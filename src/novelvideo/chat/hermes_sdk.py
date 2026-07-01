@@ -78,6 +78,20 @@ _DRAMACLAW_WRITE_TOOLS = {
     "dramaclaw_save_freezone_canvas",
     "dramaclaw_delete_freezone_canvas",
     "dramaclaw_create_freezone_canvas_from_preset",
+    "freezone_emit_canvas_command",
+    "freezone_create_node",
+    "freezone_add_next_node",
+    "freezone_update_node_data",
+    "freezone_create_edge",
+    "freezone_delete_nodes",
+    "freezone_delete_edges",
+    "freezone_move_nodes",
+    "freezone_layout_nodes",
+    "freezone_group_nodes",
+    "freezone_select_nodes",
+    "freezone_open_mainline_projection",
+    "freezone_run_node_action",
+    "freezone_create_workflow_graph",
 }
 
 _TOOL_DETAIL_FIELDS = (
