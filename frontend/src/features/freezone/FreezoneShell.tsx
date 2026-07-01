@@ -22,6 +22,7 @@ import {
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { readUrl, rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { cn } from "@/lib/utils";
+import { SUPERCHAT_CANVAS_COMMAND_EVENT } from "@/features/superchat/use-superchat";
 import { SuperChatPanel } from "@/features/superchat/superchat-panel";
 import { CommitDialog } from "./commit/CommitDialog";
 import { promoteToAsset } from "./commit/promoteToAsset";
@@ -78,6 +79,17 @@ import {
   removeLocalFreezoneProjection,
 } from "@/features/freezone/canvasSyncRuntime";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
+import {
+  applyCanvasChatCommands,
+  CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+  canvasCommandEnvelopeMatchesCanvas,
+  extractCanvasChatCommandEnvelopes,
+  normalizeCanvasChatCommandEnvelopesForValidation,
+  type CanvasChatCommandApplyResult,
+} from "@/features/freezone/canvasChatCommands";
+import { validateCanvasChatCommandEnvelopes } from "@/features/freezone/context/canvasCommandValidator";
+import { reportCanvasCommandToolResult } from "@/features/freezone/canvasCommandToolResult";
+import type { ServerFrame } from "@/features/superchat/types";
 
 export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 
@@ -88,6 +100,63 @@ interface FreezoneShellProps {
 
 const FREEZONE_CHAT_WIDTH = "clamp(500px, 34vw, 540px)";
 const PROJECTION_STATUS_REFRESH_MS = 30_000;
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function pushJsonTextCanvasCommandCandidate(candidates: unknown[], text: unknown): void {
+  if (typeof text !== "string" || !text.trim()) return;
+  try {
+    candidates.push(JSON.parse(text));
+  } catch {
+    // Non-JSON text can appear in tool display messages.
+  }
+}
+
+function pushCanvasCommandCandidate(candidates: unknown[], value: unknown): void {
+  if (!isRecord(value)) return;
+  candidates.push(value);
+  if (Array.isArray(value.commands) && value.schema_version !== CANVAS_CHAT_COMMANDS_SCHEMA_VERSION) {
+    candidates.push({
+      schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+      canvas_id: typeof value.canvas_id === "string" ? value.canvas_id : undefined,
+      commands: value.commands,
+    });
+  }
+  if (value.envelope) pushCanvasCommandCandidate(candidates, value.envelope);
+  if (value.rawInput) pushCanvasCommandCandidate(candidates, value.rawInput);
+  if (value.raw_input) pushCanvasCommandCandidate(candidates, value.raw_input);
+  pushJsonTextCanvasCommandCandidate(candidates, value.text);
+}
+
+function canvasCommandCandidatesFromFrame(frame: ServerFrame): unknown[] {
+  const candidates: unknown[] = [];
+  const record = frame as Record<string, unknown>;
+  pushCanvasCommandCandidate(candidates, record.envelope);
+  pushCanvasCommandCandidate(candidates, record.input);
+  pushCanvasCommandCandidate(candidates, record.raw);
+  pushJsonTextCanvasCommandCandidate(candidates, record.text);
+  return candidates;
+}
+
+function canvasCommandValidationFailureResult(errors: string[]): CanvasChatCommandApplyResult {
+  return {
+    applied: 0,
+    openedUiActions: 0,
+    createdNodeIds: [],
+    errors,
+    commandResults: [
+      {
+        commandIndex: -1,
+        type: "validate",
+        status: "error",
+        label: "校验画布命令",
+        error: errors.join("; "),
+      },
+    ],
+  };
+}
 
 function renderCommitSuccessMessage(target: PushTarget, result: PushResult): string {
   if (target.kind === "director_render") {
@@ -726,6 +795,80 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     });
   }, []);
 
+  useEffect(() => {
+    const handleCanvasCommand = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        frame?: ServerFrame;
+        anchorTextPrefix?: string | null;
+        receivedAt?: number;
+      }>).detail;
+      const frame = detail?.frame;
+      if (!frame || frame.type !== "canvas.command") return;
+      const turnId = typeof frame.turn_id === "string" ? frame.turn_id : null;
+      const bridgeKey = typeof frame.bridge_key === "string" ? frame.bridge_key : null;
+      const candidates = canvasCommandCandidatesFromFrame(frame);
+      const envelopes = extractCanvasChatCommandEnvelopes(candidates)
+        .filter((envelope) => canvasCommandEnvelopeMatchesCanvas(envelope, canvasId));
+
+      if (envelopes.length === 0) {
+        reportCanvasCommandToolResult({
+          bridgeKey,
+          turnId,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          projectId,
+          canvasId,
+          result: canvasCommandValidationFailureResult([
+            "画布命令格式无效或不属于当前画布，前端未执行。",
+            "无法解析 canvas_chat_commands.v1 命令；请检查 command 字段是否在正确层级。",
+          ]),
+        });
+        setChatOpen(true);
+        return;
+      }
+
+      const currentState = useCanvasStore.getState();
+      const normalizedEnvelopes = normalizeCanvasChatCommandEnvelopesForValidation(
+        envelopes,
+        currentState.nodes.map((node) => node.id),
+      );
+      const validation = validateCanvasChatCommandEnvelopes(
+        normalizedEnvelopes,
+        currentState.nodes,
+        currentState.edges,
+      );
+      if (!validation.ok) {
+        reportCanvasCommandToolResult({
+          bridgeKey,
+          turnId,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          projectId,
+          canvasId,
+          result: canvasCommandValidationFailureResult(
+            validation.issues.map((issue) => `${issue.path}: ${issue.message}`),
+          ),
+        });
+        setChatOpen(true);
+        return;
+      }
+
+      const result = applyCanvasChatCommands(normalizedEnvelopes);
+      reportCanvasCommandToolResult({
+        bridgeKey,
+        turnId,
+        anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+        projectId,
+        canvasId,
+        result,
+      });
+      setChatOpen(true);
+    };
+
+    window.addEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleCanvasCommand);
+    return () => {
+      window.removeEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleCanvasCommand);
+    };
+  }, [canvasId, projectId]);
+
   const canvasDefaultTarget = normalizePushTarget(
     (sync.metadata?.default_push_target ?? null) as
       | (Partial<PushTarget> & { kind?: PushTargetKind })
@@ -835,6 +978,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           />
         </main>
         <FreezoneChatDock
+          canvasId={canvasId}
           open={chatOpen}
           onOpenChange={setChatOpen}
           title={t("freezone.chat.title")}
@@ -903,12 +1047,14 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
 }
 
 function FreezoneChatDock({
+  canvasId,
   open,
   onOpenChange,
   title,
   description,
   toggleLabel,
 }: {
+  canvasId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
@@ -949,7 +1095,11 @@ function FreezoneChatDock({
               <SheetTitle>{title}</SheetTitle>
               <SheetDescription>{description}</SheetDescription>
             </SheetHeader>
-            <SuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
+            <SuperChatPanel
+              variant="freezone"
+              freezoneCanvasId={canvasId}
+              onRequestClose={() => onOpenChange(false)}
+            />
           </SheetContent>
         </Sheet>
       </>
@@ -986,7 +1136,11 @@ function FreezoneChatDock({
         }}
         aria-label={title}
       >
-        <SuperChatPanel variant="freezone" onRequestClose={() => onOpenChange(false)} />
+        <SuperChatPanel
+          variant="freezone"
+          freezoneCanvasId={canvasId}
+          onRequestClose={() => onOpenChange(false)}
+        />
       </aside>
     </>
   );

@@ -18,6 +18,10 @@ import {
   normalizeMessage,
 } from "@/features/superchat/message";
 import { hasStructuredContent } from "@/features/superchat/spec-extract";
+import {
+  FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT,
+  type CanvasCommandToolResultPayload,
+} from "@/features/freezone/canvasCommandToolResult";
 import { api } from "@/lib/api";
 import {
   isStaleByTtl,
@@ -28,6 +32,7 @@ import {
 
 const SETTINGS_KEY = "superchat:settings";
 const EXECUTABLE_HIDDEN_TOOL_NAMES = new Set(["freezone_emit_canvas_command"]);
+export const SUPERCHAT_CANVAS_COMMAND_EVENT = "superchat/canvas-command";
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
 const MESSAGE_CACHE_LIMIT = 50;
 // Refresh-recovery caches are best-effort; expire abandoned scopes so their
@@ -554,6 +559,16 @@ function upsertToolMessage(messages: ChatMessage[], kind: string, payload: unkno
   );
 }
 
+function dispatchCanvasCommandFrame(payload: ServerFrame): void {
+  if (typeof window === "undefined" || payload.type !== "canvas.command") return;
+  window.dispatchEvent(new CustomEvent(SUPERCHAT_CANVAS_COMMAND_EVENT, {
+    detail: {
+      frame: payload,
+      receivedAt: Date.now(),
+    },
+  }));
+}
+
 export function useSuperChat({
   project,
   displayName,
@@ -632,6 +647,19 @@ export function useSuperChat({
     setStreamText("");
     setBusy(false);
   }, [scopeKey]);
+
+  useEffect(() => {
+    const handleCanvasCommandToolResult = (event: Event) => {
+      const detail = (event as CustomEvent<CanvasCommandToolResultPayload>).detail;
+      if (!detail || detail.type !== "canvas.command.result" || !detail.bridge_key) return;
+      const { type: _type, received_at: _receivedAt, anchor_text_prefix: _anchorTextPrefix, ...frame } = detail;
+      sendFrame({ type: "canvas.command.result", ...frame });
+    };
+    window.addEventListener(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, handleCanvasCommandToolResult);
+    return () => {
+      window.removeEventListener(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, handleCanvasCommandToolResult);
+    };
+  }, [sendFrame]);
 
   const setSettings = useCallback((patch: Partial<SuperChatSettings>) => {
     setSettingsState((current) => {
@@ -800,6 +828,9 @@ export function useSuperChat({
         if (settings.showToolEvents || shouldPreserveToolMessage(frame)) {
           setMessages((current) => upsertToolMessage(current, frame.type, frame));
         }
+        break;
+      case "canvas.command":
+        dispatchCanvasCommandFrame(frame);
         break;
       case "chat.done":
         if (

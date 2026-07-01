@@ -69,6 +69,10 @@ import type { ApprovalRequest, ChatAttachment } from "@/features/superchat/types
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import type { FormatCheck, UploadResult } from "@/lib/queries/ingest";
 import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
+import { getDownstreamSpawnTypes } from "@/features/canvas/domain/nodeRegistry";
+import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
+import { useCanvasStore, type CanvasEdge, type CanvasNode } from "@/stores/canvasStore";
+import type { CanvasNodeData, CanvasNodeType } from "@/features/canvas/domain/canvasNodes";
 
 type SpecMediaDetailSection = {
   title: string;
@@ -120,6 +124,15 @@ type IngestAutomationResult = {
   taskKey?: string;
   message?: string;
   rebuild?: boolean;
+};
+
+type CanvasNodeReferencePreview = {
+  nodeId: string;
+  label: string;
+  nodeType: string | null;
+  mediaType: string | null;
+  sourceUrl: string | null;
+  previewUrl: string | null;
 };
 
 function parseSpecMediaUrl(src: string): string | null {
@@ -2378,15 +2391,363 @@ function appendAttachmentAnalysisContext(text: string, context: string): string 
   return [text, "", context].join("\n");
 }
 
+const FREEZONE_REFERENCE_DATA_KEYS = [
+  "displayName",
+  "prompt",
+  "text",
+  "content",
+  "imageUrl",
+  "previewImageUrl",
+  "videoUrl",
+  "audioUrl",
+  "sourceFileName",
+  "audioKind",
+  "aspectRatio",
+  "resultKind",
+  "slot_target",
+  "__freezone_source",
+];
+
+const FREEZONE_REFERENCE_EDITABLE_FIELDS = [
+  "displayName",
+  "prompt",
+  "text",
+  "content",
+];
+
+function truncateForCanvasReference(value: string, maxLength = 900): string {
+  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
+}
+
+function safeJson(value: unknown, maxLength = 2400): string {
+  try {
+    return truncateForCanvasReference(JSON.stringify(value), maxLength);
+  } catch {
+    return "{}";
+  }
+}
+
+function compactCanvasNodeData(data: CanvasNodeData): Record<string, unknown> {
+  const compact: Record<string, unknown> = {};
+  for (const key of FREEZONE_REFERENCE_DATA_KEYS) {
+    const value = data[key];
+    if (value === undefined || value === null || value === "") continue;
+    compact[key] = typeof value === "string" ? truncateForCanvasReference(value) : value;
+  }
+  return compact;
+}
+
+function getCanvasNodeLabel(node: CanvasNode): string {
+  if (!node.type) return node.id;
+  return resolveNodeDisplayName(node.type as CanvasNodeType, node.data);
+}
+
+function stringOrNull(value: unknown): string | null {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
+}
+
+function canvasReferenceMediaType(node: CanvasNode): string | null {
+  if (node.type === "videoNode") return "video";
+  if (node.type === "audioNode") return "audio";
+  if (node.type === "threeDWorldNode") return "model";
+  if (
+    node.type === "uploadNode" ||
+    node.type === "imageNode" ||
+    node.type === "imageGenNode" ||
+    node.type === "exportImageNode" ||
+    node.type === "pano360ViewerNode"
+  ) {
+    return "image";
+  }
+  return stringOrNull((node.data as { media_kind?: unknown }).media_kind);
+}
+
+function canvasReferenceSourceUrl(node: CanvasNode): string | null {
+  const data = node.data as {
+    imageUrl?: unknown;
+    previewImageUrl?: unknown;
+    referenceImageUrl?: unknown;
+    videoUrl?: unknown;
+    audioUrl?: unknown;
+    sourceUrl?: unknown;
+  };
+  if (node.type === "videoNode") {
+    return stringOrNull(data.videoUrl) || stringOrNull(data.sourceUrl) || stringOrNull(data.previewImageUrl);
+  }
+  if (node.type === "audioNode") {
+    return stringOrNull(data.audioUrl) || stringOrNull(data.sourceUrl);
+  }
+  return (
+    stringOrNull(data.imageUrl) ||
+    stringOrNull(data.previewImageUrl) ||
+    stringOrNull(data.referenceImageUrl) ||
+    stringOrNull(data.videoUrl) ||
+    stringOrNull(data.audioUrl) ||
+    stringOrNull(data.sourceUrl)
+  );
+}
+
+function canvasReferencePreviewUrl(node: CanvasNode): string | null {
+  const data = node.data as {
+    imageUrl?: unknown;
+    previewImageUrl?: unknown;
+    referenceImageUrl?: unknown;
+    videoUrl?: unknown;
+  };
+  if (node.type === "videoNode") {
+    return stringOrNull(data.previewImageUrl) || stringOrNull(data.videoUrl);
+  }
+  return stringOrNull(data.previewImageUrl) || stringOrNull(data.imageUrl) || stringOrNull(data.referenceImageUrl);
+}
+
+function canvasNodeToReferencePreview(node: CanvasNode): CanvasNodeReferencePreview {
+  return {
+    nodeId: node.id,
+    label: getCanvasNodeLabel(node),
+    nodeType: node.type ?? null,
+    mediaType: canvasReferenceMediaType(node),
+    sourceUrl: canvasReferenceSourceUrl(node),
+    previewUrl: canvasReferencePreviewUrl(node),
+  };
+}
+
+function getSelectedFreezoneNodes(nodes: CanvasNode[], selectedNodeId: string | null): CanvasNode[] {
+  const selected = new Map<string, CanvasNode>();
+  for (const node of nodes) {
+    if (node.selected || node.id === selectedNodeId) selected.set(node.id, node);
+  }
+  return [...selected.values()];
+}
+
+function buildFreezoneCanvasNodeReferencesContext(args: {
+  project?: string;
+  canvasId?: string | null;
+  nodes: CanvasNode[];
+  edges: CanvasEdge[];
+}): string {
+  if (args.nodes.length === 0) return "";
+  const selectedIds = new Set(args.nodes.map((node) => node.id));
+  const relatedEdges = args.edges.filter(
+    (edge) => selectedIds.has(edge.source) || selectedIds.has(edge.target),
+  );
+  const lines = [
+    "[SUPERTALE_CANVAS_NODE_REFERENCES]",
+    args.project ? `reference_1_project: ${args.project}` : null,
+    args.canvasId ? `reference_1_canvas_id: ${args.canvasId}` : null,
+  ].filter((line): line is string => line !== null);
+
+  args.nodes.forEach((node, index) => {
+    const key = `reference_1_node_${index + 1}`;
+    lines.push(`${key}_id: ${node.id}`);
+    if (node.type) lines.push(`${key}_type: ${node.type}`);
+    lines.push(`${key}_label: ${getCanvasNodeLabel(node)}`);
+    lines.push(`${key}_position_json: ${safeJson(node.position, 600)}`);
+    lines.push(`${key}_data_json: ${safeJson(compactCanvasNodeData(node.data))}`);
+    lines.push(`${key}_action_catalog_json: ${safeJson({
+      downstream_spawn_types: getDownstreamSpawnTypes(node.type as CanvasNodeType | undefined),
+      editable_fields: FREEZONE_REFERENCE_EDITABLE_FIELDS,
+      actions: [],
+    })}`);
+  });
+
+  relatedEdges.forEach((edge, index) => {
+    const key = `reference_1_edge_${index + 1}`;
+    lines.push(`${key}_id: ${edge.id}`);
+    lines.push(`${key}_source: ${edge.source}`);
+    lines.push(`${key}_target: ${edge.target}`);
+    if (edge.sourceHandle) lines.push(`${key}_source_handle: ${edge.sourceHandle}`);
+    if (edge.targetHandle) lines.push(`${key}_target_handle: ${edge.targetHandle}`);
+    if (edge.data) lines.push(`${key}_data_json: ${safeJson(edge.data, 900)}`);
+  });
+
+  lines.push("[/SUPERTALE_CANVAS_NODE_REFERENCES]");
+  return lines.join("\n");
+}
+
+function canvasReferenceResolvedUrl(value: string | null | undefined): string | null {
+  if (!value) return null;
+  return resolveMediaUrl(value) ?? value;
+}
+
+function canvasReferenceIsImageUrl(value: string | null): boolean {
+  return /\.(avif|gif|jpe?g|png|webp)(\?|#|$)/i.test(value ?? "");
+}
+
+function canvasReferenceIsVideoUrl(value: string | null): boolean {
+  return /\.(m4v|mov|mp4|webm)(\?|#|$)/i.test(value ?? "");
+}
+
+function CanvasReferenceVideoPreview({
+  src,
+  title,
+  iconClassName = "size-5",
+  animated = false,
+}: {
+  src: string;
+  title: string;
+  iconClassName?: string;
+  animated?: boolean;
+}) {
+  const videoSrc = animated || src.includes("#") ? src : `${src}#t=0.1`;
+  return (
+    <div className="relative h-full w-full bg-black">
+      <video
+        src={videoSrc}
+        className="h-full w-full object-cover"
+        autoPlay={animated}
+        loop={animated}
+        muted
+        playsInline
+        preload="metadata"
+        aria-label={title}
+      />
+      <div className={cn(
+        "pointer-events-none absolute inset-0 flex items-center justify-center text-white/90 transition-opacity",
+        animated
+          ? "bg-black/5 opacity-0 group-hover/canvas-ref:opacity-100"
+          : "bg-black/10 opacity-100",
+      )}>
+        <Play className={iconClassName} />
+      </div>
+    </div>
+  );
+}
+
+function focusCanvasReferenceNode(nodeId: string): void {
+  const store = useCanvasStore.getState();
+  if (!store.nodes.some((node) => node.id === nodeId)) return;
+  store.onNodesChange(
+    store.nodes.map((node) => ({
+      id: node.id,
+      type: "select" as const,
+      selected: node.id === nodeId,
+    })),
+  );
+  store.setSelectedNode(nodeId);
+  store.requestFocusNode(nodeId);
+}
+
+function handleCanvasReferenceKeyDown(
+  event: ReactKeyboardEvent<HTMLElement>,
+  nodeId: string,
+): void {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  focusCanvasReferenceNode(nodeId);
+}
+
+function CanvasNodeReferenceThumb({ node }: { node: CanvasNodeReferencePreview }) {
+  const thumbRef = useRef<HTMLDivElement | null>(null);
+  const [previewPosition, setPreviewPosition] = useState<{ left: number; top: number } | null>(null);
+  const mediaSrc = canvasReferenceResolvedUrl(node.sourceUrl);
+  const previewSrc = canvasReferenceResolvedUrl(node.previewUrl) ?? mediaSrc;
+  const isVideo = node.mediaType === "video" || canvasReferenceIsVideoUrl(mediaSrc);
+  const previewIsImage = canvasReferenceIsImageUrl(previewSrc);
+  const previewIsVideo = canvasReferenceIsVideoUrl(previewSrc) || (isVideo && !previewIsImage);
+  const isImage =
+    node.mediaType === "image" ||
+    node.mediaType === "pano360" ||
+    canvasReferenceIsImageUrl(mediaSrc);
+  const title = node.label || node.nodeId;
+  const updatePreviewPosition = useCallback(() => {
+    const rect = thumbRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const previewWidth = 160;
+    const previewHeight = 196;
+    const left = Math.min(
+      Math.max(rect.left + rect.width / 2, previewWidth / 2 + 12),
+      window.innerWidth - previewWidth / 2 - 12,
+    );
+    const top = rect.top - previewHeight - 8 > 12
+      ? rect.top - previewHeight - 8
+      : rect.bottom + 8;
+    setPreviewPosition({ left, top });
+  }, []);
+
+  return (
+    <div
+      ref={thumbRef}
+      className="group relative size-11 shrink-0 cursor-pointer overflow-visible focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+      aria-label={`${title} · ${node.nodeId}`}
+      role="button"
+      onMouseEnter={updatePreviewPosition}
+      onMouseMove={updatePreviewPosition}
+      onMouseLeave={() => setPreviewPosition(null)}
+      onFocus={updatePreviewPosition}
+      onBlur={() => setPreviewPosition(null)}
+      onClick={() => focusCanvasReferenceNode(node.nodeId)}
+      onKeyDown={(event) => handleCanvasReferenceKeyDown(event, node.nodeId)}
+      tabIndex={0}
+    >
+      <div className="h-full w-full overflow-hidden rounded-lg border border-white/10 bg-white/[0.07] transition group-hover:border-white/25 group-hover:ring-2 group-hover:ring-white/10">
+        {previewSrc && previewIsVideo ? (
+          <CanvasReferenceVideoPreview src={previewSrc} title={title} iconClassName="size-4" />
+        ) : previewSrc && (previewIsImage || isImage) ? (
+          <img
+            src={previewSrc}
+            alt={title}
+            className="h-full w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            draggable={false}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+            {isVideo ? <Play className="size-4" /> : <ListTree className="size-4" />}
+          </div>
+        )}
+      </div>
+      {previewPosition
+        ? createPortal(
+          <div
+            className="pointer-events-none fixed z-[9999] w-40 -translate-x-1/2 overflow-hidden rounded-xl border border-white/10 bg-popover shadow-2xl"
+            style={{ left: previewPosition.left, top: previewPosition.top }}
+          >
+            <div className="h-40 bg-black/30">
+              {mediaSrc && isVideo ? (
+                <CanvasReferenceVideoPreview
+                  src={mediaSrc}
+                  title={title}
+                  iconClassName="size-8"
+                  animated
+                />
+              ) : mediaSrc && isImage ? (
+                <img
+                  src={mediaSrc}
+                  alt={title}
+                  className="h-full w-full object-cover"
+                  loading="lazy"
+                  decoding="async"
+                  draggable={false}
+                />
+              ) : (
+                <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+                  {isVideo ? <Play className="size-8" /> : <ListTree className="size-8" />}
+                </div>
+              )}
+            </div>
+            <div className="truncate px-3 py-2 text-xs font-semibold text-popover-foreground">
+              {title}
+            </div>
+          </div>,
+          document.body,
+        )
+        : null}
+    </div>
+  );
+}
+
 type SuperChatPanelVariant = "default" | "freezone";
 
 interface SuperChatPanelProps {
   variant?: SuperChatPanelVariant;
+  freezoneCanvasId?: string | null;
   onRequestClose?: () => void;
 }
 
 export function SuperChatPanel({
   variant = "default",
+  freezoneCanvasId = null,
   onRequestClose,
 }: SuperChatPanelProps = {}) {
   const { t } = useTranslation();
@@ -2427,6 +2788,8 @@ export function SuperChatPanel({
   const composerBeamRef = useRef<BorderBeamController | null>(null);
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
   const taskEventBus = useEventBus();
+  const canvasNodes = useCanvasStore((state) => state.nodes);
+  const selectedCanvasNodeId = useCanvasStore((state) => state.selectedNodeId);
   const chat = useSuperChat({
     project: params.project,
     displayName: username || "SuperTale",
@@ -2434,9 +2797,18 @@ export function SuperChatPanel({
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 
+  const isFreezoneLayout = variant === "freezone";
   const hasSendableContent = draft.trim().length > 0 || attachments.length > 0;
   const canSend = hasSendableContent && chat.connected && !preparingSend;
   const composerWaiting = chat.busy && (!hasSendableContent || !chat.connected || preparingSend);
+  const selectedFreezoneNodes = useMemo(
+    () => (isFreezoneLayout ? getSelectedFreezoneNodes(canvasNodes, selectedCanvasNodeId) : []),
+    [canvasNodes, isFreezoneLayout, selectedCanvasNodeId],
+  );
+  const selectedFreezoneNodePreviews = useMemo(
+    () => selectedFreezoneNodes.map((node) => canvasNodeToReferencePreview(node)),
+    [selectedFreezoneNodes],
+  );
   const activeMessages = useMemo(
     () =>
       chat.messages.filter(
@@ -2824,9 +3196,23 @@ export function SuperChatPanel({
         );
       }
 
+      if (variant === "freezone") {
+        const state = useCanvasStore.getState();
+        const selectedNodes = getSelectedFreezoneNodes(state.nodes, state.selectedNodeId);
+        const canvasContext = buildFreezoneCanvasNodeReferencesContext({
+          project,
+          canvasId: freezoneCanvasId,
+          nodes: selectedNodes,
+          edges: state.edges,
+        });
+        if (canvasContext) {
+          nextText = appendAttachmentAnalysisContext(nextText, canvasContext);
+        }
+      }
+
       return chat.send(text, transportAttachments, nextText);
     },
-    [chat, params.project, recordUploadedFiles, reingestConfirmation, t, uploadedIngestFiles],
+    [chat, freezoneCanvasId, params.project, recordUploadedFiles, reingestConfirmation, t, uploadedIngestFiles, variant],
   );
 
   useEffect(() => {
@@ -3077,8 +3463,6 @@ export function SuperChatPanel({
     setRecording(true);
     recognition.start();
   };
-
-  const isFreezoneLayout = variant === "freezone";
 
   return (
     <div className={cn("relative flex h-full min-h-0 overflow-hidden bg-background", isFreezoneLayout && "bg-transparent")}>
@@ -3365,6 +3749,22 @@ export function SuperChatPanel({
                         <X className="size-3" />
                       </button>
                     </span>
+                  ))}
+                </div>
+              </div>
+            )}
+            {isFreezoneLayout && selectedFreezoneNodes.length > 0 && (
+              <div className={cn("px-4", attachments.length > 0 ? "pt-2" : "pt-3")}>
+                <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
+                  <span>当前选中</span>
+                  <span>本轮会使用</span>
+                </div>
+                <div className="flex flex-wrap gap-2">
+                  {selectedFreezoneNodePreviews.map((node) => (
+                    <CanvasNodeReferenceThumb
+                      key={node.nodeId}
+                      node={node}
+                    />
                   ))}
                 </div>
               </div>
