@@ -74,6 +74,10 @@ _DRAMACLAW_WRITE_TOOLS = {
     "dramaclaw_generate_portrait",
     "dramaclaw_generate_identity_image",
     "dramaclaw_start_single_video",
+    "dramaclaw_run_freezone_skill",
+    "dramaclaw_save_freezone_canvas",
+    "dramaclaw_delete_freezone_canvas",
+    "dramaclaw_create_freezone_canvas_from_preset",
 }
 
 _TOOL_DETAIL_FIELDS = (

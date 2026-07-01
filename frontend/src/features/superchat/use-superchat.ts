@@ -72,13 +72,14 @@ function resolveChatWsUrl(): string {
   return url.toString();
 }
 
-function scopeForProject(project?: string): ChatScope {
+function scopeForProject(project?: string, surface?: "freezone"): ChatScope {
   const name = project?.trim();
-  if (name) return { kind: "project", id: name };
+  if (name) return { kind: surface === "freezone" ? "freezone" : "project", id: name };
   return { kind: "home", id: null };
 }
 
 function scopeSessionKey(scope: ChatScope): string {
+  if (scope.kind === "freezone" && scope.id) return `supertale:freezone:${scope.id}:main`;
   if (scope.kind === "project" && scope.id) return `supertale:project:${scope.id}:main`;
   return "supertale:home:main";
 }
@@ -259,6 +260,7 @@ function isChatScope(value: unknown): value is ChatScope {
   return (
     scope.kind === "home"
     || scope.kind === "project"
+    || scope.kind === "freezone"
     || scope.kind === "asset"
     || scope.kind === "task"
   );
@@ -555,11 +557,13 @@ function upsertToolMessage(messages: ChatMessage[], kind: string, payload: unkno
 export function useSuperChat({
   project,
   displayName,
+  surface,
 }: {
   project?: string;
   displayName: string;
+  surface?: "freezone";
 }) {
-  const desiredScope = useMemo(() => scopeForProject(project), [project]);
+  const desiredScope = useMemo(() => scopeForProject(project, surface), [project, surface]);
   const scopeKey = useMemo(() => scopeSessionKey(desiredScope), [desiredScope]);
   const initialScopeSnapshot = useMemo(() => {
     const cachedMessages = loadCachedMessages(scopeKey);
@@ -980,9 +984,10 @@ export function useSuperChat({
       text: outboundText,
       turn_id: turnId,
       attachments: attachments.length > 0 ? attachments : undefined,
+      surface,
     });
     return true;
-  }, [connected, desiredScope, displayName, markTurnActive, sendFrame]);
+  }, [connected, desiredScope, displayName, markTurnActive, sendFrame, surface]);
 
   const appendNotification = useCallback(async (text: string): Promise<boolean> => {
     const trimmed = text.trim();
