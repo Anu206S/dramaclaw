@@ -21,7 +21,11 @@ _log = logging.getLogger(__name__)
 
 DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
 STATE_ROOT = DRAMACLAW_ROOT / "state"
-DEFAULT_HERMES_SKILLS = {"dramaclaw"}
+DEFAULT_HERMES_SKILLS = {
+    "dramaclaw",
+    "sketch-correction-worker",
+    "sketch-storyboard-director",
+}
 DEFAULT_HERMES_PLUGINS = {"dramaclaw"}
 DEFAULT_HERMES_TOOLSETS = {"hermes-acp"}
 _warned_repo_state_fallback = False

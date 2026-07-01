@@ -240,9 +240,56 @@ def load_user_preferences(username: str) -> str:
     return path.read_text(encoding="utf-8").strip()
 
 
-def _prompt_with_user_context(username: str, project: str, prompt: str) -> str:
+_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS = """[FREEZONE_CANVAS_ASSISTANT]
+This chat turn is running inside the Xi画/Freezone canvas.
+
+Allowed:
+- inspect project state, assets, tasks, skill runs, and canvas data;
+- run Freezone canvas skills and save/delete/create canvas nodes/canvases.
+
+Forbidden:
+- do not start or mutate the main video-production pipeline from here;
+- do not generate/plan scripts, episodes, characters, portraits, identity images, scene masters,
+  sketches, first frames, audio, final episode composition, or single-beat videos.
+
+If the user asks for mainline video generation, explain that this Xi画 assistant can only inspect
+that state or operate canvas nodes, and ask them to use the main project assistant/workflow.
+[/FREEZONE_CANVAS_ASSISTANT]"""
+
+
+def _tool_mode_for_surface(surface: str | None) -> str:
+    return "freezone_canvas" if str(surface or "").strip() == "freezone" else "default"
+
+
+def _write_hermes_tool_mode(username: str, *, mode: str) -> None:
+    try:
+        from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
+
+        home = ensure_user_hermes_workspace(username)
+        path = home / "tmp" / "dramaclaw_tool_mode.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(
+            json.dumps({"mode": mode}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+    except Exception as exc:  # noqa: BLE001 - tool mode is defense-in-depth.
+        logger.warning("failed to write hermes tool mode for user=%s mode=%s: %s", username, mode, exc)
+
+
+def _prompt_with_user_context(
+    username: str,
+    project: str,
+    prompt: str,
+    *,
+    tool_mode: str = "default",
+) -> str:
     preferences = load_user_preferences(username)
     scope = f"project:{project}" if project else "home"
+    surface_instructions = (
+        f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}"
+        if tool_mode == "freezone_canvas"
+        else ""
+    )
     return (
         "[DRAMACLAW_USER_CONTEXT]\n"
         f"username: {username}\n"
@@ -252,6 +299,7 @@ def _prompt_with_user_context(username: str, project: str, prompt: str) -> str:
         "[USER_PREFERENCES]\n"
         f"{preferences}\n\n"
         f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
+        f"{surface_instructions}\n\n"
         "[USER_MESSAGE]\n"
         f"{prompt}"
     )
@@ -2418,6 +2466,33 @@ def _trace_history_contents(
     return [str(row["content"] or "") for row in rows]
 
 
+def _store_history_contents(username: str, store_scope: Any, role: str) -> list[str]:
+    try:
+        from novelvideo.chat.store import chat_store
+
+        if role == "trace":
+            conn = chat_store.connect(username, store_scope)
+            try:
+                rows = conn.execute(
+                    """
+                    SELECT content
+                      FROM chat_messages
+                     WHERE role = 'trace'
+                     ORDER BY id ASC
+                    """
+                ).fetchall()
+            finally:
+                conn.close()
+            return [str(row["content"] or "") for row in rows]
+        return [
+            str(message.get("content") or "")
+            for message in chat_store.list_messages(username, store_scope, limit=200)
+            if message.get("role") == role
+        ]
+    except Exception:
+        return []
+
+
 def _replace_trace_messages(conn: sqlite3.Connection, messages: list[dict[str, Any]]) -> None:
     conn.execute("DELETE FROM chat_messages WHERE role = 'trace'")
     for message in messages:
@@ -3207,10 +3282,14 @@ async def stream_assistant_reply(
     *,
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
+    surface: str | None = None,
+    store_scope: Any | None = None,
 ) -> dict[str, Any]:
-    run_lock_id = _acquire_chat_run_lock(username, project)
+    tool_mode = _tool_mode_for_surface(surface)
+    lock_project = f"freezone:{project}" if tool_mode == "freezone_canvas" else project
+    run_lock_id = _acquire_chat_run_lock(username, lock_project)
     heartbeat_task = asyncio.create_task(
-        _chat_run_lock_heartbeat_loop(username, project, run_lock_id)
+        _chat_run_lock_heartbeat_loop(username, lock_project, run_lock_id)
     )
     try:
         deterministic = _frontend_context_reply(prompt)
@@ -3242,6 +3321,8 @@ async def stream_assistant_reply(
                 on_event,
                 project_dir=project_dir,
                 project_state_dir=project_state_dir,
+                tool_mode=tool_mode,
+                store_scope=store_scope,
             )
         if backend != "claude":
             raise RuntimeError(f"Unsupported chat backend: {backend}")
@@ -3259,7 +3340,7 @@ async def stream_assistant_reply(
             await heartbeat_task
         except asyncio.CancelledError:
             pass
-        _release_chat_run_lock(username, project, run_lock_id)
+        _release_chat_run_lock(username, lock_project, run_lock_id)
 
 
 def _frontend_context_reply(prompt: str) -> str | None:
@@ -3321,7 +3402,12 @@ async def _stream_deterministic_assistant_reply(
     return message
 
 
-async def prewarm_chat_backend(username: str, *, project: str | None = None) -> None:
+async def prewarm_chat_backend(
+    username: str,
+    *,
+    project: str | None = None,
+    surface: str | None = None,
+) -> None:
     """Best-effort pre-warm of the per-user agent worker.
 
     Called when the user opens a chat / switches project so the first real
@@ -3334,8 +3420,12 @@ async def prewarm_chat_backend(username: str, *, project: str | None = None) -> 
             return
         from novelvideo.chat.hermes_pool import pool as _hermes_pool
 
+        tool_mode = _tool_mode_for_surface(surface)
+        agent_profile = "freezone" if tool_mode == "freezone_canvas" else "main"
         await _hermes_pool.prewarm(
             username,
+            agent_profile=agent_profile,
+            tool_mode=tool_mode,
             scope_kind="project" if project else "home",
             project_id=project or None,
         )
@@ -3351,6 +3441,8 @@ async def _stream_assistant_reply_hermes(
     *,
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
+    tool_mode: str = "default",
+    store_scope: Any | None = None,
 ) -> dict[str, Any]:
     """Stream via Hermes ACP subprocess (per-user, sandboxed).
 
@@ -3361,14 +3453,18 @@ async def _stream_assistant_reply_hermes(
     """
     from novelvideo.chat.hermes_pool import pool as _hermes_pool
 
-    agent_prompt = _prompt_with_user_context(username, project, prompt)
+    agent_profile = "freezone" if tool_mode == "freezone_canvas" else "main"
+    _write_hermes_tool_mode(username, mode=tool_mode)
+    agent_prompt = _prompt_with_user_context(username, project, prompt, tool_mode=tool_mode)
     thread = await _hermes_pool.get_for_user(
         username,
+        agent_profile=agent_profile,
+        tool_mode=tool_mode,
         scope_kind="project" if project else "home",
         project_id=project or None,
     )
     previous_assistant = (
-        _assistant_history_contents(
+        _store_history_contents(username, store_scope, "assistant") if store_scope is not None else _assistant_history_contents(
             username,
             project,
             project_dir=project_dir,
@@ -3376,7 +3472,7 @@ async def _stream_assistant_reply_hermes(
         ) if project else []
     )
     previous_trace = (
-        _trace_history_contents(
+        _store_history_contents(username, store_scope, "trace") if store_scope is not None else _trace_history_contents(
             username,
             project,
             project_dir=project_dir,
@@ -3409,22 +3505,39 @@ async def _stream_assistant_reply_hermes(
         final_text = _normalize_json_render_reply(final_text)
         final_tool_text = _strip_replayed_assistant_prefix(tool_text, previous_trace)
         if final_tool_text.strip():
-            add_trace_messages(
+            if store_scope is not None:
+                from novelvideo.chat.store import chat_store
+
+                for trace_content in _split_trace_contents(final_tool_text):
+                    chat_store.append_message(username, store_scope, "trace", trace_content)
+            else:
+                add_trace_messages(
+                    username,
+                    project,
+                    _split_trace_contents(final_tool_text),
+                    project_dir=project_dir,
+                    project_state_dir=project_state_dir,
+                )
+        media = _extract_media(final_text, username, project, project_dir=project_dir)
+        if store_scope is not None:
+            from novelvideo.chat.store import chat_store
+
+            persisted_message = chat_store.append_message(
+                username,
+                store_scope,
+                "assistant",
+                final_text,
+                media=media,
+            )
+        else:
+            persisted_message = add_assistant_message(
                 username,
                 project,
-                _split_trace_contents(final_tool_text),
+                final_text,
+                media,
                 project_dir=project_dir,
                 project_state_dir=project_state_dir,
             )
-        media = _extract_media(final_text, username, project, project_dir=project_dir)
-        persisted_message = add_assistant_message(
-            username,
-            project,
-            final_text,
-            media,
-            project_dir=project_dir,
-            project_state_dir=project_state_dir,
-        )
         return persisted_message
 
     try:
@@ -3560,14 +3673,25 @@ async def _stream_assistant_reply_hermes(
                 )
         result_message = persist_partial_reply()
         if result_message is None:
-            result_message = add_assistant_message(
-                username,
-                project,
-                "(hermes returned no content)",
-                [],
-                project_dir=project_dir,
-                project_state_dir=project_state_dir,
-            )
+            if store_scope is not None:
+                from novelvideo.chat.store import chat_store
+
+                result_message = chat_store.append_message(
+                    username,
+                    store_scope,
+                    "assistant",
+                    "(hermes returned no content)",
+                    media=[],
+                )
+            else:
+                result_message = add_assistant_message(
+                    username,
+                    project,
+                    "(hermes returned no content)",
+                    [],
+                    project_dir=project_dir,
+                    project_state_dir=project_state_dir,
+                )
             persisted_message = result_message
         await _emit_chat_event_best_effort(
             on_event,

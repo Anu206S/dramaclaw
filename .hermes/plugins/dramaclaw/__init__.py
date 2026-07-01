@@ -42,6 +42,33 @@ RENDER_PREREQ_CHAT_PREFIX = (
     "Render 任务没有生成可用图片：当前缺少必要草图前置。请先在「虾塘」生成或确认对应 "
     "Beat 的草图后，再重新生成 Render。"
 )
+FREEZONE_MAINLINE_WRITE_DENIED_MESSAGE = (
+    "当前虾导运行在虾画画布中，只能查询项目状态或操作画布节点；"
+    "不能从这里启动主线视频生成、分集/脚本规划、草图、首帧、配音、成片或单 Beat 视频任务。"
+)
+FREEZONE_DENIED_MAINLINE_WRITE_TOOLS = {
+    "dramaclaw_post",
+    "dramaclaw_patch",
+    "dramaclaw_delete",
+    "dramaclaw_build_characters",
+    "dramaclaw_plan_episodes",
+    "dramaclaw_generate_script",
+    "dramaclaw_update_character_face_prompt",
+    "dramaclaw_plan_identities",
+    "dramaclaw_plan_scenes",
+    "dramaclaw_plan_props",
+    "dramaclaw_generate_scene_master",
+    "dramaclaw_generate_scene_reverse",
+    "dramaclaw_generate_sketches",
+    "dramaclaw_detect_sketch_identities",
+    "dramaclaw_optimize_video_global",
+    "dramaclaw_generate_audio",
+    "dramaclaw_render_first_frames",
+    "dramaclaw_compose_episode",
+    "dramaclaw_generate_portrait",
+    "dramaclaw_generate_identity_image",
+    "dramaclaw_start_single_video",
+}
 
 
 def _has_text_content_filter(value: Any) -> bool:
@@ -155,6 +182,62 @@ def _with_chat_error_hints(value: Any) -> Any:
             ),
         )
     return result
+
+
+def _tool_mode_path() -> Path | None:
+    explicit = os.environ.get("DRAMACLAW_TOOL_MODE_FILE", "").strip()
+    if explicit:
+        return Path(explicit)
+    home = os.environ.get("HERMES_HOME", "").strip()
+    if home:
+        return Path(home) / "tmp" / "dramaclaw_tool_mode.json"
+    return None
+
+
+def _current_tool_mode() -> str:
+    env_mode = os.environ.get("DRAMACLAW_TOOL_MODE", "").strip()
+    if env_mode:
+        return env_mode
+    path = _tool_mode_path()
+    if path is None:
+        return "default"
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return "default"
+    if not isinstance(data, dict):
+        return "default"
+    mode = str(data.get("mode") or "").strip()
+    return mode or "default"
+
+
+def _deny_freezone_mainline_write(tool_name: str) -> str | None:
+    if tool_name not in FREEZONE_DENIED_MAINLINE_WRITE_TOOLS:
+        return None
+    if _current_tool_mode() != "freezone_canvas":
+        return None
+    return tool_error(
+        {
+            "ok": False,
+            "code": "freezone_mainline_write_denied",
+            "tool": tool_name,
+            "chat_error": FREEZONE_MAINLINE_WRITE_DENIED_MESSAGE,
+            "agent_instruction": (
+                "Reply in natural Chinese. Explain that Xi画's assistant can query project state "
+                "or operate canvas nodes, but cannot start mainline video-generation tasks here."
+            ),
+        }
+    )
+
+
+def _guard_freezone_mainline_write(tool_name: str, handler):
+    def wrapped(args: dict[str, Any], **kwargs: Any) -> str:
+        denied = _deny_freezone_mainline_write(tool_name)
+        if denied is not None:
+            return denied
+        return handler(args, **kwargs)
+
+    return wrapped
 
 
 def _available() -> bool:
@@ -530,6 +613,166 @@ def _handle_patch(args: dict[str, Any], **_: Any) -> str:
 def _handle_delete(args: dict[str, Any], **_: Any) -> str:
     try:
         return tool_result(_request("DELETE", str(args.get("path") or ""), query=args.get("query"), body=args.get("body")))
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _require_text_arg(args: dict[str, Any], *names: str) -> str:
+    for name in names:
+        value = str(args.get(name) or "").strip()
+        if value:
+            return value
+    raise ValueError(f"{names[0]} is required")
+
+
+def _handle_list_freezone_skills(args: dict[str, Any], **_: Any) -> str:
+    """List runnable Freezone / canvas skill definitions."""
+    try:
+        return tool_result(_request("GET", "/api/v1/freezone/skills"))
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_run_freezone_skill(args: dict[str, Any], **_: Any) -> str:
+    """Run one Freezone SkillNode through the typed skill-run API."""
+    try:
+        project = _project_from_args(args)
+        skill_id = _require_text_arg(args, "skill_id")
+        body = args.get("request")
+        if body is None:
+            body = {
+                "schema_version": args.get("schema_version") or "skill.v1",
+                "skill_node_id": args.get("skill_node_id") or "",
+                "canvas_id": args.get("canvas_id") or "",
+                "idempotency_key": args.get("idempotency_key"),
+                "parameters": args.get("parameters") or {},
+                "resolved_inputs": args.get("resolved_inputs") or [],
+            }
+        if not isinstance(body, dict):
+            raise ValueError("request must be an object")
+        return tool_result(
+            _request(
+                "POST",
+                f"/api/v1/projects/{project}/freezone/skills/{quote(skill_id, safe='')}/run",
+                body=body,
+            )
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_get_freezone_skill_result(args: dict[str, Any], **_: Any) -> str:
+    """Read the current status and outputs for one Freezone skill run."""
+    try:
+        project = _project_from_args(args)
+        run_id = _require_text_arg(args, "run_id")
+        return tool_result(
+            _request(
+                "GET",
+                f"/api/v1/projects/{project}/freezone/skills/runs/{quote(run_id, safe='')}/result",
+            )
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_list_freezone_canvases(args: dict[str, Any], **_: Any) -> str:
+    """List canvases available for the current project."""
+    try:
+        project = _project_from_args(args)
+        return tool_result(
+            _request("GET", f"/api/v1/projects/{project}/freezone/canvases")
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_get_freezone_canvas(args: dict[str, Any], **_: Any) -> str:
+    """Read one persisted Freezone canvas payload."""
+    try:
+        project = _project_from_args(args)
+        canvas_id = _require_text_arg(args, "canvas_id")
+        return tool_result(
+            _request(
+                "GET",
+                f"/api/v1/projects/{project}/freezone/canvases/{quote(canvas_id, safe='')}",
+            )
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_save_freezone_canvas(args: dict[str, Any], **_: Any) -> str:
+    """Persist a complete Freezone canvas payload."""
+    try:
+        project = _project_from_args(args)
+        canvas_id = _require_text_arg(args, "canvas_id")
+        payload = args.get("payload")
+        if not isinstance(payload, dict):
+            raise ValueError("payload must be a complete canvas object")
+        payload = dict(payload)
+        payload.setdefault("canvas_id", canvas_id)
+        payload.setdefault("project_id", project)
+        return tool_result(
+            _request(
+                "PUT",
+                f"/api/v1/projects/{project}/freezone/canvases/{quote(canvas_id, safe='')}",
+                body=payload,
+            )
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_delete_freezone_canvas(args: dict[str, Any], **_: Any) -> str:
+    """Delete one Freezone canvas by id."""
+    try:
+        project = _project_from_args(args)
+        canvas_id = _require_text_arg(args, "canvas_id")
+        return tool_result(
+            _request(
+                "DELETE",
+                f"/api/v1/projects/{project}/freezone/canvases/{quote(canvas_id, safe='')}",
+            )
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_create_freezone_canvas_from_preset(args: dict[str, Any], **_: Any) -> str:
+    """Create or open a Freezone canvas from a beat/episode/asset preset."""
+    try:
+        project = _project_from_args(args)
+        body = args.get("preset")
+        if body is None:
+            body = {
+                key: args.get(key)
+                for key in (
+                    "scope",
+                    "episode",
+                    "beat",
+                    "primary_slot",
+                    "asset_kind",
+                    "character",
+                    "identity_id",
+                    "asset_id",
+                    "canvas_id",
+                    "overwrite_existing",
+                    "base_revision",
+                )
+                if args.get(key) is not None
+            }
+        if not isinstance(body, dict):
+            raise ValueError("preset must be an object")
+        if not body.get("scope"):
+            raise ValueError("preset scope is required")
+        return tool_result(
+            _request(
+                "POST",
+                f"/api/v1/projects/{project}/freezone/canvases:from-preset",
+                body=body,
+            )
+        )
     except Exception as exc:
         return tool_error(str(exc))
 
@@ -1648,6 +1891,134 @@ TOOLS = (
         _handle_delete,
     ),
     (
+        "dramaclaw_list_freezone_skills",
+        _schema(
+            "dramaclaw_list_freezone_skills",
+            "List Freezone canvas SkillNode definitions. Use this before running a canvas skill instead of guessing skill ids or roles.",
+            {
+                "project_id": {
+                    "type": "string",
+                    "description": "Unused; accepted for symmetry with other DramaClaw tools.",
+                },
+            },
+        ),
+        _handle_list_freezone_skills,
+    ),
+    (
+        "dramaclaw_run_freezone_skill",
+        _schema(
+            "dramaclaw_run_freezone_skill",
+            "Run a Freezone canvas SkillNode through /freezone/skills/{skill_id}/run. Use this for canvas graph skills such as sketch_from_context, sketch_from_director_combined, frame_from_context, set_selected_background, and scene_360.",
+            {
+                "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
+                "skill_id": {"type": "string", "description": "Skill id from dramaclaw_list_freezone_skills, e.g. freezone.sketch_from_context."},
+                "request": {"type": "object", "description": "Complete SkillRunRequest. Prefer this when available."},
+                "schema_version": {"type": "string", "description": "Default: skill.v1."},
+                "skill_node_id": {"type": "string", "description": "Canvas skill node id."},
+                "canvas_id": {"type": "string", "description": "Canvas id, usually default or a preset canvas id."},
+                "idempotency_key": {"type": "string", "description": "Optional idempotency key for retries."},
+                "parameters": {"type": "object", "description": "Skill parameter values."},
+                "resolved_inputs": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": "Resolved skill input bindings from the canvas.",
+                },
+            },
+            ["skill_id"],
+        ),
+        _handle_run_freezone_skill,
+    ),
+    (
+        "dramaclaw_get_freezone_skill_result",
+        _schema(
+            "dramaclaw_get_freezone_skill_result",
+            "Get status and outputs for one Freezone skill run. Use after dramaclaw_run_freezone_skill returns a run_id.",
+            {
+                "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
+                "run_id": {"type": "string", "description": "Run id returned by dramaclaw_run_freezone_skill."},
+            },
+            ["run_id"],
+        ),
+        _handle_get_freezone_skill_result,
+    ),
+    (
+        "dramaclaw_list_freezone_canvases",
+        _schema(
+            "dramaclaw_list_freezone_canvases",
+            "List Freezone canvases for the project.",
+            {
+                "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
+            },
+        ),
+        _handle_list_freezone_canvases,
+    ),
+    (
+        "dramaclaw_get_freezone_canvas",
+        _schema(
+            "dramaclaw_get_freezone_canvas",
+            "Read one Freezone canvas payload, including nodes, edges, viewport, revision, and metadata.",
+            {
+                "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
+                "canvas_id": {"type": "string", "description": "Canvas id."},
+            },
+            ["canvas_id"],
+        ),
+        _handle_get_freezone_canvas,
+    ),
+    (
+        "dramaclaw_save_freezone_canvas",
+        _schema(
+            "dramaclaw_save_freezone_canvas",
+            "Save a complete Freezone canvas payload. Read the canvas first, modify nodes/edges locally, then save with the current base_revision and a client_save_id.",
+            {
+                "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
+                "canvas_id": {"type": "string", "description": "Canvas id."},
+                "payload": {
+                    "type": "object",
+                    "description": "Complete canvas payload with nodes, edges, viewport, base_revision, client_save_id, and save_source.",
+                },
+            },
+            ["canvas_id", "payload"],
+        ),
+        _handle_save_freezone_canvas,
+    ),
+    (
+        "dramaclaw_delete_freezone_canvas",
+        _schema(
+            "dramaclaw_delete_freezone_canvas",
+            "Delete one Freezone canvas by id. Use only when the user explicitly asks to delete a canvas.",
+            {
+                "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
+                "canvas_id": {"type": "string", "description": "Canvas id to delete."},
+            },
+            ["canvas_id"],
+        ),
+        _handle_delete_freezone_canvas,
+    ),
+    (
+        "dramaclaw_create_freezone_canvas_from_preset",
+        _schema(
+            "dramaclaw_create_freezone_canvas_from_preset",
+            "Create or open a Freezone canvas from a preset scope such as episode, beat, asset, or blank. Use this before operating on a beat or asset canvas when no canvas id is known.",
+            {
+                "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
+                "preset": {"type": "object", "description": "Complete preset request. Prefer this when available."},
+                "scope": {"type": "string", "enum": ["episode", "beat", "asset", "blank"]},
+                "episode": {"type": "integer"},
+                "beat": {"type": "integer"},
+                "primary_slot": {"type": "string", "description": "For beat canvases, e.g. sketch or frame."},
+                "asset_kind": {"type": "string", "description": "For asset canvases, e.g. character, identity, prop, scene."},
+                "character": {"type": "string"},
+                "identity_id": {"type": "string"},
+                "asset_id": {"type": "string"},
+                "canvas_id": {"type": "string"},
+                "overwrite_existing": {"type": "boolean"},
+                "base_revision": {"type": "integer"},
+            },
+        ),
+        _handle_create_freezone_canvas_from_preset,
+    ),
+    (
         "dramaclaw_pipeline_status",
         _schema(
             "dramaclaw_pipeline_status",
@@ -2298,12 +2669,13 @@ TOOLS = (
 
 def register(ctx) -> None:
     for name, schema, handler in TOOLS:
+        guarded_handler = _guard_freezone_mainline_write(name, handler)
         for toolset in REGISTER_TOOLSETS:
             ctx.register_tool(
                 name=name,
                 toolset=toolset,
                 schema=schema,
-                handler=handler,
+                handler=guarded_handler,
                 check_fn=_available,
                 requires_env=["DRAMACLAW_API_URL", "DRAMACLAW_AGENT_TOKEN"],
                 description=schema["description"],
