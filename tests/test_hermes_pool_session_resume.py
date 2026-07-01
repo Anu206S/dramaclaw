@@ -118,6 +118,45 @@ async def test_hermes_pool_uses_separate_sessions_per_project(
 
 
 @pytest.mark.asyncio
+async def test_hermes_pool_uses_separate_sessions_per_agent_profile(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool, calls, fake_auth = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+
+    try:
+        main = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
+        freezone = await pool.get_for_user(
+            "alice",
+            agent_profile="freezone",
+            tool_mode="freezone_canvas",
+            scope_kind="project",
+            project_id="project_a",
+        )
+        main_again = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
+        freezone_again = await pool.get_for_user(
+            "alice",
+            agent_profile="freezone",
+            tool_mode="freezone_canvas",
+            scope_kind="project",
+            project_id="project_a",
+        )
+    finally:
+        await pool.close_all()
+
+    assert main.id == "session-1"
+    assert freezone.id == "session-2"
+    assert main_again.id == "session-1"
+    assert freezone_again.id == "session-2"
+    assert calls == [("start", None), ("start", None)]
+    assert sorted(pool._session_ids["alice"]) == [
+        ("freezone", "project", "project_a"),
+        ("main", "project", "project_a"),
+    ]
+    assert fake_auth.created == 2
+
+
+@pytest.mark.asyncio
 async def test_hermes_pool_resumes_current_project_session_when_renewing_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

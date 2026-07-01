@@ -820,6 +820,20 @@ def test_home_history_hides_trace_messages(monkeypatch, tmp_path):
     assert all("dramaclaw_pipeline_status" not in message["content"] for message in messages)
 
 
+def test_freezone_history_uses_separate_project_chat_db(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    chat_service.add_user_message("admin", "project-a", "mainline")
+    scope = ChatScope(kind="freezone", id="project-a")
+    chat_store.append_message("admin", scope, "user", "canvas")
+
+    assert chat_service.list_messages("admin", "project-a")[0]["content"] == "mainline"
+    assert chat_store.list_messages("admin", scope)[0]["content"] == "canvas"
+    assert (state_root / "admin" / "project-a" / "chat.db").exists()
+    assert (state_root / "admin" / "_freezone" / "project-a" / "chat.db").exists()
+
+
 def test_json_render_reply_normalizer_unwraps_fenced_ui_spec():
     content = """请查看：
 

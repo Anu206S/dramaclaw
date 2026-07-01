@@ -54,7 +54,13 @@ def repo_skills(isolated_workspace):
     """Create a fake repo .hermes/skills tree."""
     skills = isolated_workspace / ".hermes" / "skills"
     skills.mkdir(parents=True)
-    for name in ("json-render", "dramaclaw", "other-skill"):
+    for name in (
+        "json-render",
+        "dramaclaw",
+        "sketch-correction-worker",
+        "sketch-storyboard-director",
+        "other-skill",
+    ):
         (skills / name).mkdir()
         (skills / name / "SKILL.md").write_text(f"# {name}\n")
     return skills
@@ -80,6 +86,8 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     assert (home / "skills" / "_user").is_dir()
     # Default allowlist should be symlinked in.
     assert (home / "skills" / "dramaclaw").is_symlink()
+    assert (home / "skills" / "sketch-correction-worker").is_symlink()
+    assert (home / "skills" / "sketch-storyboard-director").is_symlink()
     assert not (home / "skills" / "json-render").exists()
     assert not (home / "skills" / "other-skill").exists()
     plugin_link = home / "plugins" / "dramaclaw"
