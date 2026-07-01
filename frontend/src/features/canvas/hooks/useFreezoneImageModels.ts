@@ -112,6 +112,16 @@ export function prefetchFreezoneImageModels(project: string): void {
   ensureLoaded(project);
 }
 
+export function getFreezoneImageModelsSnapshot(
+  projectOverride?: string | null,
+): UseFreezoneImageModelsResult {
+  const project =
+    projectOverride !== undefined ? projectOverride : readUrl().project;
+  if (!project) return getNoProjectState();
+  ensureLoaded(project);
+  return states.get(project) ?? getNoProjectState();
+}
+
 function subscribe(project: string | null, callback: () => void) {
   if (!project) return () => {};
   let bucket = listeners.get(project);

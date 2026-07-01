@@ -57,6 +57,8 @@ def repo_skills(isolated_workspace):
     for name in (
         "json-render",
         "dramaclaw",
+        "freezone",
+        "freezone-canvas-node-operator",
         "sketch-correction-worker",
         "sketch-storyboard-director",
         "other-skill",
@@ -71,7 +73,7 @@ def repo_plugins(isolated_workspace):
     """Create a fake repo .hermes/plugins tree."""
     plugins = isolated_workspace / ".hermes" / "plugins"
     plugins.mkdir(parents=True)
-    for name in ("dramaclaw", "other-plugin"):
+    for name in ("dramaclaw", "freezone", "other-plugin"):
         (plugins / name).mkdir()
         (plugins / name / "plugin.yaml").write_text(f"name: {name}\n")
     return plugins
@@ -86,16 +88,20 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     assert (home / "skills" / "_user").is_dir()
     # Default allowlist should be symlinked in.
     assert (home / "skills" / "dramaclaw").is_symlink()
+    assert (home / "skills" / "freezone").is_symlink()
+    assert (home / "skills" / "freezone-canvas-node-operator").is_symlink()
     assert (home / "skills" / "sketch-correction-worker").is_symlink()
     assert (home / "skills" / "sketch-storyboard-director").is_symlink()
     assert not (home / "skills" / "json-render").exists()
     assert not (home / "skills" / "other-skill").exists()
     plugin_link = home / "plugins" / "dramaclaw"
     assert plugin_link.is_symlink()
+    assert (home / "plugins" / "freezone").is_symlink()
     assert not (home / "plugins" / "other-plugin").exists()
     config = (home / "config.yaml").read_text()
-    assert _enabled_toolsets(config) == ["hermes-acp", "memory"]
+    assert _enabled_toolsets(config) == ["hermes-acp", "freezone-acp", "memory"]
     assert "    - dramaclaw" in config
+    assert "    - freezone" in config
     assert "你是虾导" in (home / "SOUL.md").read_text()
     memory = (home / "memories" / "MEMORY.md").read_text()
     assert "虾导在 DramaClaw 会话中面向用户自称“虾导”" in memory
@@ -241,12 +247,13 @@ def test_existing_config_syncs_rotated_newapi_endpoint_and_key(
     assert parsed["custom_block"]["keep"] is True
     assert _enabled_toolsets(config_path.read_text(encoding="utf-8")) == [
         "hermes-acp",
+        "freezone-acp",
         "memory",
     ]
 
     hw.ensure_user_hermes_workspace("admin")
     reparsed = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-    assert reparsed["enabled_toolsets"] == ["hermes-acp", "memory"]
+    assert reparsed["enabled_toolsets"] == ["hermes-acp", "freezone-acp", "memory"]
 
 
 def test_hermes_uses_settings_db_newapi_before_root_env(
@@ -330,8 +337,29 @@ def test_legacy_config_gets_default_plugin_block(isolated_workspace, repo_skills
     hw.ensure_user_hermes_workspace("admin")
 
     config = (home / "config.yaml").read_text()
-    assert _enabled_toolsets(config) == ["hermes-acp"]
-    assert "plugins:\n  enabled:\n    - dramaclaw" in config
+    assert _enabled_toolsets(config) == ["freezone-acp", "hermes-acp"]
+    assert "plugins:\n  enabled:\n    - dramaclaw\n    - freezone" in config
+
+
+def test_existing_plugin_block_gets_missing_freezone_plugin(
+    isolated_workspace, repo_skills, repo_plugins
+):
+    home = isolated_workspace / "state" / "admin" / ".hermes"
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "enabled_toolsets:\n"
+        "  - hermes-acp\n"
+        "plugins:\n"
+        "  enabled:\n"
+        "    - dramaclaw\n",
+        encoding="utf-8",
+    )
+
+    hw.ensure_user_hermes_workspace("admin")
+
+    parsed = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert set(parsed["plugins"]["enabled"]) == {"dramaclaw", "freezone"}
+    assert "freezone-acp" in parsed["enabled_toolsets"]
 
 
 def test_legacy_identity_context_is_migrated(isolated_workspace, repo_skills, repo_plugins):

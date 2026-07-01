@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import json
+import logging
+import time
 import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from novelvideo.api.auth import (
     AUTH_COOKIE_NAME,
@@ -23,10 +26,13 @@ from novelvideo.api.auth import (
 )
 from novelvideo.api.deps import list_user_projects
 from novelvideo.chat import service as chat_service
+from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
 from novelvideo.chat.store import ChatScope, chat_store
+from novelvideo.freezone.canvas_command_bridge import resolve_canvas_command
 from novelvideo.project_context import ProjectContext, resolve_project_context
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 @router.post("/chat/cancel")
@@ -77,6 +83,7 @@ class ChatMessageIn(BaseModel):
     turn_id: str | None = None
     attachments: list[ChatAttachmentIn] = []
     surface: str | None = None
+    context: dict[str, Any] = Field(default_factory=dict)
 
 
 class ScopeSetIn(BaseModel):
@@ -88,6 +95,23 @@ class ChatUiEventIn(BaseModel):
     scope: ChatScopePayload
     turn_id: str
     event: dict[str, Any]
+
+
+class CanvasCommandToolResultIn(BaseModel):
+    turn_id: str | None = None
+    bridge_key: str
+    project_id: str | None = None
+    canvas_id: str | None = None
+    tool_call_status: str = "completed"
+    canvas_apply_status: str
+    applied: bool = False
+    cancelled: bool = False
+    errors: list[str] = []
+    applied_count: int = 0
+    opened_ui_actions: int = 0
+    created_node_ids: list[str] = []
+    command_results: list[dict[str, Any]] = []
+    message: str | None = None
 
 
 class ChatNotificationIn(BaseModel):
@@ -141,6 +165,73 @@ async def append_chat_ui_event(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": event}
+
+
+def _canvas_bridge_dir(username: str) -> Any:
+    return ensure_user_hermes_workspace(username) / "tmp" / "supertale_canvas_command_bridge"
+
+
+def _resolve_canvas_command_tool_result_payload(
+    payload: CanvasCommandToolResultIn,
+    *,
+    username: str,
+) -> dict[str, Any]:
+    key = payload.bridge_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="bridge_key is required")
+    command_ok = (
+        payload.tool_call_status == "completed"
+        and payload.canvas_apply_status == "applied"
+        and payload.applied
+        and not payload.cancelled
+        and not payload.errors
+    )
+    if payload.canvas_apply_status == "cancelled_by_user":
+        message = "User cancelled the canvas command before execution."
+        agent_instruction = "Do not claim the canvas change was applied; ask the user before retrying."
+    elif not command_ok:
+        message = payload.message or "Frontend executor reported that the canvas command failed."
+        agent_instruction = (
+            "Do not claim success. Read errors and command_results, then fix the command before trying again."
+        )
+    else:
+        message = payload.message or "Frontend executor applied the canvas command."
+        agent_instruction = "Canvas command applied successfully."
+    result = {
+        "ok": command_ok,
+        "turn_id": payload.turn_id,
+        "tool_call_status": payload.tool_call_status,
+        "canvas_apply_status": payload.canvas_apply_status,
+        "applied": payload.applied,
+        "cancelled": payload.cancelled,
+        "errors": payload.errors,
+        "applied_count": payload.applied_count,
+        "opened_ui_actions": payload.opened_ui_actions,
+        "created_node_ids": payload.created_node_ids,
+        "command_results": payload.command_results,
+        "project_id": payload.project_id,
+        "canvas_id": payload.canvas_id,
+        "message": message,
+        "agent_instruction": agent_instruction,
+    }
+    return resolve_canvas_command(key, result, bridge_dir=_canvas_bridge_dir(username))
+
+
+@router.post("/chat/canvas-command-tool-result")
+async def resolve_canvas_command_tool_result(
+    payload: CanvasCommandToolResultIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    username = str(user["username"])
+    resolved = _resolve_canvas_command_tool_result_payload(payload, username=username)
+    if payload.cancelled or payload.canvas_apply_status == "cancelled_by_user":
+        try:
+            from novelvideo.chat.hermes_pool import pool as hermes_pool
+
+            await hermes_pool.close_user(username)
+        except Exception:
+            logger.exception("failed to close hermes worker after canvas command cancellation")
+    return {"ok": True, "data": resolved}
 
 
 async def _authenticate_ws(websocket: WebSocket) -> dict[str, Any]:
@@ -369,6 +460,94 @@ async def _sync_running_agent_scope(username: str, scope: ChatScope) -> None:
         return
 
 
+def _load_pending_canvas_command(path: Any) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    commands = payload.get("commands")
+    if not isinstance(commands, list) or not commands:
+        return None
+    envelope = payload.get("envelope")
+    if not isinstance(envelope, dict):
+        envelope = {
+            "schema_version": "canvas_chat_commands.v1",
+            "canvas_id": payload.get("canvas_id"),
+            "commands": commands,
+        }
+    if not isinstance(envelope.get("commands"), list) or not envelope.get("commands"):
+        return None
+    return {
+        "key": str(payload.get("key") or path.name.removesuffix(".pending.json")),
+        "project_id": payload.get("project_id"),
+        "canvas_id": payload.get("canvas_id") or envelope.get("canvas_id"),
+        "envelope": envelope,
+    }
+
+
+async def _watch_pending_canvas_commands(
+    *,
+    websocket: WebSocket,
+    username: str,
+    scope: ChatScope,
+    turn_id: str,
+    send_lock: asyncio.Lock,
+    emitted_bridge_keys: set[str],
+    started_at: float,
+) -> None:
+    if scope.kind != "freezone":
+        return
+    bridge_dir = _canvas_bridge_dir(username)
+    while True:
+        await asyncio.sleep(0.4)
+        try:
+            pending_paths = sorted(
+                bridge_dir.glob("*.pending.json"),
+                key=lambda item: item.stat().st_mtime,
+            )
+        except Exception:
+            continue
+        for path in pending_paths:
+            try:
+                if path.stat().st_mtime < started_at - 1.0:
+                    continue
+            except Exception:
+                continue
+            key = path.name.removesuffix(".pending.json")
+            if key in emitted_bridge_keys:
+                continue
+            if (bridge_dir / f"{key}.result.json").exists():
+                continue
+            pending = _load_pending_canvas_command(path)
+            if pending is None:
+                continue
+            if pending.get("project_id") and pending.get("project_id") != scope.id:
+                continue
+            emitted_bridge_keys.add(key)
+            envelope = pending["envelope"]
+            logger.info(
+                "emitting canvas.command from pending bridge turn_id=%s canvas_id=%s commands=%s",
+                turn_id,
+                envelope.get("canvas_id"),
+                len(envelope.get("commands") or []),
+            )
+            sent = await _send_json_best_effort(
+                websocket,
+                {
+                    "type": "canvas.command",
+                    "turn_id": turn_id,
+                    "canvas_id": envelope.get("canvas_id"),
+                    "bridge_key": key,
+                    "envelope": envelope,
+                },
+                send_lock,
+            )
+            if not sent:
+                return
+
+
 async def _stream_project_turn(
     *,
     websocket: WebSocket,
@@ -379,6 +558,7 @@ async def _stream_project_turn(
     attachments: list[ChatAttachmentIn],
     turn_id: str,
     surface: str | None = None,
+    surface_context: dict[str, Any] | None = None,
     store_scope: ChatScope | None = None,
 ) -> None:
     project = str(scope.id)
@@ -406,6 +586,18 @@ async def _stream_project_turn(
     send_lock = asyncio.Lock()
     heartbeat_task = asyncio.create_task(
         _chat_heartbeat(websocket, scope=scope, turn_id=turn_id, send_lock=send_lock)
+    )
+    emitted_bridge_keys: set[str] = set()
+    pending_canvas_task = asyncio.create_task(
+        _watch_pending_canvas_commands(
+            websocket=websocket,
+            username=username,
+            scope=scope,
+            turn_id=turn_id,
+            send_lock=send_lock,
+            emitted_bridge_keys=emitted_bridge_keys,
+            started_at=time.time(),
+        )
     )
     done_sent = False
     assistant_sent_text = ""
@@ -492,12 +684,16 @@ async def _stream_project_turn(
             project_dir=project_dir,
             project_state_dir=project_state_dir,
             surface=surface,
+            surface_context=surface_context,
             store_scope=store_scope,
         )
     finally:
         heartbeat_task.cancel()
+        pending_canvas_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await pending_canvas_task
         if not done_sent:
             await _send_json_best_effort(
                 websocket,
@@ -742,6 +938,18 @@ async def chat_ws(websocket: WebSocket) -> None:
                 )
                 continue
 
+            if event_type == "canvas.command.result":
+                payload = CanvasCommandToolResultIn.model_validate(raw)
+                _resolve_canvas_command_tool_result_payload(payload, username=username)
+                if payload.cancelled or payload.canvas_apply_status == "cancelled_by_user":
+                    try:
+                        from novelvideo.chat.hermes_pool import pool as hermes_pool
+
+                        await hermes_pool.close_user(username)
+                    except Exception:
+                        logger.exception("failed to close hermes worker after canvas command cancellation")
+                continue
+
             if event_type != "chat.message":
                 await _send_json_best_effort(
                     websocket, {"type": "error", "message": f"unsupported event: {event_type}"}
@@ -769,6 +977,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                         attachments=msg.attachments,
                         turn_id=turn_id,
                         surface="freezone" if scope.kind == "freezone" else msg.surface,
+                        surface_context=msg.context if scope.kind == "freezone" else None,
                         store_scope=scope if scope.kind == "freezone" else None,
                     )
                 elif scope.kind == "home":

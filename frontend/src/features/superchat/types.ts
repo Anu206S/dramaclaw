@@ -9,7 +9,24 @@ export type ClientFrame =
       attachments?: ChatAttachment[];
       surface?: "freezone";
     }
-  | { type: "scope.set"; scope: ChatScope };
+  | { type: "scope.set"; scope: ChatScope }
+  | {
+      type: "canvas.command.result";
+      turn_id?: string | null;
+      bridge_key: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      tool_call_status?: "completed" | "cancelled" | "failed";
+      canvas_apply_status: "applied" | "partially_applied" | "failed" | "cancelled_by_user";
+      applied?: boolean;
+      cancelled?: boolean;
+      errors?: string[];
+      applied_count?: number;
+      opened_ui_actions?: number;
+      created_node_ids?: string[];
+      command_results?: Array<Record<string, unknown>>;
+      message?: string | null;
+    };
 
 export type ChatScope = {
   kind: "home" | "project" | "freezone" | "asset" | "task";

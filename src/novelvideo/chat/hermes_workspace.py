@@ -23,11 +23,13 @@ DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
 STATE_ROOT = DRAMACLAW_ROOT / "state"
 DEFAULT_HERMES_SKILLS = {
     "dramaclaw",
+    "freezone",
+    "freezone-canvas-node-operator",
     "sketch-correction-worker",
     "sketch-storyboard-director",
 }
-DEFAULT_HERMES_PLUGINS = {"dramaclaw"}
-DEFAULT_HERMES_TOOLSETS = {"hermes-acp"}
+DEFAULT_HERMES_PLUGINS = {"dramaclaw", "freezone"}
+DEFAULT_HERMES_TOOLSETS = {"hermes-acp", "freezone-acp"}
 _warned_repo_state_fallback = False
 
 
@@ -56,11 +58,13 @@ model:
 
 enabled_toolsets:
   - hermes-acp         # Repo plugins exposed through ACP
+  - freezone-acp       # Xi画 canvas frontend-command bridge tools
   - memory             # hermes built-in cross-session memory
 
 plugins:
   enabled:
     - dramaclaw
+    - freezone
 
 display:
   tool_progress: verbose
@@ -480,17 +484,39 @@ def _materialize_skill_links(skills_dir: Path) -> None:
 
 
 def _ensure_default_plugin_enabled(config_yaml: Path) -> None:
-    """Non-destructively add the repo default plugin block to legacy configs."""
+    """Non-destructively add repo default plugins to legacy configs."""
     try:
         text = config_yaml.read_text(encoding="utf-8")
     except OSError:
         return
-    if "plugins:" in text:
+    missing = [
+        name
+        for name in sorted(DEFAULT_HERMES_PLUGINS)
+        if not re.search(rf"(?m)^    - {re.escape(name)}(?:\s*(?:#.*)?)?$", text)
+    ]
+    if not missing:
         return
-    plugin_names = "\n".join(f"    - {name}" for name in sorted(DEFAULT_HERMES_PLUGINS))
-    addition = f"\nplugins:\n  enabled:\n{plugin_names}\n"
+    if "plugins:" not in text:
+        plugin_names = "\n".join(f"    - {name}" for name in missing)
+        new_text = text.rstrip() + f"\nplugins:\n  enabled:\n{plugin_names}\n"
+    elif re.search(r"(?m)^  enabled:\s*$", text):
+        new_text = re.sub(
+            r"(?m)^  enabled:\s*$",
+            lambda m: m.group(0) + "\n" + "".join(f"    - {name}\n" for name in missing).rstrip(),
+            text,
+            count=1,
+        )
+    else:
+        new_text = re.sub(
+            r"(?m)^plugins:\s*$",
+            lambda m: m.group(0) + "\n  enabled:\n" + "".join(f"    - {name}\n" for name in missing).rstrip(),
+            text,
+            count=1,
+        )
+    if new_text == text:
+        return
     try:
-        config_yaml.write_text(text.rstrip() + addition + "\n", encoding="utf-8")
+        config_yaml.write_text(new_text.rstrip() + "\n", encoding="utf-8")
     except OSError:
         return
 
