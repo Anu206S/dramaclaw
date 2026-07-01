@@ -427,6 +427,9 @@ class HermesPool:
             "DRAMACLAW_AGENT_TOKEN_EXPIRES_AT": str(token.exp),
             "DRAMACLAW_API_URL": self._api_url,
             "DRAMACLAW_TOOL_MODE": tool_mode,
+            "DRAMACLAW_CANVAS_COMMAND_BRIDGE_DIR": str(
+                home / "tmp" / "supertale_canvas_command_bridge"
+            ),
             "SUPERTALE_USER": username,
             "SUPERTALE_AGENT_TOKEN": token.value,
             "SUPERTALE_AGENT_TOKEN_TYPE": "Bearer",

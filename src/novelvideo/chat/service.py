@@ -246,6 +246,10 @@ This chat turn is running inside the Xi画/Freezone canvas.
 Allowed:
 - inspect project state, assets, tasks, skill runs, and canvas data;
 - run Freezone canvas skills and save/delete/create canvas nodes/canvases.
+- when the user asks to create/add/write a text node on the canvas, call
+  freezone_create_node for exactly one textAnnotationNode, or freezone_emit_canvas_command
+  for multi-step canvas changes, with the current canvas_id from FREEZONE_CANVAS_CONTEXT.
+  Do not check pipeline/task failure status first unless the user asks about pipeline status.
 
 Forbidden:
 - do not start or mutate the main video-production pipeline from here;
@@ -282,11 +286,21 @@ def _prompt_with_user_context(
     prompt: str,
     *,
     tool_mode: str = "default",
+    surface_context: dict[str, Any] | None = None,
 ) -> str:
     preferences = load_user_preferences(username)
     scope = f"project:{project}" if project else "home"
+    canvas_id = str((surface_context or {}).get("freezone_canvas_id") or "default").strip() or "default"
+    canvas_context = (
+        "\n\n[FREEZONE_CANVAS_CONTEXT]\n"
+        f"canvas_id: {canvas_id}\n"
+        "Use this canvas_id for Freezone canvas tools unless the user explicitly names another canvas.\n"
+        "[/FREEZONE_CANVAS_CONTEXT]"
+        if tool_mode == "freezone_canvas"
+        else ""
+    )
     surface_instructions = (
-        f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}"
+        f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}{canvas_context}"
         if tool_mode == "freezone_canvas"
         else ""
     )
@@ -3283,6 +3297,7 @@ async def stream_assistant_reply(
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
     surface: str | None = None,
+    surface_context: dict[str, Any] | None = None,
     store_scope: Any | None = None,
 ) -> dict[str, Any]:
     tool_mode = _tool_mode_for_surface(surface)
@@ -3322,6 +3337,7 @@ async def stream_assistant_reply(
                 project_dir=project_dir,
                 project_state_dir=project_state_dir,
                 tool_mode=tool_mode,
+                surface_context=surface_context,
                 store_scope=store_scope,
             )
         if backend != "claude":
@@ -3442,6 +3458,7 @@ async def _stream_assistant_reply_hermes(
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
     tool_mode: str = "default",
+    surface_context: dict[str, Any] | None = None,
     store_scope: Any | None = None,
 ) -> dict[str, Any]:
     """Stream via Hermes ACP subprocess (per-user, sandboxed).
@@ -3455,7 +3472,13 @@ async def _stream_assistant_reply_hermes(
 
     agent_profile = "freezone" if tool_mode == "freezone_canvas" else "main"
     _write_hermes_tool_mode(username, mode=tool_mode)
-    agent_prompt = _prompt_with_user_context(username, project, prompt, tool_mode=tool_mode)
+    agent_prompt = _prompt_with_user_context(
+        username,
+        project,
+        prompt,
+        tool_mode=tool_mode,
+        surface_context=surface_context,
+    )
     thread = await _hermes_pool.get_for_user(
         username,
         agent_profile=agent_profile,

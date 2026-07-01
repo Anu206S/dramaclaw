@@ -104,6 +104,16 @@ export function prefetchFreezoneVideoModels(project: string): void {
   ensureLoaded(project);
 }
 
+export function getFreezoneVideoModelsSnapshot(
+  projectOverride?: string | null,
+): UseFreezoneVideoModelsResult {
+  const project =
+    projectOverride !== undefined ? projectOverride : readUrl().project;
+  if (!project) return getNoProjectState();
+  ensureLoaded(project);
+  return states.get(project) ?? getNoProjectState();
+}
+
 function subscribe(project: string | null, callback: () => void) {
   if (!project) return () => {};
   let bucket = listeners.get(project);
