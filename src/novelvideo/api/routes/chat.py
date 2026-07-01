@@ -76,6 +76,7 @@ class ChatMessageIn(BaseModel):
     text: str
     turn_id: str | None = None
     attachments: list[ChatAttachmentIn] = []
+    surface: str | None = None
 
 
 class ScopeSetIn(BaseModel):
@@ -255,7 +256,7 @@ def _tool_display_payload(text: object, name: object = None) -> tuple[str, str]:
 async def _project_context_for_scope(
     user: dict[str, Any], scope: ChatScope
 ) -> ProjectContext | None:
-    if scope.kind != "project" or not scope.id:
+    if scope.kind not in {"project", "freezone"} or not scope.id:
         return None
     return await resolve_project_context(
         user=user,
@@ -277,6 +278,8 @@ async def _history(
             project_dir=project_ctx.output_dir if project_ctx is not None else None,
             project_state_dir=project_ctx.state_dir if project_ctx is not None else None,
         )
+    if scope.kind == "freezone":
+        return chat_store.list_messages(username, scope)
     return chat_store.list_messages(username, scope)
 
 
@@ -289,7 +292,7 @@ async def _send_scope_changed(
     try:
         project_ctx = await _project_context_for_scope(user, scope)
     except HTTPException as exc:
-        if scope.kind != "project" or exc.status_code != 404:
+        if scope.kind not in {"project", "freezone"} or exc.status_code != 404:
             raise
         scope = ChatScope(kind="home")
         project_ctx = None
@@ -304,7 +307,12 @@ async def _send_scope_changed(
             "type": "scope.changed",
             "scope": scope.to_dict(),
             "history": await _history(username, scope, project_ctx=project_ctx),
-            "busy": chat_service.chat_run_lock_is_active(username),
+            "busy": chat_service.chat_run_lock_is_active(
+                username,
+                f"freezone:{scope.id}" if scope.kind == "freezone" else (
+                    str(scope.id) if scope.kind == "project" and scope.id else ""
+                ),
+            ),
         }
     ):
         return None
@@ -352,8 +360,9 @@ async def _sync_running_agent_scope(username: str, scope: ChatScope) -> None:
 
         await hermes_pool.set_scope_for_user(
             username,
-            scope_kind=scope.kind,
-            project_id=scope.id if scope.kind == "project" else None,
+            agent_profile="freezone" if scope.kind == "freezone" else "main",
+            scope_kind="project" if scope.kind == "freezone" else scope.kind,
+            project_id=scope.id if scope.kind in {"project", "freezone"} else None,
         )
     except Exception:
         # Scope switching should not spawn or break the UI if Hermes is absent.
@@ -369,19 +378,31 @@ async def _stream_project_turn(
     text: str,
     attachments: list[ChatAttachmentIn],
     turn_id: str,
+    surface: str | None = None,
+    store_scope: ChatScope | None = None,
 ) -> None:
     project = str(scope.id)
     project_ctx = await _project_context_for_scope(user, scope)
     project_dir = project_ctx.output_dir if project_ctx is not None else None
     project_state_dir = project_ctx.state_dir if project_ctx is not None else None
     agent_text = _text_with_attachment_context(text, attachments)
-    chat_service.add_user_message(
-        username,
-        project,
-        text,
-        project_dir=project_dir,
-        project_state_dir=project_state_dir,
-    )
+    if store_scope is not None:
+        chat_store.append_message(
+            username,
+            store_scope,
+            "user",
+            text,
+            media=_attachment_payloads(attachments),
+            turn_id=turn_id,
+        )
+    else:
+        chat_service.add_user_message(
+            username,
+            project,
+            text,
+            project_dir=project_dir,
+            project_state_dir=project_state_dir,
+        )
     send_lock = asyncio.Lock()
     heartbeat_task = asyncio.create_task(
         _chat_heartbeat(websocket, scope=scope, turn_id=turn_id, send_lock=send_lock)
@@ -470,6 +491,8 @@ async def _stream_project_turn(
             on_event,
             project_dir=project_dir,
             project_state_dir=project_state_dir,
+            surface=surface,
+            store_scope=store_scope,
         )
     finally:
         heartbeat_task.cancel()
@@ -714,7 +737,8 @@ async def chat_ws(websocket: WebSocket) -> None:
                 # the first message in the project doesn't cold-start.
                 await chat_service.prewarm_chat_backend(
                     username,
-                    project=current_scope.id if current_scope.kind == "project" else None,
+                    project=current_scope.id if current_scope.kind in {"project", "freezone"} else None,
+                    surface="freezone" if current_scope.kind == "freezone" else None,
                 )
                 continue
 
@@ -735,7 +759,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 continue
 
             try:
-                if scope.kind == "project":
+                if scope.kind in {"project", "freezone"}:
                     await _stream_project_turn(
                         websocket=websocket,
                         user=user,
@@ -744,6 +768,8 @@ async def chat_ws(websocket: WebSocket) -> None:
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
+                        surface="freezone" if scope.kind == "freezone" else msg.surface,
+                        store_scope=scope if scope.kind == "freezone" else None,
                     )
                 elif scope.kind == "home":
                     await _stream_home_turn(

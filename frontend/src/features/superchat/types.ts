@@ -7,11 +7,12 @@ export type ClientFrame =
       text: string;
       turn_id?: string;
       attachments?: ChatAttachment[];
+      surface?: "freezone";
     }
   | { type: "scope.set"; scope: ChatScope };
 
 export type ChatScope = {
-  kind: "home" | "project" | "asset" | "task";
+  kind: "home" | "project" | "freezone" | "asset" | "task";
   id?: string | null;
 };
 

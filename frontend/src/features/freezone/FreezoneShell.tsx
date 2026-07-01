@@ -21,7 +21,6 @@ import {
 } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { readUrl, rememberLastCanvas, writeUrl } from "@/lib/url-params";
-import { isCeRuntime } from "@/lib/runtime-config";
 import { cn } from "@/lib/utils";
 import { SuperChatPanel } from "@/features/superchat/superchat-panel";
 import { CommitDialog } from "./commit/CommitDialog";
@@ -359,7 +358,6 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
-  const showChatDock = !isCeRuntime();
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
@@ -392,14 +390,6 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     setDebugPanelOpen(false);
     setChatOpen(false);
   }, []);
-
-  // Warm the shared image-model store the moment we enter a project, so the
-  // request is in-flight before any picker / panel mounts.
-  useEffect(() => {
-    if (!showChatDock) {
-      setChatOpen(false);
-    }
-  }, [showChatDock]);
 
   useEffect(() => {
     prefetchFreezoneImageModels(projectId);
@@ -844,15 +834,13 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             }}
           />
         </main>
-        {showChatDock && (
-          <FreezoneChatDock
-            open={chatOpen}
-            onOpenChange={setChatOpen}
-            title={t("freezone.chat.title")}
-            description={t("freezone.chat.description")}
-            toggleLabel={t("freezone.chat.toggle")}
-          />
-        )}
+        <FreezoneChatDock
+          open={chatOpen}
+          onOpenChange={setChatOpen}
+          title={t("freezone.chat.title")}
+          description={t("freezone.chat.description")}
+          toggleLabel={t("freezone.chat.toggle")}
+        />
       </div>
       <NodeReplaceDragPreview />
       {pushState && (

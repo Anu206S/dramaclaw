@@ -2430,6 +2430,7 @@ export function SuperChatPanel({
   const chat = useSuperChat({
     project: params.project,
     displayName: username || "SuperTale",
+    surface: variant === "freezone" ? "freezone" : undefined,
   });
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 

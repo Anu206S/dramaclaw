@@ -66,14 +66,14 @@ def _state_root() -> Path:
 
 @dataclass(frozen=True)
 class ChatScope:
-    kind: Literal["home", "project", "asset", "task"]
+    kind: Literal["home", "project", "freezone", "asset", "task"]
     id: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "ChatScope":
         payload = payload or {"kind": "home"}
         kind = str(payload.get("kind") or "home")
-        if kind not in {"home", "project", "asset", "task"}:
+        if kind not in {"home", "project", "freezone", "asset", "task"}:
             raise ValueError(f"unsupported chat scope: {kind}")
         raw_id = payload.get("id")
         scope_id = str(raw_id).strip() if raw_id is not None else None
@@ -93,6 +93,8 @@ class ChatStore:
             return _state_root() / username / "_home" / "chat.db"
         if scope.kind == "project":
             return _state_root() / username / str(scope.id) / "chat.db"
+        if scope.kind == "freezone":
+            return _state_root() / username / "_freezone" / str(scope.id) / "chat.db"
         return _state_root() / username / f"_{scope.kind}" / str(scope.id) / "chat.db"
 
     def connect(self, username: str, scope: ChatScope) -> sqlite3.Connection:
