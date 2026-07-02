@@ -143,6 +143,12 @@ If choosing a node type, prefer the source node's `downstream_spawn_types`.
 
 If a later command in the same envelope will reference a newly created node, that `create_node` or `add_next_node` must declare a `client_id`. This is especially important for multi-node workflow creation: every node later used by `create_edge`, `group_nodes`, `select_nodes`, or targeted `move_nodes` must have an explicit `client_id`.
 
+For image-related creation, choose the node type by user intent:
+
+- If the user says "add/create an image node" or "添加/创建/加个图片节点", choose `imageGenNode` directly.
+- Do not ask the user to choose between `imageNode` and `imageGenNode`. `imageNode` is a hidden/internal image editing compatibility type, not the normal standalone image node.
+- If the user explicitly wants to upload or reference an existing local image file, choose `uploadNode`.
+
 For video-related creation, choose the node type by stage:
 
 - If the user asks to make/generate a video, make an ad short, create a short clip, or asks what to do now that image/text/audio materials are ready, choose `videoNode` by default. `videoNode` generates a video clip from upstream image, text, script, or audio references.
@@ -167,6 +173,8 @@ Only update fields listed in `editable_fields` unless the user explicitly asks f
 
 Connect two nodes. Before creating an edge, choose `link_type` from the Freezone link type catalog. If the current prompt does not include the catalog or the source/target object fit is unclear, call `freezone_get_link_type_catalog`.
 
+Edges are data or semantic input relationships, not visual association lines. Create an edge only when the target should consume the source as input, reference, context, or composition material. If nodes are merely related or part of the same workflow, use `group_nodes` or `layout_nodes` instead of `create_edge`.
+
 ```json
 {
   "type": "create_edge",
@@ -178,10 +186,9 @@ Connect two nodes. Before creating an edge, choose `link_type` from the Freezone
 
 Every `create_edge` command must include `link_type`. Choose exactly one of:
 
-- `context_for`: TextNode/ScriptNode -> ImageNode/VideoNode/AudioNode/ScriptNode. Upstream context, brief, beat context, constraint, or explanatory text for the target.
-- `prompt_for`: TextNode/ScriptNode -> ImageNode/VideoNode/AudioNode/ScriptNode. Upstream text/prompt/script is the direct prompt or instruction for the target generator.
-- `visual_reference_for`: ImageNode/VideoNode -> ImageNode/VideoNode. Upstream visual media is a style/content/identity/scene/prop reference for the target.
-- `source_media_for`: ImageNode/VideoNode/AudioNode -> TextNode/ImageNode/VideoNode/AudioNode/ScriptNode. Upstream media is source material to process, analyze, edit, transcribe, describe, or generate from.
+- `context_for`: TextNode/ScriptNode -> TextNode/ScriptNode. Upstream context, brief, beat context, constraint, or explanatory text for another textual node.
+- `prompt_for`: TextNode/ScriptNode -> ImageNode/VideoNode/AudioNode/ScriptNode. Upstream text/prompt/script is the direct prompt or instruction consumed by the target generator. Use this for `textAnnotationNode(semanticOutputRole="input_text") -> imageGenNode`; if the source text is only a brief, plan, requirement note, or contextual documentation, keep it as `planning_text` and group it with the generator instead of connecting it directly.
+- `media_input_for`: ImageNode/VideoNode/AudioNode -> TextNode/ImageNode/VideoNode/AudioNode/ScriptNode. Upstream media is an input, source, or visual/audio reference consumed by the target.
 - `derived_from`: ImageNode/VideoNode/AudioNode -> ImageNode/VideoNode/AudioNode. Target is an edited, extracted, upscaled, cropped, repaired, or variant artifact from source.
 - `composition_input_for`: TextNode/ScriptNode/ImageNode/VideoNode/AudioNode -> VideoNode. Upstream segment enters a composition/timeline/final-video node.
 

@@ -75,6 +75,7 @@ import type { ApprovalRequest, ChatAttachment } from "@/features/superchat/types
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import type { FormatCheck, UploadResult } from "@/lib/queries/ingest";
 import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
+import type { CanvasOntologyContext } from "@/features/canvas/ontology/canvasOntology";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import { useCanvasStore, type CanvasNode } from "@/stores/canvasStore";
 import type { CanvasNodeType } from "@/features/canvas/domain/canvasNodes";
@@ -101,6 +102,7 @@ import {
 } from "@/features/freezone/canvasContextToolResult";
 import { reportCanvasCommandToolResult } from "@/features/freezone/canvasCommandToolResult";
 import {
+  buildCanvasChatCommandContext,
   buildCanvasNodeReferenceAttachment,
   buildCanvasNodeReferenceContext,
   canvasNodeReferenceAttachmentNodes,
@@ -108,6 +110,7 @@ import {
   isCanvasNodeReferenceAttachment,
   mergeCanvasNodeReferenceAttachments,
   pruneCanvasNodeReferenceAttachments,
+  shouldIncludeCanvasSummary,
 } from "@/features/freezone/chatNodeReferences";
 import {
   visibleStructuredBlocksForMessage,
@@ -3969,6 +3972,10 @@ function canvasCommandSemanticAnchorIndex(text: string, event: CanvasCommandSurf
       "命令校验",
     ]);
   }
+  if (event.kind === "context") {
+    const readAnchor = canvasContextReadSemanticAnchorIndex(text, event.activity);
+    if (readAnchor != null) return readAnchor;
+  }
   if (event.kind === "feedback" && event.feedback.applied + event.feedback.openedUiActions > 0) {
     return firstCanvasCommandSemanticMarkerIndex(text, [
       "已经在画布上",
@@ -3981,6 +3988,37 @@ function canvasCommandSemanticAnchorIndex(text: string, event: CanvasCommandSurf
     ]);
   }
   return null;
+}
+
+function canvasContextReadSemanticAnchorIndex(text: string, activity: CanvasContextActivity): number | null {
+  if (!activity.labels.some((label) => label !== CANVAS_CONTEXT_REQUEST_LABELS.validate_canvas_commands && label !== "命令校验")) {
+    return null;
+  }
+  const requestMarkers = [
+    "我需要获取",
+    "我需要读取",
+    "我先获取",
+    "我先读取",
+    "先获取",
+    "先读取",
+    "获取该节点的详细信息",
+    "读取节点详情",
+    "检查当前",
+    "确认当前",
+  ];
+  const requestIndex = firstCanvasCommandSemanticMarkerIndex(text, requestMarkers);
+  if (requestIndex != null) {
+    const paragraphEnd = text.indexOf("\n\n", requestIndex);
+    return paragraphEnd < 0 ? text.length : paragraphEnd + 2;
+  }
+  return firstCanvasCommandSemanticMarkerIndex(text, [
+    "现在我已经获取",
+    "现在我已获取",
+    "已经获取",
+    "已获取",
+    "已经读取",
+    "已读取",
+  ]);
 }
 
 function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasCommandSurfaceEvent): number {
@@ -4487,9 +4525,11 @@ interface SuperChatPanelProps {
   variant?: SuperChatPanelVariant;
   freezoneCanvasId?: string | null;
   canvasId?: string | null;
+  currentCanvasMetadata?: Record<string, unknown> | null;
   currentCanvasSelection?: Array<Partial<CanvasNodeReferencePreview> & { nodeId: string; label?: string }>;
-  currentCanvasOntologyContext?: unknown;
+  currentCanvasOntologyContext?: CanvasOntologyContext | null;
   pendingAttachments?: ChatAttachment[];
+  onPendingAttachmentsConsumed?: () => void;
   onRequestClose?: () => void;
 }
 
@@ -4497,6 +4537,10 @@ export function SuperChatPanel({
   variant = "default",
   freezoneCanvasId = null,
   canvasId = null,
+  currentCanvasSelection = [],
+  currentCanvasOntologyContext = null,
+  pendingAttachments = [],
+  onPendingAttachmentsConsumed,
   onRequestClose,
 }: SuperChatPanelProps = {}) {
   const { t } = useTranslation();
@@ -5313,6 +5357,46 @@ export function SuperChatPanel({
     setReingestConfirmation(null);
   }, [chatScopeKey, params.project]);
 
+  useEffect(() => {
+    if (pendingAttachments.length === 0) return;
+    setAttachments((current) => {
+      const pendingCanvasReferenceIds = new Set(
+        pendingAttachments
+          .filter(isCanvasNodeReferenceAttachment)
+          .map((attachment) => attachment.id)
+          .filter((id): id is string => Boolean(id)),
+      );
+      const currentWithoutReplacedCanvasReferences =
+        pendingCanvasReferenceIds.size > 0
+          ? current.filter(
+              (attachment) =>
+                !(
+                  isCanvasNodeReferenceAttachment(attachment) &&
+                  attachment.id &&
+                  pendingCanvasReferenceIds.has(attachment.id)
+                ),
+            )
+          : current;
+      return pruneCanvasNodeReferenceAttachments(
+        mergeCanvasNodeReferenceAttachments([
+          ...currentWithoutReplacedCanvasReferences,
+          ...pendingAttachments,
+        ]),
+        existingCanvasNodeIds,
+      );
+    });
+    onPendingAttachmentsConsumed?.();
+    restoreDraftFocusRef.current = true;
+  }, [existingCanvasNodeIds, onPendingAttachmentsConsumed, pendingAttachments]);
+
+  useEffect(() => {
+    if (variant !== "freezone" || currentCanvasSelection.length > 0) return;
+    setAttachments((current) => {
+      const next = current.filter((attachment) => !isCanvasNodeReferenceAttachment(attachment));
+      return next.length === current.length ? current : next;
+    });
+  }, [currentCanvasSelection.length, variant]);
+
   const recordUploadedFiles = useCallback(
     (project: string | undefined, prepared: PreparedIngestAttachment[]): UploadedIngestFile[] => {
       const additions = prepared
@@ -5344,6 +5428,14 @@ export function SuperChatPanel({
       let transportAttachments = safeMessageAttachments;
       let contextUploadedFiles = uploadedIngestFiles;
       const project = params.project?.trim();
+      const canvasCommandContext =
+        variant === "freezone"
+          ? buildCanvasChatCommandContext(currentCanvasOntologyContext, {
+              includeCanvasSummary: shouldIncludeCanvasSummary(text, {
+                hasFocusedNodeContext: Boolean(canvasReferenceContext),
+              }),
+            })
+          : null;
       const videoIntent = VIDEO_CREATION_RE.test(text);
       const hasNovelAttachments = ordinaryAttachments.some(isNovelAttachment);
 
@@ -5527,11 +5619,15 @@ export function SuperChatPanel({
       if (canvasReferenceContext) {
         nextText = appendAttachmentAnalysisContext(nextText, canvasReferenceContext);
       }
+      if (canvasCommandContext) {
+        nextText = appendAttachmentAnalysisContext(nextText, canvasCommandContext);
+      }
 
       return chat.send(text, transportAttachments, nextText);
     },
     [
       chat,
+      currentCanvasOntologyContext,
       existingCanvasNodeIds,
       params.project,
       recordUploadedFiles,
