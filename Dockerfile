@@ -22,7 +22,7 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-COPY pyproject.toml uv.lock README.md LICENSE ./
+COPY pyproject.toml uv.lock README.md LICENSE .hermes-version ./
 COPY src ./src
 COPY .hermes ./.hermes
 
@@ -51,7 +51,15 @@ RUN set -eux; \
     fi; \
     mkdir -p /data
 
-RUN uv tool install 'hermes-agent[acp]'
+ARG HERMES_INSTALL_SPEC=""
+RUN set -eux; \
+    HERMES_VERSION="$(cat .hermes-version)"; \
+    if [ -n "$HERMES_INSTALL_SPEC" ]; then \
+        uv tool install "$HERMES_INSTALL_SPEC" --force; \
+    else \
+        uv tool install "hermes-agent[acp]==${HERMES_VERSION}" --force; \
+    fi; \
+    hermes --version
 
 ENV PATH="/app/.venv/bin:/root/.local/bin:$PATH"
 
