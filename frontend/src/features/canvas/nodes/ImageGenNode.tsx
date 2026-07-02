@@ -67,6 +67,7 @@ import {
   setAlbumPendingTotal,
   useAlbumPendingTotal,
 } from '@/features/canvas/nodes/shared/albumPendingTotals';
+import { resolveImageGenerationCompletionMode } from '@/features/canvas/nodes/imageGenCompletionMode';
 import { downloadUrlAsFile } from '@/lib/browserDownload';
 import {
   CANVAS_NODE_INPUT_BODY_FRAME_CLASS,
@@ -90,6 +91,12 @@ import {
   uploadAndAutoCommitSelectedBackgroundCandidate,
 } from '@/features/canvas/application/selectedBackgroundSlot';
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
+import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from '@/features/canvas/application/nodeActionResult';
 import { getBeatDirectorStageManifest } from '@/api/viewerManifests';
 import { BackgroundCropperDialog } from '@/features/canvas/ui/BackgroundCropperDialog';
 import {
@@ -272,6 +279,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   const isComposingRef = useRef(false);
   const hasUserEditedPromptRef = useRef(false);
   const submittingRef = useRef(false);
+  const submitWaitersRef = useRef<Array<(value: Record<string, unknown> | undefined) => void>>([]);
   useEffect(() => {
     if (isComposingRef.current) return;
     setPromptDraft(externalPrompt);
@@ -785,9 +793,18 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   const submitDisabled =
     isGenerating || !hasEffectivePrompt;
 
-  const handleSubmit = useCallback(async () => {
-    if (submitDisabled || submittingRef.current) return;
+  const handleSubmit = useCallback(async (
+    options: { completionMode?: 'submitted' | 'completed' } = {},
+  ) => {
+    const completionMode = options.completionMode ?? 'completed';
+    if (submittingRef.current) {
+      return await new Promise<Record<string, unknown> | undefined>((resolve) => {
+        submitWaitersRef.current.push(resolve);
+      });
+    }
+    if (submitDisabled) return undefined;
     submittingRef.current = true;
+    let actionOutput: Record<string, unknown> | undefined;
     try {
     const projectId = readUrl().project;
     if (!projectId) {
@@ -848,6 +865,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     // generationBatch（叠卡画册）：第 1 张完成的设为主图（imageUrl），其余
     // 逐张追加进画册，收拢态渲染成叠起的卡片。
     const total = Math.min(Math.max(effectiveCount, 1), 4);
+    const resolvedCompletionMode = resolveImageGenerationCompletionMode(completionMode, total);
     // Clear any prior failure / album on resubmit — the on-node error banner
     // should only reflect the most recent attempt.
     updateNodeData(id, {
@@ -863,6 +881,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     const canvasId = readUrl().canvas ?? 'default';
     // 各并发任务完成顺序不定，本地累积已完成的 URL，整组写回（避免读改写竞态）。
     const completedUrls: string[] = [];
+    const submittedRefs: Array<{
+      task_key: string;
+      task_type: string;
+      job_id: string;
+    }> = [];
     const runOne = async (runIndex: number) => {
       let taskKey: string | null = null;
       try {
@@ -878,38 +901,60 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
         if (runIndex === 0) {
           updateNodeData(id, generationTaskDescriptor(ref));
         }
-        const completed = await awaitTaskCompletion(ref.task_key, projectId);
-        let url = resolveOutputUrl(completed.result as Record<string, unknown> | null);
-        if (!url) {
-          try {
-            const fallback = await fetchFreezoneJobResult(projectId, ref.task_type, ref.job_id);
-            url = fallback.url;
-          } catch (error) {
-            console.warn('[image-gen] fallback fetch failed', error);
+        submittedRefs.push({
+          task_key: ref.task_key,
+          task_type: ref.task_type,
+          job_id: ref.job_id,
+        });
+        const completeTask = async () => {
+          const completed = await awaitTaskCompletion(ref.task_key, projectId);
+          let url = resolveOutputUrl(completed.result as Record<string, unknown> | null);
+          if (!url) {
+            try {
+              const fallback = await fetchFreezoneJobResult(projectId, ref.task_type, ref.job_id);
+              url = fallback.url;
+            } catch (error) {
+              console.warn('[image-gen] fallback fetch failed', error);
+            }
           }
-        }
-        if (url) {
-          completedUrls.push(url);
-          const isFirstCompleted = completedUrls.length === 1;
-          updateNodeData(id, {
-            // 第 1 张完成的设为主图并结束 loading；后续只扩充画册。
-            ...(isFirstCompleted ? buildImageGenerationSuccessPatch(url) : {}),
-            ...(total > 1 ? { generationBatch: [...completedUrls] } : {}),
-          });
-          if (canAutoCommitOnGenerate && isFirstCompleted) {
-            canvasEventBus.publish('freezone/commit-node', {
-              nodeId: id,
-              auto: true,
+          if (url) {
+            completedUrls.push(url);
+            const isFirstCompleted = completedUrls.length === 1;
+            updateNodeData(id, {
+              // 第 1 张完成的设为主图并结束 loading；后续只扩充画册。
+              ...(isFirstCompleted ? buildImageGenerationSuccessPatch(url) : {}),
+              ...(total > 1 ? { generationBatch: [...completedUrls] } : {}),
             });
+            if (canAutoCommitOnGenerate && isFirstCompleted) {
+              canvasEventBus.publish('freezone/commit-node', {
+                nodeId: id,
+                auto: true,
+              });
+            }
+          } else {
+            console.warn('[image-gen] generation completed without output url', completed);
+            // 只有 run 0（任务句柄的归属者）且尚无任何成功时才终结 loading——
+            // 非首个任务先「无 URL 完成」不能把还在跑的整体 loading 提前掐掉。
+            if (runIndex === 0 && completedUrls.length === 0) {
+              updateNodeData(id, { isGenerating: false, generationStartedAt: null });
+            }
           }
-        } else {
-          console.warn('[image-gen] generation completed without output url', completed);
-          // 只有 run 0（任务句柄的归属者）且尚无任何成功时才终结 loading——
-          // 非首个任务先「无 URL 完成」不能把还在跑的整体 loading 提前掐掉。
-          if (runIndex === 0 && completedUrls.length === 0) {
-            updateNodeData(id, { isGenerating: false, generationStartedAt: null });
-          }
+        };
+        if (resolvedCompletionMode === 'submitted') {
+          void completeTask().catch((error) => {
+            console.error('[image-gen] background generation failed', error);
+            const displayErrorMessage = backendErrorToastMessage(error, t);
+            updateNodeData(id, {
+              ...(runIndex === 0
+                ? { isGenerating: false, generationStartedAt: null }
+                : {}),
+              generationError: displayErrorMessage,
+              generationErrorRequestId: extractRequestId(displayErrorMessage),
+            });
+          });
+          return;
         }
+        await completeTask();
       } catch (error) {
         console.error('[image-gen] generation failed', error);
         // 已有同批其它图完成（主图已落）时不覆盖成功态为错误——部分失败只
@@ -962,8 +1007,33 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     // Failures are surfaced directly on the failing node (request-id banner),
     // set per-target inside runOne's catch — no global modal.
     void refreshHistory();
+    if (completedUrls.length > 0) {
+      actionOutput = {
+        imageUrl: completedUrls[0],
+        imageUrls: completedUrls,
+      };
+      return actionOutput;
+    }
+    if (resolvedCompletionMode === 'submitted' && submittedRefs.length > 0) {
+      const firstRef = submittedRefs[0]!;
+      actionOutput = {
+        submitted: true,
+        task_key: firstRef.task_key,
+        taskKey: firstRef.task_key,
+        task_type: firstRef.task_type,
+        taskType: firstRef.task_type,
+        job_id: firstRef.job_id,
+        jobId: firstRef.job_id,
+      };
+      return actionOutput;
+    }
     } finally {
       submittingRef.current = false;
+      const waiters = submitWaitersRef.current;
+      submitWaitersRef.current = [];
+      for (const resolve of waiters) {
+        resolve(actionOutput);
+      }
     }
   }, [
     aspectRatio,
@@ -985,7 +1055,20 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     updateNodeData,
     upstreamTextJoined,
     refreshHistory,
+    t,
   ]);
+
+  useEffect(() => {
+    return subscribeNodeAction(({ nodeId, action, executionMode, requestId }) => {
+      if (nodeId !== id || action !== 'generate_image') return;
+      publishNodeActionAccepted(requestId, id, action);
+      void handleSubmit({
+        completionMode: executionMode === 'single' ? 'submitted' : 'completed',
+      })
+        .then((output) => publishNodeActionSuccess(requestId, id, action, output))
+        .catch((error) => publishNodeActionError(requestId, id, action, error));
+    });
+  }, [handleSubmit, id]);
 
   // ===== Step B: 场景资产节点的 "用作背景源" 操作 =====
   // scene_master / scene_reverse_master 节点上的按钮 → 打开 BackgroundCropperDialog

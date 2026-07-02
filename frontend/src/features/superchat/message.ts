@@ -66,6 +66,15 @@ function normalizeTurnId(value: Record<string, unknown>): string | undefined {
   return normalizeId(value.turn_id) ?? normalizeId(value.turnId) ?? undefined;
 }
 
+function normalizeUiEvents(value: Record<string, unknown>): unknown[] | undefined {
+  const events = Array.isArray(value.ui_events)
+    ? value.ui_events
+    : Array.isArray(value.uiEvents)
+      ? value.uiEvents
+      : undefined;
+  return events && events.length > 0 ? events : undefined;
+}
+
 function mediaKindToType(kind: unknown): string | undefined {
   if (kind === "image" || kind === "video" || kind === "audio" || kind === "file") {
     return kind;
@@ -88,7 +97,8 @@ export function normalizeMessage(message: unknown, fallbackRole: ChatRole = "ass
   const turnId = normalizeTurnId(value);
   const displayName = typeof value.displayName === "string" ? value.displayName : undefined;
   const attachments = extractAttachments(value);
-  return { id, role, text, turnId, displayName, attachments, timestamp, raw: message };
+  const uiEvents = normalizeUiEvents(value);
+  return { id, role, text, turnId, displayName, attachments, uiEvents, timestamp, raw: message };
 }
 
 function extractAttachments(value: Record<string, unknown>): ChatAttachment[] {

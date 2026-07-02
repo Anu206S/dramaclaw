@@ -1,7 +1,11 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { memo, useCallback, useEffect, useMemo, useState } from 'react';
-import { useReactFlow } from '@xyflow/react';
+import {
+  NodeToolbar as ReactFlowNodeToolbar,
+  Position,
+  useReactFlow,
+} from '@xyflow/react';
 import { useTranslation } from 'react-i18next';
 
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -22,9 +26,9 @@ import {
   type ExportImageNodeResultKind,
 } from '@/features/canvas/domain/canvasNodes';
 import { NodeActionToolbar } from './NodeActionToolbar';
+import { NodeIdBadge } from './NodeIdBadge';
 import { AssetCommitHandle } from './AssetCommitHandle';
 import { MultiAngleEditorOverlay } from './MultiAngleEditorOverlay';
-import { LightEditorOverlay } from './LightEditorOverlay';
 import { RedrawOverlay } from './RedrawOverlay';
 import { EraseOverlay } from './EraseOverlay';
 import { Scene360Overlay } from './Scene360Overlay';
@@ -76,6 +80,7 @@ const GRID_ACTION_DEFAULT_NODE_HEIGHT = 320;
 const SCENE_360_FOCUS_ZOOM = 1.2;
 const SCENE_360_FOCUS_DURATION = 320;
 const SCENE_360_DEFAULT_NODE_HEIGHT = 320;
+const NODE_ID_BADGE_OFFSET = 88;
 
 export const SelectedNodeOverlay = memo(() => {
   const { t } = useTranslation();
@@ -104,7 +109,8 @@ export const SelectedNodeOverlay = memo(() => {
     );
   }, [nodes, onNodesChange]);
   const [multiAngleNodeId, setMultiAngleNodeId] = useState<string | null>(null);
-  const [lightEditorNodeId, setLightEditorNodeId] = useState<string | null>(null);
+  const activeLightEditorNodeId = useCanvasStore((state) => state.activeLightEditorNodeId);
+  const setLightEditorNodeId = useCanvasStore((state) => state.setActiveLightEditorNodeId);
   const [scene360NodeId, setScene360NodeId] = useState<string | null>(null);
   const [redrawNodeId, setRedrawNodeId] = useState<string | null>(null);
   const [eraseNodeId, setEraseNodeId] = useState<string | null>(null);
@@ -132,13 +138,6 @@ export const SelectedNodeOverlay = memo(() => {
     [multiAngleNode]
   );
 
-  const lightEditorNode = useMemo(() => {
-    if (!lightEditorNodeId) {
-      return null;
-    }
-    return nodes.find((node) => node.id === lightEditorNodeId) ?? null;
-  }, [nodes, lightEditorNodeId]);
-
   const redrawNode = useMemo(() => {
     if (!redrawNodeId) {
       return null;
@@ -149,11 +148,6 @@ export const SelectedNodeOverlay = memo(() => {
   const redrawImageSource = useMemo(
     () => resolveNodeSourceImageUrl(redrawNode),
     [redrawNode]
-  );
-
-  const lightEditorImageSource = useMemo(
-    () => resolveNodeSourceImageUrl(lightEditorNode),
-    [lightEditorNode]
   );
 
   const scene360Node = useMemo(() => {
@@ -201,10 +195,6 @@ export const SelectedNodeOverlay = memo(() => {
     },
     [clearFlowSelection, setSelectedNode]
   );
-
-  const handleCloseLightEditor = useCallback(() => {
-    setLightEditorNodeId(null);
-  }, []);
 
   const handleOpenRedraw = useCallback(
     (nodeId: string) => {
@@ -512,7 +502,7 @@ export const SelectedNodeOverlay = memo(() => {
   // 展开面板，不参与此互斥。)
   const activeOverlayNodeId =
     multiAngleNodeId
-    ?? lightEditorNodeId
+    ?? activeLightEditorNodeId
     ?? scene360NodeId
     ?? redrawNodeId
     ?? eraseNodeId
@@ -544,6 +534,21 @@ export const SelectedNodeOverlay = memo(() => {
     <>
       {selectedNode
         && !rotateNodeId
+        && !effectiveOverlayNodeId && (
+        <ReactFlowNodeToolbar
+          nodeId={selectedNode.id}
+          isVisible
+          position={Position.Top}
+          align={
+            nodeHasResourceForToolbar(selectedNode) ? "center" : "start"
+          }
+          offset={NODE_ID_BADGE_OFFSET}
+        >
+          <NodeIdBadge nodeId={selectedNode.id} />
+        </ReactFlowNodeToolbar>
+      )}
+      {selectedNode
+        && !rotateNodeId
         && !effectiveOverlayNodeId
         && nodeHasResourceForToolbar(selectedNode) && (
         <NodeActionToolbar
@@ -570,13 +575,6 @@ export const SelectedNodeOverlay = memo(() => {
           node={multiAngleNode}
           imageSource={multiAngleImageSource}
           onClose={handleCloseMultiAngleEditor}
-        />
-      )}
-      {lightEditorNode && lightEditorImageSource && (
-        <LightEditorOverlay
-          node={lightEditorNode}
-          imageSource={lightEditorImageSource}
-          onClose={handleCloseLightEditor}
         />
       )}
       {redrawNode && redrawImageSource && (

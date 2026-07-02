@@ -108,6 +108,22 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     assert "我是虾导，DramaClaw 的小说转视频创作助手。" not in memory
 
 
+def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skills, repo_plugins):
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+
+    assert home == isolated_workspace / "state" / "admin" / ".hermes-freezone"
+    assert (home / "skills" / "freezone").is_symlink()
+    assert (home / "skills" / "freezone-canvas-node-operator").is_symlink()
+    assert not (home / "skills" / "dramaclaw").exists()
+    assert (home / "plugins" / "freezone").is_symlink()
+    assert not (home / "plugins" / "dramaclaw").exists()
+
+    parsed = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert parsed["enabled_toolsets"] == ["hermes-acp", "freezone-acp", "memory"]
+    assert parsed["plugins"]["enabled"] == ["freezone"]
+    assert "dramaclaw-acp" in parsed["disabled_toolsets"]
+
+
 def test_hermes_initialize_timeout_allows_cold_start():
     assert hermes_sdk.INITIALIZE_TIMEOUT == 30.0
 

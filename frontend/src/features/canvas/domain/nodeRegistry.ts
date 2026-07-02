@@ -748,5 +748,9 @@ export function getDownstreamSpawnTypes(
     return base.filter((type) => allowed.has(type));
   }
 
+  if (originType === CANVAS_NODE_TYPES.textAnnotation || originType === CANVAS_NODE_TYPES.script) {
+    return base.filter((type) => type !== CANVAS_NODE_TYPES.videoCompose);
+  }
+
   return base;
 }

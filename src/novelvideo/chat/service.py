@@ -265,11 +265,18 @@ def _tool_mode_for_surface(surface: str | None) -> str:
     return "freezone_canvas" if str(surface or "").strip() == "freezone" else "default"
 
 
+def _freezone_canvas_id_from_context(surface_context: dict[str, Any] | None) -> str:
+    return str((surface_context or {}).get("freezone_canvas_id") or "default").strip() or "default"
+
+
 def _write_hermes_tool_mode(username: str, *, mode: str) -> None:
     try:
         from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
 
-        home = ensure_user_hermes_workspace(username)
+        home = ensure_user_hermes_workspace(
+            username,
+            profile="freezone" if mode == "freezone_canvas" else "director",
+        )
         path = home / "tmp" / "dramaclaw_tool_mode.json"
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
@@ -290,7 +297,7 @@ def _prompt_with_user_context(
 ) -> str:
     preferences = load_user_preferences(username)
     scope = f"project:{project}" if project else "home"
-    canvas_id = str((surface_context or {}).get("freezone_canvas_id") or "default").strip() or "default"
+    canvas_id = _freezone_canvas_id_from_context(surface_context)
     canvas_context = (
         "\n\n[FREEZONE_CANVAS_CONTEXT]\n"
         f"canvas_id: {canvas_id}\n"
@@ -3444,6 +3451,8 @@ async def prewarm_chat_backend(
             tool_mode=tool_mode,
             scope_kind="project" if project else "home",
             project_id=project or None,
+            surface="freezone" if tool_mode == "freezone_canvas" else None,
+            canvas_id="default" if tool_mode == "freezone_canvas" else None,
         )
     except Exception:
         return
@@ -3471,6 +3480,8 @@ async def _stream_assistant_reply_hermes(
     from novelvideo.chat.hermes_pool import pool as _hermes_pool
 
     agent_profile = "freezone" if tool_mode == "freezone_canvas" else "main"
+    surface = "freezone" if tool_mode == "freezone_canvas" else None
+    canvas_id = _freezone_canvas_id_from_context(surface_context) if surface == "freezone" else None
     _write_hermes_tool_mode(username, mode=tool_mode)
     agent_prompt = _prompt_with_user_context(
         username,
@@ -3485,6 +3496,8 @@ async def _stream_assistant_reply_hermes(
         tool_mode=tool_mode,
         scope_kind="project" if project else "home",
         project_id=project or None,
+        surface=surface,
+        canvas_id=canvas_id,
     )
     previous_assistant = (
         _store_history_contents(username, store_scope, "assistant") if store_scope is not None else _assistant_history_contents(

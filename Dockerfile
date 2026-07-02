@@ -28,6 +28,7 @@ COPY pyproject.toml uv.lock README.md .hermes-version ./
 COPY LICENSES ./LICENSES
 COPY src ./src
 COPY .hermes ./.hermes
+COPY deploy ./deploy
 
 # 资产完整性兜底(等价原 wheel 检查):login 媒体须随 src 带入(.dockerignore 已 ! 放行)。
 RUN test -f src/novelvideo/assets/login_bgm.mp3 \
@@ -62,6 +63,7 @@ RUN set -eux; \
     else \
         uv tool install "hermes-agent[acp]==${HERMES_VERSION}" --force; \
     fi; \
+    python3 deploy/patch_hermes_acp_toolsets.py; \
     hermes --version
 
 ENV PATH="/app/.venv/bin:/root/.local/bin:$PATH"

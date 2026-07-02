@@ -54,6 +54,14 @@ describe("locale translation files", () => {
     );
   });
 
+  it("defines the Freezone assistant placeholder text", () => {
+    const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
+    const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
+
+    expect(zh.aiAssistant.freezonePlaceholder).toBe("想画什么、改哪里，直接告诉虾画");
+    expect(en.aiAssistant.freezonePlaceholder).toBe("Tell Xia Draw what to create or where to refine");
+  });
+
   it("defines project queue kind labels in Chinese", () => {
     const content = readFileSync("public/locales/zh/translation.json", "utf8");
     const translations = JSON.parse(content);

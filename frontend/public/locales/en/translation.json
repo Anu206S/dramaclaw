@@ -336,6 +336,7 @@
     "syncingHistoryDescription": "Connecting to Xia Director and syncing chat history. Please wait.",
     "disclaimer": "Xia Director can make mistakes. Check key story, character, and asset details.",
     "placeholder": "After uploading a script, ask Xia Director to advance episodes, visuals, audio, or final video",
+    "freezonePlaceholder": "Tell Xia Draw what to create or where to refine",
     "waiting": "Waiting for chat service...",
     "waitingResponse": "Waiting for Xia Director",
     "waitingResponses": [
@@ -416,6 +417,7 @@
     "ingestAutomationNoProject": "Open a project before uploading a novel through Xia Director.",
     "ingestAutomationMissingFile": "Could not read the uploaded novel file. Select it again.",
     "attachmentOnlyPrompt": "Please analyze the file I uploaded.",
+    "canvasReferenceOnlyPrompt": "Please continue from the selected canvas node.",
     "attachmentAnalysisUploading": "Uploading file for analysis: {{filename}}",
     "settingsHint": "Account and login are managed by SuperTale. These settings only control chat display and attachment behavior."
   },

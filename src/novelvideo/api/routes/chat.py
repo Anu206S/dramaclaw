@@ -28,7 +28,7 @@ from novelvideo.api.deps import list_user_projects
 from novelvideo.chat import service as chat_service
 from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
 from novelvideo.chat.store import ChatScope, chat_store
-from novelvideo.freezone.canvas_command_bridge import resolve_canvas_command
+from novelvideo.freezone.canvas_command_bridge import resolve_canvas_command, resolve_canvas_context
 from novelvideo.project_context import ProjectContext, resolve_project_context
 
 router = APIRouter()
@@ -61,6 +61,9 @@ async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]
 class ChatScopePayload(BaseModel):
     kind: str = "home"
     id: str | None = None
+    surface: str | None = None
+    canvasId: str | None = None
+    canvas_id: str | None = None
 
 
 class ChatAttachmentIn(BaseModel):
@@ -111,6 +114,20 @@ class CanvasCommandToolResultIn(BaseModel):
     opened_ui_actions: int = 0
     created_node_ids: list[str] = []
     command_results: list[dict[str, Any]] = []
+    message: str | None = None
+
+
+class CanvasContextToolResultIn(BaseModel):
+    turn_id: str | None = None
+    anchor_text_prefix: str | None = None
+    bridge_key: str
+    project_id: str | None = None
+    canvas_id: str | None = None
+    tool_call_status: str = "completed"
+    canvas_context_status: str
+    ok: bool = True
+    responses: list[dict[str, Any]] = []
+    errors: list[str] = []
     message: str | None = None
 
 
@@ -167,8 +184,20 @@ async def append_chat_ui_event(
     return {"ok": True, "data": event}
 
 
-def _canvas_bridge_dir(username: str) -> Any:
-    return ensure_user_hermes_workspace(username) / "tmp" / "supertale_canvas_command_bridge"
+def _canvas_bridge_dir(username: str, *, profile: str = "director") -> Any:
+    return (
+        ensure_user_hermes_workspace(username, profile=profile)
+        / "tmp"
+        / "supertale_canvas_command_bridge"
+    )
+
+
+def _is_freezone_scope(scope: ChatScope) -> bool:
+    return scope.kind == "freezone" or (scope.kind == "project" and scope.surface == "freezone")
+
+
+def _canvas_bridge_profile_for_scope(scope: ChatScope) -> str:
+    return "freezone" if _is_freezone_scope(scope) else "director"
 
 
 def _resolve_canvas_command_tool_result_payload(
@@ -214,7 +243,63 @@ def _resolve_canvas_command_tool_result_payload(
         "message": message,
         "agent_instruction": agent_instruction,
     }
-    return resolve_canvas_command(key, result, bridge_dir=_canvas_bridge_dir(username))
+    return resolve_canvas_command(
+        key,
+        result,
+        bridge_dir=_canvas_bridge_dir(
+            username,
+            profile="freezone" if result.get("canvas_id") else "director",
+        ),
+    )
+
+
+def _resolve_canvas_context_tool_result_payload(
+    payload: CanvasContextToolResultIn,
+    *,
+    username: str,
+) -> dict[str, Any]:
+    key = payload.bridge_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="bridge_key is required")
+    result = {
+        "ok": payload.ok and payload.tool_call_status == "completed",
+        "tool_call_status": payload.tool_call_status,
+        "canvas_context_status": payload.canvas_context_status,
+        "responses": payload.responses,
+        "errors": payload.errors,
+        "project_id": payload.project_id,
+        "canvas_id": payload.canvas_id,
+        "message": payload.message or "Frontend returned requested canvas context.",
+    }
+    return resolve_canvas_context(
+        key,
+        result,
+        bridge_dir=_canvas_bridge_dir(
+            username,
+            profile="freezone" if result.get("canvas_id") else "director",
+        ),
+    )
+
+
+def _canvas_context_ui_event(
+    payload: CanvasContextToolResultIn,
+    resolved: dict[str, Any],
+) -> dict[str, Any]:
+    return {
+        "schema_version": "canvas_context_result.v1",
+        "type": "canvas_context_result",
+        "canvas_id": resolved.get("canvas_id"),
+        "bridge_key": payload.bridge_key,
+        "result": {
+            "ok": resolved.get("ok"),
+            "tool_call_status": resolved.get("tool_call_status"),
+            "canvas_context_status": resolved.get("canvas_context_status"),
+            "responses": resolved.get("responses") or [],
+            "errors": resolved.get("errors") or [],
+            "message": resolved.get("message"),
+        },
+        "anchor_text_prefix": payload.anchor_text_prefix,
+    }
 
 
 @router.post("/chat/canvas-command-tool-result")
@@ -231,6 +316,35 @@ async def resolve_canvas_command_tool_result(
             await hermes_pool.close_user(username)
         except Exception:
             logger.exception("failed to close hermes worker after canvas command cancellation")
+    return {"ok": True, "data": resolved}
+
+
+@router.post("/chat/canvas-context-tool-result")
+async def resolve_canvas_context_tool_result(
+    payload: CanvasContextToolResultIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    username = str(user["username"])
+    resolved = _resolve_canvas_context_tool_result_payload(payload, username=username)
+    context_turn_id = str(payload.turn_id or "").strip()
+    project_id = str(resolved.get("project_id") or payload.project_id or "").strip()
+    canvas_id = str(resolved.get("canvas_id") or payload.canvas_id or "").strip()
+    if context_turn_id and project_id and canvas_id:
+        try:
+            scope = ChatScope(kind="project", id=project_id, surface="freezone", canvas_id=canvas_id)
+            project_ctx = await _project_context_for_scope(user, scope)
+            chat_store.append_ui_event(
+                username,
+                scope,
+                context_turn_id,
+                _canvas_context_ui_event(payload, resolved),
+            )
+            if project_ctx is not None:
+                # Keep the route symmetric with project-scoped validation even
+                # though Freezone chat history is stored through chat_store.
+                _ = project_ctx
+        except Exception:
+            logger.exception("failed to persist canvas.context.result ui event")
     return {"ok": True, "data": resolved}
 
 
@@ -362,7 +476,7 @@ async def _history(
     *,
     project_ctx: ProjectContext | None = None,
 ) -> list[dict[str, Any]]:
-    if scope.kind == "project":
+    if scope.kind == "project" and (scope.surface or "director") == "director":
         return chat_service.list_messages(
             username,
             str(scope.id),
@@ -400,7 +514,7 @@ async def _send_scope_changed(
             "history": await _history(username, scope, project_ctx=project_ctx),
             "busy": chat_service.chat_run_lock_is_active(
                 username,
-                f"freezone:{scope.id}" if scope.kind == "freezone" else (
+                f"freezone:{scope.id}" if _is_freezone_scope(scope) and scope.id else (
                     str(scope.id) if scope.kind == "project" and scope.id else ""
                 ),
             ),
@@ -451,8 +565,8 @@ async def _sync_running_agent_scope(username: str, scope: ChatScope) -> None:
 
         await hermes_pool.set_scope_for_user(
             username,
-            agent_profile="freezone" if scope.kind == "freezone" else "main",
-            scope_kind="project" if scope.kind == "freezone" else scope.kind,
+            agent_profile="freezone" if _is_freezone_scope(scope) else "main",
+            scope_kind="project" if _is_freezone_scope(scope) else scope.kind,
             project_id=scope.id if scope.kind in {"project", "freezone"} else None,
         )
     except Exception:
@@ -487,6 +601,35 @@ def _load_pending_canvas_command(path: Any) -> dict[str, Any] | None:
     }
 
 
+def _load_pending_canvas_context(path: Any) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict):
+        return None
+    requests = payload.get("requests")
+    if not isinstance(requests, list) or not requests:
+        return None
+    envelope = payload.get("envelope")
+    if not isinstance(envelope, dict):
+        envelope = {
+            "schema_version": "canvas_context_request.v1",
+            "canvas_id": payload.get("canvas_id"),
+            "requests": requests,
+        }
+    if envelope.get("schema_version") != "canvas_context_request.v1":
+        return None
+    if not isinstance(envelope.get("requests"), list) or not envelope.get("requests"):
+        return None
+    return {
+        "key": str(payload.get("key") or path.name.removesuffix(".pending.json")),
+        "project_id": payload.get("project_id"),
+        "canvas_id": payload.get("canvas_id") or envelope.get("canvas_id"),
+        "envelope": envelope,
+    }
+
+
 async def _watch_pending_canvas_commands(
     *,
     websocket: WebSocket,
@@ -497,9 +640,9 @@ async def _watch_pending_canvas_commands(
     emitted_bridge_keys: set[str],
     started_at: float,
 ) -> None:
-    if scope.kind != "freezone":
+    if not _is_freezone_scope(scope):
         return
-    bridge_dir = _canvas_bridge_dir(username)
+    bridge_dir = _canvas_bridge_dir(username, profile=_canvas_bridge_profile_for_scope(scope))
     while True:
         await asyncio.sleep(0.4)
         try:
@@ -537,6 +680,67 @@ async def _watch_pending_canvas_commands(
                 websocket,
                 {
                     "type": "canvas.command",
+                    "turn_id": turn_id,
+                    "canvas_id": envelope.get("canvas_id"),
+                    "bridge_key": key,
+                    "envelope": envelope,
+                },
+                send_lock,
+            )
+            if not sent:
+                return
+
+
+async def _watch_pending_canvas_context_requests(
+    *,
+    websocket: WebSocket,
+    username: str,
+    scope: ChatScope,
+    turn_id: str,
+    send_lock: asyncio.Lock,
+    emitted_bridge_keys: set[str],
+    started_at: float,
+) -> None:
+    if not _is_freezone_scope(scope):
+        return
+    bridge_dir = _canvas_bridge_dir(username, profile=_canvas_bridge_profile_for_scope(scope))
+    while True:
+        await asyncio.sleep(0.4)
+        try:
+            pending_paths = sorted(
+                bridge_dir.glob("*.pending.json"),
+                key=lambda item: item.stat().st_mtime,
+            )
+        except Exception:
+            continue
+        for path in pending_paths:
+            try:
+                if path.stat().st_mtime < started_at - 1.0:
+                    continue
+            except Exception:
+                continue
+            key = path.name.removesuffix(".pending.json")
+            if key in emitted_bridge_keys:
+                continue
+            if (bridge_dir / f"{key}.result.json").exists():
+                continue
+            pending = _load_pending_canvas_context(path)
+            if pending is None:
+                continue
+            if pending.get("project_id") and pending.get("project_id") != scope.id:
+                continue
+            emitted_bridge_keys.add(key)
+            envelope = pending["envelope"]
+            logger.info(
+                "emitting canvas.context.request from pending bridge turn_id=%s canvas_id=%s requests=%s",
+                turn_id,
+                envelope.get("canvas_id"),
+                len(envelope.get("requests") or []),
+            )
+            sent = await _send_json_best_effort(
+                websocket,
+                {
+                    "type": "canvas.context.request",
                     "turn_id": turn_id,
                     "canvas_id": envelope.get("canvas_id"),
                     "bridge_key": key,
@@ -590,6 +794,17 @@ async def _stream_project_turn(
     emitted_bridge_keys: set[str] = set()
     pending_canvas_task = asyncio.create_task(
         _watch_pending_canvas_commands(
+            websocket=websocket,
+            username=username,
+            scope=scope,
+            turn_id=turn_id,
+            send_lock=send_lock,
+            emitted_bridge_keys=emitted_bridge_keys,
+            started_at=time.time(),
+        )
+    )
+    pending_canvas_context_task = asyncio.create_task(
+        _watch_pending_canvas_context_requests(
             websocket=websocket,
             username=username,
             scope=scope,
@@ -690,10 +905,13 @@ async def _stream_project_turn(
     finally:
         heartbeat_task.cancel()
         pending_canvas_task.cancel()
+        pending_canvas_context_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
         with contextlib.suppress(asyncio.CancelledError):
             await pending_canvas_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await pending_canvas_context_task
         if not done_sent:
             await _send_json_best_effort(
                 websocket,
@@ -934,7 +1152,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 await chat_service.prewarm_chat_backend(
                     username,
                     project=current_scope.id if current_scope.kind in {"project", "freezone"} else None,
-                    surface="freezone" if current_scope.kind == "freezone" else None,
+                    surface="freezone" if _is_freezone_scope(current_scope) else None,
                 )
                 continue
 
@@ -948,6 +1166,11 @@ async def chat_ws(websocket: WebSocket) -> None:
                         await hermes_pool.close_user(username)
                     except Exception:
                         logger.exception("failed to close hermes worker after canvas command cancellation")
+                continue
+
+            if event_type == "canvas.context.result":
+                payload = CanvasContextToolResultIn.model_validate(raw)
+                _resolve_canvas_context_tool_result_payload(payload, username=username)
                 continue
 
             if event_type != "chat.message":
@@ -976,9 +1199,9 @@ async def chat_ws(websocket: WebSocket) -> None:
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
-                        surface="freezone" if scope.kind == "freezone" else msg.surface,
-                        surface_context=msg.context if scope.kind == "freezone" else None,
-                        store_scope=scope if scope.kind == "freezone" else None,
+                        surface="freezone" if _is_freezone_scope(scope) else msg.surface,
+                        surface_context=msg.context if _is_freezone_scope(scope) else None,
+                        store_scope=scope if _is_freezone_scope(scope) else None,
                     )
                 elif scope.kind == "home":
                     await _stream_home_turn(

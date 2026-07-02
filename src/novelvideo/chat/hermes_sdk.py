@@ -91,7 +91,6 @@ _DRAMACLAW_WRITE_TOOLS = {
     "freezone_select_nodes",
     "freezone_open_mainline_projection",
     "freezone_run_node_action",
-    "freezone_create_workflow_graph",
 }
 
 _TOOL_DETAIL_FIELDS = (

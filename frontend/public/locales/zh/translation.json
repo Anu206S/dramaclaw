@@ -336,6 +336,7 @@
     "syncingHistoryDescription": "正在连接虾导并同步历史对话，请稍候。",
     "disclaimer": "虾导可能会出错，请核对关键剧情、角色与资产信息。",
     "placeholder": "上传剧本后，说出要推进的分集、画面、配音或成片任务",
+    "freezonePlaceholder": "想画什么、改哪里，直接告诉虾画",
     "waiting": "等待聊天服务连接...",
     "waitingResponse": "等待虾导回复",
     "waitingResponses": [
@@ -413,6 +414,7 @@
     "ingestAutomationNoProject": "请先进入一个项目，再从虾导上传小说生成视频。",
     "ingestAutomationMissingFile": "未能读取上传的小说文件，请重新选择文件。",
     "attachmentOnlyPrompt": "请分析我上传的文件。",
+    "canvasReferenceOnlyPrompt": "请基于当前选中的画布节点继续。",
     "attachmentAnalysisUploading": "正在上传文件供分析：{{filename}}",
     "settingsHint": "账号和登录由 SuperTale 管理。这里的设置只控制聊天展示和附件行为。",
     "tool": "工具",

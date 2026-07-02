@@ -3,7 +3,10 @@
 import {
   ArrowDown,
   ArrowUp,
+  AlertCircle,
   Braces,
+  CheckCircle2,
+  ChevronRight,
   Copy,
   Download,
   File,
@@ -53,7 +56,10 @@ import { cn } from "@/lib/utils";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { api } from "@/lib/api";
 import { p } from "@/lib/api-path";
-import { useSuperChat } from "@/features/superchat/use-superchat";
+import {
+  SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT,
+  useSuperChat,
+} from "@/features/superchat/use-superchat";
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { useEventBus } from "@/task-center/event-bus-context";
@@ -69,10 +75,45 @@ import type { ApprovalRequest, ChatAttachment } from "@/features/superchat/types
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import type { FormatCheck, UploadResult } from "@/lib/queries/ingest";
 import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
-import { getDownstreamSpawnTypes } from "@/features/canvas/domain/nodeRegistry";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
-import { useCanvasStore, type CanvasEdge, type CanvasNode } from "@/stores/canvasStore";
-import type { CanvasNodeData, CanvasNodeType } from "@/features/canvas/domain/canvasNodes";
+import { useCanvasStore, type CanvasNode } from "@/stores/canvasStore";
+import type { CanvasNodeType } from "@/features/canvas/domain/canvasNodes";
+import type {
+  CanvasChatCommand,
+  CanvasChatCommandApplyStep,
+  CanvasChatCommandApplyResult,
+  CanvasCommandApprovalEventDetail,
+  CanvasCommandResultEventDetail,
+  CanvasChatCommandEnvelope,
+} from "@/features/freezone/canvasChatCommands";
+import {
+  applyCanvasChatCommandsAsync,
+  FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT,
+  FREEZONE_CANVAS_COMMAND_RESULT_EVENT,
+  subscribeCanvasCommandApprovals,
+} from "@/features/freezone/canvasChatCommands";
+import { FREEZONE_CANVAS_WRITE_TOOL_NAME_SET } from "@/features/freezone/canvasCommandTools";
+import {
+  FREEZONE_CANVAS_CONTEXT_ACTIVITY_EVENT,
+  FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT,
+  type CanvasContextActivityPayload,
+  type CanvasContextToolResultPayload,
+} from "@/features/freezone/canvasContextToolResult";
+import { reportCanvasCommandToolResult } from "@/features/freezone/canvasCommandToolResult";
+import {
+  buildCanvasNodeReferenceAttachment,
+  buildCanvasNodeReferenceContext,
+  canvasNodeReferenceAttachmentNodes,
+  canvasNodeReferenceAttachmentNodeIds,
+  isCanvasNodeReferenceAttachment,
+  mergeCanvasNodeReferenceAttachments,
+  pruneCanvasNodeReferenceAttachments,
+} from "@/features/freezone/chatNodeReferences";
+import {
+  visibleStructuredBlocksForMessage,
+  type CanvasCommandExecutionMode,
+} from "@/features/superchat/canvas-command-display";
+import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-execution-narration";
 
 type SpecMediaDetailSection = {
   title: string;
@@ -180,6 +221,190 @@ function isHistoricalToolMessage(message: ChatMessage): boolean {
     ? (message.raw as Record<string, unknown>)
     : {};
   return raw.role === "trace";
+}
+
+const FREEZONE_TOOL_DISPLAY: Record<string, { title: string; description: string }> = {
+  freezone_emit_canvas_command: {
+    title: "准备画布操作",
+    description: "生成可执行的画布修改命令",
+  },
+  freezone_create_node: {
+    title: "创建节点",
+    description: "准备创建一个画布节点",
+  },
+  freezone_add_next_node: {
+    title: "追加节点",
+    description: "准备在节点后创建下游节点",
+  },
+  freezone_update_node_data: {
+    title: "更新节点",
+    description: "准备修改节点数据",
+  },
+  freezone_create_edge: {
+    title: "创建连线",
+    description: "准备连接两个画布节点",
+  },
+  freezone_delete_nodes: {
+    title: "删除节点",
+    description: "准备删除画布节点",
+  },
+  freezone_delete_edges: {
+    title: "断开连线",
+    description: "准备断开画布连线",
+  },
+  freezone_move_nodes: {
+    title: "移动节点",
+    description: "准备移动画布节点",
+  },
+  freezone_layout_nodes: {
+    title: "整理布局",
+    description: "准备整理画布节点布局",
+  },
+  freezone_group_nodes: {
+    title: "创建分组",
+    description: "准备把节点放入视觉分组",
+  },
+  freezone_select_nodes: {
+    title: "选择节点",
+    description: "准备选中或聚焦画布节点",
+  },
+  freezone_run_node_action: {
+    title: "运行节点动作",
+    description: "准备运行节点前端动作",
+  },
+  freezone_get_canvas_ontology: {
+    title: "读取画布 Ontology",
+    description: "获取当前画布详细 ontology",
+  },
+  freezone_get_canvas_snapshot: {
+    title: "读取画布",
+    description: "获取当前画布节点和连线信息",
+  },
+  freezone_get_selection: {
+    title: "读取选择",
+    description: "获取当前选中的画布节点",
+  },
+  freezone_get_node_detail: {
+    title: "读取节点",
+    description: "获取单个节点详情",
+  },
+  freezone_get_neighbor_graph: {
+    title: "读取上下游",
+    description: "获取节点邻近关系",
+  },
+  freezone_get_node_action_catalog: {
+    title: "读取节点能力",
+    description: "获取单个节点可用动作",
+  },
+  freezone_get_node_create_schema: {
+    title: "读取创建参数",
+    description: "获取节点创建参数",
+  },
+  freezone_get_audio_voice_options: {
+    title: "读取音色",
+    description: "获取音频节点音色选项",
+  },
+  freezone_get_slot_candidates: {
+    title: "读取槽位",
+    description: "获取当前可提交槽位",
+  },
+  freezone_get_mainline_projection_assets: {
+    title: "读取主线资产",
+    description: "获取可映射到画布的主线资产",
+  },
+  freezone_get_canvas_action_catalog: {
+    title: "查询画布能力",
+    description: "获取画布级 action catalog",
+  },
+  freezone_get_canvas_command_catalog: {
+    title: "读取命令规则",
+    description: "获取批量画布命令字段规则",
+  },
+  freezone_get_link_type_catalog: {
+    title: "读取连线类型",
+    description: "获取普通节点连线类型",
+  },
+  freezone_validate_canvas_commands: {
+    title: "校验画布命令",
+    description: "预校验 canvas_chat_commands",
+  },
+  freezone_summarize_canvas: {
+    title: "总结画布",
+    description: "整理当前画布结构摘要",
+  },
+};
+
+function toolRawRecord(message: ChatMessage): Record<string, unknown> | null {
+  return message.raw && typeof message.raw === "object"
+    ? (message.raw as Record<string, unknown>)
+    : null;
+}
+
+function freezoneToolName(message: ChatMessage): string {
+  const raw = toolRawRecord(message);
+  const candidates = [
+    raw?.name,
+    raw?.tool_name,
+    raw?.toolName,
+    raw?.function_name,
+    raw?.functionName,
+  ];
+  for (const candidate of candidates) {
+    if (typeof candidate === "string" && FREEZONE_TOOL_DISPLAY[candidate]) return candidate;
+  }
+  for (const name of Object.keys(FREEZONE_TOOL_DISPLAY)) {
+    if (message.text.includes(name)) return name;
+  }
+  return "";
+}
+
+function freezoneToolDisplay(message: ChatMessage): { title: string; description: string } | null {
+  const name = freezoneToolName(message);
+  return FREEZONE_TOOL_DISPLAY[name] ?? null;
+}
+
+function freezoneToolStatus(message: ChatMessage): "running" | "done" | "failed" {
+  const raw = toolRawRecord(message);
+  if (raw?.type === "tool.call") return "running";
+  if (raw?.success === false || raw?.error) return "failed";
+  const result = raw?.result;
+  if (result && typeof result === "object" && (result as Record<string, unknown>).ok === false) return "failed";
+  return "done";
+}
+
+function freezoneToolMeta(message: ChatMessage): string[] {
+  const raw = toolRawRecord(message);
+  if (!raw) return [];
+  const toolName = freezoneToolName(message);
+  const values: string[] = [];
+  const input = raw.input && typeof raw.input === "object" ? raw.input as Record<string, unknown> : null;
+  const rawInput =
+    raw.raw && typeof raw.raw === "object" && (raw.raw as Record<string, unknown>).rawInput && typeof (raw.raw as Record<string, unknown>).rawInput === "object"
+      ? (raw.raw as Record<string, unknown>).rawInput as Record<string, unknown>
+      : null;
+  const result = raw.result && typeof raw.result === "object" ? raw.result as Record<string, unknown> : null;
+  const data = result?.data && typeof result.data === "object" ? result.data as Record<string, unknown> : null;
+  const project = input?.project_id ?? input?.project ?? rawInput?.project_id ?? rawInput?.project ?? data?.project;
+  const canvas = input?.canvas_id ?? input?.canvasId ?? rawInput?.canvas_id ?? rawInput?.canvasId ?? data?.canvas_id;
+  if (typeof project === "string" && project.trim()) values.push(`项目：${project}`);
+  if (typeof canvas === "string" && canvas.trim()) values.push(`画布：${canvas}`);
+  if (Array.isArray(data?.objects)) values.push(`节点：${data.objects.length}`);
+  if (Array.isArray(data?.links)) values.push(`连线：${data.links.length}`);
+  if (toolName === "freezone_get_canvas_ontology") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.canvas_ontology}`);
+  if (toolName === "freezone_summarize_canvas") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.canvas_summary}`);
+  if (toolName === "freezone_get_canvas_action_catalog") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.canvas_action_catalog}`);
+  if (toolName === "freezone_get_canvas_command_catalog") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.canvas_command_catalog}`);
+  if (toolName === "freezone_get_link_type_catalog") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.link_type_catalog}`);
+  if (toolName === "freezone_get_selection") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.selection_detail}`);
+  if (toolName === "freezone_get_node_detail") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.node_detail}`);
+  if (toolName === "freezone_get_neighbor_graph") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.neighbor_graph}`);
+  if (toolName === "freezone_get_node_action_catalog") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.node_action_catalog}`);
+  if (toolName === "freezone_get_node_create_schema") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.node_create_schema}`);
+  if (toolName === "freezone_get_audio_voice_options") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.audio_voice_options}`);
+  if (toolName === "freezone_get_slot_candidates") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.slot_candidates}`);
+  if (toolName === "freezone_get_mainline_projection_assets") values.push(`读取：${CANVAS_CONTEXT_REQUEST_LABELS.mainline_projection_assets}`);
+  if (toolName === "freezone_validate_canvas_commands") values.push(`校验：${CANVAS_CONTEXT_REQUEST_LABELS.validate_canvas_commands}`);
+  return values.slice(0, 4);
 }
 
 function normalizeMessageText(text: string): string {
@@ -1002,7 +1227,12 @@ function StructuredRenderer({
               <Button
                 variant="ghost"
                 size="icon-xs"
-                onClick={() => navigator.clipboard?.writeText(JSON.stringify(block.value, null, 2)).catch(() => undefined)}
+                onClick={() => {
+                  void writeClipboardText(JSON.stringify(block.value, null, 2)).then((ok) => {
+                    if (ok) toast.success("已复制");
+                    else toast.error("复制失败");
+                  });
+                }}
                 aria-label="Copy JSON"
               >
                 <Copy className="size-3" />
@@ -1165,6 +1395,240 @@ function SpecMediaDetailModal({
   );
 }
 
+function CanvasContextActivityCard({ activity }: { activity: CanvasContextActivity }) {
+  const [expanded, setExpanded] = useState(false);
+  const failed = activity.status === "failed";
+  const running = activity.status === "running";
+  const label = activity.labels.length > 0 ? activity.labels.join("、") : "画布上下文";
+  const isThinking = activity.labels.includes(CANVAS_CONTEXT_THINKING_LABEL);
+  const isValidation = canvasContextActivityIsValidation(activity);
+  const hasErrors = activity.errors.length > 0;
+  const statusText = isThinking
+    ? CANVAS_CONTEXT_THINKING_LABEL
+    : isValidation
+      ? running
+        ? "正在校验画布命令"
+        : failed
+          ? "画布命令校验失败"
+          : "已校验画布命令"
+      : running
+        ? `正在读取${label}`
+        : failed
+          ? `读取${label}失败`
+          : `已读取${label}`;
+  return (
+    <div className={cn("mt-2 w-fit max-w-full rounded-md px-0 py-1 text-xs", failed ? "text-amber-300/90" : "text-muted-foreground")}>
+      <button
+        type="button"
+        className={cn("flex max-w-full items-center gap-2 text-left", hasErrors && "cursor-pointer")}
+        onClick={() => hasErrors && setExpanded((value) => !value)}
+      >
+        {running ? <DotsIndicator /> : failed ? <AlertCircle className="size-3.5 shrink-0" /> : <CheckCircle2 className="size-3.5 shrink-0" />}
+        <span className="font-medium">{statusText}</span>
+        {hasErrors && <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />}
+      </button>
+      {failed && hasErrors && expanded && (
+        <div className="mt-1 max-w-[min(560px,80vw)] break-words pl-[22px] text-[11px] leading-4 text-muted-foreground/80">
+          {activity.errors.join("; ")}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function FreezoneToolActivityCard({ message }: { message: ChatMessage }) {
+  const display = freezoneToolDisplay(message);
+  if (!display) return null;
+  const status = freezoneToolStatus(message);
+  const meta = freezoneToolMeta(message);
+  return (
+    <div
+      className={cn(
+        "w-full max-w-[86%] rounded-xl border px-3 py-2 text-sm",
+        status === "failed"
+          ? "border-red-400/20 bg-red-500/8 text-red-100"
+          : "border-white/[0.08] bg-white/[0.035] text-foreground",
+      )}
+    >
+      <div className="flex items-center gap-2">
+        {status === "running" ? (
+          <span className="text-muted-foreground">
+            <DotsIndicator />
+          </span>
+        ) : status === "failed" ? (
+          <AlertCircle className="size-3.5 text-red-400" />
+        ) : (
+          <CheckCircle2 className="size-3.5 text-emerald-400" />
+        )}
+        <span className="font-medium">{display.title}</span>
+        <span className="text-xs text-muted-foreground">
+          {status === "running" ? "进行中" : status === "failed" ? "失败" : "完成"}
+        </span>
+      </div>
+      <div className="mt-1 text-xs leading-5 text-muted-foreground">
+        {display.description}
+      </div>
+      {meta.length > 0 && (
+        <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-[11px] leading-4 text-muted-foreground/80">
+          {meta.map((item) => (
+            <span key={item} className="max-w-60 truncate">{item}</span>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function CanvasCommandPlanList({ plans }: { plans: CanvasCommandPlan[] | undefined }) {
+  if (!plans || plans.length === 0) return null;
+  return (
+    <div className="space-y-2 px-3 py-2">
+      {plans.slice(0, 6).map((plan) => (
+        <div key={`${plan.index}-${plan.type}`} className="rounded-lg bg-black/15 px-2.5 py-2">
+          <div className="flex items-center gap-2 text-foreground/90">
+            {plan.destructive ? (
+              <AlertCircle className="size-3.5 shrink-0 text-destructive" />
+            ) : (
+              <ListTree className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <span className="font-medium">{plan.label}</span>
+            {plan.primary && <span className="ml-auto max-w-48 truncate text-[11px] text-muted-foreground">{plan.primary}</span>}
+          </div>
+          {plan.details.length > 0 && (
+            <div className="mt-1.5 space-y-0.5 text-[11px] leading-4 text-muted-foreground">
+              {plan.details.slice(0, 5).map((detail) => <div key={detail} className="truncate">{detail}</div>)}
+            </div>
+          )}
+        </div>
+      ))}
+      {plans.length > 6 && <div className="px-1 text-[11px] text-muted-foreground">还有 {plans.length - 6} 个操作将在确认后一起执行</div>}
+    </div>
+  );
+}
+
+function CanvasCommandApprovalCard({
+  approval,
+  isExecuting = false,
+  onApply,
+  onCancel,
+}: {
+  approval: PendingCanvasCommandApproval;
+  isExecuting?: boolean;
+  onApply: (approval: PendingCanvasCommandApproval) => void;
+  onCancel: (approval: PendingCanvasCommandApproval) => void;
+}) {
+  return (
+    <div className="mt-3 w-full min-w-0 overflow-hidden rounded-xl border border-amber-400/25 bg-background/95 text-xs text-muted-foreground shadow-lg backdrop-blur-sm">
+      <div className="flex items-start gap-2 border-b border-amber-400/15 px-3 py-2">
+        <ShieldAlert className="mt-0.5 size-4 shrink-0 text-amber-500" />
+        <div className="min-w-0 flex-1">
+          <div className="text-sm font-medium text-foreground">待确认的画布操作</div>
+          <p className="mt-1 text-xs leading-5 text-muted-foreground">Agent 计划执行 {approval.commandCount} 个操作，确认后才会应用到画布。</p>
+        </div>
+        <Badge variant="outline" className="rounded-md uppercase">{isExecuting ? "执行中" : "确认"}</Badge>
+      </div>
+      <CanvasCommandPlanList plans={approval.plans} />
+      <div className="flex flex-wrap justify-end gap-2 border-t border-amber-400/15 px-3 py-2.5">
+        <Button size="xs" variant="outline" disabled={isExecuting} onClick={() => onCancel(approval)}>取消</Button>
+        <Button size="xs" disabled={isExecuting} onClick={() => onApply(approval)}>{isExecuting ? "执行中..." : "确认执行"}</Button>
+      </div>
+    </div>
+  );
+}
+
+function canvasCommandFeedbackHasFailure(feedback: CanvasCommandFeedback): boolean {
+  return feedback.errors.length > 0 || (feedback.commandResults ?? []).some((step) => step.status !== "success");
+}
+
+function canvasCommandFeedbackIsInvalidCommand(feedback: CanvasCommandFeedback): boolean {
+  return (feedback.commandResults ?? []).some((step) => step.label === "画布命令无效");
+}
+
+function canvasCommandFeedbackCompactTitle(feedback: CanvasCommandFeedback): string {
+  const firstFailedStep = (feedback.commandResults ?? []).find((step) => step.status !== "success");
+  const firstPlan = feedback.plans?.[0];
+  if (firstFailedStep?.label === "已取消") return "画布操作已取消";
+  if (firstPlan?.type === "run_node_action" && firstPlan.label.includes("生成图片")) return "生成图片失败";
+  if (firstPlan?.type === "run_node_action" && firstPlan.label.includes("生成视频")) return "生成视频失败";
+  if (firstFailedStep?.label) return firstFailedStep.label;
+  return "画布操作失败";
+}
+
+function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedback }) {
+  const [expanded, setExpanded] = useState(false);
+  const steps = feedback.commandResults ?? [];
+  const successfulCount = feedback.applied + feedback.openedUiActions;
+  if (steps.length === 0 && successfulCount === 0 && feedback.errors.length === 0) return null;
+  const failed = canvasCommandFeedbackHasFailure(feedback);
+  const invalidCommand = canvasCommandFeedbackIsInvalidCommand(feedback);
+  const initiallyCompact = failed && successfulCount === 0;
+  const collapseSuccessfulDetails = !failed && steps.length > 2;
+  const compactTitle = canvasCommandFeedbackCompactTitle(feedback);
+
+  if ((initiallyCompact || collapseSuccessfulDetails) && !expanded) {
+    return (
+      <button
+        type="button"
+        data-canvas-command-feedback-key={feedback.key}
+        data-canvas-command-feedback-signature={canvasCommandFeedbackDedupeKey(feedback)}
+        onClick={() => setExpanded(true)}
+        className={cn("mt-2 flex w-fit max-w-full items-center gap-1.5 rounded-md px-0 py-1 text-left text-xs font-medium", collapseSuccessfulDetails ? "text-emerald-300/90 hover:text-emerald-200" : invalidCommand ? "text-amber-300/90 hover:text-amber-200" : "text-destructive/90 hover:text-destructive")}
+      >
+        <span className="truncate">{collapseSuccessfulDetails ? `画布执行完成，已执行 ${successfulCount} 项` : compactTitle}</span>
+        <ChevronRight className="size-3.5 shrink-0" />
+      </button>
+    );
+  }
+
+  return (
+    <div
+      className={cn("mt-3 w-full min-w-0 overflow-hidden rounded-xl border text-xs text-muted-foreground", invalidCommand ? "border-amber-400/20 bg-amber-400/[0.035]" : failed ? "border-destructive/20 bg-destructive/[0.035]" : "border-white/[0.10] bg-background/90 backdrop-blur-sm")}
+      data-canvas-command-feedback-key={feedback.key}
+      data-canvas-command-feedback-signature={canvasCommandFeedbackDedupeKey(feedback)}
+    >
+      <div className="flex items-center gap-2 border-b border-white/[0.06] px-3 py-2 text-foreground/90">
+        <Wrench className="size-3.5" />
+        <span className="font-medium">画布执行</span>
+        {(initiallyCompact || collapseSuccessfulDetails) && (
+          <button type="button" onClick={() => setExpanded(false)} className="ml-auto rounded-md px-1.5 py-0.5 text-[11px] text-muted-foreground hover:bg-white/[0.06] hover:text-foreground">收起</button>
+        )}
+        {successfulCount > 0 && <span className={cn("text-[11px] text-muted-foreground", !initiallyCompact && "ml-auto")}>已执行 {successfulCount} 项</span>}
+      </div>
+      {expanded && <CanvasCommandPlanList plans={feedback.plans} />}
+      <div className="space-y-1 px-3 py-2">
+        {steps.map((step, index) => {
+          const ok = step.status === "success";
+          return (
+            <div key={`${step.commandIndex}-${step.type}-${step.nodeId ?? ""}-${step.action ?? ""}-${index}`} className="flex items-start gap-2 leading-5">
+              {ok ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-400" /> : <AlertCircle className={cn("mt-0.5 size-3.5 shrink-0", invalidCommand ? "text-amber-300" : "text-destructive")} />}
+              <div className="min-w-0 flex-1">
+                <div className={cn("font-medium", ok ? "text-foreground/90" : invalidCommand ? "text-amber-300" : "text-destructive")}>{step.label}</div>
+                {(step.createdNodeId || step.nodeId || step.action || step.error) && (
+                  <div className="mt-0.5 space-y-0.5 break-words text-[11px] text-muted-foreground">
+                    {step.createdNodeId && <div>新节点：{step.createdNodeId}</div>}
+                    {!step.createdNodeId && step.nodeId && <div>节点：{step.nodeId}</div>}
+                    {step.action && <div>动作：{step.action}</div>}
+                    {step.error && <div className={invalidCommand ? "text-amber-200/80" : "text-destructive"}>{step.error}</div>}
+                  </div>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {steps.length === 0 && successfulCount > 0 && (
+          <div className="flex items-center gap-2 text-foreground/90">
+            <CheckCircle2 className="size-3.5 text-emerald-400" />
+            <span>已应用 {successfulCount} 个画布操作</span>
+          </div>
+        )}
+        {feedback.errors.length > 0 && steps.length === 0 && (
+          <div className={cn("break-words", invalidCommand ? "text-amber-200/80" : "text-destructive")}>{feedback.errors.join("; ")}</div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
   variant = "default",
@@ -1175,6 +1639,12 @@ const MessageBubble = memo(function MessageBubble({
   onTogglePin,
   deferStructuredRender = false,
   streaming = false,
+  canvasCommandApprovals = [],
+  canvasCommandFeedbacks = [],
+  canvasContextActivities = [],
+  executingCanvasCommandApprovalIds = new Set<string>(),
+  onApplyCanvasCommandApproval,
+  onCancelCanvasCommandApproval,
 }: {
   message: ChatMessage;
   variant?: SuperChatPanelVariant;
@@ -1185,19 +1655,61 @@ const MessageBubble = memo(function MessageBubble({
   onTogglePin: (id: string) => void;
   deferStructuredRender?: boolean;
   streaming?: boolean;
+  canvasCommandApprovals?: PendingCanvasCommandApproval[];
+  canvasCommandFeedbacks?: CanvasCommandFeedback[];
+  canvasContextActivities?: CanvasContextActivity[];
+  executingCanvasCommandApprovalIds?: Set<string>;
+  onApplyCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
+  onCancelCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
 }) {
   const isUser = message.role === "user";
   const isTool = isToolMessage(message);
   const isHistoricalTool = isTool && isHistoricalToolMessage(message);
   const isFreezoneLayout = variant === "freezone";
+  const freezoneToolActivity = isTool ? freezoneToolDisplay(message) : null;
   const isErrorReply = isAssistantErrorReply(message);
   const isCompletionNotice = isAssistantCompletionNotice(message);
   const { t } = useTranslation();
   const shouldWaitForStructuredRender =
     deferStructuredRender && !isUser && !isTool && looksLikeStructuredRenderText(message.text);
   const { displayText, blocks } = extractStructuredBlocks(message);
+  const visibleBlocks = visibleStructuredBlocksForMessage(blocks, {
+    isFreezoneLayout,
+    isUser,
+    isTool,
+  });
+  const hasValidationContextActivity = canvasContextActivities.some(canvasContextActivityIsValidation);
+  const visibleCanvasCommandFeedbacks = dedupeCanvasCommandFeedbacks(canvasCommandFeedbacks)
+    .filter((feedback) => !(hasValidationContextActivity && canvasCommandFeedbackIsValidationOnly(feedback)));
+  const suppressCanvasExecutionNarration =
+    isFreezoneLayout
+    && !isUser
+    && !isTool
+    && (visibleCanvasCommandFeedbacks.length > 0 || canvasCommandApprovals.length > 0)
+    && looksLikeCanvasExecutionNarration(message.text);
+  const hasCanvasCommandSurface = visibleCanvasCommandFeedbacks.length > 0 || canvasCommandApprovals.length > 0;
+  const canvasCommandFlowItems = useMemo(
+    () => isUser
+      ? []
+      : buildCanvasCommandFlowItems(
+        suppressCanvasExecutionNarration ? "" : displayText,
+        canvasCommandApprovals,
+        visibleCanvasCommandFeedbacks,
+        canvasContextActivities,
+      ),
+    [
+      canvasCommandApprovals,
+      canvasContextActivities,
+      displayText,
+      isUser,
+      suppressCanvasExecutionNarration,
+      visibleCanvasCommandFeedbacks,
+    ],
+  );
   const copyText = async () => {
-    await navigator.clipboard?.writeText(message.text).catch(() => undefined);
+    const ok = await writeClipboardText(message.text);
+    if (ok) toast.success("已复制");
+    else toast.error("复制失败");
   };
   const speak = () => {
     if (!("speechSynthesis" in window)) return;
@@ -1211,7 +1723,7 @@ const MessageBubble = memo(function MessageBubble({
     <div
       className={cn(
         isUser
-          ? "pointer-events-none absolute right-1.5 top-1.5 z-10 flex translate-y-0.5 items-center gap-0.5 rounded-full border border-border/70 bg-background/85 px-1 py-0.5 text-foreground/75 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100"
+          ? "-mx-2 flex max-h-0 items-center justify-end gap-1 overflow-hidden rounded-xl px-2 py-0 text-foreground/75 opacity-0 transition-[max-height,opacity,padding] duration-150 pointer-events-none group-hover/message-actions:max-h-14 group-hover/message-actions:py-2 group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:max-h-14 group-focus-within/message-actions:py-2 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100"
           : "mt-2 flex items-center gap-1 text-muted-foreground/70",
       )}
     >
@@ -1263,7 +1775,43 @@ const MessageBubble = memo(function MessageBubble({
     </div>
   );
 
+  if (freezoneToolActivity && !hasCanvasCommandSurface) {
+    return (
+      <div className="flex items-start gap-3 justify-start">
+        <ChatAvatarFrame
+          role={message.role}
+          label={message.displayName || t("aiAssistant.title")}
+          streaming={freezoneToolStatus(message) === "running"}
+        />
+        <div className="flex min-w-0 flex-1 justify-start">
+          <FreezoneToolActivityCard message={message} />
+        </div>
+      </div>
+    );
+  }
+
   if (isUser) {
+    const visibleAttachments = message.attachments?.filter(shouldRenderAttachmentChip) ?? [];
+    const hasCanvasReferenceAttachment = visibleAttachments.some(isCanvasNodeReferenceAttachment);
+    if (hasCanvasReferenceAttachment) {
+      return (
+        <div className="flex justify-end">
+          <article className={cn("max-w-[72%]", isFreezoneLayout && "max-w-[82%]")}>
+            <div className="group/message-actions">
+              <div className="relative rounded-[14px] border-0 bg-white/[0.12] px-3 py-2.5 text-sm leading-6 text-foreground shadow-none">
+                <AttachmentList attachments={message.attachments} align="start" compact />
+                {displayText && (
+                  <div className="whitespace-pre-wrap break-words">{displayText}</div>
+                )}
+                <StructuredRenderer blocks={visibleBlocks} />
+              </div>
+              {actions}
+            </div>
+          </article>
+        </div>
+      );
+    }
+
     return (
       <div className="flex justify-end">
         <article className={cn("max-w-[72%]", isFreezoneLayout && "max-w-[82%]")}>
@@ -1273,13 +1821,13 @@ const MessageBubble = memo(function MessageBubble({
                 "relative rounded-[14px] border-0 bg-white/[0.12] px-4 py-2.5 text-sm leading-6 text-foreground shadow-none",
               )}
             >
-              {actions}
               <AttachmentList attachments={message.attachments} align="end" />
               {displayText && (
                 <div className="whitespace-pre-wrap break-words">{displayText}</div>
               )}
-              <StructuredRenderer blocks={blocks} />
+              <StructuredRenderer blocks={visibleBlocks} />
             </div>
+            {actions}
           </div>
         </article>
       </div>
@@ -1299,7 +1847,7 @@ const MessageBubble = memo(function MessageBubble({
         <article
           className={cn(
             "group relative text-sm leading-6 shadow-none",
-            blocks.length > 0 && !isUser && !isTool
+            visibleBlocks.length > 0 && !isUser && !isTool
               ? "w-full min-w-0 overflow-visible"
               : "w-fit overflow-hidden",
             isTool
@@ -1377,14 +1925,37 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         ) : (
           <>
-            {displayText && (
+            {canvasCommandFlowItems.length > 0 ? (
+              <div className="space-y-1.5">
+                {canvasCommandFlowItems.map((item) => {
+                  if (item.kind === "text") {
+                    return <MessageText key={item.key} text={item.text} markdown={!isUser && !isTool} />;
+                  }
+                  if (item.kind === "approval") {
+                    return (
+                      <CanvasCommandApprovalCard
+                        key={item.key}
+                        approval={item.approval}
+                        isExecuting={executingCanvasCommandApprovalIds.has(item.approval.id)}
+                        onApply={onApplyCanvasCommandApproval ?? (() => undefined)}
+                        onCancel={onCancelCanvasCommandApproval ?? (() => undefined)}
+                      />
+                    );
+                  }
+                  if (item.kind === "feedback") {
+                    return <CanvasCommandFeedbackCard key={item.key} feedback={item.feedback} />;
+                  }
+                  return <CanvasContextActivityCard key={item.key} activity={item.activity} />;
+                })}
+              </div>
+            ) : !suppressCanvasExecutionNarration && displayText && (
               isErrorReply && !isUser && !isTool
                 ? <HighlightedErrorText text={displayText} />
                 : isCompletionNotice && !isUser && !isTool
                   ? <HighlightedCompletionText text={displayText} />
                   : <MessageText text={displayText} markdown={!isUser && !isTool} />
             )}
-            <StructuredRenderer blocks={blocks} onOpenMedia={onOpenMedia} />
+            <StructuredRenderer blocks={visibleBlocks} onOpenMedia={onOpenMedia} />
           </>
         )}
         </article>
@@ -1586,34 +2157,161 @@ function ChatTimeline({
 function AttachmentList({
   attachments,
   align = "start",
+  compact = false,
 }: {
   attachments?: ChatAttachment[];
   align?: "start" | "end";
+  compact?: boolean;
 }) {
   const visibleAttachments = attachments?.filter(shouldRenderAttachmentChip) ?? [];
   if (visibleAttachments.length === 0) return null;
 
   return (
-    <div className={cn("mb-2 flex flex-wrap gap-1.5", align === "end" && "justify-end")}>
-      {visibleAttachments.map((attachment) => (
-        <AttachmentChip key={attachment.id || attachment.fileName || attachment.content} attachment={attachment} />
-      ))}
+    <div className={cn(compact ? "mb-2 flex flex-wrap gap-1.5" : "mb-2 flex flex-wrap gap-2", align === "end" && "justify-end")}>
+      {visibleAttachments.flatMap((attachment) => {
+        if (isCanvasNodeReferenceAttachment(attachment)) {
+          return canvasNodeReferenceAttachmentNodes(attachment).map((node) => (
+            <CanvasNodeReferenceCard
+              key={`${attachment.id}:${node.nodeId}`}
+              node={node}
+              compact
+            />
+          ));
+        }
+        return [
+          <AttachmentChip
+            key={attachment.id || attachment.fileName || attachment.content}
+            attachment={attachment}
+          />,
+        ];
+      })}
+    </div>
+  );
+}
+
+type SentCanvasNodeReferencePreview = ReturnType<typeof canvasNodeReferenceAttachmentNodes>[number];
+
+function CanvasNodeReferenceCard({
+  node,
+  compact = false,
+}: {
+  node: SentCanvasNodeReferencePreview;
+  compact?: boolean;
+}) {
+  const mediaSrc = canvasReferenceResolvedUrl(node.sourceUrl);
+  const previewSrc = canvasReferenceResolvedUrl(node.previewUrl) ?? mediaSrc;
+  const isVideo = node.mediaType === "video" || canvasReferenceIsVideoUrl(mediaSrc);
+  const previewIsImage = canvasReferenceIsImageUrl(previewSrc);
+  const previewIsVideo = canvasReferenceIsVideoUrl(previewSrc) || (isVideo && !previewIsImage);
+  const isImage =
+    node.mediaType === "image" ||
+    node.mediaType === "pano360" ||
+    canvasReferenceIsImageUrl(mediaSrc);
+  const title = node.label || node.nodeId;
+  const kindLabel =
+    node.mediaType === "video"
+      ? "Video"
+      : node.mediaType === "audio"
+        ? "Audio"
+        : node.mediaType === "text"
+          ? "Text"
+          : node.mediaType === "image" || node.mediaType === "pano360"
+            ? "Image"
+            : node.nodeType || "Canvas";
+
+  if (compact) {
+    return (
+      <div
+        className="group/canvas-ref relative w-[92px] cursor-pointer overflow-hidden rounded-[10px] bg-black/15 p-1.5 shadow-none transition hover:bg-black/25 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+        title={`${title} · ${node.nodeId}`}
+        role="button"
+        tabIndex={0}
+        onClick={() => focusCanvasReferenceNode(node.nodeId)}
+        onKeyDown={(event) => handleCanvasReferenceKeyDown(event, node.nodeId)}
+      >
+        <div className="relative size-10 overflow-hidden rounded-md bg-black/25">
+          {previewSrc && previewIsVideo ? (
+            <CanvasReferenceVideoPreview src={previewSrc} title={title} iconClassName="size-5" />
+          ) : previewSrc && (previewIsImage || isImage) ? (
+            <img
+              src={previewSrc}
+              alt={title}
+              className="h-full w-full object-cover"
+              loading="lazy"
+              decoding="async"
+              draggable={false}
+            />
+          ) : (
+            <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+              {isVideo ? <Play className="size-5" /> : <ListTree className="size-5" />}
+            </div>
+          )}
+        </div>
+        <div className="mt-1.5 line-clamp-2 text-[11px] font-medium leading-3.5 text-foreground/90">
+          {title}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div
+      className="group/canvas-ref relative w-full cursor-pointer overflow-hidden rounded-xl border border-white/10 bg-white/[0.06] shadow-sm transition hover:bg-white/[0.09] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
+      title={`${title} · ${node.nodeId}`}
+      role="button"
+      tabIndex={0}
+      onClick={() => focusCanvasReferenceNode(node.nodeId)}
+      onKeyDown={(event) => handleCanvasReferenceKeyDown(event, node.nodeId)}
+    >
+      <div className="relative h-28 bg-black/25">
+        {previewSrc && previewIsVideo ? (
+          <CanvasReferenceVideoPreview src={previewSrc} title={title} iconClassName="size-6" />
+        ) : previewSrc && (previewIsImage || isImage) ? (
+          <img
+            src={previewSrc}
+            alt={title}
+            className="h-full w-full object-cover"
+            loading="lazy"
+            decoding="async"
+            draggable={false}
+          />
+        ) : (
+          <div className="flex h-full w-full items-center justify-center text-muted-foreground">
+            {isVideo ? <Play className="size-6" /> : <ListTree className="size-6" />}
+          </div>
+        )}
+      </div>
+      <div className="px-2.5 py-2">
+        <div className="line-clamp-2 text-xs font-medium leading-4 text-foreground">{title}</div>
+        <div className="mt-0.5 flex items-center gap-1.5 text-[11px] text-muted-foreground">
+          <ListTree className="size-3" />
+          <span className="truncate">{kindLabel}</span>
+        </div>
+      </div>
     </div>
   );
 }
 
 function AttachmentChip({ attachment }: { attachment: ChatAttachment }) {
   const isImage = isImageAttachment(attachment);
+  const isCanvasReference = isCanvasNodeReferenceAttachment(attachment);
 
   return (
     <span className="inline-flex max-w-44 items-center gap-1.5 rounded-md border border-border/70 bg-background/45 px-2 py-1 text-xs">
-      {isImage ? <Image className="size-3.5" /> : <File className="size-3.5" />}
-      <span className="truncate">{attachment.fileName || attachment.mimeType || "Attachment"}</span>
+      {isCanvasReference ? (
+        <ListTree className="size-3.5" />
+      ) : isImage ? (
+        <Image className="size-3.5" />
+      ) : (
+        <File className="size-3.5" />
+      )}
+      <span className="truncate">{attachment.label || attachment.fileName || attachment.mimeType || "Attachment"}</span>
     </span>
   );
 }
 
 function shouldRenderAttachmentChip(attachment: ChatAttachment): boolean {
+  if (isCanvasNodeReferenceAttachment(attachment)) return true;
   if (!isImageAttachment(attachment) && !isVideoAttachment(attachment)) return true;
   return false;
 }
@@ -2391,50 +3089,37 @@ function appendAttachmentAnalysisContext(text: string, context: string): string 
   return [text, "", context].join("\n");
 }
 
-const FREEZONE_REFERENCE_DATA_KEYS = [
-  "displayName",
-  "prompt",
-  "text",
-  "content",
-  "imageUrl",
-  "previewImageUrl",
-  "videoUrl",
-  "audioUrl",
-  "sourceFileName",
-  "audioKind",
-  "aspectRatio",
-  "resultKind",
-  "slot_target",
-  "__freezone_source",
-];
+async function writeClipboardText(text: string): Promise<boolean> {
+  const value = text.trim();
+  if (!value) return false;
 
-const FREEZONE_REFERENCE_EDITABLE_FIELDS = [
-  "displayName",
-  "prompt",
-  "text",
-  "content",
-];
-
-function truncateForCanvasReference(value: string, maxLength = 900): string {
-  return value.length <= maxLength ? value : `${value.slice(0, maxLength)}...`;
-}
-
-function safeJson(value: unknown, maxLength = 2400): string {
   try {
-    return truncateForCanvasReference(JSON.stringify(value), maxLength);
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
   } catch {
-    return "{}";
+    // Fall through to the textarea path. Clipboard API can fail in embedded views.
   }
-}
 
-function compactCanvasNodeData(data: CanvasNodeData): Record<string, unknown> {
-  const compact: Record<string, unknown> = {};
-  for (const key of FREEZONE_REFERENCE_DATA_KEYS) {
-    const value = data[key];
-    if (value === undefined || value === null || value === "") continue;
-    compact[key] = typeof value === "string" ? truncateForCanvasReference(value) : value;
+  if (typeof document === "undefined") return false;
+  const textarea = document.createElement("textarea");
+  textarea.value = value;
+  textarea.setAttribute("readonly", "true");
+  textarea.style.position = "fixed";
+  textarea.style.left = "-9999px";
+  textarea.style.top = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+  textarea.setSelectionRange(0, textarea.value.length);
+  try {
+    return document.execCommand("copy");
+  } catch {
+    return false;
+  } finally {
+    document.body.removeChild(textarea);
   }
-  return compact;
 }
 
 function getCanvasNodeLabel(node: CanvasNode): string {
@@ -2519,51 +3204,6 @@ function getSelectedFreezoneNodes(nodes: CanvasNode[], selectedNodeId: string | 
   return [...selected.values()];
 }
 
-function buildFreezoneCanvasNodeReferencesContext(args: {
-  project?: string;
-  canvasId?: string | null;
-  nodes: CanvasNode[];
-  edges: CanvasEdge[];
-}): string {
-  if (args.nodes.length === 0) return "";
-  const selectedIds = new Set(args.nodes.map((node) => node.id));
-  const relatedEdges = args.edges.filter(
-    (edge) => selectedIds.has(edge.source) || selectedIds.has(edge.target),
-  );
-  const lines = [
-    "[SUPERTALE_CANVAS_NODE_REFERENCES]",
-    args.project ? `reference_1_project: ${args.project}` : null,
-    args.canvasId ? `reference_1_canvas_id: ${args.canvasId}` : null,
-  ].filter((line): line is string => line !== null);
-
-  args.nodes.forEach((node, index) => {
-    const key = `reference_1_node_${index + 1}`;
-    lines.push(`${key}_id: ${node.id}`);
-    if (node.type) lines.push(`${key}_type: ${node.type}`);
-    lines.push(`${key}_label: ${getCanvasNodeLabel(node)}`);
-    lines.push(`${key}_position_json: ${safeJson(node.position, 600)}`);
-    lines.push(`${key}_data_json: ${safeJson(compactCanvasNodeData(node.data))}`);
-    lines.push(`${key}_action_catalog_json: ${safeJson({
-      downstream_spawn_types: getDownstreamSpawnTypes(node.type as CanvasNodeType | undefined),
-      editable_fields: FREEZONE_REFERENCE_EDITABLE_FIELDS,
-      actions: [],
-    })}`);
-  });
-
-  relatedEdges.forEach((edge, index) => {
-    const key = `reference_1_edge_${index + 1}`;
-    lines.push(`${key}_id: ${edge.id}`);
-    lines.push(`${key}_source: ${edge.source}`);
-    lines.push(`${key}_target: ${edge.target}`);
-    if (edge.sourceHandle) lines.push(`${key}_source_handle: ${edge.sourceHandle}`);
-    if (edge.targetHandle) lines.push(`${key}_target_handle: ${edge.targetHandle}`);
-    if (edge.data) lines.push(`${key}_data_json: ${safeJson(edge.data, 900)}`);
-  });
-
-  lines.push("[/SUPERTALE_CANVAS_NODE_REFERENCES]");
-  return lines.join("\n");
-}
-
 function canvasReferenceResolvedUrl(value: string | null | undefined): string | null {
   if (!value) return null;
   return resolveMediaUrl(value) ?? value;
@@ -2636,7 +3276,13 @@ function handleCanvasReferenceKeyDown(
   focusCanvasReferenceNode(nodeId);
 }
 
-function CanvasNodeReferenceThumb({ node }: { node: CanvasNodeReferencePreview }) {
+function CanvasNodeReferenceThumb({
+  node,
+  onRemove,
+}: {
+  node: CanvasNodeReferencePreview;
+  onRemove?: () => void;
+}) {
   const thumbRef = useRef<HTMLDivElement | null>(null);
   const [previewPosition, setPreviewPosition] = useState<{ left: number; top: number } | null>(null);
   const mediaSrc = canvasReferenceResolvedUrl(node.sourceUrl);
@@ -2733,8 +3379,1106 @@ function CanvasNodeReferenceThumb({ node }: { node: CanvasNodeReferencePreview }
           document.body,
         )
         : null}
+      {onRemove && (
+        <button
+          type="button"
+          onClick={(event) => {
+            event.stopPropagation();
+            onRemove();
+          }}
+          className="pointer-events-none absolute -right-0.5 -top-0.5 z-10 rounded-full bg-background/90 p-0.5 text-muted-foreground opacity-0 shadow-sm transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:bg-background hover:text-foreground"
+          aria-label="移除画布引用"
+        >
+          <X className="size-3" />
+        </button>
+      )}
     </div>
   );
+}
+
+function pushParsedCanvasJsonText(values: unknown[], text: string): void {
+  const candidates = [text];
+  for (const match of text.matchAll(/```(?:json)?\s*([\s\S]*?)```/gi)) {
+    if (match[1]) candidates.push(match[1]);
+  }
+
+  const firstObject = text.indexOf("{");
+  const lastObject = text.lastIndexOf("}");
+  if (firstObject >= 0 && lastObject > firstObject) {
+    candidates.push(text.slice(firstObject, lastObject + 1));
+  }
+
+  const firstArray = text.indexOf("[");
+  const lastArray = text.lastIndexOf("]");
+  if (firstArray >= 0 && lastArray > firstArray) {
+    candidates.push(text.slice(firstArray, lastArray + 1));
+  }
+
+  const seen = new Set<string>();
+  for (const candidate of candidates) {
+    const trimmed = candidate.trim();
+    if (!trimmed || seen.has(trimmed)) continue;
+    seen.add(trimmed);
+    try {
+      values.push(JSON.parse(trimmed));
+    } catch {
+      values.push(trimmed);
+    }
+  }
+}
+
+export function canvasCommandCandidateValues(message: ChatMessage): unknown[] {
+  const values: unknown[] = [];
+  if (message.role !== "tool") {
+    const { blocks } = extractStructuredBlocks(message);
+    values.push(...blocks.map((block) => block.value));
+  }
+  const raw = message.raw && typeof message.raw === "object"
+    ? (message.raw as Record<string, unknown>)
+    : null;
+  const result = raw?.result;
+  const resultText =
+    typeof result === "string"
+      ? result
+      : result && typeof result === "object" && typeof (result as Record<string, unknown>).text === "string"
+        ? String((result as Record<string, unknown>).text)
+        : "";
+  const toolName = typeof raw?.name === "string" ? raw.name : "";
+  const isCanvasContextTool =
+    toolName === "freezone_get_canvas_ontology" ||
+    toolName === "freezone_summarize_canvas" ||
+    toolName === "freezone_get_canvas_action_catalog" ||
+    toolName === "freezone_get_canvas_command_catalog" ||
+    toolName === "freezone_get_link_type_catalog" ||
+    toolName === "freezone_get_selection" ||
+    toolName === "freezone_get_node_detail" ||
+    toolName === "freezone_get_neighbor_graph" ||
+    toolName === "freezone_get_node_action_catalog" ||
+    toolName === "freezone_get_node_create_schema" ||
+    toolName === "freezone_get_audio_voice_options" ||
+    toolName === "freezone_get_slot_candidates" ||
+    toolName === "freezone_get_mainline_projection_assets" ||
+    toolName === "freezone_validate_canvas_commands";
+  const mayContainCanvasCommand =
+    raw?.name === "freezone_request_canvas_context" ||
+    FREEZONE_CANVAS_WRITE_TOOL_NAME_SET.has(toolName) ||
+    isCanvasContextTool ||
+    resultText.includes("canvas_chat_commands.v1") ||
+    resultText.includes("canvas_context_request.v1") ||
+    resultText.includes("canvas_command_emitted");
+  if (message.role === "tool" && !mayContainCanvasCommand) return values;
+  if (!isCanvasContextTool) {
+    if (typeof result === "string") pushParsedCanvasJsonText(values, result);
+    if (result && typeof result === "object") {
+      const record = result as Record<string, unknown>;
+      values.push(result);
+      if (record.envelope) values.push(record.envelope);
+      if (typeof record.text === "string") pushParsedCanvasJsonText(values, record.text);
+    }
+  }
+  for (const key of ["input", "rawInput", "raw_input", "raw"]) {
+    const value = raw?.[key];
+    if (!value || typeof value !== "object") continue;
+    values.push(value);
+    const record = value as Record<string, unknown>;
+    if (record.envelope) values.push(record.envelope);
+    if (record.rawInput && typeof record.rawInput === "object") values.push(record.rawInput);
+    if (record.raw_input && typeof record.raw_input === "object") values.push(record.raw_input);
+    if (typeof record.text === "string") pushParsedCanvasJsonText(values, record.text);
+  }
+  return values;
+}
+
+type ComposerEnterEventLike = {
+  key: string;
+  shiftKey: boolean;
+  defaultPrevented: boolean;
+  nativeEvent?: {
+    isComposing?: boolean;
+    keyCode?: number;
+  };
+};
+
+export function shouldSubmitComposerEnter(event: ComposerEnterEventLike): boolean {
+  if (event.key !== "Enter" || event.shiftKey || event.defaultPrevented) return false;
+  if (event.nativeEvent?.isComposing || event.nativeEvent?.keyCode === 229) return false;
+  return true;
+}
+
+type ComposerWaitingIndicatorInput = {
+  busy: boolean;
+  hasAssistantText: boolean;
+  streamText: string;
+  pendingCanvasCommandApprovalCount: number;
+  hasPendingVisibleUserMessage: boolean;
+  hasThinkingCanvasContextActivity: boolean;
+};
+
+export function shouldShowComposerWaitingIndicator(input: ComposerWaitingIndicatorInput): boolean {
+  void input.hasAssistantText;
+  void input.streamText;
+  return (
+    input.busy &&
+    input.pendingCanvasCommandApprovalCount === 0 &&
+    input.hasPendingVisibleUserMessage &&
+    !input.hasThinkingCanvasContextActivity
+  );
+}
+
+export function shouldShowComposerWaitingStatus(
+  showWaitingIndicator: boolean,
+  variant: SuperChatPanelVariant,
+): boolean {
+  void variant;
+  return showWaitingIndicator;
+}
+
+const CANVAS_CONTEXT_REQUEST_LABELS: Record<string, string> = {
+  canvas_ontology: "画布 Ontology",
+  canvas_summary: "画布摘要",
+  canvas_action_catalog: "画布能力",
+  canvas_command_catalog: "命令规则",
+  node_detail: "节点详情",
+  neighbor_graph: "上下游关系",
+  node_action_catalog: "节点能力",
+  action_catalog: "节点能力",
+  action_catalog_by_id: "能力详情",
+  node_create_schema: "节点参数",
+  audio_voice_options: "音色选项",
+  slot_candidates: "可提交槽位",
+  mainline_projection_assets: "主线资产",
+  selection_detail: "当前选择",
+  link_type_catalog: "连线类型",
+  validate_canvas_commands: "命令校验",
+};
+const CANVAS_CONTEXT_THINKING_LABEL = "正在思考中";
+type CanvasContextActivity = {
+  key: string;
+  turnId: string | null;
+  bridgeKey: string | null;
+  status: "running" | "done" | "failed";
+  labels: string[];
+  errors: string[];
+  anchorTextPrefix?: string | null;
+  surfaceOrder?: number;
+};
+
+type CanvasCommandPlan = {
+  index: number;
+  type: CanvasChatCommand["type"];
+  label: string;
+  primary?: string;
+  details: string[];
+  destructive?: boolean;
+};
+
+type CanvasCommandFeedbackStep = {
+  commandIndex: number;
+  type: string;
+  status: string;
+  label: string;
+  nodeId?: string;
+  action?: string;
+  createdNodeId?: string;
+  error?: string;
+};
+
+type CanvasCommandFeedback = Pick<CanvasChatCommandApplyResult, "applied" | "openedUiActions" | "errors"> & {
+  commandResults: CanvasCommandFeedbackStep[];
+  key: string;
+  plans?: CanvasCommandPlan[];
+  anchorTextPrefix?: string;
+  surfaceOrder?: number;
+};
+
+type PendingCanvasCommandApproval = {
+  id: string;
+  key: string;
+  messageId: string;
+  turnId?: string | null;
+  bridgeKey?: string | null;
+  anchorTextPrefix?: string | null;
+  surfaceOrder?: number;
+  envelopes: CanvasChatCommandEnvelope[];
+  commandCount: number;
+  plans: CanvasCommandPlan[];
+};
+
+type CanvasCommandFlowItem =
+  | { kind: "text"; key: string; text: string }
+  | { kind: "approval"; key: string; approval: PendingCanvasCommandApproval }
+  | { kind: "feedback"; key: string; feedback: CanvasCommandFeedback }
+  | { kind: "context"; key: string; activity: CanvasContextActivity };
+
+type CanvasCommandSurfaceEvent =
+  | {
+      kind: "approval";
+      key: string;
+      order: number;
+      anchorTextPrefix?: string | null;
+      approval: PendingCanvasCommandApproval;
+    }
+  | {
+      kind: "feedback";
+      key: string;
+      order: number;
+      anchorTextPrefix?: string | null;
+      feedback: CanvasCommandFeedback;
+    }
+  | {
+      kind: "context";
+      key: string;
+      order: number;
+      anchorTextPrefix?: string | null;
+      activity: CanvasContextActivity;
+    };
+
+const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
+
+function loadCanvasCommandExecutionMode(): CanvasCommandExecutionMode {
+  if (typeof window === "undefined") return "manual_confirm";
+  return window.localStorage.getItem(CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY) === "auto_execute"
+    ? "auto_execute"
+    : "manual_confirm";
+}
+
+function saveCanvasCommandExecutionMode(mode: CanvasCommandExecutionMode): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY, mode);
+}
+
+function canvasSurfaceEventOrder(value: Record<string, unknown>, fallbackIndex = 0): number {
+  if (typeof value.id === "number" && Number.isFinite(value.id)) return value.id;
+  if (typeof value.received_at === "number" && Number.isFinite(value.received_at)) return value.received_at;
+  if (typeof value.receivedAt === "number" && Number.isFinite(value.receivedAt)) return value.receivedAt;
+  return fallbackIndex;
+}
+
+function compactJsonValue(value: unknown): string {
+  if (typeof value === "string") return value;
+  if (typeof value === "number" || typeof value === "boolean") return String(value);
+  if (value == null) return "";
+  try {
+    return JSON.stringify(value);
+  } catch {
+    return String(value);
+  }
+}
+
+function nodeTypeLabel(nodeType: string | undefined): string {
+  if (!nodeType) return "节点";
+  if (nodeType === "imageGenNode") return "图片节点";
+  if (nodeType === "videoNode") return "视频节点";
+  if (nodeType === "textAnnotationNode") return "文本节点";
+  if (nodeType === "audioNode") return "音频节点";
+  if (nodeType === "scriptNode") return "脚本节点";
+  return nodeType;
+}
+
+function canvasCommandPlanLabel(command: CanvasChatCommand): string {
+  switch (command.type) {
+    case "create_node":
+      return `创建${nodeTypeLabel(command.node_type)}`;
+    case "add_next_node":
+      return `添加下游${nodeTypeLabel(command.node_type)}`;
+    case "update_node_data":
+      return "更新节点参数";
+    case "delete_nodes":
+      return "删除节点";
+    case "delete_edges":
+      return "断开连接";
+    case "create_edge":
+      return "创建连接";
+    case "layout_nodes":
+      return "整理布局";
+    case "group_nodes":
+      return "创建普通组";
+    case "move_nodes":
+      return "移动节点";
+    case "select_nodes":
+      return "选中节点";
+    case "run_node_action":
+      if (command.action === "generate_image") return "生成图片";
+      if (command.action === "generate_video") return "生成视频";
+      if (command.action === "open_video_compose_modal") return "打开视频合成";
+      if (command.action === "open_video_viewer") return "打开视频";
+      return "执行节点动作";
+    case "open_mainline_projection":
+      return "打开主线虾画";
+    default:
+      return "画布操作";
+  }
+}
+
+function canvasCommandPlanPrimary(command: CanvasChatCommand): string | undefined {
+  switch (command.type) {
+    case "create_node":
+      return command.client_id;
+    case "add_next_node":
+      return command.source_node_id;
+    case "update_node_data":
+    case "run_node_action":
+      return command.node_id;
+    case "open_mainline_projection":
+      if (command.request.scope === "beat") return `EP${command.request.episode ?? ""} / Beat ${command.request.beat ?? ""}`;
+      if (command.request.scope === "episode") return `EP${command.request.episode ?? ""}`;
+      return command.request.asset_id ?? command.request.identity_id ?? command.request.character ?? command.request.asset_kind ?? "主线素材";
+    case "delete_nodes":
+    case "select_nodes":
+    case "group_nodes":
+      return command.node_ids.join(", ");
+    case "layout_nodes":
+      return command.node_ids?.length ? command.node_ids.join(", ") : "当前画布";
+    case "create_edge":
+      return `${command.source} -> ${command.target}`;
+    case "delete_edges":
+      return command.pairs?.map((pair) => `${pair.source} - ${pair.target}`).join(", ")
+        || command.edge_ids?.join(", ");
+    case "move_nodes":
+      return [
+        ...Object.keys(command.positions ?? {}),
+        ...Object.keys(command.deltas ?? {}),
+      ].join(", ");
+    default:
+      return undefined;
+  }
+}
+
+function canvasCommandPlanDetails(command: CanvasChatCommand): string[] {
+  const details: string[] = [];
+  if (command.type === "create_node" || command.type === "add_next_node") {
+    if (command.type === "create_node" && command.position) {
+      details.push(`位置：${Math.round(command.position.x)}, ${Math.round(command.position.y)}`);
+    }
+    if (command.type === "add_next_node") {
+      details.push(`上游：${command.source_node_id}`);
+      if (command.connect) details.push("自动连线");
+    }
+    for (const key of ["displayName", "title", "content", "text", "prompt", "model", "size", "requestAspectRatio", "aspectRatio", "count"] as const) {
+      const value = command.data?.[key as keyof typeof command.data];
+      if (value !== undefined && value !== "") details.push(`${key}：${compactJsonValue(value)}`);
+    }
+  } else if (command.type === "update_node_data") {
+    for (const [key, value] of Object.entries(command.data)) {
+      if (value !== undefined && value !== "") details.push(`${key} -> ${compactJsonValue(value)}`);
+    }
+  } else if (command.type === "run_node_action") {
+    details.push(`动作：${command.action}`);
+  } else if (command.type === "open_mainline_projection") {
+    details.push(`范围：${command.request.scope}`);
+    if (typeof command.request.episode === "number") details.push(`集数：${command.request.episode}`);
+    if (typeof command.request.beat === "number") details.push(`Beat：${command.request.beat}`);
+    if (command.request.primary_slot) details.push(`目标：${command.request.primary_slot}`);
+    if (command.request.asset_kind) details.push(`素材类型：${command.request.asset_kind}`);
+  } else if (command.type === "create_edge") {
+    details.push(`link_type：${command.link_type}`);
+  } else if (command.type === "layout_nodes") {
+    details.push(`模式：${command.mode}`);
+    details.push(command.node_ids?.length ? `数量：${command.node_ids.length}` : "范围：当前画布全部节点");
+  } else if (command.type === "group_nodes") {
+    details.push(`数量：${command.node_ids.length}`);
+    if (command.label) details.push(`名称：${command.label}`);
+  } else if (command.type === "move_nodes") {
+    const moveCount = new Set([
+      ...Object.keys(command.positions ?? {}),
+      ...Object.keys(command.deltas ?? {}),
+    ]).size;
+    details.push(`数量：${moveCount}`);
+  } else if (command.type === "delete_nodes") {
+    details.push(`数量：${command.node_ids.length}`);
+  } else if (command.type === "delete_edges") {
+    details.push(`数量：${(command.edge_ids?.length ?? 0) + (command.pairs?.length ?? 0)}`);
+  }
+  return details;
+}
+
+function canvasCommandIsDestructive(command: CanvasChatCommand): boolean {
+  return command.type === "delete_nodes" || command.type === "delete_edges";
+}
+
+function canvasCommandPlansFromEnvelopes(envelopes: CanvasChatCommandEnvelope[] | undefined): CanvasCommandPlan[] {
+  if (!envelopes || envelopes.length === 0) return [];
+  const plans: CanvasCommandPlan[] = [];
+  let index = 0;
+  for (const envelope of envelopes) {
+    for (const command of envelope.commands) {
+      plans.push({
+        index,
+        type: command.type,
+        label: canvasCommandPlanLabel(command),
+        primary: canvasCommandPlanPrimary(command),
+        details: canvasCommandPlanDetails(command),
+        destructive: canvasCommandIsDestructive(command),
+      });
+      index += 1;
+    }
+  }
+  return plans;
+}
+
+function canvasContextLabelsFromTypes(types: string[]): string[] {
+  return Array.from(new Set(types))
+    .map((type) => CANVAS_CONTEXT_REQUEST_LABELS[type] ?? type)
+    .filter((label) => label.trim().length > 0)
+    .slice(0, 3);
+}
+
+function collectCanvasContextRequestTypes(value: unknown, output: string[] = []): string[] {
+  if (!value || typeof value !== "object") return output;
+  const record = value as Record<string, unknown>;
+  if (record.schema_version === "canvas_context_request.v1" && Array.isArray(record.requests)) {
+    for (const request of record.requests) {
+      if (!request || typeof request !== "object") continue;
+      const type = (request as Record<string, unknown>).type;
+      if (typeof type === "string" && type.trim()) output.push(type.trim());
+    }
+  }
+  for (const key of ["input", "raw", "rawInput", "raw_input", "previousRaw", "envelope", "result", "data"]) {
+    collectCanvasContextRequestTypes(record[key], output);
+  }
+  return output;
+}
+
+function canvasContextLabelsFromResponses(responses: Array<Record<string, unknown>> | undefined): string[] {
+  if (!responses || responses.length === 0) return [];
+  return canvasContextLabelsFromTypes(
+    responses
+      .map((response) => response.type)
+      .filter((type): type is string => typeof type === "string" && type.trim().length > 0),
+  );
+}
+
+function canvasContextActivityFromUiEvent(event: unknown, fallbackIndex = 0): CanvasContextActivity | null {
+  if (!event || typeof event !== "object") return null;
+  const value = event as Record<string, unknown>;
+  if (value.type !== "canvas_context_result") return null;
+  const result = value.result && typeof value.result === "object"
+    ? value.result as Record<string, unknown>
+    : null;
+  if (!result) return null;
+  const responses = (Array.isArray(result.responses) ? result.responses : []).filter(
+    (item): item is Record<string, unknown> => Boolean(item && typeof item === "object" && !Array.isArray(item)),
+  );
+  const errors = (Array.isArray(result.errors) ? result.errors : []).map((item) => String(item)).filter(Boolean);
+  const ok = result.ok !== false && errors.length === 0;
+  return {
+    key: typeof value.bridge_key === "string" && value.bridge_key.trim()
+      ? `context:${value.bridge_key.trim()}`
+      : `context-event:${String(value.id ?? value.received_at ?? value.receivedAt ?? fallbackIndex)}`,
+    turnId: null,
+    bridgeKey: typeof value.bridge_key === "string" ? value.bridge_key : null,
+    status: ok ? "done" : "failed",
+    labels: canvasContextLabelsFromResponses(responses),
+    errors,
+    surfaceOrder: canvasSurfaceEventOrder(value, fallbackIndex),
+    anchorTextPrefix: typeof value.anchor_text_prefix === "string"
+      ? value.anchor_text_prefix
+      : typeof value.anchorTextPrefix === "string"
+        ? value.anchorTextPrefix
+        : null,
+  };
+}
+
+function canvasContextActivitiesFromUiEvents(events: unknown[] | undefined): CanvasContextActivity[] {
+  if (!events || events.length === 0) return [];
+  return events
+    .map((event, index) => canvasContextActivityFromUiEvent(event, index))
+    .filter((activity): activity is CanvasContextActivity => Boolean(activity));
+}
+
+function mergeCanvasContextActivity(current: CanvasContextActivity[] | undefined, activity: CanvasContextActivity) {
+  const items = current ?? [];
+  const index = items.findIndex((item) => item.key === activity.key);
+  if (index < 0) return [...items, activity];
+  const next = [...items];
+  next[index] = {
+    ...next[index],
+    ...activity,
+    labels: activity.labels.length > 0 ? activity.labels : next[index].labels,
+    errors: activity.errors.length > 0 ? activity.errors : next[index].errors,
+    anchorTextPrefix: next[index].anchorTextPrefix ?? activity.anchorTextPrefix,
+    surfaceOrder:
+      next[index].surfaceOrder == null
+        ? activity.surfaceOrder
+        : activity.surfaceOrder == null
+          ? next[index].surfaceOrder
+          : Math.min(next[index].surfaceOrder, activity.surfaceOrder),
+  };
+  return next;
+}
+
+function mergeCanvasContextActivitySources(...sources: Array<CanvasContextActivity[] | undefined>) {
+  let merged: CanvasContextActivity[] = [];
+  for (const source of sources) {
+    if (!source || source.length === 0) continue;
+    for (const activity of source) merged = mergeCanvasContextActivity(merged, activity);
+  }
+  return merged;
+}
+
+export const mergeCanvasContextActivitiesForTest = mergeCanvasContextActivitySources;
+
+function createThinkingCanvasContextActivity(turnId: string): CanvasContextActivity {
+  return {
+    key: `thinking:${turnId}`,
+    turnId,
+    bridgeKey: null,
+    status: "running",
+    labels: [CANVAS_CONTEXT_THINKING_LABEL],
+    errors: [],
+  };
+}
+
+function canvasContextActivityIsValidation(activity: CanvasContextActivity): boolean {
+  return activity.labels.includes(CANVAS_CONTEXT_REQUEST_LABELS.validate_canvas_commands) || activity.labels.includes("命令校验");
+}
+
+function canvasCommandAnchorEndIndex(text: string, anchorTextPrefix?: string | null): number {
+  if (!text) return 0;
+  if (anchorTextPrefix == null) return text.length;
+  if (anchorTextPrefix === "") return 0;
+  const index = text.indexOf(anchorTextPrefix);
+  return index < 0 ? text.length : index + anchorTextPrefix.length;
+}
+
+function firstCanvasCommandSemanticMarkerIndex(text: string, markers: string[]): number | null {
+  let best: number | null = null;
+  for (const marker of markers) {
+    const index = text.indexOf(marker);
+    if (index < 0) continue;
+    best = best == null ? index : Math.min(best, index);
+  }
+  return best;
+}
+
+function canvasCommandSemanticAnchorIndex(text: string, event: CanvasCommandSurfaceEvent): number | null {
+  if (!text) return null;
+  if (
+    event.kind === "context" &&
+    (
+      event.activity.labels.includes(CANVAS_CONTEXT_REQUEST_LABELS.validate_canvas_commands) ||
+      event.activity.labels.includes("命令校验")
+    )
+  ) {
+    return firstCanvasCommandSemanticMarkerIndex(text, [
+      "验证通过",
+      "校验通过",
+      "验证失败",
+      "校验失败",
+      "命令验证",
+      "命令校验",
+    ]);
+  }
+  if (event.kind === "feedback" && event.feedback.applied + event.feedback.openedUiActions > 0) {
+    return firstCanvasCommandSemanticMarkerIndex(text, [
+      "已经在画布上",
+      "已在画布上",
+      "已创建",
+      "创建好了",
+      "搭建好了",
+      "画布上创建",
+      "画布中创建",
+    ]);
+  }
+  return null;
+}
+
+function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasCommandSurfaceEvent): number {
+  const anchorIndex = canvasCommandAnchorEndIndex(text, event.anchorTextPrefix);
+  const semanticIndex = canvasCommandSemanticAnchorIndex(text, event);
+  return semanticIndex != null && semanticIndex < anchorIndex ? semanticIndex : anchorIndex;
+}
+
+function canvasCommandFeedbackDedupeKey(feedback: CanvasCommandFeedback): string {
+  return JSON.stringify({
+    applied: feedback.applied,
+    openedUiActions: feedback.openedUiActions,
+    errors: feedback.errors,
+    commandResults: (feedback.commandResults ?? []).map((step) => ({
+      commandIndex: step.commandIndex,
+      type: step.type,
+      status: step.status,
+      label: step.label,
+      nodeId: step.nodeId,
+      action: step.action,
+      error: step.error,
+    })),
+    plans: feedback.plans,
+  });
+}
+
+function dedupeCanvasCommandFeedbacks(feedbacks: CanvasCommandFeedback[]): CanvasCommandFeedback[] {
+  if (feedbacks.length < 2) return feedbacks;
+  const indexByKey = new Map<string, number>();
+  const deduped: CanvasCommandFeedback[] = [];
+  for (const feedback of feedbacks) {
+    const key = canvasCommandFeedbackDedupeKey(feedback);
+    const existingIndex = indexByKey.get(key);
+    if (existingIndex !== undefined) {
+      const existing = deduped[existingIndex];
+      deduped[existingIndex] = {
+        ...existing,
+        anchorTextPrefix: existing.anchorTextPrefix ?? feedback.anchorTextPrefix,
+        surfaceOrder:
+          existing.surfaceOrder == null
+            ? feedback.surfaceOrder
+            : feedback.surfaceOrder == null
+              ? existing.surfaceOrder
+              : Math.min(existing.surfaceOrder, feedback.surfaceOrder),
+      };
+      continue;
+    }
+    indexByKey.set(key, deduped.length);
+    deduped.push(feedback);
+  }
+  return deduped;
+}
+
+function buildCanvasCommandFlowItems(
+  text: string,
+  approvals: PendingCanvasCommandApproval[],
+  feedbacks: CanvasCommandFeedback[],
+  contextActivities: CanvasContextActivity[],
+): CanvasCommandFlowItem[] {
+  if (approvals.length === 0 && feedbacks.length === 0 && contextActivities.length === 0) return [];
+  const dedupedFeedbacks = dedupeCanvasCommandFeedbacks(feedbacks);
+  const events: CanvasCommandSurfaceEvent[] = [
+    ...approvals.map((approval, index): CanvasCommandSurfaceEvent => ({
+      kind: "approval",
+      key: `approval:${approval.id}`,
+      order: approval.surfaceOrder ?? index,
+      anchorTextPrefix: approval.anchorTextPrefix,
+      approval,
+    })),
+    ...dedupedFeedbacks.map((feedback, index): CanvasCommandSurfaceEvent => ({
+      kind: "feedback",
+      key: `feedback:${feedback.key}`,
+      order: feedback.surfaceOrder ?? approvals.length + index,
+      anchorTextPrefix: feedback.anchorTextPrefix,
+      feedback,
+    })),
+    ...contextActivities.map((activity, index): CanvasCommandSurfaceEvent => ({
+      kind: "context",
+      key: `context:${activity.key}`,
+      order: activity.surfaceOrder ?? approvals.length + feedbacks.length + index,
+      anchorTextPrefix: activity.anchorTextPrefix,
+      activity,
+    })),
+  ].sort((left, right) => {
+    const leftIndex = canvasCommandSurfaceEventAnchorEndIndex(text, left);
+    const rightIndex = canvasCommandSurfaceEventAnchorEndIndex(text, right);
+    return leftIndex - rightIndex || left.order - right.order;
+  });
+
+  const items: CanvasCommandFlowItem[] = [];
+  let cursor = 0;
+  for (const event of events) {
+    const anchorEnd = canvasCommandSurfaceEventAnchorEndIndex(text, event);
+    const nextCursor = Math.max(cursor, Math.min(anchorEnd, text.length));
+    if (nextCursor > cursor) {
+      const segment = text.slice(cursor, nextCursor);
+      if (segment.trim()) items.push({ kind: "text", key: `text:${cursor}:${nextCursor}`, text: segment });
+      cursor = nextCursor;
+    }
+    if (event.kind === "approval") {
+      items.push({ kind: "approval", key: event.key, approval: event.approval });
+    } else if (event.kind === "feedback") {
+      items.push({ kind: "feedback", key: event.key, feedback: event.feedback });
+    } else {
+      items.push({ kind: "context", key: event.key, activity: event.activity });
+    }
+  }
+  if (cursor < text.length) {
+    const segment = text.slice(cursor);
+    if (segment.trim()) items.push({ kind: "text", key: `text:${cursor}:end`, text: segment.replace(/^\n+/, "") });
+  }
+  return items;
+}
+
+export const buildCanvasCommandFlowItemsForTest = buildCanvasCommandFlowItems;
+
+function mergeCanvasCommandFeedbackSources(
+  persisted: CanvasCommandFeedback[] | undefined,
+  current: CanvasCommandFeedback[] | undefined,
+): CanvasCommandFeedback[] {
+  if ((!persisted || persisted.length === 0) && (!current || current.length === 0)) return [];
+  return dedupeCanvasCommandFeedbacks([...(persisted ?? []), ...(current ?? [])]);
+}
+
+export const mergeCanvasCommandFeedbacksForTest = mergeCanvasCommandFeedbackSources;
+
+function mergeCanvasCommandResults(
+  previous: CanvasCommandFeedbackStep[] | undefined,
+  next: CanvasCommandFeedbackStep[],
+): CanvasCommandFeedbackStep[] {
+  const merged = [...(previous ?? [])];
+  for (const step of next) {
+    const existingIndex = merged.findIndex(
+      (item) =>
+        item.commandIndex === step.commandIndex &&
+        item.type === step.type &&
+        item.nodeId === step.nodeId &&
+        item.action === step.action &&
+        item.label === step.label,
+    );
+    if (existingIndex >= 0) {
+      merged[existingIndex] = step;
+    } else {
+      merged.push(step);
+    }
+  }
+  return merged.sort((left, right) => left.commandIndex - right.commandIndex);
+}
+
+function mergeCanvasCommandFeedbackValue(
+  previous: CanvasCommandFeedback | undefined,
+  key: string,
+  result: Pick<CanvasChatCommandApplyResult, "applied" | "openedUiActions" | "errors"> & {
+    commandResults: CanvasCommandFeedbackStep[];
+  },
+  plans: CanvasCommandPlan[] = [],
+  anchorTextPrefix?: string | null,
+  surfaceOrder?: number,
+): CanvasCommandFeedback {
+  const nextAnchorTextPrefix = anchorTextPrefix == null ? undefined : anchorTextPrefix;
+  return {
+    key,
+    applied: (previous?.applied ?? 0) + result.applied,
+    openedUiActions: (previous?.openedUiActions ?? 0) + result.openedUiActions,
+    errors: [...(previous?.errors ?? []), ...result.errors],
+    commandResults: mergeCanvasCommandResults(previous?.commandResults, result.commandResults),
+    plans: [...(previous?.plans ?? []), ...plans],
+    anchorTextPrefix: previous?.anchorTextPrefix ?? nextAnchorTextPrefix,
+    surfaceOrder: previous?.surfaceOrder ?? surfaceOrder,
+  };
+}
+
+function appendCanvasCommandFeedbackCard(
+  current: CanvasCommandFeedback[] | undefined,
+  key: string,
+  result: Pick<CanvasChatCommandApplyResult, "applied" | "openedUiActions" | "errors"> & {
+    commandResults: CanvasCommandFeedbackStep[];
+  },
+  plans: CanvasCommandPlan[] = [],
+  anchorTextPrefix?: string | null,
+  surfaceOrder?: number,
+): CanvasCommandFeedback[] {
+  const items = current ?? [];
+  const index = items.findIndex((item) => item.key === key);
+  if (index < 0) return [...items, mergeCanvasCommandFeedbackValue(undefined, key, result, plans, anchorTextPrefix, surfaceOrder)];
+  const next = [...items];
+  next[index] = mergeCanvasCommandFeedbackValue(next[index], key, result, plans, anchorTextPrefix, surfaceOrder);
+  return next;
+}
+
+function canvasCommandApplyResultFromUnknown(value: unknown): CanvasChatCommandApplyResult | null {
+  if (!value || typeof value !== "object") return null;
+  const result = value as Partial<CanvasChatCommandApplyResult>;
+  const commandResults = Array.isArray(result.commandResults) ? result.commandResults : [];
+  if (
+    typeof result.applied !== "number" &&
+    typeof result.openedUiActions !== "number" &&
+    !Array.isArray(result.errors) &&
+    commandResults.length === 0
+  ) return null;
+  return {
+    applied: typeof result.applied === "number" ? result.applied : 0,
+    openedUiActions: typeof result.openedUiActions === "number" ? result.openedUiActions : 0,
+    createdNodeIds: Array.isArray(result.createdNodeIds)
+      ? result.createdNodeIds.filter((item): item is string => typeof item === "string")
+      : [],
+    errors: Array.isArray(result.errors) ? result.errors.map((item) => String(item)) : [],
+    commandResults: commandResults.filter(
+      (item): item is CanvasChatCommandApplyStep =>
+        Boolean(item) &&
+        typeof item === "object" &&
+        typeof (item as CanvasChatCommandApplyStep).label === "string" &&
+        typeof (item as CanvasChatCommandApplyStep).status === "string",
+    ),
+  };
+}
+
+function canvasCommandFeedbacksFromUiEvents(events: unknown[] | undefined): CanvasCommandFeedback[] {
+  if (!events || events.length === 0) return [];
+  const feedbacks: CanvasCommandFeedback[] = [];
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const value = event as Record<string, unknown>;
+    if (value.type !== "canvas_command_result") continue;
+    const result = canvasCommandApplyResultFromUnknown(value.result);
+    if (!result) continue;
+    const envelopes = Array.isArray(value.envelopes) ? (value.envelopes as CanvasChatCommandEnvelope[]) : undefined;
+    const anchorTextPrefix = typeof value.anchor_text_prefix === "string"
+      ? value.anchor_text_prefix
+      : typeof value.anchorTextPrefix === "string"
+        ? value.anchorTextPrefix
+        : undefined;
+    const key = typeof value.bridge_key === "string" && value.bridge_key.trim()
+      ? `bridge:${value.bridge_key.trim()}`
+      : `event:${String(value.id ?? value.received_at ?? value.receivedAt ?? feedbacks.length)}`;
+    feedbacks.push(
+      mergeCanvasCommandFeedbackValue(
+        undefined,
+        key,
+        result,
+        canvasCommandPlansFromEnvelopes(envelopes),
+        anchorTextPrefix,
+        canvasSurfaceEventOrder(value, feedbacks.length),
+      ),
+    );
+  }
+  return feedbacks;
+}
+
+function messageUiEvents(message: ChatMessage): unknown[] | undefined {
+  if (message.uiEvents && message.uiEvents.length > 0) return message.uiEvents;
+  const raw = message.raw && typeof message.raw === "object" ? (message.raw as Record<string, unknown>) : null;
+  const rawEvents = raw && Array.isArray(raw.ui_events)
+    ? raw.ui_events
+    : raw && Array.isArray(raw.uiEvents)
+      ? raw.uiEvents
+      : undefined;
+  return rawEvents && rawEvents.length > 0 ? rawEvents : undefined;
+}
+
+function mergeCanvasCommandFeedbackRecord(
+  current: Record<string, CanvasCommandFeedback[]>,
+  key: string | undefined | null,
+  feedbacks: CanvasCommandFeedback[],
+): void {
+  if (!key) return;
+  let next = current[key] ?? [];
+  for (const feedback of feedbacks) {
+    next = appendCanvasCommandFeedbackCard(
+      next,
+      feedback.key,
+      feedback,
+      feedback.plans ?? [],
+      feedback.anchorTextPrefix,
+      feedback.surfaceOrder,
+    );
+  }
+  current[key] = next;
+}
+
+function canvasCommandFeedbackIsValidationOnly(feedback: CanvasCommandFeedback): boolean {
+  const steps = feedback.commandResults ?? [];
+  return (
+    feedback.applied === 0 &&
+    feedback.openedUiActions === 0 &&
+    steps.length > 0 &&
+    !steps.some((step) => step.label === "已取消") &&
+    steps.every((step) => step.type === "validate" || step.label === "校验画布命令")
+  );
+}
+
+export const canvasCommandFeedbackIsValidationOnlyForTest = canvasCommandFeedbackIsValidationOnly;
+
+function canvasCommandApprovalEnvelopesMatch(left: CanvasChatCommandEnvelope[], right: CanvasChatCommandEnvelope[]) {
+  try {
+    return JSON.stringify(left) === JSON.stringify(right);
+  } catch {
+    return false;
+  }
+}
+
+function isCanvasCommandToolMessage(message: ChatMessage): boolean {
+  if (message.role !== "tool") return false;
+  const raw = message.raw && typeof message.raw === "object"
+    ? (message.raw as Record<string, unknown>)
+    : null;
+  return (
+    [...FREEZONE_CANVAS_WRITE_TOOL_NAME_SET].some((name) => message.text.includes(name)) ||
+    FREEZONE_CANVAS_WRITE_TOOL_NAME_SET.has(String(raw?.name ?? "")) ||
+    raw?.type === "canvas.command"
+  );
+}
+
+function findCanvasCommandFeedbackMessageId(messages: ChatMessage[], turnId?: string | null): string | null {
+  const candidates = [...messages].reverse();
+  if (turnId) {
+    const tool = candidates.find((message) => message.turnId === turnId && isCanvasCommandToolMessage(message));
+    if (tool) return tool.id;
+    const assistant = candidates.find((message) => message.turnId === turnId && message.role === "assistant");
+    if (assistant) return assistant.id;
+  }
+  const latestTool = candidates.find(isCanvasCommandToolMessage);
+  return latestTool?.id ?? null;
+}
+
+function resolveCanvasCommandApprovalMessageId(input: {
+  anchorMessageId?: string | null;
+  messages: ChatMessage[];
+  turnId: string | null;
+  latestAssistantMessageId: string | null;
+  receivedAt?: number | null;
+}): string {
+  if (input.anchorMessageId) return input.anchorMessageId;
+  const sameTurnMessageId = findCanvasCommandFeedbackMessageId(input.messages, input.turnId);
+  if (sameTurnMessageId) return sameTurnMessageId;
+  if (input.turnId) return `assistant-${input.turnId}`;
+  if (input.latestAssistantMessageId) return input.latestAssistantMessageId;
+  return `tool-canvas-command:${input.receivedAt ?? Date.now()}`;
+}
+
+export const resolveCanvasCommandApprovalMessageIdForTest = resolveCanvasCommandApprovalMessageId;
+
+function canvasCommandApprovalKey(
+  bridgeKey: string | null | undefined,
+  turnId: string | null | undefined,
+  envelopes: unknown[],
+  receivedAt?: number,
+): string {
+  if (bridgeKey && turnId) return `bridge:${bridgeKey}:turn:${turnId}`;
+  if (bridgeKey) return `bridge:${bridgeKey}`;
+  try {
+    return `local:${turnId ?? "no-turn"}:${JSON.stringify(envelopes)}`;
+  } catch {
+    return `local:${turnId ?? "no-turn"}:${receivedAt ?? Date.now()}`;
+  }
+}
+
+function canvasCommandFeedbackKey(
+  bridgeKey: string | null | undefined,
+  turnId: string | null | undefined,
+  receivedAt?: number,
+  fallback?: string,
+): string {
+  if (bridgeKey && turnId) return `bridge:${bridgeKey}:turn:${turnId}`;
+  if (bridgeKey) return `bridge:${bridgeKey}`;
+  if (receivedAt != null) return `received:${receivedAt}`;
+  return fallback ?? `local:${turnId ?? "no-turn"}:${Date.now()}`;
+}
+
+export const canvasCommandApprovalKeyForTest = canvasCommandApprovalKey;
+export const canvasCommandFeedbackKeyForTest = canvasCommandFeedbackKey;
+
+function canvasCommandApprovalApplyKey(approval: PendingCanvasCommandApproval): string {
+  if (approval.bridgeKey && approval.turnId) return `bridge:${approval.bridgeKey}:turn:${approval.turnId}`;
+  if (approval.bridgeKey) return `bridge:${approval.bridgeKey}`;
+  try {
+    return `local:${approval.turnId ?? "no-turn"}:${JSON.stringify(approval.envelopes)}`;
+  } catch {
+    return approval.key;
+  }
+}
+
+function canvasCommandApprovalCanRepeat(approval: PendingCanvasCommandApproval): boolean {
+  return approval.envelopes.some((envelope) =>
+    envelope.commands.some((command) =>
+      command.type === "create_node" ||
+      command.type === "add_next_node" ||
+      (command.type === "run_node_action" && command.action === "open_video_compose_modal"),
+    ),
+  );
+}
+
+function mergePendingCanvasCommandApproval(
+  current: PendingCanvasCommandApproval[],
+  approval: PendingCanvasCommandApproval,
+): PendingCanvasCommandApproval[] {
+  const index = current.findIndex((item) =>
+    item.key === approval.key ||
+    (
+      Boolean(item.bridgeKey) &&
+      Boolean(approval.bridgeKey) &&
+      item.bridgeKey === approval.bridgeKey &&
+      (item.turnId === approval.turnId || canvasCommandApprovalEnvelopesMatch(item.envelopes, approval.envelopes))
+    ) ||
+    (
+      Boolean(item.turnId) &&
+      Boolean(approval.turnId) &&
+      item.turnId === approval.turnId &&
+      canvasCommandApprovalEnvelopesMatch(item.envelopes, approval.envelopes)
+    ),
+  );
+  if (index < 0) return [...current, approval];
+  const next = [...current];
+  const previous = next[index];
+  next[index] = {
+    ...previous,
+    ...approval,
+    id: previous.id,
+    messageId: approval.messageId || previous.messageId,
+    turnId: approval.turnId ?? previous.turnId,
+    bridgeKey: approval.bridgeKey ?? previous.bridgeKey,
+    anchorTextPrefix: previous.anchorTextPrefix ?? approval.anchorTextPrefix,
+    surfaceOrder: previous.surfaceOrder ?? approval.surfaceOrder,
+  };
+  return next;
+}
+
+export const mergePendingCanvasCommandApprovalForTest = mergePendingCanvasCommandApproval;
+
+function removePendingCanvasCommandApproval(
+  current: PendingCanvasCommandApproval[],
+  approval: PendingCanvasCommandApproval,
+): PendingCanvasCommandApproval[] {
+  const next = current.filter((item) => {
+    if (item.id === approval.id || item.key === approval.key) return false;
+    if (approval.bridgeKey && item.bridgeKey === approval.bridgeKey) return false;
+    return true;
+  });
+  return next.length === current.length ? current : next;
+}
+
+function removePendingCanvasCommandApprovalsForResult(
+  current: PendingCanvasCommandApproval[],
+  detail: CanvasCommandResultEventDetail,
+): PendingCanvasCommandApproval[] {
+  const resultKey = canvasCommandApprovalKey(
+    detail.bridgeKey,
+    detail.turnId,
+    detail.envelopes ?? [],
+    detail.receivedAt,
+  );
+  const serializedEnvelopes = (() => {
+    try {
+      return detail.envelopes ? JSON.stringify(detail.envelopes) : null;
+    } catch {
+      return null;
+    }
+  })();
+  const next = current.filter((approval) => {
+    if (
+      detail.bridgeKey &&
+      approval.bridgeKey === detail.bridgeKey &&
+      (!detail.turnId || approval.turnId === detail.turnId)
+    ) return false;
+    if (approval.key === resultKey) return false;
+    if (detail.turnId && approval.turnId === detail.turnId && serializedEnvelopes) {
+      try {
+        if (JSON.stringify(approval.envelopes) === serializedEnvelopes) return false;
+      } catch {
+        return true;
+      }
+    }
+    return true;
+  });
+  return next.length === current.length ? current : next;
+}
+
+function removeCompletedPendingCanvasCommandApprovals(
+  current: PendingCanvasCommandApproval[],
+  feedbackByMessageId: Record<string, CanvasCommandFeedback[]>,
+  persistedFeedbackByMessageId: Record<string, CanvasCommandFeedback[]>,
+): PendingCanvasCommandApproval[] {
+  if (current.length === 0) return current;
+  const completedKeys = new Set<string>();
+  const collect = (records: Record<string, CanvasCommandFeedback[]>) => {
+    for (const feedbacks of Object.values(records)) {
+      for (const feedback of feedbacks) completedKeys.add(feedback.key);
+    }
+  };
+  collect(feedbackByMessageId);
+  collect(persistedFeedbackByMessageId);
+  if (completedKeys.size === 0) return current;
+  const next = current.filter((approval) => {
+    if (completedKeys.has(approval.key)) return false;
+    if (approval.bridgeKey && !approval.turnId && completedKeys.has(`bridge:${approval.bridgeKey}`)) return false;
+    return true;
+  });
+  return next.length === current.length ? current : next;
 }
 
 type SuperChatPanelVariant = "default" | "freezone";
@@ -2742,12 +4486,17 @@ type SuperChatPanelVariant = "default" | "freezone";
 interface SuperChatPanelProps {
   variant?: SuperChatPanelVariant;
   freezoneCanvasId?: string | null;
+  canvasId?: string | null;
+  currentCanvasSelection?: Array<Partial<CanvasNodeReferencePreview> & { nodeId: string; label?: string }>;
+  currentCanvasOntologyContext?: unknown;
+  pendingAttachments?: ChatAttachment[];
   onRequestClose?: () => void;
 }
 
 export function SuperChatPanel({
   variant = "default",
   freezoneCanvasId = null,
+  canvasId = null,
   onRequestClose,
 }: SuperChatPanelProps = {}) {
   const { t } = useTranslation();
@@ -2786,29 +4535,86 @@ export function SuperChatPanel({
   const historyScrollKeyRef = useRef<string | null>(null);
   const composerShellRef = useRef<HTMLDivElement | null>(null);
   const composerBeamRef = useRef<BorderBeamController | null>(null);
+  const canvasCommandModeButtonRef = useRef<HTMLButtonElement | null>(null);
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
   const taskEventBus = useEventBus();
   const canvasNodes = useCanvasStore((state) => state.nodes);
+  const canvasEdges = useCanvasStore((state) => state.edges);
   const selectedCanvasNodeId = useCanvasStore((state) => state.selectedNodeId);
   const chat = useSuperChat({
     project: params.project,
     displayName: username || "SuperTale",
     surface: variant === "freezone" ? "freezone" : undefined,
+    freezoneCanvasId: variant === "freezone" ? freezoneCanvasId ?? canvasId : null,
   });
+  const [pendingCanvasCommandApprovals, setPendingCanvasCommandApprovals] = useState<PendingCanvasCommandApproval[]>([]);
+  const [canvasCommandFeedbackByMessageId, setCanvasCommandFeedbackByMessageId] = useState<Record<string, CanvasCommandFeedback[]>>({});
+  const [canvasContextActivitiesByMessageId, setCanvasContextActivitiesByMessageId] = useState<Record<string, CanvasContextActivity[]>>({});
+  const [executingCanvasCommandApprovalIds, setExecutingCanvasCommandApprovalIds] = useState<Set<string>>(() => new Set());
+  const executingCanvasCommandApprovalIdsRef = useRef<Set<string>>(new Set());
+  const appliedCanvasCommandApprovalKeysRef = useRef<Set<string>>(new Set());
+  const [canvasCommandExecutionMode, setCanvasCommandExecutionMode] = useState<CanvasCommandExecutionMode>(() => loadCanvasCommandExecutionMode());
+  const [canvasCommandModeMenuOpen, setCanvasCommandModeMenuOpen] = useState(false);
+  const [canvasCommandModeMenuPosition, setCanvasCommandModeMenuPosition] = useState<{
+    left: number;
+    bottom: number;
+  } | null>(null);
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 
   const isFreezoneLayout = variant === "freezone";
-  const hasSendableContent = draft.trim().length > 0 || attachments.length > 0;
-  const canSend = hasSendableContent && chat.connected && !preparingSend;
-  const composerWaiting = chat.busy && (!hasSendableContent || !chat.connected || preparingSend);
   const selectedFreezoneNodes = useMemo(
     () => (isFreezoneLayout ? getSelectedFreezoneNodes(canvasNodes, selectedCanvasNodeId) : []),
     [canvasNodes, isFreezoneLayout, selectedCanvasNodeId],
   );
+  const selectedFreezoneNodeAttachment = useMemo(() => {
+    if (!isFreezoneLayout || selectedFreezoneNodes.length === 0) return null;
+    const project = params.project?.trim();
+    const currentCanvasId = freezoneCanvasId ?? canvasId;
+    if (!project || !currentCanvasId) return null;
+    return buildCanvasNodeReferenceAttachment(
+      project,
+      currentCanvasId,
+      selectedFreezoneNodes,
+      canvasEdges,
+      canvasNodes,
+      { displayNodes: selectedFreezoneNodes },
+    );
+  }, [
+    canvasEdges,
+    canvasId,
+    canvasNodes,
+    freezoneCanvasId,
+    isFreezoneLayout,
+    params.project,
+    selectedFreezoneNodes,
+  ]);
+  const existingCanvasNodeIds = useMemo(
+    () => new Set(canvasNodes.map((node) => node.id)),
+    [canvasNodes],
+  );
+  const hasSelectedFreezoneNodeContext = Boolean(selectedFreezoneNodeAttachment);
+  const hasSendableContent =
+    draft.trim().length > 0 || attachments.length > 0 || hasSelectedFreezoneNodeContext;
+  const canSend = hasSendableContent && chat.connected && !preparingSend;
+  const composerWaiting = chat.busy && (!hasSendableContent || !chat.connected || preparingSend);
   const selectedFreezoneNodePreviews = useMemo(
     () => selectedFreezoneNodes.map((node) => canvasNodeToReferencePreview(node)),
     [selectedFreezoneNodes],
   );
+  const deselectFreezoneNodeReferences = useCallback((nodeIds: ReadonlySet<string>) => {
+    if (!isFreezoneLayout) return;
+    if (nodeIds.size === 0) return;
+    const store = useCanvasStore.getState();
+    store.onNodesChange([...nodeIds].map((nodeId) => ({ id: nodeId, type: "select", selected: false })));
+    const remainingSelected = useCanvasStore
+      .getState()
+      .nodes
+      .filter((node) => Boolean(node.selected) && !nodeIds.has(node.id));
+    store.setSelectedNode(remainingSelected.length === 1 ? remainingSelected[0]?.id ?? null : null);
+  }, [isFreezoneLayout]);
+  const deselectFreezoneNodeReference = useCallback((nodeId: string) => {
+    deselectFreezoneNodeReferences(new Set([nodeId]));
+  }, [deselectFreezoneNodeReferences]);
   const activeMessages = useMemo(
     () =>
       chat.messages.filter(
@@ -2816,6 +4622,84 @@ export function SuperChatPanel({
       ),
     [chat.deletedIds, chat.messages, chat.settings.showToolEvents],
   );
+  const persistedCanvasCommandFeedbackByMessageId = useMemo(() => {
+    const byMessageId: Record<string, CanvasCommandFeedback[]> = {};
+    if (variant !== "freezone") return byMessageId;
+    for (const message of chat.messages) {
+      const feedbacks = canvasCommandFeedbacksFromUiEvents(messageUiEvents(message));
+      if (feedbacks.length === 0) continue;
+      mergeCanvasCommandFeedbackRecord(byMessageId, message.id, feedbacks);
+      mergeCanvasCommandFeedbackRecord(byMessageId, message.turnId, feedbacks);
+    }
+    return byMessageId;
+  }, [chat.messages, variant]);
+  const latestAssistantMessageId = useMemo(
+    () => [...activeMessages].reverse().find((message) => message.role === "assistant")?.id ?? null,
+    [activeMessages],
+  );
+  const effectiveFreezoneCanvasId = variant === "freezone" ? freezoneCanvasId ?? canvasId ?? null : null;
+  const chatScopeKey = `${params.project ?? ""}:${variant}:${effectiveFreezoneCanvasId ?? ""}`;
+
+  useEffect(() => {
+    saveCanvasCommandExecutionMode(canvasCommandExecutionMode);
+  }, [canvasCommandExecutionMode]);
+
+  useEffect(() => {
+    if (variant !== "freezone") return;
+    setPendingCanvasCommandApprovals((current) =>
+      removeCompletedPendingCanvasCommandApprovals(
+        current,
+        canvasCommandFeedbackByMessageId,
+        persistedCanvasCommandFeedbackByMessageId,
+      ),
+    );
+  }, [canvasCommandFeedbackByMessageId, persistedCanvasCommandFeedbackByMessageId, variant]);
+
+  const setCanvasExecutionMode = useCallback((mode: CanvasCommandExecutionMode) => {
+    setCanvasCommandExecutionMode(mode);
+    saveCanvasCommandExecutionMode(mode);
+    setCanvasCommandModeMenuOpen(false);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!canvasCommandModeMenuOpen) {
+      setCanvasCommandModeMenuPosition(null);
+      return;
+    }
+    const updatePosition = () => {
+      const button = canvasCommandModeButtonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const menuWidth = 288;
+      setCanvasCommandModeMenuPosition({
+        left: Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8)),
+        bottom: Math.max(8, window.innerHeight - rect.top + 8),
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [canvasCommandModeMenuOpen]);
+
+  useEffect(() => {
+    if (!canvasCommandModeMenuOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (canvasCommandModeButtonRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-canvas-command-mode-menu='true']")) return;
+      setCanvasCommandModeMenuOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [canvasCommandModeMenuOpen]);
+
   const userMessageHistory = useMemo(
     () =>
       activeMessages
@@ -2848,6 +4732,411 @@ export function SuperChatPanel({
       void chat.appendNotification(text);
     });
   }, [chat.appendNotification, params.project, t, taskEventBus]);
+
+  const appendCanvasCommandFeedback = useCallback((
+    messageId: string,
+    feedbackKey: string,
+    result: Pick<CanvasChatCommandApplyResult, "applied" | "openedUiActions" | "errors" | "commandResults">,
+    plans: CanvasCommandPlan[] = [],
+    anchorTextPrefix?: string | null,
+    surfaceOrder?: number,
+  ) => {
+    setCanvasCommandFeedbackByMessageId((current) => ({
+      ...current,
+      [messageId]: appendCanvasCommandFeedbackCard(
+        current[messageId],
+        feedbackKey,
+        result,
+        plans,
+        anchorTextPrefix,
+        surfaceOrder,
+      ),
+    }));
+  }, []);
+
+  const buildApprovalFromDetail = useCallback((detail: CanvasCommandApprovalEventDetail): PendingCanvasCommandApproval | null => {
+    if (variant === "freezone" && detail.canvasId && effectiveFreezoneCanvasId && detail.canvasId !== effectiveFreezoneCanvasId) {
+      return null;
+    }
+    const turnId = detail.turnId ?? null;
+    const bridgeKey = detail.bridgeKey ?? null;
+    const messageId = resolveCanvasCommandApprovalMessageId({
+      anchorMessageId: detail.anchorMessageId,
+      messages: activeMessages,
+      turnId,
+      latestAssistantMessageId,
+      receivedAt: detail.receivedAt,
+    });
+    const key = canvasCommandApprovalKey(bridgeKey, turnId, detail.envelopes, detail.receivedAt);
+    const commandCount = detail.envelopes.reduce((sum, envelope) => sum + envelope.commands.length, 0);
+    return {
+      id: key,
+      key,
+      messageId,
+      turnId,
+      bridgeKey,
+      anchorTextPrefix: detail.anchorTextPrefix,
+      surfaceOrder: detail.receivedAt,
+      envelopes: detail.envelopes,
+      commandCount,
+      plans: canvasCommandPlansFromEnvelopes(detail.envelopes),
+    };
+  }, [activeMessages, effectiveFreezoneCanvasId, latestAssistantMessageId, variant]);
+
+  const handleCanvasCommandApproval = useCallback((detail: CanvasCommandApprovalEventDetail) => {
+    const approval = buildApprovalFromDetail(detail);
+    if (!approval) return false;
+    setPendingCanvasCommandApprovals((current) => mergePendingCanvasCommandApproval(current, approval));
+    return true;
+  }, [buildApprovalFromDetail]);
+
+  useEffect(() => subscribeCanvasCommandApprovals(handleCanvasCommandApproval), [handleCanvasCommandApproval]);
+
+  useEffect(() => {
+    const handleEvent = (event: Event) => {
+      handleCanvasCommandApproval((event as CustomEvent<CanvasCommandApprovalEventDetail>).detail);
+    };
+    window.addEventListener(FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT, handleEvent);
+    return () => window.removeEventListener(FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT, handleEvent);
+  }, [handleCanvasCommandApproval]);
+
+  const handleCanvasCommandResult = useCallback((detail: CanvasCommandResultEventDetail) => {
+    if (variant === "freezone" && detail.canvasId && effectiveFreezoneCanvasId && detail.canvasId !== effectiveFreezoneCanvasId) {
+      return;
+    }
+    const turnId = detail.turnId ?? null;
+    const messageId = detail.anchorMessageId
+      ?? findCanvasCommandFeedbackMessageId(activeMessages, turnId)
+      ?? latestAssistantMessageId
+      ?? `canvas-command-result:${detail.receivedAt ?? Date.now()}`;
+    const feedbackKey = canvasCommandFeedbackKey(detail.bridgeKey, turnId, detail.receivedAt);
+    appendCanvasCommandFeedback(
+      messageId,
+      feedbackKey,
+      detail.result,
+      canvasCommandPlansFromEnvelopes(detail.envelopes),
+      detail.anchorTextPrefix,
+      detail.receivedAt,
+    );
+    setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApprovalsForResult(current, detail));
+  }, [activeMessages, appendCanvasCommandFeedback, effectiveFreezoneCanvasId, latestAssistantMessageId, variant]);
+
+  useEffect(() => {
+    const handleEvent = (event: Event) => {
+      handleCanvasCommandResult((event as CustomEvent<CanvasCommandResultEventDetail>).detail);
+    };
+    window.addEventListener(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, handleEvent);
+    return () => window.removeEventListener(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, handleEvent);
+  }, [handleCanvasCommandResult]);
+
+  useEffect(() => {
+    if (variant !== "freezone" || !effectiveFreezoneCanvasId) return;
+    const canvasIdForRequest = effectiveFreezoneCanvasId;
+
+    const handleCanvasContextRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        bridge_key?: string | null;
+        canvas_id?: string | null;
+        turn_id?: string | null;
+        envelope?: unknown;
+        anchorMessageId?: string | null;
+        anchorTextPrefix?: string | null;
+      }>).detail;
+      if (!detail?.bridge_key) return;
+      const bridgeKey = detail.bridge_key;
+      const requestCanvasId = typeof detail.canvas_id === "string" && detail.canvas_id.trim()
+        ? detail.canvas_id
+        : canvasIdForRequest;
+      if (requestCanvasId !== canvasIdForRequest) return;
+      const turnId = typeof detail.turn_id === "string" && detail.turn_id.trim()
+        ? detail.turn_id
+        : chat.activeTurnId;
+      const labels = canvasContextLabelsFromTypes(collectCanvasContextRequestTypes(detail.envelope));
+      const anchorTextPrefix =
+        typeof detail.anchorTextPrefix === "string"
+          ? detail.anchorTextPrefix
+          : turnId && turnId === chat.activeTurnId && chat.streamText
+            ? chat.streamText
+            : null;
+      const surfaceOrder = Date.now();
+      if (turnId) {
+        setCanvasContextActivitiesByMessageId((current) => ({
+          ...current,
+          [turnId]: mergeCanvasContextActivity(current[turnId], {
+            key: `context:${bridgeKey}`,
+            turnId,
+            bridgeKey,
+            status: "running",
+            labels,
+            errors: [],
+            anchorTextPrefix,
+            surfaceOrder,
+          }),
+        }));
+      }
+    };
+
+    window.addEventListener(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, handleCanvasContextRequest);
+    return () => {
+      window.removeEventListener(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, handleCanvasContextRequest);
+    };
+  }, [
+    chat.activeTurnId,
+    chat.streamText,
+    effectiveFreezoneCanvasId,
+    variant,
+  ]);
+
+  useEffect(() => {
+    const handleCanvasContextActivity = (event: Event) => {
+      const detail = (event as CustomEvent<CanvasContextActivityPayload>).detail;
+      if (variant === "freezone" && detail.canvas_id && effectiveFreezoneCanvasId && detail.canvas_id !== effectiveFreezoneCanvasId) return;
+      const messageId = detail.turn_id
+        ? activeMessages.find((message) => message.turnId === detail.turn_id && message.role === "assistant")?.id ?? `assistant-${detail.turn_id}`
+        : latestAssistantMessageId ?? `canvas-context:${detail.received_at ?? Date.now()}`;
+      const activity: CanvasContextActivity = {
+        key: `context:${detail.bridge_key}`,
+        turnId: detail.turn_id ?? null,
+        bridgeKey: detail.bridge_key,
+        status: detail.status,
+        labels: detail.labels,
+        errors: detail.errors,
+        anchorTextPrefix: detail.anchor_text_prefix,
+        surfaceOrder: detail.surface_order ?? detail.received_at,
+      };
+      setCanvasContextActivitiesByMessageId((current) => ({
+        ...current,
+        [messageId]: mergeCanvasContextActivity(current[messageId], activity),
+      }));
+    };
+    const handleCanvasContextResult = (event: Event) => {
+      const detail = (event as CustomEvent<CanvasContextToolResultPayload>).detail;
+      if (!detail?.bridge_key) return;
+      if (variant === "freezone" && detail.canvas_id && effectiveFreezoneCanvasId && detail.canvas_id !== effectiveFreezoneCanvasId) return;
+      const labels = canvasContextLabelsFromResponses(detail.responses);
+      const fallbackTurnId =
+        typeof detail.turn_id === "string" && detail.turn_id.trim()
+          ? detail.turn_id
+          : null;
+      const fallbackMessageId = fallbackTurnId
+        ? activeMessages.find((message) => message.turnId === fallbackTurnId && message.role === "assistant")?.id ?? fallbackTurnId
+        : latestAssistantMessageId ?? `canvas-context:${detail.received_at ?? Date.now()}`;
+      const activity: CanvasContextActivity = {
+        key: `context:${detail.bridge_key}`,
+        turnId: fallbackTurnId,
+        bridgeKey: detail.bridge_key,
+        status: detail.ok ? "done" : "failed",
+        labels,
+        errors: detail.errors ?? [],
+        anchorTextPrefix: detail.anchor_text_prefix ?? null,
+        surfaceOrder: detail.received_at ?? Date.now(),
+      };
+      setCanvasContextActivitiesByMessageId((current) => {
+        const next = { ...current };
+        let updated = false;
+        for (const [messageId, activities] of Object.entries(current)) {
+          if (!activities.some((item) => item.bridgeKey === detail.bridge_key)) continue;
+          next[messageId] = mergeCanvasContextActivity(activities, activity);
+          updated = true;
+        }
+        if (!updated) {
+          next[fallbackMessageId] = mergeCanvasContextActivity(current[fallbackMessageId], activity);
+        }
+        return next;
+      });
+    };
+    window.addEventListener(FREEZONE_CANVAS_CONTEXT_ACTIVITY_EVENT, handleCanvasContextActivity);
+    window.addEventListener(FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT, handleCanvasContextResult);
+    return () => {
+      window.removeEventListener(FREEZONE_CANVAS_CONTEXT_ACTIVITY_EVENT, handleCanvasContextActivity);
+      window.removeEventListener(FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT, handleCanvasContextResult);
+    };
+  }, [activeMessages, effectiveFreezoneCanvasId, latestAssistantMessageId, variant]);
+
+  const persistCanvasCommandUiEvent = useCallback((
+    turnId: string | null | undefined,
+    event: Record<string, unknown>,
+  ) => {
+    if (!params.project || !effectiveFreezoneCanvasId || !turnId) return;
+    void api.post("api/v1/chat/ui-events", {
+      json: {
+        scope: {
+          kind: "project",
+          id: params.project,
+          surface: "freezone",
+          canvasId: effectiveFreezoneCanvasId,
+        },
+        turn_id: turnId,
+        event,
+      },
+    }).catch((error) => {
+      console.warn("[freezone-canvas-command] failed to persist superchat canvas event", {
+        canvasId: effectiveFreezoneCanvasId,
+        turnId,
+        error,
+      });
+    });
+  }, [effectiveFreezoneCanvasId, params.project]);
+
+  const handleApplyCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval) => {
+    if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
+    executingCanvasCommandApprovalIdsRef.current.add(approval.id);
+    setExecutingCanvasCommandApprovalIds(new Set(executingCanvasCommandApprovalIdsRef.current));
+    void (async () => {
+      const receivedAt = Date.now();
+      try {
+        const applyKey = canvasCommandApprovalApplyKey(approval);
+        const canRepeatApproval = canvasCommandApprovalCanRepeat(approval);
+        if (!canRepeatApproval && appliedCanvasCommandApprovalKeysRef.current.has(applyKey)) {
+          setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApproval(current, approval));
+          return;
+        }
+        if (!canRepeatApproval) {
+          appliedCanvasCommandApprovalKeysRef.current.add(applyKey);
+          if (appliedCanvasCommandApprovalKeysRef.current.size > 100) {
+            appliedCanvasCommandApprovalKeysRef.current = new Set(
+              [...appliedCanvasCommandApprovalKeysRef.current].slice(-50),
+            );
+          }
+        }
+
+        let result: CanvasChatCommandApplyResult;
+        try {
+          result = await applyCanvasChatCommandsAsync(approval.envelopes, {
+            projectId: params.project,
+            canvasId: effectiveFreezoneCanvasId,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          const errorMessage = `画布命令执行异常：${message}`;
+          result = {
+            applied: 0,
+            openedUiActions: 0,
+            createdNodeIds: [],
+            errors: [errorMessage],
+            commandResults: [
+              {
+                commandIndex: -1,
+                type: "validate",
+                status: "error",
+                label: "画布执行异常",
+                error: errorMessage,
+              },
+            ],
+          };
+        }
+
+        reportCanvasCommandToolResult({
+          bridgeKey: approval.bridgeKey,
+          turnId: approval.turnId,
+          anchorTextPrefix: approval.anchorTextPrefix,
+          projectId: params.project,
+          canvasId: effectiveFreezoneCanvasId,
+          result,
+        });
+        const feedbackKey = canvasCommandFeedbackKey(approval.bridgeKey, approval.turnId, undefined, approval.key);
+        appendCanvasCommandFeedback(
+          approval.messageId,
+          feedbackKey,
+          result,
+          approval.plans,
+          approval.anchorTextPrefix,
+          receivedAt,
+        );
+        if (approval.turnId) {
+          appendCanvasCommandFeedback(
+            approval.turnId,
+            feedbackKey,
+            result,
+            approval.plans,
+            approval.anchorTextPrefix,
+            receivedAt,
+          );
+        }
+        persistCanvasCommandUiEvent(approval.turnId, {
+          schema_version: "canvas_command_result.v1",
+          type: "canvas_command_result",
+          canvas_id: effectiveFreezoneCanvasId,
+          bridge_key: approval.bridgeKey ?? null,
+          envelopes: approval.envelopes,
+          result,
+          anchor_text_prefix: approval.anchorTextPrefix ?? null,
+          received_at: receivedAt,
+        });
+        setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApproval(current, approval));
+      } finally {
+        executingCanvasCommandApprovalIdsRef.current.delete(approval.id);
+        setExecutingCanvasCommandApprovalIds(new Set(executingCanvasCommandApprovalIdsRef.current));
+      }
+    })();
+  }, [appendCanvasCommandFeedback, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent]);
+
+  const handleCancelCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval) => {
+    if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
+    const receivedAt = Date.now();
+    const result: CanvasChatCommandApplyResult = {
+      applied: 0,
+      openedUiActions: 0,
+      createdNodeIds: [],
+      errors: [t("freezone.chat.canvasCommandsCancelled")],
+      commandResults: [
+        {
+          commandIndex: -1,
+          type: "validate",
+          status: "error",
+          label: "已取消",
+          error: t("freezone.chat.canvasCommandsCancelled"),
+        },
+      ],
+    };
+    reportCanvasCommandToolResult({
+      bridgeKey: approval.bridgeKey,
+      turnId: approval.turnId,
+      anchorTextPrefix: approval.anchorTextPrefix,
+      projectId: params.project,
+      canvasId: effectiveFreezoneCanvasId,
+      result,
+      cancelled: true,
+    });
+    const feedbackKey = canvasCommandFeedbackKey(approval.bridgeKey, approval.turnId, undefined, approval.key);
+    persistCanvasCommandUiEvent(approval.turnId, {
+      schema_version: "canvas_command_result.v1",
+      type: "canvas_command_result",
+      canvas_id: effectiveFreezoneCanvasId,
+      bridge_key: approval.bridgeKey ?? null,
+      envelopes: approval.envelopes,
+      result,
+      anchor_text_prefix: approval.anchorTextPrefix ?? null,
+      received_at: receivedAt,
+      cancelled: true,
+    });
+    appendCanvasCommandFeedback(
+      approval.messageId,
+      feedbackKey,
+      result,
+      approval.plans,
+      approval.anchorTextPrefix,
+      receivedAt,
+    );
+    if (approval.turnId) {
+      appendCanvasCommandFeedback(
+        approval.turnId,
+        feedbackKey,
+        result,
+        approval.plans,
+        approval.anchorTextPrefix,
+        receivedAt,
+      );
+    }
+    setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApproval(current, approval));
+  }, [appendCanvasCommandFeedback, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent, t]);
+
+  useEffect(() => {
+    if (canvasCommandExecutionMode !== "auto_execute") return;
+    for (const approval of pendingCanvasCommandApprovals) {
+      if (!executingCanvasCommandApprovalIds.has(approval.id)) handleApplyCanvasCommandApproval(approval);
+    }
+  }, [canvasCommandExecutionMode, executingCanvasCommandApprovalIds, handleApplyCanvasCommandApproval, pendingCanvasCommandApprovals]);
 
   const searchQuery = search.trim().toLowerCase();
   const visibleMessages = useMemo(
@@ -2911,9 +5200,38 @@ export function SuperChatPanel({
       message.id === currentStreamingAssistantId
       || (lastConversationalMessage?.role === "assistant" && message.id === lastConversationalMessage.id)
     );
+  const thinkingCanvasContextActivity = useMemo(() => {
+    if (variant !== "freezone" || !chat.busy || !chat.activeTurnId || chat.streamText.trim()) return null;
+    const turnId = chat.activeTurnId;
+    const hasAssistantText = activeMessages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.turnId === turnId &&
+        message.text.trim().length > 0,
+    );
+    if (hasAssistantText) return null;
+    const hasContextActivity = (canvasContextActivitiesByMessageId[turnId]?.length ?? 0) > 0;
+    const hasFeedback =
+      (canvasCommandFeedbackByMessageId[turnId]?.length ?? 0) > 0 ||
+      (persistedCanvasCommandFeedbackByMessageId[turnId]?.length ?? 0) > 0;
+    const hasPendingApproval = pendingCanvasCommandApprovals.some((approval) => approval.turnId === turnId);
+    if (hasContextActivity || hasFeedback || hasPendingApproval) return null;
+    return createThinkingCanvasContextActivity(turnId);
+  }, [
+    activeMessages,
+    canvasCommandFeedbackByMessageId,
+    canvasContextActivitiesByMessageId,
+    chat.activeTurnId,
+    chat.busy,
+    chat.streamText,
+    pendingCanvasCommandApprovals,
+    persistedCanvasCommandFeedbackByMessageId,
+    variant,
+  ]);
   const showWaitingIndicator =
     chat.busy
     && !chat.streamText.trim()
+    && !thinkingCanvasContextActivity
     && (
       composerWaiting
       || (
@@ -2993,7 +5311,7 @@ export function SuperChatPanel({
     setSelectedHistoryMessageIndex(null);
     setUploadedIngestFiles(loadUploadedIngestFiles(params.project?.trim()));
     setReingestConfirmation(null);
-  }, [params.project]);
+  }, [chatScopeKey, params.project]);
 
   const recordUploadedFiles = useCallback(
     (project: string | undefined, prepared: PreparedIngestAttachment[]): UploadedIngestFile[] => {
@@ -3013,11 +5331,21 @@ export function SuperChatPanel({
   const sendWithIngestAutomation = useCallback(
     async (text: string, messageAttachments: ChatAttachment[]): Promise<boolean> => {
       let nextText = text;
-      let transportAttachments = messageAttachments;
+      const safeMessageAttachments =
+        variant === "freezone"
+          ? pruneCanvasNodeReferenceAttachments(messageAttachments, existingCanvasNodeIds)
+          : messageAttachments;
+      const canvasReferenceContext =
+        variant === "freezone" ? buildCanvasNodeReferenceContext(safeMessageAttachments) : null;
+      const canvasReferenceAttachments = safeMessageAttachments.filter(isCanvasNodeReferenceAttachment);
+      const ordinaryAttachments = safeMessageAttachments.filter(
+        (attachment) => !isCanvasNodeReferenceAttachment(attachment),
+      );
+      let transportAttachments = safeMessageAttachments;
       let contextUploadedFiles = uploadedIngestFiles;
       const project = params.project?.trim();
       const videoIntent = VIDEO_CREATION_RE.test(text);
-      const hasNovelAttachments = messageAttachments.some(isNovelAttachment);
+      const hasNovelAttachments = ordinaryAttachments.some(isNovelAttachment);
 
       if (reingestConfirmation) {
         if (reingestConfirmation.stage === "choose_overwrite") {
@@ -3069,7 +5397,7 @@ export function SuperChatPanel({
           });
           toast.success(t("aiAssistant.ingestAutomationStarted", { filename: reingestConfirmation.filename }));
           setReingestConfirmation(null);
-          return chat.send(text, [], nextText);
+          return chat.send(text, canvasReferenceAttachments, nextText);
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           toast.error(t("aiAssistant.ingestAutomationFailed", { message }));
@@ -3088,11 +5416,11 @@ export function SuperChatPanel({
 
         setPreparingSend(true);
         try {
-          const prepared = await uploadAttachmentsForIngest(project, messageAttachments, t);
+          const prepared = await uploadAttachmentsForIngest(project, ordinaryAttachments, t);
           surfaceFormatCheckWarnings(prepared, t, (formatCheck, filename) =>
             setFormatCheckDetails({ formatCheck, filename }),
           );
-          transportAttachments = prepared.map((item) => item.attachment);
+          transportAttachments = [...prepared.map((item) => item.attachment), ...canvasReferenceAttachments];
           contextUploadedFiles = recordUploadedFiles(project, prepared);
           const uploaded = prepared.find((item) => item.upload)?.upload;
           if (!uploaded) {
@@ -3168,16 +5496,16 @@ export function SuperChatPanel({
         } finally {
           setPreparingSend(false);
         }
-      } else if (messageAttachments.length > 0) {
+      } else if (ordinaryAttachments.length > 0) {
         setPreparingSend(true);
         try {
           const prepared = project
-            ? await uploadAttachmentsForIngest(project, messageAttachments, t)
-            : messageAttachments.map((attachment) => ({ attachment, original: attachment }));
+            ? await uploadAttachmentsForIngest(project, ordinaryAttachments, t)
+            : ordinaryAttachments.map((attachment) => ({ attachment, original: attachment }));
           surfaceFormatCheckWarnings(prepared, t, (formatCheck, filename) =>
             setFormatCheckDetails({ formatCheck, filename }),
           );
-          transportAttachments = prepared.map((item) => item.attachment);
+          transportAttachments = [...prepared.map((item) => item.attachment), ...canvasReferenceAttachments];
           contextUploadedFiles = recordUploadedFiles(project, prepared);
           const context = await buildAttachmentAnalysisContext(
             project,
@@ -3196,23 +5524,22 @@ export function SuperChatPanel({
         );
       }
 
-      if (variant === "freezone") {
-        const state = useCanvasStore.getState();
-        const selectedNodes = getSelectedFreezoneNodes(state.nodes, state.selectedNodeId);
-        const canvasContext = buildFreezoneCanvasNodeReferencesContext({
-          project,
-          canvasId: freezoneCanvasId,
-          nodes: selectedNodes,
-          edges: state.edges,
-        });
-        if (canvasContext) {
-          nextText = appendAttachmentAnalysisContext(nextText, canvasContext);
-        }
+      if (canvasReferenceContext) {
+        nextText = appendAttachmentAnalysisContext(nextText, canvasReferenceContext);
       }
 
       return chat.send(text, transportAttachments, nextText);
     },
-    [chat, freezoneCanvasId, params.project, recordUploadedFiles, reingestConfirmation, t, uploadedIngestFiles, variant],
+    [
+      chat,
+      existingCanvasNodeIds,
+      params.project,
+      recordUploadedFiles,
+      reingestConfirmation,
+      t,
+      uploadedIngestFiles,
+      variant,
+    ],
   );
 
   useEffect(() => {
@@ -3277,15 +5604,27 @@ export function SuperChatPanel({
   }, [draft]);
 
   const submit = () => {
-    const hasCurrentContent = draft.trim().length > 0 || attachments.length > 0;
+    const messageAttachments = selectedFreezoneNodeAttachment
+      ? mergeCanvasNodeReferenceAttachments([...attachments, selectedFreezoneNodeAttachment])
+      : attachments;
+    const hasCurrentContent = draft.trim().length > 0 || messageAttachments.length > 0;
     if (!hasCurrentContent || preparingSend) return;
     if (!chat.connected) {
       toast.error(t("aiAssistant.waiting"));
       return;
     }
     setSelectedHistoryMessageIndex(null);
-    const text = draft.trim() || t("aiAssistant.attachmentOnlyPrompt");
-    const queuedAttachments = attachments.map((attachment) => ({ ...attachment }));
+    const hasOnlyCanvasReferences =
+      draft.trim().length === 0
+      && messageAttachments.length > 0
+      && messageAttachments.every(isCanvasNodeReferenceAttachment);
+    const text = draft.trim() || (
+      hasOnlyCanvasReferences
+        ? t("aiAssistant.canvasReferenceOnlyPrompt")
+        : t("aiAssistant.attachmentOnlyPrompt")
+    );
+    const queuedAttachments = messageAttachments.map((attachment) => ({ ...attachment }));
+    const sentCanvasNodeIds = new Set(queuedAttachments.flatMap(canvasNodeReferenceAttachmentNodeIds));
     if (chat.busy) {
       setQueuedMessages((current) => [
         ...current,
@@ -3298,12 +5637,14 @@ export function SuperChatPanel({
       ]);
       setDraft("");
       setAttachments([]);
+      deselectFreezoneNodeReferences(sentCanvasNodeIds);
       return;
     }
     void sendWithIngestAutomation(text, queuedAttachments).then((sent) => {
       if (!sent) return;
       setDraft("");
       setAttachments([]);
+      deselectFreezoneNodeReferences(sentCanvasNodeIds);
     });
   };
 
@@ -3591,6 +5932,24 @@ export function SuperChatPanel({
                       onTogglePin={chat.togglePin}
                       deferStructuredRender={deferStructuredRender && isCurrentStreamingAssistantMessage(message)}
                       streaming={isStreamingAssistantMessage(message)}
+                      canvasCommandApprovals={pendingCanvasCommandApprovals.filter(
+                        (approval) => approval.messageId === message.id || (approval.turnId && approval.turnId === message.turnId),
+                      )}
+                      canvasCommandFeedbacks={mergeCanvasCommandFeedbackSources(
+                        canvasCommandFeedbacksFromUiEvents(messageUiEvents(message)),
+                        mergeCanvasCommandFeedbackSources(
+                          canvasCommandFeedbackByMessageId[message.id],
+                          message.turnId ? canvasCommandFeedbackByMessageId[message.turnId] : undefined,
+                        ),
+                      )}
+                      canvasContextActivities={mergeCanvasContextActivitySources(
+                        canvasContextActivitiesFromUiEvents(messageUiEvents(message)),
+                        canvasContextActivitiesByMessageId[message.id],
+                        message.turnId ? canvasContextActivitiesByMessageId[message.turnId] : undefined,
+                      )}
+                      executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
+                      onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
+                      onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
                     />
                   </div>
                 ))}
@@ -3610,6 +5969,25 @@ export function SuperChatPanel({
                     onTogglePin={() => undefined}
                     deferStructuredRender={deferStructuredRender}
                     streaming={chat.busy}
+                  />
+                )}
+                {thinkingCanvasContextActivity && (
+                  <MessageBubble
+                    message={{
+                      id: thinkingCanvasContextActivity.key,
+                      role: "assistant",
+                      text: "",
+                      timestamp: Date.now(),
+                      turnId: thinkingCanvasContextActivity.turnId ?? undefined,
+                    }}
+                    variant={variant}
+                    onOpenDetail={setDetailMessage}
+                    onOpenMedia={setMediaDetail}
+                    pinned={false}
+                    onDelete={() => undefined}
+                    onTogglePin={() => undefined}
+                    streaming={chat.busy}
+                    canvasContextActivities={[thinkingCanvasContextActivity]}
                   />
                 )}
               </div>
@@ -3764,6 +6142,7 @@ export function SuperChatPanel({
                     <CanvasNodeReferenceThumb
                       key={node.nodeId}
                       node={node}
+                      onRemove={() => deselectFreezoneNodeReference(node.nodeId)}
                     />
                   ))}
                 </div>
@@ -3804,13 +6183,13 @@ export function SuperChatPanel({
                   selectHistoryMessage("newer");
                   return;
                 }
-                if (event.key === "Enter" && !event.shiftKey) {
+                if (shouldSubmitComposerEnter(event)) {
                   event.preventDefault();
                   submit();
                 }
               }}
               dir="auto"
-              placeholder={t("aiAssistant.placeholder")}
+              placeholder={isFreezoneLayout ? t("aiAssistant.freezonePlaceholder") : t("aiAssistant.placeholder")}
               className={cn(
                 "max-h-[220px] min-h-14 resize-none border-0 bg-transparent px-5 py-4 text-base shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent",
                 isFreezoneLayout && "min-h-11 px-3.5 py-3 text-sm",
@@ -3819,6 +6198,30 @@ export function SuperChatPanel({
             />
             <div className="flex items-center justify-between px-3 py-2">
               <div className="flex items-center gap-1">
+                {isFreezoneLayout && (
+                  <div>
+                    <Button
+                      ref={canvasCommandModeButtonRef}
+                      type="button"
+                      variant="ghost"
+                      size="sm"
+                      className="h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+                      onClick={() => setCanvasCommandModeMenuOpen((open) => !open)}
+                    >
+                      {canvasCommandExecutionMode === "manual_confirm" ? (
+                        <>
+                          <ShieldAlert className="size-3.5" />
+                          手动确认
+                        </>
+                      ) : (
+                        <>
+                          <Wrench className="size-3.5" />
+                          自动生成
+                        </>
+                      )}
+                    </Button>
+                  </div>
+                )}
                 {ENABLE_SUPERCHAT_FILE_UPLOAD && (
                   <Button
                     variant="ghost"
@@ -3891,6 +6294,56 @@ export function SuperChatPanel({
         onClose={() => setMediaDetail(null)}
         onOpenMedia={setMediaDetail}
       />
+      {isFreezoneLayout && canvasCommandModeMenuOpen && canvasCommandModeMenuPosition && createPortal(
+        <div
+          data-canvas-command-mode-menu="true"
+          className="fixed z-[1000] w-72 overflow-hidden rounded-xl border border-white/10 bg-popover p-1.5 text-popover-foreground shadow-xl"
+          style={{
+            left: canvasCommandModeMenuPosition.left,
+            bottom: canvasCommandModeMenuPosition.bottom,
+          }}
+        >
+          <button
+            type="button"
+            className={cn(
+              "flex min-h-[58px] w-full items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-white/[0.06]",
+              canvasCommandExecutionMode === "manual_confirm" && "bg-white/[0.08]",
+            )}
+            onClick={() => setCanvasExecutionMode("manual_confirm")}
+          >
+            <ShieldAlert className="mt-0.5 size-4 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">手动确认</span>
+              <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+                Agent 在执行画布命令前都会请求确认
+              </span>
+            </span>
+            <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+              {canvasCommandExecutionMode === "manual_confirm" && <CheckCircle2 className="size-4" />}
+            </span>
+          </button>
+          <button
+            type="button"
+            className={cn(
+              "flex min-h-[58px] w-full items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-white/[0.06]",
+              canvasCommandExecutionMode === "auto_execute" && "bg-white/[0.08]",
+            )}
+            onClick={() => setCanvasExecutionMode("auto_execute")}
+          >
+            <Wrench className="mt-0.5 size-4 shrink-0" />
+            <span className="min-w-0 flex-1">
+              <span className="block text-sm font-medium">自动生成</span>
+              <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+                Agent 会自动执行安全命令并反馈结果
+              </span>
+            </span>
+            <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
+              {canvasCommandExecutionMode === "auto_execute" && <CheckCircle2 className="size-4" />}
+            </span>
+          </button>
+        </div>,
+        document.body,
+      )}
       <FormatCheckDetailsDialog
         formatCheck={formatCheckDetails?.formatCheck ?? null}
         filename={formatCheckDetails?.filename}

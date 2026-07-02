@@ -8,8 +8,28 @@ export type ClientFrame =
       turn_id?: string;
       attachments?: ChatAttachment[];
       surface?: "freezone";
+      context?: {
+        freezone_canvas_id?: string | null;
+      };
     }
-  | { type: "scope.set"; scope: ChatScope }
+  | {
+      type: "scope.set";
+      scope: ChatScope;
+      history_limit?: number;
+      history_before?: string | null;
+    }
+  | {
+      type: "canvas.context.result";
+      turn_id?: string | null;
+      bridge_key: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      tool_call_status?: "completed" | "cancelled" | "failed";
+      ok: boolean;
+      responses?: Array<Record<string, unknown>>;
+      errors?: string[];
+      message?: string | null;
+    }
   | {
       type: "canvas.command.result";
       turn_id?: string | null;
@@ -31,6 +51,8 @@ export type ClientFrame =
 export type ChatScope = {
   kind: "home" | "project" | "freezone" | "asset" | "task";
   id?: string | null;
+  surface?: "director" | "freezone" | null;
+  canvasId?: string | null;
 };
 
 export type RelayInstanceInfo = {
@@ -101,6 +123,7 @@ export type ServerFrame =
       success?: boolean;
       result?: unknown;
       error?: unknown;
+      bridge_key?: string;
     }
   | {
       type: "tool.call";
@@ -108,6 +131,45 @@ export type ServerFrame =
       name?: string;
       input?: unknown;
       raw?: unknown;
+      bridge_key?: string;
+    }
+  | {
+      type: "history.page";
+      scope?: ChatScope;
+      history: unknown[];
+      before?: string | null;
+      has_more?: boolean;
+    }
+  | {
+      type: "canvas.command";
+      turn_id?: string;
+      bridge_key?: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      envelope?: unknown;
+      envelopes?: unknown[];
+      command?: unknown;
+      commands?: unknown[];
+      anchor_text_prefix?: string | null;
+      received_at?: number;
+    }
+  | {
+      type: "canvas.context.request";
+      turn_id?: string;
+      bridge_key?: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      envelope?: unknown;
+      envelopes?: unknown[];
+      request?: unknown;
+      requests?: unknown[];
+      anchor_text_prefix?: string | null;
+      received_at?: number;
+    }
+  | {
+      type: "stop_reason";
+      reason?: string;
+      turn_id?: string;
     }
   | { type: "chat.done"; turn_id?: string; scope?: ChatScope }
   | { type: "project.created"; project: string }
@@ -136,6 +198,7 @@ export type ChatMessage = {
   turnId?: string;
   displayName?: string;
   attachments?: ChatAttachment[];
+  uiEvents?: unknown[];
   timestamp: number;
   raw?: unknown;
 };
