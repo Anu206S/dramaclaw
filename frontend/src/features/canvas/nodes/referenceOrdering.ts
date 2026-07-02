@@ -9,6 +9,45 @@
  * 作为「未手动排序」节点之间的回退次序。chip 显示、图片N/音频N 编号、提交顺序三处
  * 都走这个函数，保证可视顺序与提交顺序始终一致。
  */
+/**
+ * 按「连线顺序」（edges 数组里边的追加顺序）收集某节点的一跳上游节点。
+ *
+ * UI 编号（@图片N / 引用行 chip，走 useUpstreamNodes）与提交时收集 references
+ * 必须用同一个函数：曾经提交侧按 `state.nodes.filter(...)`（节点创建顺序）收集，
+ * 先创建但后连线的节点会被排到 references 前面，prompt 里的 @图片1 在后端就
+ * 指向另一张图（后端按 references 里图片的位置解释 图片N）。
+ */
+export function upstreamNodesInEdgeOrder<T extends { id: string }>(
+  nodes: T[],
+  edges: ReadonlyArray<{ source: string; target: string }>,
+  targetId: string,
+): T[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  return edges
+    .filter((edge) => edge.target === targetId)
+    .map((edge) => byId.get(edge.source))
+    .filter((node): node is T => node !== undefined);
+}
+
+/**
+ * 图片节点提交给后端的参考图有序列表：节点自带参考图（用户直接上传到节点上的）
+ * 排第 1，上游连线的图按序接在后面，URL 去重（自带图与某张上游图同 URL 时保留
+ * 最前的位置）。后端按位置解释 图片N，所以 @图片N 编号、mention 重排基线、提交
+ * 三处必须共用这一份列表 —— 否则自带参考图会占掉第 1 位，让所有 @图片N 偏移 1。
+ */
+export function orderedReferenceUrlsWithOwnFirst(
+  ownReferenceUrl: string | null,
+  upstreamUrls: string[],
+): string[] {
+  return Array.from(
+    new Set(
+      [ownReferenceUrl, ...upstreamUrls].filter(
+        (url): url is string => typeof url === "string" && url.length > 0,
+      ),
+    ),
+  );
+}
+
 export function sortUpstreamByReferenceOrder<T extends { id: string }>(
   nodes: T[],
   referenceOrder: string[] | undefined,
