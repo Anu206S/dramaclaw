@@ -592,15 +592,18 @@ function upsertToolMessage(messages: ChatMessage[], kind: string, payload: unkno
   );
 }
 
-function dispatchCanvasCommandFrame(payload: ServerFrame): void {
+function dispatchCanvasCommandFrame(payload: ServerFrame, anchorTextPrefix?: string | null): void {
   if (typeof window === "undefined" || payload.type !== "canvas.command") return;
   window.dispatchEvent(new CustomEvent(SUPERCHAT_CANVAS_COMMAND_EVENT, {
     detail: {
       frame: payload,
+      anchorTextPrefix: anchorTextPrefix ?? null,
       receivedAt: Date.now(),
     },
   }));
 }
+
+export const dispatchCanvasCommandFrameForTest = dispatchCanvasCommandFrame;
 
 const FREEZONE_CANVAS_CONTEXT_TOOL_REQUEST_TYPES: Record<string, string> = {
   freezone_get_canvas_ontology: "canvas_ontology",
@@ -1034,7 +1037,7 @@ export function useSuperChat({
         }
         break;
       case "canvas.command":
-        dispatchCanvasCommandFrame(frame);
+        dispatchCanvasCommandFrame(frame, streamTextRef.current.trim() ? streamTextRef.current : null);
         break;
       case "canvas.context.request":
         dispatchCanvasContextRequestFrame(frame);

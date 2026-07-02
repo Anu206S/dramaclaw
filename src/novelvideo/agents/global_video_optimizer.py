@@ -540,7 +540,7 @@ Output JSON array with one element directly."""
 
                 dialogue_hint = ""
                 if audio_type == "dialogue":
-                    dialogue_hint = f"\n- ⚠️ 此 Beat 为角色台词，prompt 中需描述说话动作（张嘴说话等）。台词由系统追加。"
+                    dialogue_hint = "\n- ⚠️ 此 Beat 为角色台词，prompt 中需描述说话动作（张嘴说话等）。台词由系统追加。"
 
                 review_task = f"""审核 Beat {beat_num} 的视频提示词是否与草图画面吻合。
 
