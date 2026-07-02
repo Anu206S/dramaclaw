@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import urlencode
 from urllib.request import Request, urlopen
 
 from tools.registry import tool_error, tool_result
