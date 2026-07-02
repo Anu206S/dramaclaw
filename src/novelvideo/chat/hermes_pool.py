@@ -20,7 +20,9 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import re
 import shutil
+import subprocess
 import time
 import uuid
 from dataclasses import dataclass, field
@@ -38,6 +40,9 @@ DEFAULT_MAX_WORKERS = 50
 DEFAULT_TOKEN_TTL_SECS = 2 * 3600  # 2 hours
 DEFAULT_TOKEN_RENEW_SKEW_SECS = 15 * 60  # rotate 15 min before expiry
 DEFAULT_API_URL = "http://127.0.0.1:8780"
+DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
+DEFAULT_HERMES_VERSION = "0.18.0"
+_checked_hermes_versions: dict[Path, str] = {}
 
 
 def _load_api_url() -> str:
@@ -87,6 +92,56 @@ def _hermes_cli_path() -> Path:
 
 def is_hermes_backend_available() -> bool:
     return _hermes_cli_path().exists()
+
+
+def _parse_hermes_version(output: str) -> tuple[int, int, int] | None:
+    match = re.search(r"Hermes Agent v(\d+)\.(\d+)\.(\d+)", output)
+    if not match:
+        return None
+    return tuple(int(part) for part in match.groups())
+
+
+def _required_hermes_version() -> tuple[str, tuple[int, int, int]]:
+    raw = os.environ.get("DRAMACLAW_HERMES_VERSION", "").strip()
+    if not raw:
+        try:
+            raw = (DRAMACLAW_ROOT / ".hermes-version").read_text(encoding="utf-8").strip()
+        except OSError:
+            raw = DEFAULT_HERMES_VERSION
+    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", raw)
+    if not match:
+        raise RuntimeError(f"invalid DramaClaw Hermes version requirement: {raw!r}")
+    return raw, tuple(int(part) for part in match.groups())
+
+
+def _ensure_supported_hermes_version(cli_path: Path) -> None:
+    if cli_path in _checked_hermes_versions:
+        return
+    required_text, required_version = _required_hermes_version()
+    try:
+        proc = subprocess.run(
+            [str(cli_path), "--version"],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except Exception as exc:  # noqa: BLE001 - surface a clear startup error
+        raise RuntimeError(f"failed to check hermes version at {cli_path}: {exc}") from exc
+    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
+    version = _parse_hermes_version(output)
+    if proc.returncode != 0 or version is None:
+        raise RuntimeError(
+            f"unable to determine hermes version from `{cli_path} --version`: {output[:500]}"
+        )
+    if version != required_version:
+        current = ".".join(str(part) for part in version)
+        raise RuntimeError(
+            f"hermes {current} does not match DramaClaw's pinned version {required_text}. "
+            "Run `scripts/setup-hermes.sh` and restart the API."
+        )
+    _checked_hermes_versions[cli_path] = output.splitlines()[0] if output else str(version)
+    _log.info("using %s", _checked_hermes_versions[cli_path])
 
 
 @dataclass
@@ -221,6 +276,7 @@ class HermesPool:
             raise RuntimeError(
                 f"hermes CLI not found at {cli_path}. " "Run `uv tool install 'hermes-agent[acp]'`."
             )
+        _ensure_supported_hermes_version(cli_path)
         home = ensure_user_hermes_workspace(username)
         worker_id = f"hermes-{uuid.uuid4().hex}"
         token = await get_auth_session_port().create_agent_session(
