@@ -3941,7 +3941,23 @@ function canvasCommandAnchorEndIndex(text: string, anchorTextPrefix?: string | n
   if (anchorTextPrefix == null) return text.length;
   if (anchorTextPrefix === "") return 0;
   const index = text.indexOf(anchorTextPrefix);
-  return index < 0 ? text.length : index + anchorTextPrefix.length;
+  if (index >= 0) return index + anchorTextPrefix.length;
+  const relaxedIndex = relaxedCanvasCommandAnchorEndIndex(text, anchorTextPrefix);
+  return relaxedIndex ?? text.length;
+}
+
+function relaxedCanvasCommandAnchorEndIndex(text: string, anchorTextPrefix: string): number | null {
+  const tokens = anchorTextPrefix.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return anchorTextPrefix === "" ? 0 : null;
+  let cursor = 0;
+  let matchedEnd = 0;
+  for (const token of tokens) {
+    const index = text.indexOf(token, cursor);
+    if (index < 0) return null;
+    matchedEnd = index + token.length;
+    cursor = matchedEnd;
+  }
+  return matchedEnd;
 }
 
 function firstCanvasCommandSemanticMarkerIndex(text: string, markers: string[]): number | null {
@@ -3980,11 +3996,13 @@ function canvasCommandSemanticAnchorIndex(text: string, event: CanvasCommandSurf
     return firstCanvasCommandSemanticMarkerIndex(text, [
       "已经在画布上",
       "已在画布上",
+      "已成功创建",
+      "成功创建",
+      "已经成功",
+      "我已经成功",
       "已创建",
       "创建好了",
       "搭建好了",
-      "画布上创建",
-      "画布中创建",
     ]);
   }
   return null;
@@ -4001,6 +4019,10 @@ function canvasContextReadSemanticAnchorIndex(text: string, activity: CanvasCont
     "我先读取",
     "先获取",
     "先读取",
+    "让我先查看",
+    "让我查看",
+    "查看一下",
+    "创建schema",
     "获取该节点的详细信息",
     "读取节点详情",
     "检查当前",
@@ -4637,6 +4659,10 @@ export function SuperChatPanel({
     [canvasNodes],
   );
   const hasSelectedFreezoneNodeContext = Boolean(selectedFreezoneNodeAttachment);
+  const visibleComposerAttachments = useMemo(
+    () => attachments.filter((attachment) => !isCanvasNodeReferenceAttachment(attachment)),
+    [attachments],
+  );
   const hasSendableContent =
     draft.trim().length > 0 || attachments.length > 0 || hasSelectedFreezoneNodeContext;
   const canSend = hasSendableContent && chat.connected && !preparingSend;
@@ -4658,6 +4684,11 @@ export function SuperChatPanel({
   }, [isFreezoneLayout]);
   const deselectFreezoneNodeReference = useCallback((nodeId: string) => {
     deselectFreezoneNodeReferences(new Set([nodeId]));
+  }, [deselectFreezoneNodeReferences]);
+  const removeAttachment = useCallback((attachment: ChatAttachment) => {
+    const removedCanvasNodeIds = new Set(canvasNodeReferenceAttachmentNodeIds(attachment));
+    setAttachments((current) => current.filter((item) => item.id !== attachment.id));
+    deselectFreezoneNodeReferences(removedCanvasNodeIds);
   }, [deselectFreezoneNodeReferences]);
   const activeMessages = useMemo(
     () =>
@@ -4896,12 +4927,17 @@ export function SuperChatPanel({
         ? detail.turn_id
         : chat.activeTurnId;
       const labels = canvasContextLabelsFromTypes(collectCanvasContextRequestTypes(detail.envelope));
+      const assistantAnchorText = turnId
+        ? activeMessages.find((message) => message.turnId === turnId && message.role === "assistant" && message.text.trim())?.text
+        : null;
       const anchorTextPrefix =
         typeof detail.anchorTextPrefix === "string"
           ? detail.anchorTextPrefix
-          : turnId && turnId === chat.activeTurnId && chat.streamText
-            ? chat.streamText
-            : null;
+          : assistantAnchorText
+            ? assistantAnchorText
+            : turnId && turnId === chat.activeTurnId && chat.streamText
+              ? chat.streamText
+              : null;
       const surfaceOrder = Date.now();
       if (turnId) {
         setCanvasContextActivitiesByMessageId((current) => ({
@@ -4925,6 +4961,7 @@ export function SuperChatPanel({
       window.removeEventListener(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, handleCanvasContextRequest);
     };
   }, [
+    activeMessages,
     chat.activeTurnId,
     chat.streamText,
     effectiveFreezoneCanvasId,
@@ -5616,11 +5653,11 @@ export function SuperChatPanel({
         );
       }
 
-      if (canvasReferenceContext) {
-        nextText = appendAttachmentAnalysisContext(nextText, canvasReferenceContext);
-      }
       if (canvasCommandContext) {
         nextText = appendAttachmentAnalysisContext(nextText, canvasCommandContext);
+      }
+      if (canvasReferenceContext) {
+        nextText = appendAttachmentAnalysisContext(nextText, canvasReferenceContext);
       }
 
       return chat.send(text, transportAttachments, nextText);
@@ -6158,18 +6195,18 @@ export function SuperChatPanel({
                 {dragFileState === "invalid" ? t("aiAssistant.unsupportedDropFiles") : t("aiAssistant.dropFiles")}
               </div>
             )}
-            {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 px-4 pt-3">
-                {attachments.map((attachment) => (
+            {visibleComposerAttachments.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+                {visibleComposerAttachments.map((attachment) => (
                   <span
                     key={attachment.id}
                     className="inline-flex max-w-48 items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
                   >
                     {attachment.mimeType?.startsWith("image/") ? <Image className="size-3.5" /> : <File className="size-3.5" />}
-                    <span className="truncate">{attachment.fileName}</span>
+                    <span className="truncate">{attachment.label || attachment.fileName}</span>
                     <button
                       type="button"
-                      onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                      onClick={() => removeAttachment(attachment)}
                       className="text-muted-foreground hover:text-foreground"
                       aria-label={t("aiAssistant.removeAttachment")}
                     >
@@ -6228,7 +6265,7 @@ export function SuperChatPanel({
               </div>
             )}
             {isFreezoneLayout && selectedFreezoneNodes.length > 0 && (
-              <div className={cn("px-4", attachments.length > 0 ? "pt-2" : "pt-3")}>
+              <div className={cn("px-4", visibleComposerAttachments.length > 0 ? "pt-2" : "pt-3")}>
                 <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
                   <span>当前选中</span>
                   <span>本轮会使用</span>

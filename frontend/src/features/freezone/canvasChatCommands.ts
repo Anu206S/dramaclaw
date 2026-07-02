@@ -23,6 +23,7 @@ import {
   dispatchNodeAction,
 } from "@/features/canvas/application/nodeActionResult";
 import type { FreezonePresetCanvasRequest } from "@/api/canvas";
+import { isAgentCreatableCanvasNodeType } from "@/features/freezone/agentCreatableNodeTypes";
 import { buildCanvasNodeActionCatalog } from "@/features/freezone/canvasNodeActionCatalog";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
 import {
@@ -245,7 +246,6 @@ export function subscribeCanvasCommandApprovals(
   };
 }
 
-const ALLOWED_NODE_TYPES = new Set<string>(Object.values(CANVAS_NODE_TYPES));
 const RESERVED_DATA_KEYS = new Set([
   "node_type",
   "preset_managed",
@@ -382,7 +382,7 @@ function isFiniteNumber(value: unknown): value is number {
 }
 
 function isCanvasNodeType(value: unknown): value is CanvasNodeType {
-  return typeof value === "string" && ALLOWED_NODE_TYPES.has(value);
+  return isAgentCreatableCanvasNodeType(value);
 }
 
 function readClientId(value: JsonRecord): string | undefined {

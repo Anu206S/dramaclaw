@@ -44,55 +44,6 @@ CONTENT_FILTER_MESSAGE = (
     "请把需求拆得更具体，避免一次性要求完成整集或包含敏感/违规描述；"
     "也可以先让我只列当前制作进度和下一步。"
 )
-DRAMACLAW_ONE_STEP_STOP_MESSAGE = (
-    "当前任务已开始处理。请稍后让我查看当前任务进度，或在任务完成后再继续下一步。"
-)
-DRAMACLAW_WRITE_FAILED_STOP_MESSAGE = (
-    "刚才这一步没有成功启动任务。请先根据返回的错误补齐前置条件；"
-    "如果是配音缺少声线，可以到「虾塘」上传或录制缺失声线后再继续。"
-)
-
-_DRAMACLAW_WRITE_TOOLS = {
-    "dramaclaw_post",
-    "dramaclaw_patch",
-    "dramaclaw_delete",
-    "dramaclaw_build_characters",
-    "dramaclaw_plan_episodes",
-    "dramaclaw_generate_script",
-    "dramaclaw_update_character_face_prompt",
-    "dramaclaw_plan_identities",
-    "dramaclaw_plan_scenes",
-    "dramaclaw_plan_props",
-    "dramaclaw_generate_scene_master",
-    "dramaclaw_generate_scene_reverse",
-    "dramaclaw_generate_sketches",
-    "dramaclaw_detect_sketch_identities",
-    "dramaclaw_optimize_video_global",
-    "dramaclaw_generate_audio",
-    "dramaclaw_render_first_frames",
-    "dramaclaw_compose_episode",
-    "dramaclaw_generate_portrait",
-    "dramaclaw_generate_identity_image",
-    "dramaclaw_start_single_video",
-    "dramaclaw_run_freezone_skill",
-    "dramaclaw_save_freezone_canvas",
-    "dramaclaw_delete_freezone_canvas",
-    "dramaclaw_create_freezone_canvas_from_preset",
-    "freezone_emit_canvas_command",
-    "freezone_create_node",
-    "freezone_add_next_node",
-    "freezone_update_node_data",
-    "freezone_create_edge",
-    "freezone_delete_nodes",
-    "freezone_delete_edges",
-    "freezone_move_nodes",
-    "freezone_layout_nodes",
-    "freezone_group_nodes",
-    "freezone_select_nodes",
-    "freezone_open_mainline_projection",
-    "freezone_run_node_action",
-}
-
 _TOOL_DETAIL_FIELDS = (
     ("command", "命令"),
     ("cmd", "命令"),
@@ -154,42 +105,6 @@ def _has_content_filter_signal(value: object) -> bool:
     if isinstance(value, (list, tuple)):
         return any(_has_content_filter_signal(item) for item in value)
     return False
-
-
-def _is_dramaclaw_write_tool(name: object) -> bool:
-    return str(name or "").strip() in _DRAMACLAW_WRITE_TOOLS
-
-
-def _should_stop_after_write_tool(first_write_tool: str | None, next_tool_name: object) -> bool:
-    return first_write_tool is not None and _is_dramaclaw_write_tool(next_tool_name)
-
-
-def _is_failed_tool_update(value: object) -> bool:
-    if not isinstance(value, dict):
-        return False
-    status = str(value.get("status") or "").strip().lower()
-    if status in {"failed", "error", "cancelled", "canceled"}:
-        return True
-    for key in ("error", "message", "result"):
-        item = value.get(key)
-        if isinstance(item, dict):
-            if item.get("ok") is False:
-                return True
-            if str(item.get("status") or "").strip().lower() in {"failed", "error"}:
-                return True
-    return False
-
-
-def _should_mark_first_write_failed(
-    first_write_tool: str | None,
-    active_tool_name: str | None,
-    update: object,
-) -> bool:
-    return (
-        first_write_tool is not None
-        and active_tool_name == first_write_tool
-        and _is_failed_tool_update(update)
-    )
 
 
 def _format_tool_call_text(update: dict, title: object) -> str:
@@ -462,9 +377,6 @@ class HermesSdkThread:
             assert self._proc.stdout is not None
             deadline = asyncio.get_event_loop().time() + STREAM_READ_TIMEOUT
             tool_call_count = 0
-            first_write_tool: str | None = None
-            active_tool_name: str | None = None
-            first_write_failed = False
             while True:
                 remaining = max(0.1, deadline - asyncio.get_event_loop().time())
                 try:
@@ -519,34 +431,6 @@ class HermesSdkThread:
                 if ev is not None:
                     if ev.type == "tool_update" and (ev.raw or {}).get("sessionUpdate") == "tool_call":
                         tool_call_count += 1
-                        tool_name = str(ev.name or "").strip()
-                        active_tool_name = tool_name
-                        if _should_stop_after_write_tool(first_write_tool, tool_name):
-                            stop_text = (
-                                DRAMACLAW_WRITE_FAILED_STOP_MESSAGE
-                                if first_write_failed
-                                else DRAMACLAW_ONE_STEP_STOP_MESSAGE
-                            )
-                            _log.warning(
-                                "Hermes turn attempted tool after write task: thread=%s turn=%s "
-                                "first_write=%s first_write_failed=%s next_tool=%s",
-                                self.id,
-                                turn_id,
-                                first_write_tool,
-                                first_write_failed,
-                                tool_name or "tool",
-                            )
-                            await self.close()
-                            yield ChatBackendEvent(
-                                type="complete",
-                                thread_id=self.id,
-                                turn_id=turn_id,
-                                text=stop_text,
-                            )
-                            return
-                        if _is_dramaclaw_write_tool(tool_name):
-                            first_write_tool = tool_name
-                            first_write_failed = False
                         if tool_call_count > TURN_TOOL_CALL_LIMIT:
                             _log.warning(
                                 "Hermes turn exceeded tool call limit: thread=%s turn=%s limit=%s",
@@ -565,16 +449,6 @@ class HermesSdkThread:
                                 ),
                             )
                             return
-                    elif (
-                        ev.type == "tool_update"
-                        and (ev.raw or {}).get("sessionUpdate") == "tool_call_update"
-                        and _should_mark_first_write_failed(
-                            first_write_tool,
-                            active_tool_name,
-                            ev.raw,
-                        )
-                    ):
-                        first_write_failed = True
                     yield ev
         finally:
             # Don't kill subprocess here — caller may want to send more prompts.
