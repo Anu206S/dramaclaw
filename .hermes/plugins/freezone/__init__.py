@@ -55,7 +55,9 @@ except Exception as exc:
 
 TOOLSET = "freezone"
 FREEZONE_ACP_TOOLSET = "freezone-acp"
-REGISTER_TOOLSETS = (FREEZONE_ACP_TOOLSET,)
+# Register on hermes-acp as a compatibility path for Hermes versions where ACP
+# only enables the built-in ACP toolset and does not read config.enabled_toolsets.
+REGISTER_TOOLSETS = (FREEZONE_ACP_TOOLSET, "hermes-acp")
 API_PREFIX = "/api/v1/"
 try:
     DEFAULT_TIMEOUT_SECONDS = max(30, int(os.environ.get("DRAMACLAW_API_TIMEOUT_SECONDS", "120")))
