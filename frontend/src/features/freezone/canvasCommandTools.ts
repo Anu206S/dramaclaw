@@ -11,7 +11,6 @@ export const FREEZONE_CANVAS_WRITE_TOOL_NAMES = [
   "freezone_group_nodes",
   "freezone_select_nodes",
   "freezone_run_node_action",
-  "freezone_create_workflow_graph",
 ] as const;
 
 export const FREEZONE_CANVAS_WRITE_TOOL_NAME_SET = new Set<string>(FREEZONE_CANVAS_WRITE_TOOL_NAMES);

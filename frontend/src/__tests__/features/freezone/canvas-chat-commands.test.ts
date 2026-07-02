@@ -938,6 +938,50 @@ describe("canvas chat commands", () => {
     ).toBe(true);
   });
 
+  it("auto-groups workflow-like create batches when the command omits group_nodes", () => {
+    const envelopes = extractCanvasChatCommandEnvelopes([
+      {
+        schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        commands: [
+          {
+            type: "create_node",
+            client_id: "brief",
+            node_type: CANVAS_NODE_TYPES.textAnnotation,
+            data: { content: "广告 Brief" },
+          },
+          {
+            type: "create_node",
+            client_id: "image",
+            node_type: CANVAS_NODE_TYPES.imageGen,
+            data: { prompt: "生成关键视觉" },
+          },
+          {
+            type: "create_node",
+            client_id: "video",
+            node_type: CANVAS_NODE_TYPES.video,
+            data: { prompt: "生成广告视频" },
+          },
+          {
+            type: "create_node",
+            client_id: "compose",
+            node_type: CANVAS_NODE_TYPES.videoCompose,
+            data: { prompt: "合成成片" },
+          },
+        ],
+      },
+    ]);
+
+    const result = applyCanvasChatCommands(envelopes);
+    const state = useCanvasStore.getState();
+    const group = state.nodes.find((node) => node.type === CANVAS_NODE_TYPES.group);
+    const members = state.nodes.filter((node) => node.parentId === group?.id);
+
+    expect(result.errors).toEqual([]);
+    expect(group?.data.displayName).toBe("工作流组");
+    expect(members).toHaveLength(4);
+    expect(result.commandResults.some((step) => step.type === "group_nodes")).toBe(true);
+  });
+
   it("does not infer connections from grouped nodes", () => {
     const envelopes = extractCanvasChatCommandEnvelopes([
       {

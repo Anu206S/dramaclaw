@@ -32,8 +32,24 @@ _log = logging.getLogger(__name__)
 INITIALIZE_TIMEOUT = 30.0
 # How long to wait for hermes to produce a session/new response.
 SESSION_NEW_TIMEOUT = 90.0  # cold start runs startup probes (vision/aux); allow them to finish
-# Per-line stdout read timeout while streaming a prompt.
-STREAM_READ_TIMEOUT = 120.0
+
+
+def _env_float(name: str, default: float) -> float:
+    try:
+        return float(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
+# Per-line stdout read timeout while streaming a prompt. Freezone canvas write
+# tools can legitimately block while the browser validates/applies commands, so
+# keep this longer than the canvas bridge wait to avoid premature "(hermes timed out)".
+CANVAS_COMMAND_RESULT_TIMEOUT = _env_float("DRAMACLAW_CANVAS_COMMAND_RESULT_TIMEOUT_SECONDS", 600.0)
+STREAM_READ_TIMEOUT = max(
+    180.0,
+    CANVAS_COMMAND_RESULT_TIMEOUT + 30.0,
+    _env_float("HERMES_STREAM_READ_TIMEOUT_SECONDS", 0.0),
+)
 try:
     TURN_TOOL_CALL_LIMIT = max(1, int(os.environ.get("HERMES_TURN_TOOL_CALL_LIMIT", "20")))
 except ValueError:
@@ -92,6 +108,23 @@ _DRAMACLAW_WRITE_TOOLS = {
     "freezone_open_mainline_projection",
     "freezone_run_node_action",
 }
+
+_FREEZONE_CANVAS_WRITE_TOOLS = {
+    "freezone_emit_canvas_command",
+    "freezone_create_node",
+    "freezone_add_next_node",
+    "freezone_update_node_data",
+    "freezone_create_edge",
+    "freezone_delete_nodes",
+    "freezone_delete_edges",
+    "freezone_move_nodes",
+    "freezone_layout_nodes",
+    "freezone_group_nodes",
+    "freezone_select_nodes",
+    "freezone_open_mainline_projection",
+    "freezone_run_node_action",
+}
+FREEZONE_FAILED_WRITE_RETRY_LIMIT = 1
 
 _TOOL_DETAIL_FIELDS = (
     ("command", "命令"),
@@ -162,6 +195,25 @@ def _is_dramaclaw_write_tool(name: object) -> bool:
 
 def _should_stop_after_write_tool(first_write_tool: str | None, next_tool_name: object) -> bool:
     return first_write_tool is not None and _is_dramaclaw_write_tool(next_tool_name)
+
+
+def _is_freezone_canvas_write_tool(name: object) -> bool:
+    return str(name or "").strip() in _FREEZONE_CANVAS_WRITE_TOOLS
+
+
+def _can_retry_failed_canvas_write(
+    first_write_tool: str | None,
+    next_tool_name: object,
+    *,
+    first_write_failed: bool,
+    failed_write_retry_count: int,
+) -> bool:
+    return (
+        first_write_failed
+        and failed_write_retry_count < FREEZONE_FAILED_WRITE_RETRY_LIMIT
+        and _is_freezone_canvas_write_tool(first_write_tool)
+        and _is_freezone_canvas_write_tool(next_tool_name)
+    )
 
 
 def _is_failed_tool_update(value: object) -> bool:
@@ -465,6 +517,7 @@ class HermesSdkThread:
             first_write_tool: str | None = None
             active_tool_name: str | None = None
             first_write_failed = False
+            failed_write_retry_count = 0
             while True:
                 remaining = max(0.1, deadline - asyncio.get_event_loop().time())
                 try:
@@ -522,28 +575,47 @@ class HermesSdkThread:
                         tool_name = str(ev.name or "").strip()
                         active_tool_name = tool_name
                         if _should_stop_after_write_tool(first_write_tool, tool_name):
-                            stop_text = (
-                                DRAMACLAW_WRITE_FAILED_STOP_MESSAGE
-                                if first_write_failed
-                                else DRAMACLAW_ONE_STEP_STOP_MESSAGE
-                            )
-                            _log.warning(
-                                "Hermes turn attempted tool after write task: thread=%s turn=%s "
-                                "first_write=%s first_write_failed=%s next_tool=%s",
-                                self.id,
-                                turn_id,
+                            if _can_retry_failed_canvas_write(
                                 first_write_tool,
-                                first_write_failed,
-                                tool_name or "tool",
-                            )
-                            await self.close()
-                            yield ChatBackendEvent(
-                                type="complete",
-                                thread_id=self.id,
-                                turn_id=turn_id,
-                                text=stop_text,
-                            )
-                            return
+                                tool_name,
+                                first_write_failed=first_write_failed,
+                                failed_write_retry_count=failed_write_retry_count,
+                            ):
+                                failed_write_retry_count += 1
+                                _log.info(
+                                    "Hermes turn retrying failed Freezone canvas write: "
+                                    "thread=%s turn=%s first_write=%s retry=%s next_tool=%s",
+                                    self.id,
+                                    turn_id,
+                                    first_write_tool,
+                                    failed_write_retry_count,
+                                    tool_name or "tool",
+                                )
+                                first_write_tool = None
+                                first_write_failed = False
+                            else:
+                                stop_text = (
+                                    DRAMACLAW_WRITE_FAILED_STOP_MESSAGE
+                                    if first_write_failed
+                                    else DRAMACLAW_ONE_STEP_STOP_MESSAGE
+                                )
+                                _log.warning(
+                                    "Hermes turn attempted tool after write task: thread=%s turn=%s "
+                                    "first_write=%s first_write_failed=%s next_tool=%s",
+                                    self.id,
+                                    turn_id,
+                                    first_write_tool,
+                                    first_write_failed,
+                                    tool_name or "tool",
+                                )
+                                await self.close()
+                                yield ChatBackendEvent(
+                                    type="complete",
+                                    thread_id=self.id,
+                                    turn_id=turn_id,
+                                    text=stop_text,
+                                )
+                                return
                         if _is_dramaclaw_write_tool(tool_name):
                             first_write_tool = tool_name
                             first_write_failed = False

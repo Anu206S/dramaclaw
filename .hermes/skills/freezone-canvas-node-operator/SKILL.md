@@ -10,15 +10,13 @@ You operate the Freezone/虾画 canvas through structured commands.
 
 Your job is to operate the Freezone canvas through the safest available frontend tool path. Do not claim the canvas changed unless the frontend has actually executed the command and reported success.
 
-Important boundary: for create/delete/update/connect/layout/open-tool/frontend-node requests, use the frontend command path. Default to one `freezone_emit_canvas_command` batch for the user's requested canvas changes. Typed Freezone write tools are only for explicit exactly-one-operation requests.
+Important boundary: for create/delete/update/connect/layout/open-tool/frontend-node requests, use the frontend command path. Default to one `freezone_emit_canvas_command` batch for ordinary canvas changes. Typed Freezone write tools are only for explicit exactly-one-operation requests.
 
 For explicit exactly-one canvas operations, you may call the specific typed tool instead of hand-writing a generic command object: `freezone_create_node`, `freezone_add_next_node`, `freezone_update_node_data`, `freezone_create_edge`, `freezone_delete_nodes`, `freezone_delete_edges`, `freezone_move_nodes`, `freezone_layout_nodes`, `freezone_group_nodes`, `freezone_select_nodes`, or `freezone_run_node_action`.
 
 Explanation boundary: do not activate this skill for questions such as "怎么 / 如何 / 什么是 / 介绍 / 说明 / 教我 / 怎么生成工作流 / how to / what is / explain / show me how". For those, answer in natural language only and do not call `freezone_emit_canvas_command`. Activate canvas commands only when the user explicitly asks to create, generate on canvas, add, connect, modify, delete, lay out, run, apply, or execute something on the canvas, or confirms after an explanation.
 
-For complex workflow materialization, multi-node creation, batch edge creation, grouped node creation, or automatic layout, call `freezone_create_workflow_graph` when available. Do not handwrite multi-node `create_node` / `create_edge` / `group_nodes` / `layout_nodes` command sets when that tool is available.
-
-For multi-node, multi-edge, workflow, storyboard, prototype, canvas-building, or any request with more than one canvas change, do not call typed write tools repeatedly. If batch command fields are unclear, call `freezone_get_canvas_command_catalog`, then submit exactly one `freezone_emit_canvas_command` batch.
+For multi-node, multi-edge, storyboard, prototype, canvas-building, or any request with more than one canvas change, do not call typed write tools repeatedly. If batch command fields are unclear, call `freezone_get_canvas_command_catalog`, then submit exactly one `freezone_emit_canvas_command` batch.
 
 If validation reports `Allowed link_type values: none` for a source/target pair, do not retry other `link_type` values. Use `group_nodes` as a visual grouping fallback or leave the nodes unconnected.
 
@@ -100,7 +98,7 @@ For actions with `execution="frontend_node"`, do not look for backend `action_id
 
 Do not invent node ids. For small fallback command output, newly created nodes that will be referenced later in the same envelope must use explicit `client_id` values, and later commands must refer to those exact values. Never emit `auto:*` ids; those may appear only in validator error messages and are not valid assistant output.
 
-Workflow plan ids are not canvas node ids. If a confirmed plan must become several canvas nodes, links, groups, or layout changes, submit one `freezone_emit_canvas_command` batch with explicit `client_id` values instead of separate single-operation tool calls.
+Plan ids are not canvas node ids. If a confirmed custom plan must become several canvas nodes, links, groups, or layout changes, submit one `freezone_emit_canvas_command` batch with explicit `client_id` values instead of separate single-operation tool calls.
 
 ## Tool Contract
 
@@ -350,7 +348,7 @@ Use `scope: "canvas"` only when the user explicitly asks to run the whole canvas
 
 ## Response Style
 
-For operation requests, default to `freezone_emit_canvas_command` as one batch. Use a specific typed write tool only when the user explicitly asks for exactly one canvas operation. If batch command fields are unclear, call `freezone_get_canvas_command_catalog` first. If no write tool is available, do not output a protocol payload; explain that the canvas tool is unavailable.
+For ordinary operation requests, default to `freezone_emit_canvas_command` as one batch. Use a specific typed write tool only when the user explicitly asks for exactly one canvas operation. If batch command fields are unclear, call `freezone_get_canvas_command_catalog` first. If no write tool is available, do not output a protocol payload; explain that the canvas tool is unavailable.
 
 Good response pattern:
 
@@ -368,7 +366,7 @@ If the user asks for something that requires a backend generation workflow not e
 ## Hard Rules
 
 - Do not output canvas commands unless the user asked to operate on the canvas.
-- Do not split complex workflow graph commands across repeated single-operation tool calls.
+- Do not split complex graph commands across repeated single-operation tool calls.
 - Put multi-node creation plus batch edges/layout/groups in one `freezone_emit_canvas_command` batch.
 - Ordinary node creation, deletion, updates, edges, layout, opening UI tools, and node actions such as `generate_image` must stay on the frontend command path.
 - Do not invent node ids, canvas ids, projects, or backend task ids.

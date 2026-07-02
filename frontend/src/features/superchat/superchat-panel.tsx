@@ -1723,7 +1723,7 @@ const MessageBubble = memo(function MessageBubble({
     <div
       className={cn(
         isUser
-          ? "-mx-2 flex max-h-0 items-center justify-end gap-1 overflow-hidden rounded-xl px-2 py-0 text-foreground/75 opacity-0 transition-[max-height,opacity,padding] duration-150 pointer-events-none group-hover/message-actions:max-h-14 group-hover/message-actions:py-2 group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:max-h-14 group-focus-within/message-actions:py-2 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100"
+          ? "pointer-events-none absolute right-1.5 top-1.5 z-10 flex translate-y-0.5 items-center gap-0.5 rounded-full border border-border/70 bg-background/85 px-1 py-0.5 text-foreground/75 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100"
           : "mt-2 flex items-center gap-1 text-muted-foreground/70",
       )}
     >
@@ -1799,13 +1799,13 @@ const MessageBubble = memo(function MessageBubble({
           <article className={cn("max-w-[72%]", isFreezoneLayout && "max-w-[82%]")}>
             <div className="group/message-actions">
               <div className="relative rounded-[14px] border-0 bg-white/[0.12] px-3 py-2.5 text-sm leading-6 text-foreground shadow-none">
+                {actions}
                 <AttachmentList attachments={message.attachments} align="start" compact />
                 {displayText && (
                   <div className="whitespace-pre-wrap break-words">{displayText}</div>
                 )}
                 <StructuredRenderer blocks={visibleBlocks} />
               </div>
-              {actions}
             </div>
           </article>
         </div>
@@ -1821,13 +1821,13 @@ const MessageBubble = memo(function MessageBubble({
                 "relative rounded-[14px] border-0 bg-white/[0.12] px-4 py-2.5 text-sm leading-6 text-foreground shadow-none",
               )}
             >
+              {actions}
               <AttachmentList attachments={message.attachments} align="end" />
               {displayText && (
                 <div className="whitespace-pre-wrap break-words">{displayText}</div>
               )}
               <StructuredRenderer blocks={visibleBlocks} />
             </div>
-            {actions}
           </div>
         </article>
       </div>
@@ -3267,6 +3267,16 @@ function focusCanvasReferenceNode(nodeId: string): void {
   store.requestFocusNode(nodeId);
 }
 
+function removeCanvasReferenceNode(nodeId: string): void {
+  const store = useCanvasStore.getState();
+  if (!store.nodes.some((node) => node.id === nodeId)) return;
+  store.onNodesChange([{ id: nodeId, type: "select", selected: false }]);
+  if (store.selectedNodeId === nodeId) {
+    const nextSelectedNodeId = store.nodes.find((node) => node.id !== nodeId && node.selected)?.id ?? null;
+    store.setSelectedNode(nextSelectedNodeId);
+  }
+}
+
 function handleCanvasReferenceKeyDown(
   event: ReactKeyboardEvent<HTMLElement>,
   nodeId: string,
@@ -3341,8 +3351,24 @@ function CanvasNodeReferenceThumb({
           <div className="flex h-full w-full items-center justify-center text-muted-foreground">
             {isVideo ? <Play className="size-4" /> : <ListTree className="size-4" />}
           </div>
-        )}
+      )}
       </div>
+      <button
+        type="button"
+        className="absolute -right-1.5 -top-1.5 z-20 flex size-4 items-center justify-center rounded-full border border-white/15 bg-background/95 text-muted-foreground opacity-0 shadow-sm transition hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100"
+        aria-label={`移除 ${title}`}
+        onClick={(event) => {
+          event.preventDefault();
+          event.stopPropagation();
+          setPreviewPosition(null);
+          removeCanvasReferenceNode(node.nodeId);
+        }}
+        onKeyDown={(event) => {
+          event.stopPropagation();
+        }}
+      >
+        <X className="size-2.5" />
+      </button>
       {previewPosition
         ? createPortal(
           <div

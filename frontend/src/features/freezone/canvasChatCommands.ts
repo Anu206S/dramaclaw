@@ -368,6 +368,12 @@ const WORKFLOW_GENERATE_ACTION_BY_NODE_TYPE: Partial<Record<CanvasNodeType, stri
   [CANVAS_NODE_TYPES.threeDWorld]: ["generate_3gs_world"],
   [CANVAS_NODE_TYPES.textAnnotation]: ["generate_text_video"],
 };
+const WORKFLOW_LIKE_CREATE_NODE_TYPES = new Set<CanvasNodeType>([
+  CANVAS_NODE_TYPES.imageGen,
+  CANVAS_NODE_TYPES.video,
+  CANVAS_NODE_TYPES.audio,
+  CANVAS_NODE_TYPES.videoCompose,
+]);
 
 function isRecord(value: unknown): value is JsonRecord {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -2389,6 +2395,36 @@ function applyCanvasChatCommandsInternal(
       envelopeAddNextCreatedCount >= 2
     ) {
       const targetNodeIds = [...new Set([...envelopeSourceNodeIds, ...envelopeCreatedNodeIds])];
+      const groupId = useCanvasStore.getState().groupNodes(targetNodeIds, {
+        label: "工作流组",
+        extraPadding: 20,
+      });
+      if (groupId) {
+        result.applied += 1;
+        result.createdNodeIds.push(groupId);
+        result.commandResults.push({
+          commandIndex,
+          type: "group_nodes",
+          status: "success",
+          label: "创建普通组",
+          nodeId: targetNodeIds[0],
+          createdNodeId: groupId,
+        });
+        commandIndex += 1;
+      }
+    }
+    if (
+      !envelopeHasExplicitGroupNodes &&
+      !envelopeHasAddNextNode &&
+      envelopeConnectionCount === 0 &&
+      result.errors.length === envelopeErrorStart &&
+      envelopeCreatedNodeIds.length >= 3 &&
+      envelope.commands.some((command) =>
+        command.type === "create_node" &&
+        WORKFLOW_LIKE_CREATE_NODE_TYPES.has(command.node_type),
+      )
+    ) {
+      const targetNodeIds = [...new Set(envelopeCreatedNodeIds)];
       const groupId = useCanvasStore.getState().groupNodes(targetNodeIds, {
         label: "工作流组",
         extraPadding: 20,
