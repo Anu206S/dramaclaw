@@ -157,9 +157,27 @@ def test_hermes_detects_content_filter_error_text():
     assert hermes_sdk._has_content_filter_signal(payload)
 
 
-def test_hermes_has_no_one_write_per_turn_guard():
-    assert not hasattr(hermes_sdk, "_should_stop_after_write_tool")
-    assert not hasattr(hermes_sdk, "_DRAMACLAW_WRITE_TOOLS")
+def test_hermes_allows_one_failed_freezone_write_retry():
+    assert hermes_sdk._should_stop_after_write_tool(
+        "dramaclaw_generate_script",
+        "dramaclaw_start_single_video",
+    )
+    assert hermes_sdk._should_stop_after_write_tool(
+        "freezone_emit_canvas_command",
+        "freezone_emit_canvas_command",
+    )
+    assert hermes_sdk._can_retry_failed_canvas_write(
+        "freezone_emit_canvas_command",
+        "freezone_emit_canvas_command",
+        first_write_failed=True,
+        failed_write_retry_count=0,
+    )
+    assert not hermes_sdk._can_retry_failed_canvas_write(
+        "freezone_emit_canvas_command",
+        "freezone_emit_canvas_command",
+        first_write_failed=True,
+        failed_write_retry_count=1,
+    )
 
 
 def test_state_root_prefers_env(monkeypatch, tmp_path):
