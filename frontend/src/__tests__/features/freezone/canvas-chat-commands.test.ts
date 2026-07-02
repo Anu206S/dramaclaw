@@ -295,6 +295,48 @@ describe("canvas chat commands", () => {
     ]);
   });
 
+  it("does not create internal or derived node types from assistant create commands", () => {
+    const envelopes = extractCanvasChatCommandEnvelopes([
+      {
+        schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        commands: [
+          {
+            type: "create_node",
+            node_type: CANVAS_NODE_TYPES.storyboardSplit,
+            data: { displayName: "不应该创建" },
+          },
+          {
+            type: "create_node",
+            node_type: CANVAS_NODE_TYPES.group,
+            data: { displayName: "空组" },
+          },
+          {
+            type: "create_node",
+            node_type: CANVAS_NODE_TYPES.skill,
+            data: { displayName: "允许的技能节点" },
+          },
+          {
+            type: "create_node",
+            node_type: CANVAS_NODE_TYPES.textAnnotation,
+            data: { displayName: "允许的文本", content: "保留" },
+          },
+        ],
+      },
+    ]);
+
+    expect(envelopes[0]?.commands).toHaveLength(2);
+
+    const result = applyCanvasChatCommands(envelopes);
+    const nodes = useCanvasStore.getState().nodes;
+
+    expect(result.applied).toBe(2);
+    expect(nodes).toHaveLength(2);
+    expect(nodes.map((node) => node.type)).toEqual([
+      CANVAS_NODE_TYPES.skill,
+      CANVAS_NODE_TYPES.textAnnotation,
+    ]);
+  });
+
   it("inherits mainline fields when add_next_node derives from a slot-targeted source", () => {
     const sourceId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.imageGen,
@@ -1303,7 +1345,7 @@ describe("canvas chat commands", () => {
           {
             type: "create_node",
             client_id: "workflow-group",
-            node_type: CANVAS_NODE_TYPES.group,
+            node_type: CANVAS_NODE_TYPES.textAnnotation,
           },
           {
             type: "create_edge",
@@ -3333,6 +3375,119 @@ describe("canvas chat commands", () => {
 
     expect(response).toContain("open_mainline_projection");
     expect(response).toContain("freezone_open_mainline_projection");
+  });
+
+  it("keeps creatable node types scoped to create commands while preserving group command access", async () => {
+    const envelopes = extractCanvasContextRequestEnvelopes([
+      {
+        schema_version: "canvas_context_request.v1",
+        requests: [{ type: "canvas_command_catalog" }],
+      },
+    ]);
+
+    const response = await buildCanvasContextRequestResponse({
+      project: "project-a",
+      canvasId: "canvas-a",
+      nodes: [],
+      edges: [],
+      ontologyContext: null,
+      envelopes,
+    });
+    const responsePayload = JSON.parse(response?.split("\n")[2] ?? "{}") as {
+      responses?: Array<{
+        type?: string;
+        data?: {
+          commands?: Array<{
+            type?: string;
+            allowed_node_types?: string[];
+          }>;
+        };
+      }>;
+    };
+    const catalog = responsePayload.responses?.find(
+      (item) => item.type === "canvas_command_catalog",
+    )?.data;
+    const createCommand = catalog?.commands?.find(
+      (command) => command.type === "create_node",
+    );
+    const groupCommand = catalog?.commands?.find(
+      (command) => command.type === "group_nodes",
+    );
+
+    expect(catalog).not.toHaveProperty("agent_creatable_node_types");
+    expect(createCommand?.allowed_node_types).toContain(
+      CANVAS_NODE_TYPES.textAnnotation,
+    );
+    expect(createCommand?.allowed_node_types).toContain(
+      CANVAS_NODE_TYPES.imageGen,
+    );
+    expect(createCommand?.allowed_node_types).toContain(
+      CANVAS_NODE_TYPES.skill,
+    );
+    expect(createCommand?.allowed_node_types).not.toContain(
+      CANVAS_NODE_TYPES.storyboardSplit,
+    );
+    expect(createCommand?.allowed_node_types).not.toContain(
+      CANVAS_NODE_TYPES.storyboardGen,
+    );
+    expect(createCommand?.allowed_node_types).not.toContain(
+      CANVAS_NODE_TYPES.group,
+    );
+    expect(groupCommand).toBeTruthy();
+  });
+
+  it("does not return create schemas for internal or derived node types", async () => {
+    const envelopes = extractCanvasContextRequestEnvelopes([
+      {
+        schema_version: "canvas_context_request.v1",
+        requests: [
+          {
+            type: "node_create_schema",
+            node_type: CANVAS_NODE_TYPES.storyboardSplit,
+          },
+          { type: "node_create_schema", node_type: CANVAS_NODE_TYPES.group },
+          {
+            type: "node_create_schema",
+            node_type: CANVAS_NODE_TYPES.textAnnotation,
+          },
+        ],
+      },
+    ]);
+
+    const response = await buildCanvasContextRequestResponse({
+      project: "project-a",
+      canvasId: "canvas-a",
+      nodes: useCanvasStore.getState().nodes,
+      edges: useCanvasStore.getState().edges,
+      ontologyContext: null,
+      selectedNodeIds: [],
+      envelopes,
+    });
+    const responsePayload = JSON.parse(response?.split("\n")[2] ?? "{}") as {
+      responses?: Array<{
+        type?: string;
+        node_type?: string;
+        data?: unknown;
+      }>;
+    };
+
+    const schemaResponses = responsePayload.responses?.filter(
+      (item) => item.type === "node_create_schema",
+    );
+    expect(
+      schemaResponses?.find(
+        (item) => item.node_type === CANVAS_NODE_TYPES.storyboardSplit,
+      )?.data,
+    ).toBeNull();
+    expect(
+      schemaResponses?.find((item) => item.node_type === CANVAS_NODE_TYPES.group)
+        ?.data,
+    ).toBeNull();
+    expect(
+      schemaResponses?.find(
+        (item) => item.node_type === CANVAS_NODE_TYPES.textAnnotation,
+      )?.data,
+    ).toBeTruthy();
   });
 
   it("returns group node detail with direct children instead of an empty shell", async () => {

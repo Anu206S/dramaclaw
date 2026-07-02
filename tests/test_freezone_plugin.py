@@ -39,20 +39,47 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_create_workflow_graph" not in names
 
 
-def test_freezone_plugin_create_node_schema_hides_internal_image_node_type():
+def test_freezone_plugin_create_node_schema_hides_internal_node_types():
     plugin = _load_plugin_module()
     create_node_tool = next(
         (schema for name, schema, _handler in plugin.TOOLS if name == "freezone_create_node"),
         None,
     )
+    add_next_tool = next(
+        (schema for name, schema, _handler in plugin.TOOLS if name == "freezone_add_next_node"),
+        None,
+    )
+    emit_tool = next(
+        (schema for name, schema, _handler in plugin.TOOLS if name == "freezone_emit_canvas_command"),
+        None,
+    )
+    group_tool = next(
+        (schema for name, schema, _handler in plugin.TOOLS if name == "freezone_group_nodes"),
+        None,
+    )
 
     assert create_node_tool is not None
+    assert add_next_tool is not None
+    assert emit_tool is not None
+    assert group_tool is not None
     enum_values = create_node_tool["parameters"]["properties"]["node_type"]["enum"]
+    add_next_enum_values = add_next_tool["parameters"]["properties"]["node_type"]["enum"]
+    emit_enum_values = (
+        emit_tool["parameters"]["properties"]["commands"]["items"]["properties"]["node_type"]["enum"]
+    )
 
     assert "imageGenNode" in enum_values
     assert "uploadNode" in enum_values
+    assert "groupNode" not in enum_values
+    assert "storyboardNode" not in enum_values
+    assert "storyboardGenNode" not in enum_values
     assert "imageNode" not in enum_values
-    assert "imageNode" not in create_node_tool["parameters"]["properties"]["nodeType"]["enum"]
+    assert "exportImageNode" not in enum_values
+    assert "videoStoryNode" not in enum_values
+    assert "skillNode" in enum_values
+    assert enum_values == create_node_tool["parameters"]["properties"]["nodeType"]["enum"]
+    assert add_next_enum_values == enum_values
+    assert emit_enum_values == enum_values
 
 
 def test_freezone_plugin_uses_frontend_link_type_catalog_values():

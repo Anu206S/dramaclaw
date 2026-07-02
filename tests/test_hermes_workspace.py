@@ -122,6 +122,14 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert parsed["enabled_toolsets"] == ["hermes-acp", "freezone-acp", "memory"]
     assert parsed["plugins"]["enabled"] == ["freezone"]
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
+    soul = (home / "SOUL.md").read_text(encoding="utf-8")
+    memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "创意咨询、找思路、风格建议" in soul
+    assert "搭建可继续工作的画布框架" in soul
+    assert "生成完整短片" in soul
+    assert "创意咨询、找思路、风格建议" in memory
+    assert "搭建可继续工作的画布框架" in memory
+    assert "生成完整短片" in memory
 
 
 def test_hermes_initialize_timeout_allows_cold_start():
@@ -149,48 +157,9 @@ def test_hermes_detects_content_filter_error_text():
     assert hermes_sdk._has_content_filter_signal(payload)
 
 
-def test_hermes_classifies_dramaclaw_write_tools():
-    assert hermes_sdk._is_dramaclaw_write_tool("dramaclaw_generate_script")
-    assert hermes_sdk._is_dramaclaw_write_tool("dramaclaw_start_single_video")
-    assert not hermes_sdk._is_dramaclaw_write_tool("dramaclaw_pipeline_status")
-    assert not hermes_sdk._is_dramaclaw_write_tool("dramaclaw_get_task")
-
-
-def test_hermes_allows_read_tools_after_write_task():
-    assert not hermes_sdk._should_stop_after_write_tool(
-        "dramaclaw_generate_script",
-        "dramaclaw_pipeline_status",
-    )
-    assert not hermes_sdk._should_stop_after_write_tool(
-        "dramaclaw_generate_script",
-        "dramaclaw_get_task",
-    )
-
-
-def test_hermes_stops_second_write_tool_after_write_task():
-    assert hermes_sdk._should_stop_after_write_tool(
-        "dramaclaw_generate_script",
-        "dramaclaw_start_single_video",
-    )
-
-
-def test_hermes_detects_failed_tool_update():
-    assert hermes_sdk._is_failed_tool_update({"status": "failed"})
-    assert hermes_sdk._is_failed_tool_update({"result": {"ok": False}})
-    assert not hermes_sdk._is_failed_tool_update({"status": "completed"})
-
-
-def test_hermes_does_not_mark_read_task_failure_as_first_write_failure():
-    assert not hermes_sdk._should_mark_first_write_failed(
-        "dramaclaw_generate_script",
-        "dramaclaw_get_task",
-        {"result": {"status": "failed", "error": "render failed"}},
-    )
-    assert hermes_sdk._should_mark_first_write_failed(
-        "dramaclaw_generate_script",
-        "dramaclaw_generate_script",
-        {"result": {"ok": False, "error": "identity_plan_required"}},
-    )
+def test_hermes_has_no_one_write_per_turn_guard():
+    assert not hasattr(hermes_sdk, "_should_stop_after_write_tool")
+    assert not hasattr(hermes_sdk, "_DRAMACLAW_WRITE_TOOLS")
 
 
 def test_state_root_prefers_env(monkeypatch, tmp_path):

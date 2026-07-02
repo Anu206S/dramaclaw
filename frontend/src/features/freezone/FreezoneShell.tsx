@@ -5,7 +5,12 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Canvas } from "@/features/canvas/Canvas";
 import { NodeReplaceDragPreview } from "@/features/canvas/ui/NodeReplaceDragPreview";
-import { listFreezoneProjectAssets, type SupertaleProjectSummary } from "@/api/projects";
+import {
+  listCharacters,
+  listFreezoneProjectAssets,
+  type FreezoneProjectAsset,
+  type SupertaleProjectSummary,
+} from "@/api/projects";
 import {
   buildProjectionFromPreset,
   getProjectionStatuses,
@@ -175,6 +180,38 @@ function canvasContextRequestCandidatesFromDetail(detail: Record<string, unknown
     detail.raw,
     detail,
   ];
+}
+
+async function loadMainlineProjectionAssets(project: string): Promise<FreezoneProjectAsset[]> {
+  const [assets, characters] = await Promise.all([
+    listFreezoneProjectAssets(project),
+    listCharacters(project),
+  ]);
+  const characterAssets: FreezoneProjectAsset[] = characters
+    .map((character): FreezoneProjectAsset | null => {
+      const name = typeof character.name === "string" ? character.name.trim() : "";
+      if (!name) return null;
+      const displayName =
+        typeof character.display_name === "string" && character.display_name.trim()
+          ? character.display_name.trim()
+          : name;
+      return {
+        id: `character:${name}`,
+        tab: "characters",
+        kind: "character",
+        role: "character_profile",
+        label: displayName,
+        sublabel: typeof character.role === "string" && character.role.trim() ? character.role.trim() : undefined,
+        url: typeof character.portrait_url === "string" && character.portrait_url.trim()
+          ? character.portrait_url.trim()
+          : null,
+        exists: true,
+        media_type: character.portrait_url ? "image" : "text",
+        meta: { character: name },
+      };
+    })
+    .filter((asset): asset is FreezoneProjectAsset => Boolean(asset));
+  return [...assets, ...characterAssets];
 }
 
 function canvasCommandValidationFailureResult(errors: string[]): CanvasChatCommandApplyResult {
@@ -1275,7 +1312,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             selectedNodeIds,
             envelopes,
             canvasMetadata: sync.metadata as Record<string, unknown> | null,
-            loadMainlineProjectionAssets: () => listFreezoneProjectAssets(projectId),
+            loadMainlineProjectionAssets: () => loadMainlineProjectionAssets(projectId),
           });
           reportCanvasContextToolResult({
             bridgeKey,

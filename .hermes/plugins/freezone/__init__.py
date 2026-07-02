@@ -330,6 +330,20 @@ def _handle_node_create_schema(args: dict[str, Any], **_: Any) -> str:
         return tool_result(
             {"ok": False, "status": "node_type_required", "error": "node_type is required"}
         )
+    if node_type not in _AGENT_CREATABLE_NODE_TYPE_VALUES:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "invalid_node_type",
+                "error": (
+                    "node_type must be a directly creatable Freezone node type. "
+                    "Use freezone_group_nodes/group_nodes for grouping existing nodes; "
+                    "do not directly create or request create schemas for internal or derived "
+                    "node types such as storyboardNode, storyboardGenNode, groupNode, imageNode, "
+                    "exportImageNode, or videoStoryNode."
+                ),
+            }
+        )
     return _request_canvas_context_from_frontend(
         project=project,
         canvas=canvas,
@@ -626,6 +640,23 @@ def _validate_write_commands_shape(
                 "invalid_command_schema",
                 f"commands[{index}] {command_type} missing required field(s): {', '.join(missing_required)}",
             )
+        if command_type == "create_node" or (
+            command_type == "add_next_node" and command.get("node_type") not in (None, "")
+        ):
+            node_type = str(command.get("node_type") or "").strip()
+            if node_type not in _AGENT_CREATABLE_NODE_TYPE_VALUES:
+                return _emit_command_error(
+                    project,
+                    canvas,
+                    "invalid_node_type",
+                    (
+                        f"commands[{index}].node_type must be a directly creatable node type; "
+                        f"got {node_type!r}. Use group_nodes/freezone_group_nodes to group existing "
+                        "nodes, and do not directly create internal or derived node types such as "
+                        "storyboardNode, storyboardGenNode, groupNode, imageNode, exportImageNode, "
+                        "or videoStoryNode."
+                    ),
+                )
         if command.get("type") == "create_edge":
             missing = [
                 field for field in ("source", "target", "link_type") if not command.get(field)
@@ -1174,23 +1205,40 @@ _NODE_TYPE_VALUES = [
     "skillNode",
 ]
 
+_AGENT_CREATABLE_NODE_TYPE_VALUES = [
+    "uploadNode",
+    "imageGenNode",
+    "beatContextNode",
+    "textAnnotationNode",
+    "videoNode",
+    "audioNode",
+    "videoComposeNode",
+    "scriptNode",
+    "pano360ViewerNode",
+    "threeDWorldNode",
+    "skillNode",
+]
+
 _NODE_TYPE_DESCRIPTION = (
-    "Canvas node type. Common values: textAnnotationNode, imageGenNode, videoNode, "
-    "audioNode, videoComposeNode, threeDWorldNode. Use textAnnotationNode for ordinary "
-    "briefs, copy, notes, prompts, and free-form text. Use scriptNode only for explicit "
-    "structured script tables or script-generation workflows. Use threeDWorldNode for "
-    "导演世界; directorWorldNode is not a valid node type."
+    "Directly creatable Freezone canvas node type. Use only these values for "
+    "create_node/add_next_node. Do not create internal or derived node types such as "
+    "groupNode, storyboardNode, storyboardGenNode, imageNode, exportImageNode, "
+    "or videoStoryNode directly. Use freezone_group_nodes/group_nodes for "
+    "grouping existing nodes. Use textAnnotationNode for ordinary briefs, copy, notes, "
+    "prompts, and free-form text. Use scriptNode only for explicit structured script "
+    "tables or script-generation workflows. Use threeDWorldNode for 导演世界; "
+    "directorWorldNode is not a valid node type."
 )
 
 _NODE_TYPE_SCHEMA = {
     "type": "string",
-    "enum": _NODE_TYPE_VALUES,
+    "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
     "description": _NODE_TYPE_DESCRIPTION,
 }
 
 _NODE_TYPE_ALIAS_SCHEMA = {
     "type": "string",
-    "enum": _NODE_TYPE_VALUES,
+    "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
     "description": "Alias of node_type. Prefer snake_case node_type.",
 }
 
@@ -1229,7 +1277,7 @@ _CANVAS_COMMAND_ITEM_SCHEMA = {
         },
         "node_type": {
             "type": "string",
-            "enum": _NODE_TYPE_VALUES,
+            "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
             "description": "Required for create_node. Batch commands use snake_case node_type, never nodeType.",
         },
         "data": {
