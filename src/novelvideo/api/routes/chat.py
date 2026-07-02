@@ -371,6 +371,8 @@ def _completion_text_or_existing(event_text: object, existing: str) -> str:
     final_text = str(event_text or "").strip()
     if not final_text or final_text.startswith("stop="):
         return existing
+    if final_text.lower() == "(hermes timed out)" and existing.strip():
+        return existing
     if existing.strip() and _is_completion_notice(final_text):
         if final_text in existing:
             return existing

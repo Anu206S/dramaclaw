@@ -40,19 +40,6 @@ except Exception as exc:
     wait_canvas_command_result = None
     wait_canvas_context_result = None
 
-_WORKFLOW_GRAPH_IMPORT_ERROR: Exception | None = None
-try:
-    from novelvideo.freezone.workflow_graph import (
-        REGISTERED_WORKFLOWS,
-        build_workflow_graph_commands,
-        build_workflow_plan,
-    )
-except Exception as exc:
-    _WORKFLOW_GRAPH_IMPORT_ERROR = exc
-    REGISTERED_WORKFLOWS = []
-    build_workflow_graph_commands = None
-    build_workflow_plan = None
-
 TOOLSET = "freezone"
 FREEZONE_ACP_TOOLSET = "freezone-acp"
 REGISTER_TOOLSETS = (FREEZONE_ACP_TOOLSET,)
@@ -520,7 +507,6 @@ _COMMAND_REQUIRED_FIELDS = {
     "open_mainline_projection": ("request",),
 }
 
-
 def _emit_command_error(project: str | None, canvas: str | None, status: str, error: str) -> str:
     return tool_result(
         {
@@ -651,7 +637,11 @@ def _validate_write_commands_shape(
     return None
 
 
-def _emit_canvas_commands(project: str | None, canvas: str | None, commands: list[Any]) -> str:
+def _emit_canvas_commands(
+    project: str | None,
+    canvas: str | None,
+    commands: list[Any],
+) -> str:
     if not isinstance(commands, list) or not commands:
         return _emit_command_error(
             project, canvas, "empty_commands", "commands must be a non-empty array"
@@ -720,48 +710,6 @@ def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
     commands = args.get("commands")
     if commands is None and isinstance(args.get("body"), dict):
         commands = args["body"].get("commands")
-    return _emit_canvas_commands(project, canvas, commands)
-
-
-def _handle_build_workflow_plan(args: dict[str, Any], **_: Any) -> str:
-    if build_workflow_plan is None:
-        return tool_error(
-            "Freezone workflow plan builder is unavailable. "
-            f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
-        )
-    return tool_result(build_workflow_plan(args))
-
-
-def _handle_list_workflows(args: dict[str, Any], **_: Any) -> str:
-    workflows = [
-        {
-            "workflow_type": str(item.get("workflow_type") or ""),
-            "label": str(item.get("label") or item.get("workflow_type") or ""),
-            "aliases": item.get("aliases") if isinstance(item.get("aliases"), list) else [],
-            "template_kind": item.get("template_kind") or item.get("builder") or "",
-        }
-        for item in REGISTERED_WORKFLOWS
-        if item.get("workflow_type")
-    ]
-    return tool_result({"ok": True, "count": len(workflows), "workflows": workflows})
-
-
-def _handle_create_workflow_graph(args: dict[str, Any], **_: Any) -> str:
-    if build_workflow_graph_commands is None:
-        return tool_error(
-            "Freezone workflow graph builder is unavailable. "
-            f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
-        )
-    built = build_workflow_graph_commands(args)
-    if not built.get("ok"):
-        return tool_result(built)
-    project = (
-        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
-    )
-    canvas = (
-        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
-    )
-    commands = built.get("commands")
     return _emit_canvas_commands(project, canvas, commands)
 
 
@@ -1465,12 +1413,12 @@ TOOLS = (
         "freezone_emit_canvas_command",
         _schema(
             "freezone_emit_canvas_command",
-            "Default Freezone write tool. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. Use this for any request that creates several nodes, several edges, or combines create/update/link/layout/group/select/run actions. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
+            "Default Freezone write tool for canvas edits. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
             {
                 **_SCOPE_PROPS,
                 "commands": {
                     "type": "array",
-                    "description": "Complete canvas_chat_commands.v1 commands array. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc. create_edge requires link_type. Use client_id on create_node/add_next_node when later commands reference newly created nodes. Do not use legacy command/nodeType/imageGenerationParams, canvas_context_request.v1, or legacy edge fields role/link_kind/semantic_kind/semantic_reason/semantic_description.",
+                    "description": "Complete canvas_chat_commands.v1 commands array. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc.",
                     "items": _CANVAS_COMMAND_ITEM_SCHEMA,
                 },
                 "body": {
