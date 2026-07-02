@@ -6,6 +6,8 @@ import {
   mergeHistorySnapshot,
   pruneOldMessageCaches,
   sanitizeMessagesForCache,
+  scopeForProjectForTest,
+  scopeSessionKeyForTest,
 } from "@/features/superchat/use-superchat";
 import type { ChatMessage, ChatRole } from "@/features/superchat/types";
 
@@ -162,6 +164,54 @@ file_1_filename: 她与她的江山.docx
     });
 
     expect(normalized?.text).toBe("上传了哪些文件了");
+  });
+
+  it("strips internal SuperTale canvas command blocks from displayed text", () => {
+    const normalized = normalizeMessage({
+      id: "backend-user-2",
+      role: "user",
+      content: `你好
+
+[SUPERTALE_CANVAS_CHAT_COMMANDS]
+This Freezone chat can change the current canvas by returning a JSON block.
+[/SUPERTALE_CANVAS_CHAT_COMMANDS]`,
+      created_at: "2026-06-08T08:00:00Z",
+    });
+
+    expect(normalized?.text).toBe("你好");
+  });
+
+  it("preserves backend ui events for persisted canvas feedback", () => {
+    const uiEvents = [
+      {
+        type: "canvas_command_result",
+        bridge_key: "bridge-a",
+      },
+    ];
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      content: "已完成",
+      ui_events: uiEvents,
+    });
+
+    expect(normalized?.uiEvents).toBe(uiEvents);
+  });
+});
+
+describe("Freezone chat scope", () => {
+  it("keeps different Freezone canvases in separate local session buckets", () => {
+    const canvasA = scopeForProjectForTest("project-a", "freezone", "canvas-a");
+    const canvasB = scopeForProjectForTest("project-a", "freezone", "canvas-b");
+
+    expect(canvasA).toMatchObject({
+      kind: "project",
+      id: "project-a",
+      surface: "freezone",
+      canvasId: "canvas-a",
+    });
+    expect(scopeSessionKeyForTest(canvasA)).toBe("supertale:project:project-a:freezone:canvas-a");
+    expect(scopeSessionKeyForTest(canvasB)).toBe("supertale:project:project-a:freezone:canvas-b");
   });
 });
 

@@ -99,6 +99,7 @@ import { nodeTypes as canvasNodeTypes } from './nodes';
 import { edgeTypes as canvasEdgeTypes } from './edges';
 import { NodeSelectionMenu } from './NodeSelectionMenu';
 import { SelectedNodeOverlay } from './ui/SelectedNodeOverlay';
+import { LightEditorCanvasOverlay } from './ui/LightEditorCanvasOverlay';
 import { MultiSelectionToolbar } from './ui/MultiSelectionToolbar';
 import {
   MultiSelectionConnectButton,
@@ -4441,6 +4442,7 @@ export function Canvas({
         {minimapVisible && <CanvasMinimapBookmarksOverlay onHoverChange={setMinimapHover} />}
 
         <SelectedNodeOverlay />
+        <LightEditorCanvasOverlay />
         <MultiSelectionToolbar />
         <MultiSelectionConnectButton
           onBatchOpenMenu={handleBatchConnectOpenMenu}

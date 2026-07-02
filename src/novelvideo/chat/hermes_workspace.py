@@ -30,6 +30,8 @@ DEFAULT_HERMES_SKILLS = {
 }
 DEFAULT_HERMES_PLUGINS = {"dramaclaw", "freezone"}
 DEFAULT_HERMES_TOOLSETS = {"hermes-acp", "freezone-acp"}
+FREEZONE_HERMES_SKILLS = {"freezone", "freezone-canvas-node-operator"}
+FREEZONE_HERMES_PLUGINS = {"freezone"}
 _warned_repo_state_fallback = False
 
 
@@ -78,6 +80,46 @@ disabled_toolsets:
   - subprocess
   - file_write
   - file_read         # We allow read by sandbox; disable agent-side tool too
+  - edit
+  - write
+  - read
+  - glob
+  - grep
+"""
+
+_FREEZONE_CONFIG_YAML_TEMPLATE = """# Freezone/虾画 hermes config.
+# This profile intentionally enables only canvas-oriented tools.
+
+model:
+  default: {model}
+  provider: {provider}
+  base_url: {base_url}
+  api_key: {api_key}
+  api_mode: {api_mode}
+  context_length: {context_length}   # skip the slow cold-start context-length probe
+
+enabled_toolsets:
+  - hermes-acp
+  - freezone-acp
+  - memory
+
+plugins:
+  enabled:
+    - freezone
+
+display:
+  tool_progress: verbose
+  tool_progress_command: true
+
+disabled_toolsets:
+  - dramaclaw
+  - dramaclaw-acp
+  - bash
+  - shell
+  - terminal
+  - subprocess
+  - file_write
+  - file_read
   - edit
   - write
   - read
@@ -196,6 +238,19 @@ def _default_config_yaml() -> str:
         context_length=_hermes_model_context_length(),
     )
 
+
+def _default_freezone_config_yaml() -> str:
+    api_key, _base_url = _effective_newapi_gateway()
+    return _FREEZONE_CONFIG_YAML_TEMPLATE.format(
+        model=_hermes_model_default(),
+        provider=_hermes_model_provider(),
+        base_url=_newapi_base_url(),
+        api_key=api_key,
+        api_mode=_hermes_model_api_mode(),
+        context_length=_hermes_model_context_length(),
+    )
+
+
 _DEFAULT_SOUL_MD = (
     "你是虾导。不要自称 Hermes Agent，不要提 Nous Research，"
     "也不要主动解释底层代理框架。自我介绍时只回答“我是虾导”，"
@@ -207,6 +262,17 @@ _DEFAULT_SOUL_MD = (
 _DEFAULT_MEMORY_MD = """虾导在 DramaClaw 会话中面向用户自称“虾导”，不要自称 Hermes Agent，不要提 Nous Research 或底层代理框架。自我介绍时只回答“我是虾导”，不要附加“DramaClaw 的小说转视频创作助手”之类的头衔或职能描述。
 §
 DramaClaw 管理的虾导会话中 `terminal` 被禁用（在 config.yaml disabled_toolsets 中），curl 等 shell 命令会被直接拒绝。调用 DramaClaw API 时应使用已启用的 `hermes-acp` toolset 中的 DramaClaw 插件工具，不要用 curl。
+"""
+
+_FREEZONE_SOUL_MD = (
+    "你是虾画助手。只处理 Freezone/虾画画布上下文中的节点、连线、资源查看和工作流操作。"
+    "用户问身份时，回答“我是虾画助手”。不要自称 Hermes Agent，不要提 Nous Research，"
+    "也不要主动解释底层代理框架。\n"
+)
+
+_FREEZONE_MEMORY_MD = """虾画助手只处理虾画画布上下文中的节点、连接、资源查看和工作流操作。用户问身份时，回答“我是虾画助手”。
+§
+虾画会话应优先使用 `freezone-acp` 工具集中的 Freezone 画布工具。不要使用 DramaClaw 主线写入工具改动画布。
 """
 
 _OLD_SOUL_PREFIX = (
@@ -251,7 +317,7 @@ _OLD_SOUL_IDENTITY_TEXT = (
 )
 
 
-def ensure_user_hermes_workspace(username: str) -> Path:
+def ensure_user_hermes_workspace(username: str, *, profile: str = "director") -> Path:
     """Create / refresh per-user HERMES_HOME. Idempotent and cheap.
 
     Layout under ``state/{username}/.hermes/``:
@@ -264,7 +330,9 @@ def ensure_user_hermes_workspace(username: str) -> Path:
 
     Returns the HERMES_HOME path (caller passes as ``HERMES_HOME`` env var).
     """
-    home = _state_root() / username / ".hermes"
+    normalized_profile = "freezone" if profile == "freezone" else "director"
+    home_name = ".hermes-freezone" if normalized_profile == "freezone" else ".hermes"
+    home = _state_root() / username / home_name
     home.mkdir(parents=True, exist_ok=True)
     try:
         home.chmod(0o700)
@@ -283,22 +351,30 @@ def ensure_user_hermes_workspace(username: str) -> Path:
     skills_dir = home / "skills"
     skills_dir.mkdir(exist_ok=True)
     (skills_dir / "_user").mkdir(exist_ok=True)
-    _materialize_skill_links(skills_dir)
+    _materialize_skill_links(skills_dir, profile=normalized_profile)
 
     # plugins layout
     plugins_dir = home / "plugins"
     plugins_dir.mkdir(exist_ok=True)
-    _materialize_plugin_links(plugins_dir)
+    _materialize_plugin_links(plugins_dir, profile=normalized_profile)
 
     # hermes config (only write if missing — user may have customized)
     config_yaml = home / "config.yaml"
     if not config_yaml.exists():
-        config_yaml.write_text(_default_config_yaml(), encoding="utf-8")
-    _ensure_default_plugin_enabled(config_yaml)
-    _ensure_default_toolsets_enabled(config_yaml)
+        config_yaml.write_text(
+            _default_freezone_config_yaml()
+            if normalized_profile == "freezone"
+            else _default_config_yaml(),
+            encoding="utf-8",
+        )
+    if normalized_profile == "freezone":
+        _ensure_freezone_config_policy(config_yaml)
+    else:
+        _ensure_default_plugin_enabled(config_yaml)
+        _ensure_default_toolsets_enabled(config_yaml)
     _ensure_model_config_from_env(config_yaml)
     _ensure_model_api_key(config_yaml)
-    _ensure_identity_context(home)
+    _ensure_identity_context(home, profile=normalized_profile)
 
     # .env template (only write if missing — never overwrite user's keys)
     env_file = home / ".env"
@@ -383,8 +459,12 @@ def _ensure_root_env_defaults(env_file: Path) -> None:
         _log.warning("failed to fill hermes .env defaults at %s", env_file)
 
 
-def _ensure_identity_context(home: Path) -> None:
+def _ensure_identity_context(home: Path, *, profile: str = "director") -> None:
     """Keep user-visible assistant identity consistent across all workspaces."""
+    if profile == "freezone":
+        _ensure_freezone_identity_context(home)
+        return
+
     soul_file = home / "SOUL.md"
     try:
         if soul_file.exists():
@@ -417,7 +497,23 @@ def _ensure_identity_context(home: Path) -> None:
         _log.warning("failed to ensure hermes MEMORY.md under %s", memories_dir)
 
 
-def _materialize_skill_links(skills_dir: Path) -> None:
+def _ensure_freezone_identity_context(home: Path) -> None:
+    """Keep the Freezone assistant identity separate from the director profile."""
+    soul_file = home / "SOUL.md"
+    try:
+        soul_file.write_text(_FREEZONE_SOUL_MD, encoding="utf-8")
+    except OSError:
+        _log.warning("failed to ensure freezone hermes SOUL.md at %s", soul_file)
+
+    memories_dir = home / "memories"
+    try:
+        memories_dir.mkdir(exist_ok=True)
+        (memories_dir / "MEMORY.md").write_text(_FREEZONE_MEMORY_MD, encoding="utf-8")
+    except OSError:
+        _log.warning("failed to ensure freezone hermes MEMORY.md under %s", memories_dir)
+
+
+def _materialize_skill_links(skills_dir: Path, *, profile: str = "director") -> None:
     """Create / refresh symlinks from skills_dir/<name> → repo-pinned skills.
 
     The source of truth is ``DramaClaw/.hermes/skills/`` so a fresh checkout
@@ -434,12 +530,11 @@ def _materialize_skill_links(skills_dir: Path) -> None:
         )
         return
 
+    env_name = "ST_HERMES_FREEZONE_SKILLS" if profile == "freezone" else "ST_HERMES_SKILLS"
+    defaults = FREEZONE_HERMES_SKILLS if profile == "freezone" else DEFAULT_HERMES_SKILLS
     allowed = {
         name.strip()
-        for name in os.environ.get(
-            "ST_HERMES_SKILLS",
-            ",".join(sorted(DEFAULT_HERMES_SKILLS)),
-        ).split(",")
+        for name in os.environ.get(env_name, ",".join(sorted(defaults))).split(",")
         if name.strip()
     }
     want = {
@@ -519,6 +614,56 @@ def _ensure_default_plugin_enabled(config_yaml: Path) -> None:
         config_yaml.write_text(new_text.rstrip() + "\n", encoding="utf-8")
     except OSError:
         return
+
+
+def _ensure_freezone_config_policy(config_yaml: Path) -> None:
+    """Force the Freezone Hermes profile to expose only canvas-oriented tools."""
+    try:
+        text = config_yaml.read_text(encoding="utf-8")
+    except OSError:
+        return
+    try:
+        config = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        _log.warning("failed to parse freezone hermes config yaml at %s", config_yaml)
+        return
+    if not isinstance(config, dict):
+        config = {}
+
+    config["enabled_toolsets"] = ["hermes-acp", "freezone-acp", "memory"]
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+    plugins["enabled"] = ["freezone"]
+    config["plugins"] = plugins
+
+    disabled_toolsets = config.get("disabled_toolsets")
+    if not isinstance(disabled_toolsets, list):
+        disabled_toolsets = []
+    disabled = [str(item).strip() for item in disabled_toolsets if str(item).strip()]
+    for item in [
+        "dramaclaw",
+        "dramaclaw-acp",
+        "bash",
+        "shell",
+        "terminal",
+        "subprocess",
+        "file_write",
+        "file_read",
+        "edit",
+        "write",
+        "read",
+        "glob",
+        "grep",
+    ]:
+        if item not in disabled:
+            disabled.append(item)
+    config["disabled_toolsets"] = disabled
+
+    try:
+        config_yaml.write_text(_dump_hermes_config_yaml(config), encoding="utf-8")
+    except OSError:
+        _log.warning("failed to enforce freezone hermes config policy at %s", config_yaml)
 
 
 def _ensure_default_toolsets_enabled(config_yaml: Path) -> None:
@@ -700,7 +845,7 @@ def _ensure_model_config_from_env(config_yaml: Path) -> None:
         _log.warning("failed to apply hermes model env overrides to %s", config_yaml)
 
 
-def _materialize_plugin_links(plugins_dir: Path) -> None:
+def _materialize_plugin_links(plugins_dir: Path, *, profile: str = "director") -> None:
     """Create / refresh symlinks from plugins_dir/<name> → repo-pinned plugins."""
     src_plugins = DRAMACLAW_ROOT / ".hermes" / "plugins"
     if not src_plugins.is_dir():
@@ -710,12 +855,11 @@ def _materialize_plugin_links(plugins_dir: Path) -> None:
         )
         return
 
+    env_name = "ST_HERMES_FREEZONE_PLUGINS" if profile == "freezone" else "ST_HERMES_PLUGINS"
+    defaults = FREEZONE_HERMES_PLUGINS if profile == "freezone" else DEFAULT_HERMES_PLUGINS
     allowed = {
         name.strip()
-        for name in os.environ.get(
-            "ST_HERMES_PLUGINS",
-            ",".join(sorted(DEFAULT_HERMES_PLUGINS)),
-        ).split(",")
+        for name in os.environ.get(env_name, ",".join(sorted(defaults))).split(",")
         if name.strip()
     }
     want = {

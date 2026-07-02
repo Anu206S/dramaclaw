@@ -20,6 +20,7 @@ const MODEL_PICKER_OPTION_BASE_CLASS =
   'inline-flex h-8 w-full items-center gap-2 rounded-[6px] px-3 text-left text-xs font-medium transition-colors';
 
 export type ProviderId =
+  | 'newapi'
   | 'huimeng'
   | 'openrouter'
   | 'openai'
@@ -46,12 +47,25 @@ export interface ModelOption {
 }
 
 export const SHARED_PROVIDERS: ProviderOption[] = [
+  { id: 'newapi', label: 'DramaClawAPI' },
   { id: 'huimeng', label: '惠盟 / HuiMeng' },
   { id: 'openrouter', label: 'OpenRouter' },
   { id: 'openai', label: 'OpenAI' },
 ];
 
 export const SHARED_MODELS: ModelOption[] = [
+  {
+    id: 'newapi_gpt_image2',
+    providerId: 'newapi',
+    apiModel: 'newapi_gpt_image2',
+    label: 'DC-Image-2',
+  },
+  {
+    id: 'newapi_nanobanana2',
+    providerId: 'newapi',
+    apiModel: 'newapi_nanobanana2',
+    label: 'DC-Banana-2',
+  },
   {
     id: 'huimeng/gpt-image-2',
     providerId: 'huimeng',
@@ -73,6 +87,7 @@ export const SHARED_MODELS: ModelOption[] = [
 ];
 
 export const DEFAULT_SHARED_MODEL_ID = 'huimeng/gpt-image-2';
+export const DEFAULT_UPSCALE_MODEL_ID = 'newapi_gpt_image2';
 
 // Video generation models. `id` is the raw backend model id sent to
 // /freezone/video/gen so we don't need a separate apiModel mapping.

@@ -144,6 +144,16 @@ def _ensure_supported_hermes_version(cli_path: Path) -> None:
     _log.info("using %s", _checked_hermes_versions[cli_path])
 
 
+def _workspace_profile_for_agent(agent_profile: str, tool_mode: str, surface: str | None) -> str:
+    if str(surface or "").strip() == "freezone":
+        return "freezone"
+    if (agent_profile or "").strip() == "freezone":
+        return "freezone"
+    if (tool_mode or "").strip() == "freezone_canvas":
+        return "freezone"
+    return "director"
+
+
 @dataclass
 class _WorkerSlot:
     """One per active user."""
@@ -157,6 +167,8 @@ class _WorkerSlot:
     tool_mode: str = "default"
     scope_kind: str = "home"
     project_id: str | None = None
+    surface: str | None = None
+    canvas_id: str | None = None
     last_used: float = field(default_factory=time.time)
 
 
@@ -176,7 +188,7 @@ class HermesPool:
         token_renew_skew_secs: int = DEFAULT_TOKEN_RENEW_SKEW_SECS,
     ) -> None:
         self._slots: dict[str, _WorkerSlot] = {}
-        self._session_ids: dict[str, dict[tuple[str, str, str | None], str]] = {}
+        self._session_ids: dict[str, dict[tuple[str, str, str | None, str | None], str]] = {}
         self._lock = asyncio.Lock()
         self._idle_kill_secs = idle_kill_secs
         self._max_workers = max_workers
@@ -195,6 +207,8 @@ class HermesPool:
         tool_mode: str = "default",
         scope_kind: str = "home",
         project_id: str | None = None,
+        surface: str | None = None,
+        canvas_id: str | None = None,
     ) -> HermesSdkThread:
         """Lazily create / return the per-user hermes thread.
 
@@ -202,6 +216,12 @@ class HermesPool:
         ``await thread.stream(prompt)`` to send messages.
         """
         slot_key = self._slot_key(username, agent_profile)
+        normalized_surface = (
+            str(surface or "").strip()
+            or ("freezone" if _workspace_profile_for_agent(agent_profile, tool_mode, surface) == "freezone" else "")
+            or None
+        )
+        normalized_canvas_id = str(canvas_id or "").strip() or None
         async with self._lock:
             slot = self._slots.get(slot_key)
             if slot is not None:
@@ -213,6 +233,8 @@ class HermesPool:
                         tool_mode=tool_mode,
                         scope_kind=scope_kind,
                         project_id=project_id,
+                        surface=normalized_surface,
+                        canvas_id=normalized_canvas_id,
                         reason="thread-closed",
                     )
                 elif self._token_needs_renewal(slot):
@@ -223,6 +245,8 @@ class HermesPool:
                         tool_mode=tool_mode,
                         scope_kind=scope_kind,
                         project_id=project_id,
+                        surface=normalized_surface,
+                        canvas_id=normalized_canvas_id,
                         reason="agent-session-renewal",
                     )
                 elif (
@@ -230,6 +254,8 @@ class HermesPool:
                     or slot.project_id != project_id
                     or slot.agent_profile != agent_profile
                     or slot.tool_mode != tool_mode
+                    or slot.surface != normalized_surface
+                    or slot.canvas_id != normalized_canvas_id
                 ):
                     slot = await self._rotate_slot_locked(
                         slot,
@@ -238,6 +264,8 @@ class HermesPool:
                         tool_mode=tool_mode,
                         scope_kind=scope_kind,
                         project_id=project_id,
+                        surface=normalized_surface,
+                        canvas_id=normalized_canvas_id,
                         reason="scope-env-change",
                     )
                 else:
@@ -253,6 +281,8 @@ class HermesPool:
                 tool_mode=tool_mode,
                 scope_kind=scope_kind,
                 project_id=project_id,
+                surface=normalized_surface,
+                canvas_id=normalized_canvas_id,
             )
             self._slots[slot_key] = slot
             # Ensure background reaper is running
@@ -269,6 +299,8 @@ class HermesPool:
         tool_mode: str,
         scope_kind: str,
         project_id: str | None,
+        surface: str | None,
+        canvas_id: str | None,
         resume_session_id: str | None = None,
     ) -> _WorkerSlot:
         cli_path = _hermes_cli_path()
@@ -277,7 +309,10 @@ class HermesPool:
                 f"hermes CLI not found at {cli_path}. " "Run `uv tool install 'hermes-agent[acp]'`."
             )
         _ensure_supported_hermes_version(cli_path)
-        home = ensure_user_hermes_workspace(username)
+        home = ensure_user_hermes_workspace(
+            username,
+            profile=_workspace_profile_for_agent(agent_profile, tool_mode, surface),
+        )
         worker_id = f"hermes-{uuid.uuid4().hex}"
         token = await get_auth_session_port().create_agent_session(
             username=username,
@@ -296,6 +331,8 @@ class HermesPool:
             project_id=project_id,
             project_env=project_env,
             tool_mode=tool_mode,
+            surface=surface,
+            canvas_id=canvas_id,
         )
         client = HermesSdkClient(
             cli_path=cli_path,
@@ -306,7 +343,7 @@ class HermesPool:
         )
         session_id = (
             resume_session_id
-            or self._session_id_for(username, scope_kind, project_id, agent_profile)
+            or self._session_id_for(username, scope_kind, project_id, agent_profile, canvas_id)
             or ""
         ).strip()
         thread = client.thread_resume(session_id) if session_id else client.thread_start()
@@ -327,6 +364,8 @@ class HermesPool:
             tool_mode=tool_mode,
             scope_kind=scope_kind,
             project_id=project_id,
+            surface=surface,
+            canvas_id=canvas_id,
         )
 
     def _token_needs_renewal(self, slot: _WorkerSlot) -> bool:
@@ -343,10 +382,14 @@ class HermesPool:
         scope_kind: str,
         project_id: str | None,
         agent_profile: str = "main",
-    ) -> tuple[str, str, str | None]:
+        canvas_id: str | None = None,
+    ) -> tuple[str, str, str | None, str | None]:
         kind = (scope_kind or "home").strip() or "home"
         profile = (agent_profile or "main").strip() or "main"
-        return profile, kind, project_id if kind != "home" else None
+        scoped_canvas = str(canvas_id or "").strip() or None
+        if profile != "freezone":
+            scoped_canvas = None
+        return profile, kind, project_id if kind != "home" else None, scoped_canvas
 
     def _session_id_for(
         self,
@@ -354,9 +397,10 @@ class HermesPool:
         scope_kind: str,
         project_id: str | None,
         agent_profile: str = "main",
+        canvas_id: str | None = None,
     ) -> str | None:
         return self._session_ids.get(username, {}).get(
-            self._scope_key(scope_kind, project_id, agent_profile)
+            self._scope_key(scope_kind, project_id, agent_profile, canvas_id)
         )
 
     def _remember_session(self, slot: _WorkerSlot) -> None:
@@ -364,7 +408,7 @@ class HermesPool:
         if not session_id:
             return
         self._session_ids.setdefault(slot.username, {})[
-            self._scope_key(slot.scope_kind, slot.project_id, slot.agent_profile)
+            self._scope_key(slot.scope_kind, slot.project_id, slot.agent_profile, slot.canvas_id)
         ] = session_id
 
     async def _rotate_slot_locked(
@@ -376,6 +420,8 @@ class HermesPool:
         tool_mode: str,
         scope_kind: str,
         project_id: str | None,
+        surface: str | None,
+        canvas_id: str | None,
         reason: str,
     ) -> _WorkerSlot:
         """Replace a running worker with a fresh token/session.
@@ -391,7 +437,8 @@ class HermesPool:
             slot.scope_kind,
             slot.project_id,
             slot.agent_profile,
-        ) == self._scope_key(scope_kind, project_id, agent_profile)
+            slot.canvas_id,
+        ) == self._scope_key(scope_kind, project_id, agent_profile, canvas_id)
         resume_session_id = slot.thread.id if same_scope else None
         replacement = await self._spawn_locked(
             slot.username,
@@ -400,6 +447,8 @@ class HermesPool:
             tool_mode=tool_mode,
             scope_kind=scope_kind,
             project_id=project_id,
+            surface=surface,
+            canvas_id=canvas_id,
             resume_session_id=resume_session_id,
         )
         _log.info(
@@ -461,6 +510,8 @@ class HermesPool:
         *,
         project_id: str | None,
         tool_mode: str = "default",
+        surface: str | None = None,
+        canvas_id: str | None = None,
         project_env: dict[str, str] | None = None,
     ) -> dict[str, str]:
         """Strict env whitelist — host LLM keys are NOT inherited.
@@ -493,6 +544,12 @@ class HermesPool:
             "SUPERTALE_AGENT_TOKEN_EXPIRES_AT": str(token.exp),
             "SUPERTALE_API_URL": self._api_url,
         }
+        if surface:
+            env["DRAMACLAW_CHAT_SURFACE"] = surface
+            env["SUPERTALE_CHAT_SURFACE"] = surface
+        if canvas_id:
+            env["DRAMACLAW_CANVAS_ID"] = canvas_id
+            env["SUPERTALE_CANVAS_ID"] = canvas_id
         if project_id:
             env["DRAMACLAW_PROJECT_ID"] = project_id
             env["DRAMACLAW_PROJECT"] = project_id
@@ -565,6 +622,8 @@ class HermesPool:
         tool_mode: str = "default",
         scope_kind: str = "home",
         project_id: str | None = None,
+        surface: str | None = None,
+        canvas_id: str | None = None,
     ) -> None:
         """Proactively spawn + warm the user's worker for the given scope.
 
@@ -581,6 +640,8 @@ class HermesPool:
                 tool_mode=tool_mode,
                 scope_kind=scope_kind,
                 project_id=project_id,
+                surface=surface,
+                canvas_id=canvas_id,
             )
         except Exception as e:  # noqa: BLE001 - prewarm must never break chat
             _log.debug("prewarm get_for_user failed for user=%s: %s", username, e)
