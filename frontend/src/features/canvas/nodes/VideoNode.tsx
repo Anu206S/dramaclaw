@@ -66,6 +66,8 @@ import {
   resolveImageDisplayUrl,
   snapToAllowedAspectRatio,
 } from "@/features/canvas/application/imageData";
+import { ensureWebSafeVideo } from "@/features/canvas/application/videoTranscode";
+import { isVideoFile, VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import { toast } from "sonner";
 import { downloadUrlAsFile } from "@/lib/browserDownload";
@@ -197,6 +199,7 @@ import {
   formatCreditCost,
 } from "@/components/credits/credit-visual";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
+import { useDebouncedValue } from "@/hooks/use-debounced-value";
 
 type VideoNodeProps = NodeProps & {
   id: string;
@@ -444,14 +447,18 @@ function submittableImageUrl(
 
 function resolveDroppedVideoFile(event: DragEvent<HTMLElement>): File | null {
   const directFile = event.dataTransfer.files?.[0];
-  if (directFile && directFile.type.startsWith("video/")) {
+  if (directFile && isVideoFile(directFile)) {
     return directFile;
   }
-  const item = Array.from(event.dataTransfer.items || []).find(
-    (candidate) =>
-      candidate.kind === "file" && candidate.type.startsWith("video/"),
+  // items[].type 同样对 .mxf 为空串，先按 MIME 粗筛拿到 File 再用扩展名兜底。
+  const candidates = Array.from(event.dataTransfer.items || []).filter(
+    (candidate) => candidate.kind === "file",
   );
-  return item?.getAsFile() ?? null;
+  for (const candidate of candidates) {
+    const file = candidate.getAsFile();
+    if (file && isVideoFile(file)) return file;
+  }
+  return null;
 }
 
 function resolveOutputUrl(
@@ -728,13 +735,22 @@ export const VideoNode = memo(
       videoModelsLoading || videoModelsFallback
         ? null
         : (selectedVideoModel?.apiModel ?? null);
+    // Debounce the cost-estimate inputs: dragging the duration slider (and,
+    // to a lesser degree, flipping count/quality/model) churns the query key
+    // and TanStack Query aborts each in-flight request, spraying "Canceled"
+    // rows across the Network tab. Coalesce to one request once the params
+    // settle (~350ms). Primitives only — see useDebouncedValue's contract.
+    const debouncedBackend = useDebouncedValue(videoBackendForCost, 350);
+    const debouncedQuality = useDebouncedValue(quality, 350);
+    const debouncedCount = useDebouncedValue(count, 350);
+    const debouncedDurationSec = useDebouncedValue(durationSec, 350);
     const videoCreditCost = useGenerationCreditCost(
       "video_backend",
-      videoBackendForCost,
+      debouncedBackend,
       {
         surface: "canvas",
-        params: { resolution: qualityToResolution(quality) },
-        quantity: Math.min(Math.max(count, 1), 4) * durationSec,
+        params: { resolution: qualityToResolution(debouncedQuality) },
+        quantity: Math.min(Math.max(debouncedCount, 1), 4) * debouncedDurationSec,
       },
     );
     const totalCreditCostDisplay = useMemo(() => {
@@ -1201,7 +1217,7 @@ export const VideoNode = memo(
 
     const processFile = useCallback(
       async (file: File) => {
-        if (!file.type.startsWith("video/")) return;
+        if (!isVideoFile(file)) return;
         const projectId = readUrl().project;
         if (!projectId) {
           console.error("[video-node] no project in URL");
@@ -1213,10 +1229,21 @@ export const VideoNode = memo(
         setTransientPreviewUrl(previewUrl);
         updateNodeData(id, { sourceFileName: file.name, isUploading: true });
         try {
+          // HEVC（飞书录屏/iPhone）等 Web 不兼容编码先在浏览器内转成 H.264 再上传，
+          // 否则 Edge 等无对应解码器的浏览器只有声音没画面。见 videoTranscode.ts。
+          // 转码期间 UI 统一走「上传中」loading，不单独显示转码进度。
+          const prepared = await ensureWebSafeVideo(file);
+          if (prepared.transcoded) {
+            // 源编码在本浏览器可能根本解不了（Edge+HEVC），本地预览也换成转码产物。
+            clearTransientPreview();
+            const preparedUrl = URL.createObjectURL(prepared.file);
+            transientUrlRef.current = preparedUrl;
+            setTransientPreviewUrl(preparedUrl);
+          }
           const uploaded = await uploadFreezoneVideo(
             projectId,
-            file,
-            file.name,
+            prepared.file,
+            prepared.file.name,
           );
           updateNodeData(id, {
             videoUrl: uploaded.url,
@@ -1453,7 +1480,7 @@ export const VideoNode = memo(
       return canvasEventBus.subscribe(
         "video-node/external-file",
         ({ nodeId, file }) => {
-          if (nodeId !== id || !file.type.startsWith("video/")) return;
+          if (nodeId !== id || !isVideoFile(file)) return;
           void processFile(file);
         },
       );
@@ -2993,7 +3020,7 @@ export const VideoNode = memo(
         <input
           ref={inputRef}
           type="file"
-          accept="video/*"
+          accept={VIDEO_FILE_ACCEPT}
           className="hidden"
           onChange={handleFileChange}
         />

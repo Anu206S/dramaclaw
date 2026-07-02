@@ -37,6 +37,7 @@ import '@xyflow/react/dist/style.css';
 import { useShallow } from 'zustand/react/shallow';
 
 import { CreditDisplayHiddenProvider } from '@/components/credits/credit-visual';
+import { isCeRuntime } from '@/lib/runtime-config';
 import { resolveAbsolutePosition, useCanvasStore } from '@/stores/canvasStore';
 import { useAppStore } from '@/stores/app-store';
 import { getSkillRegistry } from '@/api/skills';
@@ -70,6 +71,7 @@ import {
   isPresetManagedNode,
 } from '@/features/canvas/domain/mainlineNodeFlags';
 import { prepareNodeImage } from '@/features/canvas/application/imageData';
+import { isVideoFile } from '@/features/canvas/application/videoFileTypes';
 import { uploadLocalImageToBackend } from '@/features/canvas/application/uploadToolOutput';
 import {
   buildGenerationErrorReport,
@@ -469,7 +471,8 @@ function collectDroppedMediaFiles(dataTransfer: DataTransfer): File[] {
   return Array.from(files).filter(
     (file) =>
       file.type.startsWith('image/') ||
-      file.type.startsWith('video/') ||
+      // isVideoFile 兜住 .mxf 等 file.type 为空串的专业容器（后续 ffmpeg 转码）。
+      isVideoFile(file) ||
       file.type.startsWith('audio/')
   );
 }
@@ -4368,7 +4371,7 @@ export function Canvas({
   }, [nodePlacementClientPosition, pendingNodePlacement, t]);
 
   return (
-    <CreditDisplayHiddenProvider value={true}>
+    <CreditDisplayHiddenProvider value={isCeRuntime()}>
     <div
       ref={wrapperRef}
       className="relative h-full w-full bg-background"
