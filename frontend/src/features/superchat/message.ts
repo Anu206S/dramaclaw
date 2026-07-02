@@ -4,7 +4,7 @@ import type { ChatAttachment, ChatMessage, ChatRole } from "@/features/superchat
 import { hasStructuredContent } from "@/features/superchat/spec-extract";
 
 const INTERNAL_CONTEXT_BLOCK_RE =
-  /\n?\[(DRAMACLAW_[A-Z0-9_]+)\][\s\S]*?\[\/\1\]\n?/g;
+  /\n?\[((?:DRAMACLAW|SUPERTALE)_[A-Z0-9_]+)\][\s\S]*?\[\/\1\]\n?/g;
 
 function stripInternalContextBlocks(text: string): string {
   return text.replace(INTERNAL_CONTEXT_BLOCK_RE, "\n").trim();
