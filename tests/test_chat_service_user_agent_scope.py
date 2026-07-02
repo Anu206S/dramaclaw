@@ -681,6 +681,29 @@ def test_prompt_injects_json_render_contract(monkeypatch, tmp_path):
     assert prompt.rstrip().endswith("查看肖像图片，用 json-render 显示")
 
 
+def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainline_generation(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "我想做个公益短片没思路",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "creative ideation" in prompt
+    assert "draft a canvas framework" in prompt
+    assert "Freezone canvas tools" in prompt
+    assert "generate complete short videos" in prompt
+    assert "video, audio, and composition nodes" in prompt
+    assert "Do not use mainline production tools" in prompt
+    assert "Do not start or mutate the main video-production pipeline" in prompt
+    assert "do not generate/plan scripts" not in prompt
+
+
 def test_project_media_uses_project_id_url_and_explicit_project_dir(tmp_path):
     project_dir = tmp_path / "output" / "admin" / "demo"
     image = project_dir / "frames" / "ep001" / "beat_01.png"

@@ -5,7 +5,12 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Canvas } from "@/features/canvas/Canvas";
 import { NodeReplaceDragPreview } from "@/features/canvas/ui/NodeReplaceDragPreview";
-import { listFreezoneProjectAssets, type SupertaleProjectSummary } from "@/api/projects";
+import {
+  listCharacters,
+  listFreezoneProjectAssets,
+  type FreezoneProjectAsset,
+  type SupertaleProjectSummary,
+} from "@/api/projects";
 import {
   buildProjectionFromPreset,
   getProjectionStatuses,
@@ -28,6 +33,7 @@ import {
   SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT,
 } from "@/features/superchat/use-superchat";
 import { SuperChatPanel } from "@/features/superchat/superchat-panel";
+import type { ChatAttachment } from "@/features/superchat/types";
 import { CommitDialog } from "./commit/CommitDialog";
 import { promoteToAsset } from "./commit/promoteToAsset";
 import { commitDirectorRenderFromCanvasSource } from "./commit/directorRenderCommit";
@@ -83,6 +89,7 @@ import {
   removeLocalFreezoneProjection,
 } from "@/features/freezone/canvasSyncRuntime";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
+import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import {
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
   canvasCommandEnvelopeMatchesCanvas,
@@ -99,10 +106,14 @@ import {
   reportCanvasContextToolResult,
 } from "@/features/freezone/canvasContextToolResult";
 import {
+  buildCanvasNodeReferenceAttachment,
   buildCanvasContextRequestResponses,
   extractCanvasContextRequestEnvelopes,
 } from "@/features/freezone/chatNodeReferences";
-import { buildCanvasOntologyContext } from "@/features/canvas/ontology/canvasOntology";
+import {
+  buildCanvasOntologyContext,
+  type CanvasOntologyContext,
+} from "@/features/canvas/ontology/canvasOntology";
 import type { ServerFrame } from "@/features/superchat/types";
 
 export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
@@ -111,6 +122,12 @@ interface FreezoneShellProps {
   project: SupertaleProjectSummary;
   canvasId: string;
 }
+
+type CurrentCanvasSelectionItem = {
+  nodeId: string;
+  nodeType: string | null;
+  label: string;
+};
 
 const FREEZONE_CHAT_WIDTH = "clamp(500px, 34vw, 540px)";
 const PROJECTION_STATUS_REFRESH_MS = 30_000;
@@ -163,6 +180,38 @@ function canvasContextRequestCandidatesFromDetail(detail: Record<string, unknown
     detail.raw,
     detail,
   ];
+}
+
+async function loadMainlineProjectionAssets(project: string): Promise<FreezoneProjectAsset[]> {
+  const [assets, characters] = await Promise.all([
+    listFreezoneProjectAssets(project),
+    listCharacters(project),
+  ]);
+  const characterAssets: FreezoneProjectAsset[] = characters
+    .map((character): FreezoneProjectAsset | null => {
+      const name = typeof character.name === "string" ? character.name.trim() : "";
+      if (!name) return null;
+      const displayName =
+        typeof character.display_name === "string" && character.display_name.trim()
+          ? character.display_name.trim()
+          : name;
+      return {
+        id: `character:${name}`,
+        tab: "characters",
+        kind: "character",
+        role: "character_profile",
+        label: displayName,
+        sublabel: typeof character.role === "string" && character.role.trim() ? character.role.trim() : undefined,
+        url: typeof character.portrait_url === "string" && character.portrait_url.trim()
+          ? character.portrait_url.trim()
+          : null,
+        exists: true,
+        media_type: character.portrait_url ? "image" : "text",
+        meta: { character: name },
+      };
+    })
+    .filter((asset): asset is FreezoneProjectAsset => Boolean(asset));
+  return [...assets, ...characterAssets];
 }
 
 function canvasCommandValidationFailureResult(errors: string[]): CanvasChatCommandApplyResult {
@@ -553,6 +602,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  const [pendingChatAttachments, setPendingChatAttachments] = useState<ChatAttachment[]>([]);
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
@@ -579,6 +629,79 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     }
   }, [projectId, queryClient]);
   const sync = useCanvasSync(projectId, canvasId);
+  const canvasNodes = useCanvasStore((state) => state.nodes);
+  const canvasEdges = useCanvasStore((state) => state.edges);
+  const selectedNodeId = useCanvasStore((state) => state.selectedNodeId);
+  const visibleSelectedCanvasNodes = useMemo(() => {
+    const selectedNodes = canvasNodes.filter((node) => node.selected);
+    return selectedNodes.length > 0
+      ? selectedNodes
+      : selectedNodeId
+        ? canvasNodes.filter((node) => node.id === selectedNodeId)
+        : [];
+  }, [canvasNodes, selectedNodeId]);
+  const chatReferenceCanvasNodes = useMemo(() => {
+    if (visibleSelectedCanvasNodes.length === 0) return [];
+    const selectedIds = new Set(visibleSelectedCanvasNodes.map((node) => node.id));
+    const expandedIds = new Set(selectedIds);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const node of canvasNodes) {
+        if (!node.parentId || !expandedIds.has(node.parentId) || expandedIds.has(node.id)) continue;
+        expandedIds.add(node.id);
+        changed = true;
+      }
+    }
+    return canvasNodes.filter((node) => expandedIds.has(node.id));
+  }, [canvasNodes, visibleSelectedCanvasNodes]);
+  const currentCanvasSelection = useMemo<CurrentCanvasSelectionItem[]>(
+    () =>
+      visibleSelectedCanvasNodes.map((node) => ({
+        nodeId: node.id,
+        nodeType: node.type ?? null,
+        label: resolveNodeDisplayName(node.type, node.data),
+      })),
+    [visibleSelectedCanvasNodes],
+  );
+  const currentCanvasSelectionAttachment = useMemo(
+    () =>
+      buildCanvasNodeReferenceAttachment(
+        projectId,
+        canvasId,
+        chatReferenceCanvasNodes,
+        canvasEdges,
+        canvasNodes,
+        { displayNodes: visibleSelectedCanvasNodes },
+      ),
+    [canvasEdges, canvasId, canvasNodes, chatReferenceCanvasNodes, projectId, visibleSelectedCanvasNodes],
+  );
+  const attachCurrentSelectionToChat = useCallback(() => {
+    if (!currentCanvasSelectionAttachment) return false;
+    setPendingChatAttachments([currentCanvasSelectionAttachment]);
+    return true;
+  }, [currentCanvasSelectionAttachment]);
+  const handleChatOpenChange = useCallback(
+    (nextOpen: boolean) => {
+      if (nextOpen) {
+        attachCurrentSelectionToChat();
+      }
+      setChatOpen(nextOpen);
+    },
+    [attachCurrentSelectionToChat],
+  );
+  const currentCanvasOntologyContext = useMemo(
+    () =>
+      buildCanvasOntologyContext(canvasNodes, canvasEdges, {
+        canvasId,
+        selectedNodeIds: chatReferenceCanvasNodes.map((node) => node.id),
+      }),
+    [canvasEdges, canvasId, canvasNodes, chatReferenceCanvasNodes],
+  );
+  useEffect(() => {
+    if (!chatOpen || !currentCanvasSelectionAttachment) return;
+    setPendingChatAttachments([currentCanvasSelectionAttachment]);
+  }, [chatOpen, currentCanvasSelectionAttachment]);
 
   const handleBlankPaneClick = useCallback(() => {
     setAssetPanelCollapsed(true);
@@ -1189,7 +1312,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             selectedNodeIds,
             envelopes,
             canvasMetadata: sync.metadata as Record<string, unknown> | null,
-            loadMainlineProjectionAssets: () => listFreezoneProjectAssets(projectId),
+            loadMainlineProjectionAssets: () => loadMainlineProjectionAssets(projectId),
           });
           reportCanvasContextToolResult({
             bridgeKey,
@@ -1332,8 +1455,13 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         </main>
         <FreezoneChatDock
           canvasId={canvasId}
+          currentCanvasMetadata={sync.metadata}
+          currentCanvasSelection={currentCanvasSelection}
+          currentCanvasOntologyContext={currentCanvasOntologyContext}
+          pendingAttachments={pendingChatAttachments}
+          onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
           open={chatOpen}
-          onOpenChange={setChatOpen}
+          onOpenChange={handleChatOpenChange}
           title={t("freezone.chat.title")}
           description={t("freezone.chat.description")}
           toggleLabel={t("freezone.chat.toggle")}
@@ -1401,6 +1529,11 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
 
 function FreezoneChatDock({
   canvasId,
+  currentCanvasMetadata,
+  currentCanvasSelection,
+  currentCanvasOntologyContext,
+  pendingAttachments,
+  onPendingAttachmentsConsumed,
   open,
   onOpenChange,
   title,
@@ -1408,6 +1541,11 @@ function FreezoneChatDock({
   toggleLabel,
 }: {
   canvasId: string;
+  currentCanvasMetadata: Record<string, unknown> | null;
+  currentCanvasSelection: CurrentCanvasSelectionItem[];
+  currentCanvasOntologyContext: CanvasOntologyContext;
+  pendingAttachments: ChatAttachment[];
+  onPendingAttachmentsConsumed: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   title: string;
@@ -1451,6 +1589,11 @@ function FreezoneChatDock({
             <SuperChatPanel
               variant="freezone"
               freezoneCanvasId={canvasId}
+              currentCanvasMetadata={currentCanvasMetadata}
+              currentCanvasSelection={currentCanvasSelection}
+              currentCanvasOntologyContext={currentCanvasOntologyContext}
+              pendingAttachments={pendingAttachments}
+              onPendingAttachmentsConsumed={onPendingAttachmentsConsumed}
               onRequestClose={() => onOpenChange(false)}
             />
           </SheetContent>
@@ -1492,6 +1635,11 @@ function FreezoneChatDock({
         <SuperChatPanel
           variant="freezone"
           freezoneCanvasId={canvasId}
+          currentCanvasMetadata={currentCanvasMetadata}
+          currentCanvasSelection={currentCanvasSelection}
+          currentCanvasOntologyContext={currentCanvasOntologyContext}
+          pendingAttachments={pendingAttachments}
+          onPendingAttachmentsConsumed={onPendingAttachmentsConsumed}
           onRequestClose={() => onOpenChange(false)}
         />
       </aside>

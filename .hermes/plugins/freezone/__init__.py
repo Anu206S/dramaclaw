@@ -317,6 +317,20 @@ def _handle_node_create_schema(args: dict[str, Any], **_: Any) -> str:
         return tool_result(
             {"ok": False, "status": "node_type_required", "error": "node_type is required"}
         )
+    if node_type not in _AGENT_CREATABLE_NODE_TYPE_VALUES:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "invalid_node_type",
+                "error": (
+                    "node_type must be a directly creatable Freezone node type. "
+                    "Use freezone_group_nodes/group_nodes for grouping existing nodes; "
+                    "do not directly create or request create schemas for internal or derived "
+                    "node types such as storyboardNode, storyboardGenNode, groupNode, imageNode, "
+                    "exportImageNode, or videoStoryNode."
+                ),
+            }
+        )
     return _request_canvas_context_from_frontend(
         project=project,
         canvas=canvas,
@@ -612,6 +626,23 @@ def _validate_write_commands_shape(
                 "invalid_command_schema",
                 f"commands[{index}] {command_type} missing required field(s): {', '.join(missing_required)}",
             )
+        if command_type == "create_node" or (
+            command_type == "add_next_node" and command.get("node_type") not in (None, "")
+        ):
+            node_type = str(command.get("node_type") or "").strip()
+            if node_type not in _AGENT_CREATABLE_NODE_TYPE_VALUES:
+                return _emit_command_error(
+                    project,
+                    canvas,
+                    "invalid_node_type",
+                    (
+                        f"commands[{index}].node_type must be a directly creatable node type; "
+                        f"got {node_type!r}. Use group_nodes/freezone_group_nodes to group existing "
+                        "nodes, and do not directly create internal or derived node types such as "
+                        "storyboardNode, storyboardGenNode, groupNode, imageNode, exportImageNode, "
+                        "or videoStoryNode."
+                    ),
+                )
         if command.get("type") == "create_edge":
             missing = [
                 field for field in ("source", "target", "link_type") if not command.get(field)
@@ -1097,8 +1128,7 @@ _SCOPE_PROPS = {
 _LINK_TYPE_VALUES = [
     "context_for",
     "prompt_for",
-    "visual_reference_for",
-    "source_media_for",
+    "media_input_for",
     "derived_from",
     "composition_input_for",
 ]
@@ -1123,21 +1153,40 @@ _NODE_TYPE_VALUES = [
     "skillNode",
 ]
 
+_AGENT_CREATABLE_NODE_TYPE_VALUES = [
+    "uploadNode",
+    "imageGenNode",
+    "beatContextNode",
+    "textAnnotationNode",
+    "videoNode",
+    "audioNode",
+    "videoComposeNode",
+    "scriptNode",
+    "pano360ViewerNode",
+    "threeDWorldNode",
+    "skillNode",
+]
+
 _NODE_TYPE_DESCRIPTION = (
-    "Canvas node type. Common values: textAnnotationNode, imageGenNode, videoNode, "
-    "audioNode, scriptNode, videoComposeNode, threeDWorldNode. "
-    "Use threeDWorldNode for 导演世界; directorWorldNode is not a valid node type."
+    "Directly creatable Freezone canvas node type. Use only these values for "
+    "create_node/add_next_node. Do not create internal or derived node types such as "
+    "groupNode, storyboardNode, storyboardGenNode, imageNode, exportImageNode, "
+    "or videoStoryNode directly. Use freezone_group_nodes/group_nodes for "
+    "grouping existing nodes. Use textAnnotationNode for ordinary briefs, copy, notes, "
+    "prompts, and free-form text. Use scriptNode only for explicit structured script "
+    "tables or script-generation workflows. Use threeDWorldNode for 导演世界; "
+    "directorWorldNode is not a valid node type."
 )
 
 _NODE_TYPE_SCHEMA = {
     "type": "string",
-    "enum": _NODE_TYPE_VALUES,
+    "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
     "description": _NODE_TYPE_DESCRIPTION,
 }
 
 _NODE_TYPE_ALIAS_SCHEMA = {
     "type": "string",
-    "enum": _NODE_TYPE_VALUES,
+    "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
     "description": "Alias of node_type. Prefer snake_case node_type.",
 }
 
@@ -1176,7 +1225,7 @@ _CANVAS_COMMAND_ITEM_SCHEMA = {
         },
         "node_type": {
             "type": "string",
-            "enum": _NODE_TYPE_VALUES,
+            "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
             "description": "Required for create_node. Batch commands use snake_case node_type, never nodeType.",
         },
         "data": {
@@ -1307,7 +1356,10 @@ TOOLS = (
         "freezone_get_node_create_schema",
         _schema(
             "freezone_get_node_create_schema",
-            "Request allowed create_node data schema for one Freezone node type from the frontend.",
+            "Request allowed create_node data schema for one Freezone node type from the frontend. "
+            "For ordinary text, briefs, copywriting, prompts, notes, or free-form scripts, "
+            "request textAnnotationNode schema. Request scriptNode only when the user "
+            "explicitly asks for structured script tables or a script-generation workflow.",
             {
                 **_SCOPE_PROPS,
                 "node_type": _NODE_TYPE_SCHEMA,
@@ -1359,26 +1411,16 @@ TOOLS = (
                     "items": {"type": "string", "enum": _MAINLINE_PROJECTION_ASSET_KIND_VALUES},
                     "description": "Optional filters for mainline asset kinds to map into Freezone. Use character for all people/identity/portrait requests. Other narrow categories include prop, scene_master, scene_reverse_master, scene_360, or prop_ref.",
                 },
-                "assetKinds": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Alias of asset_kinds.",
-                },
+                "assetKinds": {"type": "array", "items": {"type": "string"}, "description": "Alias of asset_kinds."},
                 "asset_kind": {
                     "type": "string",
                     "enum": _MAINLINE_PROJECTION_ASSET_KIND_VALUES,
                     "description": "Single asset kind filter alias. Prefer asset_kinds for multiple values.",
                 },
                 "assetKind": {"type": "string", "description": "Alias of asset_kind."},
-                "query": {
-                    "type": "string",
-                    "description": "Optional user-facing keyword to match asset label/name.",
-                },
+                "query": {"type": "string", "description": "Optional user-facing keyword to match asset label/name."},
                 "q": {"type": "string", "description": "Alias of query."},
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum candidates to return. Default 20, maximum 50.",
-                },
+                "limit": {"type": "integer", "description": "Maximum candidates to return. Default 20, maximum 50."},
             },
         ),
         _handle_mainline_projection_assets,
@@ -1672,7 +1714,7 @@ TOOLS = (
         "freezone_open_mainline_projection",
         _schema(
             "freezone_open_mainline_projection",
-            "Open a mainline episode, beat, or asset projection in the user's personal Freezone canvas. This mirrors the frontend 虾画/虾画编辑 toolbar button: the frontend asks the user to confirm, then opens the projected canvas. Use only when the user explicitly asks to open or map mainline content into 虾画/Freezone.",
+            "Mainline -> canvas only. Open/map/project a mainline episode, beat, or asset into the user's personal Freezone canvas. This mirrors the frontend 虾画/虾画编辑 toolbar button: the frontend asks the user to confirm, then opens the projected canvas. Use this when the user asks to open/map mainline content into 虾画/Freezone; do not use slot-candidate tools for this direction, and do not use this tool to submit canvas nodes back to the mainline. If the user asks to map a category such as 人物/身份/肖像/场景/道具 but does not provide an exact asset name/id, first call freezone_get_mainline_projection_assets for that category, using asset_kind=character for all people/identity/portrait requests, then pass the selected candidate's projection_request to this tool.",
             {
                 **_SCOPE_PROPS,
                 "scope": {
@@ -1694,8 +1736,8 @@ TOOLS = (
                     "description": "Asset kind for asset scope.",
                 },
                 "assetKind": {"type": "string", "description": "Alias of asset_kind."},
-                "character": {"type": "string", "description": "Character name for character, identity, or portrait assets."},
-                "identity_id": {"type": "string", "description": "Identity id for identity assets."},
+                "character": {"type": "string", "description": "Character name for character assets."},
+                "identity_id": {"type": "string", "description": "Legacy alias accepted by older character projection requests; prefer character-only asset projections."},
                 "identityId": {"type": "string", "description": "Alias of identity_id."},
                 "asset_id": {"type": "string", "description": "Scene or prop id for scene/prop assets."},
                 "assetId": {"type": "string", "description": "Alias of asset_id."},

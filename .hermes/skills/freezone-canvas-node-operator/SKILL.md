@@ -14,17 +14,13 @@ Important boundary: for create/delete/update/connect/layout/open-tool/frontend-n
 
 For explicit exactly-one canvas operations, you may call the specific typed tool instead of hand-writing a generic command object: `freezone_create_node`, `freezone_add_next_node`, `freezone_update_node_data`, `freezone_create_edge`, `freezone_delete_nodes`, `freezone_delete_edges`, `freezone_move_nodes`, `freezone_layout_nodes`, `freezone_group_nodes`, `freezone_select_nodes`, or `freezone_run_node_action`.
 
-Explanation boundary: do not activate this skill for questions such as "怎么 / 如何 / 什么是 / 介绍 / 说明 / 教我 / 怎么生成工作流 / how to / what is / explain / show me how". For those, answer in natural language only and do not call `freezone_emit_canvas_command`. Activate canvas commands only when the user explicitly asks to create, generate on canvas, add, connect, modify, delete, lay out, run, apply, or execute something on the canvas, or confirms after an explanation.
+Explanation boundary: do not activate this skill for questions such as "怎么 / 如何 / 什么是 / 介绍 / 说明 / 教我 / how to / what is / explain / show me how". For those, answer in natural language only and do not call `freezone_emit_canvas_command`. Activate canvas commands only when the user explicitly asks to create, generate on canvas, add, connect, modify, delete, lay out, run, apply, or execute something on the canvas, or confirms after an explanation.
 
 For multi-node, multi-edge, storyboard, prototype, canvas-building, or any request with more than one canvas change, do not call typed write tools repeatedly. If batch command fields are unclear, call `freezone_get_canvas_command_catalog`, then submit exactly one `freezone_emit_canvas_command` batch.
 
 If validation reports `Allowed link_type values: none` for a source/target pair, do not retry other `link_type` values. Use `group_nodes` as a visual grouping fallback or leave the nodes unconnected.
 
 If you need read-only canvas context, dynamic parameter options, command field rules, or frontend preflight validation before editing, use the specific Freezone tools: `freezone_get_canvas_ontology`, `freezone_summarize_canvas`, `freezone_get_canvas_action_catalog`, `freezone_get_canvas_command_catalog`, `freezone_get_link_type_catalog`, `freezone_get_selection`, `freezone_get_node_detail`, `freezone_get_neighbor_graph`, `freezone_get_node_action_catalog`, `freezone_get_node_create_schema`, `freezone_get_audio_voice_options`, and `freezone_get_slot_candidates`. For nontrivial create/update/delete/connect/layout operations, call `freezone_validate_canvas_commands` with the exact `canvas_chat_commands.v1` envelope before the write tool; if validation reports issues, fix the envelope and validate again. Never put `canvas_context_request.v1` inside any write tool, and never use `run_node_action` just to fetch options.
-
-When the user asks to run, execute, generate, or create content for an existing workflow, selected workflow, node group, or selected workflow nodes, use one `run_workflow` command. Do not manually enumerate every `run_node_action`, and do not hand-pick only image/video/audio nodes for a full workflow request. The frontend expands groups/selection, chooses supported node generate actions, and runs them by canvas edge dependencies: after a node finishes, all connected downstream generate nodes whose dependencies are satisfied start together.
-
-When the user has selected an existing workflow group and asks to continue, complete, generate, or create the video from it, treat the selected group and its child nodes as the existing workflow source of truth. Reuse existing text content, prompts, media, and edges. Do not create replacement workflow nodes, duplicate text nodes, or write a fresh set of content unless the user explicitly asks to add missing nodes, create new variants, rewrite content, or replace existing content.
 
 If you need read-only canvas context or dynamic parameter options before editing, use `freezone_request_canvas_context` when available. Examples include `neighbor_graph`, `node_create_schema`, `action_catalog`, and `audio_voice_options`. Never put `canvas_context_request.v1` inside `freezone_emit_canvas_command.commands`, and never use `run_node_action` just to fetch options.
 
@@ -98,8 +94,11 @@ For actions with `execution="frontend_node"`, do not look for backend `action_id
 
 Do not invent node ids. For small fallback command output, newly created nodes that will be referenced later in the same envelope must use explicit `client_id` values, and later commands must refer to those exact values. Never emit `auto:*` ids; those may appear only in validator error messages and are not valid assistant output.
 
+<<<<<<< HEAD
 Plan ids are not canvas node ids. If a confirmed custom plan must become several canvas nodes, links, groups, or layout changes, submit one `freezone_emit_canvas_command` batch with explicit `client_id` values instead of separate single-operation tool calls.
 
+=======
+>>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
 ## Tool Contract
 
 When a canvas operation is needed, call a Freezone write tool. Do not output protocol JSON in the chat message. If no Freezone write tool is available, explain that the canvas tool is unavailable and ask the user to retry after the tool is restored.
@@ -139,7 +138,7 @@ Create a downstream node from an existing node and optionally connect it.
 
 If choosing a node type, prefer the source node's `downstream_spawn_types`.
 
-If a later command in the same envelope will reference a newly created node, that `create_node` or `add_next_node` must declare a `client_id`. This is especially important for multi-node workflow creation: every node later used by `create_edge`, `group_nodes`, `select_nodes`, or targeted `move_nodes` must have an explicit `client_id`.
+If a later command in the same envelope will reference a newly created node, that `create_node` or `add_next_node` must declare a `client_id`. Every node later used by `create_edge`, `group_nodes`, `select_nodes`, or targeted `move_nodes` must have an explicit `client_id`.
 
 For video-related creation, choose the node type by stage:
 
@@ -165,6 +164,8 @@ Only update fields listed in `editable_fields` unless the user explicitly asks f
 
 Connect two nodes. Before creating an edge, choose `link_type` from the Freezone link type catalog. If the current prompt does not include the catalog or the source/target object fit is unclear, call `freezone_get_link_type_catalog`.
 
+Edges are data or semantic input relationships, not visual association lines. Create an edge only when the target should consume the source as input, reference, context, or composition material. If nodes are merely related or part of the same group, use `group_nodes` or `layout_nodes` instead of `create_edge`.
+
 ```json
 {
   "type": "create_edge",
@@ -176,10 +177,9 @@ Connect two nodes. Before creating an edge, choose `link_type` from the Freezone
 
 Every `create_edge` command must include `link_type`. Choose exactly one of:
 
-- `context_for`: TextNode/ScriptNode -> ImageNode/VideoNode/AudioNode/ScriptNode. Upstream context, brief, beat context, constraint, or explanatory text for the target.
-- `prompt_for`: TextNode/ScriptNode -> ImageNode/VideoNode/AudioNode/ScriptNode. Upstream text/prompt/script is the direct prompt or instruction for the target generator.
-- `visual_reference_for`: ImageNode/VideoNode -> ImageNode/VideoNode. Upstream visual media is a style/content/identity/scene/prop reference for the target.
-- `source_media_for`: ImageNode/VideoNode/AudioNode -> TextNode/ImageNode/VideoNode/AudioNode/ScriptNode. Upstream media is source material to process, analyze, edit, transcribe, describe, or generate from.
+- `context_for`: TextNode/ScriptNode -> TextNode/ScriptNode. Upstream context, brief, beat context, constraint, or explanatory text for another textual node.
+- `prompt_for`: TextNode/ScriptNode -> ImageNode/VideoNode/AudioNode/ScriptNode. Upstream text/prompt/script is the direct prompt or instruction consumed by the target generator. Use this for `textAnnotationNode(semanticOutputRole="input_text") -> imageGenNode`; if the source text is only a brief, plan, requirement note, or contextual documentation, keep it as `planning_text` and group it with the generator instead of connecting it directly.
+- `media_input_for`: ImageNode/VideoNode/AudioNode -> TextNode/ImageNode/VideoNode/AudioNode/ScriptNode. Upstream media is an input, source, or visual/audio reference consumed by the target.
 - `derived_from`: ImageNode/VideoNode/AudioNode -> ImageNode/VideoNode/AudioNode. Target is an edited, extracted, upscaled, cropped, repaired, or variant artifact from source.
 - `composition_input_for`: TextNode/ScriptNode/ImageNode/VideoNode/AudioNode -> VideoNode. Upstream segment enters a composition/timeline/final-video node.
 
@@ -223,7 +223,7 @@ Lay out referenced nodes.
 
 Allowed modes: `horizontal`, `vertical`, `grid`.
 
-If you are laying out a freshly created multi-node workflow and do not need a targeted subset, prefer omitting `node_ids` entirely so the frontend lays out the current canvas/group without requiring extra same-envelope aliases.
+If you are laying out freshly created nodes and do not need a targeted subset, prefer omitting `node_ids` entirely so the frontend lays out the current canvas/group without requiring extra same-envelope aliases.
 
 Large layout changes may require frontend confirmation.
 
@@ -324,28 +324,6 @@ For `execution="manual_ui"`, `run_node_action` opens a UI or confirmation entry.
 
 If the user asks to run/execute/generate a referenced imageGenNode and its `action_catalog_json.actions` contains `generate_image`, emit exactly a `run_node_action` command for that node id and action.
 
-### run_workflow
-
-Run supported generate actions for an existing workflow, selected group, or selected workflow nodes. Prefer this when the user asks to "运行工作流", "按节点顺序生成", "生成这个工作流的内容", or "执行选中的工作流".
-
-```json
-{
-  "type": "run_workflow",
-  "node_ids": ["group_or_node_id"]
-}
-```
-
-If the user clearly refers to the current selection and no specific node ids are available, omit `node_ids` or set `scope` to `"selection"`:
-
-```json
-{
-  "type": "run_workflow",
-  "scope": "selection"
-}
-```
-
-Use `scope: "canvas"` only when the user explicitly asks to run the whole canvas. The frontend will skip nodes without supported generate actions and execute the remaining nodes by connection-line dependencies.
-
 ## Response Style
 
 For ordinary operation requests, default to `freezone_emit_canvas_command` as one batch. Use a specific typed write tool only when the user explicitly asks for exactly one canvas operation. If batch command fields are unclear, call `freezone_get_canvas_command_catalog` first. If no write tool is available, do not output a protocol payload; explain that the canvas tool is unavailable.
@@ -361,12 +339,15 @@ If no referenced nodes are provided:
 - For standalone creation requests, such as "添加一个图片节点", call `freezone_create_node` for exactly one node or `freezone_emit_canvas_command` for a batch.
 - For operations that require an existing target, such as delete/update/add-next/open-tool, ask the user to select nodes and click "添加到聊天".
 
-If the user asks for something that requires a backend generation workflow not exposed in `action_catalog_json`, explain that the current canvas chat can prepare/open the relevant node UI, but cannot silently complete that generation yet.
+If the user asks for something that requires a generation capability not exposed in `action_catalog_json`, explain that the current canvas chat can prepare/open the relevant node UI, but cannot silently complete that generation yet.
 
 ## Hard Rules
 
 - Do not output canvas commands unless the user asked to operate on the canvas.
+<<<<<<< HEAD
 - Do not split complex graph commands across repeated single-operation tool calls.
+=======
+>>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
 - Put multi-node creation plus batch edges/layout/groups in one `freezone_emit_canvas_command` batch.
 - Ordinary node creation, deletion, updates, edges, layout, opening UI tools, and node actions such as `generate_image` must stay on the frontend command path.
 - Do not invent node ids, canvas ids, projects, or backend task ids.

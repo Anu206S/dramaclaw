@@ -230,6 +230,51 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     expect(useCanvasStore.getState().selectedNodeId).toBeNull();
   });
 
+  it("does not duplicate canvas references between attachments and current selection", async () => {
+    const node = {
+      id: "image-node-1",
+      type: "imageNode",
+      position: { x: 0, y: 0 },
+      selected: true,
+      data: {
+        displayName: "图片节点",
+      },
+    } satisfies Partial<CanvasNode> as CanvasNode;
+    const attachment = buildCanvasNodeReferenceAttachment(
+      "project-a",
+      "canvas-a",
+      [node],
+      [],
+      [node],
+      { displayNodes: [node] },
+    );
+    expect(attachment).not.toBeNull();
+
+    useCanvasStore.getState().setCanvasData([node], []);
+    useCanvasStore.getState().setSelectedNode(node.id);
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([node], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [node.id],
+        })}
+        pendingAttachments={[attachment as ChatAttachment]}
+      />,
+    );
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(screen.getAllByRole("button", { name: /图片节点 · image-node-1/ })).toHaveLength(1);
+    expect(screen.getAllByLabelText("移除画布引用")).toHaveLength(1);
+    expect(screen.getByText("本轮会使用")).toBeInTheDocument();
+  });
+
   it("sends selected canvas nodes as canvas reference attachments", async () => {
     const node = {
       id: "image-node-1",
