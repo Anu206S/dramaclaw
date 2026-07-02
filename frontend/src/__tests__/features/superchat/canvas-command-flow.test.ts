@@ -234,4 +234,185 @@ describe("canvas command flow placement", () => {
       text: "验证通过，创建节点并连接：\n\n",
     });
   });
+
+  it("keeps canvas cards in stream order when the final assistant text normalizes blank lines", () => {
+    const text = [
+      "我需要为您创建一个图片节点。在Freezone画布中，图片节点对应的是 `imageNode` 类型。",
+      "",
+      "让我先查看一下图片节点的创建schema，以确保使用正确的字段：",
+      "",
+      "我看到图片节点的创建schema中，`imageNode`类型需要提供一些必要的字段。根据schema，我需要创建一个`imageNode`，并设置显示名称等基本信息。",
+      "",
+      "让我为您创建一个图片节点：",
+      "",
+      "图片节点已成功创建！我为您创建了一个名为\"图片节点\"的图片节点。",
+    ].join("\n");
+    const streamingAnchor = [
+      "我需要为您创建一个图片节点。在Freezone画布中，图片节点对应的是 `imageNode` 类型。",
+      "",
+      "让我先查看一下图片节点的创建schema，以确保使用正确的字段：",
+      "",
+      "",
+      "我看到图片节点的创建schema中，`imageNode`类型需要提供一些必要的字段。根据schema，我需要创建一个`imageNode`，并设置显示名称等基本信息。",
+      "",
+      "让我为您创建一个图片节点：",
+      "",
+    ].join("\n");
+
+    const items = buildCanvasCommandFlowItemsForTest(
+      text,
+      [],
+      [
+        {
+          key: "bridge:create",
+          applied: 1,
+          openedUiActions: 0,
+          errors: [],
+          commandResults: [
+            {
+              commandIndex: 0,
+              type: "create_node",
+              status: "success",
+              label: "创建节点",
+            },
+          ],
+          anchorTextPrefix: streamingAnchor,
+          surfaceOrder: 30,
+        },
+      ],
+      [
+        {
+          key: "context:node-create-schema",
+          turnId: "turn-a",
+          bridgeKey: "node-create-schema",
+          status: "done",
+          labels: ["节点参数"],
+          errors: [],
+          anchorTextPrefix: null,
+          surfaceOrder: 10,
+        },
+        {
+          key: "context:validation",
+          turnId: "turn-a",
+          bridgeKey: "validation",
+          status: "done",
+          labels: ["命令校验"],
+          errors: [],
+          anchorTextPrefix: streamingAnchor,
+          surfaceOrder: 20,
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual([
+      "text",
+      "context",
+      "text",
+      "context",
+      "feedback",
+      "text",
+    ]);
+    expect(items[1]).toMatchObject({
+      kind: "context",
+      activity: { bridgeKey: "node-create-schema" },
+    });
+    expect(items[3]).toMatchObject({
+      kind: "context",
+      activity: { bridgeKey: "validation" },
+    });
+    expect(items[4]).toMatchObject({
+      kind: "feedback",
+      feedback: { key: "bridge:create" },
+    });
+    expect(items[5]).toMatchObject({
+      kind: "text",
+      text: expect.stringContaining("图片节点已成功创建"),
+    });
+  });
+
+  it("does not anchor execution cards inside the assistant request sentence", () => {
+    const text = [
+      "我需要在 Freezone 画布上创建一个新的图片节点。让我使用正确的工具来完成这个任务。",
+      "",
+      "我已经成功在Freezone画布上创建了一个新的图片节点。该节点的ID为 `dbc24486-07e7-4d55-9376-920a7f9a8254`。",
+      "",
+      "这个图片节点现在可以在画布上看到，您可以进一步编辑它的属性、添加图像或与其他节点建立连接。",
+    ].join("\n");
+    const anchorTextPrefix = [
+      "我需要在 Freezone 画布上创建一个新的图片节点。让我使用正确的工具来完成这个任务。",
+      "",
+    ].join("\n");
+
+    const items = buildCanvasCommandFlowItemsForTest(
+      text,
+      [],
+      [
+        {
+          key: "bridge:create",
+          applied: 1,
+          openedUiActions: 0,
+          errors: [],
+          commandResults: [
+            {
+              commandIndex: 0,
+              type: "create_node",
+              status: "success",
+              label: "创建节点",
+            },
+          ],
+          anchorTextPrefix,
+          surfaceOrder: 10,
+        },
+      ],
+      [],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "feedback", "text"]);
+    expect(items[0]).toMatchObject({
+      kind: "text",
+      text: anchorTextPrefix,
+    });
+    expect(items[2]).toMatchObject({
+      kind: "text",
+      text: expect.stringContaining("我已经成功在Freezone画布上创建"),
+    });
+  });
+
+  it("keeps read-context cards next to the assistant text that requested them", () => {
+    const text = [
+      "我将帮你润色当前视频节点的提示词。首先，我需要获取该节点的详细信息，以便了解其完整内容和可编辑字段。",
+      "",
+      "现在我已经获取了视频节点的详细信息。当前的提示词是“猫吃鱼”。",
+      "",
+      "让我为这个提示词提供几个润色选项，从基础增强到专业级：",
+    ].join("\n");
+
+    const items = buildCanvasCommandFlowItemsForTest(
+      text,
+      [],
+      [],
+      [
+        {
+          key: "context:node-detail",
+          turnId: "turn-a",
+          bridgeKey: "node-detail",
+          status: "done",
+          labels: ["节点详情"],
+          errors: [],
+          anchorTextPrefix: null,
+          surfaceOrder: 10,
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "context", "text"]);
+    expect(items[0]).toMatchObject({
+      kind: "text",
+      text: "我将帮你润色当前视频节点的提示词。首先，我需要获取该节点的详细信息，以便了解其完整内容和可编辑字段。\n\n",
+    });
+    expect(items[2]).toMatchObject({
+      kind: "text",
+      text: "现在我已经获取了视频节点的详细信息。当前的提示词是“猫吃鱼”。\n\n让我为这个提示词提供几个润色选项，从基础增强到专业级：",
+    });
+  });
 });

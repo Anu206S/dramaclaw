@@ -17,6 +17,10 @@ import {
   type CanvasNodeActionCatalog,
 } from "@/features/freezone/canvasNodeActionCatalog";
 import {
+  AGENT_CREATABLE_CANVAS_NODE_TYPES,
+  isAgentCreatableCanvasNodeType,
+} from "@/features/freezone/agentCreatableNodeTypes";
+import {
   buildCanvasActionCatalog,
   BASE_CANVAS_ACTION_CAPABILITIES,
 } from "@/features/freezone/context/canvasActionCatalog";
@@ -754,6 +758,7 @@ export function buildCanvasChatCommandContext(
     "[SUPERTALE_CANVAS_CHAT_COMMANDS]",
     "Use freezone_emit_canvas_command once for batch edits. Use typed write tools only for explicit one-operation requests.",
     "Do not expose tool names, command JSON, node_id, field ids, schema names, or action ids in user-visible prose unless the user asks for implementation details.",
+    "Do not claim a canvas change succeeded until a frontend write result returns success. Do not say a node was created, updated, deleted, connected, moved, or executed unless the write tool/frontend result confirms it.",
     "For uncertain command shapes, call freezone_get_canvas_command_catalog. Validate non-trivial or multi-command edits with freezone_validate_canvas_commands before emitting the final write tool.",
     "create_edge needs link_type. If link types are not present in current context, call freezone_get_link_type_catalog.",
     "For dynamic fields such as model, size, aspectRatio, genMode, voice, templates, or create_node data, call the specific get_* schema/options tool such as freezone_get_node_create_schema instead of guessing.",
@@ -782,10 +787,11 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
         client_id:
           "Batch-only alias for later commands before the frontend creates the real node id.",
         node_type:
-          "Canvas node type such as textAnnotationNode, imageGenNode, videoNode, or audioNode.",
+          "Choose exactly from this command's allowed_node_types. Internal or derived node types such as groupNode, storyboardNode, storyboardGenNode, imageNode, exportImageNode, and videoStoryNode are not direct create_node targets.",
         data: "Node data. For textAnnotationNode, use displayName for the node title/header and content for the body; title is accepted as a displayName alias. For complex or dynamic fields, call freezone_get_node_create_schema first.",
         position: "Optional canvas position {x, y}.",
       },
+      allowed_node_types: AGENT_CREATABLE_CANVAS_NODE_TYPES,
       invalid_example: {
         command: "create_node",
         data: { nodeType: "textAnnotationNode", title: "旧格式" },
@@ -819,9 +825,10 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
         source_node_id:
           "Existing node id or same-batch client_id to create downstream from.",
         node_type:
-          "Choose from the source node action_catalog_json.parameters.allowed_node_types. Request node_create_schema for the selected node_type before filling data.",
+          "Choose from the source node action_catalog_json.parameters.allowed_node_types and this command's allowed_node_types. Request node_create_schema for the selected node_type before filling data.",
         data: "Initial data for the new node. For dynamic/enum fields, request node_create_schema first.",
       },
+      allowed_node_types: AGENT_CREATABLE_CANVAS_NODE_TYPES,
       example: {
         type: "add_next_node",
         source_node_id: "brief_1",
@@ -1081,15 +1088,20 @@ function buildNodeCreateSchema(
   nodeType: CanvasNodeType | undefined,
 ): Record<string, unknown> | null {
   if (!nodeType) return null;
+  const schemaNodeType =
+    nodeType === CANVAS_NODE_TYPES.imageEdit
+      ? CANVAS_NODE_TYPES.imageGen
+      : nodeType;
+  if (!isAgentCreatableCanvasNodeType(schemaNodeType)) return null;
   const node: CanvasNode = {
-    id: `__create_schema__:${nodeType}`,
-    type: nodeType,
+    id: `__create_schema__:${schemaNodeType}`,
+    type: schemaNodeType,
     position: { x: 0, y: 0 },
     data: {} as CanvasNodeData,
   };
   const catalog = buildCanvasNodeActionCatalog(node);
   return {
-    node_type: nodeType,
+    node_type: schemaNodeType,
     editable_fields: catalog.editable_fields,
     create_schema: catalog.editable_schema,
     stable_create_fields: catalog.editable_fields.filter((field) =>
@@ -1340,6 +1352,9 @@ function projectionRequestForMainlineAsset(
   );
   if (targetRequest) return targetRequest;
 
+  const identityId =
+    stringOrNull(meta.identity_id) ?? stringOrNull(meta.identityId);
+  void identityId;
   const sceneId = stringOrNull(meta.scene_id) ?? stringOrNull(meta.scene);
   const propId = stringOrNull(meta.prop_id) ?? stringOrNull(meta.propId);
 
@@ -1363,19 +1378,20 @@ function projectionAssetSourceFromSlotTarget(
 ): MainlineProjectionAssetSource | null {
   const target = recordOrNull(slotTarget);
   const kind = stringOrNull(target?.kind);
-  if (!target || !kind) return null;
+  if (!kind) return null;
+  const targetRecord = target as Record<string, unknown>;
   return {
     ...fallback,
     kind,
     role: kind,
     exists: true,
     meta: {
-      character: stringOrNull(target.character) ?? undefined,
-      identity_id: stringOrNull(target.identity_id) ?? undefined,
-      scene_id: stringOrNull(target.scene_id) ?? undefined,
-      prop_id: stringOrNull(target.prop_id) ?? undefined,
+      character: stringOrNull(targetRecord.character) ?? undefined,
+      identity_id: stringOrNull(targetRecord.identity_id) ?? undefined,
+      scene_id: stringOrNull(targetRecord.scene_id) ?? undefined,
+      prop_id: stringOrNull(targetRecord.prop_id) ?? undefined,
     },
-    slot_target: target,
+    slot_target: targetRecord,
   };
 }
 
@@ -1809,11 +1825,17 @@ export async function buildCanvasContextRequestResponses(params: {
           });
           break;
         case "node_create_schema":
-          response.push({
-            type: "node_create_schema",
-            node_type: request.node_type ?? null,
-            data: buildNodeCreateSchema(request.node_type),
-          });
+          {
+            const schema = buildNodeCreateSchema(request.node_type);
+            response.push({
+              type: "node_create_schema",
+              node_type:
+                (schema?.node_type as CanvasNodeType | undefined) ??
+                request.node_type ??
+                null,
+              data: schema,
+            });
+          }
           break;
         case "audio_voice_options": {
           const node = request.node_id

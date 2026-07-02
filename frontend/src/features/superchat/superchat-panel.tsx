@@ -75,6 +75,7 @@ import type { ApprovalRequest, ChatAttachment } from "@/features/superchat/types
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import type { FormatCheck, UploadResult } from "@/lib/queries/ingest";
 import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
+import type { CanvasOntologyContext } from "@/features/canvas/ontology/canvasOntology";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import { useCanvasStore, type CanvasNode } from "@/stores/canvasStore";
 import type { CanvasNodeType } from "@/features/canvas/domain/canvasNodes";
@@ -101,6 +102,7 @@ import {
 } from "@/features/freezone/canvasContextToolResult";
 import { reportCanvasCommandToolResult } from "@/features/freezone/canvasCommandToolResult";
 import {
+  buildCanvasChatCommandContext,
   buildCanvasNodeReferenceAttachment,
   buildCanvasNodeReferenceContext,
   canvasNodeReferenceAttachmentNodes,
@@ -108,6 +110,7 @@ import {
   isCanvasNodeReferenceAttachment,
   mergeCanvasNodeReferenceAttachments,
   pruneCanvasNodeReferenceAttachments,
+  shouldIncludeCanvasSummary,
 } from "@/features/freezone/chatNodeReferences";
 import {
   visibleStructuredBlocksForMessage,
@@ -3964,7 +3967,23 @@ function canvasCommandAnchorEndIndex(text: string, anchorTextPrefix?: string | n
   if (anchorTextPrefix == null) return text.length;
   if (anchorTextPrefix === "") return 0;
   const index = text.indexOf(anchorTextPrefix);
-  return index < 0 ? text.length : index + anchorTextPrefix.length;
+  if (index >= 0) return index + anchorTextPrefix.length;
+  const relaxedIndex = relaxedCanvasCommandAnchorEndIndex(text, anchorTextPrefix);
+  return relaxedIndex ?? text.length;
+}
+
+function relaxedCanvasCommandAnchorEndIndex(text: string, anchorTextPrefix: string): number | null {
+  const tokens = anchorTextPrefix.trim().split(/\s+/).filter(Boolean);
+  if (tokens.length === 0) return anchorTextPrefix === "" ? 0 : null;
+  let cursor = 0;
+  let matchedEnd = 0;
+  for (const token of tokens) {
+    const index = text.indexOf(token, cursor);
+    if (index < 0) return null;
+    matchedEnd = index + token.length;
+    cursor = matchedEnd;
+  }
+  return matchedEnd;
 }
 
 function firstCanvasCommandSemanticMarkerIndex(text: string, markers: string[]): number | null {
@@ -3995,18 +4014,59 @@ function canvasCommandSemanticAnchorIndex(text: string, event: CanvasCommandSurf
       "命令校验",
     ]);
   }
+  if (event.kind === "context") {
+    const readAnchor = canvasContextReadSemanticAnchorIndex(text, event.activity);
+    if (readAnchor != null) return readAnchor;
+  }
   if (event.kind === "feedback" && event.feedback.applied + event.feedback.openedUiActions > 0) {
     return firstCanvasCommandSemanticMarkerIndex(text, [
       "已经在画布上",
       "已在画布上",
+      "已成功创建",
+      "成功创建",
+      "已经成功",
+      "我已经成功",
       "已创建",
       "创建好了",
       "搭建好了",
-      "画布上创建",
-      "画布中创建",
     ]);
   }
   return null;
+}
+
+function canvasContextReadSemanticAnchorIndex(text: string, activity: CanvasContextActivity): number | null {
+  if (!activity.labels.some((label) => label !== CANVAS_CONTEXT_REQUEST_LABELS.validate_canvas_commands && label !== "命令校验")) {
+    return null;
+  }
+  const requestMarkers = [
+    "我需要获取",
+    "我需要读取",
+    "我先获取",
+    "我先读取",
+    "先获取",
+    "先读取",
+    "让我先查看",
+    "让我查看",
+    "查看一下",
+    "创建schema",
+    "获取该节点的详细信息",
+    "读取节点详情",
+    "检查当前",
+    "确认当前",
+  ];
+  const requestIndex = firstCanvasCommandSemanticMarkerIndex(text, requestMarkers);
+  if (requestIndex != null) {
+    const paragraphEnd = text.indexOf("\n\n", requestIndex);
+    return paragraphEnd < 0 ? text.length : paragraphEnd + 2;
+  }
+  return firstCanvasCommandSemanticMarkerIndex(text, [
+    "现在我已经获取",
+    "现在我已获取",
+    "已经获取",
+    "已获取",
+    "已经读取",
+    "已读取",
+  ]);
 }
 
 function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasCommandSurfaceEvent): number {
@@ -4513,9 +4573,11 @@ interface SuperChatPanelProps {
   variant?: SuperChatPanelVariant;
   freezoneCanvasId?: string | null;
   canvasId?: string | null;
+  currentCanvasMetadata?: Record<string, unknown> | null;
   currentCanvasSelection?: Array<Partial<CanvasNodeReferencePreview> & { nodeId: string; label?: string }>;
-  currentCanvasOntologyContext?: unknown;
+  currentCanvasOntologyContext?: CanvasOntologyContext | null;
   pendingAttachments?: ChatAttachment[];
+  onPendingAttachmentsConsumed?: () => void;
   onRequestClose?: () => void;
 }
 
@@ -4523,6 +4585,10 @@ export function SuperChatPanel({
   variant = "default",
   freezoneCanvasId = null,
   canvasId = null,
+  currentCanvasSelection = [],
+  currentCanvasOntologyContext = null,
+  pendingAttachments = [],
+  onPendingAttachmentsConsumed,
   onRequestClose,
 }: SuperChatPanelProps = {}) {
   const { t } = useTranslation();
@@ -4619,6 +4685,10 @@ export function SuperChatPanel({
     [canvasNodes],
   );
   const hasSelectedFreezoneNodeContext = Boolean(selectedFreezoneNodeAttachment);
+  const visibleComposerAttachments = useMemo(
+    () => attachments.filter((attachment) => !isCanvasNodeReferenceAttachment(attachment)),
+    [attachments],
+  );
   const hasSendableContent =
     draft.trim().length > 0 || attachments.length > 0 || hasSelectedFreezoneNodeContext;
   const canSend = hasSendableContent && chat.connected && !preparingSend;
@@ -4640,6 +4710,11 @@ export function SuperChatPanel({
   }, [isFreezoneLayout]);
   const deselectFreezoneNodeReference = useCallback((nodeId: string) => {
     deselectFreezoneNodeReferences(new Set([nodeId]));
+  }, [deselectFreezoneNodeReferences]);
+  const removeAttachment = useCallback((attachment: ChatAttachment) => {
+    const removedCanvasNodeIds = new Set(canvasNodeReferenceAttachmentNodeIds(attachment));
+    setAttachments((current) => current.filter((item) => item.id !== attachment.id));
+    deselectFreezoneNodeReferences(removedCanvasNodeIds);
   }, [deselectFreezoneNodeReferences]);
   const activeMessages = useMemo(
     () =>
@@ -4878,12 +4953,17 @@ export function SuperChatPanel({
         ? detail.turn_id
         : chat.activeTurnId;
       const labels = canvasContextLabelsFromTypes(collectCanvasContextRequestTypes(detail.envelope));
+      const assistantAnchorText = turnId
+        ? activeMessages.find((message) => message.turnId === turnId && message.role === "assistant" && message.text.trim())?.text
+        : null;
       const anchorTextPrefix =
         typeof detail.anchorTextPrefix === "string"
           ? detail.anchorTextPrefix
-          : turnId && turnId === chat.activeTurnId && chat.streamText
-            ? chat.streamText
-            : null;
+          : assistantAnchorText
+            ? assistantAnchorText
+            : turnId && turnId === chat.activeTurnId && chat.streamText
+              ? chat.streamText
+              : null;
       const surfaceOrder = Date.now();
       if (turnId) {
         setCanvasContextActivitiesByMessageId((current) => ({
@@ -4907,6 +4987,7 @@ export function SuperChatPanel({
       window.removeEventListener(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, handleCanvasContextRequest);
     };
   }, [
+    activeMessages,
     chat.activeTurnId,
     chat.streamText,
     effectiveFreezoneCanvasId,
@@ -5339,6 +5420,46 @@ export function SuperChatPanel({
     setReingestConfirmation(null);
   }, [chatScopeKey, params.project]);
 
+  useEffect(() => {
+    if (pendingAttachments.length === 0) return;
+    setAttachments((current) => {
+      const pendingCanvasReferenceIds = new Set(
+        pendingAttachments
+          .filter(isCanvasNodeReferenceAttachment)
+          .map((attachment) => attachment.id)
+          .filter((id): id is string => Boolean(id)),
+      );
+      const currentWithoutReplacedCanvasReferences =
+        pendingCanvasReferenceIds.size > 0
+          ? current.filter(
+              (attachment) =>
+                !(
+                  isCanvasNodeReferenceAttachment(attachment) &&
+                  attachment.id &&
+                  pendingCanvasReferenceIds.has(attachment.id)
+                ),
+            )
+          : current;
+      return pruneCanvasNodeReferenceAttachments(
+        mergeCanvasNodeReferenceAttachments([
+          ...currentWithoutReplacedCanvasReferences,
+          ...pendingAttachments,
+        ]),
+        existingCanvasNodeIds,
+      );
+    });
+    onPendingAttachmentsConsumed?.();
+    restoreDraftFocusRef.current = true;
+  }, [existingCanvasNodeIds, onPendingAttachmentsConsumed, pendingAttachments]);
+
+  useEffect(() => {
+    if (variant !== "freezone" || currentCanvasSelection.length > 0) return;
+    setAttachments((current) => {
+      const next = current.filter((attachment) => !isCanvasNodeReferenceAttachment(attachment));
+      return next.length === current.length ? current : next;
+    });
+  }, [currentCanvasSelection.length, variant]);
+
   const recordUploadedFiles = useCallback(
     (project: string | undefined, prepared: PreparedIngestAttachment[]): UploadedIngestFile[] => {
       const additions = prepared
@@ -5370,6 +5491,14 @@ export function SuperChatPanel({
       let transportAttachments = safeMessageAttachments;
       let contextUploadedFiles = uploadedIngestFiles;
       const project = params.project?.trim();
+      const canvasCommandContext =
+        variant === "freezone"
+          ? buildCanvasChatCommandContext(currentCanvasOntologyContext, {
+              includeCanvasSummary: shouldIncludeCanvasSummary(text, {
+                hasFocusedNodeContext: Boolean(canvasReferenceContext),
+              }),
+            })
+          : null;
       const videoIntent = VIDEO_CREATION_RE.test(text);
       const hasNovelAttachments = ordinaryAttachments.some(isNovelAttachment);
 
@@ -5550,6 +5679,9 @@ export function SuperChatPanel({
         );
       }
 
+      if (canvasCommandContext) {
+        nextText = appendAttachmentAnalysisContext(nextText, canvasCommandContext);
+      }
       if (canvasReferenceContext) {
         nextText = appendAttachmentAnalysisContext(nextText, canvasReferenceContext);
       }
@@ -5558,6 +5690,7 @@ export function SuperChatPanel({
     },
     [
       chat,
+      currentCanvasOntologyContext,
       existingCanvasNodeIds,
       params.project,
       recordUploadedFiles,
@@ -6088,18 +6221,18 @@ export function SuperChatPanel({
                 {dragFileState === "invalid" ? t("aiAssistant.unsupportedDropFiles") : t("aiAssistant.dropFiles")}
               </div>
             )}
-            {attachments.length > 0 && (
-              <div className="flex flex-wrap gap-1.5 px-4 pt-3">
-                {attachments.map((attachment) => (
+            {visibleComposerAttachments.length > 0 && (
+              <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
+                {visibleComposerAttachments.map((attachment) => (
                   <span
                     key={attachment.id}
                     className="inline-flex max-w-48 items-center gap-1.5 rounded-md border border-border bg-muted/40 px-2 py-1 text-xs"
                   >
                     {attachment.mimeType?.startsWith("image/") ? <Image className="size-3.5" /> : <File className="size-3.5" />}
-                    <span className="truncate">{attachment.fileName}</span>
+                    <span className="truncate">{attachment.label || attachment.fileName}</span>
                     <button
                       type="button"
-                      onClick={() => setAttachments((current) => current.filter((item) => item.id !== attachment.id))}
+                      onClick={() => removeAttachment(attachment)}
                       className="text-muted-foreground hover:text-foreground"
                       aria-label={t("aiAssistant.removeAttachment")}
                     >
@@ -6158,7 +6291,7 @@ export function SuperChatPanel({
               </div>
             )}
             {isFreezoneLayout && selectedFreezoneNodes.length > 0 && (
-              <div className={cn("px-4", attachments.length > 0 ? "pt-2" : "pt-3")}>
+              <div className={cn("px-4", visibleComposerAttachments.length > 0 ? "pt-2" : "pt-3")}>
                 <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
                   <span>当前选中</span>
                   <span>本轮会使用</span>

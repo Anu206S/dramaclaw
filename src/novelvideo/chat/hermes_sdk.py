@@ -60,6 +60,7 @@ CONTENT_FILTER_MESSAGE = (
     "请把需求拆得更具体，避免一次性要求完成整集或包含敏感/违规描述；"
     "也可以先让我只列当前制作进度和下一步。"
 )
+<<<<<<< HEAD
 DRAMACLAW_ONE_STEP_STOP_MESSAGE = (
     "当前任务已开始处理。请稍后让我查看当前任务进度，或在任务完成后再继续下一步。"
 )
@@ -126,6 +127,8 @@ _FREEZONE_CANVAS_WRITE_TOOLS = {
 }
 FREEZONE_FAILED_WRITE_RETRY_LIMIT = 1
 
+=======
+>>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
 _TOOL_DETAIL_FIELDS = (
     ("command", "命令"),
     ("cmd", "命令"),
@@ -189,6 +192,7 @@ def _has_content_filter_signal(value: object) -> bool:
     return False
 
 
+<<<<<<< HEAD
 def _is_dramaclaw_write_tool(name: object) -> bool:
     return str(name or "").strip() in _DRAMACLAW_WRITE_TOOLS
 
@@ -244,6 +248,8 @@ def _should_mark_first_write_failed(
     )
 
 
+=======
+>>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
 def _format_tool_call_text(update: dict, title: object) -> str:
     lines = [f"→ {title}"]
     seen: set[str] = set()
@@ -514,10 +520,13 @@ class HermesSdkThread:
             assert self._proc.stdout is not None
             deadline = asyncio.get_event_loop().time() + STREAM_READ_TIMEOUT
             tool_call_count = 0
+<<<<<<< HEAD
             first_write_tool: str | None = None
             active_tool_name: str | None = None
             first_write_failed = False
             failed_write_retry_count = 0
+=======
+>>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
             while True:
                 remaining = max(0.1, deadline - asyncio.get_event_loop().time())
                 try:
@@ -572,6 +581,7 @@ class HermesSdkThread:
                 if ev is not None:
                     if ev.type == "tool_update" and (ev.raw or {}).get("sessionUpdate") == "tool_call":
                         tool_call_count += 1
+<<<<<<< HEAD
                         tool_name = str(ev.name or "").strip()
                         active_tool_name = tool_name
                         if _should_stop_after_write_tool(first_write_tool, tool_name):
@@ -619,6 +629,8 @@ class HermesSdkThread:
                         if _is_dramaclaw_write_tool(tool_name):
                             first_write_tool = tool_name
                             first_write_failed = False
+=======
+>>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
                         if tool_call_count > TURN_TOOL_CALL_LIMIT:
                             _log.warning(
                                 "Hermes turn exceeded tool call limit: thread=%s turn=%s limit=%s",
@@ -637,16 +649,6 @@ class HermesSdkThread:
                                 ),
                             )
                             return
-                    elif (
-                        ev.type == "tool_update"
-                        and (ev.raw or {}).get("sessionUpdate") == "tool_call_update"
-                        and _should_mark_first_write_failed(
-                            first_write_tool,
-                            active_tool_name,
-                            ev.raw,
-                        )
-                    ):
-                        first_write_failed = True
                     yield ev
         finally:
             # Don't kill subprocess here — caller may want to send more prompts.
