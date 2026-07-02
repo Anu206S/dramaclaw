@@ -191,6 +191,14 @@ docker compose up -d --build   # starts two services: api / web
 
 Open the app at <http://localhost:8080>; the REST API is at <http://localhost:8780>. In **Settings → Model Config → Official**, paste your DC key (get one at <https://relayclaw.cdnfg.com>) and you're ready — no model mapping needed. Full steps in the [Quick Start](docs/en/getting-started/quickstart.md).
 
+**No build needed** — every GitHub Release publishes multi-arch (amd64/arm64) images to Docker Hub, so a single file is enough to run:
+
+```bash
+curl -LO https://raw.githubusercontent.com/dramaclaw/dramaclaw/main/docker-compose.release.yml
+docker compose -f docker-compose.release.yml up -d
+# Pin a version (defaults to latest): DRAMACLAW_VERSION=1.0.1 docker compose -f docker-compose.release.yml up -d
+```
+
 ### Local development (uv + Python 3.11+)
 
 ```bash
@@ -212,7 +220,7 @@ DramaClaw stays model-neutral — all text/image/video/audio models connect thro
 - **DramaClaw official key (recommended)**: `docker compose up`, open <http://localhost:8080> → Settings → Model Config → Official, paste your DC key, save. Works instantly — no model mapping needed. Get a key at <https://relayclaw.cdnfg.com>.
 - **Bring your own gateway (BYO)**: point `NEWAPI_BASE_URL` at your own OpenAI-compatible endpoint and map model names (see [Configuring Models](docs/en/getting-started/configuring-models.md)).
 
-> Prefer fully local? Run `docker compose -f docker-compose.selfhosted.yml up` for a bundled `newapi` gateway you configure yourself.
+> Prefer fully local? Run `docker compose -f docker-compose.selfhosted.yml up` for a bundled `newapi` gateway you configure yourself (prebuilt-image variant: `docker-compose.selfhosted.release.yml`).
 
 | Stage                | Connected via gateway                                               |
 |----------------------|---------------------------------------------------------------------|
@@ -291,7 +299,7 @@ The people building DramaClaw — thank you. 💜
     <td align="center"><a href="https://github.com/bopy-zou"><img src="https://github.com/bopy-zou.png?size=100" width="72" alt="bopy-zou"/><br/><sub>bopy-zou</sub></a></td>
     <td align="center"><a href="https://github.com/Handanhhhy"><img src="https://github.com/Handanhhhy.png?size=100" width="72" alt="Handanhhhy"/><br/><sub>Handanhhhy</sub></a></td>
     <td align="center"><a href="https://github.com/Hanlin-Gabriel"><img src="https://github.com/Hanlin-Gabriel.png?size=100" width="72" alt="Hanlin-Gabriel"/><br/><sub>Hanlin-Gabriel</sub></a></td>
-    <td align="center"><a href="https://github.com/honggui-duat"><img src="https://github.com/honggui-duat.png?size=100" width="72" alt="honggui-duat"/><br/><sub>honggui-duat</sub></a></td>
+    <td align="center"><a href="https://github.com/ryanhuang-duat"><img src="https://github.com/ryanhuang-duat.png?size=100" width="72" alt="ryanhuang-duat"/><br/><sub>ryanhuang-duat</sub></a></td>
     <td align="center"><a href="https://github.com/lywaterman"><img src="https://github.com/lywaterman.png?size=100" width="72" alt="lywaterman"/><br/><sub>lywaterman</sub></a></td>
     <td align="center"><a href="https://github.com/n7s4"><img src="https://github.com/n7s4.png?size=100" width="72" alt="n7s4"/><br/><sub>n7s4</sub></a></td>
   </tr>
