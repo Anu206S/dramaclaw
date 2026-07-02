@@ -55,9 +55,7 @@ except Exception as exc:
 
 TOOLSET = "freezone"
 FREEZONE_ACP_TOOLSET = "freezone-acp"
-# Register on hermes-acp as a compatibility path for Hermes versions where ACP
-# only enables the built-in ACP toolset and does not read config.enabled_toolsets.
-REGISTER_TOOLSETS = (FREEZONE_ACP_TOOLSET, "hermes-acp")
+REGISTER_TOOLSETS = (FREEZONE_ACP_TOOLSET,)
 API_PREFIX = "/api/v1/"
 try:
     DEFAULT_TIMEOUT_SECONDS = max(30, int(os.environ.get("DRAMACLAW_API_TIMEOUT_SECONDS", "120")))
@@ -369,6 +367,56 @@ def _handle_slot_candidates(args: dict[str, Any], **_: Any) -> str:
     request: dict[str, Any] = {"type": "slot_candidates"}
     if slot_kind:
         request["slot_kind"] = slot_kind
+    return _request_canvas_context_from_frontend(
+        project=project,
+        canvas=canvas,
+        requests=[request],
+    )
+
+
+def _handle_mainline_projection_assets(args: dict[str, Any], **_: Any) -> str:
+    project = (
+        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+    )
+    canvas = (
+        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+    )
+    request: dict[str, Any] = {"type": "mainline_projection_assets"}
+
+    def _normalize_projection_asset_kind(value: Any) -> str | None:
+        text = str(value).strip()
+        if not text:
+            return None
+        if text in {
+            "identity",
+            "portrait",
+            "character_identity",
+            "character_portrait",
+            "identity_portrait",
+        }:
+            return "character"
+        return text
+
+    asset_kinds = args.get("asset_kinds") or args.get("assetKinds")
+    if isinstance(asset_kinds, list):
+        values = [
+            normalized
+            for item in asset_kinds
+            if (normalized := _normalize_projection_asset_kind(item))
+        ]
+        if values:
+            request["asset_kinds"] = list(dict.fromkeys(values))
+    asset_kind = str(args.get("asset_kind") or args.get("assetKind") or "").strip()
+    if asset_kind and "asset_kinds" not in request:
+        normalized = _normalize_projection_asset_kind(asset_kind)
+        if normalized:
+            request["asset_kinds"] = [normalized]
+    query = str(args.get("query") or args.get("q") or "").strip()
+    if query:
+        request["query"] = query
+    limit = args.get("limit")
+    if isinstance(limit, (int, float)):
+        request["limit"] = int(limit)
     return _request_canvas_context_from_frontend(
         project=project,
         canvas=canvas,
@@ -1159,6 +1207,16 @@ _MAINLINE_ASSET_KIND_VALUES = [
     "prop",
     "prop_ref",
 ]
+_MAINLINE_PROJECTION_ASSET_KIND_VALUES = [
+    "character",
+    "scene",
+    "scene_master",
+    "scene_reverse_master",
+    "scene_spatial_layout",
+    "scene_360",
+    "prop",
+    "prop_ref",
+]
 
 _CANVAS_COMMAND_ITEM_SCHEMA = {
     "type": "object",
@@ -1329,120 +1387,53 @@ TOOLS = (
         "freezone_get_slot_candidates",
         _schema(
             "freezone_get_slot_candidates",
-            "Request current pushable Freezone slot candidates from the frontend.",
+            "Canvas -> mainline only. Request Freezone canvas nodes that can be submitted/pushed back to a mainline slot. Use this only when the user wants to submit, sync, or set a canvas node as a mainline result; do not use it to open/map/project mainline content into Freezone.",
             {
                 **_SCOPE_PROPS,
                 "slot_kind": {
                     "type": "string",
-                    "description": "Optional slot kind filter, e.g. image, video, audio, or text.",
+                    "description": "Optional mainline slot kind filter for canvas-to-mainline submission, e.g. image, video, audio, or text.",
                 },
                 "slotKind": {"type": "string", "description": "Alias of slot_kind."},
             },
         ),
         _handle_slot_candidates,
     ),
-    # 工作流规划与物化：先生成计划，再把计划转成一次前端批量命令。
     (
-        "freezone_list_workflows",
+        "freezone_get_mainline_projection_assets",
         _schema(
-            "freezone_list_workflows",
-            "List registered Freezone workflow templates from the workflow modules directory. This is read-only and only for list/query requests. If the user asks to create/add/generate/recreate another workflow instance, including when the same workflow already exists on the canvas, call freezone_create_workflow_graph instead.",
+            "freezone_get_mainline_projection_assets",
+            "Mainline -> canvas only. Request compact mainline asset candidates that can be opened/mapped/projected into Freezone with freezone_open_mainline_projection. Use only after the user explicitly asks to map/open/project mainline characters, scenes, or props into Freezone; do not use for ordinary canvas creation/editing/linking/layout/generation, and do not use for canvas-to-mainline submission. For people/characters/identities/portraits, always request asset kind character.",
             {
                 **_SCOPE_PROPS,
-            },
-        ),
-        _handle_list_workflows,
-    ),
-    (
-        "freezone_build_workflow_plan",
-        _schema(
-            "freezone_build_workflow_plan",
-            "Build a deterministic Freezone workflow plan without modifying the canvas. Use this only for planning, preview, analysis, or explanation. When the user asks to create an already registered workflow on the canvas, call freezone_create_workflow_graph directly with workflow_type/workflow_types instead of manually creating nodes.",
-            {
-                **_SCOPE_PROPS,
-                "workflow_type": {
-                    "type": "string",
-                    "description": "Workflow template: short_drama, ad_video, product_video, mv, text_to_image, image_to_video, text_to_video, image_to_text, or text_to_audio.",
-                },
-                "workflow_types": {
+                "asset_kinds": {
                     "type": "array",
-                    "description": "Batch workflow templates. Use this when the user asks to create multiple registered workflows at once.",
+                    "items": {"type": "string", "enum": _MAINLINE_PROJECTION_ASSET_KIND_VALUES},
+                    "description": "Optional filters for mainline asset kinds to map into Freezone. Use character for all people/identity/portrait requests. Other narrow categories include prop, scene_master, scene_reverse_master, scene_360, or prop_ref.",
+                },
+                "assetKinds": {
+                    "type": "array",
                     "items": {"type": "string"},
+                    "description": "Alias of asset_kinds.",
                 },
-                "workflowType": {"type": "string", "description": "Alias of workflow_type."},
-                "title": {"type": "string", "description": "Optional user-facing workflow title."},
-                "user_goal": {
+                "asset_kind": {
                     "type": "string",
-                    "description": "Optional original user goal or request text used to fill semantic text nodes.",
+                    "enum": _MAINLINE_PROJECTION_ASSET_KIND_VALUES,
+                    "description": "Single asset kind filter alias. Prefer asset_kinds for multiple values.",
                 },
-                "brief": {
+                "assetKind": {"type": "string", "description": "Alias of asset_kind."},
+                "query": {
                     "type": "string",
-                    "description": "Optional product/story/music brief used to fill workflow node content.",
+                    "description": "Optional user-facing keyword to match asset label/name.",
                 },
-                "product": {
-                    "type": "string",
-                    "description": "Optional product name or product description for ad/product workflows.",
+                "q": {"type": "string", "description": "Alias of query."},
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum candidates to return. Default 20, maximum 50.",
                 },
-                "beat_count": {
-                    "type": "number",
-                    "description": "For short_drama, number of beat production units. Defaults to 1; max 6.",
-                },
-                "beats": {"type": "number", "description": "Alias of beat_count."},
             },
         ),
-        _handle_build_workflow_plan,
-    ),
-    (
-        "freezone_create_workflow_graph",
-        _schema(
-            "freezone_create_workflow_graph",
-            "Create a registered Freezone workflow or convert a workflow plan/graph into legal canvas_chat_commands.v1 commands, including all create_node, create_edge, layout, and group commands, then submit them as one frontend-confirmed batch. This is the required tool for creating registered workflows; do not replace it with repeated create_node calls. Existing workflows on the canvas do not block creating another instance; use this again for requests like recreate another text-to-image workflow.",
-            {
-                **_SCOPE_PROPS,
-                "plan": {
-                    "type": "object",
-                    "description": "freezone_workflow_plan.v1 returned by freezone_build_workflow_plan.",
-                },
-                "workflow": {
-                    "type": "object",
-                    "description": "Alias payload containing nodes/edges/groups.",
-                },
-                "graph": {
-                    "type": "object",
-                    "description": "Alias payload containing nodes/edges/groups.",
-                },
-                "workflow_type": {
-                    "type": "string",
-                    "description": "Optional workflow type when passing nodes directly.",
-                },
-                "workflow_types": {
-                    "type": "array",
-                    "description": "Batch workflow templates to create without passing expanded nodes. Use values such as short_drama, ad_video, product_video, mv, text_to_image, image_to_video, text_to_video, image_to_text, and text_to_audio.",
-                    "items": {"type": "string"},
-                },
-                "nodes": {
-                    "type": "array",
-                    "description": "Logical workflow nodes with id, node_type, label, description, stage, data, and optional position.",
-                    "items": {"type": "object"},
-                },
-                "edges": {
-                    "type": "array",
-                    "description": "Logical edges using source and target plan ids. Optional link_type may be supplied; legacy role is accepted as input only and is never emitted.",
-                    "items": {"type": "object"},
-                },
-                "groups": {
-                    "type": "array",
-                    "description": "Optional visual groups with label and node_ids.",
-                    "items": {"type": "object"},
-                },
-                "layout": {
-                    "type": "object",
-                    "description": "Optional layout metadata with groups.",
-                },
-                "body": {"type": "object", "description": "Raw plan/graph payload override."},
-            },
-        ),
-        _handle_create_workflow_graph,
+        _handle_mainline_projection_assets,
     ),
     # 写入前预校验。
     (

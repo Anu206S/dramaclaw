@@ -22,6 +22,10 @@ import {
   FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT,
   type CanvasCommandToolResultPayload,
 } from "@/features/freezone/canvasCommandToolResult";
+import {
+  FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT,
+  type CanvasContextToolResultPayload,
+} from "@/features/freezone/canvasContextToolResult";
 import { api } from "@/lib/api";
 import {
   isStaleByTtl,
@@ -33,6 +37,7 @@ import {
 const SETTINGS_KEY = "superchat:settings";
 const EXECUTABLE_HIDDEN_TOOL_NAMES = new Set(["freezone_emit_canvas_command"]);
 export const SUPERCHAT_CANVAS_COMMAND_EVENT = "superchat/canvas-command";
+export const SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT = "superchat/canvas-context-request";
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
 const MESSAGE_CACHE_LIMIT = 50;
 // Refresh-recovery caches are best-effort; expire abandoned scopes so their
@@ -77,17 +82,38 @@ function resolveChatWsUrl(): string {
   return url.toString();
 }
 
-function scopeForProject(project?: string, surface?: "freezone"): ChatScope {
+type ProjectChatSurface = "director" | "freezone";
+
+function scopeForProject(
+  project?: string,
+  surface: ProjectChatSurface = "director",
+  canvasId?: string | null,
+): ChatScope {
   const name = project?.trim();
-  if (name) return { kind: surface === "freezone" ? "freezone" : "project", id: name };
+  if (name) {
+    const normalizedCanvasId = canvasId?.trim() || null;
+    return {
+      kind: "project",
+      id: name,
+      surface,
+      canvasId: surface === "freezone" ? normalizedCanvasId : null,
+    };
+  }
   return { kind: "home", id: null };
 }
 
 function scopeSessionKey(scope: ChatScope): string {
+  if (scope.kind === "project" && scope.id) {
+    const surface = scope.surface || "director";
+    const canvasSuffix = surface === "freezone" && scope.canvasId ? `:${scope.canvasId}` : "";
+    return `supertale:project:${scope.id}:${surface}${canvasSuffix}`;
+  }
   if (scope.kind === "freezone" && scope.id) return `supertale:freezone:${scope.id}:main`;
-  if (scope.kind === "project" && scope.id) return `supertale:project:${scope.id}:main`;
   return "supertale:home:main";
 }
+
+export const scopeForProjectForTest = scopeForProject;
+export const scopeSessionKeyForTest = scopeSessionKey;
 
 function messageCacheKey(scopeKey: string): string {
   return `${MESSAGE_CACHE_PREFIX}${scopeKey}`;
@@ -256,6 +282,13 @@ function scopeMatches(a: ChatScope | undefined, b: ChatScope): boolean {
   if (!a) return false;
   if (a.kind !== b.kind) return false;
   if (a.kind === "home") return true;
+  if (a.kind === "project" && b.kind === "project") {
+    return (
+      (a.id ?? null) === (b.id ?? null)
+      && (a.surface ?? "director") === (b.surface ?? "director")
+      && ((a.surface ?? "director") !== "freezone" || (a.canvasId ?? null) === (b.canvasId ?? null))
+    );
+  }
   return (a.id ?? null) === (b.id ?? null);
 }
 
@@ -569,16 +602,172 @@ function dispatchCanvasCommandFrame(payload: ServerFrame): void {
   }));
 }
 
+const FREEZONE_CANVAS_CONTEXT_TOOL_REQUEST_TYPES: Record<string, string> = {
+  freezone_get_canvas_ontology: "canvas_ontology",
+  freezone_summarize_canvas: "canvas_summary",
+  freezone_get_canvas_action_catalog: "canvas_action_catalog",
+  freezone_get_canvas_command_catalog: "canvas_command_catalog",
+  freezone_get_link_type_catalog: "link_type_catalog",
+  freezone_get_selection: "selection_detail",
+  freezone_get_node_detail: "node_detail",
+  freezone_get_neighbor_graph: "neighbor_graph",
+  freezone_get_node_action_catalog: "node_action_catalog",
+  freezone_get_node_create_schema: "node_create_schema",
+  freezone_get_audio_voice_options: "audio_voice_options",
+  freezone_get_slot_candidates: "slot_candidates",
+  freezone_get_mainline_projection_assets: "mainline_projection_assets",
+  freezone_validate_canvas_commands: "validate_canvas_commands",
+};
+
+function collectToolInputRecords(values: unknown[], output: Record<string, unknown>[] = []): Record<string, unknown>[] {
+  for (const value of values) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const record = value as Record<string, unknown>;
+    output.push(record);
+    for (const key of ["input", "raw", "rawInput", "raw_input", "arguments", "args", "payload"]) {
+      collectToolInputRecords([record[key]], output);
+    }
+  }
+  return output;
+}
+
+function firstStringValue(records: Record<string, unknown>[], keys: string[]): string | undefined {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "string" && value.trim()) return value.trim();
+    }
+  }
+  return undefined;
+}
+
+function firstNumberValue(records: Record<string, unknown>[], keys: string[]): number | undefined {
+  for (const record of records) {
+    for (const key of keys) {
+      const value = record[key];
+      if (typeof value === "number" && Number.isFinite(value)) return value;
+    }
+  }
+  return undefined;
+}
+
+function firstValue(records: Record<string, unknown>[], keys: string[]): unknown {
+  for (const record of records) {
+    for (const key of keys) {
+      if (key in record) return record[key];
+    }
+  }
+  return undefined;
+}
+
+function firstStringArrayValue(records: Record<string, unknown>[], keys: string[]): string[] | undefined {
+  const value = firstValue(records, keys);
+  if (!Array.isArray(value)) return undefined;
+  const strings = value
+    .filter((item): item is string => typeof item === "string" && item.trim().length > 0)
+    .map((item) => item.trim());
+  return strings.length > 0 ? strings : undefined;
+}
+
+function canvasContextRequestFromToolCall(payload: ServerFrame): {
+  envelope: {
+    schema_version: "canvas_context_request.v1";
+    requests: Array<Record<string, unknown>>;
+  };
+  canvasId?: string | null;
+} | null {
+  if (payload.type !== "tool.call" || typeof payload.name !== "string") return null;
+  const requestType = FREEZONE_CANVAS_CONTEXT_TOOL_REQUEST_TYPES[payload.name];
+  if (!requestType) return null;
+
+  const records = collectToolInputRecords([payload.input, payload.raw]);
+  const request: Record<string, unknown> = { type: requestType };
+  const canvasId = firstStringValue(records, ["canvas_id", "canvasId"]);
+
+  if (
+    requestType === "node_detail" ||
+    requestType === "neighbor_graph" ||
+    requestType === "node_action_catalog" ||
+    requestType === "audio_voice_options"
+  ) {
+    const nodeId = firstStringValue(records, ["node_id", "nodeId"]);
+    if (nodeId) request.node_id = nodeId;
+  }
+  if (requestType === "neighbor_graph") {
+    const depth = firstNumberValue(records, ["depth"]);
+    if (depth !== undefined) request.depth = depth;
+  }
+  if (requestType === "node_create_schema") {
+    const nodeType = firstStringValue(records, ["node_type", "nodeType"]);
+    if (nodeType) request.node_type = nodeType;
+  }
+  if (requestType === "slot_candidates") {
+    const slotKind = firstStringValue(records, ["slot_kind", "slotKind"]);
+    if (slotKind) request.slot_kind = slotKind;
+  }
+  if (requestType === "mainline_projection_assets") {
+    const assetKinds = firstStringArrayValue(records, ["asset_kinds", "assetKinds"]);
+    const assetKind = firstStringValue(records, ["asset_kind", "assetKind"]);
+    const query = firstStringValue(records, ["query", "q"]);
+    const limit = firstNumberValue(records, ["limit"]);
+    if (assetKinds) request.asset_kinds = assetKinds;
+    else if (assetKind) request.asset_kinds = [assetKind];
+    if (query) request.query = query;
+    if (limit !== undefined) request.limit = limit;
+  }
+  if (requestType === "validate_canvas_commands") {
+    const payloadValue =
+      firstValue(records, ["payload", "body", "envelope"]) ??
+      (Array.isArray(firstValue(records, ["commands"]))
+        ? { commands: firstValue(records, ["commands"]) }
+        : undefined);
+    if (payloadValue !== undefined) request.payload = payloadValue;
+  }
+
+  return {
+    canvasId,
+    envelope: {
+      schema_version: "canvas_context_request.v1",
+      requests: [request],
+    },
+  };
+}
+
+function dispatchCanvasContextRequestFrame(payload: ServerFrame): void {
+  if (typeof window === "undefined") return;
+  if (payload.type === "canvas.context.request") {
+    window.dispatchEvent(new CustomEvent(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, { detail: payload }));
+    return;
+  }
+  const contextRequest = canvasContextRequestFromToolCall(payload);
+  if (!contextRequest) return;
+  window.dispatchEvent(new CustomEvent(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, {
+    detail: {
+      ...payload,
+      canvas_id: contextRequest.canvasId ?? null,
+      envelope: contextRequest.envelope,
+    },
+  }));
+}
+
 export function useSuperChat({
   project,
   displayName,
-  surface,
+  surface = "director",
+  canvasId,
+  freezoneCanvasId,
 }: {
   project?: string;
   displayName: string;
-  surface?: "freezone";
+  surface?: ProjectChatSurface;
+  canvasId?: string | null;
+  freezoneCanvasId?: string | null;
 }) {
-  const desiredScope = useMemo(() => scopeForProject(project, surface), [project, surface]);
+  const normalizedFreezoneCanvasId = canvasId ?? freezoneCanvasId ?? null;
+  const desiredScope = useMemo(
+    () => scopeForProject(project, surface, normalizedFreezoneCanvasId),
+    [normalizedFreezoneCanvasId, project, surface],
+  );
   const scopeKey = useMemo(() => scopeSessionKey(desiredScope), [desiredScope]);
   const initialScopeSnapshot = useMemo(() => {
     const cachedMessages = loadCachedMessages(scopeKey);
@@ -655,9 +844,23 @@ export function useSuperChat({
       const { type: _type, received_at: _receivedAt, anchor_text_prefix: _anchorTextPrefix, ...frame } = detail;
       sendFrame({ type: "canvas.command.result", ...frame });
     };
+    const handleCanvasContextToolResult = (event: Event) => {
+      const detail = (event as CustomEvent<CanvasContextToolResultPayload>).detail;
+      if (!detail || detail.type !== "canvas.context.result" || !detail.bridge_key) return;
+      const {
+        type: _type,
+        received_at: _receivedAt,
+        anchor_text_prefix: _anchorTextPrefix,
+        canvas_context_status: _canvasContextStatus,
+        ...frame
+      } = detail;
+      sendFrame({ type: "canvas.context.result", ...frame });
+    };
     window.addEventListener(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, handleCanvasCommandToolResult);
+    window.addEventListener(FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT, handleCanvasContextToolResult);
     return () => {
       window.removeEventListener(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, handleCanvasCommandToolResult);
+      window.removeEventListener(FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT, handleCanvasContextToolResult);
     };
   }, [sendFrame]);
 
@@ -809,6 +1012,7 @@ export function useSuperChat({
         ) {
           break;
         }
+        dispatchCanvasContextRequestFrame(frame);
         if (settings.showToolEvents || shouldPreserveToolMessage(frame)) {
           setMessages((current) => upsertToolMessage(current, frame.type, frame));
         }
@@ -831,6 +1035,9 @@ export function useSuperChat({
         break;
       case "canvas.command":
         dispatchCanvasCommandFrame(frame);
+        break;
+      case "canvas.context.request":
+        dispatchCanvasContextRequestFrame(frame);
         break;
       case "chat.done":
         if (
@@ -1015,10 +1222,14 @@ export function useSuperChat({
       text: outboundText,
       turn_id: turnId,
       attachments: attachments.length > 0 ? attachments : undefined,
-      surface,
+      surface: surface === "freezone" ? "freezone" : undefined,
+      context:
+        surface === "freezone" && normalizedFreezoneCanvasId
+          ? { freezone_canvas_id: normalizedFreezoneCanvasId }
+          : undefined,
     });
     return true;
-  }, [connected, desiredScope, displayName, markTurnActive, sendFrame, surface]);
+  }, [connected, desiredScope, displayName, markTurnActive, normalizedFreezoneCanvasId, sendFrame, surface]);
 
   const appendNotification = useCallback(async (text: string): Promise<boolean> => {
     const trimmed = text.trim();

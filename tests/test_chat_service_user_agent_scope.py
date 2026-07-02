@@ -825,12 +825,42 @@ def test_freezone_history_uses_separate_project_chat_db(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
 
     chat_service.add_user_message("admin", "project-a", "mainline")
-    scope = ChatScope(kind="freezone", id="project-a")
+    scope = ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
     chat_store.append_message("admin", scope, "user", "canvas")
 
     assert chat_service.list_messages("admin", "project-a")[0]["content"] == "mainline"
     assert chat_store.list_messages("admin", scope)[0]["content"] == "canvas"
     assert (state_root / "admin" / "project-a" / "chat.db").exists()
+    assert (state_root / "admin" / "project-a" / "_chat" / "freezone" / "canvas-a" / "chat.db").exists()
+
+
+def test_chat_scope_round_trips_freezone_canvas_payload() -> None:
+    scope = ChatScope.from_payload(
+        {
+            "kind": "project",
+            "id": "project-a",
+            "surface": "freezone",
+            "canvasId": "canvas-a",
+        }
+    )
+
+    assert scope == ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
+    assert scope.to_dict() == {
+        "kind": "project",
+        "id": "project-a",
+        "surface": "freezone",
+        "canvasId": "canvas-a",
+    }
+
+
+def test_legacy_freezone_scope_still_uses_legacy_chat_db(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    scope = ChatScope(kind="freezone", id="project-a")
+    chat_store.append_message("admin", scope, "user", "legacy")
+
+    assert chat_store.list_messages("admin", scope)[0]["content"] == "legacy"
     assert (state_root / "admin" / "_freezone" / "project-a" / "chat.db").exists()
 
 

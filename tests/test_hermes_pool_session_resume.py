@@ -59,7 +59,8 @@ def _patch_fake_hermes_pool(
     started_count = 0
     fake_auth = _FakeAuthService()
     fake_cli = tmp_path / "hermes"
-    fake_cli.write_text("#!/bin/sh\n", encoding="utf-8")
+    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
+    fake_cli.chmod(0o755)
 
     class FakeHermesSdkClient:
         def __init__(self, **_kwargs) -> None:
@@ -78,7 +79,11 @@ def _patch_fake_hermes_pool(
     monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
     registry.register_port("auth_session", fake_auth)
     monkeypatch.setattr(hermes_pool, "_hermes_cli_path", lambda: fake_cli)
-    monkeypatch.setattr(hermes_pool, "ensure_user_hermes_workspace", lambda _user: tmp_path)
+    monkeypatch.setattr(
+        hermes_pool,
+        "ensure_user_hermes_workspace",
+        lambda _user, profile="director": tmp_path,
+    )
     monkeypatch.setattr(hermes_pool, "HermesSdkClient", FakeHermesSdkClient)
 
     pool = hermes_pool.HermesPool(max_workers=5)
@@ -150,10 +155,77 @@ async def test_hermes_pool_uses_separate_sessions_per_agent_profile(
     assert freezone_again.id == "session-2"
     assert calls == [("start", None), ("start", None)]
     assert sorted(pool._session_ids["alice"]) == [
-        ("freezone", "project", "project_a"),
-        ("main", "project", "project_a"),
+        ("freezone", "project", "project_a", None),
+        ("main", "project", "project_a", None),
     ]
     assert fake_auth.created == 2
+
+
+@pytest.mark.asyncio
+async def test_hermes_pool_freezone_profile_uses_isolated_home_and_canvas_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+    from novelvideo.ports import registry
+
+    fake_auth = _FakeAuthService()
+    fake_cli = tmp_path / "hermes"
+    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
+    fake_cli.chmod(0o755)
+    workspaces: list[tuple[str, str]] = []
+    client_kwargs: list[dict] = []
+
+    class FakeHermesSdkClient:
+        def __init__(self, **kwargs) -> None:
+            client_kwargs.append(kwargs)
+
+        def thread_start(self) -> _FakeThread:
+            return _FakeThread("session-freezone")
+
+        def thread_resume(self, session_id: str) -> _FakeThread:
+            return _FakeThread(session_id)
+
+    def fake_workspace(username: str, *, profile: str = "director") -> Path:
+        workspaces.append((username, profile))
+        home_name = ".hermes-freezone" if profile == "freezone" else ".hermes"
+        home = tmp_path / username / home_name
+        (home / "tmp").mkdir(parents=True, exist_ok=True)
+        return home
+
+    monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
+    registry.register_port("auth_session", fake_auth)
+    monkeypatch.setattr(hermes_pool, "_hermes_cli_path", lambda: fake_cli)
+    monkeypatch.setattr(hermes_pool, "ensure_user_hermes_workspace", fake_workspace)
+    monkeypatch.setattr(hermes_pool, "HermesSdkClient", FakeHermesSdkClient)
+
+    pool = hermes_pool.HermesPool(max_workers=5)
+
+    async def fake_project_env(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(pool, "_project_env", fake_project_env)
+
+    try:
+        thread = await pool.get_for_user(
+            "alice",
+            agent_profile="freezone",
+            tool_mode="freezone_canvas",
+            scope_kind="project",
+            project_id="project_a",
+            canvas_id="canvas_123",
+        )
+    finally:
+        await pool.close_all()
+
+    assert thread.id == "session-freezone"
+    assert workspaces == [("alice", "freezone")]
+    assert client_kwargs[0]["cwd"] == tmp_path / "alice" / ".hermes-freezone"
+    env = client_kwargs[0]["env"]
+    assert env["HERMES_HOME"] == str(tmp_path / "alice" / ".hermes-freezone")
+    assert env["DRAMACLAW_CANVAS_ID"] == "canvas_123"
+    assert env["SUPERTALE_CANVAS_ID"] == "canvas_123"
+    assert env["DRAMACLAW_CHAT_SURFACE"] == "freezone"
 
 
 @pytest.mark.asyncio

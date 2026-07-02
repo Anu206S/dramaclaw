@@ -31,11 +31,22 @@ function projectionKeyFromEdge(edge: CanvasEdge): string | null {
 }
 
 function projectionIdPrefix(projectionKey: string): string {
+  const trimmed = projectionKey.trim();
   const safeKey = projectionKey
     .trim()
     .replace(/[^a-zA-Z0-9_-]+/g, "_")
     .replace(/^_+|_+$/g, "") || "projection";
-  return `projection_${safeKey}__`;
+  const suffix = /[^\x00-\x7F]/.test(trimmed) ? `_${stableProjectionKeyHash(trimmed)}` : "";
+  return `projection_${safeKey}${suffix}__`;
+}
+
+function stableProjectionKeyHash(value: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < value.length; index += 1) {
+    hash ^= value.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(36);
 }
 
 function stampInheritedProjectionData<T extends { data?: unknown }>(

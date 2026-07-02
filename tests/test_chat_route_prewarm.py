@@ -32,3 +32,16 @@ def test_ws_connect_does_not_prewarm_default_home_scope() -> None:
 
 def test_ws_connect_can_prewarm_non_home_scope() -> None:
     assert chat_route._should_prewarm_on_ws_connect(ChatScope(kind="project", id="project_a")) is True
+
+
+def test_scope_from_model_preserves_freezone_canvas_scope() -> None:
+    scope = chat_route._scope_from_model(
+        chat_route.ChatScopePayload(
+            kind="project",
+            id="project-a",
+            surface="freezone",
+            canvasId="canvas-a",
+        )
+    )
+
+    assert scope == ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
