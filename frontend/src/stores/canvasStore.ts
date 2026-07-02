@@ -148,6 +148,8 @@ interface CanvasState {
    * 会在节点下方重叠。功能浮层优先级更高。
    */
   activeOverlayNodeId: string | null;
+  /** 当前打开的打光编辑器目标节点 id。独立于节点选中态，点击聊天面板时不应关闭。 */
+  activeLightEditorNodeId: string | null;
   /**
    * 当前鼠标悬停的节点 id（由 Canvas 的 onNodeMouseEnter/Leave 维护，离开带短
    * 延迟，避免鼠标移到节点上方的浮动按钮栏时按钮提前消失）。供 NodeSpawnPlusOverlay
@@ -350,6 +352,7 @@ interface CanvasState {
   deleteEdge: (edgeId: string) => void;
   setSelectedNode: (nodeId: string | null) => void;
   setActiveOverlayNodeId: (nodeId: string | null) => void;
+  setActiveLightEditorNodeId: (nodeId: string | null) => void;
   setHoveredNodeId: (nodeId: string | null) => void;
   /** 请求将视口聚焦到目标节点；Canvas 处理完会通过 clearPendingFocus 复位。 */
   requestFocusNode: (nodeId: string) => void;
@@ -1234,6 +1237,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   pendingClearIntent: false,
   selectedNodeId: null,
   activeOverlayNodeId: null,
+  activeLightEditorNodeId: null,
   hoveredNodeId: null,
   pendingFocusNodeId: null,
   activeToolDialog: null,
@@ -3657,6 +3661,14 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
   setActiveOverlayNodeId: (nodeId) => {
     set((state) =>
       state.activeOverlayNodeId === nodeId ? state : { activeOverlayNodeId: nodeId }
+    );
+  },
+
+  setActiveLightEditorNodeId: (nodeId) => {
+    set((state) =>
+      state.activeLightEditorNodeId === nodeId
+        ? state
+        : { activeLightEditorNodeId: nodeId }
     );
   },
 

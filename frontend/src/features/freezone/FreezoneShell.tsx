@@ -5,7 +5,7 @@ import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import { Canvas } from "@/features/canvas/Canvas";
 import { NodeReplaceDragPreview } from "@/features/canvas/ui/NodeReplaceDragPreview";
-import type { SupertaleProjectSummary } from "@/api/projects";
+import { listFreezoneProjectAssets, type SupertaleProjectSummary } from "@/api/projects";
 import {
   buildProjectionFromPreset,
   getProjectionStatuses,
@@ -22,7 +22,11 @@ import {
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { readUrl, rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { cn } from "@/lib/utils";
-import { SUPERCHAT_CANVAS_COMMAND_EVENT } from "@/features/superchat/use-superchat";
+import { api } from "@/lib/api";
+import {
+  SUPERCHAT_CANVAS_COMMAND_EVENT,
+  SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT,
+} from "@/features/superchat/use-superchat";
 import { SuperChatPanel } from "@/features/superchat/superchat-panel";
 import { CommitDialog } from "./commit/CommitDialog";
 import { promoteToAsset } from "./commit/promoteToAsset";
@@ -80,15 +84,25 @@ import {
 } from "@/features/freezone/canvasSyncRuntime";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
 import {
-  applyCanvasChatCommands,
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
   canvasCommandEnvelopeMatchesCanvas,
+  emitCanvasCommandApproval,
   extractCanvasChatCommandEnvelopes,
+  FREEZONE_CANVAS_COMMAND_RESULT_EVENT,
   normalizeCanvasChatCommandEnvelopesForValidation,
   type CanvasChatCommandApplyResult,
 } from "@/features/freezone/canvasChatCommands";
 import { validateCanvasChatCommandEnvelopes } from "@/features/freezone/context/canvasCommandValidator";
 import { reportCanvasCommandToolResult } from "@/features/freezone/canvasCommandToolResult";
+import {
+  emitCanvasContextActivity,
+  reportCanvasContextToolResult,
+} from "@/features/freezone/canvasContextToolResult";
+import {
+  buildCanvasContextRequestResponses,
+  extractCanvasContextRequestEnvelopes,
+} from "@/features/freezone/chatNodeReferences";
+import { buildCanvasOntologyContext } from "@/features/canvas/ontology/canvasOntology";
 import type { ServerFrame } from "@/features/superchat/types";
 
 export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
@@ -140,6 +154,17 @@ function canvasCommandCandidatesFromFrame(frame: ServerFrame): unknown[] {
   return candidates;
 }
 
+function canvasContextRequestCandidatesFromDetail(detail: Record<string, unknown>): unknown[] {
+  return [
+    detail.envelope,
+    detail.request,
+    detail.requests,
+    detail.input,
+    detail.raw,
+    detail,
+  ];
+}
+
 function canvasCommandValidationFailureResult(errors: string[]): CanvasChatCommandApplyResult {
   return {
     applied: 0,
@@ -156,6 +181,107 @@ function canvasCommandValidationFailureResult(errors: string[]): CanvasChatComma
       },
     ],
   };
+}
+
+function persistCanvasCommandResult({
+  projectId,
+  canvasId,
+  turnId,
+  envelopes,
+  result,
+  anchorTextPrefix,
+  receivedAt,
+  bridgeKey,
+}: {
+  projectId: string;
+  canvasId: string;
+  turnId: string | null;
+  envelopes: ReturnType<typeof extractCanvasChatCommandEnvelopes>;
+  result: CanvasChatCommandApplyResult;
+  anchorTextPrefix?: string | null;
+  receivedAt?: number;
+  bridgeKey?: string | null;
+}) {
+  if (!turnId) return;
+  void api.post("api/v1/chat/ui-events", {
+    json: {
+      scope: {
+        kind: "project",
+        id: projectId,
+        surface: "freezone",
+        canvasId,
+      },
+      turn_id: turnId,
+      event: {
+        schema_version: "canvas_command_result.v1",
+        type: "canvas_command_result",
+        canvas_id: canvasId,
+        bridge_key: bridgeKey ?? null,
+        envelopes,
+        result,
+        anchor_text_prefix: anchorTextPrefix ?? null,
+        received_at: receivedAt ?? Date.now(),
+      },
+    },
+  }).catch((error) => {
+    console.warn("[freezone-canvas-command] failed to persist canvas command result", {
+      canvasId,
+      turnId,
+      error,
+    });
+  });
+}
+
+function persistCanvasCommandValidationActivity({
+  projectId,
+  canvasId,
+  turnId,
+  bridgeKey,
+  ok,
+  errors,
+  anchorTextPrefix,
+  receivedAt,
+}: {
+  projectId: string;
+  canvasId: string;
+  turnId: string | null;
+  bridgeKey: string;
+  ok: boolean;
+  errors: string[];
+  anchorTextPrefix?: string | null;
+  receivedAt?: number;
+}) {
+  if (!turnId) return;
+  void api.post("api/v1/chat/ui-events", {
+    json: {
+      scope: {
+        kind: "project",
+        id: projectId,
+        surface: "freezone",
+        canvasId,
+      },
+      turn_id: turnId,
+      event: {
+        schema_version: "canvas_context_result.v1",
+        type: "canvas_context_result",
+        canvas_id: canvasId,
+        bridge_key: bridgeKey,
+        result: {
+          ok,
+          responses: [{ type: "validate_canvas_commands" }],
+          errors,
+        },
+        anchor_text_prefix: anchorTextPrefix ?? null,
+        received_at: receivedAt ?? Date.now(),
+      },
+    },
+  }).catch((error) => {
+    console.warn("[freezone-canvas-command] failed to persist canvas command validation activity", {
+      canvasId,
+      turnId,
+      error,
+    });
+  });
 }
 
 function renderCommitSuccessMessage(target: PushTarget, result: PushResult): string {
@@ -806,22 +932,95 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       if (!frame || frame.type !== "canvas.command") return;
       const turnId = typeof frame.turn_id === "string" ? frame.turn_id : null;
       const bridgeKey = typeof frame.bridge_key === "string" ? frame.bridge_key : null;
+      const eventReceivedAt = detail?.receivedAt ?? Date.now();
+      const validationBridgeKey = bridgeKey
+        ? `${bridgeKey}:validation`
+        : `validation:${turnId ?? canvasId}:${eventReceivedAt}`;
+      emitCanvasContextActivity({
+        turnId,
+        anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+        bridgeKey: validationBridgeKey,
+        canvasId,
+        status: "running",
+        labels: ["命令校验"],
+        receivedAt: eventReceivedAt,
+        surfaceOrder: eventReceivedAt,
+      });
       const candidates = canvasCommandCandidatesFromFrame(frame);
       const envelopes = extractCanvasChatCommandEnvelopes(candidates)
         .filter((envelope) => canvasCommandEnvelopeMatchesCanvas(envelope, canvasId));
 
       if (envelopes.length === 0) {
+        const errors = [
+          "画布命令格式无效或不属于当前画布，前端未执行。",
+          "无法解析 canvas_chat_commands.v1 命令；请检查 command 字段是否在正确层级。",
+        ];
+        emitCanvasContextActivity({
+          turnId,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          bridgeKey: validationBridgeKey,
+          canvasId,
+          status: "failed",
+          labels: ["命令校验"],
+          errors,
+          receivedAt: eventReceivedAt + 1,
+          surfaceOrder: eventReceivedAt + 1,
+        });
+        persistCanvasCommandValidationActivity({
+          projectId,
+          canvasId,
+          turnId,
+          bridgeKey: validationBridgeKey,
+          ok: false,
+          errors,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          receivedAt: eventReceivedAt + 1,
+        });
+        const result: CanvasChatCommandApplyResult = {
+          applied: 0,
+          openedUiActions: 0,
+          createdNodeIds: [],
+          errors,
+          commandResults: [
+            {
+              commandIndex: -1,
+              type: "validate",
+              status: "error",
+              label: "画布命令无效",
+              error: "无法解析 canvas_chat_commands.v1 命令；请检查 command 字段是否在正确层级。",
+            },
+          ],
+        };
         reportCanvasCommandToolResult({
           bridgeKey,
           turnId,
           anchorTextPrefix: detail?.anchorTextPrefix ?? null,
           projectId,
           canvasId,
-          result: canvasCommandValidationFailureResult([
-            "画布命令格式无效或不属于当前画布，前端未执行。",
-            "无法解析 canvas_chat_commands.v1 命令；请检查 command 字段是否在正确层级。",
-          ]),
+          result,
         });
+        persistCanvasCommandResult({
+          projectId,
+          canvasId,
+          turnId,
+          envelopes: [],
+          result,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          receivedAt: detail?.receivedAt,
+          bridgeKey,
+        });
+        window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, {
+          detail: {
+            canvasId,
+            turnId,
+            bridgeKey,
+            anchorMessageId: null,
+            envelopes: [],
+            result,
+            anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+            receivedAt: eventReceivedAt + 2,
+          },
+        }));
         setChatOpen(true);
         return;
       }
@@ -837,30 +1036,96 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         currentState.edges,
       );
       if (!validation.ok) {
+        const errors = [
+          "画布命令预校验失败，前端未展示确认卡，也未执行。",
+          ...validation.issues.map((issue) => `${issue.path}: ${issue.message}`),
+        ];
+        emitCanvasContextActivity({
+          turnId,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          bridgeKey: validationBridgeKey,
+          canvasId,
+          status: "failed",
+          labels: ["命令校验"],
+          errors,
+          receivedAt: eventReceivedAt + 1,
+          surfaceOrder: eventReceivedAt + 1,
+        });
+        persistCanvasCommandValidationActivity({
+          projectId,
+          canvasId,
+          turnId,
+          bridgeKey: validationBridgeKey,
+          ok: false,
+          errors,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          receivedAt: eventReceivedAt + 1,
+        });
+        const result = canvasCommandValidationFailureResult(errors);
         reportCanvasCommandToolResult({
           bridgeKey,
           turnId,
           anchorTextPrefix: detail?.anchorTextPrefix ?? null,
           projectId,
           canvasId,
-          result: canvasCommandValidationFailureResult(
-            validation.issues.map((issue) => `${issue.path}: ${issue.message}`),
-          ),
+          result,
         });
+        persistCanvasCommandResult({
+          projectId,
+          canvasId,
+          turnId,
+          envelopes: normalizedEnvelopes,
+          result,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          receivedAt: detail?.receivedAt,
+          bridgeKey,
+        });
+        window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, {
+          detail: {
+            canvasId,
+            turnId,
+            bridgeKey,
+            anchorMessageId: null,
+            envelopes: normalizedEnvelopes,
+            result,
+            anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+            receivedAt: eventReceivedAt + 2,
+          },
+        }));
         setChatOpen(true);
         return;
       }
 
-      const result = applyCanvasChatCommands(normalizedEnvelopes);
-      reportCanvasCommandToolResult({
-        bridgeKey,
+      emitCanvasContextActivity({
         turnId,
         anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+        bridgeKey: validationBridgeKey,
+        canvasId,
+        status: "done",
+        labels: ["命令校验"],
+        receivedAt: eventReceivedAt + 1,
+        surfaceOrder: eventReceivedAt + 1,
+      });
+      persistCanvasCommandValidationActivity({
         projectId,
         canvasId,
-        result,
+        turnId,
+        bridgeKey: validationBridgeKey,
+        ok: true,
+        errors: [],
+        anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+        receivedAt: eventReceivedAt + 1,
       });
       setChatOpen(true);
+      window.setTimeout(() => emitCanvasCommandApproval({
+        canvasId,
+        turnId,
+        anchorMessageId: null,
+        anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+        bridgeKey,
+        envelopes: normalizedEnvelopes,
+        receivedAt: eventReceivedAt + 2,
+      }), 0);
     };
 
     window.addEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleCanvasCommand);
@@ -868,6 +1133,94 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       window.removeEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleCanvasCommand);
     };
   }, [canvasId, projectId]);
+
+  useEffect(() => {
+    const handleCanvasContextRequest = (event: Event) => {
+      const detail = (event as CustomEvent<Record<string, unknown>>).detail;
+      if (!detail) return;
+      const requestedCanvasId =
+        typeof detail.canvas_id === "string"
+          ? detail.canvas_id
+          : typeof detail.canvasId === "string"
+            ? detail.canvasId
+            : null;
+      if (requestedCanvasId && requestedCanvasId !== canvasId) return;
+
+      const bridgeKey = typeof detail.bridge_key === "string" ? detail.bridge_key : null;
+      const turnId = typeof detail.turn_id === "string" ? detail.turn_id : null;
+      const anchorTextPrefix =
+        typeof detail.anchorTextPrefix === "string"
+          ? detail.anchorTextPrefix
+          : typeof detail.anchor_text_prefix === "string"
+            ? detail.anchor_text_prefix
+            : null;
+      const envelopes = extractCanvasContextRequestEnvelopes(
+        canvasContextRequestCandidatesFromDetail(detail),
+      );
+      if (envelopes.length === 0) {
+        reportCanvasContextToolResult({
+          bridgeKey,
+          turnId,
+          anchorTextPrefix,
+          projectId,
+          canvasId,
+          responses: [],
+          errors: ["无法解析 canvas_context_request.v1 请求。"],
+        });
+        setChatOpen(true);
+        return;
+      }
+
+      void (async () => {
+        const currentState = useCanvasStore.getState();
+        const selectedNodeIds = currentState.nodes
+          .filter((node) => node.selected || currentState.selectedNodeId === node.id)
+          .map((node) => node.id);
+        try {
+          const responses = await buildCanvasContextRequestResponses({
+            project: projectId,
+            canvasId,
+            nodes: currentState.nodes,
+            edges: currentState.edges,
+            ontologyContext: buildCanvasOntologyContext(currentState.nodes, currentState.edges, {
+              canvasId,
+              selectedNodeIds,
+            }),
+            selectedNodeIds,
+            envelopes,
+            canvasMetadata: sync.metadata as Record<string, unknown> | null,
+            loadMainlineProjectionAssets: () => listFreezoneProjectAssets(projectId),
+          });
+          reportCanvasContextToolResult({
+            bridgeKey,
+            turnId,
+            anchorTextPrefix,
+            projectId,
+            canvasId,
+            responses: responses ?? [],
+            errors: [],
+          });
+        } catch (error) {
+          reportCanvasContextToolResult({
+            bridgeKey,
+            turnId,
+            anchorTextPrefix,
+            projectId,
+            canvasId,
+            responses: [],
+            errors: [error instanceof Error ? error.message : String(error)],
+          });
+        } finally {
+          setChatOpen(true);
+        }
+      })();
+    };
+
+    window.addEventListener(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, handleCanvasContextRequest);
+    return () => {
+      window.removeEventListener(SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT, handleCanvasContextRequest);
+    };
+  }, [canvasId, projectId, sync.metadata]);
 
   const canvasDefaultTarget = normalizePushTarget(
     (sync.metadata?.default_push_target ?? null) as

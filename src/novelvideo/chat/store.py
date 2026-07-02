@@ -68,6 +68,8 @@ def _state_root() -> Path:
 class ChatScope:
     kind: Literal["home", "project", "freezone", "asset", "task"]
     id: str | None = None
+    surface: str | None = None
+    canvas_id: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "ChatScope":
@@ -77,14 +79,34 @@ class ChatScope:
             raise ValueError(f"unsupported chat scope: {kind}")
         raw_id = payload.get("id")
         scope_id = str(raw_id).strip() if raw_id is not None else None
+        raw_surface = payload.get("surface")
+        surface = str(raw_surface).strip() if raw_surface is not None else None
+        raw_canvas_id = payload.get("canvasId", payload.get("canvas_id"))
+        canvas_id = str(raw_canvas_id).strip() if raw_canvas_id is not None else None
         if kind == "home":
             scope_id = None
+            surface = None
+            canvas_id = None
         if kind != "home" and not scope_id:
             raise ValueError(f"scope id is required for {kind}")
-        return cls(kind=kind, id=scope_id)
+        if kind == "project":
+            surface = surface or "director"
+            if surface not in {"director", "freezone"}:
+                raise ValueError(f"unsupported project chat surface: {surface}")
+            if surface != "freezone":
+                canvas_id = None
+        else:
+            surface = None
+            canvas_id = None
+        return cls(kind=kind, id=scope_id, surface=surface, canvas_id=canvas_id)
 
     def to_dict(self) -> dict[str, str | None]:
-        return {"kind": self.kind, "id": self.id}
+        data: dict[str, str | None] = {"kind": self.kind, "id": self.id}
+        if self.surface:
+            data["surface"] = self.surface
+        if self.canvas_id:
+            data["canvasId"] = self.canvas_id
+        return data
 
 
 class ChatStore:
@@ -92,7 +114,20 @@ class ChatStore:
         if scope.kind == "home":
             return _state_root() / username / "_home" / "chat.db"
         if scope.kind == "project":
-            return _state_root() / username / str(scope.id) / "chat.db"
+            if (scope.surface or "director") == "director" and not scope.canvas_id:
+                return _state_root() / username / str(scope.id) / "chat.db"
+            surface = scope.surface or "director"
+            if surface == "freezone" and scope.canvas_id:
+                return (
+                    _state_root()
+                    / username
+                    / str(scope.id)
+                    / "_chat"
+                    / surface
+                    / str(scope.canvas_id)
+                    / "chat.db"
+                )
+            return _state_root() / username / str(scope.id) / "_chat" / surface / "chat.db"
         if scope.kind == "freezone":
             return _state_root() / username / "_freezone" / str(scope.id) / "chat.db"
         return _state_root() / username / f"_{scope.kind}" / str(scope.id) / "chat.db"
