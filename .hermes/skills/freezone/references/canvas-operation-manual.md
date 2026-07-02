@@ -33,7 +33,7 @@
 - `scriptNode`
   - 结构化脚本/脚本生成节点
   - 适合表格化、结构化、带镜头项的脚本产物
-  - 不是普通自由文本节点，也不是当前默认的流程中间节点
+  - 不是普通自由文本节点，也不是当前默认的工作流中间节点
   - 在现阶段，如果只是写创意、分镜描述、配音稿、人物设定、广告脚本，优先使用 `textAnnotationNode`
   - 只有当用户明确要“生成一份结构化脚本/镜头表/分镜表”，或产品侧明确需要脚本生成器节点时，再使用 `scriptNode`
 - `beatContextNode`
@@ -77,7 +77,7 @@
 - `imageGenNode + textAnnotationNode(semanticOutputRole=input_text) -> videoNode`
   - 表示：图片和文本共同作为视频输入
 - `textAnnotationNode(普通简报/设定) + imageGenNode` 放在同一个 group，但不连线
-  - 表示：业务上属于同一组内容，但简报还不是直接生成输入
+  - 表示：业务上属于同一个工作流，但简报还不是直接生成输入
 
 ### 错误理解
 
