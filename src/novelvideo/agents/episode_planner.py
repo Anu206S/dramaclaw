@@ -20,7 +20,7 @@
         └── 第4轮: 生成剧集大纲
 """
 
-from typing import Optional, List, Any, Callable, TYPE_CHECKING
+from typing import Optional, List, Callable, TYPE_CHECKING
 
 from pydantic_ai import Agent
 from pydantic import BaseModel, Field

@@ -3,6 +3,8 @@
 import { beforeEach, describe, expect, it } from "vitest";
 import { normalizeMessage } from "@/features/superchat/message";
 import {
+  SUPERCHAT_CANVAS_COMMAND_EVENT,
+  dispatchCanvasCommandFrameForTest,
   mergeHistorySnapshot,
   pruneOldMessageCaches,
   sanitizeMessagesForCache,
@@ -212,6 +214,40 @@ describe("Freezone chat scope", () => {
     });
     expect(scopeSessionKeyForTest(canvasA)).toBe("supertale:project:project-a:freezone:canvas-a");
     expect(scopeSessionKeyForTest(canvasB)).toBe("supertale:project:project-a:freezone:canvas-b");
+  });
+});
+
+describe("canvas command bridge events", () => {
+  it("passes the current assistant text as the canvas command anchor", () => {
+    const received: unknown[] = [];
+    const handleEvent = (event: Event) => {
+      received.push((event as CustomEvent).detail);
+    };
+    window.addEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleEvent);
+
+    try {
+      dispatchCanvasCommandFrameForTest(
+        {
+          type: "canvas.command",
+          turn_id: "turn-a",
+          bridge_key: "bridge-a",
+          canvas_id: "canvas-a",
+          envelope: { schema_version: "canvas_chat_commands.v1", commands: [] },
+        },
+        "正在更新视频节点的内容...\n",
+      );
+    } finally {
+      window.removeEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleEvent);
+    }
+
+    expect(received).toHaveLength(1);
+    expect(received[0]).toMatchObject({
+      anchorTextPrefix: "正在更新视频节点的内容...\n",
+      frame: {
+        type: "canvas.command",
+        bridge_key: "bridge-a",
+      },
+    });
   });
 });
 
