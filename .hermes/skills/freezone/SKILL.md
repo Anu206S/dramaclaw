@@ -31,11 +31,12 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 
 ## 画布建模原则
 
-- 画布连线表示数据输入、参考或上下文关系，不表示“下一步顺序”。
+- 画布连线表示数据输入、参考或上下文关系，不表示“下一步顺序”，也不是视觉关联线。只有当目标节点会消费上游作为输入、参考、上下文或合成素材时才连线；如果节点只是相关、属于同一工作流、需要放在一起展示，使用 `group_nodes` 或 `layout_nodes`，不要用 `create_edge`。
 - 画布只能使用前端真实支持的节点类型；不要发明抽象节点类型。
+- 用户说“添加/创建/加个图片节点”时，默认就是创建 `imageGenNode`。不要反问 `imageNode` 还是 `imageGenNode`；`imageNode` 是隐藏的内部图片编辑/兼容类型，不作为普通新增节点提供给用户。只有用户明确说“上传本地图片/引用已有图片文件”时才考虑 `uploadNode`。
 - `add_next_node` 只在当前节点会作为新节点输入时使用。若只是创建一个相关节点但当前节点不是输入，应使用 `create_node`，必要时再补 `create_edge`。
 - 多输入任务应把多个输入节点分别连接到目标节点，而不是串成 `A -> B -> C`。例如“图片 + 文本生成视频”应让图片节点和文本节点分别连接到 `videoNode`。
-- 文本作为图片生成输入时，可以使用 `textAnnotationNode -> imageGenNode`；图片节点自身 prompt 会和上游文本共同构成生成上下文。
+- 文本作为图片生成输入时，使用 `textAnnotationNode(semanticOutputRole="input_text") -> imageGenNode` 且 `link_type="prompt_for"`；图片节点自身 prompt 会和上游文本共同构成生成上下文，不要两边写重复提示词。不要用 `context_for` 连接到图片生成节点。
 - `textAnnotationNode` 是默认的普通文本语义节点。人物设定、广告创意、分镜描述、配音稿、普通脚本内容，优先用它。
 - `scriptNode` 不是默认文本节点，也不是默认工作流中间节点。只有用户明确要结构化脚本、镜头表、分镜表，或明确要求脚本生成器产物时，再考虑使用它。
 - 不要复用历史轮次里的画布节点 ID。只有当前用户文本、当前 node references、或本轮刚创建的 `client_id` 可作为操作目标。

@@ -39,6 +39,34 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_create_workflow_graph" not in names
 
 
+def test_freezone_plugin_create_node_schema_hides_internal_image_node_type():
+    plugin = _load_plugin_module()
+    create_node_tool = next(
+        (schema for name, schema, _handler in plugin.TOOLS if name == "freezone_create_node"),
+        None,
+    )
+
+    assert create_node_tool is not None
+    enum_values = create_node_tool["parameters"]["properties"]["node_type"]["enum"]
+
+    assert "imageGenNode" in enum_values
+    assert "uploadNode" in enum_values
+    assert "imageNode" not in enum_values
+    assert "imageNode" not in create_node_tool["parameters"]["properties"]["nodeType"]["enum"]
+
+
+def test_freezone_plugin_uses_frontend_link_type_catalog_values():
+    plugin = _load_plugin_module()
+
+    for tool_name in ("freezone_create_edge", "freezone_emit_canvas_command"):
+        tool = next((schema for name, schema, _handler in plugin.TOOLS if name == tool_name), None)
+        assert tool is not None
+        schema_text = json.dumps(tool, ensure_ascii=False)
+        assert "media_input_for" in schema_text
+        assert "visual_reference_for" not in schema_text
+        assert "source_media_for" not in schema_text
+
+
 def test_freezone_plugin_mainline_projection_assets_schema_is_directional():
     plugin = _load_plugin_module()
     asset_tool = next(

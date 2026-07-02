@@ -26,6 +26,7 @@ import {
   FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT,
   type CanvasContextToolResultPayload,
 } from "@/features/freezone/canvasContextToolResult";
+import { FREEZONE_CANVAS_WRITE_TOOL_NAME_SET } from "@/features/freezone/canvasCommandTools";
 import { api } from "@/lib/api";
 import {
   isStaleByTtl,
@@ -35,7 +36,7 @@ import {
 } from "@/lib/localStorageQuota";
 
 const SETTINGS_KEY = "superchat:settings";
-const EXECUTABLE_HIDDEN_TOOL_NAMES = new Set(["freezone_emit_canvas_command"]);
+const EXECUTABLE_HIDDEN_TOOL_NAMES = FREEZONE_CANVAS_WRITE_TOOL_NAME_SET;
 export const SUPERCHAT_CANVAS_COMMAND_EVENT = "superchat/canvas-command";
 export const SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT = "superchat/canvas-context-request";
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
