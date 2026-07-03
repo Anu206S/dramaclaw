@@ -730,7 +730,7 @@ function buildCanvasOntologySummaryBlock(
   const summary = buildCanvasOntologySummary(context);
   return [
     "[SUPERTALE_CANVAS_ONTOLOGY_SUMMARY]",
-    "This is a lightweight read-only Freezone canvas summary. Use it as a map of existing nodes, links, candidates, slots, and current selection before emitting canvas_chat_commands.v1. Request more detail with specific Freezone get_* tools if needed.",
+    "Read-only Freezone canvas summary: existing nodes, links, candidates, slots, and selection. It is not an edit request. Request detail with Freezone get_* tools if needed.",
     JSON.stringify(summary),
     "[/SUPERTALE_CANVAS_ONTOLOGY_SUMMARY]",
   ];
@@ -750,7 +750,8 @@ export function buildCanvasChatCommandContext(
     "[SUPERTALE_CANVAS_CHAT_COMMANDS]",
     "Use freezone_emit_canvas_command once for batch edits. Use typed write tools only for explicit one-operation requests.",
     "For canvas edit requests, the first assistant output must be a Freezone write tool call. Do not emit assistant prose, acknowledgement, summary, or status text before the write tool call.",
-    "For a framework, workflow, storyboard, or short-video plan, do not perform step-by-step writes; gather needed catalogs/schemas, validate once, then emit one freezone_emit_canvas_command batch.",
+    "Open-ended ideation/no-idea requests are planning conversation, not canvas edits. Ask or suggest first; emit commands only after the user explicitly asks to create, build, connect, run, or land it on canvas.",
+    "For explicit canvas framework/workflow/storyboard/short-video plan edits, do not step-write; gather catalogs/schemas, validate once, then emit one freezone_emit_canvas_command batch.",
     "Do not expose tool names, command JSON, node_id, field ids, schema names, or action ids in user-visible prose unless the user asks for implementation details.",
     "Do not claim a canvas change succeeded until a frontend write result returns success. Do not say a node was created, updated, deleted, connected, moved, or executed unless the write tool/frontend result confirms it.",
     "For uncertain command shapes, call freezone_get_canvas_command_catalog. Validate non-trivial or multi-command edits with freezone_validate_canvas_commands before emitting the final write tool.",
