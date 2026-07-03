@@ -325,7 +325,33 @@ class ChatStore:
                     if target_index is None:
                         target_index = user_index
             if target_index is None:
-                continue
+                # Some tool-only turns do not produce an assistant message, for example
+                # when Hermes returns no natural-language content after a canvas approval.
+                # Keep the UI events visible by anchoring them to the user message for
+                # that turn; the frontend expands tool_activity events beside it.
+                target_index = next(
+                    (
+                        index
+                        for index, message in enumerate(messages)
+                        if message.get("role") == "user" and message.get("turn_id") == turn_id
+                    ),
+                    None,
+                )
+            if target_index is None:
+                first_event = events[0]
+                messages.append(
+                    {
+                        "id": f"ui-events:{turn_id}",
+                        "role": "assistant",
+                        "content": "",
+                        "media": [],
+                        "attachments": [],
+                        "turn_id": turn_id,
+                        "created_at": str(first_event.get("created_at") or ""),
+                        "ui_events": [],
+                    }
+                )
+                target_index = len(messages) - 1
             existing = messages[target_index].get("ui_events")
             if not isinstance(existing, list):
                 existing = []

@@ -1527,6 +1527,11 @@ function CanvasCommandApprovalCard({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-foreground">待确认的画布操作</div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">Agent 计划执行 {approval.commandCount} 个操作，确认后才会应用到画布。</p>
+          {approval.expiresAt ? (
+            <p className="mt-1 text-[11px] leading-4 text-amber-500">
+              {Math.max(0, Math.ceil((approval.expiresAt - Date.now()) / 1000))} 秒后自动取消
+            </p>
+          ) : null}
         </div>
         <Badge variant="outline" className="rounded-md uppercase">{isExecuting ? "执行中" : "确认"}</Badge>
       </div>
@@ -3628,10 +3633,15 @@ type PendingCanvasCommandApproval = {
   bridgeKey?: string | null;
   anchorTextPrefix?: string | null;
   surfaceOrder?: number;
+  receivedAt: number;
+  autoExpires?: boolean;
+  expiresAt?: number;
   envelopes: CanvasChatCommandEnvelope[];
   commandCount: number;
   plans: CanvasCommandPlan[];
 };
+
+type CanvasCommandApprovalCancelReason = "user" | "timeout";
 
 type CanvasCommandFlowItem =
   | { kind: "text"; key: string; text: string }
@@ -4787,6 +4797,9 @@ export function SuperChatPanel({
   const deselectFreezoneNodeReference = useCallback((nodeId: string) => {
     deselectFreezoneNodeReferences(new Set([nodeId]));
   }, [deselectFreezoneNodeReferences]);
+  const deselectAllSelectedFreezoneNodeReferences = useCallback(() => {
+    deselectFreezoneNodeReferences(new Set(selectedFreezoneNodes.map((node) => node.id)));
+  }, [deselectFreezoneNodeReferences, selectedFreezoneNodes]);
   const removeAttachment = useCallback((attachment: ChatAttachment) => {
     const removedCanvasNodeIds = new Set(canvasNodeReferenceAttachmentNodeIds(attachment));
     setAttachments((current) => current.filter((item) => item.id !== attachment.id));
@@ -4946,6 +4959,11 @@ export function SuperChatPanel({
     });
     const key = canvasCommandApprovalKey(bridgeKey, turnId, detail.envelopes, detail.receivedAt);
     const commandCount = detail.envelopes.reduce((sum, envelope) => sum + envelope.commands.length, 0);
+    const receivedAt = detail.receivedAt ?? Date.now();
+    const receivedAtLooksLikeEpochMs = receivedAt > 1_000_000_000_000;
+    const expiresAt = detail.autoExpires
+      ? (receivedAtLooksLikeEpochMs ? receivedAt + 30_000 : Date.now() + 30_000)
+      : undefined;
     return {
       id: key,
       key,
@@ -4954,6 +4972,9 @@ export function SuperChatPanel({
       bridgeKey,
       anchorTextPrefix: detail.anchorTextPrefix,
       surfaceOrder: detail.receivedAt,
+      receivedAt,
+      autoExpires: detail.autoExpires,
+      expiresAt,
       envelopes: detail.envelopes,
       commandCount,
       plans: canvasCommandPlansFromEnvelopes(detail.envelopes),
@@ -4969,11 +4990,17 @@ export function SuperChatPanel({
     return true;
   }, [buildApprovalFromDetail]);
 
-  useEffect(() => subscribeCanvasCommandApprovals(handleCanvasCommandApproval), [handleCanvasCommandApproval]);
+  useEffect(
+    () => subscribeCanvasCommandApprovals((detail) => handleCanvasCommandApproval({ ...detail, autoExpires: true })),
+    [handleCanvasCommandApproval],
+  );
 
   useEffect(() => {
     const handleEvent = (event: Event) => {
-      handleCanvasCommandApproval((event as CustomEvent<CanvasCommandApprovalEventDetail>).detail);
+      handleCanvasCommandApproval({
+        ...(event as CustomEvent<CanvasCommandApprovalEventDetail>).detail,
+        autoExpires: true,
+      });
     };
     window.addEventListener(FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT, handleEvent);
     return () => window.removeEventListener(FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT, handleEvent);
@@ -5295,7 +5322,7 @@ export function SuperChatPanel({
     })();
   }, [appendCanvasCommandFeedback, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent]);
 
-  const handleCancelCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval) => {
+  const handleCancelCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval, reason: CanvasCommandApprovalCancelReason = "user") => {
     if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
     resolvedCanvasCommandApprovalKeysRef.current.add(approval.key);
     resolvedCanvasCommandApprovalKeysRef.current.add(canvasCommandApprovalApplyKey(approval));
@@ -5305,18 +5332,19 @@ export function SuperChatPanel({
       );
     }
     const receivedAt = Date.now();
+    const cancelMessage = reason === "timeout" ? "画布操作等待超时，已自动取消" : t("freezone.chat.canvasCommandsCancelled");
     const result: CanvasChatCommandApplyResult = {
       applied: 0,
       openedUiActions: 0,
       createdNodeIds: [],
-      errors: [t("freezone.chat.canvasCommandsCancelled")],
+      errors: [cancelMessage],
       commandResults: [
         {
           commandIndex: -1,
           type: "validate",
           status: "error",
           label: "已取消",
-          error: t("freezone.chat.canvasCommandsCancelled"),
+          error: cancelMessage,
         },
       ],
     };
@@ -5340,6 +5368,7 @@ export function SuperChatPanel({
       anchor_text_prefix: approval.anchorTextPrefix ?? null,
       received_at: receivedAt,
       cancelled: true,
+      cancel_reason: reason,
     });
     appendCanvasCommandFeedback(
       approval.messageId,
@@ -5368,6 +5397,22 @@ export function SuperChatPanel({
       if (!executingCanvasCommandApprovalIds.has(approval.id)) handleApplyCanvasCommandApproval(approval);
     }
   }, [canvasCommandExecutionMode, executingCanvasCommandApprovalIds, handleApplyCanvasCommandApproval, pendingCanvasCommandApprovals]);
+
+  useEffect(() => {
+    if (pendingCanvasCommandApprovals.length === 0) return;
+    const cancelExpiredApprovals = () => {
+      const now = Date.now();
+      for (const approval of pendingCanvasCommandApprovals) {
+        if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) continue;
+        if (approval.expiresAt && approval.expiresAt <= now) {
+          handleCancelCanvasCommandApproval(approval, "timeout");
+        }
+      }
+    };
+    cancelExpiredApprovals();
+    const timer = window.setInterval(cancelExpiredApprovals, 1_000);
+    return () => window.clearInterval(timer);
+  }, [handleCancelCanvasCommandApproval, pendingCanvasCommandApprovals]);
 
   const searchQuery = search.trim().toLowerCase();
   const visibleMessages = useMemo(
@@ -6514,7 +6559,19 @@ export function SuperChatPanel({
               <div className={cn("px-4", visibleComposerAttachments.length > 0 ? "pt-2" : "pt-3")}>
                 <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
                   <span>当前选中</span>
-                  <span>本轮会使用</span>
+                  <div className="flex items-center gap-2">
+                    <span>本轮会使用</span>
+                    {selectedFreezoneNodes.length > 1 && (
+                      <button
+                        type="button"
+                        onClick={deselectAllSelectedFreezoneNodeReferences}
+                        className="rounded-sm px-1.5 py-0.5 text-[11px] font-medium text-destructive transition hover:bg-destructive/10 hover:text-destructive"
+                        aria-label="取消全部画布引用"
+                      >
+                        全部取消
+                      </button>
+                    )}
+                  </div>
                 </div>
                 <div className="flex flex-wrap gap-2">
                   {selectedFreezoneNodePreviews.map((node) => (

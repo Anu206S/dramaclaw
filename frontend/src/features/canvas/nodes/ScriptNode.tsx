@@ -68,6 +68,12 @@ import {
 } from '@/api/ops';
 import { awaitTaskCompletion } from '@/api/tasks';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
+import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from '@/features/canvas/application/nodeActionResult';
 import { useUpstreamNodes } from '@/features/canvas/application/useUpstreamGraph';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { useNodeGenerationHistory } from '@/features/canvas/hooks/useNodeGenerationHistory';
@@ -280,17 +286,17 @@ function useScriptStorySubmit(
   prompt: string,
   data: ScriptNodeData,
   onSettled?: () => void,
-): { submit: () => Promise<void>; isGenerating: boolean } {
+): { submit: () => Promise<{ scriptResult?: FreezoneStoryScriptResult }>; isGenerating: boolean } {
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const { isGenerating } = useNodeGenerationTaskState(data);
 
-  const submit = useCallback(async () => {
-    if (isGenerating) return;
+  const submit = useCallback(async (): Promise<{ scriptResult?: FreezoneStoryScriptResult }> => {
+    if (isGenerating) return {};
     const project = readUrl().project;
     if (!project) {
       console.error('[script-node] submit: no project in URL');
       updateNodeData(nodeId, { generationError: '缺少 project 参数' });
-      return;
+      return {};
     }
 
     // 同一个 story-script 接口支持三种输入，按上游连线类型分流（后端默认 newapi，
@@ -325,7 +331,7 @@ function useScriptStorySubmit(
       updateNodeData(nodeId, {
         generationError: '请输入剧情或连接文本 / 视频 / 角色图片节点',
       });
-      return;
+      return {};
     }
 
     updateNodeData(nodeId, {
@@ -354,6 +360,7 @@ function useScriptStorySubmit(
         scriptTitle: result.title ?? null,
         generationError: null,
       });
+      return { scriptResult: result };
     } catch (error) {
       console.error('[script-node] submit failed', error);
       updateNodeData(nodeId, {
@@ -361,9 +368,11 @@ function useScriptStorySubmit(
         generationStartedAt: null,
         generationError: error instanceof Error ? error.message : '生成失败',
       });
+      throw error;
     } finally {
       onSettled?.();
     }
+    return {};
   }, [isGenerating, nodeId, references, prompt, updateNodeData, onSettled]);
 
   return { submit, isGenerating };
@@ -443,6 +452,25 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
     data,
     refreshHistory,
   );
+
+  useEffect(() => {
+    return subscribeNodeAction(({ nodeId, action, requestId }) => {
+      if (nodeId !== id || action !== 'generate_story_script') return;
+      publishNodeActionAccepted(requestId, id, action);
+      void submit()
+        .then((output) => {
+          const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
+          const latestScriptResult = latest?.type === CANVAS_NODE_TYPES.script
+            ? (latest.data as ScriptNodeData).scriptResult
+            : undefined;
+          publishNodeActionSuccess(requestId, id, action, {
+            ...(output.scriptResult ? { scriptResult: output.scriptResult } : {}),
+            ...(latestScriptResult ? { scriptResult: latestScriptResult } : {}),
+          });
+        })
+        .catch((error) => publishNodeActionError(requestId, id, action, error));
+    });
+  }, [id, submit]);
 
   useEffect(() => {
     updateNodeInternals(id);

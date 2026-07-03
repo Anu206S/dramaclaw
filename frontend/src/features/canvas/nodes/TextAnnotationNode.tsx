@@ -54,6 +54,12 @@ import {
 } from '@/api/ops';
 import { awaitTaskCompletion } from '@/api/tasks';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
+import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from '@/features/canvas/application/nodeActionResult';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { readUrl } from '@/lib/url-params';
 import {
@@ -331,7 +337,7 @@ export const TextAnnotationNode = memo(({
     const projectId = readUrl().project;
     if (!projectId) {
       console.error('[text-node] no project in URL');
-      return;
+      return {};
     }
     const state = useCanvasStore.getState();
     const upstreamEdge = state.edges.find((edge) => edge.target === id);
@@ -372,13 +378,13 @@ export const TextAnnotationNode = memo(({
     }
   }, [id, updateNodeData]);
 
-  const runTextToVideo = useCallback(async () => {
+  const runTextToVideo = useCallback(async (): Promise<{ videoUrl?: string }> => {
     const promptText = content.trim();
-    if (promptText.length === 0) return;
+    if (promptText.length === 0) return {};
     const projectId = readUrl().project;
     if (!projectId) {
       console.error('[text-node] no project in URL');
-      return;
+      return {};
     }
     const state = useCanvasStore.getState();
     const downstreamEdge = state.edges.find((edge) => edge.source === id);
@@ -387,7 +393,7 @@ export const TextAnnotationNode = memo(({
       : null;
     if (!targetNode || targetNode.type !== CANVAS_NODE_TYPES.video) {
       console.warn('[text-node] textToVideo: no downstream video node');
-      return;
+      return {};
     }
     const videoData = targetNode.data as VideoNodeData;
     const aspectRatio = (videoData.aspectRatio ?? '16:9') as FreezoneVideoAspectRatio;
@@ -425,6 +431,7 @@ export const TextAnnotationNode = memo(({
       if (siblingId) targetIds.push(siblingId);
     }
 
+    const completedUrls: string[] = [];
     const runOne = async (videoNodeId: string) => {
       try {
         const ref = await submitFreezoneVideoGen(projectId, {
@@ -442,6 +449,7 @@ export const TextAnnotationNode = memo(({
         const completed = await awaitTaskCompletion(ref.task_key, projectId);
         const url = resolveVideoOutputUrl(completed.result);
         if (url) {
+          completedUrls.push(url);
           updateNodeData(videoNodeId, {
             videoUrl: url,
             isGenerating: false,
@@ -459,7 +467,32 @@ export const TextAnnotationNode = memo(({
     };
 
     await Promise.allSettled(targetIds.map(runOne));
+    return completedUrls[0] ? { videoUrl: completedUrls[0] } : {};
   }, [content, duplicateNodeAsSibling, id, videoModels, updateNodeData]);
+
+  useEffect(() => {
+    return subscribeNodeAction(({ nodeId, action, requestId }) => {
+      if (nodeId !== id || action !== 'generate_text_video') return;
+      publishNodeActionAccepted(requestId, id, action);
+      void runTextToVideo()
+        .then((output) => {
+          const state = useCanvasStore.getState();
+          const downstreamEdge = state.edges.find((edge) => edge.source === id);
+          const latestVideoNode = downstreamEdge
+            ? state.nodes.find((node) => node.id === downstreamEdge.target)
+            : null;
+          const latestVideoUrl = latestVideoNode?.type === CANVAS_NODE_TYPES.video
+            && typeof latestVideoNode.data.videoUrl === 'string'
+            ? latestVideoNode.data.videoUrl
+            : undefined;
+          publishNodeActionSuccess(requestId, id, action, {
+            ...(output.videoUrl ? { videoUrl: output.videoUrl } : {}),
+            ...(latestVideoUrl ? { videoUrl: latestVideoUrl } : {}),
+          });
+        })
+        .catch((error) => publishNodeActionError(requestId, id, action, error));
+    });
+  }, [id, runTextToVideo]);
 
   const textPlaceholder = t('node.textNode.placeholder');
   const hasUserContent = content.trim().length > 0 && content.trim() !== textPlaceholder.trim();

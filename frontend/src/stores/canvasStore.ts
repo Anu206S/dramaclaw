@@ -1117,6 +1117,39 @@ function maybeApplyImageAutoResize(node: CanvasNode, patch: Partial<CanvasNodeDa
   };
 }
 
+
+function pruneEmptyGroupNodes(nodes: CanvasNode[], protectedIds: Set<string>): CanvasNode[] {
+  let nextNodes = nodes;
+  let changed = true;
+
+  while (changed) {
+    changed = false;
+    const parentIds = new Set(
+      nextNodes
+        .map((node) => node.parentId)
+        .filter((parentId): parentId is string => Boolean(parentId))
+    );
+    const emptyGroupIds = new Set(
+      nextNodes
+        .filter(
+          (node) =>
+            node.type === CANVAS_NODE_TYPES.group &&
+            !protectedIds.has(node.id) &&
+            !isPresetManagedNode(node) &&
+            !parentIds.has(node.id)
+        )
+        .map((node) => node.id)
+    );
+
+    if (emptyGroupIds.size > 0) {
+      changed = true;
+      nextNodes = nextNodes.filter((node) => !emptyGroupIds.has(node.id));
+    }
+  }
+
+  return nextNodes;
+}
+
 export function resolveAbsolutePosition(
   node: CanvasNode,
   nodeMap: Map<string, CanvasNode>
@@ -2656,7 +2689,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
           deleteSet.delete(node.id);
         }
       }
-      const nextNodes = state.nodes
+      const nodesAfterDelete = state.nodes
         .filter((node) => !deleteSet.has(node.id))
         .map((node) => {
           if (!node.parentId || !deleteSet.has(node.parentId)) {
@@ -2673,8 +2706,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
             },
           };
         });
+      const protectedGroupIds = new Set(
+        existingIds.filter((nodeId) => state.nodes.some((node) => node.id === nodeId))
+      );
+      const nextNodes = pruneEmptyGroupNodes(nodesAfterDelete, protectedGroupIds);
+      const nextNodeIds = new Set(nextNodes.map((node) => node.id));
       const nextEdges = state.edges.filter(
-        (edge) => !deleteSet.has(edge.source) && !deleteSet.has(edge.target)
+        (edge) =>
+          !deleteSet.has(edge.source) &&
+          !deleteSet.has(edge.target) &&
+          nextNodeIds.has(edge.source) &&
+          nextNodeIds.has(edge.target)
       );
 
       const editSource: CanvasMutationSource = isDeleteToEmpty(

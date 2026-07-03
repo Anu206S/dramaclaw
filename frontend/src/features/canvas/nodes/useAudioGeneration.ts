@@ -55,14 +55,14 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     .join('\n\n');
   const emotionPrompt = data.emotionPrompt ?? '';
 
-  const generate = useCallback(async () => {
-    if (isGenerating) return;
+  const generate = useCallback(async (): Promise<{ audioUrl?: string }> => {
+    if (isGenerating) return {};
     const trimmed = effectivePrompt;
-    if (trimmed.length === 0) return;
+    if (trimmed.length === 0) return {};
     const project = readUrl().project;
     if (!project) {
       updateNodeData(nodeId, { generationError: '当前 URL 缺少 project 参数' });
-      return;
+      return {};
     }
     updateNodeData(nodeId, {
       isGenerating: true,
@@ -97,6 +97,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
         durationMs: null,
         generationError: null,
       });
+      return result.url ? { audioUrl: result.url } : {};
     } catch (error) {
       console.error(
         `[audio-node] ${isMusic ? 'music' : 'speech'} generation failed`,
@@ -106,6 +107,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
         isGenerating: false,
         generationError: error instanceof Error ? error.message : '生成失败',
       });
+      throw error;
     }
   }, [
     isGenerating,

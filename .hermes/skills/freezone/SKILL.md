@@ -20,6 +20,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 - **创意咨询**：可以自然语言回答；如果用户希望"落到画布"，使用画布工具创建可继续工作的材料。
 - **全局画布请求**：用户说"看看画布""整理当前画布"时，优先使用当前注入的画布上下文；不足时再读取。
 - **运行已有工作流**：复用已有节点、内容和连线，优先运行已有工作流；不要重新规划一套重复节点，除非用户明确要求新增、重写或替换。
+- **注册工作流**：用户询问支持哪些工作流时，使用 `freezone_list_workflows`。用户明确要求创建已注册工作流时，交给 `workflows` skill 并调用 `freezone_create_workflow_graph`；不要手写节点、连线或分组命令。用户只要求规划/预览时，使用 `freezone_build_workflow_plan`。
 
 ### 开放意图的默认响应
 
@@ -88,7 +89,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 - 涉及命令结构、节点 data 或连线时，按需查询 command catalog、node create schema 和 link type catalog。
 - 用户要求创建、添加、删除、更新、连接、移动、布局、选择、打开、运行、应用或执行任何画布对象时，**必须先调用 Freezone 写入工具**。没有写入工具成功结果，就不能说画布已变化。
 - 单个明确操作可以用对应单步写入工具，也可以用 `freezone_emit_canvas_command`；工具选择可以灵活，但“必须调用写入工具并等待结果”不可省略。
-- **多节点/连线/分组/布局请求必须用一次批量命令提交**（`freezone_emit_canvas_command`），不要连续调用多个单步工具。
+- **多节点/连线/分组/布局请求必须用一次批量命令提交**（普通非注册工作流使用 `freezone_emit_canvas_command`；已注册工作流使用 `freezone_create_workflow_graph`），不要连续调用多个单步工具。
 - 同一个批量命令里，如果后续命令会引用本轮新建节点（连线、分组、布局、选择、移动、运行等），创建该节点时必须显式声明 `client_id`，后续只引用这个 `client_id`。禁止用 `node_0`、`node_1`、`new_node`、`auto:*` 或任何未声明占位符表示“第几个刚创建的节点”。
 - 主题性批量工作默认组织成一个工作组：例如同一个短片方案、广告创意、分镜包、工作流、素材准备包、同一目标的一组规划/生成/合成节点。批量命令里显式加入 `group_nodes`，用清晰业务 label 命名。单独加一个节点、零散修改、删除、移动、选择、运行，或只是临时补一个不成套的节点时，不要为了“批量”而强行建组。
 - 延续已有主题时，优先复用该主题组：如果当前引用节点属于某个组，且用户是在继续这个主题补节点，优先从组内合适节点 `add_next_node` 生成真实下游；这类新增节点会自然落在同组语境里。若新增内容只是相关材料而非真实下游，创建在组附近并保持同一主题布局，不要为了把节点塞进组而伪造输入连线。

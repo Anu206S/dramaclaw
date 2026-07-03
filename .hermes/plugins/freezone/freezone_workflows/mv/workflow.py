@@ -1,0 +1,37 @@
+WORKFLOW = {
+    "order": 4,
+    "workflow_type": "mv",
+    "label": "MV / 音乐视频",
+    "aliases": ["music_video", "音乐视频"],
+    "template_kind": "linear",
+    "title": "MV / 音乐视频工作流",
+    "nodes": [
+        (
+            "song_input",
+            "textAnnotationNode",
+            "音频/歌词输入",
+            "歌曲、歌词、节奏和情绪方向。",
+            "input",
+        ),
+        ("rhythm_map", "textAnnotationNode", "节奏段落", "拆分主歌、副歌、桥段和节奏点。", "story"),
+        (
+            "visual_style",
+            "textAnnotationNode",
+            "视觉风格",
+            "确定影像风格、色调和视觉符号。",
+            "asset",
+        ),
+        ("mv_frame", "imageGenNode", "关键视觉", "生成 MV 关键帧或段落视觉。", "image"),
+        ("mv_video", "videoNode", "视频段落", "按节奏生成视频段落。", "video"),
+        ("compose", "videoComposeNode", "成片合成", "合成视频、音乐和歌词字幕。", "compose"),
+    ],
+    "edges": [
+        ("song_input", "rhythm_map"),
+        ("song_input", "visual_style"),
+        ("rhythm_map", "mv_frame"),
+        ("visual_style", "mv_frame"),
+        ("mv_frame", "mv_video"),
+        ("song_input", "compose"),
+        ("mv_video", "compose"),
+    ],
+}

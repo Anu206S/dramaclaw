@@ -142,6 +142,7 @@ export type CanvasCommandApprovalEventDetail = {
   bridgeKey?: string | null;
   envelopes: CanvasChatCommandEnvelope[];
   receivedAt?: number;
+  autoExpires?: boolean;
 };
 
 export type CanvasCommandResultEventDetail = {

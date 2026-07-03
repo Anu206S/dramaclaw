@@ -60,6 +60,7 @@ def repo_skills(isolated_workspace):
         "freezone",
         "sketch-correction-worker",
         "sketch-storyboard-director",
+        "workflows",
         "other-skill",
     ):
         (skills / name).mkdir()
@@ -90,6 +91,7 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     assert (home / "skills" / "freezone").is_symlink()
     assert (home / "skills" / "sketch-correction-worker").is_symlink()
     assert (home / "skills" / "sketch-storyboard-director").is_symlink()
+    assert (home / "skills" / "workflows").is_symlink()
     assert not (home / "skills" / "json-render").exists()
     assert not (home / "skills" / "other-skill").exists()
     plugin_link = home / "plugins" / "dramaclaw"
@@ -112,6 +114,7 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
 
     assert home == isolated_workspace / "state" / "admin" / ".hermes-freezone"
     assert (home / "skills" / "freezone").is_symlink()
+    assert (home / "skills" / "workflows").is_symlink()
     assert not (home / "skills" / "dramaclaw").exists()
     assert (home / "plugins" / "freezone").is_symlink()
     assert not (home / "plugins" / "dramaclaw").exists()
@@ -136,6 +139,30 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "node create schema" in memory
     assert "link type catalog" in memory
     assert "生成完整短片" in memory
+
+
+def test_freezone_profile_refreshes_stale_repo_symlinks(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+):
+    stale_root = isolated_workspace / "stale"
+    stale_skill = stale_root / "skills" / "workflows"
+    stale_plugin = stale_root / "plugins" / "freezone"
+    stale_skill.mkdir(parents=True)
+    stale_plugin.mkdir(parents=True)
+
+    home = isolated_workspace / "state" / "admin" / ".hermes-freezone"
+    (home / "skills").mkdir(parents=True)
+    (home / "plugins").mkdir(parents=True)
+    (home / "skills" / "workflows").symlink_to(stale_skill)
+    (home / "plugins" / "freezone").symlink_to(stale_plugin)
+
+    refreshed = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+
+    assert refreshed == home
+    assert (home / "skills" / "workflows").resolve() == repo_skills / "workflows"
+    assert (home / "plugins" / "freezone").resolve() == repo_plugins / "freezone"
 
 
 def test_hermes_initialize_timeout_allows_cold_start():
@@ -172,6 +199,7 @@ def test_hermes_stops_mainline_writes_but_not_freezone_canvas_writes():
         "freezone_emit_canvas_command",
         "freezone_emit_canvas_command",
     )
+    assert hermes_sdk._is_freezone_canvas_write_tool("freezone_create_workflow_graph")
     assert not hermes_sdk._should_stop_after_write_tool(
         "freezone_emit_canvas_command",
         "dramaclaw_start_single_video",

@@ -36,6 +36,12 @@ import { CANVAS_NODE_PANEL_SURFACE_CLASS, canvasNodeFrameClass } from '@/feature
 import { useCanvasStore, useIsBoxSelecting } from '@/stores/canvasStore';
 import { AudioOperationsPanel } from '@/features/canvas/nodes/AudioOperationsPanel';
 import { useAudioGeneration } from '@/features/canvas/nodes/useAudioGeneration';
+import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from '@/features/canvas/application/nodeActionResult';
 import { RegenerateButton } from '@/features/canvas/ui/RegenerateButton';
 import {
   hasMainlineContexts,
@@ -101,6 +107,26 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
   const { isGenerating, task } = useNodeGenerationTaskState(data);
   // 重试用与面板提交同一套生成逻辑（hook）。
   const { generate } = useAudioGeneration(id, data);
+  useEffect(() => {
+    return subscribeNodeAction(({ nodeId, action, requestId }) => {
+      if (nodeId !== id || action !== 'generate_audio') return;
+      publishNodeActionAccepted(requestId, id, action);
+      void generate()
+        .then((output) => {
+          const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
+          const latestAudioUrl = latest?.type === CANVAS_NODE_TYPES.audio
+            && typeof latest.data.audioUrl === 'string'
+            ? latest.data.audioUrl
+            : undefined;
+          publishNodeActionSuccess(requestId, id, action, {
+            ...(output.audioUrl ? { audioUrl: output.audioUrl } : {}),
+            ...(latestAudioUrl ? { audioUrl: latestAudioUrl } : {}),
+          });
+        })
+        .catch((error) => publishNodeActionError(requestId, id, action, error));
+    });
+  }, [generate, id]);
+
 
   // 任务流(SSE)回报失败时把错误持久化进节点数据 + 清 isGenerating——覆盖刷新后、
   // 节点未选中、handleSubmit promise 已随旧页面销毁等 catch 没跑到的情况。

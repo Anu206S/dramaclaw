@@ -182,6 +182,12 @@ import {
 } from "@/api/ops";
 import { awaitTaskCompletion } from "@/api/tasks";
 import { generationTaskDescriptor } from "@/features/canvas/application/resumeGeneration";
+import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from "@/features/canvas/application/nodeActionResult";
 import { useNodeGenerationHistory } from "@/features/canvas/hooks/useNodeGenerationHistory";
 import {
   NodeGenerationHistory,
@@ -1284,6 +1290,7 @@ export const VideoNode = memo(
       event.stopPropagation();
     }, []);
 
+
     const handleUploadClick = useCallback(() => {
       inputRef.current?.click();
     }, []);
@@ -1717,7 +1724,7 @@ export const VideoNode = memo(
       const projectId = readUrl().project;
       if (!projectId) {
         console.error("[video-node] no project in URL");
-        return;
+        return {};
       }
       setIsErasing(true);
       try {
@@ -1759,8 +1766,8 @@ export const VideoNode = memo(
       isGenerating ||
       (prompt.trim().length === 0 && upstreamTextJoined.length === 0);
 
-    const handleSubmit = useCallback(async () => {
-      if (submitDisabled) return;
+    const handleSubmit = useCallback(async (): Promise<{ videoUrl?: string }> => {
+      if (submitDisabled) return {};
       // 在途守卫（与 ImageGenNode 一致）：第 1 条完成就会清 isGenerating，
       // submitDisabled 拦不住「旧批次 N-1 个任务还在跑时重新提交」——旧闭包
       // 会用过期的 completedUrls 覆写新批次的 generationBatch。
@@ -1770,7 +1777,7 @@ export const VideoNode = memo(
       const projectId = readUrl().project;
       if (!projectId) {
         console.error("[video-node] no project in URL");
-        return;
+        return {};
       }
       updateNodeData(id, {
         isGenerating: true,
@@ -1837,7 +1844,7 @@ export const VideoNode = memo(
               isGenerating: false,
               generationStartedAt: null,
             });
-            return;
+            return {};
           }
           doSubmit = (targetId) =>
             submitFreezoneVideoKeyframes(projectId, {
@@ -1864,7 +1871,7 @@ export const VideoNode = memo(
               isGenerating: false,
               generationStartedAt: null,
             });
-            return;
+            return {};
           }
           doSubmit = (targetId) =>
             submitFreezoneVideoI2v(projectId, {
@@ -1937,7 +1944,7 @@ export const VideoNode = memo(
               isGenerating: false,
               generationStartedAt: null,
             });
-            return;
+            return {};
           }
           doSubmit = (targetId) =>
             submitFreezoneVideoOmniGen(projectId, {
@@ -1974,7 +1981,7 @@ export const VideoNode = memo(
 
         if (!doSubmit) {
           updateNodeData(id, { isGenerating: false, generationStartedAt: null });
-          return;
+          return {};
         }
         const submitOnce = doSubmit;
 
@@ -2116,6 +2123,7 @@ export const VideoNode = memo(
         // 所有任务尘埃落定后统一拉一次历史：N 条记录都落在本节点名下，run 0
         // settle 时就拉会漏掉后完成的 N-1 条（后端成功失败都会记）。
         void refreshHistory();
+        return completedUrls[0] ? { videoUrl: completedUrls[0] } : {};
       } catch (error) {
         console.error("[video-node] video gen failed", error);
         updateNodeData(id, { isGenerating: false, generationStartedAt: null });
@@ -2124,6 +2132,7 @@ export const VideoNode = memo(
       } finally {
         submittingRef.current = false;
       }
+      return {};
     }, [
       aspectRatio,
       submitAspectRatio,
@@ -2146,6 +2155,26 @@ export const VideoNode = memo(
       updateNodeData,
       upstreamTextJoined,
     ]);
+
+    useEffect(() => {
+      return subscribeNodeAction(({ nodeId, action, executionMode, requestId }) => {
+        if (nodeId !== id || action !== "generate_video") return;
+        publishNodeActionAccepted(requestId, id, action);
+        void handleSubmit()
+          .then((output) => {
+            const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
+            const latestVideoUrl = isVideoNode(latest) && typeof latest.data.videoUrl === "string"
+              ? latest.data.videoUrl
+              : undefined;
+            publishNodeActionSuccess(requestId, id, action, {
+              ...(output.videoUrl ? { videoUrl: output.videoUrl } : {}),
+              ...(latestVideoUrl ? { videoUrl: latestVideoUrl } : {}),
+              ...(executionMode === "single" ? { submitted: true } : {}),
+            });
+          })
+          .catch((error) => publishNodeActionError(requestId, id, action, error));
+      });
+    }, [handleSubmit, id]);
 
     const hasMainlineContext = hasMainlineContexts(
       (data as { mainline_context?: unknown }).mainline_context,

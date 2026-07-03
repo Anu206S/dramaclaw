@@ -42,6 +42,13 @@ scripts/incident_drills/.drill.local.env
 
 # 验收日志（证据归档在本地/CI 工件，不进 git）
 /acceptance-logs/
+
+# SuperTale-only Hermes overlays must not be committed to the open-source repo.
+/.hermes/plugins/workflows/
+/.hermes/skills/supertale/
+/.hermes/plugins/supertale/
+/.hermes/skills/freezone-workflows/
+/.hermes/plugins/freezone-workflows/
 docs/oss-split/
 
 # 内部过程文档不进公开仓（迁至 dc workspace docs）
