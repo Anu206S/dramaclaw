@@ -46,9 +46,6 @@ export const CANVAS_NODE_REFERENCE_SCHEMA_VERSION = "canvas_node_reference.v1";
 export const CANVAS_CONTEXT_REQUEST_SCHEMA_VERSION =
   "canvas_context_request.v1";
 
-const CANVAS_SUMMARY_INTENT_RE =
-  /(当前画布|这个画布|整[理个]|全图|全局|已有节点|现有节点|这些节点|周围|上下游|链路|流程|workflow|工作流|能提交|候选|slot|主线|关系|连接起来|连起来|基于当前|基于现在|看看画布|分析画布)/i;
-
 type CanvasNodeReferenceItem = {
   node_id: string;
   node_type: string | null;
@@ -485,15 +482,10 @@ export function shouldIncludeCanvasSummary(
   text: string,
   options: { hasFocusedNodeContext?: boolean } = {},
 ): boolean {
+  void options;
   const trimmed = text.trim();
   if (!trimmed) return false;
-  if (CANVAS_SUMMARY_INTENT_RE.test(trimmed)) return true;
-  return Boolean(
-    options.hasFocusedNodeContext &&
-    /(后面|旁边|上游|下游|连接|连线|接一个|加一个|继续做|生成视频|图生视频)/i.test(
-      trimmed,
-    ),
-  );
+  return true;
 }
 
 export function canvasNodeReferenceAttachmentNodeIds(

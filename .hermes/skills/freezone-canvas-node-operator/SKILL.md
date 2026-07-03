@@ -18,6 +18,8 @@ Explanation boundary: do not activate this skill for questions such as "怎么 /
 
 For multi-node, multi-edge, storyboard, prototype, canvas-building, or any request with more than one canvas change, do not call typed write tools repeatedly. If batch command fields are unclear, call `freezone_get_canvas_command_catalog`, then submit exactly one `freezone_emit_canvas_command` batch.
 
+Canvas writes must be grounded. Before node creation or graph edits, use the current canvas summary/ontology; for command shape, node data, or edges, query `freezone_get_canvas_command_catalog`, `freezone_get_node_create_schema`, and `freezone_get_link_type_catalog` as needed. Validate multi-step or edge-creating commands before writing.
+
 If validation reports `Allowed link_type values: none` for a source/target pair, do not retry other `link_type` values. Use `group_nodes` as a visual grouping fallback or leave the nodes unconnected.
 
 If you need read-only canvas context, dynamic parameter options, command field rules, or frontend preflight validation before editing, use the specific Freezone tools: `freezone_get_canvas_ontology`, `freezone_summarize_canvas`, `freezone_get_canvas_action_catalog`, `freezone_get_canvas_command_catalog`, `freezone_get_link_type_catalog`, `freezone_get_selection`, `freezone_get_node_detail`, `freezone_get_neighbor_graph`, `freezone_get_node_action_catalog`, `freezone_get_node_create_schema`, `freezone_get_audio_voice_options`, and `freezone_get_slot_candidates`. For nontrivial create/update/delete/connect/layout operations, call `freezone_validate_canvas_commands` with the exact `canvas_chat_commands.v1` envelope before the write tool; if validation reports issues, fix the envelope and validate again. Never put `canvas_context_request.v1` inside any write tool, and never use `run_node_action` just to fetch options.
@@ -94,11 +96,8 @@ For actions with `execution="frontend_node"`, do not look for backend `action_id
 
 Do not invent node ids. For small fallback command output, newly created nodes that will be referenced later in the same envelope must use explicit `client_id` values, and later commands must refer to those exact values. Never emit `auto:*` ids; those may appear only in validator error messages and are not valid assistant output.
 
-<<<<<<< HEAD
 Plan ids are not canvas node ids. If a confirmed custom plan must become several canvas nodes, links, groups, or layout changes, submit one `freezone_emit_canvas_command` batch with explicit `client_id` values instead of separate single-operation tool calls.
 
-=======
->>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
 ## Tool Contract
 
 When a canvas operation is needed, call a Freezone write tool. Do not output protocol JSON in the chat message. If no Freezone write tool is available, explain that the canvas tool is unavailable and ask the user to retry after the tool is restored.
@@ -344,10 +343,7 @@ If the user asks for something that requires a generation capability not exposed
 ## Hard Rules
 
 - Do not output canvas commands unless the user asked to operate on the canvas.
-<<<<<<< HEAD
 - Do not split complex graph commands across repeated single-operation tool calls.
-=======
->>>>>>> 10e428004cb19a27687fe7d91caccf60ef969173
 - Put multi-node creation plus batch edges/layout/groups in one `freezone_emit_canvas_command` batch.
 - Ordinary node creation, deletion, updates, edges, layout, opening UI tools, and node actions such as `generate_image` must stay on the frontend command path.
 - Do not invent node ids, canvas ids, projects, or backend task ids.

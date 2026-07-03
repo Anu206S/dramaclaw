@@ -105,6 +105,7 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     assert "你是虾导" in (home / "SOUL.md").read_text()
     memory = (home / "memories" / "MEMORY.md").read_text()
     assert "虾导在 DramaClaw 会话中面向用户自称“虾导”" in memory
+    assert "不要在普通回复开头自报身份" in memory
     assert "我是虾导，DramaClaw 的小说转视频创作助手。" not in memory
 
 
@@ -126,9 +127,17 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
     assert "创意咨询、找思路、风格建议" in soul
     assert "搭建可继续工作的画布框架" in soul
+    assert "不要在普通回复开头自报身份" in soul
+    assert "command catalog" in soul
+    assert "node create schema" in soul
+    assert "link type catalog" in soul
     assert "生成完整短片" in soul
     assert "创意咨询、找思路、风格建议" in memory
     assert "搭建可继续工作的画布框架" in memory
+    assert "不要在普通回复开头自报身份" in memory
+    assert "command catalog" in memory
+    assert "node create schema" in memory
+    assert "link type catalog" in memory
     assert "生成完整短片" in memory
 
 
@@ -157,26 +166,18 @@ def test_hermes_detects_content_filter_error_text():
     assert hermes_sdk._has_content_filter_signal(payload)
 
 
-def test_hermes_allows_one_failed_freezone_write_retry():
+def test_hermes_stops_mainline_writes_but_not_freezone_canvas_writes():
     assert hermes_sdk._should_stop_after_write_tool(
         "dramaclaw_generate_script",
         "dramaclaw_start_single_video",
     )
-    assert hermes_sdk._should_stop_after_write_tool(
+    assert not hermes_sdk._should_stop_after_write_tool(
         "freezone_emit_canvas_command",
         "freezone_emit_canvas_command",
     )
-    assert hermes_sdk._can_retry_failed_canvas_write(
+    assert not hermes_sdk._should_stop_after_write_tool(
         "freezone_emit_canvas_command",
-        "freezone_emit_canvas_command",
-        first_write_failed=True,
-        failed_write_retry_count=0,
-    )
-    assert not hermes_sdk._can_retry_failed_canvas_write(
-        "freezone_emit_canvas_command",
-        "freezone_emit_canvas_command",
-        first_write_failed=True,
-        failed_write_retry_count=1,
+        "dramaclaw_start_single_video",
     )
 
 
