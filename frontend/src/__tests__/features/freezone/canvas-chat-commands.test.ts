@@ -3195,7 +3195,9 @@ describe("canvas chat commands", () => {
     expect(routingOnly).toContain("freezone_validate_canvas_commands");
     expect(routingOnly).toContain("freezone_get_node_create_schema");
     expect(routingOnly).toContain("create_edge needs link_type");
-    expect(routingOnly).toContain("framework, workflow, storyboard, or short-video plan");
+    expect(routingOnly).toContain("Open-ended ideation/no-idea requests");
+    expect(routingOnly).toContain("emit commands only after the user explicitly asks");
+    expect(routingOnly).toContain("explicit canvas framework/workflow/storyboard/short-video plan");
     expect(routingOnly).toContain("videoComposeNode");
     expect(routingOnly).toContain("video/audio inputs");
     expect(routingOnly.length).toBeLessThan(2500);
@@ -6271,7 +6273,8 @@ describe("canvas chat commands", () => {
     expect(context).toContain("freezone_get_node_action_catalog");
     expect(context).toContain("freezone_get_canvas_command_catalog");
     expect(context).toContain("freezone_validate_canvas_commands");
-    expect(context).toContain("framework, workflow, storyboard, or short-video plan");
+    expect(context).toContain("Open-ended ideation/no-idea requests");
+    expect(context).toContain("explicit canvas framework/workflow/storyboard/short-video plan");
     expect(context).toContain("video/audio inputs");
   });
 
