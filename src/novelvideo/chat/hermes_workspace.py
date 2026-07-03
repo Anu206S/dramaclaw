@@ -24,13 +24,12 @@ STATE_ROOT = DRAMACLAW_ROOT / "state"
 DEFAULT_HERMES_SKILLS = {
     "dramaclaw",
     "freezone",
-    "freezone-canvas-node-operator",
     "sketch-correction-worker",
     "sketch-storyboard-director",
 }
 DEFAULT_HERMES_PLUGINS = {"dramaclaw", "freezone"}
 DEFAULT_HERMES_TOOLSETS = {"hermes-acp", "freezone-acp"}
-FREEZONE_HERMES_SKILLS = {"freezone", "freezone-canvas-node-operator"}
+FREEZONE_HERMES_SKILLS = {"freezone"}
 FREEZONE_HERMES_PLUGINS = {"freezone"}
 _warned_repo_state_fallback = False
 

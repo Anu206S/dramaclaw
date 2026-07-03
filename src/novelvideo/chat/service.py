@@ -254,8 +254,14 @@ Allowed:
 - before canvas writes, ground the operation in the current canvas summary/context. For
   node creation or graph edits, use command catalog, node create schema, and link type catalog
   as needed. Validate multi-step or edge-creating commands before writing.
+- for canvas frameworks, workflows, storyboards, short-video plans, or any request that
+  creates several nodes/edges/groups/layout changes, gather needed catalogs/schemas first,
+  then submit one validated Freezone canvas command batch; do not write nodes step by step.
 - Freezone canvas can generate complete short videos through canvas operations: create and run
   video, audio, and composition nodes, then use the frontend write result as the source of truth.
+- videoComposeNode is the final timeline/composition node for combining multiple video clips
+  and audio tracks into the final video. Connect video/audio outputs to it as composition
+  inputs; do not connect planning text, briefs, or prompts directly into videoComposeNode.
 - when the user asks to create/add/write a text node on the canvas, call
   freezone_create_node for exactly one textAnnotationNode, or freezone_emit_canvas_command
   for multi-step canvas changes, with the current canvas_id from FREEZONE_CANVAS_CONTEXT.
@@ -272,8 +278,37 @@ operations. Only redirect when the user explicitly asks to use the DramaClaw mai
 [/FREEZONE_CANVAS_ASSISTANT]"""
 
 
-def _tool_mode_for_surface(surface: str | None) -> str:
-    return "freezone_canvas" if str(surface or "").strip() == "freezone" else "default"
+_FREEZONE_CANVAS_PROMPT_MARKERS = (
+    "[SUPERTALE_CANVAS_ROUTING]",
+    "[SUPERTALE_CANVAS_CHAT_COMMANDS]",
+    "[SUPERTALE_CANVAS_ONTOLOGY_CONTEXT]",
+    "[SUPERTALE_CANVAS_ONTOLOGY_SUMMARY]",
+    "[SUPERTALE_CANVAS_NODE_REFERENCES]",
+)
+
+
+def _prompt_has_freezone_canvas_context(prompt: str | None) -> bool:
+    text = str(prompt or "")
+    return any(marker in text for marker in _FREEZONE_CANVAS_PROMPT_MARKERS)
+
+
+def _surface_context_has_freezone_canvas(surface_context: dict[str, Any] | None) -> bool:
+    return bool(str((surface_context or {}).get("freezone_canvas_id") or "").strip())
+
+
+def _tool_mode_for_surface(
+    surface: str | None,
+    *,
+    prompt: str | None = None,
+    surface_context: dict[str, Any] | None = None,
+) -> str:
+    if str(surface or "").strip() == "freezone":
+        return "freezone_canvas"
+    if _surface_context_has_freezone_canvas(surface_context):
+        return "freezone_canvas"
+    if _prompt_has_freezone_canvas_context(prompt):
+        return "freezone_canvas"
+    return "default"
 
 
 def _freezone_canvas_id_from_context(surface_context: dict[str, Any] | None) -> str:
@@ -3320,7 +3355,11 @@ async def stream_assistant_reply(
     surface_context: dict[str, Any] | None = None,
     store_scope: Any | None = None,
 ) -> dict[str, Any]:
-    tool_mode = _tool_mode_for_surface(surface)
+    tool_mode = _tool_mode_for_surface(
+        surface,
+        prompt=prompt,
+        surface_context=surface_context,
+    )
     lock_project = f"freezone:{project}" if tool_mode == "freezone_canvas" else project
     run_lock_id = _acquire_chat_run_lock(username, lock_project)
     heartbeat_task = asyncio.create_task(

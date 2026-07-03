@@ -58,7 +58,6 @@ def repo_skills(isolated_workspace):
         "json-render",
         "dramaclaw",
         "freezone",
-        "freezone-canvas-node-operator",
         "sketch-correction-worker",
         "sketch-storyboard-director",
         "other-skill",
@@ -89,7 +88,6 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     # Default allowlist should be symlinked in.
     assert (home / "skills" / "dramaclaw").is_symlink()
     assert (home / "skills" / "freezone").is_symlink()
-    assert (home / "skills" / "freezone-canvas-node-operator").is_symlink()
     assert (home / "skills" / "sketch-correction-worker").is_symlink()
     assert (home / "skills" / "sketch-storyboard-director").is_symlink()
     assert not (home / "skills" / "json-render").exists()
@@ -114,7 +112,6 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
 
     assert home == isolated_workspace / "state" / "admin" / ".hermes-freezone"
     assert (home / "skills" / "freezone").is_symlink()
-    assert (home / "skills" / "freezone-canvas-node-operator").is_symlink()
     assert not (home / "skills" / "dramaclaw").exists()
     assert (home / "plugins" / "freezone").is_symlink()
     assert not (home / "plugins" / "dramaclaw").exists()
