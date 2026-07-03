@@ -34,9 +34,36 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_update_node_data" in names
     assert "freezone_run_node_action" in names
     assert "freezone_get_mainline_projection_assets" in names
-    assert "freezone_list_workflows" not in names
-    assert "freezone_build_workflow_plan" not in names
-    assert "freezone_create_workflow_graph" not in names
+    assert "freezone_list_workflows" in names
+    assert "freezone_build_workflow_plan" in names
+    assert "freezone_create_workflow_graph" in names
+
+
+def test_freezone_plugin_routes_registered_workflows_through_builder():
+    plugin = _load_plugin_module()
+
+    built = plugin.build_workflow_graph_commands({"workflow_type": "ad_video"})
+
+    assert built["ok"] is True
+    assert any(command["type"] == "create_node" for command in built["commands"])
+    assert any(command["type"] == "group_nodes" for command in built["commands"])
+
+    manual_result = plugin._handle_emit_canvas_command(
+        {
+            "commands": [
+                {
+                    "type": "create_node",
+                    "node_type": "textAnnotationNode",
+                    "data": {"displayName": "广告视频工作流"},
+                },
+                {"type": "create_node", "node_type": "imageGenNode"},
+                {"type": "create_node", "node_type": "videoNode"},
+            ]
+        }
+    )
+
+    assert manual_result["ok"] is False
+    assert manual_result["status"] == "wrong_tool_registered_workflow"
 
 
 def test_freezone_plugin_create_node_schema_hides_internal_node_types():

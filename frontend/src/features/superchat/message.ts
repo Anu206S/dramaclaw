@@ -84,10 +84,11 @@ function mediaKindToType(kind: unknown): string | undefined {
 
 export function normalizeMessage(message: unknown, fallbackRole: ChatRole = "assistant"): ChatMessage | null {
   const text = extractMessageText(message).trim();
-  if (!text && !hasStructuredContent(message)) return null;
   const value = message && typeof message === "object"
     ? (message as Record<string, unknown>)
     : {};
+  const uiEvents = normalizeUiEvents(value);
+  if (!text && !hasStructuredContent(message) && !uiEvents) return null;
   const id =
     normalizeId(value.id)
     ?? normalizeId(value.messageId)
@@ -97,7 +98,6 @@ export function normalizeMessage(message: unknown, fallbackRole: ChatRole = "ass
   const turnId = normalizeTurnId(value);
   const displayName = typeof value.displayName === "string" ? value.displayName : undefined;
   const attachments = extractAttachments(value);
-  const uiEvents = normalizeUiEvents(value);
   return { id, role, text, turnId, displayName, attachments, uiEvents, timestamp, raw: message };
 }
 

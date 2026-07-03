@@ -140,6 +140,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
   });
 
   afterEach(() => {
+    vi.useRealTimers();
     superChatMocks.send.mockClear();
     superChatMocks.messages = [];
     superChatMocks.busy = false;
@@ -227,6 +228,50 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
 
     expect(screen.queryByText("本轮会使用")).not.toBeInTheDocument();
     expect(useCanvasStore.getState().nodes[0]?.selected).toBe(false);
+    expect(useCanvasStore.getState().selectedNodeId).toBeNull();
+  });
+
+  it("lets the user remove all selected canvas nodes from current-turn context", () => {
+    const nodes = [
+      {
+        id: "image-node-1",
+        type: "imageNode",
+        position: { x: 0, y: 0 },
+        selected: true,
+        data: { title: "图片节点 A" },
+      },
+      {
+        id: "image-node-2",
+        type: "imageNode",
+        position: { x: 220, y: 0 },
+        selected: true,
+        data: { title: "图片节点 B" },
+      },
+    ] satisfies Partial<CanvasNode>[] as CanvasNode[];
+
+    useCanvasStore.getState().setCanvasData(nodes, []);
+    useCanvasStore.getState().setSelectedNode(nodes[0].id);
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: nodes.map((node) => node.id),
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(screen.getByText("本轮会使用")).toBeInTheDocument();
+    expect(screen.getByText("全部取消")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByLabelText("取消全部画布引用"));
+
+    expect(screen.queryByText("本轮会使用")).not.toBeInTheDocument();
+    expect(useCanvasStore.getState().nodes.every((node) => !node.selected)).toBe(true);
     expect(useCanvasStore.getState().selectedNodeId).toBeNull();
   });
 
@@ -563,12 +608,12 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
               ],
             },
           ],
-          receivedAt: 1,
+          receivedAt: Date.now(),
         },
       }));
     });
 
-    expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
+    expect(screen.getByText("待确认的画布操作")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
 
     await waitFor(() =>
@@ -917,7 +962,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
               ],
             },
           ],
-          receivedAt: 1,
+          receivedAt: Date.now(),
         },
       }));
     });
@@ -946,6 +991,132 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
         }),
       }),
     }));
+  });
+
+  it("automatically cancels canvas command approvals after the countdown", async () => {
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "准备创建节点",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("freezone/canvas-command-approval", {
+        detail: {
+          canvasId: "canvas-a",
+          turnId: "turn-a",
+          bridgeKey: "bridge-a",
+          envelopes: [
+            {
+              schema_version: "canvas_chat_commands.v1",
+              commands: [
+                {
+                  type: "create_node",
+                  node_type: "imageGenNode",
+                  data: { prompt: "test image" },
+                },
+              ],
+            },
+          ],
+          receivedAt: Date.now() - 31_000,
+        },
+      }));
+    });
+
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith("api/v1/chat/canvas-command-tool-result", expect.objectContaining({
+        json: expect.objectContaining({
+          bridge_key: "bridge-a",
+          turn_id: "turn-a",
+          canvas_apply_status: "cancelled_by_user",
+          cancelled: true,
+          errors: ["画布操作等待超时，已自动取消"],
+        }),
+      })),
+    );
+    expect(apiMocks.post).toHaveBeenCalledWith("api/v1/chat/ui-events", expect.objectContaining({
+      json: expect.objectContaining({
+        turn_id: "turn-a",
+        event: expect.objectContaining({
+          type: "canvas_command_result",
+          bridge_key: "bridge-a",
+          cancelled: true,
+          cancel_reason: "timeout",
+        }),
+      }),
+    }));
+  });
+
+  it("shows a countdown before canvas approval buttons", async () => {
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "准备创建节点",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("freezone/canvas-command-approval", {
+        detail: {
+          canvasId: "canvas-a",
+          turnId: "turn-a",
+          bridgeKey: "bridge-a",
+          envelopes: [
+            {
+              schema_version: "canvas_chat_commands.v1",
+              commands: [
+                {
+                  type: "create_node",
+                  node_type: "imageGenNode",
+                  data: { prompt: "test image" },
+                },
+              ],
+            },
+          ],
+          receivedAt: Date.now(),
+        },
+      }));
+    });
+
+    expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
+    expect(screen.getByText(/秒后自动取消/)).toBeInTheDocument();
   });
 
   it("renders Freezone tool calls as activity cards", async () => {
@@ -1029,7 +1200,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
               ],
             },
           ],
-          receivedAt: 1,
+          receivedAt: Date.now(),
         },
       }));
     });

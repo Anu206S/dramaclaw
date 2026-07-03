@@ -26,10 +26,11 @@ DEFAULT_HERMES_SKILLS = {
     "freezone",
     "sketch-correction-worker",
     "sketch-storyboard-director",
+    "workflows",
 }
 DEFAULT_HERMES_PLUGINS = {"dramaclaw", "freezone"}
 DEFAULT_HERMES_TOOLSETS = {"hermes-acp", "freezone-acp"}
-FREEZONE_HERMES_SKILLS = {"freezone"}
+FREEZONE_HERMES_SKILLS = {"freezone", "workflows"}
 FREEZONE_HERMES_PLUGINS = {"freezone"}
 _warned_repo_state_fallback = False
 

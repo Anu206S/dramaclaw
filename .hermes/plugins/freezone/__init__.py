@@ -17,9 +17,26 @@ from urllib.request import Request, urlopen
 
 from tools.registry import tool_error, tool_result
 
+_PLUGIN_DIR = Path(__file__).resolve().parent
+if str(_PLUGIN_DIR) not in sys.path:
+    sys.path.insert(0, str(_PLUGIN_DIR))
+
 _REPO_SRC = Path(__file__).resolve().parents[3] / "src"
 if _REPO_SRC.exists() and str(_REPO_SRC) not in sys.path:
     sys.path.insert(0, str(_REPO_SRC))
+
+_WORKFLOW_GRAPH_IMPORT_ERROR: Exception | None = None
+try:
+    from workflow_graph import (
+        REGISTERED_WORKFLOWS,
+        build_workflow_graph_commands,
+        build_workflow_plan,
+    )
+except Exception as exc:
+    _WORKFLOW_GRAPH_IMPORT_ERROR = exc
+    REGISTERED_WORKFLOWS = []
+    build_workflow_graph_commands = None
+    build_workflow_plan = None
 
 _CANVAS_COMMAND_BRIDGE_IMPORT_ERROR: Exception | None = None
 try:
@@ -520,6 +537,35 @@ _COMMAND_REQUIRED_FIELDS = {
     "open_mainline_projection": ("request",),
 }
 
+
+_WORKFLOW_LIKE_NODE_TYPES = {
+    "imageGenNode",
+    "videoNode",
+    "audioNode",
+    "videoComposeNode",
+    "scriptNode",
+    "storyboardGenNode",
+}
+
+_REGISTERED_WORKFLOW_HINTS = (
+    "工作流",
+    "workflow",
+    "广告",
+    "投放",
+    "产品",
+    "商品",
+    "短剧",
+    "小说",
+    "故事",
+    "mv",
+    "音乐视频",
+    "文生",
+    "图生",
+    "视频",
+    "音频",
+)
+
+
 def _emit_command_error(project: str | None, canvas: str | None, status: str, error: str) -> str:
     return tool_result(
         {
@@ -529,6 +575,44 @@ def _emit_command_error(project: str | None, canvas: str | None, status: str, er
             **_scope_meta(project or "", canvas),
         }
     )
+
+
+def _command_text(command: dict[str, Any]) -> str:
+    values: list[str] = []
+    for key in ("client_id", "node_type", "label", "title", "displayName", "display_name"):
+        value = command.get(key)
+        if value is not None:
+            values.append(str(value))
+    data = command.get("data")
+    if isinstance(data, dict):
+        for key in ("displayName", "display_name", "title", "label", "prompt", "text", "content"):
+            value = data.get(key)
+            if value is not None:
+                values.append(str(value))
+    return "\n".join(values).lower()
+
+
+def _looks_like_manual_registered_workflow_batch(commands: list[Any]) -> bool:
+    object_commands = [command for command in commands if isinstance(command, dict)]
+    create_commands = [
+        command
+        for command in object_commands
+        if command.get("type") in {"create_node", "add_next_node"}
+    ]
+    if len(create_commands) < 3:
+        return False
+    workflow_like_count = sum(
+        1 for command in create_commands if command.get("node_type") in _WORKFLOW_LIKE_NODE_TYPES
+    )
+    if workflow_like_count < 2:
+        return False
+    has_dependency_shape = any(
+        command.get("type") in {"create_edge", "group_nodes", "layout_nodes", "select_nodes"}
+        for command in object_commands
+    )
+    haystack = "\n".join(_command_text(command) for command in object_commands)
+    has_registered_hint = any(hint in haystack for hint in _REGISTERED_WORKFLOW_HINTS)
+    return (not has_dependency_shape) or has_registered_hint
 
 
 def _validate_write_commands_shape(
@@ -669,6 +753,8 @@ def _emit_canvas_commands(
     project: str | None,
     canvas: str | None,
     commands: list[Any],
+    *,
+    allow_registered_workflow_batch: bool = False,
 ) -> str:
     if not isinstance(commands, list) or not commands:
         return _emit_command_error(
@@ -677,6 +763,22 @@ def _emit_canvas_commands(
     shape_error = _validate_write_commands_shape(project, canvas, commands)
     if shape_error:
         return shape_error
+    if (
+        not allow_registered_workflow_batch
+        and _looks_like_manual_registered_workflow_batch(commands)
+    ):
+        return _emit_command_error(
+            project,
+            canvas,
+            "wrong_tool_registered_workflow",
+            (
+                "This looks like a registered workflow being hand-written as canvas commands. "
+                "Do not infer workflow nodes, edges, groups, or layout yourself. First call "
+                "freezone_list_workflows to identify the workflow_type; if the user's request "
+                "matches exactly one registered workflow, call freezone_create_workflow_graph "
+                "with workflow_type/workflow_types. If it is ambiguous, ask the user to choose."
+            ),
+        )
     envelope = {
         "schema_version": "canvas_chat_commands.v1",
         **({"project_id": project} if project else {}),
@@ -739,6 +841,48 @@ def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
     if commands is None and isinstance(args.get("body"), dict):
         commands = args["body"].get("commands")
     return _emit_canvas_commands(project, canvas, commands)
+
+
+def _handle_build_workflow_plan(args: dict[str, Any], **_: Any) -> str:
+    if build_workflow_plan is None:
+        return tool_error(
+            "Freezone workflow plan builder is unavailable. "
+            f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
+        )
+    return tool_result(build_workflow_plan(args))
+
+
+def _handle_list_workflows(args: dict[str, Any], **_: Any) -> str:
+    workflows = [
+        {
+            "workflow_type": str(item.get("workflow_type") or ""),
+            "label": str(item.get("label") or item.get("workflow_type") or ""),
+            "aliases": item.get("aliases") if isinstance(item.get("aliases"), list) else [],
+            "template_kind": item.get("template_kind") or item.get("builder") or "",
+        }
+        for item in REGISTERED_WORKFLOWS
+        if item.get("workflow_type")
+    ]
+    return tool_result({"ok": True, "count": len(workflows), "workflows": workflows})
+
+
+def _handle_create_workflow_graph(args: dict[str, Any], **_: Any) -> str:
+    if build_workflow_graph_commands is None:
+        return tool_error(
+            "Freezone workflow graph builder is unavailable. "
+            f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
+        )
+    built = build_workflow_graph_commands(args)
+    if not built.get("ok"):
+        return tool_result(built)
+    project = (
+        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+    )
+    canvas = (
+        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+    )
+    commands = built.get("commands")
+    return _emit_canvas_commands(project, canvas, commands, allow_registered_workflow_batch=True)
 
 
 def _position_from_args(args: dict[str, Any]) -> dict[str, Any] | None:
@@ -1422,6 +1566,76 @@ TOOLS = (
         ),
         _handle_mainline_projection_assets,
     ),
+    (
+        "freezone_list_workflows",
+        _schema(
+            "freezone_list_workflows",
+            "List registered Freezone workflow templates. Use this before choosing a workflow_type when the user asks what workflows are available or asks to create an ambiguous workflow.",
+            {},
+        ),
+        _handle_list_workflows,
+    ),
+    (
+        "freezone_build_workflow_plan",
+        _schema(
+            "freezone_build_workflow_plan",
+            "Build a deterministic freezone_workflow_plan.v1 for one or more registered workflow_type values. This is read-only and does not change the canvas.",
+            {
+                "workflow_type": {
+                    "type": "string",
+                    "description": "Registered workflow type, e.g. text_to_image, image_to_video, text_to_video, image_to_text, text_to_audio, short_drama, ad_video, product_video, mv.",
+                },
+                "workflow_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Multiple registered workflow types to plan together.",
+                },
+                "title": {"type": "string", "description": "Optional workflow title."},
+                "user_goal": {
+                    "type": "string",
+                    "description": "Optional user goal or brief to seed text nodes.",
+                },
+                "beat_count": {
+                    "type": "integer",
+                    "description": "Optional beat count for short drama style workflows.",
+                },
+            },
+        ),
+        _handle_build_workflow_plan,
+    ),
+    (
+        "freezone_create_workflow_graph",
+        _schema(
+            "freezone_create_workflow_graph",
+            "Create registered Freezone workflow nodes, edges, layout, and group in one frontend approval. Use this instead of hand-writing create_node/create_edge commands for registered workflows.",
+            {
+                **_SCOPE_PROPS,
+                "workflow_type": {
+                    "type": "string",
+                    "description": "Registered workflow type to create.",
+                },
+                "workflow_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Multiple registered workflow types to create in one approval.",
+                },
+                "plan": {
+                    "type": "object",
+                    "description": "Optional prebuilt freezone_workflow_plan.v1.",
+                },
+                "title": {"type": "string", "description": "Optional workflow title."},
+                "user_goal": {
+                    "type": "string",
+                    "description": "Optional user goal or brief to seed text nodes.",
+                },
+                "beat_count": {
+                    "type": "integer",
+                    "description": "Optional beat count for short drama style workflows.",
+                },
+            },
+        ),
+        _handle_create_workflow_graph,
+    ),
     # 写入前预校验。
     (
         "freezone_validate_canvas_commands",
@@ -1452,12 +1666,12 @@ TOOLS = (
         "freezone_emit_canvas_command",
         _schema(
             "freezone_emit_canvas_command",
-            "Default Freezone write tool for canvas edits. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. Required for frameworks, workflows, storyboards, short-video plans, and any request that creates several nodes/edges/groups/layout changes. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
+            "Default Freezone write tool for ordinary non-workflow canvas edits. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. Do not use this tool to create registered workflows returned by freezone_list_workflows; use freezone_create_workflow_graph instead. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
             {
                 **_SCOPE_PROPS,
                 "commands": {
                     "type": "array",
-                    "description": "Complete canvas_chat_commands.v1 commands array. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc.",
+                    "description": "Complete canvas_chat_commands.v1 commands array for ordinary non-workflow edits. For registered workflows, do not build this array manually; call freezone_create_workflow_graph with workflow_type/workflow_types. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc.",
                     "items": _CANVAS_COMMAND_ITEM_SCHEMA,
                 },
                 "body": {
