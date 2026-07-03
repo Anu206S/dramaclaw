@@ -606,6 +606,19 @@ function dispatchCanvasCommandFrame(payload: ServerFrame, anchorTextPrefix?: str
 
 export const dispatchCanvasCommandFrameForTest = dispatchCanvasCommandFrame;
 
+function canvasContextToolResultFrame(detail: CanvasContextToolResultPayload): ClientFrame | null {
+  if (!detail || detail.type !== "canvas.context.result" || !detail.bridge_key) return null;
+  const {
+    type: _type,
+    received_at: _receivedAt,
+    anchor_text_prefix: _anchorTextPrefix,
+    ...frame
+  } = detail;
+  return { type: "canvas.context.result", ...frame };
+}
+
+export const canvasContextToolResultFrameForTest = canvasContextToolResultFrame;
+
 const FREEZONE_CANVAS_CONTEXT_TOOL_REQUEST_TYPES: Record<string, string> = {
   freezone_get_canvas_ontology: "canvas_ontology",
   freezone_summarize_canvas: "canvas_summary",
@@ -850,15 +863,9 @@ export function useSuperChat({
     };
     const handleCanvasContextToolResult = (event: Event) => {
       const detail = (event as CustomEvent<CanvasContextToolResultPayload>).detail;
-      if (!detail || detail.type !== "canvas.context.result" || !detail.bridge_key) return;
-      const {
-        type: _type,
-        received_at: _receivedAt,
-        anchor_text_prefix: _anchorTextPrefix,
-        canvas_context_status: _canvasContextStatus,
-        ...frame
-      } = detail;
-      sendFrame({ type: "canvas.context.result", ...frame });
+      const frame = canvasContextToolResultFrame(detail);
+      if (!frame) return;
+      sendFrame(frame);
     };
     window.addEventListener(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, handleCanvasCommandToolResult);
     window.addEventListener(FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT, handleCanvasContextToolResult);

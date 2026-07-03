@@ -124,7 +124,7 @@ class CanvasContextToolResultIn(BaseModel):
     project_id: str | None = None
     canvas_id: str | None = None
     tool_call_status: str = "completed"
-    canvas_context_status: str
+    canvas_context_status: str | None = None
     ok: bool = True
     responses: list[dict[str, Any]] = []
     errors: list[str] = []
@@ -264,7 +264,8 @@ def _resolve_canvas_context_tool_result_payload(
     result = {
         "ok": payload.ok and payload.tool_call_status == "completed",
         "tool_call_status": payload.tool_call_status,
-        "canvas_context_status": payload.canvas_context_status,
+        "canvas_context_status": payload.canvas_context_status
+        or ("resolved" if payload.ok and payload.tool_call_status == "completed" else "failed"),
         "responses": payload.responses,
         "errors": payload.errors,
         "project_id": payload.project_id,

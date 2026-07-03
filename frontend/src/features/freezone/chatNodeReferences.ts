@@ -749,6 +749,7 @@ export function buildCanvasChatCommandContext(
       : []),
     "[SUPERTALE_CANVAS_CHAT_COMMANDS]",
     "Use freezone_emit_canvas_command once for batch edits. Use typed write tools only for explicit one-operation requests.",
+    "For canvas edit requests, the first assistant output must be a Freezone write tool call. Do not emit assistant prose, acknowledgement, summary, or status text before the write tool call.",
     "For a framework, workflow, storyboard, or short-video plan, do not perform step-by-step writes; gather needed catalogs/schemas, validate once, then emit one freezone_emit_canvas_command batch.",
     "Do not expose tool names, command JSON, node_id, field ids, schema names, or action ids in user-visible prose unless the user asks for implementation details.",
     "Do not claim a canvas change succeeded until a frontend write result returns success. Do not say a node was created, updated, deleted, connected, moved, or executed unless the write tool/frontend result confirms it.",

@@ -25,6 +25,7 @@ export type ClientFrame =
       project_id?: string | null;
       canvas_id?: string | null;
       tool_call_status?: "completed" | "cancelled" | "failed";
+      canvas_context_status?: "resolved" | "failed" | string;
       ok: boolean;
       responses?: Array<Record<string, unknown>>;
       errors?: string[];

@@ -281,6 +281,52 @@ function persistCanvasCommandResult({
   });
 }
 
+function persistCanvasCommandApproval({
+  projectId,
+  canvasId,
+  turnId,
+  envelopes,
+  anchorTextPrefix,
+  receivedAt,
+  bridgeKey,
+}: {
+  projectId: string;
+  canvasId: string;
+  turnId: string | null;
+  envelopes: ReturnType<typeof extractCanvasChatCommandEnvelopes>;
+  anchorTextPrefix?: string | null;
+  receivedAt?: number;
+  bridgeKey?: string | null;
+}) {
+  if (!turnId) return;
+  void api.post("api/v1/chat/ui-events", {
+    json: {
+      scope: {
+        kind: "project",
+        id: projectId,
+        surface: "freezone",
+        canvasId,
+      },
+      turn_id: turnId,
+      event: {
+        schema_version: "canvas_command_approval.v1",
+        type: "canvas_command_approval",
+        canvas_id: canvasId,
+        bridge_key: bridgeKey ?? null,
+        envelopes,
+        anchor_text_prefix: anchorTextPrefix ?? null,
+        received_at: receivedAt ?? Date.now(),
+      },
+    },
+  }).catch((error) => {
+    console.warn("[freezone-canvas-command] failed to persist canvas command approval", {
+      canvasId,
+      turnId,
+      error,
+    });
+  });
+}
+
 function persistCanvasCommandValidationActivity({
   projectId,
   canvasId,
@@ -1238,6 +1284,15 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         errors: [],
         anchorTextPrefix: detail?.anchorTextPrefix ?? null,
         receivedAt: eventReceivedAt + 1,
+      });
+      persistCanvasCommandApproval({
+        projectId,
+        canvasId,
+        turnId,
+        envelopes: normalizedEnvelopes,
+        anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+        receivedAt: eventReceivedAt + 2,
+        bridgeKey,
       });
       setChatOpen(true);
       window.setTimeout(() => emitCanvasCommandApproval({

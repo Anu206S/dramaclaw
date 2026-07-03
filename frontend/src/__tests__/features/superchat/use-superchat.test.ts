@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { normalizeMessage } from "@/features/superchat/message";
 import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
+  canvasContextToolResultFrameForTest,
   dispatchCanvasCommandFrameForTest,
   mergeHistorySnapshot,
   pruneOldMessageCaches,
@@ -247,6 +248,29 @@ describe("canvas command bridge events", () => {
         type: "canvas.command",
         bridge_key: "bridge-a",
       },
+    });
+  });
+});
+
+describe("canvas context bridge results", () => {
+  it("preserves canvas_context_status in the websocket frame", () => {
+    const frame = canvasContextToolResultFrameForTest({
+      type: "canvas.context.result",
+      turn_id: "turn-a",
+      bridge_key: "bridge-a",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      tool_call_status: "completed",
+      canvas_context_status: "resolved",
+      ok: true,
+      responses: [],
+      errors: [],
+      message: "ok",
+    });
+
+    expect(frame).toMatchObject({
+      type: "canvas.context.result",
+      canvas_context_status: "resolved",
     });
   });
 });
