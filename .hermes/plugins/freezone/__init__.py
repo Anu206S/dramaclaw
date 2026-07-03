@@ -325,9 +325,8 @@ def _handle_node_create_schema(args: dict[str, Any], **_: Any) -> str:
                 "error": (
                     "node_type must be a directly creatable Freezone node type. "
                     "Use freezone_group_nodes/group_nodes for grouping existing nodes; "
-                    "do not directly create or request create schemas for internal or derived "
-                    "node types such as storyboardNode, storyboardGenNode, groupNode, imageNode, "
-                    "exportImageNode, or videoStoryNode."
+                    "do not directly create or request create schemas for node types outside the "
+                    "creatable values exposed by the command catalog."
                 ),
             }
         )
@@ -638,9 +637,7 @@ def _validate_write_commands_shape(
                     (
                         f"commands[{index}].node_type must be a directly creatable node type; "
                         f"got {node_type!r}. Use group_nodes/freezone_group_nodes to group existing "
-                        "nodes, and do not directly create internal or derived node types such as "
-                        "storyboardNode, storyboardGenNode, groupNode, imageNode, exportImageNode, "
-                        "or videoStoryNode."
+                        "nodes, and only use creatable node types exposed by the command catalog."
                     ),
                 )
         if command.get("type") == "create_edge":
@@ -1169,10 +1166,10 @@ _AGENT_CREATABLE_NODE_TYPE_VALUES = [
 
 _NODE_TYPE_DESCRIPTION = (
     "Directly creatable Freezone canvas node type. Use only these values for "
-    "create_node/add_next_node. Do not create internal or derived node types such as "
-    "groupNode, storyboardNode, storyboardGenNode, imageNode, exportImageNode, "
-    "or videoStoryNode directly. Use freezone_group_nodes/group_nodes for "
-    "grouping existing nodes. Use textAnnotationNode for ordinary briefs, copy, notes, "
+    "create_node/add_next_node. If the user asks to add a picture/image node, use "
+    "imageGenNode unless they explicitly ask to upload or import an existing file. "
+    "Use freezone_group_nodes/group_nodes for grouping existing nodes. "
+    "Use textAnnotationNode for ordinary briefs, copy, notes, "
     "prompts, and free-form text. Use scriptNode only for explicit structured script "
     "tables or script-generation workflows. Use threeDWorldNode for 导演世界; "
     "directorWorldNode is not a valid node type."
@@ -1455,7 +1452,7 @@ TOOLS = (
         "freezone_emit_canvas_command",
         _schema(
             "freezone_emit_canvas_command",
-            "Default Freezone write tool for canvas edits. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
+            "Default Freezone write tool for canvas edits. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. Required for frameworks, workflows, storyboards, short-video plans, and any request that creates several nodes/edges/groups/layout changes. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
             {
                 **_SCOPE_PROPS,
                 "commands": {
@@ -1477,7 +1474,7 @@ TOOLS = (
         "freezone_create_node",
         _schema(
             "freezone_create_node",
-            "Single-operation tool only: create exactly one standalone Freezone canvas node when the user explicitly asks for one node. If the user asks to create these nodes, several nodes, a workflow, storyboard, prototype, framework, page, or any request with more than one canvas change, do not use this repeatedly; use one freezone_emit_canvas_command batch instead. For dynamic fields, inspect freezone_get_node_create_schema first.",
+            "Single-operation tool only: create exactly one standalone Freezone canvas node when the user explicitly asks for one node. If the user asks to create these nodes, several nodes, a workflow, storyboard, prototype, framework, page, short-video plan, or any request with more than one canvas change, do not use this repeatedly; use one freezone_emit_canvas_command batch instead. For dynamic fields, inspect freezone_get_node_create_schema first.",
             {
                 **_SCOPE_PROPS,
                 "node_type": _NODE_TYPE_SCHEMA,

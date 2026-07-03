@@ -749,6 +749,7 @@ export function buildCanvasChatCommandContext(
       : []),
     "[SUPERTALE_CANVAS_CHAT_COMMANDS]",
     "Use freezone_emit_canvas_command once for batch edits. Use typed write tools only for explicit one-operation requests.",
+    "For a framework, workflow, storyboard, or short-video plan, do not perform step-by-step writes; gather needed catalogs/schemas, validate once, then emit one freezone_emit_canvas_command batch.",
     "Do not expose tool names, command JSON, node_id, field ids, schema names, or action ids in user-visible prose unless the user asks for implementation details.",
     "Do not claim a canvas change succeeded until a frontend write result returns success. Do not say a node was created, updated, deleted, connected, moved, or executed unless the write tool/frontend result confirms it.",
     "For uncertain command shapes, call freezone_get_canvas_command_catalog. Validate non-trivial or multi-command edits with freezone_validate_canvas_commands before emitting the final write tool.",
@@ -756,6 +757,7 @@ export function buildCanvasChatCommandContext(
     "For dynamic fields such as model, size, aspectRatio, genMode, voice, templates, or create_node data, call the specific get_* schema/options tool such as freezone_get_node_create_schema instead of guessing.",
     "Referenced nodes are attention anchors. Use their action_summary_json for quick routing; request freezone_get_node_detail or freezone_get_node_action_catalog when full editable field schema or action parameters are needed.",
     "For workflow/group execution requests, prefer run_workflow over separate run_node_action calls.",
+    "videoComposeNode is a final timeline/composition node: connect video/audio inputs to it with composition_input_for; do not connect planning text or prompts directly to videoComposeNode.",
     "If creating nodes that later commands reference in the same batch, use client_id and reuse that same client_id only inside the same envelope.",
     "[/SUPERTALE_CANVAS_CHAT_COMMANDS]",
   ].join("\n");
@@ -779,7 +781,7 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
         client_id:
           "Batch-only alias for later commands before the frontend creates the real node id.",
         node_type:
-          "Choose exactly from this command's allowed_node_types. Internal or derived node types such as groupNode, storyboardNode, storyboardGenNode, imageNode, exportImageNode, and videoStoryNode are not direct create_node targets.",
+          "Choose exactly from this command's allowed_node_types. For a user request to add a picture/image node, create imageGenNode unless the user explicitly asks to upload or import an existing file.",
         data: "Node data. For textAnnotationNode, use displayName for the node title/header and content for the body; title is accepted as a displayName alias. For complex or dynamic fields, call freezone_get_node_create_schema first.",
         position: "Optional canvas position {x, y}.",
       },

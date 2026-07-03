@@ -700,12 +700,36 @@ def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainl
     assert "node create schema" in prompt
     assert "link type catalog" in prompt
     assert "Validate multi-step or edge-creating commands" in prompt
+    assert "submit one validated Freezone canvas command batch" in prompt
+    assert "do not write nodes step by step" in prompt
     assert "Freezone canvas tools" in prompt
     assert "generate complete short videos" in prompt
     assert "video, audio, and composition nodes" in prompt
+    assert "videoComposeNode is the final timeline/composition node" in prompt
+    assert "do not connect planning text, briefs, or prompts directly into videoComposeNode" in prompt
     assert "Do not use mainline production tools" in prompt
     assert "Do not start or mutate the main video-production pipeline" in prompt
     assert "do not generate/plan scripts" not in prompt
+
+
+def test_tool_mode_infers_freezone_from_frontend_canvas_injection():
+    prompt = """加个视频节点
+
+[SUPERTALE_CANVAS_ROUTING]
+Current surface is Freezone canvas.
+[/SUPERTALE_CANVAS_ROUTING]"""
+
+    assert chat_service._tool_mode_for_surface(None, prompt=prompt) == "freezone_canvas"
+
+
+def test_tool_mode_infers_freezone_from_canvas_context():
+    assert (
+        chat_service._tool_mode_for_surface(
+            None,
+            surface_context={"freezone_canvas_id": "canvas-a"},
+        )
+        == "freezone_canvas"
+    )
 
 
 def test_project_media_uses_project_id_url_and_explicit_project_dir(tmp_path):

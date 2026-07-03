@@ -3195,6 +3195,9 @@ describe("canvas chat commands", () => {
     expect(routingOnly).toContain("freezone_validate_canvas_commands");
     expect(routingOnly).toContain("freezone_get_node_create_schema");
     expect(routingOnly).toContain("create_edge needs link_type");
+    expect(routingOnly).toContain("framework, workflow, storyboard, or short-video plan");
+    expect(routingOnly).toContain("videoComposeNode");
+    expect(routingOnly).toContain("video/audio inputs");
     expect(routingOnly.length).toBeLessThan(2500);
     expect(routingOnly).not.toContain("link_type catalog:");
     expect(routingOnly).not.toContain(
@@ -3445,6 +3448,9 @@ describe("canvas chat commands", () => {
           commands?: Array<{
             type?: string;
             allowed_node_types?: string[];
+            field_notes?: {
+              node_type?: string;
+            };
           }>;
         };
       }>;
@@ -3477,6 +3483,11 @@ describe("canvas chat commands", () => {
     );
     expect(createCommand?.allowed_node_types).not.toContain(
       CANVAS_NODE_TYPES.group,
+    );
+    expect(createCommand?.field_notes?.node_type).toContain("imageGenNode");
+    expect(createCommand?.field_notes?.node_type).not.toContain("imageNode");
+    expect(createCommand?.field_notes?.node_type).not.toContain(
+      "exportImageNode",
     );
     expect(groupCommand).toBeTruthy();
   });
@@ -6256,6 +6267,8 @@ describe("canvas chat commands", () => {
     expect(context).toContain("freezone_get_node_action_catalog");
     expect(context).toContain("freezone_get_canvas_command_catalog");
     expect(context).toContain("freezone_validate_canvas_commands");
+    expect(context).toContain("framework, workflow, storyboard, or short-video plan");
+    expect(context).toContain("video/audio inputs");
   });
 
   it("parses audio download as a runnable node action", () => {
