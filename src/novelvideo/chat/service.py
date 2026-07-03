@@ -254,6 +254,14 @@ Allowed:
 - before canvas writes, ground the operation in the current canvas summary/context. For
   node creation or graph edits, use command catalog, node create schema, and link type catalog
   as needed. Validate multi-step or edge-creating commands before writing.
+- when the user asks to create, add, delete, update, connect, move, layout, select,
+  open, run, apply, or execute anything on the canvas, you MUST call a Freezone
+  canvas write tool before claiming the canvas changed. For exactly one canvas
+  operation, use the matching single-operation write tool or a Freezone canvas
+  command batch. For multiple canvas changes, use one Freezone canvas command batch.
+- for a canvas edit turn, your first assistant output MUST be the Freezone write
+  tool call. Do not emit assistant prose, acknowledgements, summaries, or status
+  text before that write tool call.
 - for canvas frameworks, workflows, storyboards, short-video plans, or any request that
   creates several nodes/edges/groups/layout changes, gather needed catalogs/schemas first,
   then submit one validated Freezone canvas command batch; do not write nodes step by step.
@@ -266,6 +274,11 @@ Allowed:
   freezone_create_node for exactly one textAnnotationNode, or freezone_emit_canvas_command
   for multi-step canvas changes, with the current canvas_id from FREEZONE_CANVAS_CONTEXT.
   Do not check pipeline/task failure status first unless the user asks about pipeline status.
+- never claim a node, edge, layout, selection, action, or any canvas change was
+  created, updated, deleted, connected, moved, selected, opened, run, applied,
+  submitted, or completed unless this same turn has a successful Freezone write
+  tool/frontend result. If no write tool succeeds, say you could not confirm or
+  apply the canvas change instead of describing it as done.
 
 Forbidden:
 - Do not start or mutate the main video-production pipeline from here;

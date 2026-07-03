@@ -6256,6 +6256,10 @@ describe("canvas chat commands", () => {
     expect(context).toContain(
       "Use typed write tools only for explicit one-operation requests",
     );
+    expect(context).toContain(
+      "the first assistant output must be a Freezone write tool call",
+    );
+    expect(context).toContain("Do not emit assistant prose");
     expect(context).toContain("Do not expose tool names");
     expect(context).not.toContain("return ONLY a fenced JSON block");
     expect(context).not.toContain("Otherwise write the JSON envelope directly");

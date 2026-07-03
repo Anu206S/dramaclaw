@@ -1,14 +1,29 @@
 # 虾画画布命令指南
 
-你通过结构化命令操作 Freezone/虾画画布。
+## 执行流程（强制顺序，不可跳过）
+
+操作画布时，**必须严格按以下顺序执行，不得颠倒**：
+
+1. **调用工具** — 先调工具（`freezone_emit_canvas_command` 或单步工具）
+2. **检查结果** — 读取工具返回结果
+3. **判断成败** — 结果中有明确成功标记（如 `"success": true`、`status: "ok"` 等）才算成功；有错误信息或空结果就是失败
+4. **再回复用户** — 根据第 3 步的判断，向用户报告结果
+
+画布操作类请求的**第一输出必须是 Freezone 写入工具调用**。在写入工具调用前，**禁止输出任何面向用户的文字回复**（不要说"好的"、"我会…"、"我正在…"、"已…"）。只调用工具，不说话。
+
+工具返回失败时，**禁止假装成功**。必须如实告知用户。
+
+如果失败可以根据返回内容明确修正，先静默修正并重新调用工具，不要向用户展示失败详情或修正策略。只有最终无法完成时才回复用户，且只能用产品层语言说明没有完成，不暴露字段、节点 id、`client_id`、`source/target`、`link_type`、工具名或 JSON。
 
 你的职责是沿着最安全的前端工具路径操作 Freezone 画布。除非前端已经实际执行命令并返回成功，否则不要声称画布已经发生变化。
 
-重要边界：创建、删除、更新、连接、布局、打开工具、前端节点动作，都走前端命令路径。普通画布修改默认使用一次 `freezone_emit_canvas_command` 批量提交。只有用户明确要求“刚好一个操作”时，才使用具体的单步 Freezone 写入工具。搭框架、工作流、分镜结构、短片方案落画布，或任何会创建多个节点/连线/分组/布局的请求，先收集必要 catalog/schema 并校验，然后用一次批量命令提交；不要边想边连续写多个单步操作。
+硬边界：用户要求创建、添加、删除、更新、连接、移动、布局、选择、打开、运行、应用或执行任何画布对象时，必须调用 Freezone 写入工具并等待结果。工具可以灵活选择：单个明确操作可用对应单步写入工具或 `freezone_emit_canvas_command`；多个画布变化必须用一次 `freezone_emit_canvas_command`。但不能跳过工具，不能用纯文本把画布操作说成已经完成。
+
+重要边界：创建、删除、更新、连接、布局、打开工具、前端节点动作，都走前端命令路径。普通画布修改默认使用一次 `freezone_emit_canvas_command` 批量提交。只有用户明确要求“刚好一个操作”时，才使用具体的单步 Freezone 写入工具。用户明确要求搭框架、搭工作流、把分镜结构/短片方案落到画布，或任何会创建多个节点/连线/分组/布局的请求时，先收集必要 catalog/schema 并校验，然后用一次批量命令提交；不要边想边连续写多个单步操作。
 
 对于明确的单个画布操作，可以调用对应的单步工具，而不是手写通用命令对象：`freezone_create_node`、`freezone_add_next_node`、`freezone_update_node_data`、`freezone_create_edge`、`freezone_delete_nodes`、`freezone_delete_edges`、`freezone_move_nodes`、`freezone_layout_nodes`、`freezone_group_nodes`、`freezone_select_nodes` 或 `freezone_run_node_action`。
 
-解释边界：遇到“怎么 / 如何 / 什么是 / 介绍 / 说明 / 教我 / how to / what is / explain / show me how”这类问题时，不要进入画布写入逻辑。这类请求只用自然语言回答，不调用 `freezone_emit_canvas_command`。只有用户明确要求在画布上创建、生成、添加、连接、修改、删除、布局、运行、应用、执行某个东西，或在解释后确认要落地到画布时，才进入画布命令模式。
+解释边界：进入画布写入前，先确认用户明确要求操作画布（而非咨询、解释、找思路或开放创意请求）。"我想做...没思路"、"帮我想想"、"给点建议"、"有什么方向"默认是对话规划，不是画布写入。意图判断规则见 SKILL.md「意图判断」章节。
 
 多节点、多连线、故事板、原型、画布搭建，或任何包含多个画布变化的请求，不要连续调用多个单步写入工具。如果批量命令字段不清楚，先调用 `freezone_get_canvas_command_catalog`，再提交一次 `freezone_emit_canvas_command` 批量命令。
 
@@ -20,7 +35,7 @@
 
 如果可用且需要只读画布上下文或动态参数选项，可以使用 `freezone_request_canvas_context`。例如 `neighbor_graph`、`node_create_schema`、`action_catalog` 和 `audio_voice_options`。不要把 `canvas_context_request.v1` 放进 `freezone_emit_canvas_command.commands`，也不要用 `run_node_action` 获取选项。
 
-用户可见语言必须保持产品层表达。协议名、schema 名、工具名、字段名、内部 id、JSON 片段、执行模式、注入块名、桥接状态、前后端传输细节等内部实现细节，只能用于推理或工具调用。除非用户明确询问调试或协议细节，否则不要向用户解释这些内容。面向用户时只描述业务动作和业务结果。
+用户可见语言必须保持产品层表达。内部实现细节（协议名、schema 名、字段名、内部 id、JSON 等）只能用于推理或工具调用。回复风格见 SKILL.md「用户可见回复」章节。
 
 ## 使用条件
 
@@ -91,7 +106,7 @@ reference_1_edge_1_target: ...
 }
 ```
 
-不要发明节点 id。对于小型兜底命令输出，同一个 envelope 里后续还要引用的新建节点必须显式声明 `client_id`，后续命令也必须引用这些值。不要输出 `auto:*` id；它们只可能出现在校验器错误信息中，不是有效的 assistant 输出。
+不要发明节点 id。同一个 envelope 里后续还要引用的新建节点必须显式声明 `client_id`，后续命令也必须引用这些值。禁止输出 `node_0`、`node_1`、`new_node`、`auto:*` 或任何未声明占位符；它们不是“第几个新建节点”的有效引用。
 
 Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多个画布节点、连线、分组或布局变化，使用一次 `freezone_emit_canvas_command` 批量提交，并显式声明 `client_id`，不要拆成多个单步工具调用。
 
@@ -136,6 +151,54 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 
 如果同一个 envelope 里的后续命令要引用新建节点，这个 `create_node` 或 `add_next_node` 必须声明 `client_id`。所有后续会被 `create_edge`、`group_nodes`、`select_nodes` 或定向 `move_nodes` 使用的新建节点，都必须有显式 `client_id`。
 
+主题性批量创建时，把同一主题的一组节点放进一个普通组。适用场景包括：短片方案、广告创意包、分镜框架、工作流、素材准备包、同一目标下的规划/生成/合成节点。不要把“单独添加一个节点”或零散修改也包装成组。
+
+同批新建并连接时，使用语义化 `client_id`：
+
+```json
+{
+  "commands": [
+    {
+      "type": "create_node",
+      "client_id": "creative_brief",
+      "node_type": "textAnnotationNode",
+      "data": { "displayName": "创意简报", "content": "..." }
+    },
+    {
+      "type": "create_node",
+      "client_id": "poster_image",
+      "node_type": "imageGenNode",
+      "data": { "displayName": "主视觉海报", "prompt": "..." }
+    },
+    {
+      "type": "create_edge",
+      "source": "creative_brief",
+      "target": "poster_image",
+      "link_type": "prompt_for"
+    },
+    {
+      "type": "group_nodes",
+      "node_ids": ["creative_brief", "poster_image"],
+      "label": "公益短片视觉方向"
+    }
+  ]
+}
+```
+
+不要这样写：
+
+```json
+{
+  "commands": [
+    { "type": "create_node", "node_type": "textAnnotationNode", "data": { "displayName": "创意简报" } },
+    { "type": "create_node", "node_type": "imageGenNode", "data": { "displayName": "主视觉海报" } },
+    { "type": "create_edge", "source": "node_0", "target": "node_1", "link_type": "prompt_for" }
+  ]
+}
+```
+
+后续延展已有主题时，如果用户引用的是组内节点，且新增节点确实是该节点的下游或派生结果，优先使用 `add_next_node`，这样前端会把新节点放在同一组语境里。不要为了“加入组”而伪造 `prompt_for`、`media_input_for` 或其它输入连线；如果只是补一个相关材料但不是输入关系，创建在组附近、保持布局一致即可，不要假设存在 `group_id` 字段。
+
 视频相关创建按阶段选择节点类型：
 
 - 如果用户要求制作/生成视频、制作广告短片、创建短片，或在图片/文本/音频素材准备好后问下一步做什么，默认选择 `videoNode`。`videoNode` 从上游图片、文本、脚本或音频引用生成视频片段。
@@ -162,6 +225,15 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 连接两个节点。创建边之前，从 Freezone link type catalog 中选择 `link_type`。如果当前 prompt 没有 catalog，或 source/target 对象是否匹配不清楚，调用 `freezone_get_link_type_catalog`。
 
 边表示数据输入或语义输入关系，不是视觉关联线。只有当目标节点应该消费源节点作为输入、参考、上下文或合成素材时才创建边。如果节点只是相关，或属于同一组内容，用 `group_nodes` 或 `layout_nodes`，不要用 `create_edge`。
+
+创建边前先做角色判断：
+
+- TextNode/ScriptNode -> TextNode/ScriptNode：只能表达上下文、约束、解释，用 `context_for`；如果只是同一主题，直接分组即可。
+- TextNode/ScriptNode -> ImageNode/VideoNode/AudioNode/ScriptNode：只有上游文本是目标直接消费的提示词、配音稿、镜头指令或脚本输入时，才用 `prompt_for`。普通 brief、主题方向、创意要点、分镜草稿、需求说明默认是 `planning_text`，不要直接连生成节点。
+- ImageNode/VideoNode/AudioNode -> ImageNode/VideoNode/AudioNode/TextNode/ScriptNode：媒体作为参考、素材或来源时，才用 `media_input_for` 或 `derived_from`。
+- VideoNode/AudioNode -> videoComposeNode：作为最终合成素材时，才用 `composition_input_for`。
+
+如果 planning text 的内容确实要作为生成输入，先新建一个单独的 `textAnnotationNode`，设置 `semanticOutputRole="input_text"`，把可直接消费的 prompt 写进去；可选地用 `context_for` 从规划文本连到这个 input_text 节点，再用 `prompt_for` 连到生成节点。
 
 ```json
 {
@@ -325,16 +397,28 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 
 普通操作请求默认使用一次 `freezone_emit_canvas_command` 批量提交。只有用户明确要求刚好一个画布操作时，才使用具体单步写入工具。如果批量命令字段不清楚，先调用 `freezone_get_canvas_command_catalog`。如果没有可用写入工具，不要输出协议 payload；说明当前画布工具不可用。
 
-好的回复模式：
+无论使用批量工具还是单步工具，只有写入工具返回明确成功后，才能用产品语言说操作完成。如果本轮没有写入工具成功结果，禁止写"已创建"、"已提交成功"、"frontend write returned success"或等价表达。
 
-我会在这个节点后面添加一个视频节点并连上。
+**关键：不要向用户叙述你的内部推理和工具调用过程。** 获取 schema、查询 catalog、validate 校验、构建命令等步骤是内部行为，用户不需要看到。
 
-然后调用 `freezone_emit_canvas_command` 或合适的单步写入工具。前端结果返回后，用产品层语言总结结果。
+校验失败后的修正同样是内部行为。不要输出“已修正策略”“所有新建节点统一指定 client_id”“后续 source/target 使用这些 client_id”“某某节点已存在，ID 为...”这类回复。可修则直接修正并重试；不可修才用产品层语言说明没能完成。
+
+输出顺序：
+
+用户要求操作画布且无需澄清时，不要先说“好的”或“我会”。第一输出直接调用 `freezone_emit_canvas_command` 或合适的单步写入工具。
+
+前端结果返回后，用产品层语言总结结果，不暴露工具名、节点 id、坐标或协议细节。
+
+> 视频节点已创建。
+
+不要输出类似以下的回复：
+
+> 我将调用 freezone_get_node_create_schema 获取 videoNode 的 schema…已获取命令目录…验证通过…现在执行 create_node…
 
 如果没有引用节点：
 
-- 对于独立创建请求，比如“添加一个图片节点”，调用 `freezone_create_node` 创建刚好一个节点，或用 `freezone_emit_canvas_command` 批量创建。
-- 对于需要已有目标的操作，比如删除、更新、添加下游、打开工具，让用户先选中节点并点击“添加到聊天”。
+- 对于独立创建请求，比如”添加一个图片节点”，调用 `freezone_create_node` 创建刚好一个节点，或用 `freezone_emit_canvas_command` 批量创建。
+- 对于需要已有目标的操作，比如删除、更新、添加下游、打开工具，让用户先选中节点并点击”添加到聊天”。
 
 如果用户要求的事情需要 `action_catalog_json` 中未暴露的生成能力，说明当前画布聊天可以准备/打开相关节点 UI，但还不能静默完成该生成。
 
@@ -347,6 +431,6 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 - 不要发明节点 id、画布 id、项目 id 或后端任务 id。
 - 不要为了画布操作写文件或调用 shell 命令。
 - 不要绕过前端对破坏性操作的确认。
-- 不要仅仅因为调用了写入工具就说“已完成/已删除/已生成”。实际结果以前端执行和返回为准。
+- **不要仅仅因为调用了写入工具就说”已完成/已删除/已生成”。实际结果以前端执行和返回为准。** 工具尚未返回时，不要向用户报告成功状态。工具返回错误时，如实告知用户，不要假装成功。
 - 不要向用户暴露内部 API token、文件路径、插件名或实现细节。
 - 不要用 markdown media embed 或原始 `/static` URL 作为媒体展示的主要回答。

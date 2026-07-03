@@ -533,6 +533,19 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     );
 
     act(() => {
+      window.dispatchEvent(new CustomEvent("freezone/canvas-context-activity", {
+        detail: {
+          type: "canvas.context.activity",
+          turn_id: "turn-a",
+          bridge_key: "validation-a",
+          canvas_id: "canvas-a",
+          status: "done",
+          labels: ["命令校验"],
+          errors: [],
+          received_at: 1,
+          surface_order: 1,
+        },
+      }));
       window.dispatchEvent(new CustomEvent("freezone/canvas-command-approval", {
         detail: {
           canvasId: "canvas-a",
@@ -577,6 +590,287 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
         }),
       }),
     }));
+  });
+
+  it("does not restore a persisted canvas command approval after it was confirmed", async () => {
+    superChatMocks.messages = [
+      {
+        id: "user-a",
+        role: "user",
+        text: "加个视频节点",
+        displayName: "User",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+        raw: {
+          ui_events: [
+            {
+              id: 1,
+              type: "canvas_command_approval",
+              turn_id: "turn-a",
+              schema_version: "canvas_command_approval.v1",
+              canvas_id: "canvas-a",
+              bridge_key: "bridge-a",
+              envelopes: [
+                {
+                  schema_version: "canvas_chat_commands.v1",
+                  canvas_id: "canvas-a",
+                  commands: [
+                    {
+                      type: "create_node",
+                      node_type: "videoNode",
+                      data: { title: "视频输入" },
+                    },
+                  ],
+                },
+              ],
+              received_at: 2,
+            },
+          ],
+        },
+      } as ChatMessage,
+    ];
+
+    const { rerender } = render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+
+    await waitFor(() => expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument());
+
+    superChatMocks.messages = [
+      superChatMocks.messages[0],
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "已为你添加一个视频节点。",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+      },
+    ] as ChatMessage[];
+
+    rerender(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument());
+    expect(screen.getByText("已为你添加一个视频节点。")).toBeInTheDocument();
+  });
+
+  it("shows a canvas command approval even when the agent has no visible message yet", async () => {
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("freezone/canvas-context-activity", {
+        detail: {
+          type: "canvas.context.activity",
+          turn_id: "turn-a",
+          bridge_key: "validation-a",
+          canvas_id: "canvas-a",
+          status: "done",
+          labels: ["命令校验"],
+          errors: [],
+          received_at: 1,
+          surface_order: 1,
+        },
+      }));
+      window.dispatchEvent(new CustomEvent("freezone/canvas-command-approval", {
+        detail: {
+          canvasId: "canvas-a",
+          turnId: "turn-a",
+          bridgeKey: "bridge-a",
+          envelopes: [
+            {
+              schema_version: "canvas_chat_commands.v1",
+              commands: [
+                {
+                  type: "create_node",
+                  node_type: "videoNode",
+                  data: {},
+                },
+              ],
+            },
+          ],
+          receivedAt: 1,
+        },
+      }));
+    });
+
+    expect(await screen.findByText("已校验画布命令")).toBeInTheDocument();
+    expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认执行" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+    await waitFor(() => expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument());
+    expect(await screen.findByText("画布执行")).toBeInTheDocument();
+  });
+
+  it("restores a persisted canvas command approval when no assistant message exists yet", async () => {
+    superChatMocks.messages = [
+      {
+        id: "user-a",
+        role: "user",
+        text: "加个视频节点",
+        displayName: "User",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+        raw: {
+          ui_events: [
+            {
+              id: 1,
+              type: "canvas_command_approval",
+              turn_id: "turn-a",
+              schema_version: "canvas_command_approval.v1",
+              canvas_id: "canvas-a",
+              bridge_key: "bridge-a",
+              envelopes: [
+                {
+                  schema_version: "canvas_chat_commands.v1",
+                  canvas_id: "canvas-a",
+                  commands: [
+                    {
+                      type: "create_node",
+                      node_type: "videoNode",
+                      data: { title: "视频输入" },
+                    },
+                  ],
+                },
+              ],
+              received_at: 2,
+            },
+          ],
+        },
+      } as ChatMessage,
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "确认执行" })).toBeInTheDocument();
+  });
+
+  it("does not restore a persisted canvas command approval when a result already exists", async () => {
+    superChatMocks.messages = [
+      {
+        id: "user-a",
+        role: "user",
+        text: "加个视频节点",
+        displayName: "User",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+        raw: {
+          ui_events: [
+            {
+              id: 1,
+              type: "canvas_command_approval",
+              turn_id: "turn-a",
+              schema_version: "canvas_command_approval.v1",
+              canvas_id: "canvas-a",
+              bridge_key: "bridge-a",
+              envelopes: [
+                {
+                  schema_version: "canvas_chat_commands.v1",
+                  canvas_id: "canvas-a",
+                  commands: [
+                    {
+                      type: "create_node",
+                      node_type: "videoNode",
+                      data: { title: "视频输入" },
+                    },
+                  ],
+                },
+              ],
+              received_at: 2,
+            },
+            {
+              id: 2,
+              type: "canvas_command_result",
+              turn_id: "turn-a",
+              schema_version: "canvas_command_result.v1",
+              canvas_id: "canvas-a",
+              bridge_key: "bridge-a",
+              result: {
+                applied: 0,
+                openedUiActions: 0,
+                createdNodeIds: [],
+                errors: ["已取消画布操作"],
+                commandResults: [
+                  {
+                    commandIndex: -1,
+                    type: "validate",
+                    status: "error",
+                    label: "已取消",
+                    error: "已取消画布操作",
+                  },
+                ],
+              },
+              received_at: 3,
+              cancelled: true,
+            },
+          ],
+        },
+      } as ChatMessage,
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    await waitFor(() => expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument());
   });
 
   it("reports and persists cancelled canvas command approvals", async () => {

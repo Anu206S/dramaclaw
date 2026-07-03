@@ -79,6 +79,63 @@ describe("canvas command flow placement", () => {
     expect(items[0]).toMatchObject({ kind: "text", text: "正文前半段\n" });
   });
 
+  it("places unanchored canvas read activity before the assistant reply", () => {
+    const items = buildCanvasCommandFlowItemsForTest(
+      "你好！当前 Freezone 画布为空（0 个节点，0 条连线）。",
+      [],
+      [],
+      [
+        {
+          key: "context:summary",
+          turnId: "turn-a",
+          bridgeKey: "summary",
+          status: "done",
+          labels: ["画布摘要"],
+          errors: [],
+          surfaceOrder: 10,
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["context", "text"]);
+    expect(items[1]).toMatchObject({
+      kind: "text",
+      text: "你好！当前 Freezone 画布为空（0 个节点，0 条连线）。",
+    });
+  });
+
+  it("places unanchored execution feedback before assistant success text", () => {
+    const items = buildCanvasCommandFlowItemsForTest(
+      "已为你添加一个视频节点。\n\n已创建成功，ID 为 node-a。",
+      [],
+      [
+        {
+          key: "bridge:create-video",
+          applied: 1,
+          openedUiActions: 0,
+          errors: [],
+          commandResults: [
+            {
+              commandIndex: 0,
+              type: "create_node",
+              status: "success",
+              label: "创建节点",
+              createdNodeId: "node-a",
+            },
+          ],
+          surfaceOrder: 10,
+        },
+      ],
+      [],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["feedback", "text"]);
+    expect(items[1]).toMatchObject({
+      kind: "text",
+      text: "已为你添加一个视频节点。\n\n已创建成功，ID 为 node-a。",
+    });
+  });
+
   it("does not treat a cancelled canvas command as validation-only feedback", () => {
     expect(canvasCommandFeedbackIsValidationOnlyForTest({
       key: "bridge:cancelled",

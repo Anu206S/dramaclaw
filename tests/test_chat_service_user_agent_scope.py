@@ -40,6 +40,20 @@ def test_completion_notice_appends_without_replacing_existing_reply():
     assert notice in merged
 
 
+def test_canvas_context_tool_result_infers_missing_status():
+    payload = chat_routes.CanvasContextToolResultIn.model_validate(
+        {
+            "bridge_key": "bridge-a",
+            "tool_call_status": "completed",
+            "ok": True,
+            "responses": [],
+            "errors": [],
+        }
+    )
+
+    assert payload.canvas_context_status is None
+
+
 def test_infer_display_tool_call_recovers_sketch_display_promise():
     inferred = chat_service._infer_display_tool_call_from_text(
         "全部显示",
@@ -699,6 +713,11 @@ def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainl
     assert "command catalog" in prompt
     assert "node create schema" in prompt
     assert "link type catalog" in prompt
+    assert "MUST call a Freezone" in prompt
+    assert "first assistant output MUST be the Freezone write" in prompt
+    assert "Do not emit assistant prose" in prompt
+    assert "matching single-operation write tool" in prompt
+    assert "If no write tool succeeds" in prompt
     assert "Validate multi-step or edge-creating commands" in prompt
     assert "submit one validated Freezone canvas command batch" in prompt
     assert "do not write nodes step by step" in prompt
@@ -883,6 +902,30 @@ def test_freezone_history_uses_separate_project_chat_db(monkeypatch, tmp_path):
     assert chat_store.list_messages("admin", scope)[0]["content"] == "canvas"
     assert (state_root / "admin" / "project-a" / "chat.db").exists()
     assert (state_root / "admin" / "project-a" / "_chat" / "freezone" / "canvas-a" / "chat.db").exists()
+
+
+def test_chat_ui_events_attach_to_user_message_when_turn_has_no_assistant(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    scope = ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
+
+    chat_store.append_message("admin", scope, "user", "加个视频节点", turn_id="turn-a")
+    chat_store.append_ui_event(
+        "admin",
+        scope,
+        "turn-a",
+        {
+            "type": "canvas_command_approval",
+            "schema_version": "canvas_command_approval.v1",
+            "canvas_id": "canvas-a",
+            "bridge_key": "bridge-a",
+            "envelopes": [],
+        },
+    )
+
+    messages = chat_store.list_messages("admin", scope)
+
+    assert messages[0]["role"] == "user"
+    assert messages[0]["ui_events"][0]["type"] == "canvas_command_approval"
 
 
 def test_chat_scope_round_trips_freezone_canvas_payload() -> None:

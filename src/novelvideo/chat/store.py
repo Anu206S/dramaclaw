@@ -322,6 +322,8 @@ class ChatStore:
                         if messages[index].get("role") == "assistant":
                             target_index = index
                             break
+                    if target_index is None:
+                        target_index = user_index
             if target_index is None:
                 continue
             existing = messages[target_index].get("ui_events")

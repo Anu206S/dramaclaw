@@ -4072,6 +4072,20 @@ function canvasContextReadSemanticAnchorIndex(text: string, activity: CanvasCont
 function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasCommandSurfaceEvent): number {
   const anchorIndex = canvasCommandAnchorEndIndex(text, event.anchorTextPrefix);
   const semanticIndex = canvasCommandSemanticAnchorIndex(text, event);
+  if (
+    event.kind === "context" &&
+    event.anchorTextPrefix == null &&
+    semanticIndex == null
+  ) {
+    return 0;
+  }
+  if (
+    event.kind === "feedback" &&
+    event.anchorTextPrefix == null &&
+    event.feedback.applied + event.feedback.openedUiActions > 0
+  ) {
+    return 0;
+  }
   return semanticIndex != null && semanticIndex < anchorIndex ? semanticIndex : anchorIndex;
 }
 
@@ -4183,12 +4197,10 @@ function buildCanvasCommandFlowItems(
 
 export const buildCanvasCommandFlowItemsForTest = buildCanvasCommandFlowItems;
 
-function mergeCanvasCommandFeedbackSources(
-  persisted: CanvasCommandFeedback[] | undefined,
-  current: CanvasCommandFeedback[] | undefined,
-): CanvasCommandFeedback[] {
-  if ((!persisted || persisted.length === 0) && (!current || current.length === 0)) return [];
-  return dedupeCanvasCommandFeedbacks([...(persisted ?? []), ...(current ?? [])]);
+function mergeCanvasCommandFeedbackSources(...sources: Array<CanvasCommandFeedback[] | undefined>): CanvasCommandFeedback[] {
+  const items = sources.flatMap((source) => source ?? []);
+  if (items.length === 0) return [];
+  return dedupeCanvasCommandFeedbacks(items);
 }
 
 export const mergeCanvasCommandFeedbacksForTest = mergeCanvasCommandFeedbackSources;
@@ -4314,6 +4326,47 @@ function canvasCommandFeedbacksFromUiEvents(events: unknown[] | undefined): Canv
     );
   }
   return feedbacks;
+}
+
+function canvasCommandApprovalDetailsFromUiEvents(events: unknown[] | undefined): CanvasCommandApprovalEventDetail[] {
+  if (!events || events.length === 0) return [];
+  const approvals: CanvasCommandApprovalEventDetail[] = [];
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const value = event as Record<string, unknown>;
+    if (value.type !== "canvas_command_approval") continue;
+    if (!Array.isArray(value.envelopes)) continue;
+    const canvasId = typeof value.canvas_id === "string"
+      ? value.canvas_id
+      : typeof value.canvasId === "string"
+        ? value.canvasId
+        : null;
+    const turnId = typeof value.turn_id === "string"
+      ? value.turn_id
+      : typeof value.turnId === "string"
+        ? value.turnId
+        : null;
+    const bridgeKey = typeof value.bridge_key === "string"
+      ? value.bridge_key
+      : typeof value.bridgeKey === "string"
+        ? value.bridgeKey
+        : null;
+    const anchorTextPrefix = typeof value.anchor_text_prefix === "string"
+      ? value.anchor_text_prefix
+      : typeof value.anchorTextPrefix === "string"
+        ? value.anchorTextPrefix
+        : null;
+    approvals.push({
+      canvasId,
+      turnId,
+      anchorMessageId: typeof value.anchorMessageId === "string" ? value.anchorMessageId : null,
+      anchorTextPrefix,
+      bridgeKey,
+      envelopes: value.envelopes as CanvasChatCommandEnvelope[],
+      receivedAt: canvasSurfaceEventOrder(value, approvals.length),
+    });
+  }
+  return approvals;
 }
 
 function messageUiEvents(message: ChatMessage): unknown[] | undefined {
@@ -4459,11 +4512,11 @@ function canvasCommandApprovalCanRepeat(approval: PendingCanvasCommandApproval):
   );
 }
 
-function mergePendingCanvasCommandApproval(
-  current: PendingCanvasCommandApproval[],
+function pendingCanvasCommandApprovalMatches(
+  item: PendingCanvasCommandApproval,
   approval: PendingCanvasCommandApproval,
-): PendingCanvasCommandApproval[] {
-  const index = current.findIndex((item) =>
+): boolean {
+  return (
     item.key === approval.key ||
     (
       Boolean(item.bridgeKey) &&
@@ -4476,8 +4529,15 @@ function mergePendingCanvasCommandApproval(
       Boolean(approval.turnId) &&
       item.turnId === approval.turnId &&
       canvasCommandApprovalEnvelopesMatch(item.envelopes, approval.envelopes)
-    ),
+    )
   );
+}
+
+function mergePendingCanvasCommandApproval(
+  current: PendingCanvasCommandApproval[],
+  approval: PendingCanvasCommandApproval,
+): PendingCanvasCommandApproval[] {
+  const index = current.findIndex((item) => pendingCanvasCommandApprovalMatches(item, approval));
   if (index < 0) return [...current, approval];
   const next = [...current];
   const previous = next[index];
@@ -4561,10 +4621,25 @@ function removeCompletedPendingCanvasCommandApprovals(
   if (completedKeys.size === 0) return current;
   const next = current.filter((approval) => {
     if (completedKeys.has(approval.key)) return false;
-    if (approval.bridgeKey && !approval.turnId && completedKeys.has(`bridge:${approval.bridgeKey}`)) return false;
+    if (approval.bridgeKey && completedKeys.has(`bridge:${approval.bridgeKey}`)) return false;
     return true;
   });
   return next.length === current.length ? current : next;
+}
+
+function canvasCommandApprovalHasCompletedFeedback(
+  approval: PendingCanvasCommandApproval,
+  feedbackByMessageId: Record<string, CanvasCommandFeedback[]>,
+  persistedFeedbackByMessageId: Record<string, CanvasCommandFeedback[]>,
+): boolean {
+  const completedKeys = new Set<string>();
+  for (const records of [feedbackByMessageId, persistedFeedbackByMessageId]) {
+    for (const feedbacks of Object.values(records)) {
+      for (const feedback of feedbacks) completedKeys.add(feedback.key);
+    }
+  }
+  if (completedKeys.has(approval.key)) return true;
+  return Boolean(approval.bridgeKey && completedKeys.has(`bridge:${approval.bridgeKey}`));
 }
 
 type SuperChatPanelVariant = "default" | "freezone";
@@ -4645,6 +4720,7 @@ export function SuperChatPanel({
   const [executingCanvasCommandApprovalIds, setExecutingCanvasCommandApprovalIds] = useState<Set<string>>(() => new Set());
   const executingCanvasCommandApprovalIdsRef = useRef<Set<string>>(new Set());
   const appliedCanvasCommandApprovalKeysRef = useRef<Set<string>>(new Set());
+  const resolvedCanvasCommandApprovalKeysRef = useRef<Set<string>>(new Set());
   const [canvasCommandExecutionMode, setCanvasCommandExecutionMode] = useState<CanvasCommandExecutionMode>(() => loadCanvasCommandExecutionMode());
   const [canvasCommandModeMenuOpen, setCanvasCommandModeMenuOpen] = useState(false);
   const [canvasCommandModeMenuPosition, setCanvasCommandModeMenuPosition] = useState<{
@@ -4887,6 +4963,8 @@ export function SuperChatPanel({
   const handleCanvasCommandApproval = useCallback((detail: CanvasCommandApprovalEventDetail) => {
     const approval = buildApprovalFromDetail(detail);
     if (!approval) return false;
+    const resolvedKeys = resolvedCanvasCommandApprovalKeysRef.current;
+    if (resolvedKeys.has(approval.key) || resolvedKeys.has(canvasCommandApprovalApplyKey(approval))) return true;
     setPendingCanvasCommandApprovals((current) => mergePendingCanvasCommandApproval(current, approval));
     return true;
   }, [buildApprovalFromDetail]);
@@ -4900,6 +4978,38 @@ export function SuperChatPanel({
     window.addEventListener(FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT, handleEvent);
     return () => window.removeEventListener(FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT, handleEvent);
   }, [handleCanvasCommandApproval]);
+
+  useEffect(() => {
+    if (variant !== "freezone") return;
+    setPendingCanvasCommandApprovals((current) => {
+      let next = current;
+      for (const message of chat.messages) {
+        for (const detail of canvasCommandApprovalDetailsFromUiEvents(messageUiEvents(message))) {
+          const approval = buildApprovalFromDetail({
+            ...detail,
+            turnId: detail.turnId ?? message.turnId ?? null,
+          });
+          if (!approval) continue;
+          const resolvedKeys = resolvedCanvasCommandApprovalKeysRef.current;
+          if (resolvedKeys.has(approval.key) || resolvedKeys.has(canvasCommandApprovalApplyKey(approval))) continue;
+          if (canvasCommandApprovalHasCompletedFeedback(
+            approval,
+            canvasCommandFeedbackByMessageId,
+            persistedCanvasCommandFeedbackByMessageId,
+          )) continue;
+          if (next.some((item) => pendingCanvasCommandApprovalMatches(item, approval))) continue;
+          next = mergePendingCanvasCommandApproval(next, approval);
+        }
+      }
+      return next;
+    });
+  }, [
+    buildApprovalFromDetail,
+    canvasCommandFeedbackByMessageId,
+    chat.messages,
+    persistedCanvasCommandFeedbackByMessageId,
+    variant,
+  ]);
 
   const handleCanvasCommandResult = useCallback((detail: CanvasCommandResultEventDetail) => {
     if (variant === "freezone" && detail.canvasId && effectiveFreezoneCanvasId && detail.canvasId !== effectiveFreezoneCanvasId) {
@@ -5087,6 +5197,13 @@ export function SuperChatPanel({
 
   const handleApplyCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval) => {
     if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
+    resolvedCanvasCommandApprovalKeysRef.current.add(approval.key);
+    resolvedCanvasCommandApprovalKeysRef.current.add(canvasCommandApprovalApplyKey(approval));
+    if (resolvedCanvasCommandApprovalKeysRef.current.size > 200) {
+      resolvedCanvasCommandApprovalKeysRef.current = new Set(
+        [...resolvedCanvasCommandApprovalKeysRef.current].slice(-100),
+      );
+    }
     executingCanvasCommandApprovalIdsRef.current.add(approval.id);
     setExecutingCanvasCommandApprovalIds(new Set(executingCanvasCommandApprovalIdsRef.current));
     void (async () => {
@@ -5180,6 +5297,13 @@ export function SuperChatPanel({
 
   const handleCancelCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval) => {
     if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
+    resolvedCanvasCommandApprovalKeysRef.current.add(approval.key);
+    resolvedCanvasCommandApprovalKeysRef.current.add(canvasCommandApprovalApplyKey(approval));
+    if (resolvedCanvasCommandApprovalKeysRef.current.size > 200) {
+      resolvedCanvasCommandApprovalKeysRef.current = new Set(
+        [...resolvedCanvasCommandApprovalKeysRef.current].slice(-100),
+      );
+    }
     const receivedAt = Date.now();
     const result: CanvasChatCommandApplyResult = {
       applied: 0,
@@ -5253,6 +5377,60 @@ export function SuperChatPanel({
         : activeMessages,
     [activeMessages, searchQuery],
   );
+  const orphanCanvasCommandSurfaces = useMemo(() => {
+    type OrphanSurface = { id: string; turnId: string | null };
+    const surfaces = new Map<string, OrphanSurface>();
+    const hasVisibleAssistantSurface = (id: string, turnId: string | null) =>
+      visibleMessages.some(
+        (message) =>
+          message.role !== "user" &&
+          (message.id === id || (turnId && message.turnId === turnId)),
+      );
+    const addSurface = (id: string | null | undefined, turnId: string | null | undefined) => {
+      const resolvedTurnId = turnId ?? null;
+      const resolvedId = id || (resolvedTurnId ? `assistant-${resolvedTurnId}` : null);
+      if (!resolvedId) return;
+      if (hasVisibleAssistantSurface(resolvedId, resolvedTurnId)) return;
+      surfaces.set(resolvedId, { id: resolvedId, turnId: resolvedTurnId });
+    };
+    for (const approval of pendingCanvasCommandApprovals) addSurface(approval.messageId, approval.turnId);
+    const addEventRecordSurfaces = (records: Record<string, unknown>) => {
+      for (const key of Object.keys(records)) {
+        if (key.startsWith("assistant-")) {
+          addSurface(key, key.slice("assistant-".length) || null);
+        } else if (key.startsWith("turn-")) {
+          addSurface(`assistant-${key}`, key);
+        }
+      }
+    };
+    addEventRecordSurfaces(canvasCommandFeedbackByMessageId);
+    addEventRecordSurfaces(persistedCanvasCommandFeedbackByMessageId);
+    addEventRecordSurfaces(canvasContextActivitiesByMessageId);
+    return [...surfaces.values()].filter((surface) => {
+      const approvals = pendingCanvasCommandApprovals.filter(
+        (approval) =>
+          approval.messageId === surface.id ||
+          (surface.turnId && approval.turnId === surface.turnId),
+      );
+      const feedbacks = mergeCanvasCommandFeedbackSources(
+        canvasCommandFeedbackByMessageId[surface.id],
+        surface.turnId ? canvasCommandFeedbackByMessageId[surface.turnId] : undefined,
+        persistedCanvasCommandFeedbackByMessageId[surface.id],
+        surface.turnId ? persistedCanvasCommandFeedbackByMessageId[surface.turnId] : undefined,
+      );
+      const activities = mergeCanvasContextActivitySources(
+        canvasContextActivitiesByMessageId[surface.id],
+        surface.turnId ? canvasContextActivitiesByMessageId[surface.turnId] : undefined,
+      );
+      return approvals.length > 0 || feedbacks.length > 0 || activities.length > 0;
+    });
+  }, [
+    canvasCommandFeedbackByMessageId,
+    canvasContextActivitiesByMessageId,
+    pendingCanvasCommandApprovals,
+    persistedCanvasCommandFeedbackByMessageId,
+    visibleMessages,
+  ]);
   const activeMessageCount = activeMessages.length;
   const lastActiveMessageId = activeMessages[activeMessages.length - 1]?.id ?? "";
   const deferStructuredRender =
@@ -6066,7 +6244,7 @@ export function SuperChatPanel({
                   <div className="text-xs leading-5">{t("aiAssistant.syncingHistoryDescription")}</div>
                 </div>
               </div>
-            ) : chat.messages.length === 0 && !chat.streamText && !showWaitingIndicator ? (
+            ) : chat.messages.length === 0 && !chat.streamText && !showWaitingIndicator && orphanCanvasCommandSurfaces.length === 0 ? (
               <div className={cn("mx-auto flex h-full w-full max-w-[760px] items-center justify-center text-center", isFreezoneLayout && "max-w-none")}>
                 <div className="max-w-64 text-sm text-muted-foreground">
                   <div className="mb-2 font-medium text-foreground">{t("aiAssistant.emptyTitle")}</div>
@@ -6092,19 +6270,23 @@ export function SuperChatPanel({
                       deferStructuredRender={deferStructuredRender && isCurrentStreamingAssistantMessage(message)}
                       streaming={isStreamingAssistantMessage(message)}
                       canvasCommandApprovals={pendingCanvasCommandApprovals.filter(
-                        (approval) => approval.messageId === message.id || (approval.turnId && approval.turnId === message.turnId),
+                        (approval) =>
+                          approval.messageId === message.id ||
+                          (message.role !== "user" && approval.turnId && approval.turnId === message.turnId),
                       )}
                       canvasCommandFeedbacks={mergeCanvasCommandFeedbackSources(
                         canvasCommandFeedbacksFromUiEvents(messageUiEvents(message)),
                         mergeCanvasCommandFeedbackSources(
                           canvasCommandFeedbackByMessageId[message.id],
                           message.turnId ? canvasCommandFeedbackByMessageId[message.turnId] : undefined,
+                          message.turnId ? canvasCommandFeedbackByMessageId[`assistant-${message.turnId}`] : undefined,
                         ),
                       )}
                       canvasContextActivities={mergeCanvasContextActivitySources(
                         canvasContextActivitiesFromUiEvents(messageUiEvents(message)),
                         canvasContextActivitiesByMessageId[message.id],
                         message.turnId ? canvasContextActivitiesByMessageId[message.turnId] : undefined,
+                        message.turnId ? canvasContextActivitiesByMessageId[`assistant-${message.turnId}`] : undefined,
                       )}
                       executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
                       onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
@@ -6130,6 +6312,44 @@ export function SuperChatPanel({
                     streaming={chat.busy}
                   />
                 )}
+                {orphanCanvasCommandSurfaces.map((surface) => (
+                  <MessageBubble
+                    key={`orphan-canvas-surface:${surface.id}`}
+                    message={{
+                      id: surface.id,
+                      role: "assistant",
+                      text: "",
+                      displayName: "Agent",
+                      timestamp: Date.now(),
+                      turnId: surface.turnId ?? undefined,
+                    }}
+                    variant={variant}
+                    onOpenDetail={setDetailMessage}
+                    onOpenMedia={setMediaDetail}
+                    pinned={false}
+                    onDelete={() => undefined}
+                    onTogglePin={() => undefined}
+                    streaming={chat.busy}
+                    canvasCommandApprovals={pendingCanvasCommandApprovals.filter(
+                      (approval) =>
+                        approval.messageId === surface.id ||
+                        (surface.turnId && approval.turnId === surface.turnId),
+                    )}
+                    canvasCommandFeedbacks={mergeCanvasCommandFeedbackSources(
+                      canvasCommandFeedbackByMessageId[surface.id],
+                      surface.turnId ? canvasCommandFeedbackByMessageId[surface.turnId] : undefined,
+                      persistedCanvasCommandFeedbackByMessageId[surface.id],
+                      surface.turnId ? persistedCanvasCommandFeedbackByMessageId[surface.turnId] : undefined,
+                    )}
+                    canvasContextActivities={mergeCanvasContextActivitySources(
+                      canvasContextActivitiesByMessageId[surface.id],
+                      surface.turnId ? canvasContextActivitiesByMessageId[surface.turnId] : undefined,
+                    )}
+                    executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
+                    onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
+                    onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
+                  />
+                ))}
                 {thinkingCanvasContextActivity && (
                   <MessageBubble
                     message={{
