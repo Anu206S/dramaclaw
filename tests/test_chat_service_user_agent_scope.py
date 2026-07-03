@@ -695,7 +695,11 @@ def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainl
     )
 
     assert "creative ideation" in prompt
-    assert "draft a canvas framework" in prompt
+    assert "working Freezone canvas material" in prompt
+    assert "command catalog" in prompt
+    assert "node create schema" in prompt
+    assert "link type catalog" in prompt
+    assert "Validate multi-step or edge-creating commands" in prompt
     assert "Freezone canvas tools" in prompt
     assert "generate complete short videos" in prompt
     assert "video, audio, and composition nodes" in prompt

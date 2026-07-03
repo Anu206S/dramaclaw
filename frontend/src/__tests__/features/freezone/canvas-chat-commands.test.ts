@@ -3167,7 +3167,7 @@ describe("canvas chat commands", () => {
     );
   });
 
-  it("keeps canvas routing lightweight and adds summary only when requested", () => {
+  it("keeps canvas routing lightweight and includes summary for ordinary Freezone turns", () => {
     const store = useCanvasStore.getState();
     const nodeId = store.addNode(
       CANVAS_NODE_TYPES.imageGen,
@@ -3203,7 +3203,8 @@ describe("canvas chat commands", () => {
     expect(withSummary).toContain("[SUPERTALE_CANVAS_ONTOLOGY_SUMMARY]");
     expect(withSummary).toContain("canvas_ontology_summary.v1");
     expect(shouldIncludeCanvasSummary("基于当前画布搭一个流程")).toBe(true);
-    expect(shouldIncludeCanvasSummary("加一个图片节点")).toBe(false);
+    expect(shouldIncludeCanvasSummary("加一个图片节点")).toBe(true);
+    expect(shouldIncludeCanvasSummary("我想做个公益短片没思路")).toBe(true);
   });
 
   it("keeps text node references free of legacy semantic guidance", () => {

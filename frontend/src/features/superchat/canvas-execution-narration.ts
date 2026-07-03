@@ -1,10 +1,7 @@
-import { FREEZONE_CANVAS_WRITE_TOOL_NAMES } from "@/features/freezone/canvasCommandTools";
-
 const CANVAS_EXECUTION_PROTOCOL_MARKERS = [
   "canvas_chat_commands.v1",
   "canvas_context_request.v1",
   "canvas_command_emitted",
-  ...FREEZONE_CANVAS_WRITE_TOOL_NAMES,
 ];
 
 export function looksLikeCanvasExecutionNarration(text: string): boolean {

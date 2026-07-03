@@ -7,8 +7,15 @@ import {
   mergeCanvasCommandFeedbacksForTest,
   mergePendingCanvasCommandApprovalForTest,
 } from "@/features/superchat/superchat-panel";
+import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-execution-narration";
 
 describe("canvas command flow placement", () => {
+  it("keeps user-facing assistant text visible when it only mentions a canvas tool name", () => {
+    expect(looksLikeCanvasExecutionNarration(
+      "如需进一步操作，可以通过 freezone_run_node_action 调用配置动作。",
+    )).toBe(false);
+  });
+
   it("keeps an event after the final assistant text when its saved anchor is missing", () => {
     const items = buildCanvasCommandFlowItemsForTest(
       "前置说明\n最终回复",

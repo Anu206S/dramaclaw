@@ -93,19 +93,6 @@ _DRAMACLAW_WRITE_TOOLS = {
     "dramaclaw_save_freezone_canvas",
     "dramaclaw_delete_freezone_canvas",
     "dramaclaw_create_freezone_canvas_from_preset",
-    "freezone_emit_canvas_command",
-    "freezone_create_node",
-    "freezone_add_next_node",
-    "freezone_update_node_data",
-    "freezone_create_edge",
-    "freezone_delete_nodes",
-    "freezone_delete_edges",
-    "freezone_move_nodes",
-    "freezone_layout_nodes",
-    "freezone_group_nodes",
-    "freezone_select_nodes",
-    "freezone_open_mainline_projection",
-    "freezone_run_node_action",
 }
 
 _FREEZONE_CANVAS_WRITE_TOOLS = {
@@ -193,7 +180,7 @@ def _is_dramaclaw_write_tool(name: object) -> bool:
 
 
 def _should_stop_after_write_tool(first_write_tool: str | None, next_tool_name: object) -> bool:
-    return first_write_tool is not None and _is_dramaclaw_write_tool(next_tool_name)
+    return _is_dramaclaw_write_tool(first_write_tool) and _is_dramaclaw_write_tool(next_tool_name)
 
 
 def _is_freezone_canvas_write_tool(name: object) -> bool:
