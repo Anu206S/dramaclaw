@@ -7,6 +7,7 @@ import {
   DEFAULT_FREEZONE_AGENT_ID,
   loadFreezoneCanvasAgents,
   selectFreezoneCanvasAgent,
+  shouldConnectFreezoneCanvasAgent,
   updateFreezoneCanvasAgentFromUserMessage,
 } from "@/features/freezone/canvasAgents";
 
@@ -81,5 +82,32 @@ describe("Freezone canvas agents", () => {
       name: "我想做个广告短片",
       lastActiveAt: 3000,
     });
+  });
+
+  it("keeps creation timestamps stable when conversations receive new messages", () => {
+    loadFreezoneCanvasAgents("project-a", "canvas-a", 1000);
+    addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
+    addFreezoneCanvasAgent("project-a", "canvas-a", 3000);
+
+    const afterOldConversationMessage = updateFreezoneCanvasAgentFromUserMessage(
+      "project-a",
+      "canvas-a",
+      "main",
+      "你好",
+      4000,
+    );
+
+    expect(afterOldConversationMessage.agents.map((agent) => [agent.id, agent.createdAt])).toEqual([
+      ["main", 1000],
+      ["agent-2", 2000],
+      ["agent-3", 3000],
+    ]);
+    expect(afterOldConversationMessage.agents.find((agent) => agent.id === "main")?.lastActiveAt).toBe(4000);
+  });
+
+  it("keeps websocket connections only for active or busy agents", () => {
+    expect(shouldConnectFreezoneCanvasAgent({ active: true, busy: false })).toBe(true);
+    expect(shouldConnectFreezoneCanvasAgent({ active: false, busy: true })).toBe(true);
+    expect(shouldConnectFreezoneCanvasAgent({ active: false, busy: false })).toBe(false);
   });
 });

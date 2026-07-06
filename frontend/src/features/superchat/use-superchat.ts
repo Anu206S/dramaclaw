@@ -804,6 +804,7 @@ export function useSuperChat({
   canvasId,
   freezoneCanvasId,
   freezoneAgentId,
+  connectionEnabled = true,
 }: {
   project?: string;
   displayName: string;
@@ -811,6 +812,7 @@ export function useSuperChat({
   canvasId?: string | null;
   freezoneCanvasId?: string | null;
   freezoneAgentId?: string | null;
+  connectionEnabled?: boolean;
 }) {
   const normalizedFreezoneCanvasId = canvasId ?? freezoneCanvasId ?? null;
   const desiredScope = useMemo(
@@ -1338,12 +1340,16 @@ export function useSuperChat({
   }, [scopeKey]);
 
   useEffect(() => {
+    if (!connectionEnabled) {
+      disconnect();
+      return;
+    }
     const connectTimer = window.setTimeout(connect, 50);
     return () => {
       window.clearTimeout(connectTimer);
       disconnect();
     };
-  }, [connect, disconnect]);
+  }, [connect, connectionEnabled, disconnect]);
 
   const send = useCallback((text: string, attachments: ChatAttachment[] = [], transportText?: string) => {
     const trimmed = text.trim();

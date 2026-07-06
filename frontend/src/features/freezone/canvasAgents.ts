@@ -15,6 +15,16 @@ export type FreezoneCanvasAgentState = {
   activeAgentId: string;
 };
 
+export function shouldConnectFreezoneCanvasAgent({
+  active,
+  busy,
+}: {
+  active: boolean;
+  busy: boolean;
+}): boolean {
+  return active || busy;
+}
+
 const STORAGE_PREFIX = "freezone:canvas-agents:v1:";
 const GENERATED_AGENT_NAME_RE = /^(Agent(?: \d+)?|新对话)$/;
 const MAX_AGENT_TITLE_LENGTH = 32;

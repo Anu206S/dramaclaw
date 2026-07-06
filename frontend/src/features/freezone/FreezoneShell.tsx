@@ -105,6 +105,7 @@ import {
   addFreezoneCanvasAgent,
   loadFreezoneCanvasAgents,
   selectFreezoneCanvasAgent,
+  shouldConnectFreezoneCanvasAgent,
   updateFreezoneCanvasAgentFromUserMessage,
   type FreezoneCanvasAgentState,
 } from "@/features/freezone/canvasAgents";
@@ -1690,6 +1691,7 @@ function FreezoneChatDock({
   const [agentState, setAgentState] = useState<FreezoneCanvasAgentState>(() =>
     loadFreezoneCanvasAgents(projectId, canvasId),
   );
+  const [busyAgentIds, setBusyAgentIds] = useState<Set<string>>(() => new Set());
   const activeAgentId = agentState.activeAgentId;
 
   useEffect(() => {
@@ -1711,6 +1713,28 @@ function FreezoneChatDock({
   const handleAgentUserMessage = useCallback((agentId: string, message: string, timestamp: number) => {
     setAgentState(updateFreezoneCanvasAgentFromUserMessage(projectId, canvasId, agentId, message, timestamp));
   }, [canvasId, projectId]);
+
+  const handleAgentConnectionState = useCallback((agentId: string, state: { busy: boolean }) => {
+    setBusyAgentIds((current) => {
+      const hasAgent = current.has(agentId);
+      if (state.busy === hasAgent) return current;
+      const next = new Set(current);
+      if (state.busy) {
+        next.add(agentId);
+      } else {
+        next.delete(agentId);
+      }
+      return next;
+    });
+  }, []);
+
+  useEffect(() => {
+    const validAgentIds = new Set(agentState.agents.map((agent) => agent.id));
+    setBusyAgentIds((current) => {
+      const next = new Set([...current].filter((agentId) => validAgentIds.has(agentId)));
+      return next.size === current.size ? current : next;
+    });
+  }, [agentState.agents]);
 
   const startPaneResize = useCallback((
     pane: "chat" | "history",
@@ -1838,6 +1862,8 @@ function FreezoneChatDock({
   );
   const agentPanels = agentState.agents.map((agent) => {
     const active = agent.id === activeAgentId;
+    const busy = busyAgentIds.has(agent.id);
+    const connectionEnabled = shouldConnectFreezoneCanvasAgent({ active, busy });
     return (
       <div
         key={`${projectId}:${canvasId}:${agent.id}`}
@@ -1848,6 +1874,7 @@ function FreezoneChatDock({
           variant="freezone"
           freezoneCanvasId={canvasId}
           freezoneAgentId={agent.id}
+          connectionEnabled={connectionEnabled}
           currentCanvasMetadata={currentCanvasMetadata}
           currentCanvasSelection={currentCanvasSelection}
           currentCanvasOntologyContext={currentCanvasOntologyContext}
@@ -1856,6 +1883,7 @@ function FreezoneChatDock({
           onRequestClose={() => onOpenChange(false)}
           freezoneHeaderActions={agentHeaderActions}
           onFreezoneUserMessage={(message, timestamp) => handleAgentUserMessage(agent.id, message, timestamp)}
+          onConnectionStateChange={(state) => handleAgentConnectionState(agent.id, state)}
         />
       </div>
     );
@@ -2002,7 +2030,7 @@ function FreezoneAgentHistoryPanel({
       if (!normalizedSearch) return true;
       return agent.name.toLowerCase().includes(normalizedSearch) || agent.id.toLowerCase().includes(normalizedSearch);
     })
-    .sort((left, right) => right.lastActiveAt - left.lastActiveAt);
+    .sort((left, right) => right.createdAt - left.createdAt);
 
   return (
     <div className="flex h-full min-h-0 w-full flex-col bg-zinc-950/35 p-3">
@@ -2041,7 +2069,7 @@ function FreezoneAgentHistoryPanel({
                 <span className="min-w-0 truncate text-sm font-medium">{agent.name}</span>
               </span>
               <span className="ml-4 mt-0.5 text-[11px] leading-none text-zinc-500">
-                {formatAgentHistoryTime(agent.lastActiveAt)}
+                {formatAgentHistoryTime(agent.createdAt)}
               </span>
             </button>
           );
