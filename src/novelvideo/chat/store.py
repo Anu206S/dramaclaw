@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sqlite3
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -70,6 +71,7 @@ class ChatScope:
     id: str | None = None
     surface: str | None = None
     canvas_id: str | None = None
+    agent_id: str | None = None
 
     @classmethod
     def from_payload(cls, payload: dict[str, Any] | None) -> "ChatScope":
@@ -83,10 +85,13 @@ class ChatScope:
         surface = str(raw_surface).strip() if raw_surface is not None else None
         raw_canvas_id = payload.get("canvasId", payload.get("canvas_id"))
         canvas_id = str(raw_canvas_id).strip() if raw_canvas_id is not None else None
+        raw_agent_id = payload.get("agentId", payload.get("agent_id"))
+        agent_id = str(raw_agent_id).strip() if raw_agent_id is not None else None
         if kind == "home":
             scope_id = None
             surface = None
             canvas_id = None
+            agent_id = None
         if kind != "home" and not scope_id:
             raise ValueError(f"scope id is required for {kind}")
         if kind == "project":
@@ -95,10 +100,16 @@ class ChatScope:
                 raise ValueError(f"unsupported project chat surface: {surface}")
             if surface != "freezone":
                 canvas_id = None
+                agent_id = None
+            else:
+                agent_id = agent_id or "main"
+                if not re.fullmatch(r"[A-Za-z0-9_-]+", agent_id):
+                    raise ValueError("unsupported freezone agent id")
         else:
             surface = None
             canvas_id = None
-        return cls(kind=kind, id=scope_id, surface=surface, canvas_id=canvas_id)
+            agent_id = None
+        return cls(kind=kind, id=scope_id, surface=surface, canvas_id=canvas_id, agent_id=agent_id)
 
     def to_dict(self) -> dict[str, str | None]:
         data: dict[str, str | None] = {"kind": self.kind, "id": self.id}
@@ -106,6 +117,8 @@ class ChatScope:
             data["surface"] = self.surface
         if self.canvas_id:
             data["canvasId"] = self.canvas_id
+        if self.agent_id:
+            data["agentId"] = self.agent_id
         return data
 
 
@@ -118,6 +131,7 @@ class ChatStore:
                 return _state_root() / username / str(scope.id) / "chat.db"
             surface = scope.surface or "director"
             if surface == "freezone" and scope.canvas_id:
+                agent_id = scope.agent_id or "main"
                 return (
                     _state_root()
                     / username
@@ -125,6 +139,8 @@ class ChatStore:
                     / "_chat"
                     / surface
                     / str(scope.canvas_id)
+                    / "agents"
+                    / agent_id
                     / "chat.db"
                 )
             return _state_root() / username / str(scope.id) / "_chat" / surface / "chat.db"
@@ -132,8 +148,30 @@ class ChatStore:
             return _state_root() / username / "_freezone" / str(scope.id) / "chat.db"
         return _state_root() / username / f"_{scope.kind}" / str(scope.id) / "chat.db"
 
-    def connect(self, username: str, scope: ChatScope) -> sqlite3.Connection:
+    def _legacy_freezone_canvas_db_for(self, username: str, scope: ChatScope) -> Path | None:
+        if scope.kind != "project" or scope.surface != "freezone" or not scope.canvas_id:
+            return None
+        if scope.agent_id not in {None, "", "main"}:
+            return None
+        return (
+            _state_root()
+            / username
+            / str(scope.id)
+            / "_chat"
+            / "freezone"
+            / str(scope.canvas_id)
+            / "chat.db"
+        )
+
+    def read_db_for(self, username: str, scope: ChatScope) -> Path:
         db_path = self.db_for(username, scope)
+        legacy_db_path = self._legacy_freezone_canvas_db_for(username, scope)
+        if legacy_db_path is not None and not db_path.exists() and legacy_db_path.exists():
+            return legacy_db_path
+        return db_path
+
+    def connect(self, username: str, scope: ChatScope, *, db_path: Path | None = None) -> sqlite3.Connection:
+        db_path = db_path or self.db_for(username, scope)
         db_path.parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(db_path)
         conn.row_factory = sqlite3.Row
@@ -364,7 +402,7 @@ class ChatStore:
         *,
         limit: int = 50,
     ) -> list[dict[str, Any]]:
-        conn = self.connect(username, scope)
+        conn = self.connect(username, scope, db_path=self.read_db_for(username, scope))
         try:
             rows = conn.execute(
                 """
@@ -392,6 +430,8 @@ class ChatStore:
                 raw_content = content
                 content = _strip_replayed_assistant_prefix(content, previous_assistants)
                 previous_assistants.append(raw_content)
+            else:
+                previous_assistants = []
             try:
                 metadata = json.loads(row["metadata_json"] or "{}")
             except json.JSONDecodeError:

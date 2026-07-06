@@ -213,8 +213,43 @@ describe("Freezone chat scope", () => {
       surface: "freezone",
       canvasId: "canvas-a",
     });
-    expect(scopeSessionKeyForTest(canvasA)).toBe("supertale:project:project-a:freezone:canvas-a");
-    expect(scopeSessionKeyForTest(canvasB)).toBe("supertale:project:project-a:freezone:canvas-b");
+    expect(scopeSessionKeyForTest(canvasA)).toBe(
+      "supertale:project:project-a:freezone:canvas-a:agent:main",
+    );
+    expect(scopeSessionKeyForTest(canvasB)).toBe(
+      "supertale:project:project-a:freezone:canvas-b:agent:main",
+    );
+  });
+
+  it("keeps different Freezone agents on the same canvas in separate local session buckets", () => {
+    const agentA = scopeForProjectForTest("project-a", "freezone", "canvas-a", "main");
+    const agentB = scopeForProjectForTest("project-a", "freezone", "canvas-a", "agent-2");
+
+    expect(agentA).toMatchObject({
+      kind: "project",
+      id: "project-a",
+      surface: "freezone",
+      canvasId: "canvas-a",
+      agentId: "main",
+    });
+    expect(scopeSessionKeyForTest(agentA)).toBe(
+      "supertale:project:project-a:freezone:canvas-a:agent:main",
+    );
+    expect(scopeSessionKeyForTest(agentB)).toBe(
+      "supertale:project:project-a:freezone:canvas-a:agent:agent-2",
+    );
+  });
+
+  it("does not let agent ids affect director chat scopes", () => {
+    const director = scopeForProjectForTest("project-a", "director", null, "agent-2");
+
+    expect(director).toEqual({
+      kind: "project",
+      id: "project-a",
+      surface: "director",
+      canvasId: null,
+    });
+    expect(scopeSessionKeyForTest(director)).toBe("supertale:project:project-a:director");
   });
 });
 

@@ -89,15 +89,18 @@ function scopeForProject(
   project?: string,
   surface: ProjectChatSurface = "director",
   canvasId?: string | null,
+  agentId?: string | null,
 ): ChatScope {
   const name = project?.trim();
   if (name) {
     const normalizedCanvasId = canvasId?.trim() || null;
+    const normalizedAgentId = surface === "freezone" ? (agentId?.trim() || "main") : null;
     return {
       kind: "project",
       id: name,
       surface,
       canvasId: surface === "freezone" ? normalizedCanvasId : null,
+      ...(surface === "freezone" ? { agentId: normalizedAgentId } : {}),
     };
   }
   return { kind: "home", id: null };
@@ -107,7 +110,11 @@ function scopeSessionKey(scope: ChatScope): string {
   if (scope.kind === "project" && scope.id) {
     const surface = scope.surface || "director";
     const canvasSuffix = surface === "freezone" && scope.canvasId ? `:${scope.canvasId}` : "";
-    return `supertale:project:${scope.id}:${surface}${canvasSuffix}`;
+    const agentSuffix =
+      surface === "freezone"
+        ? `:agent:${scope.agentId?.trim() || "main"}`
+        : "";
+    return `supertale:project:${scope.id}:${surface}${canvasSuffix}${agentSuffix}`;
   }
   if (scope.kind === "freezone" && scope.id) return `supertale:freezone:${scope.id}:main`;
   return "supertale:home:main";
@@ -118,6 +125,28 @@ export const scopeSessionKeyForTest = scopeSessionKey;
 
 function messageCacheKey(scopeKey: string): string {
   return `${MESSAGE_CACHE_PREFIX}${scopeKey}`;
+}
+
+function frameScope(frame: ServerFrame): ChatScope | null {
+  const scopedFrame = frame as { scope?: unknown };
+  return isChatScope(scopedFrame.scope) ? scopedFrame.scope : null;
+}
+
+function frameScopeSessionKey(frame: ServerFrame): string | null {
+  const scope = frameScope(frame);
+  return scope ? scopeSessionKey(scope) : null;
+}
+
+function frameMatchesCurrentScope(frame: ServerFrame, currentScope: ChatScope): boolean {
+  const scope = frameScope(frame);
+  return !scope || scopeMatches(scope, currentScope);
+}
+
+function updateCachedMessagesForScope(
+  scopeKey: string,
+  updater: (messages: ChatMessage[]) => ChatMessage[],
+): void {
+  saveCachedMessages(scopeKey, updater(loadCachedMessages(scopeKey)));
 }
 
 // `normalizeMessage` stores the whole source message under `raw`. Across a
@@ -288,6 +317,7 @@ function scopeMatches(a: ChatScope | undefined, b: ChatScope): boolean {
       (a.id ?? null) === (b.id ?? null)
       && (a.surface ?? "director") === (b.surface ?? "director")
       && ((a.surface ?? "director") !== "freezone" || (a.canvasId ?? null) === (b.canvasId ?? null))
+      && ((a.surface ?? "director") !== "freezone" || (a.agentId ?? "main") === (b.agentId ?? "main"))
     );
   }
   return (a.id ?? null) === (b.id ?? null);
@@ -773,17 +803,19 @@ export function useSuperChat({
   surface = "director",
   canvasId,
   freezoneCanvasId,
+  freezoneAgentId,
 }: {
   project?: string;
   displayName: string;
   surface?: ProjectChatSurface;
   canvasId?: string | null;
   freezoneCanvasId?: string | null;
+  freezoneAgentId?: string | null;
 }) {
   const normalizedFreezoneCanvasId = canvasId ?? freezoneCanvasId ?? null;
   const desiredScope = useMemo(
-    () => scopeForProject(project, surface, normalizedFreezoneCanvasId),
-    [normalizedFreezoneCanvasId, project, surface],
+    () => scopeForProject(project, surface, normalizedFreezoneCanvasId, freezoneAgentId),
+    [freezoneAgentId, normalizedFreezoneCanvasId, project, surface],
   );
   const scopeKey = useMemo(() => scopeSessionKey(desiredScope), [desiredScope]);
   const initialScopeSnapshot = useMemo(() => {
@@ -822,6 +854,10 @@ export function useSuperChat({
   const closedRef = useRef(false);
   const authRejectedRef = useRef(false);
   const connectionIdRef = useRef(0);
+  const desiredScopeRef = useRef(desiredScope);
+  const handleFrameRef = useRef<(frame: ServerFrame) => void>(() => {});
+  const cacheScopeKeyRef = useRef(scopeKey);
+  const skipNextCacheSaveRef = useRef(false);
 
   const sendFrame = useCallback((frame: ClientFrame) => {
     const ws = wsRef.current;
@@ -831,8 +867,8 @@ export function useSuperChat({
   }, []);
 
   const requestHistory = useCallback(() => {
-    sendFrame({ type: "scope.set", scope: desiredScope });
-  }, [desiredScope, sendFrame]);
+    sendFrame({ type: "scope.set", scope: desiredScopeRef.current });
+  }, [sendFrame]);
 
   const markTurnActive = useCallback((turnId: string | null) => {
     if (!turnId) return;
@@ -855,14 +891,21 @@ export function useSuperChat({
   }, [scopeKey]);
 
   useEffect(() => {
+    const shouldHandleFreezoneAgentResult = (agentId?: string | null) => {
+      const currentScope = desiredScopeRef.current;
+      if (currentScope.kind !== "project" || currentScope.surface !== "freezone") return true;
+      return (agentId || "main") === (currentScope.agentId || "main");
+    };
     const handleCanvasCommandToolResult = (event: Event) => {
       const detail = (event as CustomEvent<CanvasCommandToolResultPayload>).detail;
       if (!detail || detail.type !== "canvas.command.result" || !detail.bridge_key) return;
+      if (!shouldHandleFreezoneAgentResult(detail.agent_id)) return;
       const { type: _type, received_at: _receivedAt, anchor_text_prefix: _anchorTextPrefix, ...frame } = detail;
       sendFrame({ type: "canvas.command.result", ...frame });
     };
     const handleCanvasContextToolResult = (event: Event) => {
       const detail = (event as CustomEvent<CanvasContextToolResultPayload>).detail;
+      if (!shouldHandleFreezoneAgentResult(detail?.agent_id)) return;
       const frame = canvasContextToolResultFrame(detail);
       if (!frame) return;
       sendFrame(frame);
@@ -905,14 +948,16 @@ export function useSuperChat({
         setConnecting(false);
         setError(null);
         const frameScope = isChatScope(frame.scope) ? frame.scope : undefined;
-        if (!scopeMatches(frameScope, desiredScope)) break;
+        if (!scopeMatches(frameScope, desiredScopeRef.current)) break;
         setHistoryReady(true);
         const history = mergeHistory(Array.isArray(frame.history) ? frame.history : []);
         const currentMessages = messagesRef.current;
         const protectedTurnId = activeTurnIdRef.current ?? recentlyCompletedTurnIdRef.current;
         setMessages((current) => {
           const preserveRemoteBusy = frame.busy === true && currentTurnIsLive(protectedTurnId, current);
-          return mergeHistorySnapshot(current, history, protectedTurnId, preserveRemoteBusy);
+          const merged = mergeHistorySnapshot(current, history, protectedTurnId, preserveRemoteBusy);
+          saveCachedMessages(scopeKey, merged);
+          return merged;
         });
         const activeTurnId = activeTurnIdRef.current;
         if (frame.busy === true && currentTurnIsLive(activeTurnId, currentMessages)) {
@@ -934,6 +979,13 @@ export function useSuperChat({
         break;
       }
       case "chat.busy": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
+          const remoteScopeKey = frameScopeSessionKey(frame);
+          if (remoteScopeKey && typeof frame.turn_id === "string" && frame.turn_id.trim()) {
+            saveActiveTurn(remoteScopeKey, frame.turn_id);
+          }
+          break;
+        }
         const message = typeof frame.message === "string" ? frame.message : null;
         if (message) setError(message);
         const turnId =
@@ -948,6 +1000,13 @@ export function useSuperChat({
         break;
       }
       case "chat.ping": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
+          const remoteScopeKey = frameScopeSessionKey(frame);
+          if (remoteScopeKey && typeof frame.turn_id === "string" && frame.turn_id.trim()) {
+            saveActiveTurn(remoteScopeKey, frame.turn_id);
+          }
+          break;
+        }
         if (
           typeof frame.turn_id === "string"
           && cancelledTurnIdsRef.current.has(frame.turn_id)
@@ -966,6 +1025,12 @@ export function useSuperChat({
         break;
       }
       case "thread.started":
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
+          const remoteScopeKey = frameScopeSessionKey(frame);
+          const turnId = typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null;
+          if (remoteScopeKey && turnId) saveActiveTurn(remoteScopeKey, turnId);
+          break;
+        }
         if (
           typeof frame.turn_id === "string"
           && cancelledTurnIdsRef.current.has(frame.turn_id)
@@ -980,6 +1045,18 @@ export function useSuperChat({
         recentlyCompletedTurnIdRef.current = null;
         break;
       case "assistant.delta": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
+          const remoteScopeKey = frameScopeSessionKey(frame);
+          const turnId = typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null;
+          const next = typeof frame.text === "string" ? frame.text : "";
+          if (remoteScopeKey && turnId && next.trim()) {
+            updateCachedMessagesForScope(remoteScopeKey, (current) =>
+              upsertAssistantMessage(current, turnId, next),
+            );
+            saveActiveTurn(remoteScopeKey, turnId);
+          }
+          break;
+        }
         const next = typeof frame.text === "string" ? frame.text : "";
         if (!next) break;
         if (
@@ -1007,7 +1084,18 @@ export function useSuperChat({
         setStreamText("");
         break;
       }
-      case "assistant.message":
+      case "assistant.message": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
+          const remoteScopeKey = frameScopeSessionKey(frame);
+          const turnId = typeof frame.turn_id === "string" ? frame.turn_id : undefined;
+          if (remoteScopeKey) {
+            updateCachedMessagesForScope(remoteScopeKey, (current) =>
+              upsertServerAssistantMessage(current, frame.message, turnId),
+            );
+            if (turnId) clearActiveTurn(remoteScopeKey, turnId);
+          }
+          break;
+        }
         setMessages((current) =>
           upsertServerAssistantMessage(
             current,
@@ -1016,6 +1104,7 @@ export function useSuperChat({
           ),
         );
         break;
+      }
       case "tool.call":
         if (
           typeof frame.turn_id === "string"
@@ -1029,6 +1118,18 @@ export function useSuperChat({
         }
         break;
       case "tool.result":
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
+          const remoteScopeKey = frameScopeSessionKey(frame);
+          if (remoteScopeKey && typeof frame.turn_id === "string" && frame.turn_id.trim()) {
+            saveActiveTurn(remoteScopeKey, frame.turn_id);
+            if (settings.showToolEvents || shouldPreserveToolMessage(frame)) {
+              updateCachedMessagesForScope(remoteScopeKey, (current) =>
+                upsertToolMessage(current, frame.type, frame),
+              );
+            }
+          }
+          break;
+        }
         if (
           typeof frame.turn_id === "string"
           && cancelledTurnIdsRef.current.has(frame.turn_id)
@@ -1051,6 +1152,12 @@ export function useSuperChat({
         dispatchCanvasContextRequestFrame(frame);
         break;
       case "chat.done":
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
+          const remoteScopeKey = frameScopeSessionKey(frame);
+          const turnId = typeof frame.turn_id === "string" ? frame.turn_id : null;
+          if (remoteScopeKey) clearActiveTurn(remoteScopeKey, turnId);
+          break;
+        }
         if (
           typeof frame.turn_id === "string"
           && cancelledTurnIdsRef.current.has(frame.turn_id)
@@ -1081,7 +1188,11 @@ export function useSuperChat({
       default:
         break;
     }
-  }, [desiredScope, finalizeStream, markTurnActive, markTurnInactive, settings.showToolEvents]);
+  }, [finalizeStream, markTurnActive, markTurnInactive, scopeKey, settings.showToolEvents]);
+
+  useEffect(() => {
+    handleFrameRef.current = handleFrame;
+  }, [handleFrame]);
 
   const connect = useCallback(() => {
     closedRef.current = false;
@@ -1104,12 +1215,12 @@ export function useSuperChat({
     wsRef.current = ws;
     ws.onopen = () => {
       if (connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
-      sendFrame({ type: "scope.set", scope: desiredScope });
+      sendFrame({ type: "scope.set", scope: desiredScopeRef.current });
     };
     ws.onmessage = (event) => {
       if (connectionIdRef.current !== connectionId || wsRef.current !== ws) return;
       try {
-        handleFrame(JSON.parse(String(event.data)) as ServerFrame);
+        handleFrameRef.current(JSON.parse(String(event.data)) as ServerFrame);
       } catch {
         // Ignore malformed frames from development proxies.
       }
@@ -1137,7 +1248,7 @@ export function useSuperChat({
         reconnectRef.current = window.setTimeout(connect, 1200);
       }
     };
-  }, [desiredScope, handleFrame, sendFrame]);
+  }, [sendFrame]);
 
   const disconnect = useCallback(() => {
     closedRef.current = true;
@@ -1157,6 +1268,11 @@ export function useSuperChat({
   }, []);
 
   useEffect(() => {
+    desiredScopeRef.current = desiredScope;
+    if (cacheScopeKeyRef.current !== scopeKey) {
+      cacheScopeKeyRef.current = scopeKey;
+      skipNextCacheSaveRef.current = true;
+    }
     setRelayInstances([]);
     setSelectedInstanceId("");
     setModels([]);
@@ -1176,6 +1292,13 @@ export function useSuperChat({
     setBusy(Boolean(activeTurn));
   }, [desiredScope, scopeKey]);
 
+  useEffect(() => {
+    if (wsRef.current?.readyState !== WebSocket.OPEN) return;
+    setConnecting(true);
+    setHistoryReady(false);
+    sendFrame({ type: "scope.set", scope: desiredScope });
+  }, [desiredScope, sendFrame]);
+
   // Sweep stale/legacy message caches once on mount so abandoned conversations
   // don't accumulate and eventually exhaust the localStorage quota.
   useEffect(() => {
@@ -1184,6 +1307,11 @@ export function useSuperChat({
 
   useEffect(() => {
     messagesRef.current = messages;
+    if (cacheScopeKeyRef.current !== scopeKey) return;
+    if (skipNextCacheSaveRef.current) {
+      skipNextCacheSaveRef.current = false;
+      return;
+    }
     saveCachedMessages(scopeKey, messages);
   }, [messages, scopeKey]);
 

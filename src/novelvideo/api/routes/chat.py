@@ -16,7 +16,7 @@ import uuid
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
-from pydantic import BaseModel, Field
+from pydantic import AliasChoices, BaseModel, Field
 
 from novelvideo.api.auth import (
     AUTH_COOKIE_NAME,
@@ -26,6 +26,7 @@ from novelvideo.api.auth import (
 )
 from novelvideo.api.deps import list_user_projects
 from novelvideo.chat import service as chat_service
+from novelvideo.chat.hermes_pool import canvas_bridge_dir_for_profile
 from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
 from novelvideo.chat.store import ChatScope, chat_store
 from novelvideo.freezone.canvas_command_bridge import resolve_canvas_command, resolve_canvas_context
@@ -64,6 +65,8 @@ class ChatScopePayload(BaseModel):
     surface: str | None = None
     canvasId: str | None = None
     canvas_id: str | None = None
+    agentId: str | None = None
+    agent_id: str | None = None
 
 
 class ChatAttachmentIn(BaseModel):
@@ -105,6 +108,7 @@ class CanvasCommandToolResultIn(BaseModel):
     bridge_key: str
     project_id: str | None = None
     canvas_id: str | None = None
+    agent_id: str | None = Field(default=None, validation_alias=AliasChoices("agent_id", "agentId"))
     tool_call_status: str = "completed"
     canvas_apply_status: str
     applied: bool = False
@@ -123,6 +127,7 @@ class CanvasContextToolResultIn(BaseModel):
     bridge_key: str
     project_id: str | None = None
     canvas_id: str | None = None
+    agent_id: str | None = Field(default=None, validation_alias=AliasChoices("agent_id", "agentId"))
     tool_call_status: str = "completed"
     canvas_context_status: str | None = None
     ok: bool = True
@@ -185,11 +190,9 @@ async def append_chat_ui_event(
 
 
 def _canvas_bridge_dir(username: str, *, profile: str = "director") -> Any:
-    return (
-        ensure_user_hermes_workspace(username, profile=profile)
-        / "tmp"
-        / "supertale_canvas_command_bridge"
-    )
+    workspace_profile = "freezone" if profile.startswith("freezone") else "director"
+    home = ensure_user_hermes_workspace(username, profile=workspace_profile)
+    return canvas_bridge_dir_for_profile(home, profile)
 
 
 def _is_freezone_scope(scope: ChatScope) -> bool:
@@ -197,7 +200,53 @@ def _is_freezone_scope(scope: ChatScope) -> bool:
 
 
 def _canvas_bridge_profile_for_scope(scope: ChatScope) -> str:
-    return "freezone" if _is_freezone_scope(scope) else "director"
+    if _is_freezone_scope(scope):
+        return f"freezone:{scope.agent_id or 'main'}"
+    return "director"
+
+
+def _freezone_agent_profile(scope: ChatScope) -> str:
+    return f"freezone:{scope.agent_id or 'main'}"
+
+
+def _chat_run_lock_project_for_scope(scope: ChatScope) -> str:
+    if _is_freezone_scope(scope) and scope.id:
+        return chat_service._chat_run_lock_project_for_turn(
+            str(scope.id),
+            tool_mode="freezone_canvas",
+            store_scope=scope,
+        )
+    return str(scope.id) if scope.kind == "project" and scope.id else ""
+
+
+def _freezone_agent_id_from_payload(payload: Any) -> str:
+    agent_id = str(
+        getattr(payload, "agent_id", None)
+        or "main"
+    ).strip()
+    return agent_id or "main"
+
+
+async def _close_freezone_agent_worker(username: str, agent_id: str | None) -> bool:
+    try:
+        from novelvideo.chat.hermes_pool import pool as hermes_pool
+
+        return await hermes_pool.close_user_profile(username, f"freezone:{agent_id or 'main'}")
+    except Exception:
+        logger.exception("failed to close freezone hermes worker after canvas command cancellation")
+        return False
+
+
+async def _close_canvas_command_worker(username: str, payload: CanvasCommandToolResultIn) -> bool:
+    if payload.canvas_id:
+        return await _close_freezone_agent_worker(username, _freezone_agent_id_from_payload(payload))
+    try:
+        from novelvideo.chat.hermes_pool import pool as hermes_pool
+
+        return await hermes_pool.close_user(username)
+    except Exception:
+        logger.exception("failed to close hermes worker after canvas command cancellation")
+        return False
 
 
 def _resolve_canvas_command_tool_result_payload(
@@ -248,7 +297,9 @@ def _resolve_canvas_command_tool_result_payload(
         result,
         bridge_dir=_canvas_bridge_dir(
             username,
-            profile="freezone" if result.get("canvas_id") else "director",
+            profile=f"freezone:{_freezone_agent_id_from_payload(payload)}"
+            if result.get("canvas_id")
+            else "director",
         ),
     )
 
@@ -277,7 +328,9 @@ def _resolve_canvas_context_tool_result_payload(
         result,
         bridge_dir=_canvas_bridge_dir(
             username,
-            profile="freezone" if result.get("canvas_id") else "director",
+            profile=f"freezone:{_freezone_agent_id_from_payload(payload)}"
+            if result.get("canvas_id")
+            else "director",
         ),
     )
 
@@ -311,12 +364,7 @@ async def resolve_canvas_command_tool_result(
     username = str(user["username"])
     resolved = _resolve_canvas_command_tool_result_payload(payload, username=username)
     if payload.cancelled or payload.canvas_apply_status == "cancelled_by_user":
-        try:
-            from novelvideo.chat.hermes_pool import pool as hermes_pool
-
-            await hermes_pool.close_user(username)
-        except Exception:
-            logger.exception("failed to close hermes worker after canvas command cancellation")
+        await _close_canvas_command_worker(username, payload)
     return {"ok": True, "data": resolved}
 
 
@@ -332,7 +380,13 @@ async def resolve_canvas_context_tool_result(
     canvas_id = str(resolved.get("canvas_id") or payload.canvas_id or "").strip()
     if context_turn_id and project_id and canvas_id:
         try:
-            scope = ChatScope(kind="project", id=project_id, surface="freezone", canvas_id=canvas_id)
+            scope = ChatScope(
+                kind="project",
+                id=project_id,
+                surface="freezone",
+                canvas_id=canvas_id,
+                agent_id=_freezone_agent_id_from_payload(payload),
+            )
             project_ctx = await _project_context_for_scope(user, scope)
             chat_store.append_ui_event(
                 username,
@@ -515,12 +569,7 @@ async def _send_scope_changed(
             "type": "scope.changed",
             "scope": scope.to_dict(),
             "history": await _history(username, scope, project_ctx=project_ctx),
-            "busy": chat_service.chat_run_lock_is_active(
-                username,
-                f"freezone:{scope.id}" if _is_freezone_scope(scope) and scope.id else (
-                    str(scope.id) if scope.kind == "project" and scope.id else ""
-                ),
-            ),
+            "busy": chat_service.chat_run_lock_is_active(username, _chat_run_lock_project_for_scope(scope)),
         }
     ):
         return None
@@ -568,7 +617,7 @@ async def _sync_running_agent_scope(username: str, scope: ChatScope) -> None:
 
         await hermes_pool.set_scope_for_user(
             username,
-            agent_profile="freezone" if _is_freezone_scope(scope) else "main",
+            agent_profile=_freezone_agent_profile(scope) if _is_freezone_scope(scope) else "main",
             scope_kind="project" if _is_freezone_scope(scope) else scope.kind,
             project_id=scope.id if scope.kind in {"project", "freezone"} else None,
         )
@@ -685,6 +734,7 @@ async def _watch_pending_canvas_commands(
                     "type": "canvas.command",
                     "turn_id": turn_id,
                     "canvas_id": envelope.get("canvas_id"),
+                    "agent_id": scope.agent_id or "main",
                     "bridge_key": key,
                     "envelope": envelope,
                 },
@@ -746,6 +796,7 @@ async def _watch_pending_canvas_context_requests(
                     "type": "canvas.context.request",
                     "turn_id": turn_id,
                     "canvas_id": envelope.get("canvas_id"),
+                    "agent_id": scope.agent_id or "main",
                     "bridge_key": key,
                     "envelope": envelope,
                 },
@@ -840,6 +891,7 @@ async def _stream_project_turn(
                 websocket,
                 {
                     "type": "assistant.delta",
+                    "scope": scope.to_dict(),
                     "text": assistant_sent_text,
                     "turn_id": turn_id,
                     "accumulated": True,
@@ -852,6 +904,7 @@ async def _stream_project_turn(
                 websocket,
                 {
                     "type": "tool.result",
+                    "scope": scope.to_dict(),
                     "turn_id": turn_id,
                     "name": tool_name,
                     "success": True,
@@ -868,6 +921,7 @@ async def _stream_project_turn(
                     websocket,
                     {
                         "type": "assistant.message",
+                        "scope": scope.to_dict(),
                         "turn_id": turn_id,
                         "message": message,
                     },
@@ -881,6 +935,7 @@ async def _stream_project_turn(
                     websocket,
                     {
                         "type": "assistant.delta",
+                        "scope": scope.to_dict(),
                         "text": final_text,
                         "turn_id": turn_id,
                         "accumulated": True,
@@ -904,6 +959,7 @@ async def _stream_project_turn(
             surface=surface,
             surface_context=surface_context,
             store_scope=store_scope,
+            turn_id=turn_id,
         )
     finally:
         heartbeat_task.cancel()
@@ -1020,6 +1076,7 @@ async def _stream_home_turn(
                     websocket,
                     {
                         "type": "assistant.delta",
+                        "scope": scope.to_dict(),
                         "text": display_text,
                         "turn_id": turn_id,
                         "accumulated": True,
@@ -1035,6 +1092,7 @@ async def _stream_home_turn(
                     websocket,
                     {
                         "type": "tool.result",
+                        "scope": scope.to_dict(),
                         "turn_id": turn_id,
                         "name": display_name,
                         "success": True,
@@ -1058,6 +1116,7 @@ async def _stream_home_turn(
             websocket,
             {
                 "type": "assistant.message",
+                "scope": scope.to_dict(),
                 "turn_id": turn_id,
                 "message": message,
             },
@@ -1070,6 +1129,7 @@ async def _stream_home_turn(
                 websocket,
                 {
                     "type": "assistant.delta",
+                    "scope": scope.to_dict(),
                     "text": assistant_text,
                     "turn_id": turn_id,
                     "accumulated": True,
@@ -1156,6 +1216,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                     username,
                     project=current_scope.id if current_scope.kind in {"project", "freezone"} else None,
                     surface="freezone" if _is_freezone_scope(current_scope) else None,
+                    agent_id=current_scope.agent_id if _is_freezone_scope(current_scope) else None,
                 )
                 continue
 
@@ -1163,12 +1224,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 payload = CanvasCommandToolResultIn.model_validate(raw)
                 _resolve_canvas_command_tool_result_payload(payload, username=username)
                 if payload.cancelled or payload.canvas_apply_status == "cancelled_by_user":
-                    try:
-                        from novelvideo.chat.hermes_pool import pool as hermes_pool
-
-                        await hermes_pool.close_user(username)
-                    except Exception:
-                        logger.exception("failed to close hermes worker after canvas command cancellation")
+                    await _close_canvas_command_worker(username, payload)
                 continue
 
             if event_type == "canvas.context.result":

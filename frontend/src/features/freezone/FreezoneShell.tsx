@@ -1,8 +1,10 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
+import { PanelRightClose, PanelRightOpen, Plus, Search } from "lucide-react";
 import { Canvas } from "@/features/canvas/Canvas";
 import { NodeReplaceDragPreview } from "@/features/canvas/ui/NodeReplaceDragPreview";
 import {
@@ -99,6 +101,13 @@ import {
   normalizeCanvasChatCommandEnvelopesForValidation,
   type CanvasChatCommandApplyResult,
 } from "@/features/freezone/canvasChatCommands";
+import {
+  addFreezoneCanvasAgent,
+  loadFreezoneCanvasAgents,
+  selectFreezoneCanvasAgent,
+  updateFreezoneCanvasAgentFromUserMessage,
+  type FreezoneCanvasAgentState,
+} from "@/features/freezone/canvasAgents";
 import { validateCanvasChatCommandEnvelopes } from "@/features/freezone/context/canvasCommandValidator";
 import { reportCanvasCommandToolResult } from "@/features/freezone/canvasCommandToolResult";
 import {
@@ -129,11 +138,33 @@ type CurrentCanvasSelectionItem = {
   label: string;
 };
 
-const FREEZONE_CHAT_WIDTH = "clamp(500px, 34vw, 540px)";
 const PROJECTION_STATUS_REFRESH_MS = 30_000;
+const FREEZONE_CHAT_WIDTH_STORAGE_KEY = "freezone.chatDock.chatWidth";
+const FREEZONE_AGENT_HISTORY_WIDTH_STORAGE_KEY = "freezone.chatDock.agentHistoryWidth";
+const FREEZONE_CHAT_WIDTH_DEFAULT = 540;
+const FREEZONE_CHAT_WIDTH_MIN = 420;
+const FREEZONE_CHAT_WIDTH_MAX = 760;
+const FREEZONE_AGENT_HISTORY_WIDTH_DEFAULT = 220;
+const FREEZONE_AGENT_HISTORY_WIDTH_MIN = 180;
+const FREEZONE_AGENT_HISTORY_WIDTH_MAX = 360;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function clampNumber(value: number, min: number, max: number): number {
+  return Math.min(max, Math.max(min, value));
+}
+
+function loadStoredPanelWidth(key: string, fallback: number, min: number, max: number): number {
+  if (typeof window === "undefined") return fallback;
+  const parsed = Number(window.localStorage.getItem(key));
+  return Number.isFinite(parsed) ? clampNumber(parsed, min, max) : fallback;
+}
+
+function storePanelWidth(key: string, value: number): void {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(key, String(Math.round(value)));
 }
 
 function pushJsonTextCanvasCommandCandidate(candidates: unknown[], text: unknown): void {
@@ -1101,6 +1132,12 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       if (!frame || frame.type !== "canvas.command") return;
       const turnId = typeof frame.turn_id === "string" ? frame.turn_id : null;
       const bridgeKey = typeof frame.bridge_key === "string" ? frame.bridge_key : null;
+      const agentId =
+        typeof frame.agent_id === "string"
+          ? frame.agent_id
+          : typeof frame.agentId === "string"
+            ? frame.agentId
+            : null;
       const eventReceivedAt = detail?.receivedAt ?? Date.now();
       const validationBridgeKey = bridgeKey
         ? `${bridgeKey}:validation`
@@ -1110,6 +1147,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         anchorTextPrefix: detail?.anchorTextPrefix ?? null,
         bridgeKey: validationBridgeKey,
         canvasId,
+        agentId,
         status: "running",
         labels: ["命令校验"],
         receivedAt: eventReceivedAt,
@@ -1129,6 +1167,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           anchorTextPrefix: detail?.anchorTextPrefix ?? null,
           bridgeKey: validationBridgeKey,
           canvasId,
+          agentId,
           status: "failed",
           labels: ["命令校验"],
           errors,
@@ -1166,6 +1205,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           anchorTextPrefix: detail?.anchorTextPrefix ?? null,
           projectId,
           canvasId,
+          agentId,
           result,
         });
         persistCanvasCommandResult({
@@ -1181,6 +1221,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, {
           detail: {
             canvasId,
+            agentId,
             turnId,
             bridgeKey,
             anchorMessageId: null,
@@ -1214,6 +1255,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           anchorTextPrefix: detail?.anchorTextPrefix ?? null,
           bridgeKey: validationBridgeKey,
           canvasId,
+          agentId,
           status: "failed",
           labels: ["命令校验"],
           errors,
@@ -1237,6 +1279,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           anchorTextPrefix: detail?.anchorTextPrefix ?? null,
           projectId,
           canvasId,
+          agentId,
           result,
         });
         persistCanvasCommandResult({
@@ -1252,6 +1295,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, {
           detail: {
             canvasId,
+            agentId,
             turnId,
             bridgeKey,
             anchorMessageId: null,
@@ -1270,6 +1314,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         anchorTextPrefix: detail?.anchorTextPrefix ?? null,
         bridgeKey: validationBridgeKey,
         canvasId,
+        agentId,
         status: "done",
         labels: ["命令校验"],
         receivedAt: eventReceivedAt + 1,
@@ -1297,6 +1342,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       setChatOpen(true);
       window.setTimeout(() => emitCanvasCommandApproval({
         canvasId,
+        agentId,
         turnId,
         anchorMessageId: null,
         anchorTextPrefix: detail?.anchorTextPrefix ?? null,
@@ -1325,6 +1371,12 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       if (requestedCanvasId && requestedCanvasId !== canvasId) return;
 
       const bridgeKey = typeof detail.bridge_key === "string" ? detail.bridge_key : null;
+      const agentId =
+        typeof detail.agent_id === "string"
+          ? detail.agent_id
+          : typeof detail.agentId === "string"
+            ? detail.agentId
+            : null;
       const turnId = typeof detail.turn_id === "string" ? detail.turn_id : null;
       const anchorTextPrefix =
         typeof detail.anchorTextPrefix === "string"
@@ -1342,6 +1394,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           anchorTextPrefix,
           projectId,
           canvasId,
+          agentId,
           responses: [],
           errors: ["无法解析 canvas_context_request.v1 请求。"],
         });
@@ -1375,6 +1428,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             anchorTextPrefix,
             projectId,
             canvasId,
+            agentId,
             responses: responses ?? [],
             errors: [],
           });
@@ -1385,6 +1439,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             anchorTextPrefix,
             projectId,
             canvasId,
+            agentId,
             responses: [],
             errors: [error instanceof Error ? error.message : String(error)],
           });
@@ -1509,6 +1564,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           />
         </main>
         <FreezoneChatDock
+          projectId={projectId}
           canvasId={canvasId}
           currentCanvasMetadata={sync.metadata}
           currentCanvasSelection={currentCanvasSelection}
@@ -1583,6 +1639,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
 }
 
 function FreezoneChatDock({
+  projectId,
   canvasId,
   currentCanvasMetadata,
   currentCanvasSelection,
@@ -1595,6 +1652,7 @@ function FreezoneChatDock({
   description,
   toggleLabel,
 }: {
+  projectId: string;
   canvasId: string;
   currentCanvasMetadata: Record<string, unknown> | null;
   currentCanvasSelection: CurrentCanvasSelectionItem[];
@@ -1610,6 +1668,198 @@ function FreezoneChatDock({
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [shouldRenderPanel, setShouldRenderPanel] = useState(open);
   const [panelVisible, setPanelVisible] = useState(open);
+  const [agentHistoryOpen, setAgentHistoryOpen] = useState(false);
+  const [agentSearch, setAgentSearch] = useState("");
+  const [chatWidth, setChatWidth] = useState(() =>
+    loadStoredPanelWidth(
+      FREEZONE_CHAT_WIDTH_STORAGE_KEY,
+      FREEZONE_CHAT_WIDTH_DEFAULT,
+      FREEZONE_CHAT_WIDTH_MIN,
+      FREEZONE_CHAT_WIDTH_MAX,
+    ),
+  );
+  const [agentHistoryWidth, setAgentHistoryWidth] = useState(() =>
+    loadStoredPanelWidth(
+      FREEZONE_AGENT_HISTORY_WIDTH_STORAGE_KEY,
+      FREEZONE_AGENT_HISTORY_WIDTH_DEFAULT,
+      FREEZONE_AGENT_HISTORY_WIDTH_MIN,
+      FREEZONE_AGENT_HISTORY_WIDTH_MAX,
+    ),
+  );
+  const [resizingPane, setResizingPane] = useState<"chat" | "history" | null>(null);
+  const [agentState, setAgentState] = useState<FreezoneCanvasAgentState>(() =>
+    loadFreezoneCanvasAgents(projectId, canvasId),
+  );
+  const activeAgentId = agentState.activeAgentId;
+
+  useEffect(() => {
+    setAgentState(loadFreezoneCanvasAgents(projectId, canvasId));
+  }, [canvasId, projectId]);
+
+  const handleSelectAgent = useCallback((agentId: string) => {
+    setAgentState(selectFreezoneCanvasAgent(projectId, canvasId, agentId));
+  }, [canvasId, projectId]);
+
+  const handleAddAgent = useCallback(() => {
+    setAgentState(addFreezoneCanvasAgent(projectId, canvasId).state);
+  }, [canvasId, projectId]);
+
+  const handleHeaderAddAgent = useCallback(() => {
+    setAgentState(addFreezoneCanvasAgent(projectId, canvasId).state);
+  }, [canvasId, projectId]);
+
+  const handleAgentUserMessage = useCallback((agentId: string, message: string, timestamp: number) => {
+    setAgentState(updateFreezoneCanvasAgentFromUserMessage(projectId, canvasId, agentId, message, timestamp));
+  }, [canvasId, projectId]);
+
+  const startPaneResize = useCallback((
+    pane: "chat" | "history",
+    event: ReactPointerEvent<HTMLDivElement>,
+  ) => {
+    event.preventDefault();
+    const target = event.currentTarget;
+    const pointerId = event.pointerId;
+    const startX = event.clientX;
+    const startChatWidth = chatWidth;
+    const startHistoryWidth = agentHistoryWidth;
+    let cleaned = false;
+
+    document.body.style.cursor = "col-resize";
+    document.body.style.userSelect = "none";
+    setResizingPane(pane);
+
+    const clampChatWidth = (value: number) => {
+      const maxByViewport = Math.max(
+        FREEZONE_CHAT_WIDTH_MIN,
+        window.innerWidth - 360 - (agentHistoryOpen ? agentHistoryWidth : 0),
+      );
+      return clampNumber(
+        value,
+        FREEZONE_CHAT_WIDTH_MIN,
+        Math.min(FREEZONE_CHAT_WIDTH_MAX, maxByViewport),
+      );
+    };
+    const clampHistoryWidth = (value: number) => {
+      const maxByViewport = Math.max(
+        FREEZONE_AGENT_HISTORY_WIDTH_MIN,
+        window.innerWidth - 360 - chatWidth,
+      );
+      return clampNumber(
+        value,
+        FREEZONE_AGENT_HISTORY_WIDTH_MIN,
+        Math.min(FREEZONE_AGENT_HISTORY_WIDTH_MAX, maxByViewport),
+      );
+    };
+
+    const handlePointerMove = (moveEvent: PointerEvent) => {
+      if (moveEvent.pointerId !== pointerId) return;
+      if (pane === "chat") {
+        const nextWidth = clampChatWidth(startChatWidth + startX - moveEvent.clientX);
+        setChatWidth(nextWidth);
+        storePanelWidth(FREEZONE_CHAT_WIDTH_STORAGE_KEY, nextWidth);
+        return;
+      }
+      const nextWidth = clampHistoryWidth(startHistoryWidth + startX - moveEvent.clientX);
+      setAgentHistoryWidth(nextWidth);
+      storePanelWidth(FREEZONE_AGENT_HISTORY_WIDTH_STORAGE_KEY, nextWidth);
+    };
+
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      window.removeEventListener("pointermove", handlePointerMove);
+      window.removeEventListener("pointerup", cleanup);
+      window.removeEventListener("pointercancel", cleanup);
+      window.removeEventListener("blur", cleanup);
+      target.removeEventListener("lostpointercapture", cleanup);
+      try {
+        if (target.hasPointerCapture(pointerId)) target.releasePointerCapture(pointerId);
+      } catch {
+        // Pointer capture can already be released by the browser.
+      }
+      document.body.style.cursor = "";
+      document.body.style.userSelect = "";
+      setResizingPane(null);
+    };
+
+    try {
+      target.setPointerCapture(pointerId);
+    } catch {
+      // Some browsers may reject capture for non-primary pointers.
+    }
+
+    window.addEventListener("pointermove", handlePointerMove);
+    window.addEventListener("pointerup", cleanup);
+    window.addEventListener("pointercancel", cleanup);
+    window.addEventListener("blur", cleanup);
+    target.addEventListener("lostpointercapture", cleanup);
+  }, [agentHistoryOpen, agentHistoryWidth, chatWidth]);
+
+  const agentHeaderActions = (
+    <>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        onClick={handleHeaderAddAgent}
+        aria-label="新建 Agent"
+        title="新建 Agent"
+        className="text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+      >
+        <Plus className="size-4" />
+      </Button>
+      <Button
+        type="button"
+        variant="ghost"
+        size="icon-sm"
+        onClick={() => setAgentHistoryOpen((value) => !value)}
+        aria-pressed={agentHistoryOpen}
+        aria-label={agentHistoryOpen ? "收起历史 Agent" : "打开历史 Agent"}
+        title={agentHistoryOpen ? "收起历史 Agent" : "打开历史 Agent"}
+        className={cn(
+          "text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+          agentHistoryOpen && "bg-white/[0.08] text-foreground",
+        )}
+      >
+        {agentHistoryOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+      </Button>
+    </>
+  );
+
+  const agentHistoryPanel = (
+    <FreezoneAgentHistoryPanel
+      agents={agentState.agents}
+      activeAgentId={activeAgentId}
+      search={agentSearch}
+      onSearchChange={setAgentSearch}
+      onSelect={handleSelectAgent}
+      onAdd={handleAddAgent}
+    />
+  );
+  const agentPanels = agentState.agents.map((agent) => {
+    const active = agent.id === activeAgentId;
+    return (
+      <div
+        key={`${projectId}:${canvasId}:${agent.id}`}
+        className={cn("h-full min-h-0 w-full", !active && "hidden")}
+        aria-hidden={!active}
+      >
+        <SuperChatPanel
+          variant="freezone"
+          freezoneCanvasId={canvasId}
+          freezoneAgentId={agent.id}
+          currentCanvasMetadata={currentCanvasMetadata}
+          currentCanvasSelection={currentCanvasSelection}
+          currentCanvasOntologyContext={currentCanvasOntologyContext}
+          pendingAttachments={active ? pendingAttachments : []}
+          onPendingAttachmentsConsumed={active ? onPendingAttachmentsConsumed : undefined}
+          onRequestClose={() => onOpenChange(false)}
+          freezoneHeaderActions={agentHeaderActions}
+          onFreezoneUserMessage={(message, timestamp) => handleAgentUserMessage(agent.id, message, timestamp)}
+        />
+      </div>
+    );
+  });
 
   useEffect(() => {
     if (!isDesktop) {
@@ -1641,16 +1891,17 @@ function FreezoneChatDock({
               <SheetTitle>{title}</SheetTitle>
               <SheetDescription>{description}</SheetDescription>
             </SheetHeader>
-            <SuperChatPanel
-              variant="freezone"
-              freezoneCanvasId={canvasId}
-              currentCanvasMetadata={currentCanvasMetadata}
-              currentCanvasSelection={currentCanvasSelection}
-              currentCanvasOntologyContext={currentCanvasOntologyContext}
-              pendingAttachments={pendingAttachments}
-              onPendingAttachmentsConsumed={onPendingAttachmentsConsumed}
-              onRequestClose={() => onOpenChange(false)}
-            />
+            <div className="relative flex min-h-0 flex-1 overflow-hidden">
+              <div className="min-h-0 flex-1">{agentPanels}</div>
+              <div
+                className={cn(
+                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-zinc-950/95 shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
+                  agentHistoryOpen ? "translate-x-0" : "translate-x-full",
+                )}
+              >
+                {agentHistoryPanel}
+              </div>
+            </div>
           </SheetContent>
         </Sheet>
       </>
@@ -1682,24 +1933,146 @@ function FreezoneChatDock({
           panelVisible ? "translate-x-0 scale-100 opacity-100" : "translate-x-10 scale-[0.985] opacity-0",
         )}
         style={{
-          width: FREEZONE_CHAT_WIDTH,
+          width: agentHistoryOpen ? chatWidth + agentHistoryWidth + 8 : chatWidth,
           maxWidth: "calc(100vw - 360px)",
         }}
         aria-label={title}
       >
-        <SuperChatPanel
-          variant="freezone"
-          freezoneCanvasId={canvasId}
-          currentCanvasMetadata={currentCanvasMetadata}
-          currentCanvasSelection={currentCanvasSelection}
-          currentCanvasOntologyContext={currentCanvasOntologyContext}
-          pendingAttachments={pendingAttachments}
-          onPendingAttachmentsConsumed={onPendingAttachmentsConsumed}
-          onRequestClose={() => onOpenChange(false)}
-        />
+        <div
+          className="group absolute inset-y-0 left-0 z-30 flex w-2 -translate-x-1 cursor-col-resize touch-none items-stretch justify-center"
+          role="separator"
+          aria-orientation="vertical"
+          aria-label="调整聊天宽度"
+          title="调整聊天宽度"
+          onPointerDown={(event) => startPaneResize("chat", event)}
+        >
+          <span className="h-full w-px bg-white/10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+        </div>
+        {resizingPane && <div className="fixed inset-0 z-50 cursor-col-resize" aria-hidden="true" />}
+        <div className="flex min-h-0 flex-1">
+          <div className="min-w-0 shrink-0" style={{ width: chatWidth }}>
+            {agentPanels}
+          </div>
+          {agentHistoryOpen && (
+            <div
+              className="group relative z-20 flex w-2 shrink-0 cursor-col-resize touch-none items-stretch justify-center bg-white/[0.03] transition-colors hover:bg-white/[0.08]"
+              role="separator"
+              aria-orientation="vertical"
+              aria-label="调整历史 Agent 宽度"
+              title="调整历史 Agent 宽度"
+              onPointerDown={(event) => startPaneResize("history", event)}
+            >
+              <span className="h-full w-px bg-white/14 transition-colors group-hover:bg-white/35" />
+            </div>
+          )}
+          <div
+            className={cn(
+              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-zinc-950/45 transition-[width,opacity] duration-200",
+              agentHistoryOpen ? "opacity-100" : "w-0 opacity-0",
+            )}
+            style={{ width: agentHistoryOpen ? agentHistoryWidth : 0 }}
+            aria-hidden={!agentHistoryOpen}
+          >
+            {agentHistoryPanel}
+          </div>
+        </div>
       </aside>
     </>
   );
+}
+
+function FreezoneAgentHistoryPanel({
+  agents,
+  activeAgentId,
+  search,
+  onSearchChange,
+  onSelect,
+  onAdd,
+}: {
+  agents: FreezoneCanvasAgentState["agents"];
+  activeAgentId: string;
+  search: string;
+  onSearchChange: (value: string) => void;
+  onSelect: (agentId: string) => void;
+  onAdd: () => void;
+}) {
+  const normalizedSearch = search.trim().toLowerCase();
+  const visibleAgents = agents
+    .filter((agent) => {
+      if (!normalizedSearch) return true;
+      return agent.name.toLowerCase().includes(normalizedSearch) || agent.id.toLowerCase().includes(normalizedSearch);
+    })
+    .sort((left, right) => right.lastActiveAt - left.lastActiveAt);
+
+  return (
+    <div className="flex h-full min-h-0 w-full flex-col bg-zinc-950/35 p-3">
+      <label className="flex h-9 shrink-0 items-center gap-2 rounded-lg bg-white/[0.07] px-3 text-zinc-400">
+        <Search className="size-4 shrink-0" />
+        <input
+          value={search}
+          onChange={(event) => onSearchChange(event.target.value)}
+          placeholder="搜索会话..."
+          className="min-w-0 flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
+        />
+      </label>
+      <div className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+        {visibleAgents.map((agent) => {
+          const active = agent.id === activeAgentId;
+          return (
+            <button
+              key={agent.id}
+              type="button"
+              onClick={() => onSelect(agent.id)}
+              className={cn(
+                "relative flex min-h-[50px] w-full flex-col items-start justify-center rounded-lg px-4 py-2 text-left transition-colors",
+                active
+                  ? "bg-white/[0.14] text-white shadow-inner shadow-white/[0.03] before:absolute before:inset-y-2 before:left-0 before:w-px before:rounded-full before:bg-white/80"
+                  : "text-zinc-400 hover:bg-white/[0.07] hover:text-zinc-100",
+              )}
+              title={agent.name}
+            >
+              <span className="flex w-full items-center gap-2">
+                <span
+                  className={cn(
+                    "size-2 shrink-0 rounded-full",
+                    active ? "bg-emerald-400" : "bg-zinc-600",
+                  )}
+                />
+                <span className="min-w-0 truncate text-sm font-medium">{agent.name}</span>
+              </span>
+              <span className="ml-4 mt-0.5 text-[11px] leading-none text-zinc-500">
+                {formatAgentHistoryTime(agent.lastActiveAt)}
+              </span>
+            </button>
+          );
+        })}
+        {visibleAgents.length === 0 && (
+          <div className="px-2 py-8 text-center text-xs text-zinc-500">
+            没有匹配的 Agent
+          </div>
+        )}
+      </div>
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        className="mt-3 h-9 shrink-0 rounded-lg bg-white/[0.10] text-sm text-zinc-100 hover:bg-white/[0.16]"
+        onClick={onAdd}
+      >
+        <Plus className="mr-1.5 size-4" />
+        新建 Agent
+      </Button>
+    </div>
+  );
+}
+
+function formatAgentHistoryTime(timestamp: number): string {
+  if (!Number.isFinite(timestamp) || timestamp <= 0) return "";
+  return new Intl.DateTimeFormat("zh-CN", {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).format(new Date(timestamp));
 }
 
 /**

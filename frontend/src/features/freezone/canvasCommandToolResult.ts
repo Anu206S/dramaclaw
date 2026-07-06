@@ -13,6 +13,7 @@ export type CanvasCommandToolResultPayload = {
   bridge_key: string;
   project_id: string | null;
   canvas_id: string | null;
+  agent_id?: string | null;
   tool_call_status: "completed" | "cancelled" | "failed";
   canvas_apply_status: CanvasApplyStatus;
   applied: boolean;
@@ -39,6 +40,7 @@ export function reportCanvasCommandToolResult({
   anchorTextPrefix,
   projectId,
   canvasId,
+  agentId,
   result,
   cancelled = false,
 }: {
@@ -47,6 +49,7 @@ export function reportCanvasCommandToolResult({
   anchorTextPrefix?: string | null;
   projectId?: string | null;
   canvasId?: string | null;
+  agentId?: string | null;
   result?: CanvasChatCommandApplyResult;
   cancelled?: boolean;
 }) {
@@ -65,6 +68,7 @@ export function reportCanvasCommandToolResult({
     bridge_key: bridgeKey,
     project_id: projectId ?? null,
     canvas_id: canvasId ?? null,
+    agent_id: agentId ?? null,
     tool_call_status: cancelled ? "cancelled" : canvasApplyStatus === "failed" ? "failed" : "completed",
     canvas_apply_status: canvasApplyStatus,
     applied: !cancelled && Boolean(result && (result.applied > 0 || result.openedUiActions > 0)),

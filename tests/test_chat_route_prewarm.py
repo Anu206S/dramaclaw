@@ -41,7 +41,39 @@ def test_scope_from_model_preserves_freezone_canvas_scope() -> None:
             id="project-a",
             surface="freezone",
             canvasId="canvas-a",
+            agentId="agent-2",
         )
     )
 
-    assert scope == ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
+    assert scope == ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+
+
+def test_scope_from_model_ignores_agent_for_director_scope() -> None:
+    scope = chat_route._scope_from_model(
+        chat_route.ChatScopePayload(
+            kind="project",
+            id="project-a",
+            surface="director",
+            agentId="agent-2",
+        )
+    )
+
+    assert scope == ChatScope(kind="project", id="project-a", surface="director")
+
+
+def test_freezone_canvas_bridge_dir_is_agent_scoped(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    main_dir = chat_route._canvas_bridge_dir("admin", profile="freezone:main")
+    second_dir = chat_route._canvas_bridge_dir("admin", profile="freezone:agent-2")
+
+    assert main_dir != second_dir
+    assert main_dir.parent == second_dir.parent
+    assert main_dir.parent.name == "supertale_canvas_command_bridge"
+    assert ".hermes-freezone" in main_dir.parts

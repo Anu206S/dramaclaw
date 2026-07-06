@@ -147,11 +147,23 @@ def _ensure_supported_hermes_version(cli_path: Path) -> None:
 def _workspace_profile_for_agent(agent_profile: str, tool_mode: str, surface: str | None) -> str:
     if str(surface or "").strip() == "freezone":
         return "freezone"
-    if (agent_profile or "").strip() == "freezone":
+    if (agent_profile or "").strip().startswith("freezone"):
         return "freezone"
     if (tool_mode or "").strip() == "freezone_canvas":
         return "freezone"
     return "director"
+
+
+def canvas_bridge_dir_for_profile(home: Path, agent_profile: str) -> Path:
+    base = home / "tmp" / "supertale_canvas_command_bridge"
+    profile = (agent_profile or "").strip()
+    if not profile.startswith("freezone:"):
+        return base
+    safe_profile = "".join(
+        ch if ch.isalnum() or ch in {"-", "_"} else "_"
+        for ch in profile
+    ).strip("_")
+    return base / (safe_profile or "freezone_main")
 
 
 @dataclass
@@ -328,6 +340,7 @@ class HermesPool:
             home,
             username,
             token,
+            agent_profile=agent_profile,
             project_id=project_id,
             project_env=project_env,
             tool_mode=tool_mode,
@@ -387,7 +400,7 @@ class HermesPool:
         kind = (scope_kind or "home").strip() or "home"
         profile = (agent_profile or "main").strip() or "main"
         scoped_canvas = str(canvas_id or "").strip() or None
-        if profile != "freezone":
+        if not profile.startswith("freezone"):
             scoped_canvas = None
         return profile, kind, project_id if kind != "home" else None, scoped_canvas
 
@@ -508,6 +521,7 @@ class HermesPool:
         username: str,
         token: AgentSessionToken,
         *,
+        agent_profile: str,
         project_id: str | None,
         tool_mode: str = "default",
         surface: str | None = None,
@@ -534,9 +548,7 @@ class HermesPool:
             "DRAMACLAW_AGENT_TOKEN_EXPIRES_AT": str(token.exp),
             "DRAMACLAW_API_URL": self._api_url,
             "DRAMACLAW_TOOL_MODE": tool_mode,
-            "DRAMACLAW_CANVAS_COMMAND_BRIDGE_DIR": str(
-                home / "tmp" / "supertale_canvas_command_bridge"
-            ),
+            "DRAMACLAW_CANVAS_COMMAND_BRIDGE_DIR": str(canvas_bridge_dir_for_profile(home, agent_profile)),
             "SUPERTALE_USER": username,
             "SUPERTALE_AGENT_TOKEN": token.value,
             "SUPERTALE_AGENT_TOKEN_TYPE": "Bearer",
@@ -612,6 +624,17 @@ class HermesPool:
                 slot = self._slots.pop(key, None)
                 if slot is not None:
                     await self._close_slot(slot)
+            return True
+
+    async def close_user_profile(self, username: str, agent_profile: str) -> bool:
+        """Programmatically tear down one user's worker for a single profile."""
+        profile = (agent_profile or "main").strip() or "main"
+        async with self._lock:
+            key = self._slot_key(username, profile)
+            slot = self._slots.pop(key, None)
+            if slot is None:
+                return False
+            await self._close_slot(slot)
             return True
 
     async def prewarm(

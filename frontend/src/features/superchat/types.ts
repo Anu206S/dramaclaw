@@ -24,6 +24,8 @@ export type ClientFrame =
       bridge_key: string;
       project_id?: string | null;
       canvas_id?: string | null;
+      agent_id?: string | null;
+      agentId?: string | null;
       tool_call_status?: "completed" | "cancelled" | "failed";
       canvas_context_status?: "resolved" | "failed" | string;
       ok: boolean;
@@ -37,6 +39,8 @@ export type ClientFrame =
       bridge_key: string;
       project_id?: string | null;
       canvas_id?: string | null;
+      agent_id?: string | null;
+      agentId?: string | null;
       tool_call_status?: "completed" | "cancelled" | "failed";
       canvas_apply_status: "applied" | "partially_applied" | "failed" | "cancelled_by_user";
       applied?: boolean;
@@ -54,6 +58,7 @@ export type ChatScope = {
   id?: string | null;
   surface?: "director" | "freezone" | null;
   canvasId?: string | null;
+  agentId?: string | null;
 };
 
 export type RelayInstanceInfo = {
@@ -108,17 +113,20 @@ export type ServerFrame =
     }
   | {
       type: "assistant.delta";
+      scope?: ChatScope;
       text?: string;
       turn_id?: string;
       accumulated?: boolean;
     }
   | {
       type: "assistant.message";
+      scope?: ChatScope;
       message?: unknown;
       turn_id?: string;
     }
   | {
       type: "tool.result";
+      scope?: ChatScope;
       turn_id?: string;
       name?: string;
       success?: boolean;
@@ -147,6 +155,8 @@ export type ServerFrame =
       bridge_key?: string;
       project_id?: string | null;
       canvas_id?: string | null;
+      agent_id?: string | null;
+      agentId?: string | null;
       envelope?: unknown;
       envelopes?: unknown[];
       command?: unknown;
@@ -160,6 +170,8 @@ export type ServerFrame =
       bridge_key?: string;
       project_id?: string | null;
       canvas_id?: string | null;
+      agent_id?: string | null;
+      agentId?: string | null;
       envelope?: unknown;
       envelopes?: unknown[];
       request?: unknown;
