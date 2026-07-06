@@ -15,13 +15,59 @@ function quotaError(): DOMException {
   return new DOMException("quota", "QuotaExceededError");
 }
 
+function createTestStorage(): Storage {
+  const store = new Map<string, string>();
+  return {
+    get length() {
+      return store.size;
+    },
+    key(index: number) {
+      return [...store.keys()][index] ?? null;
+    },
+    getItem(key: string) {
+      return store.get(key) ?? null;
+    },
+    setItem(key: string, value: string) {
+      store.set(key, String(value));
+    },
+    removeItem(key: string) {
+      store.delete(key);
+    },
+    clear() {
+      store.clear();
+    },
+  };
+}
+
+const originalLocalStorage = window.localStorage;
+
+function installTestStorage(): void {
+  const storage = createTestStorage();
+  Object.defineProperty(globalThis, "localStorage", { value: storage, writable: true, configurable: true });
+  Object.defineProperty(window, "localStorage", { value: storage, writable: true, configurable: true });
+}
+
+function restoreOriginalStorage(): void {
+  Object.defineProperty(globalThis, "localStorage", {
+    value: originalLocalStorage,
+    writable: true,
+    configurable: true,
+  });
+  Object.defineProperty(window, "localStorage", {
+    value: originalLocalStorage,
+    writable: true,
+    configurable: true,
+  });
+}
+
 describe("safeLocalStorageSet", () => {
   beforeEach(() => {
-    window.localStorage.clear();
+    installTestStorage();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    restoreOriginalStorage();
   });
 
   it("writes straight through when there is room", () => {
@@ -125,7 +171,11 @@ describe("isStaleByTtl", () => {
 
 describe("pruneLocalStorageByPrefix", () => {
   beforeEach(() => {
-    window.localStorage.clear();
+    installTestStorage();
+  });
+
+  afterEach(() => {
+    restoreOriginalStorage();
   });
 
   it("removes matching keys the predicate rejects and keeps the rest", () => {
@@ -166,11 +216,12 @@ describe("pruneLocalStorageByPrefix", () => {
 
 describe("quotaSafeStateStorage", () => {
   beforeEach(() => {
-    window.localStorage.clear();
+    installTestStorage();
   });
 
   afterEach(() => {
     vi.restoreAllMocks();
+    restoreOriginalStorage();
   });
 
   it("reads and writes through like normal storage", () => {
