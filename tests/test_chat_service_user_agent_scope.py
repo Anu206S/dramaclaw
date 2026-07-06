@@ -1047,6 +1047,7 @@ async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_
     async def on_event(event):
         events.append(event)
 
+    monkeypatch.setattr(chat_service, "is_hermes_backend_available", lambda: True)
     monkeypatch.setattr(chat_service, "_write_hermes_tool_mode", lambda *_args, **_kwargs: None)
     monkeypatch.setattr("novelvideo.chat.hermes_pool.pool", FakePool())
 
