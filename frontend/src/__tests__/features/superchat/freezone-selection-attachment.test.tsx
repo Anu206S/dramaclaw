@@ -167,6 +167,24 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     expect(screen.getByPlaceholderText("想画什么、改哪里，直接告诉虾画")).toBeInTheDocument();
   });
 
+  it("renders Freezone-only header actions when provided", () => {
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+        freezoneHeaderActions={<button type="button">历史 Agent</button>}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "历史 Agent" })).toBeInTheDocument();
+  });
+
   it("does not show a selected canvas node as current-turn context after its attachment was consumed", () => {
     render(
       <SuperChatPanel

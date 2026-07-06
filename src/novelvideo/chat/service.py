@@ -793,7 +793,24 @@ def _chat_run_lock_is_stale(
 
 
 def _chat_run_lock_key(project: str) -> str:
+    if project.startswith("freezone:"):
+        return project
     return _CHAT_RUN_LOCK_KEY
+
+
+def _chat_run_lock_project_for_turn(
+    project: str,
+    *,
+    tool_mode: str,
+    store_scope: Any | None = None,
+) -> str:
+    if tool_mode != "freezone_canvas":
+        return project
+    canvas_id = str(getattr(store_scope, "canvas_id", "") or "").strip()
+    agent_id = str(getattr(store_scope, "agent_id", "") or "main").strip() or "main"
+    if canvas_id:
+        return f"freezone:{project}:canvas:{canvas_id}:agent:{agent_id}"
+    return f"freezone:{project}:agent:{agent_id}"
 
 
 def _chat_run_lock_path(username: str, project: str) -> Path:
@@ -3367,13 +3384,18 @@ async def stream_assistant_reply(
     surface: str | None = None,
     surface_context: dict[str, Any] | None = None,
     store_scope: Any | None = None,
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
     tool_mode = _tool_mode_for_surface(
         surface,
         prompt=prompt,
         surface_context=surface_context,
     )
-    lock_project = f"freezone:{project}" if tool_mode == "freezone_canvas" else project
+    lock_project = _chat_run_lock_project_for_turn(
+        project,
+        tool_mode=tool_mode,
+        store_scope=store_scope,
+    )
     run_lock_id = _acquire_chat_run_lock(username, lock_project)
     heartbeat_task = asyncio.create_task(
         _chat_run_lock_heartbeat_loop(username, lock_project, run_lock_id)
@@ -3411,6 +3433,7 @@ async def stream_assistant_reply(
                 tool_mode=tool_mode,
                 surface_context=surface_context,
                 store_scope=store_scope,
+                turn_id=turn_id,
             )
         if backend != "claude":
             raise RuntimeError(f"Unsupported chat backend: {backend}")
@@ -3495,6 +3518,7 @@ async def prewarm_chat_backend(
     *,
     project: str | None = None,
     surface: str | None = None,
+    agent_id: str | None = None,
 ) -> None:
     """Best-effort pre-warm of the per-user agent worker.
 
@@ -3509,7 +3533,7 @@ async def prewarm_chat_backend(
         from novelvideo.chat.hermes_pool import pool as _hermes_pool
 
         tool_mode = _tool_mode_for_surface(surface)
-        agent_profile = "freezone" if tool_mode == "freezone_canvas" else "main"
+        agent_profile = f"freezone:{agent_id or 'main'}" if tool_mode == "freezone_canvas" else "main"
         await _hermes_pool.prewarm(
             username,
             agent_profile=agent_profile,
@@ -3534,6 +3558,7 @@ async def _stream_assistant_reply_hermes(
     tool_mode: str = "default",
     surface_context: dict[str, Any] | None = None,
     store_scope: Any | None = None,
+    turn_id: str | None = None,
 ) -> dict[str, Any]:
     """Stream via Hermes ACP subprocess (per-user, sandboxed).
 
@@ -3544,7 +3569,8 @@ async def _stream_assistant_reply_hermes(
     """
     from novelvideo.chat.hermes_pool import pool as _hermes_pool
 
-    agent_profile = "freezone" if tool_mode == "freezone_canvas" else "main"
+    store_agent_id = str(getattr(store_scope, "agent_id", "") or "").strip()
+    agent_profile = f"freezone:{store_agent_id or 'main'}" if tool_mode == "freezone_canvas" else "main"
     surface = "freezone" if tool_mode == "freezone_canvas" else None
     canvas_id = _freezone_canvas_id_from_context(surface_context) if surface == "freezone" else None
     _write_hermes_tool_mode(username, mode=tool_mode)
@@ -3629,6 +3655,7 @@ async def _stream_assistant_reply_hermes(
                 "assistant",
                 final_text,
                 media=media,
+                turn_id=turn_id,
             )
         else:
             persisted_message = add_assistant_message(
@@ -3783,6 +3810,7 @@ async def _stream_assistant_reply_hermes(
                     "assistant",
                     "(hermes returned no content)",
                     media=[],
+                    turn_id=turn_id,
                 )
             else:
                 result_message = add_assistant_message(

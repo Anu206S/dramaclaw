@@ -438,6 +438,59 @@ def test_chat_run_lock_is_user_scoped(monkeypatch, tmp_path):
     chat_service._release_chat_run_lock("admin", "project-b", next_lock_id)
 
 
+def test_freezone_chat_run_lock_is_agent_scoped(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    first_scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-1",
+    )
+    second_scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+    first_lock_project = chat_service._chat_run_lock_project_for_turn(
+        "project-a",
+        tool_mode="freezone_canvas",
+        store_scope=first_scope,
+    )
+    second_lock_project = chat_service._chat_run_lock_project_for_turn(
+        "project-a",
+        tool_mode="freezone_canvas",
+        store_scope=second_scope,
+    )
+
+    first_lock_id = chat_service._acquire_chat_run_lock("admin", first_lock_project)
+    try:
+        second_lock_id = chat_service._acquire_chat_run_lock("admin", second_lock_project)
+        chat_service._release_chat_run_lock("admin", second_lock_project, second_lock_id)
+    finally:
+        chat_service._release_chat_run_lock("admin", first_lock_project, first_lock_id)
+
+
+def test_director_chat_run_lock_remains_project_scoped(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    lock_project = chat_service._chat_run_lock_project_for_turn(
+        "project-a",
+        tool_mode="default",
+        store_scope=ChatScope(
+            kind="project",
+            id="project-a",
+            surface="director",
+            agent_id="agent-2",
+        ),
+    )
+
+    assert lock_project == "project-a"
+
+
 def test_chat_run_lock_uses_named_agent_locks_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
 
@@ -890,6 +943,22 @@ def test_home_history_hides_trace_messages(monkeypatch, tmp_path):
     assert all("dramaclaw_pipeline_status" not in message["content"] for message in messages)
 
 
+def test_chat_history_keeps_repeated_assistant_replies_across_turns(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    scope = ChatScope(kind="home")
+
+    chat_store.append_message("admin", scope, "user", "你好", turn_id="turn-1")
+    chat_store.append_message("admin", scope, "assistant", "你好！有什么可以帮你？", turn_id="turn-1")
+    chat_store.append_message("admin", scope, "user", "你好", turn_id="turn-2")
+    chat_store.append_message("admin", scope, "assistant", "你好！有什么可以帮你？", turn_id="turn-2")
+
+    messages = chat_store.list_messages("admin", scope)
+
+    assert [message["role"] for message in messages] == ["user", "assistant", "user", "assistant"]
+    assert messages[1]["content"] == "你好！有什么可以帮你？"
+    assert messages[3]["content"] == "你好！有什么可以帮你？"
+
+
 def test_freezone_history_uses_separate_project_chat_db(monkeypatch, tmp_path):
     state_root = tmp_path / "state"
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
@@ -901,7 +970,163 @@ def test_freezone_history_uses_separate_project_chat_db(monkeypatch, tmp_path):
     assert chat_service.list_messages("admin", "project-a")[0]["content"] == "mainline"
     assert chat_store.list_messages("admin", scope)[0]["content"] == "canvas"
     assert (state_root / "admin" / "project-a" / "chat.db").exists()
-    assert (state_root / "admin" / "project-a" / "_chat" / "freezone" / "canvas-a" / "chat.db").exists()
+    assert (
+        state_root
+        / "admin"
+        / "project-a"
+        / "_chat"
+        / "freezone"
+        / "canvas-a"
+        / "agents"
+        / "main"
+        / "chat.db"
+    ).exists()
+
+
+def test_freezone_agent_history_uses_separate_chat_db(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    main_scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="main",
+    )
+    second_scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+
+    chat_store.append_message("admin", main_scope, "user", "main agent")
+    chat_store.append_message("admin", second_scope, "user", "second agent")
+
+    assert chat_store.list_messages("admin", main_scope)[0]["content"] == "main agent"
+    assert chat_store.list_messages("admin", second_scope)[0]["content"] == "second agent"
+    assert (
+        state_root
+        / "admin"
+        / "project-a"
+        / "_chat"
+        / "freezone"
+        / "canvas-a"
+        / "agents"
+        / "agent-2"
+        / "chat.db"
+    ).exists()
+
+
+@pytest.mark.anyio
+async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+    events = []
+
+    class FakeThread:
+        async def stream(self, _prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(type="thread_started", thread_id="thread-a", turn_id="turn-a")
+            yield backend_sdk.ChatBackendEvent(type="assistant_delta", text="你好")
+            yield backend_sdk.ChatBackendEvent(type="complete", text="")
+
+    class FakePool:
+        async def get_for_user(self, *_args, **_kwargs):
+            return FakeThread()
+
+    async def on_event(event):
+        events.append(event)
+
+    monkeypatch.setattr(chat_service, "_write_hermes_tool_mode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("novelvideo.chat.hermes_pool.pool", FakePool())
+
+    result = await chat_service.stream_assistant_reply(
+        "admin",
+        "project-a",
+        "你好",
+        on_event,
+        surface="freezone",
+        surface_context={"canvasId": "canvas-a"},
+        store_scope=scope,
+        turn_id="turn-a",
+    )
+
+    assert result["turn_id"] == "turn-a"
+    messages = chat_store.list_messages("admin", scope)
+    assistant = [message for message in messages if message["role"] == "assistant"][0]
+    assert assistant["turn_id"] == "turn-a"
+
+
+def test_freezone_main_agent_reads_legacy_canvas_chat_db(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="main",
+    )
+    legacy_db = state_root / "admin" / "project-a" / "_chat" / "freezone" / "canvas-a" / "chat.db"
+    conn = chat_store.connect("admin", scope, db_path=legacy_db)
+    try:
+        conn.execute(
+            """
+            INSERT INTO chat_messages (role, content, media_json, turn_id, metadata_json, created_at)
+            VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            ("user", "legacy canvas", "[]", None, "{}", datetime.now(timezone.utc).isoformat()),
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+    assert chat_store.list_messages("admin", scope)[0]["content"] == "legacy canvas"
+
+    chat_store.append_message("admin", scope, "user", "new main")
+
+    assert chat_store.list_messages("admin", scope)[0]["content"] == "new main"
+    assert (
+        state_root
+        / "admin"
+        / "project-a"
+        / "_chat"
+        / "freezone"
+        / "canvas-a"
+        / "agents"
+        / "main"
+        / "chat.db"
+    ).exists()
+
+
+def test_director_history_path_ignores_agent_id(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    scope = ChatScope.from_payload(
+        {
+            "kind": "project",
+            "id": "project-a",
+            "surface": "director",
+            "agentId": "agent-2",
+        }
+    )
+    chat_store.append_message("admin", scope, "user", "director")
+
+    assert scope == ChatScope(kind="project", id="project-a", surface="director")
+    assert (state_root / "admin" / "project-a" / "chat.db").exists()
+    assert not (state_root / "admin" / "project-a" / "_chat").exists()
 
 
 def test_chat_ui_events_attach_to_user_message_when_turn_has_no_assistant(monkeypatch, tmp_path):
@@ -935,16 +1160,45 @@ def test_chat_scope_round_trips_freezone_canvas_payload() -> None:
             "id": "project-a",
             "surface": "freezone",
             "canvasId": "canvas-a",
+            "agentId": "agent-2",
         }
     )
 
-    assert scope == ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
+    assert scope == ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
     assert scope.to_dict() == {
         "kind": "project",
         "id": "project-a",
         "surface": "freezone",
         "canvasId": "canvas-a",
+        "agentId": "agent-2",
     }
+
+
+def test_chat_scope_defaults_freezone_agent_to_main() -> None:
+    scope = ChatScope.from_payload(
+        {
+            "kind": "project",
+            "id": "project-a",
+            "surface": "freezone",
+            "canvasId": "canvas-a",
+        }
+    )
+
+    assert scope.agent_id == "main"
+    assert scope.to_dict()["agentId"] == "main"
+
+
+def test_hermes_workspace_profile_treats_freezone_agent_profiles_as_freezone() -> None:
+    from novelvideo.chat import hermes_pool
+
+    assert hermes_pool._workspace_profile_for_agent("freezone:agent-2", "freezone_canvas", "freezone") == "freezone"
+    assert hermes_pool._workspace_profile_for_agent("main", "default", None) == "director"
 
 
 def test_legacy_freezone_scope_still_uses_legacy_chat_db(monkeypatch, tmp_path):

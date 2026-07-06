@@ -3631,6 +3631,7 @@ type PendingCanvasCommandApproval = {
   messageId: string;
   turnId?: string | null;
   bridgeKey?: string | null;
+  agentId?: string | null;
   anchorTextPrefix?: string | null;
   surfaceOrder?: number;
   receivedAt: number;
@@ -4657,6 +4658,7 @@ type SuperChatPanelVariant = "default" | "freezone";
 interface SuperChatPanelProps {
   variant?: SuperChatPanelVariant;
   freezoneCanvasId?: string | null;
+  freezoneAgentId?: string | null;
   canvasId?: string | null;
   currentCanvasMetadata?: Record<string, unknown> | null;
   currentCanvasSelection?: Array<Partial<CanvasNodeReferencePreview> & { nodeId: string; label?: string }>;
@@ -4664,17 +4666,22 @@ interface SuperChatPanelProps {
   pendingAttachments?: ChatAttachment[];
   onPendingAttachmentsConsumed?: () => void;
   onRequestClose?: () => void;
+  freezoneHeaderActions?: ReactNode;
+  onFreezoneUserMessage?: (message: string, timestamp: number) => void;
 }
 
 export function SuperChatPanel({
   variant = "default",
   freezoneCanvasId = null,
+  freezoneAgentId = null,
   canvasId = null,
   currentCanvasSelection = [],
   currentCanvasOntologyContext = null,
   pendingAttachments = [],
   onPendingAttachmentsConsumed,
   onRequestClose,
+  freezoneHeaderActions,
+  onFreezoneUserMessage,
 }: SuperChatPanelProps = {}) {
   const { t } = useTranslation();
   const params = useParams({ strict: false }) as { project?: string };
@@ -4713,6 +4720,7 @@ export function SuperChatPanel({
   const composerShellRef = useRef<HTMLDivElement | null>(null);
   const composerBeamRef = useRef<BorderBeamController | null>(null);
   const canvasCommandModeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const onFreezoneUserMessageRef = useRef(onFreezoneUserMessage);
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
   const taskEventBus = useEventBus();
   const canvasNodes = useCanvasStore((state) => state.nodes);
@@ -4723,6 +4731,7 @@ export function SuperChatPanel({
     displayName: username || "SuperTale",
     surface: variant === "freezone" ? "freezone" : undefined,
     freezoneCanvasId: variant === "freezone" ? freezoneCanvasId ?? canvasId : null,
+    freezoneAgentId: variant === "freezone" ? freezoneAgentId : null,
   });
   const [pendingCanvasCommandApprovals, setPendingCanvasCommandApprovals] = useState<PendingCanvasCommandApproval[]>([]);
   const [canvasCommandFeedbackByMessageId, setCanvasCommandFeedbackByMessageId] = useState<Record<string, CanvasCommandFeedback[]>>({});
@@ -4738,6 +4747,10 @@ export function SuperChatPanel({
     bottom: number;
   } | null>(null);
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
+
+  useEffect(() => {
+    onFreezoneUserMessageRef.current = onFreezoneUserMessage;
+  }, [onFreezoneUserMessage]);
 
   const isFreezoneLayout = variant === "freezone";
   const selectedFreezoneNodes = useMemo(
@@ -4828,7 +4841,25 @@ export function SuperChatPanel({
     [activeMessages],
   );
   const effectiveFreezoneCanvasId = variant === "freezone" ? freezoneCanvasId ?? canvasId ?? null : null;
-  const chatScopeKey = `${params.project ?? ""}:${variant}:${effectiveFreezoneCanvasId ?? ""}`;
+  const effectiveFreezoneAgentId = variant === "freezone" ? freezoneAgentId?.trim() || "main" : null;
+  const chatScopeKey = `${params.project ?? ""}:${variant}:${effectiveFreezoneCanvasId ?? ""}:${effectiveFreezoneAgentId ?? ""}`;
+  const freezoneAgentMatches = useCallback((agentId?: string | null) => {
+    if (variant !== "freezone") return true;
+    return (agentId || "main") === (effectiveFreezoneAgentId || "main");
+  }, [effectiveFreezoneAgentId, variant]);
+  const firstUserMessage = useMemo(
+    () => activeMessages.find((message) => message.role === "user" && message.text.trim().length > 0) ?? null,
+    [activeMessages],
+  );
+  const latestUserMessageForFreezoneTitle = useMemo(
+    () => [...activeMessages].reverse().find((message) => message.role === "user") ?? null,
+    [activeMessages],
+  );
+
+  useEffect(() => {
+    if (variant !== "freezone" || !firstUserMessage || !latestUserMessageForFreezoneTitle) return;
+    onFreezoneUserMessageRef.current?.(firstUserMessage.text.trim(), latestUserMessageForFreezoneTitle.timestamp);
+  }, [firstUserMessage, latestUserMessageForFreezoneTitle, variant]);
 
   useEffect(() => {
     saveCanvasCommandExecutionMode(canvasCommandExecutionMode);
@@ -4948,6 +4979,7 @@ export function SuperChatPanel({
     if (variant === "freezone" && detail.canvasId && effectiveFreezoneCanvasId && detail.canvasId !== effectiveFreezoneCanvasId) {
       return null;
     }
+    if (!freezoneAgentMatches(detail.agentId)) return null;
     const turnId = detail.turnId ?? null;
     const bridgeKey = detail.bridgeKey ?? null;
     const messageId = resolveCanvasCommandApprovalMessageId({
@@ -4970,6 +5002,7 @@ export function SuperChatPanel({
       messageId,
       turnId,
       bridgeKey,
+      agentId: detail.agentId ?? null,
       anchorTextPrefix: detail.anchorTextPrefix,
       surfaceOrder: detail.receivedAt,
       receivedAt,
@@ -4979,7 +5012,7 @@ export function SuperChatPanel({
       commandCount,
       plans: canvasCommandPlansFromEnvelopes(detail.envelopes),
     };
-  }, [activeMessages, effectiveFreezoneCanvasId, latestAssistantMessageId, variant]);
+  }, [activeMessages, effectiveFreezoneCanvasId, freezoneAgentMatches, latestAssistantMessageId, variant]);
 
   const handleCanvasCommandApproval = useCallback((detail: CanvasCommandApprovalEventDetail) => {
     const approval = buildApprovalFromDetail(detail);
@@ -5042,6 +5075,7 @@ export function SuperChatPanel({
     if (variant === "freezone" && detail.canvasId && effectiveFreezoneCanvasId && detail.canvasId !== effectiveFreezoneCanvasId) {
       return;
     }
+    if (!freezoneAgentMatches(detail.agentId)) return;
     const turnId = detail.turnId ?? null;
     const messageId = detail.anchorMessageId
       ?? findCanvasCommandFeedbackMessageId(activeMessages, turnId)
@@ -5057,7 +5091,7 @@ export function SuperChatPanel({
       detail.receivedAt,
     );
     setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApprovalsForResult(current, detail));
-  }, [activeMessages, appendCanvasCommandFeedback, effectiveFreezoneCanvasId, latestAssistantMessageId, variant]);
+  }, [activeMessages, appendCanvasCommandFeedback, effectiveFreezoneCanvasId, freezoneAgentMatches, latestAssistantMessageId, variant]);
 
   useEffect(() => {
     const handleEvent = (event: Event) => {
@@ -5075,12 +5109,16 @@ export function SuperChatPanel({
       const detail = (event as CustomEvent<{
         bridge_key?: string | null;
         canvas_id?: string | null;
+        agent_id?: string | null;
+        agentId?: string | null;
         turn_id?: string | null;
         envelope?: unknown;
         anchorMessageId?: string | null;
         anchorTextPrefix?: string | null;
       }>).detail;
       if (!detail?.bridge_key) return;
+      const requestAgentId = typeof detail.agent_id === "string" ? detail.agent_id : detail.agentId;
+      if (!freezoneAgentMatches(requestAgentId)) return;
       const bridgeKey = detail.bridge_key;
       const requestCanvasId = typeof detail.canvas_id === "string" && detail.canvas_id.trim()
         ? detail.canvas_id
@@ -5128,6 +5166,7 @@ export function SuperChatPanel({
     chat.activeTurnId,
     chat.streamText,
     effectiveFreezoneCanvasId,
+    freezoneAgentMatches,
     variant,
   ]);
 
@@ -5135,6 +5174,7 @@ export function SuperChatPanel({
     const handleCanvasContextActivity = (event: Event) => {
       const detail = (event as CustomEvent<CanvasContextActivityPayload>).detail;
       if (variant === "freezone" && detail.canvas_id && effectiveFreezoneCanvasId && detail.canvas_id !== effectiveFreezoneCanvasId) return;
+      if (!freezoneAgentMatches(detail.agent_id)) return;
       const messageId = detail.turn_id
         ? activeMessages.find((message) => message.turnId === detail.turn_id && message.role === "assistant")?.id ?? `assistant-${detail.turn_id}`
         : latestAssistantMessageId ?? `canvas-context:${detail.received_at ?? Date.now()}`;
@@ -5157,6 +5197,7 @@ export function SuperChatPanel({
       const detail = (event as CustomEvent<CanvasContextToolResultPayload>).detail;
       if (!detail?.bridge_key) return;
       if (variant === "freezone" && detail.canvas_id && effectiveFreezoneCanvasId && detail.canvas_id !== effectiveFreezoneCanvasId) return;
+      if (!freezoneAgentMatches(detail.agent_id)) return;
       const labels = canvasContextLabelsFromResponses(detail.responses);
       const fallbackTurnId =
         typeof detail.turn_id === "string" && detail.turn_id.trim()
@@ -5195,7 +5236,7 @@ export function SuperChatPanel({
       window.removeEventListener(FREEZONE_CANVAS_CONTEXT_ACTIVITY_EVENT, handleCanvasContextActivity);
       window.removeEventListener(FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT, handleCanvasContextResult);
     };
-  }, [activeMessages, effectiveFreezoneCanvasId, latestAssistantMessageId, variant]);
+  }, [activeMessages, effectiveFreezoneCanvasId, freezoneAgentMatches, latestAssistantMessageId, variant]);
 
   const persistCanvasCommandUiEvent = useCallback((
     turnId: string | null | undefined,
@@ -5283,6 +5324,7 @@ export function SuperChatPanel({
           anchorTextPrefix: approval.anchorTextPrefix,
           projectId: params.project,
           canvasId: effectiveFreezoneCanvasId,
+          agentId: approval.agentId,
           result,
         });
         const feedbackKey = canvasCommandFeedbackKey(approval.bridgeKey, approval.turnId, undefined, approval.key);
@@ -5354,6 +5396,7 @@ export function SuperChatPanel({
       anchorTextPrefix: approval.anchorTextPrefix,
       projectId: params.project,
       canvasId: effectiveFreezoneCanvasId,
+      agentId: approval.agentId,
       result,
       cancelled: true,
     });
@@ -6226,6 +6269,7 @@ export function SuperChatPanel({
               searchOpen={searchOpen}
               onToggleSearch={() => setSearchOpen((value) => !value)}
             />
+            {freezoneHeaderActions}
             {onRequestClose && (
               <Button
                 type="button"

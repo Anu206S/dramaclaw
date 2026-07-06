@@ -11,6 +11,7 @@ export type CanvasContextActivityPayload = {
   surface_order?: number;
   bridge_key: string;
   canvas_id: string | null;
+  agent_id?: string | null;
   status: "running" | "done" | "failed";
   labels: string[];
   errors: string[];
@@ -24,6 +25,7 @@ export type CanvasContextToolResultPayload = {
   bridge_key: string;
   project_id: string | null;
   canvas_id: string | null;
+  agent_id?: string | null;
   tool_call_status: "completed" | "cancelled" | "failed";
   canvas_context_status: "resolved" | "failed";
   ok: boolean;
@@ -37,6 +39,7 @@ export function emitCanvasContextActivity({
   anchorTextPrefix,
   bridgeKey,
   canvasId,
+  agentId,
   status,
   labels,
   errors = [],
@@ -47,6 +50,7 @@ export function emitCanvasContextActivity({
   anchorTextPrefix?: string | null;
   bridgeKey: string;
   canvasId?: string | null;
+  agentId?: string | null;
   status: CanvasContextActivityPayload["status"];
   labels: string[];
   errors?: string[];
@@ -61,6 +65,7 @@ export function emitCanvasContextActivity({
     surface_order: surfaceOrder ?? receivedAt ?? Date.now(),
     bridge_key: bridgeKey,
     canvas_id: canvasId ?? null,
+    agent_id: agentId ?? null,
     status,
     labels,
     errors,
@@ -74,6 +79,7 @@ export function reportCanvasContextToolResult({
   bridgeKey,
   projectId,
   canvasId,
+  agentId,
   responses,
   errors = [],
 }: {
@@ -82,6 +88,7 @@ export function reportCanvasContextToolResult({
   bridgeKey?: string | null;
   projectId?: string | null;
   canvasId?: string | null;
+  agentId?: string | null;
   responses?: Array<Record<string, unknown>>;
   errors?: string[];
 }) {
@@ -95,6 +102,7 @@ export function reportCanvasContextToolResult({
     bridge_key: bridgeKey,
     project_id: projectId ?? null,
     canvas_id: canvasId ?? null,
+    agent_id: agentId ?? null,
     tool_call_status: ok ? "completed" : "failed",
     canvas_context_status: ok ? "resolved" : "failed",
     ok,

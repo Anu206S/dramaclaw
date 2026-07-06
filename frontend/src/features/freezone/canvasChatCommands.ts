@@ -136,6 +136,7 @@ export type CanvasChatCommandEnvelope = {
 
 export type CanvasCommandApprovalEventDetail = {
   canvasId?: string | null;
+  agentId?: string | null;
   turnId?: string | null;
   anchorMessageId?: string | null;
   anchorTextPrefix?: string | null;
@@ -147,6 +148,7 @@ export type CanvasCommandApprovalEventDetail = {
 
 export type CanvasCommandResultEventDetail = {
   canvasId?: string | null;
+  agentId?: string | null;
   turnId?: string | null;
   anchorMessageId?: string | null;
   anchorTextPrefix?: string | null;
