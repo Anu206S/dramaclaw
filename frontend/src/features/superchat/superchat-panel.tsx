@@ -4659,6 +4659,12 @@ interface SuperChatPanelProps {
   variant?: SuperChatPanelVariant;
   freezoneCanvasId?: string | null;
   freezoneAgentId?: string | null;
+  connectionEnabled?: boolean;
+  onConnectionStateChange?: (state: {
+    busy: boolean;
+    connected: boolean;
+    connecting: boolean;
+  }) => void;
   canvasId?: string | null;
   currentCanvasMetadata?: Record<string, unknown> | null;
   currentCanvasSelection?: Array<Partial<CanvasNodeReferencePreview> & { nodeId: string; label?: string }>;
@@ -4674,6 +4680,8 @@ export function SuperChatPanel({
   variant = "default",
   freezoneCanvasId = null,
   freezoneAgentId = null,
+  connectionEnabled = true,
+  onConnectionStateChange,
   canvasId = null,
   currentCanvasSelection = [],
   currentCanvasOntologyContext = null,
@@ -4732,6 +4740,7 @@ export function SuperChatPanel({
     surface: variant === "freezone" ? "freezone" : undefined,
     freezoneCanvasId: variant === "freezone" ? freezoneCanvasId ?? canvasId : null,
     freezoneAgentId: variant === "freezone" ? freezoneAgentId : null,
+    connectionEnabled,
   });
   const [pendingCanvasCommandApprovals, setPendingCanvasCommandApprovals] = useState<PendingCanvasCommandApproval[]>([]);
   const [canvasCommandFeedbackByMessageId, setCanvasCommandFeedbackByMessageId] = useState<Record<string, CanvasCommandFeedback[]>>({});
@@ -4751,6 +4760,14 @@ export function SuperChatPanel({
   useEffect(() => {
     onFreezoneUserMessageRef.current = onFreezoneUserMessage;
   }, [onFreezoneUserMessage]);
+
+  useEffect(() => {
+    onConnectionStateChange?.({
+      busy: chat.busy,
+      connected: chat.connected,
+      connecting: chat.connecting,
+    });
+  }, [chat.busy, chat.connected, chat.connecting, onConnectionStateChange]);
 
   const isFreezoneLayout = variant === "freezone";
   const selectedFreezoneNodes = useMemo(

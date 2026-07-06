@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { beforeEach, describe, expect, it } from "vitest";
+import { act, renderHook } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeMessage } from "@/features/superchat/message";
 import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
@@ -11,6 +12,7 @@ import {
   sanitizeMessagesForCache,
   scopeForProjectForTest,
   scopeSessionKeyForTest,
+  useSuperChat,
 } from "@/features/superchat/use-superchat";
 import type { ChatMessage, ChatRole } from "@/features/superchat/types";
 
@@ -250,6 +252,62 @@ describe("Freezone chat scope", () => {
       canvasId: null,
     });
     expect(scopeSessionKeyForTest(director)).toBe("supertale:project:project-a:director");
+  });
+});
+
+describe("useSuperChat websocket lifecycle", () => {
+  const OriginalWebSocket = globalThis.WebSocket;
+
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.restoreAllMocks();
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: OriginalWebSocket,
+      writable: true,
+      configurable: true,
+    });
+  });
+
+  it("does not open a websocket while the panel connection is disabled", () => {
+    vi.useFakeTimers();
+    const sockets: unknown[] = [];
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 0;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send() {}
+      close() {}
+    }
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    renderHook(() =>
+      useSuperChat({
+        project: "project-a",
+        displayName: "Tester",
+        surface: "freezone",
+        freezoneCanvasId: "canvas-a",
+        freezoneAgentId: "agent-2",
+        connectionEnabled: false,
+      }),
+    );
+
+    act(() => {
+      vi.advanceTimersByTime(100);
+    });
+
+    expect(sockets).toHaveLength(0);
   });
 });
 
