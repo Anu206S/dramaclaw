@@ -961,7 +961,7 @@ interface ScriptOperationsPanelProps {
   data: ScriptNodeData;
   references: ScriptReference[];
   /** 与节点本体「重试」共用的提交实例 + 历史（见 ScriptNode 里的 hook 调用）。 */
-  onSubmit: () => Promise<void>;
+  onSubmit: () => Promise<{ scriptResult?: FreezoneStoryScriptResult }>;
   isGenerating: boolean;
   historyRecords: FreezoneGenerationHistoryRecord[];
   historyLoading: boolean;

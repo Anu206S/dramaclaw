@@ -1771,7 +1771,7 @@ export const VideoNode = memo(
       // 在途守卫（与 ImageGenNode 一致）：第 1 条完成就会清 isGenerating，
       // submitDisabled 拦不住「旧批次 N-1 个任务还在跑时重新提交」——旧闭包
       // 会用过期的 completedUrls 覆写新批次的 generationBatch。
-      if (submittingRef.current) return;
+      if (submittingRef.current) return {};
       submittingRef.current = true;
       try {
       const projectId = readUrl().project;
