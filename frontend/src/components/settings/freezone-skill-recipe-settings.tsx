@@ -119,12 +119,13 @@ export function FreezoneSkillRecipeSettings({
   }, [kind]);
 
   const saveItem = async (payload: FreezoneAgentConfigPayload) => {
-    if (!validateCatalogPayload(kind, payload)) {
+    const cleanPayload = stripCatalogMetadata(payload);
+    if (!validateCatalogPayload(kind, cleanPayload)) {
       toast.error(t("settings.freezoneCatalog.saveFailed"));
       return;
     }
     try {
-      await saveCatalogItem.mutateAsync({ kind, payload });
+      await saveCatalogItem.mutateAsync({ kind, payload: cleanPayload });
       toast.success(t("settings.freezoneCatalog.saved"));
       if (kind === "skills") {
         setAddingSkill(false);
@@ -140,9 +141,13 @@ export function FreezoneSkillRecipeSettings({
 
   const toggleItemEnabled = async (item: ManagedCatalogItem, enabled: boolean) => {
     try {
+      const payload =
+        item.builtin && !item.customized
+          ? { id: item.id, enabled }
+          : { ...stripCatalogMetadata(item.payload), enabled };
       await saveCatalogItem.mutateAsync({
         kind,
-        payload: { ...item.payload, enabled },
+        payload,
       });
     } catch {
       toast.error(t("settings.freezoneCatalog.saveFailed"));
@@ -186,8 +191,8 @@ export function FreezoneSkillRecipeSettings({
     const payloads = selectedItems.length > 0 ? selectedItems : catalogItems;
     if (payloads.length === 0) return;
     const exportPayload = payloads.length === 1
-      ? payloads[0].payload
-      : payloads.map((item) => item.payload);
+      ? stripCatalogMetadata(payloads[0].payload)
+      : payloads.map((item) => stripCatalogMetadata(item.payload));
     downloadJson(
       exportPayload,
       `freezone-${kind}-${new Date().toISOString().slice(0, 10)}.json`,
@@ -1530,6 +1535,7 @@ function RatingBandsField({
 
 interface ManagedCatalogItem {
   builtin: boolean;
+  customized: boolean;
   enabled: boolean;
   id: string;
   payload: FreezoneAgentConfigPayload;
@@ -1700,6 +1706,11 @@ function CatalogList({
                   {t("settings.freezoneCatalog.builtIn")}
                 </span>
               ) : null}
+              {item.customized ? (
+                <span className="shrink-0 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] leading-none text-cyan-200">
+                  {t("settings.freezoneCatalog.customized")}
+                </span>
+              ) : null}
             </div>
             <p className="mt-1 truncate text-[11px] text-muted-foreground">{item.description}</p>
           </div>
@@ -1755,6 +1766,7 @@ function toManagedCatalogItem(
   if (kind === "recipes") {
     return {
       builtin: item._catalog_source === "builtin",
+      customized: item._catalog_source === "user" && item._catalog_base_source === "builtin",
       enabled: item.enabled !== false,
       id,
       payload: item,
@@ -1769,6 +1781,7 @@ function toManagedCatalogItem(
   const triggers = typeof item.triggers === "object" && item.triggers ? item.triggers : {};
   return {
     builtin: item._catalog_source === "builtin",
+    customized: item._catalog_source === "user" && item._catalog_base_source === "builtin",
     enabled: item.enabled !== false,
     id,
     payload: item,
@@ -1779,6 +1792,12 @@ function toManagedCatalogItem(
       ...getStringArray((triggers as Record<string, unknown>).keywords),
     ].filter(Boolean),
   };
+}
+
+function stripCatalogMetadata(payload: FreezoneAgentConfigPayload): FreezoneAgentConfigPayload {
+  return Object.fromEntries(
+    Object.entries(payload).filter(([key]) => !key.startsWith("_catalog_")),
+  ) as FreezoneAgentConfigPayload;
 }
 
 function getString(value: unknown) {

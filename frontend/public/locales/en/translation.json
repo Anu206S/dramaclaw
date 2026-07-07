@@ -3686,6 +3686,7 @@
       "selectAll": "Select all",
       "readOnly": "Read-only",
       "builtIn": "Built-in",
+      "customized": "Customized",
       "skillsCount": "{{count}} item(s)",
       "recipesCount": "{{count}} item(s)",
       "selectionCount": "{{selectedCount}} / {{count}} selected",
