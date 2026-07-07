@@ -23,13 +23,11 @@ DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
 STATE_ROOT = DRAMACLAW_ROOT / "state"
 DEFAULT_HERMES_SKILLS = {
     "dramaclaw",
-    "freezone",
     "sketch-correction-worker",
     "sketch-storyboard-director",
-    "workflows",
 }
-DEFAULT_HERMES_PLUGINS = {"dramaclaw", "freezone"}
-DEFAULT_HERMES_TOOLSETS = {"hermes-acp", "freezone-acp"}
+DEFAULT_HERMES_PLUGINS = {"dramaclaw"}
+DEFAULT_HERMES_TOOLSETS = {"hermes-acp"}
 FREEZONE_HERMES_SKILLS = {"freezone", "workflows"}
 FREEZONE_HERMES_PLUGINS = {"freezone"}
 _warned_repo_state_fallback = False
@@ -60,13 +58,11 @@ model:
 
 enabled_toolsets:
   - hermes-acp         # Repo plugins exposed through ACP
-  - freezone-acp       # Xi画 canvas frontend-command bridge tools
   - memory             # hermes built-in cross-session memory
 
 plugins:
   enabled:
     - dramaclaw
-    - freezone
 
 display:
   tool_progress: verbose
