@@ -339,6 +339,32 @@ describe("SettingsDialog tabs", () => {
     expect(rawJson.force_enhancement).toBe(false);
   });
 
+  it("does not save a Freezone Recipe until all required fields are present", () => {
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Recipes" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增" }));
+    fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
+      target: { value: "story-recipe" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("如：电商广告图增强"), {
+      target: { value: "故事 Recipe" },
+    });
+
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+
+    const [actionKeysInput] = screen.getAllByPlaceholderText("输入后按 Enter 或逗号确认");
+    fireEvent.change(actionKeysInput, {
+      target: { value: "story-action" },
+    });
+    fireEvent.keyDown(actionKeysInput, { key: "Enter", code: "Enter" });
+    fireEvent.change(screen.getByPlaceholderText("用于增强生成提示词的系统指令..."), {
+      target: { value: "系统提示" },
+    });
+
+    expect(screen.getByRole("button", { name: "保存" })).not.toBeDisabled();
+  });
+
   it("adds and removes rating band rows in the new Skill editor", () => {
     renderSettingsDialog();
 
@@ -534,6 +560,53 @@ describe("SettingsDialog tabs", () => {
           category: "general",
         }),
       });
+    });
+  });
+
+  it("does not save a Freezone Skill until all required fields are present", async () => {
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增" }));
+    fireEvent.change(screen.getByPlaceholderText("my-skill"), {
+      target: { value: "story-skill" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("适用场景描述"), {
+      target: { value: "故事规则" },
+    });
+
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+    expect(freezoneAgentConfigMocks.save).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByPlaceholderText("输入关键词"), {
+      target: { value: "故事" },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText("输入关键词"), { key: "Enter" });
+
+    expect(screen.getByRole("button", { name: "保存" })).not.toBeDisabled();
+  });
+
+  it("rejects imported Freezone Recipes that miss required fields", async () => {
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Recipes" }));
+    const importInput = screen.getByLabelText("导入");
+    const file = new File(
+      [
+        JSON.stringify({
+          id: "recipe-without-system-prompt",
+          name: "缺字段 Recipe",
+          output_kind: "image",
+          action_keys: ["missing-prompt"],
+        }),
+      ],
+      "recipe.json",
+      { type: "application/json" },
+    );
+    fireEvent.change(importInput, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(freezoneAgentConfigMocks.save).not.toHaveBeenCalled();
     });
   });
 
