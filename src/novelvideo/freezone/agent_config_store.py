@@ -31,16 +31,29 @@ def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> 
     builtin_items_by_id: dict[str, dict] = {}
     for payload in _read_agent_config_items(builtin_agent_catalog_dir(checked_kind)):
         item_id = str(payload["id"])
-        payload.setdefault("_catalog_source", "builtin")
         builtin_items_by_id[item_id] = payload
 
     user_items_by_id = {
         str(payload["id"]): payload
         for payload in _read_agent_config_items(user_agent_config_dir(username, checked_kind))
     }
-    user_items = [user_items_by_id[item_id] for item_id in sorted(user_items_by_id)]
+    user_items: list[dict] = []
+    for item_id in sorted(user_items_by_id):
+        user_payload = user_items_by_id[item_id]
+        if user_payload.get("hidden") is True:
+            continue
+        builtin_payload = builtin_items_by_id.get(item_id)
+        if builtin_payload is not None:
+            merged_payload = {**builtin_payload, **user_payload}
+            merged_payload["_catalog_source"] = "user"
+            merged_payload["_catalog_base_source"] = "builtin"
+            user_items.append(merged_payload)
+            continue
+        user_payload.setdefault("_catalog_source", "user")
+        user_items.append(user_payload)
+
     builtin_items = [
-        builtin_items_by_id[item_id]
+        {**builtin_items_by_id[item_id], "_catalog_source": "builtin"}
         for item_id in sorted(builtin_items_by_id)
         if item_id not in user_items_by_id
     ]
@@ -56,15 +69,16 @@ def save_user_agent_config_item(
     item_id = _validate_item_id(str(payload.get("id") or ""))
     root = user_agent_config_dir(username, kind)
     root.mkdir(parents=True, exist_ok=True)
+    stored_payload = _strip_response_metadata(payload)
 
     target = root / f"{item_id}.json"
     tmp = target.with_suffix(".json.tmp")
     tmp.write_text(
-        json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
+        json.dumps(stored_payload, ensure_ascii=False, indent=2) + "\n",
         encoding="utf-8",
     )
     os.replace(tmp, target)
-    return payload
+    return stored_payload
 
 
 def delete_user_agent_config_item(
@@ -74,7 +88,19 @@ def delete_user_agent_config_item(
     item_id: str,
 ) -> bool:
     checked_id = _validate_item_id(item_id)
-    target = user_agent_config_dir(username, kind) / f"{checked_id}.json"
+    checked_kind = _validate_kind(kind)
+    user_root = user_agent_config_dir(username, checked_kind)
+    target = user_root / f"{checked_id}.json"
+    if _builtin_agent_config_exists(checked_kind, checked_id):
+        user_root.mkdir(parents=True, exist_ok=True)
+        tmp = target.with_suffix(".json.tmp")
+        tmp.write_text(
+            json.dumps({"id": checked_id, "hidden": True}, ensure_ascii=False, indent=2)
+            + "\n",
+            encoding="utf-8",
+        )
+        os.replace(tmp, target)
+        return True
     if not target.exists():
         return False
     target.unlink()
@@ -110,3 +136,11 @@ def _read_agent_config_items(root: Path) -> list[dict]:
             continue
         items.append(payload)
     return items
+
+
+def _builtin_agent_config_exists(kind: AgentConfigKind, item_id: str) -> bool:
+    return (builtin_agent_catalog_dir(kind) / f"{item_id}.json").exists()
+
+
+def _strip_response_metadata(payload: dict) -> dict:
+    return {key: value for key, value in payload.items() if not key.startswith("_catalog_")}

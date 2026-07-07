@@ -105,6 +105,7 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.selectAll": "全选",
         "settings.freezoneCatalog.readOnly": "只读",
         "settings.freezoneCatalog.builtIn": "内置",
+        "settings.freezoneCatalog.customized": "已定制",
         "settings.freezoneCatalog.skillsCount": `共 ${options?.count ?? 0} 项`,
         "settings.freezoneCatalog.recipesCount": `共 ${options?.count ?? 0} 项`,
         "settings.freezoneCatalog.selectionCount": `已选 ${options?.selectedCount ?? 0} / 共 ${options?.count ?? 0} 项`,
@@ -617,6 +618,47 @@ describe("SettingsDialog tabs", () => {
     expect(screen.getByText("内置")).toBeInTheDocument();
     expect(screen.getByText("builtin-skill").closest("article")).toHaveTextContent("内置");
     expect(screen.getByText("user-skill").closest("article")).not.toHaveTextContent("内置");
+  });
+
+  it("marks customized built-in items and toggles pure built-ins with a minimal overlay", async () => {
+    freezoneAgentConfigMocks.items = [
+      {
+        id: "builtin-skill",
+        _catalog_source: "builtin",
+        enabled: true,
+        category: "general",
+        description: "内置规则",
+        triggers: { keywords: ["builtin"] },
+      },
+      {
+        id: "customized-skill",
+        _catalog_source: "user",
+        _catalog_base_source: "builtin",
+        enabled: true,
+        category: "general",
+        description: "用户定制规则",
+        triggers: { keywords: ["customized"] },
+      },
+    ];
+    freezoneAgentConfigMocks.save.mockResolvedValue({});
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Skills" }));
+
+    expect(screen.getByText("builtin-skill").closest("article")).toHaveTextContent("内置");
+    expect(screen.getByText("customized-skill").closest("article")).toHaveTextContent("已定制");
+
+    fireEvent.click(screen.getByRole("switch", { name: "切换 builtin-skill 启用状态" }));
+
+    await waitFor(() => {
+      expect(freezoneAgentConfigMocks.save).toHaveBeenCalledWith({
+        kind: "skills",
+        payload: {
+          id: "builtin-skill",
+          enabled: false,
+        },
+      });
+    });
   });
 
   it("does not save a Freezone Skill until all required fields are present", async () => {

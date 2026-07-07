@@ -3686,6 +3686,7 @@
       "selectAll": "全选",
       "readOnly": "只读",
       "builtIn": "内置",
+      "customized": "已定制",
       "skillsCount": "共 {{count}} 项",
       "recipesCount": "共 {{count}} 项",
       "selectionCount": "已选 {{selectedCount}} / 共 {{count}} 项",

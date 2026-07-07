@@ -89,8 +89,87 @@ def test_agent_config_items_include_builtin_catalog_with_user_override(
 
     assert [item["id"] for item in listed] == ["story-skill", "image-skill"]
     assert listed[0]["description"] == "用户故事规则"
-    assert "_catalog_source" not in listed[0]
+    assert listed[0]["_catalog_source"] == "user"
+    assert listed[0]["_catalog_base_source"] == "builtin"
     assert listed[1]["_catalog_source"] == "builtin"
+
+
+def test_builtin_agent_config_item_can_be_hidden_by_user_overlay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    builtin_root = tmp_path / "agent_catalog" / "builtins"
+    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", builtin_root)
+    skill_root = builtin_root / "skills"
+    skill_root.mkdir(parents=True)
+    (skill_root / "story-skill.json").write_text(
+        json.dumps({"id": "story-skill", "description": "内置故事规则"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    deleted = agent_config_store.delete_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        item_id="story-skill",
+    )
+
+    assert deleted is True
+    assert agent_config_store.list_user_agent_config_items("alice", "skills") == []
+    overlay_path = (
+        tmp_path
+        / "alice"
+        / "_account"
+        / "freezone"
+        / "agent_config"
+        / "skills"
+        / "story-skill.json"
+    )
+    assert json.loads(overlay_path.read_text(encoding="utf-8")) == {
+        "id": "story-skill",
+        "hidden": True,
+    }
+
+
+def test_builtin_agent_config_item_merges_partial_user_overlay(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    builtin_root = tmp_path / "agent_catalog" / "builtins"
+    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", builtin_root)
+    skill_root = builtin_root / "skills"
+    skill_root.mkdir(parents=True)
+    (skill_root / "story-skill.json").write_text(
+        json.dumps(
+            {
+                "id": "story-skill",
+                "description": "内置故事规则",
+                "category": "general",
+                "enabled": True,
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload={"id": "story-skill", "enabled": False},
+    )
+
+    listed = agent_config_store.list_user_agent_config_items("alice", "skills")
+
+    assert listed == [
+        {
+            "id": "story-skill",
+            "description": "内置故事规则",
+            "category": "general",
+            "enabled": False,
+            "_catalog_source": "user",
+            "_catalog_base_source": "builtin",
+        }
+    ]
 
 
 def test_invalid_builtin_catalog_files_are_ignored(
