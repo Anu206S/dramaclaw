@@ -563,6 +563,33 @@ describe("SettingsDialog tabs", () => {
     });
   });
 
+  it("does not render Freezone Skill catalog tags in the list", async () => {
+    freezoneAgentConfigMocks.items = [
+      {
+        id: "social-media",
+        enabled: true,
+        category: "social",
+        description: "社交媒体内容素材制作",
+        triggers: { keywords: ["instagram", "tiktok"] },
+      },
+    ];
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Skills" }));
+
+    expect(screen.getByText("social-media")).toBeInTheDocument();
+    expect(screen.getByText("社交媒体内容素材制作")).toBeInTheDocument();
+    expect(screen.queryByText("instagram")).not.toBeInTheDocument();
+    expect(screen.queryByText("tiktok")).not.toBeInTheDocument();
+    expect(screen.queryByText("social")).not.toBeInTheDocument();
+
+    fireEvent.change(screen.getByPlaceholderText("搜索 Skill"), {
+      target: { value: "instagram" },
+    });
+
+    expect(screen.getByText("social-media")).toBeInTheDocument();
+  });
+
   it("does not save a Freezone Skill until all required fields are present", async () => {
     renderSettingsDialog();
 

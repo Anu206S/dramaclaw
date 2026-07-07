@@ -15,6 +15,7 @@ import {
   Maximize2,
   Mic,
   MicOff,
+  Package,
   Plus,
   Play,
   Pin,
@@ -46,6 +47,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { apiCall } from "@/api/client";
 import {
   Dialog,
   DialogClose,
@@ -119,6 +121,14 @@ import {
   type CanvasCommandExecutionMode,
 } from "@/features/superchat/canvas-command-display";
 import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-execution-narration";
+import {
+  filterFreezoneSkillSuggestions,
+  getFreezoneSkillSlashQuery,
+  insertFreezoneSkillMention,
+  moveFreezoneSkillSuggestionIndex,
+  toFreezoneSkillSuggestions,
+} from "@/features/superchat/freezone-skill-suggestions";
+import type { FreezoneAgentConfigPayload } from "@/lib/queries/freezone-agent-config";
 
 type SpecMediaDetailSection = {
   title: string;
@@ -4718,6 +4728,9 @@ export function SuperChatPanel({
   const [recording, setRecording] = useState(false);
   const [dragFileState, setDragFileState] = useState<"valid" | "invalid" | null>(null);
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
+  const [freezoneSkillCatalog, setFreezoneSkillCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
+  const [freezoneSkillCatalogLoaded, setFreezoneSkillCatalogLoaded] = useState(false);
+  const [activeFreezoneSkillSuggestionIndex, setActiveFreezoneSkillSuggestionIndex] = useState(0);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
   const restoreDraftFocusRef = useRef(false);
@@ -4772,6 +4785,59 @@ export function SuperChatPanel({
   }, [chat.busy, chat.connected, chat.connecting, onConnectionStateChange]);
 
   const isFreezoneLayout = variant === "freezone";
+  const freezoneSkillSuggestions = useMemo(
+    () => toFreezoneSkillSuggestions(freezoneSkillCatalog),
+    [freezoneSkillCatalog],
+  );
+  const freezoneSkillSlashQuery = isFreezoneLayout ? getFreezoneSkillSlashQuery(draft) : null;
+  const visibleFreezoneSkillSuggestions = useMemo(
+    () => freezoneSkillSlashQuery === null
+      ? []
+      : filterFreezoneSkillSuggestions(freezoneSkillSuggestions, freezoneSkillSlashQuery).slice(0, 8),
+    [freezoneSkillSlashQuery, freezoneSkillSuggestions],
+  );
+  const showFreezoneSkillSuggestions =
+    isFreezoneLayout
+    && freezoneSkillSlashQuery !== null
+    && visibleFreezoneSkillSuggestions.length > 0;
+  const insertFreezoneSkillSuggestion = useCallback((skillId: string) => {
+    setDraft((current) => insertFreezoneSkillMention(current, skillId));
+    setActiveFreezoneSkillSuggestionIndex(0);
+    restoreDraftFocusRef.current = true;
+  }, []);
+
+  useEffect(() => {
+    if (!isFreezoneLayout || freezoneSkillSlashQuery === null || freezoneSkillCatalogLoaded) return;
+    let cancelled = false;
+    void apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills")
+      .then((items) => {
+        if (cancelled) return;
+        setFreezoneSkillCatalog(items);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFreezoneSkillCatalog([]);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setFreezoneSkillCatalogLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [freezoneSkillCatalogLoaded, freezoneSkillSlashQuery, isFreezoneLayout]);
+
+  useEffect(() => {
+    setActiveFreezoneSkillSuggestionIndex(0);
+  }, [freezoneSkillSlashQuery]);
+
+  useEffect(() => {
+    setActiveFreezoneSkillSuggestionIndex((index) =>
+      visibleFreezoneSkillSuggestions.length > 0
+        ? Math.min(index, visibleFreezoneSkillSuggestions.length - 1)
+        : 0,
+    );
+  }, [visibleFreezoneSkillSuggestions.length]);
   const selectedFreezoneNodes = useMemo(
     () => (isFreezoneLayout ? getSelectedFreezoneNodes(canvasNodes, selectedCanvasNodeId) : []),
     [canvasNodes, isFreezoneLayout, selectedCanvasNodeId],
@@ -6549,6 +6615,42 @@ export function SuperChatPanel({
                 {dragFileState === "invalid" ? t("aiAssistant.unsupportedDropFiles") : t("aiAssistant.dropFiles")}
               </div>
             )}
+            {showFreezoneSkillSuggestions && (
+              <div className="border-b border-white/10 bg-black/20 px-3 py-2.5">
+                <div className="mb-1.5 px-0.5 text-xs text-muted-foreground/85">
+                  技能
+                </div>
+                <div className="max-h-52 overflow-y-auto pr-1">
+                  {visibleFreezoneSkillSuggestions.map((skill, index) => (
+                    <button
+                      key={skill.id}
+                      type="button"
+                      className={cn(
+                        "flex h-8 w-full items-center gap-2 rounded-md px-1 text-left text-sm transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06] focus-visible:outline-none",
+                        activeFreezoneSkillSuggestionIndex === index && "bg-white/[0.06]",
+                      )}
+                      onMouseDown={(event) => {
+                        event.preventDefault();
+                      }}
+                      onMouseEnter={() => setActiveFreezoneSkillSuggestionIndex(index)}
+                      onClick={() => insertFreezoneSkillSuggestion(skill.id)}
+                    >
+                      <Package className="size-3.5 shrink-0 text-muted-foreground/80" />
+                      <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                        <span className="shrink-0 text-[13px] font-medium text-foreground/90">
+                          {skill.label}
+                        </span>
+                        {skill.description && (
+                          <span className="truncate text-xs text-muted-foreground/65">
+                            {skill.description}
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  ))}
+                </div>
+              </div>
+            )}
             {visibleComposerAttachments.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
                 {visibleComposerAttachments.map((attachment) => (
@@ -6655,6 +6757,32 @@ export function SuperChatPanel({
                 setDraft(event.target.value);
               }}
               onKeyDown={(event) => {
+                if (
+                  showFreezoneSkillSuggestions
+                  && (event.key === "ArrowDown" || event.key === "ArrowUp")
+                ) {
+                  event.preventDefault();
+                  setActiveFreezoneSkillSuggestionIndex((index) =>
+                    moveFreezoneSkillSuggestionIndex(
+                      index,
+                      event.key === "ArrowDown" ? 1 : -1,
+                      visibleFreezoneSkillSuggestions.length,
+                    ),
+                  );
+                  return;
+                }
+                if (
+                  showFreezoneSkillSuggestions
+                  && event.key === "Enter"
+                  && !event.shiftKey
+                  && visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex]
+                ) {
+                  event.preventDefault();
+                  insertFreezoneSkillSuggestion(
+                    visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex].id,
+                  );
+                  return;
+                }
                 if (
                   queuedMessages.length > 0
                   && draft.trim().length === 0
