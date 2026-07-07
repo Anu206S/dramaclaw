@@ -80,6 +80,11 @@ from novelvideo.config import IMAGE_GENERATION_SELECTIONS, image_generation_sele
 from novelvideo.director_world import DirectorWorldService
 from novelvideo.director_world.staging_prop_ai import generate_ai_staging_prop
 from novelvideo.freezone import canvas_store
+from novelvideo.freezone.agent_config_store import (
+    delete_user_agent_config_item,
+    list_user_agent_config_items,
+    save_user_agent_config_item,
+)
 from novelvideo.freezone.audio_node import (
     create_user_audio_voice,
     freezone_audio_eleven_music_output_path,
@@ -2142,6 +2147,7 @@ TAG_FREEZONE_ASSETS = "freezone-assets"
 TAG_FREEZONE_COMMIT = "freezone-commit"
 TAG_FREEZONE_JOBS = "freezone-jobs"
 TAG_FREEZONE_SKILLS = "freezone-skills"
+TAG_FREEZONE_AGENT_CONFIG = "freezone-agent-config"
 
 CANVAS_EVENT_SCHEMA_VERSION = "canvas_event.v1"
 MAINLINE_SKETCH_IMAGE_SIZE = "1K"
@@ -3890,6 +3896,44 @@ async def _review_frame_text(
 @router.get("/freezone/skills", tags=[TAG_FREEZONE_SKILLS])
 async def freezone_skills(user: dict = Depends(get_api_user)):
     return {"ok": True, "data": [skill.model_dump(mode="json") for skill in list_skills()]}
+
+
+@router.get("/freezone/agent-config/{kind}", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def list_freezone_agent_config(kind: str, user: dict = Depends(get_api_user)):
+    username = str(user.get("username") or "")
+    try:
+        items = list_user_agent_config_items(username, kind)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": items}
+
+
+@router.post("/freezone/agent-config/{kind}", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def save_freezone_agent_config_item(
+    kind: str,
+    payload: Annotated[dict, Body()],
+    user: dict = Depends(get_api_user),
+):
+    username = str(user.get("username") or "")
+    try:
+        item = save_user_agent_config_item(username=username, kind=kind, payload=payload)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": item}
+
+
+@router.delete("/freezone/agent-config/{kind}/{item_id}", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def delete_freezone_agent_config_item(
+    kind: str,
+    item_id: str,
+    user: dict = Depends(get_api_user),
+):
+    username = str(user.get("username") or "")
+    try:
+        deleted = delete_user_agent_config_item(username=username, kind=kind, item_id=item_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": {"deleted": deleted}}
 
 
 # ============================================================
