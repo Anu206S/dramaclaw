@@ -1529,6 +1529,7 @@ function RatingBandsField({
 }
 
 interface ManagedCatalogItem {
+  builtin: boolean;
   enabled: boolean;
   id: string;
   payload: FreezoneAgentConfigPayload;
@@ -1694,6 +1695,11 @@ function CatalogList({
               <h4 className="truncate font-mono text-[13px] font-semibold text-foreground">
                 {item.id}
               </h4>
+              {item.builtin ? (
+                <span className="shrink-0 rounded border border-border/70 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+                  {t("settings.freezoneCatalog.builtIn")}
+                </span>
+              ) : null}
             </div>
             <p className="mt-1 truncate text-[11px] text-muted-foreground">{item.description}</p>
           </div>
@@ -1748,6 +1754,7 @@ function toManagedCatalogItem(
   const id = typeof item.id === "string" ? item.id : "";
   if (kind === "recipes") {
     return {
+      builtin: item._catalog_source === "builtin",
       enabled: item.enabled !== false,
       id,
       payload: item,
@@ -1761,6 +1768,7 @@ function toManagedCatalogItem(
   }
   const triggers = typeof item.triggers === "object" && item.triggers ? item.triggers : {};
   return {
+    builtin: item._catalog_source === "builtin",
     enabled: item.enabled !== false,
     id,
     payload: item,

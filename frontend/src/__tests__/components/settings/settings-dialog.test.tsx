@@ -590,6 +590,35 @@ describe("SettingsDialog tabs", () => {
     expect(screen.getByText("social-media")).toBeInTheDocument();
   });
 
+  it("marks built-in Freezone catalog items in the list", async () => {
+    freezoneAgentConfigMocks.items = [
+      {
+        id: "builtin-skill",
+        _catalog_source: "builtin",
+        enabled: true,
+        category: "general",
+        description: "内置规则",
+        triggers: { keywords: ["builtin"] },
+      },
+      {
+        id: "user-skill",
+        enabled: true,
+        category: "general",
+        description: "用户规则",
+        triggers: { keywords: ["user"] },
+      },
+    ];
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Skills" }));
+
+    expect(screen.getByText("builtin-skill")).toBeInTheDocument();
+    expect(screen.getByText("user-skill")).toBeInTheDocument();
+    expect(screen.getByText("内置")).toBeInTheDocument();
+    expect(screen.getByText("builtin-skill").closest("article")).toHaveTextContent("内置");
+    expect(screen.getByText("user-skill").closest("article")).not.toHaveTextContent("内置");
+  });
+
   it("does not save a Freezone Skill until all required fields are present", async () => {
     renderSettingsDialog();
 

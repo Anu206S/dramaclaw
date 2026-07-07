@@ -93,7 +93,7 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
           <DialogTitle>{t("settings.title")}</DialogTitle>
         </DialogHeader>
 
-        <div className="grid min-h-0 grid-cols-[132px_minmax(0,1fr)] overflow-hidden">
+        <div className="grid min-h-0 grid-cols-[152px_minmax(0,1fr)] overflow-hidden">
           <div
             role="tablist"
             aria-label={t("settings.title")}
@@ -167,7 +167,7 @@ function SettingsSideTab({
       )}
     >
       {active ? <span className="absolute left-0 h-4 w-0.5 rounded-full bg-muted-foreground/80" /> : null}
-      <span className="truncate">{children}</span>
+      <span className="whitespace-nowrap">{children}</span>
     </button>
   );
 }
