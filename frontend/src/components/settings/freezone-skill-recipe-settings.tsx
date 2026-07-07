@@ -1694,14 +1694,6 @@ function CatalogList({
               <h4 className="truncate font-mono text-[13px] font-semibold text-foreground">
                 {item.id}
               </h4>
-              {item.tags.map((tag) => (
-                <span
-                  key={tag}
-                  className="rounded border border-border/70 px-1.5 py-0.5 text-[10px] text-muted-foreground"
-                >
-                  {tag}
-                </span>
-              ))}
             </div>
             <p className="mt-1 truncate text-[11px] text-muted-foreground">{item.description}</p>
           </div>
