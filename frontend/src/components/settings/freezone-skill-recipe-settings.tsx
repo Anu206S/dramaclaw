@@ -119,6 +119,10 @@ export function FreezoneSkillRecipeSettings({
   }, [kind]);
 
   const saveItem = async (payload: FreezoneAgentConfigPayload) => {
+    if (!validateCatalogPayload(kind, payload)) {
+      toast.error(t("settings.freezoneCatalog.saveFailed"));
+      return;
+    }
     try {
       await saveCatalogItem.mutateAsync({ kind, payload });
       toast.success(t("settings.freezoneCatalog.saved"));
@@ -222,13 +226,17 @@ export function FreezoneSkillRecipeSettings({
     try {
       const parsed = JSON.parse(await file.text()) as unknown;
       const payloads = Array.isArray(parsed) ? parsed : [parsed];
-      for (const payload of payloads) {
-        if (!payload || typeof payload !== "object" || Array.isArray(payload)) {
-          throw new Error("invalid json");
-        }
+      const normalizedPayloads = payloads.map((payload) => {
+        if (!isPlainObject(payload)) throw new Error("invalid json");
+        return payload as FreezoneAgentConfigPayload;
+      });
+      if (!normalizedPayloads.every((payload) => validateCatalogPayload(kind, payload))) {
+        throw new Error("invalid catalog payload");
+      }
+      for (const payload of normalizedPayloads) {
         await saveCatalogItem.mutateAsync({
           kind,
-          payload: payload as FreezoneAgentConfigPayload,
+          payload,
         });
       }
       toast.success(t("settings.freezoneCatalog.imported"));
@@ -451,7 +459,7 @@ function NewRecipeEditor({
     () => JSON.stringify(rawRecipeJson, null, 2),
     [rawRecipeJson],
   );
-  const canSave = recipeDraft.id.trim().length > 0 && !saving;
+  const canSave = isValidRecipeDraft(recipeDraft) && !saving;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -736,7 +744,7 @@ function NewSkillEditor({
     [initialPayload, ratingBands, skillDraft, textReviewItems, visualReviewItems],
   );
   const rawSkillJsonText = useMemo(() => JSON.stringify(rawSkillJson, null, 2), [rawSkillJson]);
-  const canSave = skillDraft.id.trim().length > 0 && !saving;
+  const canSave = isValidSkillDraft(skillDraft) && !saving;
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -1006,12 +1014,54 @@ function isRecipeGenerationType(value: unknown): value is RecipeGenerationType {
   return value === "image" || value === "video" || value === "audio" || value === "text";
 }
 
+function isValidSkillDraft(draft: SkillDraft) {
+  return (
+    draft.id.trim().length > 0 &&
+    draft.category.trim().length > 0 &&
+    draft.description.trim().length > 0 &&
+    draft.keywords.some((keyword) => keyword.trim().length > 0)
+  );
+}
+
+function isValidRecipeDraft(draft: RecipeDraft) {
+  return (
+    draft.id.trim().length > 0 &&
+    draft.name.trim().length > 0 &&
+    isRecipeGenerationType(draft.outputKind) &&
+    draft.actionKeys.some((key) => key.trim().length > 0) &&
+    draft.systemPrompt.trim().length > 0
+  );
+}
+
+function validateCatalogPayload(kind: FreezoneCatalogKind, payload: FreezoneAgentConfigPayload) {
+  if (kind === "skills") {
+    const triggers = getRecord(payload.triggers);
+    return (
+      getString(payload.id).trim().length > 0 &&
+      getString(payload.category).trim().length > 0 &&
+      getString(payload.description).trim().length > 0 &&
+      getStringArray(triggers.keywords).some((keyword) => keyword.trim().length > 0)
+    );
+  }
+  return (
+    getString(payload.id).trim().length > 0 &&
+    getString(payload.name).trim().length > 0 &&
+    isRecipeGenerationType(payload.output_kind) &&
+    getStringArray(payload.action_keys).some((key) => key.trim().length > 0) &&
+    getString(payload.system_prompt).trim().length > 0
+  );
+}
+
 function optionalNumberText(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
 }
 
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return Boolean(value) && typeof value === "object" && !Array.isArray(value);
+}
+
 function getRecord(value: unknown): Record<string, unknown> {
-  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+  return isPlainObject(value) ? value : {};
 }
 
 function getRecordArray(value: unknown): Array<Record<string, unknown>> {
