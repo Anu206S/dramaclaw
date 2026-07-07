@@ -2,12 +2,20 @@
 // Copyright (c) 2026 ClaymoreLab
 import { useQuery } from "@tanstack/react-query";
 
+import {
+  BillingRuleNotConfiguredError,
+  jsonWithBackendError,
+} from "@/lib/api-errors";
 import { api } from "@/lib/api";
 import type { OkResponse } from "@/types/api";
 
 export type GenerationCreditCost = {
   cost: number;
   display: string;
+  unit?: "call" | "item" | "second" | "token" | "character" | string;
+  unit_cost?: number;
+  quantity?: number;
+  params?: Record<string, unknown>;
 };
 
 export type GenerationCreditCostOptions = {
@@ -49,7 +57,8 @@ export function useGenerationCreditCost(
     cleanKind === "model" ||
     cleanKind === "image_selection" ||
     cleanKind === "fixed_image" ||
-    cleanKind === "video_backend";
+    cleanKind === "video_backend" ||
+    cleanKind === "feature";
   return useQuery({
     queryKey: generationCreditCostQueryKey(cleanKind, cleanValue, {
       params: options.params,
@@ -59,8 +68,8 @@ export function useGenerationCreditCost(
       imageRole: cleanImageRole,
     }),
     queryFn: ({ signal }) =>
-      api
-        .get("api/v1/generation-credit-cost", {
+      jsonWithBackendError<OkResponse<GenerationCreditCost>>(
+        api.get("api/v1/generation-credit-cost", {
           searchParams: {
             kind: cleanKind,
             ...(cleanSurface ? { surface: cleanSurface } : {}),
@@ -71,9 +80,12 @@ export function useGenerationCreditCost(
             ...(cleanImageRole ? { image_role: cleanImageRole } : {}),
           },
           signal,
-        })
-        .json<OkResponse<GenerationCreditCost>>(),
+          throwHttpErrors: false,
+        }),
+      ),
     enabled: !!cleanKind && (!requiresValue || !!cleanValue),
+    retry: (failureCount, error) =>
+      !(error instanceof BillingRuleNotConfiguredError) && failureCount < 3,
     staleTime: 60_000,
   });
 }

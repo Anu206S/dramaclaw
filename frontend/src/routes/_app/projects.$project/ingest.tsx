@@ -28,13 +28,20 @@ import {
   useStartIngest,
   useUploadNovel,
   type FormatCheck,
+  type UploadResult,
 } from "@/lib/queries/ingest";
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import { useStyles } from "@/lib/queries/styles";
 import { useCharacters } from "@/lib/queries/characters";
 import { useCancelTask } from "@/lib/queries/tasks";
+import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { useTaskStream } from "@/hooks/use-task-stream";
 import { queryKeys } from "@/lib/query-keys";
+import {
+  backendErrorToastMessage,
+  BillingRuleNotConfiguredError,
+} from "@/lib/api-errors";
+import { CreditCostInline } from "@/components/credit-cost-inline";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
@@ -227,8 +234,8 @@ function formatSize(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
 }
 
-function errorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+function countBillableNovelChars(text: string): number {
+  return text ? text.replace(/[\s\u3000]+/g, "").length : 0;
 }
 
 function hiddenImportedPreviewKey(project: string): string {
@@ -343,6 +350,7 @@ function UploadedFileCard({
   isIngesting,
   canStart,
   isStarting,
+  ingestCostDisplay,
   onStart,
   onCancel,
   isCancelling,
@@ -358,6 +366,7 @@ function UploadedFileCard({
   isIngesting: boolean;
   canStart: boolean;
   isStarting: boolean;
+  ingestCostDisplay?: string | null;
   onStart: () => void;
   onCancel: () => void;
   isCancelling: boolean;
@@ -447,6 +456,7 @@ function UploadedFileCard({
                     <Play className="size-3.5 fill-current" />
                   )}
                   {isStarting ? t("ingest.processing") : t("ingest.startIngest")}
+                  <CreditCostInline display={ingestCostDisplay} />
                 </Button>
               )}
               {/* 导入完成后去掉「重新上传」「删除」：已导入的小说不再允许就地换文件
@@ -659,10 +669,7 @@ export function IngestPageContent({ project }: { project: string }) {
   const queryClient = useQueryClient();
 
   // Upload state
-  const [uploadedFile, setUploadedFile] = useState<{
-    filename: string;
-    size: number;
-  } | null>(null);
+  const [uploadedFile, setUploadedFile] = useState<UploadResult | null>(null);
   const [uploadedFileSource, setUploadedFileSource] =
     useState<UploadedFileSource | null>(null);
   const [inputMode, setInputMode] = useState<InputMode>("upload");
@@ -700,6 +707,29 @@ export function IngestPageContent({ project }: { project: string }) {
   // Re-import warning if characters already exist
   const { data: charactersRes } = useCharacters(project);
   const hasCharacters = (charactersRes?.data?.length ?? 0) > 0;
+  const pastedBillableChars = useMemo(
+    () => countBillableNovelChars(pastedText.trim()),
+    [pastedText],
+  );
+  const billingBillableChars =
+    inputMode === "paste" && pastedBillableChars > 0
+      ? pastedBillableChars
+      : typeof uploadedFile?.billable_chars === "number"
+        ? uploadedFile.billable_chars
+        : typeof chaptersData?.billable_chars === "number"
+          ? chaptersData.billable_chars
+          : null;
+  const ingestFeatureCost = useGenerationCreditCost("feature", "ingest_fast", {
+    quantity: billingBillableChars && billingBillableChars > 0
+      ? billingBillableChars
+      : undefined,
+  });
+  const ingestFeatureCostData = ingestFeatureCost.data?.data;
+  const ingestFeatureCostDisplay =
+    ingestFeatureCostData?.display ??
+    (ingestFeatureCost.error instanceof BillingRuleNotConfiguredError
+      ? t("common.billingRuleNotConfiguredShort")
+      : null);
 
   // SSE task streaming
   const [ingestStarted, setIngestStarted] = useState(false);
@@ -837,7 +867,7 @@ export function IngestPageContent({ project }: { project: string }) {
         toast.success(`${t("common.upload")} ✓ — ${result.data.filename}`);
         warnFormatCheck(result.data.format_check, result.data.filename);
       } catch (error) {
-        toast.error(errorMessage(error, t("common.error")));
+        toast.error(backendErrorToastMessage(error, t));
       }
     },
     [uploadMutation, t, warnFormatCheck],
@@ -950,7 +980,7 @@ export function IngestPageContent({ project }: { project: string }) {
       setIngestFileStatus("importing");
     } catch (error) {
       setIngestFileStatus("failed");
-      const message = errorMessage(error, t("common.error"));
+      const message = backendErrorToastMessage(error, t);
       setIngestError(message);
       toast.error(message);
     }
@@ -986,6 +1016,12 @@ export function IngestPageContent({ project }: { project: string }) {
             sum + (ch.word_count ?? ch.char_count ?? ch.content?.length ?? 0),
           0,
         );
+  const billableChars =
+    typeof uploadedFile?.billable_chars === "number"
+      ? uploadedFile.billable_chars
+      : typeof chaptersData?.billable_chars === "number"
+        ? chaptersData.billable_chars
+        : totalChars;
   const totalCharsUnknown = totalChars === 0 && !chaptersData?.total_chars;
   const isStarting = updateProject.isPending || startIngestMutation.isPending;
 
@@ -1282,6 +1318,7 @@ export function IngestPageContent({ project }: { project: string }) {
                   {isStarting || ingestStarted
                     ? t("ingest.processing")
                     : t("ingest.startIngest")}
+                  <CreditCostInline display={ingestFeatureCostDisplay} />
                 </Button>
               </div>
             </motion.section>
@@ -1299,6 +1336,7 @@ export function IngestPageContent({ project }: { project: string }) {
                   isIngesting={ingestStarted}
                   canStart={!!uploadedFile && !ingestSubmitted}
                   isStarting={isStarting}
+                  ingestCostDisplay={ingestFeatureCostDisplay}
                   onStart={handleStartIngest}
                   onCancel={handleCancelIngest}
                   isCancelling={cancelTask.isPending}
@@ -1361,7 +1399,7 @@ export function IngestPageContent({ project }: { project: string }) {
                   </h2>
 
                   {/* Stat cards */}
-                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-3 sm:grid-cols-5">
                     <StatCard
                       label={t("ingest.statFilename")}
                       value={
@@ -1380,6 +1418,14 @@ export function IngestPageContent({ project }: { project: string }) {
                         totalCharsUnknown
                           ? <span className="text-muted-foreground/60">—</span>
                           : totalChars.toLocaleString()
+                      }
+                    />
+                    <StatCard
+                      label={t("ingest.statBillableChars")}
+                      value={
+                        totalCharsUnknown
+                          ? <span className="text-muted-foreground/60">—</span>
+                          : billableChars.toLocaleString()
                       }
                     />
                     <StatCard

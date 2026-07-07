@@ -27,7 +27,8 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
-import { readUrl, rememberLastCanvas, writeUrl } from "@/lib/url-params";
+import { currentCanvasParam } from "@/lib/app-router";
+import { rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import {
@@ -797,7 +798,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
 
   useEffect(() => {
     rememberLastCanvas(projectId, canvasId);
-    if (canvasId !== "default" && readUrl().canvas !== canvasId) {
+    if (canvasId !== "default" && currentCanvasParam() !== canvasId) {
       writeUrl({ canvas: canvasId }, { replace: true, notify: false });
     }
   }, [canvasId, projectId]);

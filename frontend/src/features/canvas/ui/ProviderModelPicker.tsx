@@ -48,7 +48,7 @@ export interface ModelOption {
 
 export const SHARED_PROVIDERS: ProviderOption[] = [
   { id: 'newapi', label: 'DramaClawAPI' },
-  { id: 'huimeng', label: '惠盟 / HuiMeng' },
+  { id: 'huimeng', label: '绘梦 / HuiMeng' },
   { id: 'openrouter', label: 'OpenRouter' },
   { id: 'openai', label: 'OpenAI' },
 ];
@@ -93,7 +93,7 @@ export const DEFAULT_UPSCALE_MODEL_ID = 'newapi_gpt_image2';
 // /freezone/video/gen so we don't need a separate apiModel mapping.
 export const VIDEO_PROVIDERS: ProviderOption[] = [
   { id: 'seedance', label: 'Seedance' },
-  { id: 'huimeng', label: '惠盟 / HuiMeng' },
+  { id: 'huimeng', label: '绘梦 / HuiMeng' },
 ];
 
 export const VIDEO_MODELS: ModelOption[] = [
@@ -153,12 +153,22 @@ export const VIDEO_MODELS: ModelOption[] = [
     minDuration: 2,
     maxDuration: 12,
   },
+  {
+    id: 'newapi_grok-video-channel',
+    providerId: 'huimeng',
+    apiModel: 'newapi_grok-video-channel',
+    label: 'Grok Video Channel',
+    resolutionOptions: ['720p', '480p'],
+    minDuration: 6,
+    maxDuration: 30,
+  },
 ];
 
 // Matches the backend `FreezoneVideoGenRequest.model` default. The picker
 // hydrates the live list via /freezone/video/models, but this id is what the
-// canvas store uses on first node creation before that fetch resolves.
-export const DEFAULT_VIDEO_MODEL_ID = 'newapi_seedance-2.0-fast';
+// canvas store uses on first node creation before that fetch resolves (and
+// when no previously-picked model has been remembered).
+export const DEFAULT_VIDEO_MODEL_ID = 'newapi_seedance-2.0';
 
 export type ProviderModelDomain = 'image' | 'video';
 

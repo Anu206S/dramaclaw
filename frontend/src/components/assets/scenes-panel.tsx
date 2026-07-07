@@ -34,7 +34,11 @@ import {
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { useAssetFocus } from "@/hooks/use-asset-focus";
 import { useNavigateToAsset } from "@/hooks/use-assets-deep-link";
-import { backendErrorToastMessage } from "@/lib/api-errors";
+import {
+  backendErrorToastMessage,
+  BillingRuleNotConfiguredError,
+} from "@/lib/api-errors";
+import { CreditCostInline } from "@/components/credit-cost-inline";
 import { Button } from "@/components/ui/button";
 import { EMPTY_STATE_ACTION_BUTTON_CLASS } from "@/components/ui/empty-state-styles";
 import {
@@ -61,6 +65,10 @@ import {
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { useTaskController } from "@/hooks/use-task-controller";
+import {
+  sceneReferenceAssetScope,
+  stageAssetScope,
+} from "@/lib/task-scope";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
 import { sceneTypeLabel, sceneTypeOptions } from "@/lib/scene-type";
 import { timeOfDayLabel, timeOfDayOptions } from "@/lib/time-of-day";
@@ -607,12 +615,20 @@ function SceneAssetCardController({
   const generateStagePly = useGenerateScene3gsPlyAsync(project, scene.name);
   const saveDirectorWorld = useSaveSceneDirectorWorld(project, scene.name);
   const clearDirectorWorld = useClearSceneDirectorWorld(project, scene.name);
+  // Reconcile keys must reproduce the BE-hashed task scope exactly (see
+  // task-scope.ts) — a human-readable placeholder never matches the row stored
+  // on `/tasks`, so loading state is silently dropped after a refresh.
+  // Pano runs are keyed by source: when a master exists the BE step is
+  // `pano_from_master`, otherwise `pano_from_text` (mirrors the card's
+  // `panoSource = hasMaster ? "master" : "text"`).
+  const hasMaster = Boolean(resolveMediaUrl(scene.master_url));
+  const panoStep = hasMaster ? "pano_from_master" : "pano_from_text";
   const masterTask = useTaskController({
     key: {
       taskType: "scene_reference_asset",
       project,
       episode: 0,
-      scope: `scene:${scene.name}:master`,
+      scope: sceneReferenceAssetScope(scene.name, "master"),
     },
     invalidateKeys: [queryKeys.scenes(project)],
   });
@@ -621,7 +637,7 @@ function SceneAssetCardController({
       taskType: "stage_asset",
       project,
       episode: 0,
-      scope: `scene:${scene.name}:pano`,
+      scope: stageAssetScope(scene.name, panoStep),
     },
     invalidateKeys: [queryKeys.scenes(project)],
   });
@@ -630,7 +646,7 @@ function SceneAssetCardController({
       taskType: "scene_reference_asset",
       project,
       episode: 0,
-      scope: `scene:${scene.name}:reverse`,
+      scope: sceneReferenceAssetScope(scene.name, "reverse_master"),
     },
     invalidateKeys: [queryKeys.scenes(project)],
   });
@@ -639,7 +655,7 @@ function SceneAssetCardController({
       taskType: "stage_asset",
       project,
       episode: 0,
-      scope: `scene:${scene.name}:single_face_sharp`,
+      scope: stageAssetScope(scene.name, "single_face_sharp"),
     },
     invalidateKeys: [queryKeys.scenes(project)],
     onComplete: () => setStagePlySource(null),
@@ -650,7 +666,7 @@ function SceneAssetCardController({
       taskType: "stage_asset",
       project,
       episode: 0,
-      scope: `scene:${scene.name}:pano_sharp`,
+      scope: stageAssetScope(scene.name, "pano_sharp"),
     },
     invalidateKeys: [queryKeys.scenes(project)],
     onComplete: () => setStagePlySource(null),
@@ -1104,6 +1120,12 @@ export function ScenesPanel({
   const updateScene = useUpdateScene(project, editing?.name ?? "");
   const deleteScene = useDeleteScene(project);
   const buildScenes = useBuildScenes(project);
+  const buildScenesCost = useGenerationCreditCost("feature", "build_scenes");
+  const buildScenesCostDisplay =
+    buildScenesCost.data?.data.display ??
+    (buildScenesCost.error instanceof BillingRuleNotConfiguredError
+      ? t("common.billingRuleNotConfiguredShort")
+      : null);
   const refIndex = useAssetReferenceIndex(project);
 
   const allItems = scenes.data?.data ?? [];
@@ -1212,9 +1234,15 @@ export function ScenesPanel({
   }
 
   async function handleBuildScenes() {
-    const res = await buildScenes.mutateAsync();
+    let res;
+    try {
+      res = await buildScenes.mutateAsync();
+    } catch (err) {
+      toast.error(backendErrorToastMessage(err, t));
+      return;
+    }
     if (isErrorResponse(res)) {
-      toast.error(res.error);
+      toast.error(backendErrorToastMessage(res.error, t));
       return;
     }
     toast.success(res.message);
@@ -1272,6 +1300,7 @@ export function ScenesPanel({
             <Sparkles className="size-3.5" />
           )}
           {t("assets.scenes.build")}
+          <CreditCostInline display={buildScenesCostDisplay} />
         </Button>
       </AssetHeaderActions>
       {scenes.isLoading ? (

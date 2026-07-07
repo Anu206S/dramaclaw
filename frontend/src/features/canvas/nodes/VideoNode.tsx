@@ -200,6 +200,7 @@ import {
   DEFAULT_VIDEO_MODEL_ID,
   ProviderModelPicker,
 } from "@/features/canvas/ui/ProviderModelPicker";
+import { writeLastVideoModel } from "@/features/canvas/domain/lastVideoModel";
 import {
   CreditCostPill,
   formatCreditCost,
@@ -328,6 +329,43 @@ function clampVideoDuration(value: number, bounds: { min: number; max: number })
   return Math.min(Math.max(Math.round(value), bounds.min), bounds.max);
 }
 
+// Seedance 2.0(doubao-seedance-2-0，r2v）后端硬上限：一次请求的音频总时长
+// 必须 ≤ 15.2s，超了会以 InvalidParameter 报错。对用户按「15 秒」提示，实际
+// 用 15.2s 作拦截阈值，避免把后端本会放行的 15.0~15.2s 音频误拦。
+const MAX_AUDIO_TOTAL_DURATION_MS = 15_200;
+
+// 音频节点的 durationMs 是懒加载的（波形播放器挂载读元数据后才写入），刚上传、
+// 从未渲染过的音频节点可能为 null。提交前用一个临时 <audio> 探测真实时长兜底，
+// 探测失败（CORS/网络等）返回 null，不阻断提交，交由后端兜底。
+function probeAudioDurationMs(url: string): Promise<number | null> {
+  return new Promise((resolve) => {
+    if (!url) {
+      resolve(null);
+      return;
+    }
+    const audio = document.createElement("audio");
+    let settled = false;
+    const finish = (ms: number | null) => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timer);
+      audio.onloadedmetadata = null;
+      audio.onerror = null;
+      audio.removeAttribute("src");
+      audio.load();
+      resolve(ms);
+    };
+    const timer = window.setTimeout(() => finish(null), 8000);
+    audio.preload = "metadata";
+    audio.onloadedmetadata = () => {
+      const secs = audio.duration;
+      finish(Number.isFinite(secs) && secs > 0 ? Math.round(secs * 1000) : null);
+    };
+    audio.onerror = () => finish(null);
+    audio.src = url;
+  });
+}
+
 function isSeedance2ValueModel(modelId: string | null | undefined): boolean {
   const normalized = String(modelId ?? "").trim().toLowerCase();
   return normalized === "newapi_seedance-2.0-value" ||
@@ -344,6 +382,34 @@ function isSeedance1xModel(modelId: string | null | undefined): boolean {
     .replace(/[\s._-]/g, "")
     .toLowerCase();
   return /seedance1\d/.test(normalized);
+}
+
+function isGrokVideoChannelModel(modelId: string | null | undefined): boolean {
+  const normalized = String(modelId ?? "")
+    .replace(/[\s._-]/g, "")
+    .toLowerCase();
+  return normalized.includes("grokvideochannel");
+}
+
+function videoModelReferenceDisabledReason(
+  modelId: string | null | undefined,
+  counts: { images: number; videos: number; audios: number },
+): string | null {
+  if (isGrokVideoChannelModel(modelId)) {
+    if (counts.videos > 0 || counts.audios > 0) {
+      return "Grok Video Channel 仅支持图片素材";
+    }
+    if (counts.images > 8) {
+      return "Grok Video Channel 最多支持 1 张首帧和 7 张参考图";
+    }
+    return null;
+  }
+  if (isSeedance1xModel(modelId)) {
+    if (counts.images > 0 || counts.videos > 0 || counts.audios > 0) {
+      return "该模型不支持当前接入的素材";
+    }
+  }
+  return null;
 }
 
 function sceneOptimizeOptionsForModel(
@@ -1074,12 +1140,6 @@ export const VideoNode = memo(
       }
       return { images, videos, audios };
     }, [upstreamNodes]);
-    // 节点是否接入了任意参考素材(图片 / 视频 / 音频)。Seedance 1.0 全系列
-    // 不支持接入素材,故此时在模型选择器里禁用它们。
-    const hasReferenceMedia =
-      upstreamCounts.images > 0 ||
-      upstreamCounts.videos > 0 ||
-      upstreamCounts.audios > 0;
     const isClipMode = Boolean(data.isClipMode);
     const clipStartMs =
       typeof data.clipStartMs === "number" ? data.clipStartMs : null;
@@ -1893,6 +1953,8 @@ export const VideoNode = memo(
           // backend caps: image≤9, video≤3, audio≤3, total≤12.
           const upstream = collectUpstream();
           const references: FreezoneVideoReferenceItem[] = [];
+          // 与 references 里 type==="audio" 的项一一对应，用于提交前校验音频总时长。
+          const audioRefs: { url: string; durationMs: number | null }[] = [];
           let imageCount = 0;
           let videoCount = 0;
           let audioCount = 0;
@@ -1928,6 +1990,13 @@ export const VideoNode = memo(
                   role: "配乐参考",
                   label: rawLabel,
                 });
+                audioRefs.push({
+                  url,
+                  durationMs:
+                    typeof node.data.durationMs === "number"
+                      ? node.data.durationMs
+                      : null,
+                });
                 audioCount += 1;
               }
             } else {
@@ -1945,6 +2014,33 @@ export const VideoNode = memo(
               generationStartedAt: null,
             });
             return {};
+          }
+          // Seedance 2.0 后端限制音频总时长 ≤ 15.2s，超了会以 InvalidParameter
+          // 报错。提交前先本地校验：durationMs 缺失时用 <audio> 探测兜底，超限就
+          // 弹窗拦下，避免白跑一趟后端。仅对 seedance2 生效（其它模型上限可能不同）。
+          if (isSeedance20Model && audioRefs.length > 0) {
+            const resolvedDurations = await Promise.all(
+              audioRefs.map((ref) =>
+                typeof ref.durationMs === "number" && ref.durationMs > 0
+                  ? Promise.resolve(ref.durationMs)
+                  : probeAudioDurationMs(ref.url),
+              ),
+            );
+            const totalAudioMs = resolvedDurations.reduce<number>(
+              (sum, ms) => sum + (ms ?? 0),
+              0,
+            );
+            if (totalAudioMs > MAX_AUDIO_TOTAL_DURATION_MS) {
+              void showErrorDialog(
+                t("node.videoNode.audio.durationExceeded", { max: 15 }),
+                t("common.error"),
+              );
+              updateNodeData(id, {
+                isGenerating: false,
+                generationStartedAt: null,
+              });
+              return {};
+            }
           }
           doSubmit = (targetId) =>
             submitFreezoneVideoOmniGen(projectId, {
@@ -2876,18 +2972,15 @@ export const VideoNode = memo(
                 <div className="flex min-w-0 items-center gap-2">
                   <ProviderModelPicker
                     selectedModelId={modelId}
-                    onChange={(nextModelId) =>
-                      updateNodeData(id, { model: nextModelId })
-                    }
+                    onChange={(nextModelId) => {
+                      updateNodeData(id, { model: nextModelId });
+                      // 记住这次选择，后续新建的视频节点将继承它。
+                      writeLastVideoModel(nextModelId);
+                    }}
                     domain="video"
                     popoverPlacement="top"
-                    getOptionDisabledReason={
-                      hasReferenceMedia
-                        ? (model) =>
-                            isSeedance1xModel(model.apiModel ?? model.id)
-                              ? "该模型不支持当前接入的素材"
-                              : null
-                        : undefined
+                    getOptionDisabledReason={(model) =>
+                      videoModelReferenceDisabledReason(model.apiModel ?? model.id, upstreamCounts)
                     }
                   />
                   <VideoConfigChip
