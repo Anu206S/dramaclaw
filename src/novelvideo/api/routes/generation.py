@@ -2,6 +2,7 @@
 
 import json
 import io
+import logging
 import os
 import re
 from pathlib import Path
@@ -69,7 +70,7 @@ from novelvideo.seedance2_i2v.pipeline import (
 from novelvideo.seedance2_i2v.voice_clone import normalize_seedance2_audio_type
 from novelvideo.project_config import load_project_config, save_project_config
 from novelvideo.project_context import ProjectContext
-from novelvideo.ports import get_task_backend
+from novelvideo.ports import get_task_backend, get_usage_meter
 from novelvideo.task_identity import project_task_state_key
 from novelvideo.models import beat_scene_id
 from novelvideo.services.background_anchor_service import (
@@ -83,9 +84,25 @@ from novelvideo.utils.path_resolver import compute_identity_path, compute_portra
 
 router = APIRouter()
 
+logger = logging.getLogger(__name__)
+
+AI_IDENTITY_DETECTION_FEATURE_KEY = "ai_identity_detection"
+MODEL_CALL_CREDIT_POLICY_FEATURE_INCLUDED = "feature_included"
+
 
 async def _resolve_generation_project(project: str, user: dict, required_role: str = "editor"):
     return await resolve_project_scope(project, user, required_role=required_role)
+
+
+def _requester_user_id_for_billing(resolved: Any, user: dict) -> str:
+    ctx = getattr(resolved, "ctx", None)
+    return str(
+        getattr(ctx, "requester_user_id", "")
+        or user.get("id")
+        or user.get("user_id")
+        or user.get("username")
+        or ""
+    )
 
 
 def _color_assignment_requires_full_sketch_clean(
@@ -585,6 +602,10 @@ def _is_happyhorse_backend(video_backend: str | None) -> bool:
     return _seedance2_model_from_backend(video_backend) == "happyhorse-1.0"
 
 
+def _is_grok_video_backend(video_backend: str | None) -> bool:
+    return _seedance2_model_from_backend(video_backend) == "grok-video-channel"
+
+
 def _seedance2_api_resolution(resolution: str | None) -> str:
     text = str(resolution or "").strip()
     if text in {"480p", "720p", "1080p"}:
@@ -608,6 +629,9 @@ SEEDANCE2_DEFAULT_RESOLUTION_OPTIONS = ("480p", "720p")
 HAPPYHORSE_RESOLUTION_OPTIONS = ("720p", "1080p")
 HAPPYHORSE_RATIO_OPTIONS = ("16:9", "9:16", "1:1", "4:3", "3:4")
 HAPPYHORSE_SUPPORTED_MODES = ("first_frame", "multimodal_reference")
+GROK_VIDEO_RESOLUTION_OPTIONS = ("720p", "480p")
+GROK_VIDEO_RATIO_OPTIONS = ("16:9", "9:16", "1:1", "2:3", "3:2")
+GROK_VIDEO_SUPPORTED_MODES = ("first_frame", "multimodal_reference")
 
 
 def _seedance2_model_from_backend(video_backend: str | None) -> str:
@@ -649,6 +673,16 @@ def _happyhorse_resolution_for_backend(resolution: str | None) -> str:
 def _happyhorse_ratio_for_backend(ratio: str | None) -> str:
     text = str(ratio or "").strip()
     return text if text in HAPPYHORSE_RATIO_OPTIONS else "16:9"
+
+
+def _grok_video_resolution_for_backend(resolution: str | None) -> str:
+    text = str(resolution or "").strip().lower()
+    return text if text in GROK_VIDEO_RESOLUTION_OPTIONS else "720p"
+
+
+def _grok_video_ratio_for_backend(ratio: str | None) -> str:
+    text = str(ratio or "").strip()
+    return text if text in GROK_VIDEO_RATIO_OPTIONS else "16:9"
 
 
 def _seedance2_initial_prompt(beat: dict[str, Any], video_mode: str) -> str:
@@ -854,6 +888,86 @@ async def _prepare_happyhorse_api_beat(
         )
         image_paths = selected_reference_paths(assets, "reference_images")
         config.reference_image_paths = list(dict.fromkeys(image_paths))[:9]
+        config.reference_audio_paths = []
+        references = [
+            {"type": "image", "path": path, "role": f"图片{index}"}
+            for index, path in enumerate(config.reference_image_paths, 1)
+        ]
+
+    return {
+        "prompt": final_prompt,
+        "duration": target_duration,
+        "resolution": config.resolution,
+        "ratio": config.ratio,
+        "image_path": image_path,
+        "references": references,
+        "config_json": dump_seedance2_config(config),
+    }
+
+
+async def _prepare_grok_video_api_beat(
+    *,
+    output_dir: str | Path,
+    episode: int,
+    beat: dict[str, Any],
+    next_beat: dict[str, Any] | None,
+    frame_path: Path,
+    video_mode: str,
+    prompt: str,
+    duration: float,
+    resolution: str | None,
+    ratio: str | None,
+    prop_menu: list[Any] | None = None,
+) -> dict[str, Any]:
+    from novelvideo.seedance2_i2v.assets import (
+        append_seedance2_user_reference_assets,
+        build_seedance2_project_assets,
+        selected_reference_paths,
+    )
+    from novelvideo.seedance2_i2v.models import (
+        Seedance2I2VMode,
+        dump_seedance2_config,
+        parse_seedance2_config,
+    )
+
+    config = parse_seedance2_config(beat.get("seedance2_config_json"))
+    mode = config.mode
+    if mode == Seedance2I2VMode.FIRST_LAST_FRAME or video_mode == "keyframe":
+        raise ValueError("Grok Video 不支持首尾帧模式，请改用首帧模式或多参模式")
+
+    final_prompt = str(config.final_prompt or prompt or "").strip()
+    if not final_prompt:
+        beat_num = int(beat.get("beat_number") or 0)
+        prefix = f"Beat {beat_num} " if beat_num else ""
+        raise ValueError(f"{prefix}缺少视频提示词，请先生成或填写视频提示词")
+
+    target_duration = int(config.duration or duration or 0)
+    config.duration = target_duration
+    config.resolution = _grok_video_resolution_for_backend(resolution or config.resolution)
+    config.ratio = _grok_video_ratio_for_backend(ratio or config.ratio)
+    config.final_prompt = final_prompt
+
+    image_path: str | None = None
+    references: list[dict[str, str]] = []
+
+    if mode == Seedance2I2VMode.FIRST_FRAME:
+        image_path = str(frame_path)
+    else:
+        assets = build_seedance2_project_assets(
+            project_output=Path(output_dir),
+            episode=episode,
+            beat=beat,
+            mode=Seedance2I2VMode.MULTIMODAL_REFERENCE,
+            next_beat=next_beat,
+            prop_menu=prop_menu,
+        )
+        append_seedance2_user_reference_assets(
+            assets,
+            reference_image_paths=list(config.reference_image_paths),
+            reference_audio_paths=[],
+        )
+        image_paths = selected_reference_paths(assets, "reference_images")
+        config.reference_image_paths = list(dict.fromkeys(image_paths))[:7]
         config.reference_audio_paths = []
         references = [
             {"type": "image", "path": path, "role": f"图片{index}"}
@@ -1377,7 +1491,10 @@ def _api_video_backend_options() -> list[VideoBackendOption]:
         bounds = duration_bounds.get(model or "")
         if model == "happyhorse-1.0" and not bounds:
             bounds = (3, 15)
+        if model == "grok-video-channel" and not bounds:
+            bounds = (6, 30)
         is_happyhorse = _is_happyhorse_backend(value)
+        is_grok_video = _is_grok_video_backend(value)
         backend_options.append(
             VideoBackendOption(
                 value=value,
@@ -1385,17 +1502,34 @@ def _api_video_backend_options() -> list[VideoBackendOption]:
                 is_default=value == default_backend,
                 is_seedance2=_is_seedance2_backend(value),
                 is_happyhorse=is_happyhorse,
+                is_grok_video=is_grok_video,
                 dialogue_only=value in {"seedance_pro", "newapi_seedance-1.5-pro"},
                 min_duration=bounds[0] if bounds else None,
                 max_duration=bounds[1] if bounds else None,
-                resolution_options=list(HAPPYHORSE_RESOLUTION_OPTIONS)
-                if is_happyhorse
-                else None,
-                ratio_options=list(HAPPYHORSE_RATIO_OPTIONS) if is_happyhorse else None,
-                supported_modes=list(HAPPYHORSE_SUPPORTED_MODES) if is_happyhorse else None,
-                reference_image_max=9 if is_happyhorse else None,
-                reference_video_max=1 if is_happyhorse else None,
-                reference_audio_max=0 if is_happyhorse else None,
+                resolution_options=(
+                    list(HAPPYHORSE_RESOLUTION_OPTIONS)
+                    if is_happyhorse
+                    else list(GROK_VIDEO_RESOLUTION_OPTIONS)
+                    if is_grok_video
+                    else None
+                ),
+                ratio_options=(
+                    list(HAPPYHORSE_RATIO_OPTIONS)
+                    if is_happyhorse
+                    else list(GROK_VIDEO_RATIO_OPTIONS)
+                    if is_grok_video
+                    else None
+                ),
+                supported_modes=(
+                    list(HAPPYHORSE_SUPPORTED_MODES)
+                    if is_happyhorse
+                    else list(GROK_VIDEO_SUPPORTED_MODES)
+                    if is_grok_video
+                    else None
+                ),
+                reference_image_max=7 if is_grok_video else 9 if is_happyhorse else None,
+                reference_video_max=0 if is_grok_video else 1 if is_happyhorse else None,
+                reference_audio_max=0 if is_grok_video or is_happyhorse else None,
             )
         )
     return backend_options
@@ -3971,6 +4105,7 @@ async def generate_single_video(
         return {"ok": False, "error": backend_error}
     is_seedance2 = _is_seedance2_backend(body.video_backend)
     is_happyhorse = _is_happyhorse_backend(body.video_backend)
+    is_grok_video = _is_grok_video_backend(body.video_backend)
 
     # 首帧路径
     from novelvideo.utils.path_resolver import PathResolver
@@ -4010,6 +4145,8 @@ async def generate_single_video(
     single_video_resolution: str | None = None
     happyhorse_references: list[dict[str, str]] = []
     happyhorse_ratio: str | None = None
+    grok_video_references: list[dict[str, str]] = []
+    grok_video_ratio: str | None = None
     if is_seedance2:
         try:
             request_config_json = _merge_seedance2_request_config(
@@ -4092,6 +4229,52 @@ async def generate_single_video(
             video_mode = "first_frame"
         except ValueError as exc:
             return {"ok": False, "error": str(exc)}
+    elif is_grok_video:
+        try:
+            request_config_json = _merge_seedance2_request_config(
+                beat,
+                seedance2_config_json=body.seedance2_config_json,
+                config_overrides=_seedance2_request_config_overrides(body),
+            )
+            if request_config_json and hasattr(store, "update_beat_asset"):
+                await store.update_beat_asset(
+                    episode_number=episode_num,
+                    beat_number=beat_num,
+                    seedance2_config_json=request_config_json,
+                )
+            beat_index = beats.index(beat)
+            episode_obj = _episode_from_store_or_none(store, episode_num)
+            prop_menu = await _runtime_prop_menu_with_global_props(store, episode_obj, beats)
+            prepared = await _prepare_grok_video_api_beat(
+                output_dir=output_dir,
+                episode=episode_num,
+                beat=beat,
+                next_beat=beats[beat_index + 1] if beat_index + 1 < len(beats) else None,
+                frame_path=frame_path,
+                video_mode=video_mode,
+                prompt=prompt,
+                duration=video_duration,
+                resolution=body.resolution if "resolution" in body.model_fields_set else None,
+                ratio=body.ratio if "ratio" in body.model_fields_set else None,
+                prop_menu=prop_menu,
+            )
+            if prepared["config_json"] and hasattr(store, "update_beat_asset"):
+                await store.update_beat_asset(
+                    episode_number=episode_num,
+                    beat_number=beat_num,
+                    seedance2_config_json=str(prepared["config_json"]),
+                )
+            prompt = str(prepared["prompt"])
+            video_duration = float(prepared["duration"])
+            frame_path = Path(str(prepared["image_path"])) if prepared["image_path"] else None
+            last_frame_path = None
+            seedance2_config_json = str(prepared["config_json"])
+            single_video_resolution = str(prepared["resolution"])
+            grok_video_ratio = str(prepared["ratio"])
+            grok_video_references = list(prepared.get("references") or [])
+            video_mode = "first_frame"
+        except ValueError as exc:
+            return {"ok": False, "error": str(exc)}
     else:
         if not prompt.strip():
             return {"ok": False, "error": _missing_video_prompt_error(beat_num)}
@@ -4132,6 +4315,9 @@ async def generate_single_video(
         config["references"] = happyhorse_references
         if body.audio_setting is not None:
             config["audio_setting"] = body.audio_setting
+    if is_grok_video:
+        config["ratio"] = _grok_video_ratio_for_backend(grok_video_ratio)
+        config["references"] = grok_video_references
 
     if ctx is not None:
         queued = await get_task_backend().enqueue_project_task(
@@ -5391,8 +5577,47 @@ async def detect_sketch_identities(
     grid_dir = project_dir / "grids" / f"ep{episode_num:03d}" / "sketch"
     grid_dir.mkdir(parents=True, exist_ok=True)
 
+    usage_meter = get_usage_meter()
+    ctx = getattr(resolved, "ctx", None)
+    project_id = str(getattr(ctx, "project_id", "") or "")
+    reservation = await usage_meter.reserve_feature_start_credits(
+        user_id=_requester_user_id_for_billing(resolved, user),
+        feature_key=AI_IDENTITY_DETECTION_FEATURE_KEY,
+        project_id=project_id,
+        resource_kind="sketch",
+        task_type=AI_IDENTITY_DETECTION_FEATURE_KEY,
+        metadata={
+            "source": "sync_api",
+            "endpoint": "detect_sketch_identities",
+            "episode": episode_num,
+            "sketch_count": len(frame_items),
+        },
+        require_price_rule=True,
+        require_positive_cost=True,
+    )
+    reservation_id = str(reservation.get("id") or "")
+    billing_metadata: dict[str, Any] = {
+        "model_call_credit_policy": MODEL_CALL_CREDIT_POLICY_FEATURE_INCLUDED,
+        "feature_key": AI_IDENTITY_DETECTION_FEATURE_KEY,
+        "source": "sync_api",
+    }
+    if reservation_id:
+        billing_metadata.update(
+            {
+                "feature_credit_reservation_id": reservation_id,
+                "feature_credit_charge_id": reservation_id,
+                "feature_credit_cost": str(reservation.get("cost") or 0),
+            }
+        )
+
     detections: dict[int, list[str]] = {}
     try:
+        usage_meter.set_llm_usage_context(
+            _requester_user_id_for_billing(resolved, user),
+            project_id=project_id,
+            resource_kind="sketch",
+            billing_metadata=billing_metadata,
+        )
         batch_size = 25
         for batch_idx in range(0, len(frame_items), batch_size):
             batch = frame_items[batch_idx : batch_idx + batch_size]
@@ -5415,29 +5640,64 @@ async def detect_sketch_identities(
                 if 1 <= panel_index <= len(ordered_batch):
                     beat_number = ordered_batch[panel_index - 1][0]
                     detections[beat_number] = list(marker_ids or [])
+
+        for beat_number, _path in frame_items:
+            detections.setdefault(beat_number, [])
+
+        characters = store.get_all_characters()
+        identity_detections: dict[int, list[str]] = {}
+        prop_detections: dict[int, list[str]] = {}
+        allowed_prop_ids = set(prop_color_map)
+        for beat_number, keys in detections.items():
+            det_ids, det_props = split_detected_marker_keys(
+                keys,
+                beats,
+                characters,
+                allowed_prop_ids=allowed_prop_ids,
+            )
+            identity_detections[beat_number] = det_ids or [NO_CHARACTER_MARKER]
+            prop_detections[beat_number] = det_props or [NO_PROP_MARKER]
+
+        # 持久化
+        await store.set_beat_detected_identities(episode_num, identity_detections)
+        await store.set_beat_detected_props(episode_num, prop_detections)
+
+        if reservation_id:
+            await usage_meter.confirm_feature_credit_reservation(
+                reservation_id,
+                metadata={
+                    "source": "sync_api",
+                    "endpoint": "detect_sketch_identities",
+                    "episode": episode_num,
+                    "sketch_count": len(frame_items),
+                    "detected_identity_count": sum(
+                        len(real_detected_identities(v))
+                        for v in identity_detections.values()
+                    ),
+                    "detected_prop_count": sum(
+                        len(real_detected_props(v)) for v in prop_detections.values()
+                    ),
+                },
+            )
     except Exception as e:
+        if reservation_id:
+            try:
+                await usage_meter.refund_feature_credit_reservation(
+                    reservation_id,
+                    metadata={
+                        "source": "sync_api",
+                        "endpoint": "detect_sketch_identities",
+                        "episode": episode_num,
+                        "error": str(e),
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "Failed to refund AI identity detection feature credit reservation"
+                )
         return {"ok": False, "error": f"AI detection failed: {e}"}
-
-    for beat_number, _path in frame_items:
-        detections.setdefault(beat_number, [])
-
-    characters = store.get_all_characters()
-    identity_detections: dict[int, list[str]] = {}
-    prop_detections: dict[int, list[str]] = {}
-    allowed_prop_ids = set(prop_color_map)
-    for beat_number, keys in detections.items():
-        det_ids, det_props = split_detected_marker_keys(
-            keys,
-            beats,
-            characters,
-            allowed_prop_ids=allowed_prop_ids,
-        )
-        identity_detections[beat_number] = det_ids or [NO_CHARACTER_MARKER]
-        prop_detections[beat_number] = det_props or [NO_PROP_MARKER]
-
-    # 持久化
-    await store.set_beat_detected_identities(episode_num, identity_detections)
-    await store.set_beat_detected_props(episode_num, prop_detections)
+    finally:
+        usage_meter.clear_llm_usage_context()
 
     # 转换 key 为字符串（JSON 兼容）
     str_identity_detections = {str(k): v for k, v in identity_detections.items()}

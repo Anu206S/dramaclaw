@@ -21,6 +21,7 @@ GenerationCreditCostKind = Literal[
     "freezone_image_reverse_prompt",
     "freezone_story_script",
     "style_analyzer",
+    "feature",
 ]
 GenerationCreditSurface = Literal["supertale", "canvas"]
 
@@ -247,6 +248,10 @@ def _generation_credit_cost_model(kind: str, value: str) -> str:
         from novelvideo.config import get_newapi_text_model_name
 
         return get_newapi_text_model_name("STYLE_ANALYZER_MODEL", "gemini-3.5-flash")
+    if kind == "feature":
+        if not clean_value:
+            raise HTTPException(status_code=400, detail="feature key is required")
+        return clean_value
     raise HTTPException(status_code=400, detail="invalid generation credit cost kind")
 
 
@@ -259,6 +264,8 @@ def _generation_billing_kind(kind: str) -> str:
         return "audio"
     if kind in {"freezone_image_reverse_prompt", "freezone_story_script", "style_analyzer"}:
         return "text"
+    if kind == "feature":
+        return "feature"
     return "model"
 
 
@@ -374,7 +381,7 @@ async def get_generation_credit_cost(
     surface: GenerationCreditSurface = Query("supertale"),
     value: str = Query("", max_length=256),
     params: str = Query("", max_length=2048),
-    quantity: int = Query(1, ge=0, le=1_000_000),
+    quantity: int = Query(1, ge=0, le=50_000_000),
     mode_key: str = Query("", max_length=128),
     image_role: str = Query("", max_length=64),
     user: dict = Depends(get_api_user),
@@ -399,10 +406,17 @@ async def get_generation_credit_cost(
         ),
         quantity=_clean_quantity(quantity),
     )
-    return {
-        "ok": True,
-        "data": {
-            "cost": quote.total_cost,
-            "display": _display_credit_cost(quote.total_cost),
-        },
+    data = {
+        "cost": quote.total_cost,
+        "display": _display_credit_cost(quote.total_cost),
     }
+    if getattr(quote, "unit", "call") == "character":
+        data.update(
+            {
+                "unit": "character",
+                "unit_cost": getattr(quote, "unit_cost", 0),
+                "quantity": getattr(quote, "quantity", quantity),
+                "params": getattr(quote, "params", None) or {},
+            }
+        )
+    return {"ok": True, "data": data}

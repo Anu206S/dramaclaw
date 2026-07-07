@@ -7,8 +7,8 @@ from typing import Any
 INSUFFICIENT_CREDITS_CODE = "INSUFFICIENT_CREDITS"
 INSUFFICIENT_CREDITS_MESSAGE = "积分不足，请联系管理员充值"
 BILLING_RULE_NOT_CONFIGURED_CODE = "BILLING_RULE_NOT_CONFIGURED"
-BILLING_RULE_NOT_CONFIGURED_MESSAGE = "计费规则未配置，请联系管理员配置计费规则"
-GENERATION_BILLING_UNITS = {"call", "item", "second", "token"}
+BILLING_RULE_NOT_CONFIGURED_MESSAGE = "计费规则未配置，请联系管理员设置积分规则"
+GENERATION_BILLING_UNITS = {"call", "item", "second", "token", "character"}
 
 
 class InsufficientCreditsError(RuntimeError):
@@ -35,12 +35,14 @@ class InsufficientCreditsStop(BaseException):
 
 
 class BillingRuleNotConfiguredError(RuntimeError):
-    """Raised when a required billing rule is missing or not chargeable."""
+    """Raised when a billable action has no usable admin pricing rule."""
 
     def __init__(self, *, kind: str, key: str) -> None:
         self.kind = str(kind or "").strip()
         self.key = str(key or "").strip()
-        super().__init__(f"billing rule not configured: kind={self.kind} key={self.key}")
+        super().__init__(
+            f"billing rule is not configured for {self.kind or 'billing'}:{self.key}"
+        )
 
 
 def iter_exception_chain(exc: BaseException | None):
@@ -53,14 +55,18 @@ def iter_exception_chain(exc: BaseException | None):
         current = current.__cause__ or current.__context__
 
 
-def find_insufficient_credits_error(exc: BaseException | None) -> InsufficientCreditsError | None:
+def find_insufficient_credits_error(
+    exc: BaseException | None,
+) -> InsufficientCreditsError | None:
     for item in iter_exception_chain(exc):
         if isinstance(item, InsufficientCreditsError):
             return item
     return None
 
 
-def find_insufficient_credits_stop(exc: BaseException | None) -> InsufficientCreditsStop | None:
+def find_insufficient_credits_stop(
+    exc: BaseException | None,
+) -> InsufficientCreditsStop | None:
     for item in iter_exception_chain(exc):
         if isinstance(item, InsufficientCreditsStop):
             return item
@@ -76,7 +82,9 @@ def find_billing_rule_not_configured_error(
     return None
 
 
-def is_insufficient_credits_error(exc: BaseException | None = None, message: str = "") -> bool:
+def is_insufficient_credits_error(
+    exc: BaseException | None = None, message: str = ""
+) -> bool:
     if (
         find_insufficient_credits_error(exc) is not None
         or find_insufficient_credits_stop(exc) is not None
@@ -124,12 +132,7 @@ def billing_rule_not_configured_payload(
         "message": BILLING_RULE_NOT_CONFIGURED_MESSAGE,
     }
     if err is not None:
-        payload.update(
-            {
-                "billing_kind": err.kind,
-                "billing_key": err.key,
-            }
-        )
+        payload.update({"billing_kind": err.kind, "billing_key": err.key})
     return payload
 
 
