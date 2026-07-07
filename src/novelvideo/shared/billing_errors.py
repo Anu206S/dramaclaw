@@ -6,6 +6,8 @@ from typing import Any
 
 INSUFFICIENT_CREDITS_CODE = "INSUFFICIENT_CREDITS"
 INSUFFICIENT_CREDITS_MESSAGE = "积分不足，请联系管理员充值"
+BILLING_RULE_NOT_CONFIGURED_CODE = "BILLING_RULE_NOT_CONFIGURED"
+BILLING_RULE_NOT_CONFIGURED_MESSAGE = "计费规则未配置，请联系管理员配置计费规则"
 GENERATION_BILLING_UNITS = {"call", "item", "second", "token"}
 
 
@@ -32,6 +34,15 @@ class InsufficientCreditsStop(BaseException):
         super().__init__(INSUFFICIENT_CREDITS_MESSAGE)
 
 
+class BillingRuleNotConfiguredError(RuntimeError):
+    """Raised when a required billing rule is missing or not chargeable."""
+
+    def __init__(self, *, kind: str, key: str) -> None:
+        self.kind = str(kind or "").strip()
+        self.key = str(key or "").strip()
+        super().__init__(f"billing rule not configured: kind={self.kind} key={self.key}")
+
+
 def iter_exception_chain(exc: BaseException | None):
     """Yield an exception and its explicit/implicit causes once each."""
     seen: set[int] = set()
@@ -52,6 +63,15 @@ def find_insufficient_credits_error(exc: BaseException | None) -> InsufficientCr
 def find_insufficient_credits_stop(exc: BaseException | None) -> InsufficientCreditsStop | None:
     for item in iter_exception_chain(exc):
         if isinstance(item, InsufficientCreditsStop):
+            return item
+    return None
+
+
+def find_billing_rule_not_configured_error(
+    exc: BaseException | None,
+) -> BillingRuleNotConfiguredError | None:
+    for item in iter_exception_chain(exc):
+        if isinstance(item, BillingRuleNotConfiguredError):
             return item
     return None
 
@@ -91,12 +111,39 @@ def insufficient_credits_payload(exc: BaseException | None = None) -> dict[str, 
     return payload
 
 
+def billing_rule_not_configured_payload(
+    exc: BillingRuleNotConfiguredError | BaseException | None = None,
+) -> dict[str, Any]:
+    err = (
+        exc
+        if isinstance(exc, BillingRuleNotConfiguredError)
+        else find_billing_rule_not_configured_error(exc)
+    )
+    payload: dict[str, Any] = {
+        "error_code": BILLING_RULE_NOT_CONFIGURED_CODE,
+        "message": BILLING_RULE_NOT_CONFIGURED_MESSAGE,
+    }
+    if err is not None:
+        payload.update(
+            {
+                "billing_kind": err.kind,
+                "billing_key": err.key,
+            }
+        )
+    return payload
+
+
 __all__ = [
+    "BILLING_RULE_NOT_CONFIGURED_CODE",
+    "BILLING_RULE_NOT_CONFIGURED_MESSAGE",
     "GENERATION_BILLING_UNITS",
     "INSUFFICIENT_CREDITS_CODE",
     "INSUFFICIENT_CREDITS_MESSAGE",
+    "BillingRuleNotConfiguredError",
     "InsufficientCreditsError",
     "InsufficientCreditsStop",
+    "billing_rule_not_configured_payload",
+    "find_billing_rule_not_configured_error",
     "find_insufficient_credits_error",
     "find_insufficient_credits_stop",
     "insufficient_credits_payload",
