@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import {
@@ -67,6 +67,7 @@ import {
   type FeatureModelProvider,
   type MediaStorageProvider,
 } from "@/stores/settingsStore";
+import { FreezoneSkillRecipeSettings } from "./freezone-skill-recipe-settings";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -80,24 +81,59 @@ const SHOW_CODEX_BRIDGE = false;
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { t } = useTranslation();
+  const [activeTab, setActiveTab] = useState<"general" | "freezone-skills" | "freezone-recipes">("general");
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
         showCloseButton
-        className="max-w-[calc(100%-2rem)] gap-0 rounded-lg border border-border bg-black p-0 ring-0 sm:max-w-[860px]"
+        className="grid h-[min(78vh,720px)] max-w-[calc(100%-2rem)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 rounded-lg border border-border bg-black p-0 ring-0 sm:max-w-[860px]"
       >
         <DialogHeader className="border-b border-border px-5 py-4">
           <DialogTitle>{t("settings.title")}</DialogTitle>
         </DialogHeader>
 
-        <ScrollArea className="max-h-[min(72vh,640px)] [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0">
-          <div className="divide-y divide-border">
-            <ModelConfigSection open={open} />
-            <MediaStorageSection />
-            {SHOW_CODEX_BRIDGE && <CodexBridgeSection />}
+        <div className="grid min-h-0 grid-cols-[132px_minmax(0,1fr)] overflow-hidden">
+          <div
+            role="tablist"
+            aria-label={t("settings.title")}
+            className="space-y-1 border-r border-border bg-white/[0.015] px-3 py-5"
+          >
+            <SettingsSideTab
+              active={activeTab === "general"}
+              onClick={() => setActiveTab("general")}
+            >
+              {t("settings.tabs.general")}
+            </SettingsSideTab>
+            <SettingsSideTab
+              active={activeTab === "freezone-skills"}
+              onClick={() => setActiveTab("freezone-skills")}
+            >
+              {t("settings.tabs.freezoneSkills")}
+            </SettingsSideTab>
+            <SettingsSideTab
+              active={activeTab === "freezone-recipes"}
+              onClick={() => setActiveTab("freezone-recipes")}
+            >
+              {t("settings.tabs.freezoneRecipes")}
+            </SettingsSideTab>
           </div>
-        </ScrollArea>
+
+          <ScrollArea className="h-full min-h-0 min-w-0 overflow-hidden [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0 [&_[data-slot=scroll-area-viewport]]:overflow-y-auto">
+            {activeTab === "general" ? (
+              <div className="divide-y divide-border">
+                <ModelConfigSection open={open} />
+                <MediaStorageSection />
+                {SHOW_CODEX_BRIDGE && <CodexBridgeSection />}
+              </div>
+            ) : (
+              <FreezoneSkillRecipeSettings
+                kind={activeTab === "freezone-skills" ? "skills" : "recipes"}
+                open={open}
+              />
+            )}
+          </ScrollArea>
+        </div>
 
         <div className="flex justify-end border-t border-border px-5 py-3.5">
           <DialogClose render={<Button variant="outline" size="sm" />}>
@@ -106,6 +142,33 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
         </div>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function SettingsSideTab({
+  active,
+  children,
+  onClick,
+}: {
+  active: boolean;
+  children: ReactNode;
+  onClick: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      role="tab"
+      aria-selected={active}
+      onClick={onClick}
+      className={cn(
+        "relative flex h-8 w-full items-center rounded-[5px] px-3 text-left text-sm text-muted-foreground transition-colors",
+        "hover:bg-white/[0.045] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/45",
+        active && "bg-white/[0.065] font-medium text-foreground shadow-[inset_0_0_0_1px_rgba(255,255,255,0.035)]",
+      )}
+    >
+      {active ? <span className="absolute left-0 h-4 w-0.5 rounded-full bg-muted-foreground/80" /> : null}
+      <span className="truncate">{children}</span>
+    </button>
   );
 }
 
