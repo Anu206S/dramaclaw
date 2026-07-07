@@ -1,0 +1,311 @@
+{
+  "id": "social-media",
+  "enabled": true,
+  "version": 1,
+  "description": "社交媒体内容素材制作，包括多平台封面图/配图/海报的矩阵式批量生成，适用于小红书/抖音/Instagram/TikTok/微博/微信公众号等平台",
+  "category": "social",
+  "triggers": {
+    "keywords": [
+      "社媒",
+      "小红书",
+      "抖音",
+      "种草",
+      "矩阵",
+      "多平台",
+      "一键生成",
+      "素材图",
+      "参考图",
+      "产品图",
+      "多图",
+      "图片素材",
+      "微博",
+      "朋友圈",
+      "公众号",
+      "视频号",
+      "instagram",
+      "tiktok",
+      "youtube",
+      "linkedin",
+      "twitter",
+      "facebook",
+      "帖子",
+      "推文",
+      "内容创作",
+      "品牌内容",
+      "新媒体",
+      "封面",
+      "配图",
+      "海报",
+      "宣传图",
+      "爆款",
+      "短视频"
+    ],
+    "node_scopes": [
+      "image",
+      "imageGeneration",
+      "videoGeneration"
+    ]
+  },
+  "planning": {
+    "planning_notes": "社媒内容素材根据输入素材情况分两条路径规划：  **路径 A：主题驱动（用户仅给文字主题/卖点，无图片素材）** 步骤①  textGeneration（operationType: social-copywriting）—— 爆款文案拆解：根据用户主题/卖点，为每个目标平台生成 3-5 条带情绪钩子的标题变体，并为每条标题配套一段中文视觉 Prompt 种子（含主体、场景、光影、构图、色调、留白指示）； 步骤②（单步并发）imageGeneration —— 执行时先 plan_canvas_actions 一次性为所有目标平台各创建 1 个 imageGeneration 节点，再 wait_for_tasks 并行等待全部完成（禁止在创建节点之前调用 wait_for_tasks）。★★★ 这是一个整体步骤，绝对禁止拆分成多个子步骤逐平台生成 ★★★  **路径 B：素材驱动（用户提供了图片素材，如产品图/场景图/人物照）** 步骤①  textGeneration（operationType: social-copywriting）—— 爆款文案拆解：基于用户提供的图片素材分析内容，为每个目标平台生成标题和视觉 Prompt，文案必须围绕素材中的实际内容展开； 步骤②（单步并发）imageGeneration —— 同路径 A 一样先 plan_canvas_actions 并发创建所有平台的 imageGeneration 节点，再 wait_for_tasks 等待（禁止在创建节点之前调用 wait_for_tasks）。每个节点的 inputLinks 必须引用用户提供的原始图片节点，以图生图模式保持主体一致性。   当用户提供了多张图片时：若图片是同一产品/主题的不同角度，选最具代表性的 1-2 张作为各平台的图生图输入；若图片是不同产品/场景，可为每张图分别生成多平台素材矩阵。  **两条路径共用的平台 operationType 映射：**   - 小红书/XHS：operationType: \"xiaohongshu-cover\"，比例 3:4   - 抖音/TikTok/Reels：operationType: \"douyin-cover\"，比例 9:16   - Instagram：operationType: \"ig-post\"，比例 1:1 或 4:5   - 微博/微信公众号：operationType: \"weibo-image\"，比例 16:9  **可选后续步骤（两条路径均适用）：** ③ 图生图精修 —— 当画面主体过满无留白空间时，可用图生图 outpaint 在顶部/底部扩充文字排版区域。  **快捷路径：** 若用户仅指定单一平台或仅需局部修改（换标题、调色调），优先规划单步直出，不走全链路。 若用户要求\"矩阵\"\"多平台\"\"一键生成\"等，必须走完整的文案+并发生图流水线。",
+    "prompt_guide": "你是一名社媒视觉创意总监，精通各大平台的内容审美与传播规律。 信息流首屏 0.5 秒内必须抓住注意力——色彩饱和、主体突出、构图留呼吸空间。 小红书追求精致感/胶片色调/高明度暖调，抖音追求高对比度/大特写/视觉冲击，IG 追求极简高级/影棚质感，微博/公号追求信息量与横向叙事。 同批多平台素材保持统一品牌色调与视觉语言，但尺寸和构图重心按平台差异化。 画面必须为主体留出安全区和文字排版空间（留白），避免关键内容被平台 UI 遮挡。",
+    "conduct_rules": [
+      "严格只执行当前步骤目标，禁止跨步骤提前创建节点",
+      "多平台矩阵在同一步中并行创建并统一 wait_for_tasks",
+      "图片节点必须使用与平台匹配的 operationType 与 aspectRatio",
+      "有素材输入时优先图生图，保持主体一致性",
+      "图片生成使用 2K 及以上分辨率"
+    ],
+    "default_aspect_ratios": {
+      "imageGeneration": "3:4",
+      "videoGeneration": "9:16"
+    }
+  },
+  "workflow_templates": [
+    {
+      "id": "social-matrix-text-only",
+      "description": "纯文本需求的多平台社媒矩阵",
+      "condition": {
+        "text_only": true,
+        "message_keywords": [
+          "矩阵",
+          "多平台",
+          "封面",
+          "配图"
+        ]
+      },
+      "steps": [
+        {
+          "id": "copywriting",
+          "step_number": 1,
+          "goal_template": "生成社媒矩阵文案与视觉要点",
+          "node_type": "textGeneration",
+          "action_key": "social-copywriting",
+          "model": "gemini-3.5-flash",
+          "prompt_strategy": "user_message",
+          "input_strategy": {
+            "type": "none"
+          },
+          "need_review": false,
+          "multiplicity": "single"
+        },
+        {
+          "id": "matrix-images",
+          "step_number": 2,
+          "goal_template": "为{platforms}生成社媒配图",
+          "node_type": "imageGeneration",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {
+            "type": "previous_step",
+            "step_id": "copywriting"
+          },
+          "need_review": false,
+          "multiplicity": {
+            "type": "per_platform",
+            "user_overridable": true,
+            "defaultPlatforms": [
+              {
+                "id": "xiaohongshu",
+                "name": "小红书",
+                "aliases": [
+                  "XHS",
+                  "xhs"
+                ],
+                "action_key": "xiaohongshu-cover",
+                "aspect_ratio": "3:4"
+              },
+              {
+                "id": "douyin",
+                "name": "抖音",
+                "aliases": [
+                  "tiktok",
+                  "TikTok",
+                  "dy"
+                ],
+                "action_key": "douyin-cover",
+                "aspect_ratio": "9:16"
+              },
+              {
+                "id": "instagram",
+                "name": "Instagram",
+                "aliases": [
+                  "ins",
+                  "IG",
+                  "ig"
+                ],
+                "action_key": "ig-post",
+                "aspect_ratio": "1:1"
+              },
+              {
+                "id": "weibo",
+                "name": "微博",
+                "aliases": [
+                  "wb",
+                  "新浪"
+                ],
+                "action_key": "weibo-image",
+                "aspect_ratio": "16:9"
+              }
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "social-matrix-with-assets",
+      "description": "带素材输入的多平台社媒矩阵",
+      "condition": {
+        "hasInputTypes": [
+          "image"
+        ]
+      },
+      "steps": [
+        {
+          "id": "copywriting-assets",
+          "step_number": 1,
+          "goal_template": "基于输入素材生成社媒矩阵文案与视觉要点",
+          "node_type": "textGeneration",
+          "action_key": "social-copywriting",
+          "model": "gemini-3.5-flash",
+          "prompt_strategy": "user_message",
+          "input_strategy": {
+            "type": "user_assets",
+            "filter": "image"
+          },
+          "need_review": false,
+          "multiplicity": "single"
+        },
+        {
+          "id": "matrix-images-assets",
+          "step_number": 2,
+          "goal_template": "基于素材为{platforms}生成社媒配图",
+          "node_type": "imageGeneration",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {
+            "type": "previous_step_and_user_assets",
+            "step_id": "copywriting-assets"
+          },
+          "need_review": false,
+          "multiplicity": {
+            "type": "per_platform",
+            "user_overridable": true,
+            "defaultPlatforms": [
+              {
+                "id": "xiaohongshu",
+                "name": "小红书",
+                "aliases": [
+                  "XHS",
+                  "xhs"
+                ],
+                "action_key": "xiaohongshu-cover",
+                "aspect_ratio": "3:4"
+              },
+              {
+                "id": "douyin",
+                "name": "抖音",
+                "aliases": [
+                  "tiktok",
+                  "TikTok",
+                  "dy"
+                ],
+                "action_key": "douyin-cover",
+                "aspect_ratio": "9:16"
+              },
+              {
+                "id": "instagram",
+                "name": "Instagram",
+                "aliases": [
+                  "ins",
+                  "IG",
+                  "ig"
+                ],
+                "action_key": "ig-post",
+                "aspect_ratio": "1:1"
+              },
+              {
+                "id": "weibo",
+                "name": "微博",
+                "aliases": [
+                  "wb",
+                  "新浪"
+                ],
+                "action_key": "weibo-image",
+                "aspect_ratio": "16:9"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ],
+  "evaluation": {
+    "rating_bands": [
+      {
+        "score": 3,
+        "description": "画面模糊/比例错误，完全不适配目标平台，主体被 UI 遮挡，无法用于发布"
+      },
+      {
+        "score": 5,
+        "description": "画面清晰但视觉平淡，构图和色彩缺乏吸引力，在信息流中会被直接划过"
+      },
+      {
+        "score": 6,
+        "description": "基本达标但属于模板化内容，缺乏个性和记忆点，留白和安全区基本合理"
+      },
+      {
+        "score": 7,
+        "description": "画面有吸引力，平台适配准确，品牌调性统一，留白合理可排版文字，适合正式发布"
+      },
+      {
+        "score": 9,
+        "description": "视觉冲击强烈，极具传播潜力和话题性，优于同赛道 80% 的内容创作者，多平台风格差异化精准"
+      }
+    ],
+    "visual_review_items": [
+      {
+        "name": "信息流抓眼度",
+        "weight": 0.3,
+        "description": "能否在信息流中 0.5 秒内抓住用户注意力：颜色饱和度、主体突出性、构图张力是否足够，是否在一众内容中跳脱而出"
+      },
+      {
+        "name": "平台规格适配",
+        "weight": 0.25,
+        "description": "比例是否符合目标平台标准（小红书 3:4、抖音 9:16、IG 1:1、微博 16:9），主体是否避开了平台 UI 安全区（点赞栏/头像/互动按钮），文字排版空间是否充足"
+      },
+      {
+        "name": "品牌调性一致",
+        "weight": 0.25,
+        "description": "同批多平台素材的色调、光影、视觉语言是否统一，是否符合品牌/IP 调性，多图并排时是否有\"同一套\"的感觉"
+      },
+      {
+        "name": "传播转化潜力",
+        "weight": 0.2,
+        "description": "内容是否具备点赞/收藏/转发的驱动力，是否有情绪共鸣或话题性，能否促进用户互动或商业转化"
+      }
+    ],
+    "text_review_items": [
+      {
+        "name": "标题吸引力",
+        "weight": 0.4,
+        "description": "标题是否抓眼、有情绪钩子（痛点/好奇/共鸣），是否在 12 字以内精准传达核心卖点，是否适配目标平台的话语体系"
+      },
+      {
+        "name": "平台差异化",
+        "weight": 0.3,
+        "description": "不同平台的文案是否体现了调性差异（小红书种草感 vs 抖音冲击力 vs IG 简约），而非简单套用同一模板"
+      },
+      {
+        "name": "视觉 Prompt 可执行性",
+        "weight": 0.3,
+        "description": "提取的视觉 Prompt 是否足够具体，能否直接用于 AI 图像生成，是否包含构图、光影、色调、风格等关键要素"
+      }
+    ],
+    "domain_constraints": [
+      "图片/视频不得包含违规内容（色情、暴力、违禁品广告等）",
+      "画面中如有文字元素，必须清晰可读、与背景对比度充足，不得出现乱码或截断",
+      "各平台素材比例必须严格符合要求，不得使用错误比例",
+      "多平台素材必须保持统一的品牌视觉语言（色调、光影、风格一致）",
+      "主体不得被平台 UI 元素（点赞按钮、头像、评论栏）遮挡"
+    ]
+  }
+}
