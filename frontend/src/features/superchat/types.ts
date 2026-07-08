@@ -51,6 +51,8 @@ export type ClientFrame =
       created_node_ids?: string[];
       command_results?: Array<Record<string, unknown>>;
       message?: string | null;
+      user_message?: string | null;
+      agent_hint?: string | null;
     };
 
 export type ChatScope = {
@@ -187,6 +189,17 @@ export type ServerFrame =
   | { type: "chat.done"; turn_id?: string; scope?: ChatScope }
   | {
       type: "skill_studio.event";
+      turn_id?: string;
+      scope?: ChatScope;
+      bridge_key?: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      agent_id?: string | null;
+      agentId?: string | null;
+      event?: unknown;
+    }
+  | {
+      type: "assistant.clarification.event";
       turn_id?: string;
       scope?: ChatScope;
       bridge_key?: string;

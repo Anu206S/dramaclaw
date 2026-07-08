@@ -813,7 +813,7 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     )
 
     assert "[FREEZONE_SKILL_STUDIO]" in prompt
-    assert "freezone_present_skill_studio_questions" in prompt
+    assert "freezone_request_user_clarification" in prompt
     assert "freezone_present_agent_catalog_draft" in prompt
     assert "skill_studio_session_id" in prompt
     assert "Do not claim the Skill or Recipe is saved" in prompt

@@ -33,7 +33,8 @@ describe("canvas command validator", () => {
     expect(catalogText).toContain("Edges are data or semantic input relationships");
     expect(catalogText).toContain("use group_nodes or layout_nodes instead of create_edge");
     expect(promptLinkType?.source_object_types).toEqual(["TextNode"]);
-    expect(promptLinkType?.instruction).toContain("only when upstream text is direct generation input");
+    expect(promptLinkType?.instruction).toContain("upstream text is direct generation input");
+    expect(promptLinkType?.instruction).toContain("no semanticOutputRole may be connected with prompt_for");
     expect(promptLinkType?.instruction).toContain("group it with the generator instead of connecting it directly");
   });
 
@@ -194,7 +195,11 @@ describe("canvas command validator", () => {
           type: "create_node",
           client_id: "brief",
           node_type: CANVAS_NODE_TYPES.textAnnotation,
-          data: { displayName: "海报简报", content: "家乡文化海报策划" },
+          data: {
+            displayName: "海报简报",
+            content: "家乡文化海报策划",
+            semanticOutputRole: "planning_text",
+          },
         },
         {
           type: "create_node",
@@ -222,6 +227,37 @@ describe("canvas command validator", () => {
         expect.stringContaining('semanticOutputRole="input_text"'),
       ]),
     );
+  });
+
+  it("infers blank text nodes as direct input when connected to generators with prompt_for", () => {
+    const envelope: CanvasChatCommandEnvelope = {
+      schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+      commands: [
+        {
+          type: "create_node",
+          client_id: "prompt",
+          node_type: CANVAS_NODE_TYPES.textAnnotation,
+          data: { displayName: "图片提示", content: "新国风水墨海报" },
+        },
+        {
+          type: "create_node",
+          client_id: "poster",
+          node_type: CANVAS_NODE_TYPES.imageGen,
+          data: { displayName: "海报图", prompt: "" },
+        },
+        {
+          type: "create_edge",
+          source: "prompt",
+          target: "poster",
+          link_type: "prompt_for",
+        },
+      ],
+    };
+
+    const result = validateCanvasChatCommandEnvelopes([envelope], [], []);
+
+    expect(result.ok).toBe(true);
+    expect(result.issues).toEqual([]);
   });
 
   it("accepts text-to-text context edges", () => {

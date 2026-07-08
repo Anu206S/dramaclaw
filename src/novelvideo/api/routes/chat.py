@@ -30,6 +30,7 @@ from novelvideo.chat.hermes_pool import canvas_bridge_dir_for_profile
 from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
 from novelvideo.chat.store import ChatScope, chat_store
 from novelvideo.freezone.canvas_command_bridge import (
+    resolve_clarification_result,
     resolve_canvas_command,
     resolve_canvas_context,
     resolve_skill_studio_result,
@@ -134,6 +135,8 @@ class CanvasCommandToolResultIn(BaseModel):
     created_node_ids: list[str] = []
     command_results: list[dict[str, Any]] = []
     message: str | None = None
+    user_message: str | None = None
+    agent_hint: str | None = None
 
 
 class CanvasContextToolResultIn(BaseModel):
@@ -163,6 +166,23 @@ class SkillStudioToolResultIn(BaseModel):
     action: str = "submit"
     selections: dict[str, Any] = Field(default_factory=dict)
     draft: dict[str, Any] | None = None
+    errors: list[str] = []
+    message: str | None = None
+
+
+class ClarificationToolResultIn(BaseModel):
+    turn_id: str | None = None
+    bridge_key: str
+    project_id: str | None = None
+    canvas_id: str | None = None
+    agent_id: str | None = Field(default=None, validation_alias=AliasChoices("agent_id", "agentId"))
+    tool_call_status: str = "completed"
+    clarification_status: str = "answered"
+    ok: bool = True
+    action: str = "submit"
+    answers: dict[str, Any] = Field(default_factory=dict)
+    skipped: bool = False
+    used_recommended: bool = False
     errors: list[str] = []
     message: str | None = None
 
@@ -359,9 +379,10 @@ def _resolve_canvas_command_tool_result_payload(
         message = "User cancelled the canvas command before execution."
         agent_instruction = "Do not claim the canvas change was applied; ask the user before retrying."
     elif not command_ok:
-        message = payload.message or "Frontend executor reported that the canvas command failed."
+        message = payload.user_message or payload.message or "Frontend executor reported that the canvas command failed."
         agent_instruction = (
-            "Do not claim success. Read errors and command_results, then fix the command before trying again."
+            payload.agent_hint
+            or "Do not claim success. Read errors and command_results, then fix the command before trying again. Do not expose raw canvas protocol details to the user."
         )
     else:
         message = payload.message or "Frontend executor applied the canvas command."
@@ -381,7 +402,9 @@ def _resolve_canvas_command_tool_result_payload(
         "project_id": payload.project_id,
         "canvas_id": payload.canvas_id,
         "message": message,
+        "user_message": payload.user_message,
         "agent_instruction": agent_instruction,
+        "agent_hint": payload.agent_hint,
     }
     return resolve_canvas_command(
         key,
@@ -454,6 +477,117 @@ def _resolve_skill_studio_tool_result_payload(
             if result.get("canvas_id")
             else "director",
         ),
+    )
+
+
+def _resolve_clarification_tool_result_payload(
+    payload: ClarificationToolResultIn,
+    *,
+    username: str,
+) -> dict[str, Any]:
+    key = payload.bridge_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="bridge_key is required")
+    ok = payload.ok and payload.tool_call_status == "completed" and not payload.errors
+    if ok:
+        agent_instruction = "Continue using the frontend clarification response."
+        message = payload.message or "Frontend returned the user's clarification response."
+    else:
+        agent_instruction = "Do not continue; handle the clarification error or ask the user to retry."
+        message = payload.message or "Frontend reported that the clarification interaction failed."
+    result = {
+        "ok": ok,
+        "turn_id": payload.turn_id,
+        "tool_call_status": payload.tool_call_status,
+        "clarification_status": payload.clarification_status,
+        "action": payload.action,
+        "answers": payload.answers,
+        "skipped": payload.skipped,
+        "used_recommended": payload.used_recommended,
+        "errors": payload.errors,
+        "project_id": payload.project_id,
+        "canvas_id": payload.canvas_id,
+        "message": message,
+        "agent_instruction": agent_instruction,
+    }
+    return resolve_clarification_result(
+        key,
+        result,
+        bridge_dir=_canvas_bridge_dir(
+            username,
+            profile=f"freezone:{_freezone_agent_id_from_payload(payload)}"
+            if result.get("canvas_id")
+            else "director",
+        ),
+    )
+
+
+def _scope_from_interaction_payload(payload: SkillStudioToolResultIn | ClarificationToolResultIn) -> ChatScope | None:
+    project_id = str(payload.project_id or "").strip()
+    canvas_id = str(payload.canvas_id or "").strip()
+    if not project_id or not canvas_id:
+        return None
+    return ChatScope(
+        kind="project",
+        id=project_id,
+        surface="freezone",
+        canvas_id=canvas_id,
+        agent_id=_freezone_agent_id_from_payload(payload),
+    )
+
+
+def _persist_skill_studio_result_ui_event(
+    *,
+    username: str,
+    payload: SkillStudioToolResultIn,
+) -> None:
+    turn_id = str(payload.turn_id or "").strip()
+    scope = _scope_from_interaction_payload(payload)
+    if not turn_id or scope is None:
+        return
+    event: dict[str, Any] = {
+        "type": "skill_studio.questions" if payload.draft is None else "skill_studio.draft",
+        "bridge_key": payload.bridge_key,
+        "project_id": payload.project_id,
+        "canvas_id": payload.canvas_id,
+        "agent_id": payload.agent_id,
+        "submitted": True,
+        "action": payload.action,
+        "skill_studio_status": payload.skill_studio_status,
+    }
+    if payload.selections:
+        event["selections"] = payload.selections
+    if payload.draft is not None:
+        event["draft"] = payload.draft
+    chat_store.append_ui_event(username, scope, turn_id, event)
+
+
+def _persist_clarification_result_ui_event(
+    *,
+    username: str,
+    payload: ClarificationToolResultIn,
+) -> None:
+    turn_id = str(payload.turn_id or "").strip()
+    scope = _scope_from_interaction_payload(payload)
+    if not turn_id or scope is None:
+        return
+    chat_store.append_ui_event(
+        username,
+        scope,
+        turn_id,
+        {
+            "type": "assistant.clarification.request",
+            "bridge_key": payload.bridge_key,
+            "project_id": payload.project_id,
+            "canvas_id": payload.canvas_id,
+            "agent_id": payload.agent_id,
+            "submitted": True,
+            "action": payload.action,
+            "clarification_status": payload.clarification_status,
+            "answers": payload.answers,
+            "skipped": payload.skipped,
+            "used_recommended": payload.used_recommended,
+        },
     )
 
 
@@ -532,6 +666,24 @@ async def resolve_skill_studio_tool_result(
 ) -> dict[str, Any]:
     username = str(user["username"])
     resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
+    try:
+        _persist_skill_studio_result_ui_event(username=username, payload=payload)
+    except Exception:
+        logger.exception("failed to persist skill studio result ui event")
+    return {"ok": True, "data": resolved}
+
+
+@router.post("/chat/clarification-tool-result")
+async def resolve_clarification_tool_result(
+    payload: ClarificationToolResultIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    username = str(user["username"])
+    resolved = _resolve_clarification_tool_result_payload(payload, username=username)
+    try:
+        _persist_clarification_result_ui_event(username=username, payload=payload)
+    except Exception:
+        logger.exception("failed to persist clarification result ui event")
     return {"ok": True, "data": resolved}
 
 
@@ -863,6 +1015,28 @@ def _load_pending_skill_studio_event(path: Any) -> dict[str, Any] | None:
     }
 
 
+def _load_pending_clarification_event(path: Any) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("kind") != "clarification_event":
+        return None
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        return None
+    if str(event.get("type") or "").strip() != "assistant.clarification.request":
+        return None
+    if not str(event.get("clarification_id") or "").strip():
+        return None
+    return {
+        "key": str(payload.get("key") or path.name.removesuffix(".pending.json")),
+        "project_id": payload.get("project_id"),
+        "canvas_id": payload.get("canvas_id"),
+        "event": event,
+    }
+
+
 async def _watch_pending_canvas_commands(
     *,
     websocket: WebSocket,
@@ -986,6 +1160,79 @@ async def _watch_pending_skill_studio_events(
                 websocket,
                 {
                     "type": "skill_studio.event",
+                    "scope": scope.to_dict(),
+                    "turn_id": turn_id,
+                    "canvas_id": pending.get("canvas_id"),
+                    "agent_id": scope.agent_id or "main",
+                    "bridge_key": key,
+                    "event": pending["event"],
+                },
+                send_lock,
+            )
+            if not sent:
+                return
+
+
+async def _watch_pending_clarification_events(
+    *,
+    websocket: WebSocket,
+    username: str,
+    scope: ChatScope,
+    turn_id: str,
+    send_lock: asyncio.Lock | None,
+    emitted_bridge_keys: set[str],
+    started_at: float,
+) -> None:
+    if not _is_freezone_scope(scope):
+        return
+    bridge_dir = _canvas_bridge_dir(username, profile=_canvas_bridge_profile_for_scope(scope))
+    while True:
+        await asyncio.sleep(0.4)
+        try:
+            pending_paths = sorted(
+                bridge_dir.glob("*.pending.json"),
+                key=lambda item: item.stat().st_mtime,
+            )
+        except Exception:
+            continue
+        for path in pending_paths:
+            try:
+                if path.stat().st_mtime < started_at - 1.0:
+                    continue
+            except Exception:
+                continue
+            key = path.name.removesuffix(".pending.json")
+            if key in emitted_bridge_keys:
+                continue
+            if (bridge_dir / f"{key}.result.json").exists():
+                continue
+            pending = _load_pending_clarification_event(path)
+            if pending is None:
+                continue
+            if pending.get("project_id") and pending.get("project_id") != scope.id:
+                continue
+            emitted_bridge_keys.add(key)
+            ui_event = {
+                **pending["event"],
+                "bridge_key": key,
+                "project_id": pending.get("project_id") or scope.id,
+                "canvas_id": pending.get("canvas_id") or scope.canvas_id,
+                "agent_id": scope.agent_id or "main",
+                "turn_id": turn_id,
+            }
+            try:
+                chat_store.append_ui_event(username, scope, turn_id, ui_event)
+            except Exception:
+                logger.exception("failed to persist assistant.clarification ui event")
+            logger.info(
+                "emitting assistant.clarification.event from pending bridge turn_id=%s canvas_id=%s",
+                turn_id,
+                pending.get("canvas_id"),
+            )
+            sent = await _send_json_best_effort(
+                websocket,
+                {
+                    "type": "assistant.clarification.event",
                     "scope": scope.to_dict(),
                     "turn_id": turn_id,
                     "canvas_id": pending.get("canvas_id"),
@@ -1151,6 +1398,17 @@ async def _stream_project_turn(
             started_at=time.time(),
         )
     )
+    pending_clarification_task = asyncio.create_task(
+        _watch_pending_clarification_events(
+            websocket=websocket,
+            username=username,
+            scope=scope,
+            turn_id=turn_id,
+            send_lock=send_lock,
+            emitted_bridge_keys=emitted_bridge_keys,
+            started_at=time.time(),
+        )
+    )
     skill_studio_status = _skill_studio_status_frame(scope=scope, turn_id=turn_id, text=text)
     if skill_studio_status is not None:
         await _send_json_best_effort(websocket, skill_studio_status, send_lock)
@@ -1210,6 +1468,17 @@ async def _stream_project_turn(
                 },
                 send_lock,
             )
+        elif event_type == "assistant.clarification.event":
+            await _send_json_best_effort(
+                websocket,
+                {
+                    "type": "assistant.clarification.event",
+                    "scope": scope.to_dict(),
+                    "turn_id": event.get("turn_id") or turn_id,
+                    "event": event.get("event"),
+                },
+                send_lock,
+            )
         elif event_type == "assistant_message":
             message = event.get("message")
             if isinstance(message, dict):
@@ -1263,6 +1532,7 @@ async def _stream_project_turn(
         pending_canvas_task.cancel()
         pending_canvas_context_task.cancel()
         pending_skill_studio_task.cancel()
+        pending_clarification_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
         with contextlib.suppress(asyncio.CancelledError):
@@ -1271,6 +1541,8 @@ async def _stream_project_turn(
             await pending_canvas_context_task
         with contextlib.suppress(asyncio.CancelledError):
             await pending_skill_studio_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await pending_clarification_task
         if not done_sent:
             await _send_json_best_effort(
                 websocket,

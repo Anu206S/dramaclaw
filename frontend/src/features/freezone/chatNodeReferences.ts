@@ -784,7 +784,7 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
           "Batch-only alias for later commands before the frontend creates the real node id.",
         node_type:
           "Choose exactly from this command's allowed_node_types. For a user request to add a picture/image node, create imageGenNode unless the user explicitly asks to upload or import an existing file.",
-        data: "Node data. For textAnnotationNode, use displayName for the node title/header and content for the body; title is accepted as a displayName alias. For complex or dynamic fields, call freezone_get_node_create_schema first.",
+        data: "Node data. For textAnnotationNode, use displayName for the node title/header and content for the body; title is accepted as a displayName alias. For imageGenNode model and all complex/dynamic/enum fields, call freezone_get_node_create_schema first and use exact options. Do not invent model ids such as flux, midjourney, or raw provider/api names; omit model if no schema option is available.",
         position: "Optional canvas position {x, y}.",
       },
       allowed_node_types: AGENT_CREATABLE_CANVAS_NODE_TYPES,
@@ -806,7 +806,6 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
         data: {
           displayName: "海报图",
           prompt: "成都文化主题海报，国潮水墨风",
-          model: "nanobanana",
           quality: "high",
           aspectRatio: "2:3",
         },

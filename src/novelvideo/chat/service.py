@@ -310,7 +310,7 @@ Routing:
 - In Skill Studio turns, you must not emit Freezone canvas commands or claim that canvas nodes changed.
 
 Output contract:
-- For clarification questions, call freezone_present_skill_studio_questions.
+- For clarification questions, call freezone_request_user_clarification.
 - For generated or modified drafts, call freezone_present_agent_catalog_draft.
 - Do not paste the final JSON as the chat answer.
 - Do not return only a diff or patch.

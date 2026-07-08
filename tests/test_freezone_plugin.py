@@ -45,6 +45,7 @@ def test_freezone_plugin_registers_canvas_command_tools():
 
     names = {name for name, _schema, _handler in plugin.TOOLS}
 
+    assert "freezone_request_user_clarification" in names
     assert "freezone_emit_canvas_command" in names
     assert "freezone_create_node" in names
     assert "freezone_update_node_data" in names
@@ -56,6 +57,66 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_create_workflow_graph" in names
     assert "freezone_present_skill_studio_questions" in names
     assert "freezone_present_agent_catalog_draft" in names
+
+
+def test_freezone_plugin_clarification_tool_waits_for_frontend_result(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):
+        assert project_id == "project-a"
+        assert canvas_id == "canvas-a"
+        assert event["type"] == "assistant.clarification.request"
+        return "clarify-key-1"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    def fake_wait_result(key, timeout_seconds):
+        return {
+            "ok": True,
+            "status": "clarification_frontend_result",
+            "tool_call_status": "completed",
+            "clarification_status": "answered",
+            "bridge_key": key,
+            "answers": {
+                "scope": {"option_ids": ["workflow"], "custom_text": "偏海报"},
+            },
+            "message": "User submitted clarification answers.",
+        }
+
+    monkeypatch.setattr(plugin, "clarification_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_clarification_event", fake_put_pending_event)
+    monkeypatch.setattr(plugin, "wait_clarification_result", fake_wait_result)
+
+    result = handlers["freezone_request_user_clarification"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "clarification_id": "clarify_01",
+            "title": "先确认方向",
+            "questions": [
+                {
+                    "id": "scope",
+                    "title": "主要做什么？",
+                    "mode": "multiple",
+                    "options": [{"id": "workflow", "label": "工作流自动化"}],
+                    "allow_custom": True,
+                }
+            ],
+            "allow_skip": True,
+            "allow_recommended": True,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "clarification_frontend_result"
+    assert result["bridge_key"] == "clarify-key-1"
+    assert result["answers"]["scope"]["option_ids"] == ["workflow"]
+    assert pending_events[0]["event"]["type"] == "assistant.clarification.request"
+    assert pending_events[0]["event"]["clarification_id"] == "clarify_01"
+    assert pending_events[0]["event"]["questions"][0]["mode"] == "multiple"
 
 
 def test_freezone_plugin_skill_studio_tools_wait_for_frontend_results(monkeypatch):

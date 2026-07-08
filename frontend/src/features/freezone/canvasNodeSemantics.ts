@@ -51,9 +51,9 @@ const CANVAS_NODE_SEMANTICS: Partial<Record<CanvasNodeType, CanvasNodeSemanticSp
     nodeType: CANVAS_NODE_TYPES.textAnnotation,
     role: "semantic_source",
     shortDescription: "plain text, brief, copywriting, notes, settings, free-form scripts",
-    defaultUsage: "Default planning/brief/setting node. Prefer this over scriptNode for ordinary written text.",
+    defaultUsage: "Plain text container. Leave output role unset until an edge or workflow makes the text's purpose clear.",
     planningStart: true,
-    primaryOutputRole: "planning_text",
+    primaryOutputRole: null,
     acceptedInputRoles: ["planning_text", "context_text"],
   },
   [CANVAS_NODE_TYPES.script]: {

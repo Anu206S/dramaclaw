@@ -48,7 +48,7 @@ export const CANVAS_LINK_TYPE_CATALOG: CanvasLinkTypeCatalogItem[] = [
     source_object_types: ["TextNode"],
     target_object_types: ["ImageNode", "VideoNode", "AudioNode", "ScriptNode"],
     description: "上游文本/脚本是目标生成节点的直接提示词、文案、台词或任务输入。",
-    instruction: "Use only when upstream text is direct generation input, such as text-to-image, text-to-video, text-to-audio, script generation, or another direct textual instruction. If the source text is only a brief, plan, requirement note, or contextual documentation, keep it as planning_text and group it with the generator instead of connecting it directly, or create a separate input_text prompt node.",
+    instruction: "Use when upstream text is direct generation input, such as text-to-image, text-to-video, text-to-audio, script generation, or another direct textual instruction. A plain textAnnotationNode with no semanticOutputRole may be connected with prompt_for and will be treated as direct input text for that edge. If the source text is explicitly planning_text and is only a brief, plan, requirement note, or contextual documentation, keep it as planning_text and group it with the generator instead of connecting it directly, or create a separate input_text prompt node.",
   },
   {
     link_type: "media_input_for",
@@ -177,6 +177,17 @@ function targetAccepts(node: CanvasNode | undefined, role: CanvasNodeIoRole): bo
   return accepted.includes(role);
 }
 
+function inferredBlankTextRoleForTarget(
+  sourceNode: CanvasNode | undefined,
+  targetNode: CanvasNode | undefined,
+): CanvasNodeIoRole | null {
+  if (sourceNode?.type !== CANVAS_NODE_TYPES.textAnnotation) return null;
+  if (targetAccepts(targetNode, "input_text")) return "input_text";
+  if (targetAccepts(targetNode, "context_text")) return "context_text";
+  if (targetAccepts(targetNode, "planning_text")) return "planning_text";
+  return null;
+}
+
 function isMediaRole(role: CanvasNodeIoRole | null): role is "image_output" | "audio_output" | "video_output" {
   return role === "image_output" || role === "audio_output" || role === "video_output";
 }
@@ -207,7 +218,7 @@ export function deriveCanvasEdgeSemanticSpec({
   if (!sourceNode || !targetNode) return null;
 
   const role = edgeRole(edge);
-  const sourceRole = sourceOutputRole(sourceNode);
+  const sourceRole = sourceOutputRole(sourceNode) ?? inferredBlankTextRoleForTarget(sourceNode, targetNode);
 
   if (
     (sourceRole === "planning_text" || sourceRole === "context_text") &&
