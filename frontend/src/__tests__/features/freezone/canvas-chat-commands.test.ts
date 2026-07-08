@@ -337,6 +337,36 @@ describe("canvas chat commands", () => {
     ]);
   });
 
+  it("rejects invented image model ids before creating image nodes", () => {
+    const envelopes = extractCanvasChatCommandEnvelopes([
+      {
+        schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        commands: [
+          {
+            type: "create_node",
+            node_type: CANVAS_NODE_TYPES.imageGen,
+            data: {
+              displayName: "图片节点",
+              prompt: "国风水墨海报",
+              model: "flux-pro-1.1",
+            },
+          },
+        ],
+      },
+    ]);
+
+    const result = applyCanvasChatCommands(envelopes);
+
+    expect(result.applied).toBe(0);
+    expect(useCanvasStore.getState().nodes).toHaveLength(0);
+    expect(result.errors.join("\n")).toContain(
+      "field model value \"flux-pro-1.1\" is not a valid option",
+    );
+    expect(result.errors.join("\n")).toContain(
+      "freezone_get_node_create_schema",
+    );
+  });
+
   it("inherits mainline fields when add_next_node derives from a slot-targeted source", () => {
     const sourceId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.imageGen,
@@ -3449,12 +3479,14 @@ describe("canvas chat commands", () => {
         data?: {
           commands?: Array<{
             type?: string;
-            allowed_node_types?: string[];
-            field_notes?: {
-              node_type?: string;
-            };
-          }>;
-        };
+          allowed_node_types?: string[];
+          field_notes?: {
+            node_type?: string;
+            data?: string;
+          };
+          image_node_example?: { data?: Record<string, unknown> };
+        }>;
+      };
       }>;
     };
     const catalog = responsePayload.responses?.find(
@@ -3490,6 +3522,12 @@ describe("canvas chat commands", () => {
     expect(createCommand?.field_notes?.node_type).not.toContain("imageNode");
     expect(createCommand?.field_notes?.node_type).not.toContain(
       "exportImageNode",
+    );
+    expect(createCommand?.field_notes?.data).toContain(
+      "freezone_get_node_create_schema",
+    );
+    expect(createCommand?.image_node_example?.data).not.toHaveProperty(
+      "model",
     );
     expect(groupCommand).toBeTruthy();
   });
@@ -3762,7 +3800,7 @@ describe("canvas chat commands", () => {
     expect(context).toContain(`reference_1_edge_1_id: ${edgeId}`);
     expect(context).toContain(`reference_1_edge_1_source: ${sourceId}`);
     expect(context).toContain(`reference_1_edge_1_target: ${targetId}`);
-    expect(context).not.toContain("reference_1_edge_1_link_type:");
+    expect(context).toContain("reference_1_edge_1_link_type: prompt_for");
     expect(context).toContain("Referenced edges are only for unlink");
   });
 

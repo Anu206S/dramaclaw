@@ -6,6 +6,7 @@ import {
   AlertCircle,
   Braces,
   CheckCircle2,
+  ChevronLeft,
   ChevronRight,
   Copy,
   Download,
@@ -99,6 +100,7 @@ import {
   subscribeCanvasCommandApprovals,
 } from "@/features/freezone/canvasChatCommands";
 import { FREEZONE_CANVAS_WRITE_TOOL_NAME_SET } from "@/features/freezone/canvasCommandTools";
+import { canvasCommandUserMessageFromResult } from "@/features/freezone/canvasCommandUserMessages";
 import {
   FREEZONE_CANVAS_CONTEXT_ACTIVITY_EVENT,
   FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT,
@@ -1600,6 +1602,9 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
   const initiallyCompact = failed && successfulCount === 0;
   const collapseSuccessfulDetails = !failed && steps.length > 2;
   const compactTitle = canvasCommandFeedbackCompactTitle(feedback);
+  const userFailureMessage = failed
+    ? canvasCommandUserMessageFromResult(feedback.errors, feedback.commandResults)
+    : null;
 
   if ((initiallyCompact || collapseSuccessfulDetails) && !expanded) {
     return (
@@ -1632,6 +1637,11 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
       </div>
       {expanded && <CanvasCommandPlanList plans={feedback.plans} />}
       <div className="space-y-1 px-3 py-2">
+        {userFailureMessage && (
+          <div className={cn("mb-1 rounded-md px-2 py-1.5 leading-5", invalidCommand ? "bg-amber-400/[0.06] text-amber-100/90" : "bg-destructive/[0.06] text-destructive")}>
+            {userFailureMessage}
+          </div>
+        )}
         {steps.map((step, index) => {
           const ok = step.status === "success";
           return (
@@ -1644,7 +1654,7 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
                     {step.createdNodeId && <div>新节点：{step.createdNodeId}</div>}
                     {!step.createdNodeId && step.nodeId && <div>节点：{step.nodeId}</div>}
                     {step.action && <div>动作：{step.action}</div>}
-                    {step.error && <div className={invalidCommand ? "text-amber-200/80" : "text-destructive"}>{step.error}</div>}
+                    {step.error && ok && <div className={invalidCommand ? "text-amber-200/80" : "text-destructive"}>{step.error}</div>}
                   </div>
                 )}
               </div>
@@ -1657,7 +1667,7 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
             <span>已应用 {successfulCount} 个画布操作</span>
           </div>
         )}
-        {feedback.errors.length > 0 && steps.length === 0 && (
+        {feedback.errors.length > 0 && steps.length === 0 && !userFailureMessage && (
           <div className={cn("break-words", invalidCommand ? "text-amber-200/80" : "text-destructive")}>{feedback.errors.join("; ")}</div>
         )}
       </div>
@@ -1674,7 +1684,45 @@ type SkillStudioQuestionOption = {
 type SkillStudioQuestion = {
   id?: string;
   title?: string;
+  selection_mode?: "single" | "multiple";
+  selectionMode?: "single" | "multiple";
+  allow_custom?: boolean;
+  allowCustom?: boolean;
   options?: SkillStudioQuestionOption[];
+};
+
+type SkillStudioQuestionSelection = {
+  option_ids?: string[];
+  option_id?: string;
+  custom_text?: string;
+  customText?: string;
+};
+
+type SkillStudioQuestionSelections = Record<string, string | string[] | SkillStudioQuestionSelection>;
+
+type AssistantClarificationQuestion = SkillStudioQuestion & {
+  mode?: "single" | "multiple";
+};
+
+type AssistantClarificationAnswers = SkillStudioQuestionSelections;
+
+type AssistantClarificationUiEvent = {
+  type: "assistant.clarification.request";
+  bridge_key?: string;
+  project_id?: string | null;
+  canvas_id?: string | null;
+  agent_id?: string | null;
+  turn_id?: string | null;
+  anchor_text_prefix?: string | null;
+  clarification_id?: string;
+  title?: string;
+  description?: string;
+  questions?: AssistantClarificationQuestion[];
+  allow_recommended?: boolean;
+  allow_skip?: boolean;
+  submitted?: boolean;
+  action?: string;
+  answers?: AssistantClarificationAnswers;
 };
 
 type SkillStudioUiEvent =
@@ -1699,7 +1747,7 @@ type SkillStudioUiEvent =
       allow_skip?: boolean;
       submitted?: boolean;
       action?: string;
-      selections?: Record<string, string>;
+      selections?: SkillStudioQuestionSelections;
     }
   | {
       type: "skill_studio.draft";
@@ -1715,16 +1763,56 @@ type SkillStudioUiEvent =
       skill?: Record<string, unknown>;
       recipes?: Array<Record<string, unknown>>;
       warnings?: unknown[];
+      draft?: Record<string, unknown>;
       submitted?: boolean;
+      cancelled?: boolean;
     };
+
+function uiEventRecordString(value: Record<string, unknown>, key: string): string | null {
+  const candidate = value[key];
+  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : null;
+}
+
+function uiEventStableKey(event: unknown): string | null {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const value = event as Record<string, unknown>;
+  const type = uiEventRecordString(value, "type");
+  if (!type) return null;
+  const stableId =
+    uiEventRecordString(value, "bridge_key")
+    ?? uiEventRecordString(value, "skill_studio_session_id")
+    ?? uiEventRecordString(value, "clarification_id");
+  return stableId ? `${type}:${stableId}` : null;
+}
+
+function mergeUiEventsByStableKey<T>(events: T[]): T[] {
+  const merged: T[] = [];
+  for (const event of events) {
+    const key = uiEventStableKey(event);
+    if (!key) {
+      merged.push(event);
+      continue;
+    }
+    const existingIndex = merged.findIndex((candidate) => uiEventStableKey(candidate) === key);
+    if (existingIndex >= 0) {
+      merged[existingIndex] = {
+        ...(merged[existingIndex] as Record<string, unknown>),
+        ...(event as Record<string, unknown>),
+      } as T;
+    } else {
+      merged.push(event);
+    }
+  }
+  return merged;
+}
 
 function skillStudioEventsFromUiEvents(events: unknown[] | undefined): SkillStudioUiEvent[] {
   if (!events || events.length === 0) return [];
-  const skillStudioEvents = events.filter((event): event is SkillStudioUiEvent => {
+  const skillStudioEvents = mergeUiEventsByStableKey(events.filter((event): event is SkillStudioUiEvent => {
     if (!event || typeof event !== "object") return false;
     const type = (event as Record<string, unknown>).type;
     return type === "skill_studio.status" || type === "skill_studio.questions" || type === "skill_studio.draft";
-  });
+  })) as SkillStudioUiEvent[];
   const hasInteractiveCard = skillStudioEvents.some((event) =>
     event.type === "skill_studio.questions" || event.type === "skill_studio.draft",
   );
@@ -1737,11 +1825,64 @@ export const skillStudioEventsFromUiEventsForTest = skillStudioEventsFromUiEvent
 
 function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUiEvent[] {
   const events = skillStudioEventsFromUiEvents(messageUiEvents(message));
-  if (!message.text.trim()) return events;
-  return events.filter((event) => event.type !== "skill_studio.status");
+  const visibleEvents = events.filter((event) =>
+    !(event.type === "skill_studio.questions" && event.submitted !== true),
+  );
+  if (!message.text.trim()) return visibleEvents;
+  return visibleEvents.filter((event) => event.type !== "skill_studio.status");
 }
 
 export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEventsForMessage;
+
+function pendingSkillStudioQuestionEventsForMessage(message: ChatMessage): Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>[] {
+  return skillStudioEventsFromUiEvents(messageUiEvents(message))
+    .filter((event): event is Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }> =>
+      event.type === "skill_studio.questions" && event.submitted !== true,
+    );
+}
+
+function latestPendingSkillStudioQuestionEvent(messages: ChatMessage[]): Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }> | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    const event = pendingSkillStudioQuestionEventsForMessage(message)[0];
+    if (event) return event;
+  }
+  return null;
+}
+
+function assistantClarificationEventsFromUiEvents(events: unknown[] | undefined): AssistantClarificationUiEvent[] {
+  if (!events || events.length === 0) return [];
+  return mergeUiEventsByStableKey(events.filter((event): event is AssistantClarificationUiEvent => {
+    if (!event || typeof event !== "object") return false;
+    return (event as Record<string, unknown>).type === "assistant.clarification.request";
+  })) as AssistantClarificationUiEvent[];
+}
+
+function visibleAssistantClarificationEventsForMessage(message: ChatMessage): AssistantClarificationUiEvent[] {
+  return assistantClarificationEventsFromUiEvents(messageUiEvents(message)).filter((event) => event.submitted === true);
+}
+
+function pendingAssistantClarificationEventsForMessage(message: ChatMessage): AssistantClarificationUiEvent[] {
+  return assistantClarificationEventsFromUiEvents(messageUiEvents(message)).filter((event) => event.submitted !== true);
+}
+
+function latestPendingAssistantClarificationEvent(messages: ChatMessage[]): AssistantClarificationUiEvent | null {
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    const event = assistantClarificationEventsFromUiEvents(messageUiEvents(message))
+      .find((candidate) => candidate.submitted !== true);
+    if (event) return event;
+  }
+  return null;
+}
+
+function messageIsWaitingForUserReply(message: ChatMessage): boolean {
+  if (message.role !== "assistant") return false;
+  return pendingSkillStudioQuestionEventsForMessage(message).length > 0
+    || pendingAssistantClarificationEventsForMessage(message).length > 0;
+}
+
+export const messageIsWaitingForUserReplyForTest = messageIsWaitingForUserReply;
 
 type SkillStudioFlowItem =
   | { kind: "text"; key: string; text: string }
@@ -2028,6 +2169,60 @@ function findSkillStudioOption(
   return (question.options ?? []).find((option, index) => skillStudioOptionKey(option, index) === selectedOptionId) ?? null;
 }
 
+function skillStudioQuestionSelectionMode(question: SkillStudioQuestion): "single" | "multiple" {
+  return (question as AssistantClarificationQuestion).mode === "multiple"
+    || question.selection_mode === "multiple"
+    || question.selectionMode === "multiple"
+    ? "multiple"
+    : "single";
+}
+
+function skillStudioQuestionAllowsCustom(question: SkillStudioQuestion): boolean {
+  return question.allow_custom !== false && question.allowCustom !== false;
+}
+
+function normalizedSkillStudioQuestionSelection(
+  selection: SkillStudioQuestionSelections[string] | undefined,
+): { optionIds: string[]; customText: string } {
+  if (!selection) return { optionIds: [], customText: "" };
+  if (typeof selection === "string") return { optionIds: selection ? [selection] : [], customText: "" };
+  if (Array.isArray(selection)) {
+    return { optionIds: selection.filter((value): value is string => typeof value === "string" && value.trim().length > 0), customText: "" };
+  }
+  if (typeof selection === "object") {
+    const optionIds = Array.isArray(selection.option_ids)
+      ? selection.option_ids.filter((value): value is string => typeof value === "string" && value.trim().length > 0)
+      : typeof selection.option_id === "string" && selection.option_id.trim().length > 0
+        ? [selection.option_id]
+        : [];
+    const customText = typeof selection.custom_text === "string"
+      ? selection.custom_text
+      : typeof selection.customText === "string"
+        ? selection.customText
+        : "";
+    return { optionIds, customText };
+  }
+  return { optionIds: [], customText: "" };
+}
+
+function skillStudioSelectionHasAnswer(selection: SkillStudioQuestionSelections[string] | undefined): boolean {
+  const normalized = normalizedSkillStudioQuestionSelection(selection);
+  return normalized.optionIds.length > 0 || normalized.customText.trim().length > 0;
+}
+
+function skillStudioSelectionForMode(
+  question: SkillStudioQuestion,
+  optionIds: string[],
+  customText: string,
+): SkillStudioQuestionSelection {
+  const selectionMode = skillStudioQuestionSelectionMode(question);
+  const normalizedOptionIds = selectionMode === "multiple" ? optionIds : optionIds.slice(0, 1);
+  return {
+    option_ids: normalizedOptionIds,
+    custom_text: customText,
+  };
+}
+
 function formatSkillStudioOption(option: SkillStudioQuestionOption): string {
   const label = option.label?.trim() || option.id?.trim() || "未命名选项";
   const description = option.description?.trim();
@@ -2037,18 +2232,21 @@ function formatSkillStudioOption(option: SkillStudioQuestionOption): string {
 function selectedSkillStudioOptionLabel(
   question: SkillStudioQuestion,
   questionIndex: number,
-  selections: Record<string, string>,
+  selections: SkillStudioQuestionSelections,
 ): string {
-  const selectedOption = findSkillStudioOption(
-    question,
-    selections[skillStudioQuestionKey(question, questionIndex)],
-  );
-  return selectedOption ? formatSkillStudioOption(selectedOption) : "未选择";
+  const selection = normalizedSkillStudioQuestionSelection(selections[skillStudioQuestionKey(question, questionIndex)]);
+  const selectedLabels = selection.optionIds
+    .map((optionId) => findSkillStudioOption(question, optionId))
+    .filter((option): option is SkillStudioQuestionOption => Boolean(option))
+    .map(formatSkillStudioOption);
+  const customText = selection.customText.trim();
+  const parts = [...selectedLabels, ...(customText ? [`补充：${customText}`] : [])];
+  return parts.length > 0 ? parts.join("；") : "未选择";
 }
 
 export function buildSkillStudioQuestionResponseForTest(
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
-  selections: Record<string, string>,
+  selections: SkillStudioQuestionSelections,
 ): string {
   const lines = [
     "我已在 Skill Studio 问题卡片中完成选择。",
@@ -2073,11 +2271,11 @@ export function buildSkillStudioQuestionResponseForTest(
 
 export function buildSkillStudioQuestionToolResultForTest(
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
-  selections: Record<string, string>,
+  selections: SkillStudioQuestionSelections,
 ) {
   const safeSelections = Object.fromEntries(
     Object.entries(selections).filter(([key]) => !key.startsWith("__")),
-  );
+  ) as SkillStudioQuestionSelections;
   return {
     turn_id: event.turn_id ?? undefined,
     bridge_key: event.bridge_key ?? "",
@@ -2093,7 +2291,63 @@ export function buildSkillStudioQuestionToolResultForTest(
   };
 }
 
+export function buildAssistantClarificationResponseForTest(
+  event: AssistantClarificationUiEvent,
+  answers: AssistantClarificationAnswers,
+): string {
+  const lines = [
+    "我已完成补充信息选择。",
+    event.clarification_id ? `Clarification：${event.clarification_id}` : "",
+    event.title ? `卡片：${event.title}` : "",
+  ].filter(Boolean);
+
+  const answerLines = (event.questions ?? [])
+    .map((question, index) => ({ question, index }))
+    .filter(({ question }) => (question.options ?? []).length > 0 || skillStudioQuestionAllowsCustom(question))
+    .map(({ question, index }) =>
+      `${question.title || `问题 ${index + 1}`}\n${selectedSkillStudioOptionLabel(question, index, answers)}`,
+    );
+
+  return [
+    ...lines,
+    "回答如下：",
+    ...answerLines,
+    "请基于以上补充信息继续。",
+  ].join("\n");
+}
+
+export function buildAssistantClarificationToolResultForTest(
+  event: AssistantClarificationUiEvent,
+  answers: AssistantClarificationAnswers,
+) {
+  const safeAnswers = Object.fromEntries(
+    Object.entries(answers).filter(([key]) => !key.startsWith("__")),
+  ) as AssistantClarificationAnswers;
+  return {
+    turn_id: event.turn_id ?? undefined,
+    bridge_key: event.bridge_key ?? "",
+    project_id: event.project_id ?? undefined,
+    canvas_id: event.canvas_id ?? undefined,
+    agent_id: event.agent_id ?? undefined,
+    tool_call_status: "completed",
+    clarification_status: "answered",
+    ok: true,
+    action: "submit",
+    answers: safeAnswers,
+    message: buildAssistantClarificationResponseForTest(event, safeAnswers),
+  };
+}
+
 function draftPayloadFromEvent(event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) {
+  if (event.draft && typeof event.draft === "object" && !Array.isArray(event.draft)) {
+    const draft = event.draft;
+    return {
+      summary: typeof draft.summary === "string" ? draft.summary : event.summary || "",
+      skill: draft.skill && typeof draft.skill === "object" && !Array.isArray(draft.skill) ? draft.skill as Record<string, unknown> : {},
+      recipes: Array.isArray(draft.recipes) ? draft.recipes : [],
+      warnings: Array.isArray(draft.warnings) ? draft.warnings : [],
+    };
+  }
   return {
     summary: event.summary || "",
     skill: event.skill && typeof event.skill === "object" ? event.skill : {},
@@ -2172,22 +2426,21 @@ function SkillStudioQuestionsCard({
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>;
   onSubmit?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
-    selections: Record<string, string>,
+    selections: SkillStudioQuestionSelections,
   ) => Promise<boolean>;
 }) {
   const questions = Array.isArray(event.questions) ? event.questions : [];
-  const [selections, setSelections] = useState<Record<string, string>>(() =>
+  const [selections, setSelections] = useState<SkillStudioQuestionSelections>(() =>
     event.selections && typeof event.selections === "object" ? event.selections : {},
   );
   const [submitted, setSubmitted] = useState(event.submitted === true);
-  const [activeQuestionKey, setActiveQuestionKey] = useState<string | null>(() =>
-    questions[0] ? skillStudioQuestionKey(questions[0], 0) : null,
-  );
   const selectableQuestions = questions
     .map((question, index) => ({ question, index }))
-    .filter(({ question }) => (question.options ?? []).length > 0);
+    .filter(({ question }) => (question.options ?? []).length > 0 || skillStudioQuestionAllowsCustom(question));
+  const [activeQuestionPosition, setActiveQuestionPosition] = useState(0);
+  const activeItem = selectableQuestions[Math.min(activeQuestionPosition, Math.max(selectableQuestions.length - 1, 0))] ?? null;
   const answeredCount = selectableQuestions.filter(({ question, index }) =>
-    Boolean(selections[skillStudioQuestionKey(question, index)]),
+    skillStudioSelectionHasAnswer(selections[skillStudioQuestionKey(question, index)]),
   ).length;
   const hasAnySelection = answeredCount > 0;
   const canSubmitSelections = selectableQuestions.length > 0 && hasAnySelection;
@@ -2196,6 +2449,10 @@ function SkillStudioQuestionsCard({
     (question: SkillStudioQuestion, index: number) => selectedSkillStudioOptionLabel(question, index, selections),
     [selections],
   );
+  const goToQuestion = useCallback((position: number) => {
+    if (selectableQuestions.length === 0) return;
+    setActiveQuestionPosition(Math.max(0, Math.min(position, selectableQuestions.length - 1)));
+  }, [selectableQuestions.length]);
   const submitSelections = useCallback(() => {
     if (!onSubmit || submitted) return;
     void onSubmit(event, selections).then((ok) => {
@@ -2210,154 +2467,475 @@ function SkillStudioQuestionsCard({
     if (submitted) return;
     const questionKey = skillStudioQuestionKey(question, questionIndex);
     setSelections((current) => {
-      const next = { ...current, [questionKey]: optionKey };
-      const nextUnanswered = selectableQuestions.find(({ question: candidate, index }) => {
-        const candidateKey = skillStudioQuestionKey(candidate, index);
-        return candidateKey !== questionKey && !next[candidateKey];
-      });
-      setActiveQuestionKey(nextUnanswered
-        ? skillStudioQuestionKey(nextUnanswered.question, nextUnanswered.index)
-        : questionKey);
+      const currentSelection = normalizedSkillStudioQuestionSelection(current[questionKey]);
+      const selectionMode = skillStudioQuestionSelectionMode(question);
+      const optionIds = selectionMode === "multiple"
+        ? currentSelection.optionIds.includes(optionKey)
+          ? currentSelection.optionIds.filter((candidate) => candidate !== optionKey)
+          : [...currentSelection.optionIds, optionKey]
+        : [optionKey];
+      const next = {
+        ...current,
+        [questionKey]: skillStudioSelectionForMode(question, optionIds, currentSelection.customText),
+      };
       return next;
     });
-  }, [selectableQuestions, submitted]);
+  }, [submitted]);
+  const updateCustomText = useCallback((
+    question: SkillStudioQuestion,
+    questionIndex: number,
+    customText: string,
+  ) => {
+    if (submitted) return;
+    const questionKey = skillStudioQuestionKey(question, questionIndex);
+    setSelections((current) => {
+      const currentSelection = normalizedSkillStudioQuestionSelection(current[questionKey]);
+      return {
+        ...current,
+        [questionKey]: skillStudioSelectionForMode(question, currentSelection.optionIds, customText),
+      };
+    });
+  }, [submitted]);
   const readOnly = submitted;
-  return (
-    <div className="rounded-xl border border-white/[0.08] bg-black/30 p-3 text-sm shadow-[0_12px_40px_rgba(0,0,0,0.18)] backdrop-blur-sm">
-      <div className="mb-2 flex items-center gap-2 text-foreground">
-        <span className="flex size-6 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] text-cyan-100">
-          <ListTree className="size-3.5" />
-        </span>
-        <span className="font-medium tracking-normal">{event.title || "确定 Skill 方向"}</span>
-      </div>
-      {event.description && (
-        <p className="mb-3 text-xs leading-5 text-muted-foreground">{event.description}</p>
-      )}
-      <div className="space-y-2">
-        {questions.map((question, index) => (
-          <div
-            key={question.id || index}
-            className={cn(
-              "rounded-lg border px-3 py-2.5 transition-colors",
-              activeQuestionKey === skillStudioQuestionKey(question, index)
-                ? readOnly
-                  ? "border-white/[0.09] bg-white/[0.035]"
-                  : "border-cyan-300/30 bg-white/[0.055]"
-                : "border-white/[0.07] bg-white/[0.025] hover:bg-white/[0.04]",
+
+  if (readOnly) {
+    return (
+      <div className="rounded-2xl border border-white/[0.08] bg-black/30 p-3 text-sm shadow-[0_16px_44px_rgba(0,0,0,0.22)] backdrop-blur-sm">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-foreground">
+              <ListTree className="size-4 text-muted-foreground" />
+              <span className="font-medium tracking-normal">{event.title || "Skill Studio 选择"}</span>
+            </div>
+            {event.description && (
+              <p className="mt-1 line-clamp-2 text-xs leading-5 text-muted-foreground">{event.description}</p>
             )}
-          >
+          </div>
+          <span className="shrink-0 rounded-full bg-emerald-400/10 px-2 py-1 text-[11px] text-emerald-100/80">已提交</span>
+        </div>
+        <div className="space-y-1.5">
+          {selectableQuestions.map(({ question, index }) => (
+            <div key={question.id || index} className="rounded-xl border border-white/[0.06] bg-white/[0.025] px-3 py-2">
+              <div className="flex items-start justify-between gap-3">
+                <span className="min-w-0 text-xs font-medium text-foreground/85">{question.title || `问题 ${index + 1}`}</span>
+                <span className="shrink-0 rounded-full bg-white/[0.05] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {skillStudioSelectionHasAnswer(selections[skillStudioQuestionKey(question, index)]) ? "已选" : "未选"}
+                </span>
+              </div>
+              <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">{selectedSummary(question, index)}</p>
+            </div>
+          ))}
+        </div>
+        {selectableQuestions.length > 0 && (
+          <div className="mt-3 flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
+            <CheckCircle2 className="size-3" />
+            <span>已提交 {answeredCount} / {selectableQuestions.length}</span>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  const activeQuestion = activeItem?.question;
+  const activeQuestionIndex = activeItem?.index ?? 0;
+  const activeQuestionKey = activeQuestion ? skillStudioQuestionKey(activeQuestion, activeQuestionIndex) : "";
+  const activeSelection = normalizedSkillStudioQuestionSelection(selections[activeQuestionKey]);
+  const activeSelectionMode = activeQuestion ? skillStudioQuestionSelectionMode(activeQuestion) : "single";
+  const activeSelectedCount = activeSelection.optionIds.length + (activeSelection.customText.trim() ? 1 : 0);
+  const hasPrevious = activeQuestionPosition > 0;
+  const hasNext = activeQuestionPosition < selectableQuestions.length - 1;
+  const continueLabel = hasNext ? "下一题" : allQuestionsAnswered ? "提交选择" : "用当前选择继续";
+  const continueAction = () => {
+    if (hasNext) {
+      goToQuestion(activeQuestionPosition + 1);
+      return;
+    }
+    submitSelections();
+  };
+
+  return (
+    <div className="bg-transparent px-4 pb-3 pt-3 text-sm">
+      <div className="mb-2.5 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium leading-5 text-foreground">
+            {activeQuestion?.title || event.title || "需要你补充一点信息"}
+          </div>
+        </div>
+        {selectableQuestions.length > 0 && (
+          <div className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
             <button
               type="button"
-              className="flex w-full items-start justify-between gap-3 text-left"
-              disabled={readOnly}
-              onClick={() => {
-                if (!readOnly) setActiveQuestionKey(skillStudioQuestionKey(question, index));
-              }}
+              disabled={!hasPrevious}
+              className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              onClick={() => goToQuestion(activeQuestionPosition - 1)}
+              aria-label="上一题"
             >
-              <span className="min-w-0">
-                <span className="block text-xs font-medium text-foreground/85">
-                  {question.title || `问题 ${index + 1}`}
-                </span>
-                {selections[skillStudioQuestionKey(question, index)] && (
-                  <span className="mt-1 block truncate text-[11px] text-muted-foreground">
-                    {selectedSummary(question, index)}
-                  </span>
-                )}
-              </span>
-              <span className={cn(
-                "shrink-0 rounded-full px-1.5 py-0.5 text-[10px]",
-                selections[skillStudioQuestionKey(question, index)]
-                  ? "bg-cyan-300/10 text-cyan-100/80"
-                  : "bg-white/[0.04] text-muted-foreground",
-              )}>
-                {selections[skillStudioQuestionKey(question, index)] ? "已选" : "未选"}
-              </span>
+              <ChevronLeft className="size-4" />
             </button>
-            {!readOnly && activeQuestionKey === skillStudioQuestionKey(question, index) && (
-              <div className="mt-2.5 flex flex-wrap gap-1.5">
-                {(question.options ?? []).map((option, optionIndex) => {
-                  const questionKey = skillStudioQuestionKey(question, index);
-                  const optionKey = skillStudioOptionKey(option, optionIndex);
-                  const selected = selections[questionKey] === optionKey;
-                  return (
-                    <button
-                      key={option.id || optionIndex}
-                      type="button"
-                      disabled={readOnly}
-                      aria-pressed={selected}
-                      className={cn(
-                        "rounded-full border px-2.5 py-1 text-left text-xs leading-4 transition-colors disabled:cursor-default",
-                        selected
-                          ? "border-cyan-200/45 bg-cyan-200/12 text-cyan-50 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
-                          : "border-white/[0.09] bg-white/[0.035] text-foreground/75 hover:border-white/20 hover:bg-white/[0.07] hover:text-foreground",
-                      )}
-                      onClick={() => {
-                        if (readOnly) return;
-                        selectOption(question, index, optionKey);
-                      }}
-                      title={option.description}
-                    >
+            <span className="min-w-10 text-center tabular-nums">{activeQuestionPosition + 1}/{selectableQuestions.length}</span>
+            <button
+              type="button"
+              disabled={!hasNext}
+              className="flex size-7 items-center justify-center rounded-full text-muted-foreground transition-colors hover:bg-white/[0.06] hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              onClick={() => goToQuestion(activeQuestionPosition + 1)}
+              aria-label="下一题"
+            >
+              <ChevronRight className="size-4" />
+            </button>
+          </div>
+        )}
+      </div>
+      {activeQuestion ? (
+        <div className="overflow-hidden rounded-2xl bg-white/[0.035] ring-1 ring-white/[0.07]">
+          <div className="flex items-center justify-between gap-2 px-3 py-2 text-[11px] text-muted-foreground/80">
+            <span>{activeSelectionMode === "multiple" ? "可多选，也可以补充" : "选择一个方向，也可以补充"}</span>
+            {activeSelectionMode === "multiple" && (
+              <span className="shrink-0 rounded-full bg-white/[0.05] px-2 py-1 text-[11px] text-muted-foreground">
+                多选
+              </span>
+            )}
+          </div>
+          <div className="divide-y divide-white/[0.06]">
+            {(activeQuestion.options ?? []).map((option, optionIndex) => {
+              const optionKey = skillStudioOptionKey(option, optionIndex);
+              const selected = activeSelection.optionIds.includes(optionKey);
+              return (
+                <button
+                  key={option.id || optionIndex}
+                  type="button"
+                  aria-pressed={selected}
+                  className={cn(
+                    "group flex w-full items-start gap-3 px-3 py-3 text-left transition-colors",
+                    selected ? "bg-white/[0.09]" : "hover:bg-white/[0.05]",
+                  )}
+                  onClick={() => selectOption(activeQuestion, activeQuestionIndex, optionKey)}
+                >
+                  <span className={cn(
+                    "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-xs",
+                    selected ? "bg-foreground text-background" : "bg-white/[0.08] text-foreground/80",
+                  )}>
+                    {selected ? <CheckCircle2 className="size-3.5" /> : optionIndex + 1}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block break-words text-sm leading-5 text-foreground/88">
                       {option.label || option.id || `选项 ${optionIndex + 1}`}
-                    </button>
-                  );
-                })}
+                    </span>
+                    {option.description && (
+                      <span className="mt-0.5 block line-clamp-2 break-words text-xs leading-4 text-muted-foreground">
+                        {option.description}
+                      </span>
+                    )}
+                  </span>
+                  {activeSelectionMode === "single" && <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground/65" />}
+                </button>
+              );
+            })}
+            {skillStudioQuestionAllowsCustom(activeQuestion) && (
+              <div className="px-3 py-2.5">
+                <Textarea
+                  value={activeSelection.customText}
+                  onChange={(changeEvent) => updateCustomText(activeQuestion, activeQuestionIndex, changeEvent.target.value)}
+                  placeholder="其他补充..."
+                  className="min-h-11 resize-none rounded-xl border-0 bg-white/[0.05] px-3 py-2 text-sm leading-5 shadow-none placeholder:text-muted-foreground/65 focus-visible:ring-1 focus-visible:ring-white/15"
+                />
               </div>
             )}
           </div>
-        ))}
-      </div>
-      <div className="mt-3 flex flex-wrap items-center gap-2">
-        {selectableQuestions.length > 0 && (
-          <Button
-            type="button"
-            size="xs"
-            disabled={readOnly || !onSubmit || !canSubmitSelections}
-            onClick={submitSelections}
-          >
-            {allQuestionsAnswered ? "提交选择" : "用当前选择继续"}
-          </Button>
-        )}
-        {event.allow_recommended && (
-          <Button
-            type="button"
-            size="xs"
-            variant="outline"
-            disabled={readOnly || !onSubmit}
-            onClick={() => {
-              if (readOnly) return;
-              void onSubmit?.(event, { __action: "recommended" }).then((ok) => {
-                if (ok) setSubmitted(true);
-              });
-            }}
-          >
-            使用推荐配置
-          </Button>
-        )}
-        {event.allow_skip && (
-          <Button
-            type="button"
-            size="xs"
-            variant="ghost"
-            disabled={readOnly || !onSubmit}
-            onClick={() => {
-              if (readOnly) return;
-              void onSubmit?.(event, { __action: "skip" }).then((ok) => {
-                if (ok) setSubmitted(true);
-              });
-            }}
-          >
-            跳过生成草稿
-          </Button>
-        )}
-      </div>
-      {selectableQuestions.length > 0 && (
-        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
-          {readOnly && <CheckCircle2 className="size-3" />}
-          <span>
-            {readOnly ? "已提交" : "已选择"} {answeredCount} / {selectableQuestions.length}
-          </span>
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] px-3 py-6 text-center text-xs text-muted-foreground">
+          暂无可选择的问题
         </div>
       )}
+      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs text-muted-foreground/80">
+          已选择 {activeSelectedCount} 项 · {answeredCount} / {selectableQuestions.length}
+        </div>
+        <div className="flex items-center gap-2">
+          {event.allow_skip && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 rounded-full px-3 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+              disabled={!onSubmit}
+              onClick={() => {
+                void onSubmit?.(event, { __action: "skip" }).then((ok) => {
+                  if (ok) setSubmitted(true);
+                });
+              }}
+            >
+              跳过
+            </Button>
+          )}
+          {event.allow_recommended && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 rounded-full border-white/[0.12] bg-white/[0.04] px-3 text-xs hover:bg-white/[0.08]"
+              disabled={!onSubmit}
+              onClick={() => {
+                void onSubmit?.(event, { __action: "recommended" }).then((ok) => {
+                  if (ok) setSubmitted(true);
+                });
+              }}
+            >
+              使用推荐配置
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 rounded-full px-3 text-xs"
+            disabled={!onSubmit || (hasNext ? false : !canSubmitSelections)}
+            onClick={continueAction}
+          >
+            {continueLabel}
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function AssistantClarificationSummaryCard({ event }: { event: AssistantClarificationUiEvent }) {
+  const questions = Array.isArray(event.questions) ? event.questions : [];
+  const answers = event.answers && typeof event.answers === "object" ? event.answers : {};
+  return (
+    <div className="rounded-2xl bg-white/[0.045] px-4 py-3 text-sm">
+      {event.title && (
+        <div className="mb-2 text-xs text-muted-foreground">{event.title}</div>
+      )}
+      <div className="space-y-3">
+        {questions.map((question, index) => (
+          <div key={question.id || index}>
+            <div className="text-xs leading-5 text-muted-foreground">
+              {question.title || `问题 ${index + 1}`}
+            </div>
+            <div className="mt-0.5 whitespace-pre-wrap text-sm leading-6 text-foreground/90">
+              {selectedSkillStudioOptionLabel(question, index, answers)}
+            </div>
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function AssistantClarificationInputCard({
+  event,
+  onSubmit,
+}: {
+  event: AssistantClarificationUiEvent;
+  onSubmit?: (event: AssistantClarificationUiEvent, answers: AssistantClarificationAnswers) => Promise<boolean>;
+}) {
+  const questions = Array.isArray(event.questions) ? event.questions : [];
+  const [answers, setAnswers] = useState<AssistantClarificationAnswers>(() =>
+    event.answers && typeof event.answers === "object" ? event.answers : {},
+  );
+  const [activeQuestionPosition, setActiveQuestionPosition] = useState(0);
+  const selectableQuestions = questions
+    .map((question, index) => ({ question, index }))
+    .filter(({ question }) => (question.options ?? []).length > 0 || skillStudioQuestionAllowsCustom(question));
+  const activeItem = selectableQuestions[Math.min(activeQuestionPosition, Math.max(selectableQuestions.length - 1, 0))] ?? null;
+  const answeredCount = selectableQuestions.filter(({ question, index }) =>
+    skillStudioSelectionHasAnswer(answers[skillStudioQuestionKey(question, index)]),
+  ).length;
+  const allQuestionsAnswered = selectableQuestions.length > 0 && answeredCount === selectableQuestions.length;
+  const canSubmit = answeredCount > 0 || selectableQuestions.length === 0;
+  const goToQuestion = useCallback((position: number) => {
+    if (selectableQuestions.length === 0) return;
+    setActiveQuestionPosition(Math.max(0, Math.min(position, selectableQuestions.length - 1)));
+  }, [selectableQuestions.length]);
+  const selectOption = useCallback((question: AssistantClarificationQuestion, questionIndex: number, optionKey: string) => {
+    const questionKey = skillStudioQuestionKey(question, questionIndex);
+    setAnswers((current) => {
+      const currentSelection = normalizedSkillStudioQuestionSelection(current[questionKey]);
+      const selectionMode = skillStudioQuestionSelectionMode(question);
+      const optionIds = selectionMode === "multiple"
+        ? currentSelection.optionIds.includes(optionKey)
+          ? currentSelection.optionIds.filter((candidate) => candidate !== optionKey)
+          : [...currentSelection.optionIds, optionKey]
+        : [optionKey];
+      return {
+        ...current,
+        [questionKey]: skillStudioSelectionForMode(question, optionIds, currentSelection.customText),
+      };
+    });
+  }, []);
+  const updateCustomText = useCallback((question: AssistantClarificationQuestion, questionIndex: number, customText: string) => {
+    const questionKey = skillStudioQuestionKey(question, questionIndex);
+    setAnswers((current) => {
+      const currentSelection = normalizedSkillStudioQuestionSelection(current[questionKey]);
+      return {
+        ...current,
+        [questionKey]: skillStudioSelectionForMode(question, currentSelection.optionIds, customText),
+      };
+    });
+  }, []);
+  const submitAnswers = useCallback(() => {
+    if (!onSubmit || !canSubmit) return;
+    void onSubmit(event, answers);
+  }, [answers, canSubmit, event, onSubmit]);
+  const activeQuestion = activeItem?.question;
+  const activeQuestionIndex = activeItem?.index ?? 0;
+  const activeQuestionKey = activeQuestion ? skillStudioQuestionKey(activeQuestion, activeQuestionIndex) : "";
+  const activeSelection = normalizedSkillStudioQuestionSelection(answers[activeQuestionKey]);
+  const activeSelectionMode = activeQuestion ? skillStudioQuestionSelectionMode(activeQuestion) : "single";
+  const hasPrevious = activeQuestionPosition > 0;
+  const hasNext = activeQuestionPosition < selectableQuestions.length - 1;
+  const activeSelectedCount = activeSelection.optionIds.length + (activeSelection.customText.trim() ? 1 : 0);
+  const continueLabel = hasNext ? "下一题" : allQuestionsAnswered ? "发送" : "用当前回答发送";
+  const continueAction = () => {
+    if (hasNext) {
+      goToQuestion(activeQuestionPosition + 1);
+      return;
+    }
+    submitAnswers();
+  };
+
+  return (
+    <div className="bg-transparent px-4 pb-3 pt-3 text-sm">
+      <div className="mb-2.5 flex items-center justify-between gap-3">
+        <div className="min-w-0">
+          <div className="truncate text-sm font-medium leading-5 text-foreground">
+            {activeQuestion?.title || event.title || "需要你补充一点信息"}
+          </div>
+        </div>
+        {selectableQuestions.length > 0 && (
+          <div className="flex shrink-0 items-center gap-1 text-xs text-muted-foreground">
+            <button
+              type="button"
+              disabled={!hasPrevious}
+              className="flex size-7 items-center justify-center rounded-full transition-colors hover:bg-white/[0.06] hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              onClick={() => goToQuestion(activeQuestionPosition - 1)}
+              aria-label="上一题"
+            >
+              <ChevronLeft className="size-4" />
+            </button>
+            <span className="min-w-10 text-center tabular-nums">{activeQuestionPosition + 1}/{selectableQuestions.length}</span>
+            <button
+              type="button"
+              disabled={!hasNext}
+              className="flex size-7 items-center justify-center rounded-full transition-colors hover:bg-white/[0.06] hover:text-foreground disabled:pointer-events-none disabled:opacity-35"
+              onClick={() => goToQuestion(activeQuestionPosition + 1)}
+              aria-label="下一题"
+            >
+              <ChevronRight className="size-4" />
+            </button>
+            <button
+              type="button"
+              className="flex size-7 items-center justify-center rounded-full transition-colors hover:bg-white/[0.06] hover:text-foreground"
+              onClick={() => {
+                void onSubmit?.(event, { __action: "skip" });
+              }}
+              aria-label="跳过"
+            >
+              <X className="size-4" />
+            </button>
+          </div>
+        )}
+      </div>
+      {activeQuestion ? (
+        <div className="overflow-hidden rounded-2xl bg-white/[0.035] ring-1 ring-white/[0.07]">
+          <div className="flex items-center justify-between gap-2 px-3 py-2 text-[11px] text-muted-foreground/80">
+            <span>{activeSelectionMode === "multiple" ? "可多选，也可以补充" : "选择一个方向，也可以补充"}</span>
+            {activeSelectionMode === "multiple" && (
+              <span className="shrink-0 rounded-full bg-white/[0.06] px-2 py-0.5 text-[11px] text-muted-foreground">
+                多选
+              </span>
+            )}
+          </div>
+          <div className="divide-y divide-white/[0.06]">
+            {(activeQuestion.options ?? []).map((option, optionIndex) => {
+              const optionKey = skillStudioOptionKey(option, optionIndex);
+              const selected = activeSelection.optionIds.includes(optionKey);
+              return (
+                <button
+                  key={option.id || optionIndex}
+                  type="button"
+                  className={cn(
+                    "group flex w-full items-start gap-3 px-3 py-3 text-left transition-colors",
+                    selected ? "bg-white/[0.09]" : "hover:bg-white/[0.05]",
+                  )}
+                  onClick={() => selectOption(activeQuestion, activeQuestionIndex, optionKey)}
+                >
+                  <span className={cn(
+                    "mt-0.5 flex size-6 shrink-0 items-center justify-center rounded-full text-xs",
+                    selected ? "bg-foreground text-background" : "bg-white/[0.08] text-foreground/80",
+                  )}>
+                    {selected ? <CheckCircle2 className="size-3.5" /> : optionIndex + 1}
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="block break-words text-sm leading-5 text-foreground/88">{option.label || option.id || `选项 ${optionIndex + 1}`}</span>
+                    {option.description && (
+                      <span className="mt-0.5 block line-clamp-2 break-words text-xs leading-4 text-muted-foreground">{option.description}</span>
+                    )}
+                  </span>
+                  {activeSelectionMode === "single" && <ChevronRight className="mt-1 size-4 shrink-0 text-muted-foreground/65" />}
+                </button>
+              );
+            })}
+            {skillStudioQuestionAllowsCustom(activeQuestion) && (
+              <div className="px-3 py-2.5">
+                <Textarea
+                  value={activeSelection.customText}
+                  onChange={(changeEvent) => updateCustomText(activeQuestion, activeQuestionIndex, changeEvent.target.value)}
+                  placeholder="其他补充..."
+                  className="min-h-11 resize-none rounded-xl border-0 bg-white/[0.05] px-3 py-2 text-sm leading-5 shadow-none placeholder:text-muted-foreground/65 focus-visible:ring-1 focus-visible:ring-white/15"
+                />
+              </div>
+            )}
+          </div>
+        </div>
+      ) : (
+        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] px-3 py-5 text-center text-xs text-muted-foreground">
+          暂无可回答的问题
+        </div>
+      )}
+      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-xs text-muted-foreground/80">
+          已选择 {activeSelectedCount} 项 · {answeredCount} / {selectableQuestions.length}
+        </div>
+        <div className="flex items-center gap-2">
+          {event.allow_skip && (
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 rounded-full px-3 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+              onClick={() => {
+                void onSubmit?.(event, { __action: "skip" });
+              }}
+            >
+              跳过
+            </Button>
+          )}
+          {event.allow_recommended && (
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 rounded-full border-white/[0.12] bg-white/[0.04] px-3 text-xs hover:bg-white/[0.08]"
+              onClick={() => {
+                void onSubmit?.(event, { __action: "recommended" });
+              }}
+            >
+              使用推荐
+            </Button>
+          )}
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 rounded-full px-3 text-xs"
+            disabled={!onSubmit || (hasNext ? false : !canSubmit)}
+            onClick={continueAction}
+          >
+            {continueLabel}
+          </Button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -2365,16 +2943,24 @@ function SkillStudioQuestionsCard({
 function SkillStudioDraftCard({
   event,
   onSubmit,
+  onDraftChange,
+  onCancel,
 }: {
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>;
   onSubmit?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => Promise<boolean>;
+  onDraftChange?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => void;
+  onCancel?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
 }) {
   const [draftObject, setDraftObject] = useState<Record<string, unknown>>(() => draftPayloadFromEvent(event));
   const [draftText, setDraftText] = useState(() => prettyJson(draftObject));
-  const [submitted, setSubmitted] = useState(false);
+  const [submitted, setSubmitted] = useState(event.submitted === true);
+  const [cancelled, setCancelled] = useState(event.cancelled === true);
   const [jsonError, setJsonError] = useState<string | null>(null);
   const skill = getRecord(draftObject.skill);
   const recipes = Array.isArray(draftObject.recipes)
@@ -2387,10 +2973,11 @@ function SkillStudioDraftCard({
     setDraftObject((current) => {
       const next = updater(current);
       setDraftText(prettyJson(next));
+      onDraftChange?.(event, next);
       return next;
     });
     if (jsonError) setJsonError(null);
-  }, [jsonError]);
+  }, [event, jsonError, onDraftChange]);
   const updateSkillField = useCallback((key: string, value: unknown) => {
     syncDraftObject((current) => ({
       ...current,
@@ -2427,7 +3014,7 @@ function SkillStudioDraftCard({
     });
   }, [syncDraftObject]);
   const submitDraft = useCallback(() => {
-    if (!onSubmit || submitted) return;
+    if (!onSubmit || submitted || cancelled) return;
     let parsed: unknown;
     try {
       parsed = JSON.parse(draftText);
@@ -2440,10 +3027,17 @@ function SkillStudioDraftCard({
       return;
     }
     setJsonError(null);
+    onDraftChange?.(event, parsed as Record<string, unknown>);
     void onSubmit(event, parsed as Record<string, unknown>).then((ok) => {
       if (ok) setSubmitted(true);
     });
-  }, [draftText, event, onSubmit, submitted]);
+  }, [cancelled, draftText, event, onDraftChange, onSubmit, submitted]);
+  const cancelDraft = useCallback(() => {
+    if (submitted || cancelled) return;
+    setCancelled(true);
+    onCancel?.(event);
+  }, [cancelled, event, onCancel, submitted]);
+  const readOnly = submitted || cancelled;
   const fieldClass = "h-8 rounded-lg border-white/[0.08] bg-black/20 text-xs shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
   const labelClass = "mb-1 block text-[11px] font-medium text-muted-foreground";
   const textAreaClass = "min-h-16 resize-y rounded-lg border-white/[0.08] bg-black/20 text-xs leading-5 shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
@@ -2498,7 +3092,7 @@ function SkillStudioDraftCard({
                 <span className={labelClass}>{skillStudioDraftFieldLabels.skill.id}</span>
                 <Input
                   value={textField(skill.id)}
-                  disabled={submitted}
+                  disabled={readOnly}
                   onChange={(changeEvent) => updateSkillField("id", changeEvent.target.value)}
                   className={cn(fieldClass, "font-mono")}
                 />
@@ -2507,7 +3101,7 @@ function SkillStudioDraftCard({
                 <span className={labelClass}>{skillStudioDraftFieldLabels.skill.category}</span>
                 <Input
                   value={textField(skill.category)}
-                  disabled={submitted}
+                  disabled={readOnly}
                   onChange={(changeEvent) => updateSkillField("category", changeEvent.target.value)}
                   className={fieldClass}
                 />
@@ -2517,7 +3111,7 @@ function SkillStudioDraftCard({
               <span className={labelClass}>{skillStudioDraftFieldLabels.skill.description}</span>
               <Textarea
                 value={textField(skill.description)}
-                disabled={submitted}
+                disabled={readOnly}
                 onChange={(changeEvent) => updateSkillField("description", changeEvent.target.value)}
                 className={textAreaClass}
               />
@@ -2541,7 +3135,7 @@ function SkillStudioDraftCard({
               <span className={labelClass}>{skillStudioDraftFieldLabels.skill.keywords}</span>
               <Input
                 value={listText(triggers.keywords)}
-                disabled={submitted}
+                disabled={readOnly}
                 onChange={(changeEvent) => updateNestedSkillField("triggers", "keywords", parseListText(changeEvent.target.value))}
                 placeholder="用顿号、逗号或换行分隔"
                 className={fieldClass}
@@ -2551,7 +3145,7 @@ function SkillStudioDraftCard({
               <span className={labelClass}>{skillStudioDraftFieldLabels.skill.nodeTypes}</span>
               <Input
                 value={listText(triggers.nodeTypes)}
-                disabled={submitted}
+                disabled={readOnly}
                 onChange={(changeEvent) => updateNestedSkillField("triggers", "nodeTypes", parseListText(changeEvent.target.value))}
                 placeholder="如：imageGenNode、textAnnotationNode"
                 className={fieldClass}
@@ -2574,7 +3168,7 @@ function SkillStudioDraftCard({
                 <span className={labelClass}>{skillStudioDraftFieldLabels.skill.metaPlanningHints}</span>
                 <Textarea
                   value={textField(planning.metaPlanningHints)}
-                  disabled={submitted}
+                  disabled={readOnly}
                   onChange={(changeEvent) => updateNestedSkillField("planning", "metaPlanningHints", changeEvent.target.value)}
                   className={textAreaClass}
                 />
@@ -2583,7 +3177,7 @@ function SkillStudioDraftCard({
                 <span className={labelClass}>{skillStudioDraftFieldLabels.skill.promptStyleGuide}</span>
                 <Textarea
                   value={textField(planning.promptStyleGuide)}
-                  disabled={submitted}
+                  disabled={readOnly}
                   onChange={(changeEvent) => updateNestedSkillField("planning", "promptStyleGuide", changeEvent.target.value)}
                   className={textAreaClass}
                 />
@@ -2593,7 +3187,7 @@ function SkillStudioDraftCard({
               <span className={labelClass}>{skillStudioDraftFieldLabels.skill.behaviorRules}</span>
               <Input
                 value={listText(planning.behaviorRules)}
-                disabled={submitted}
+                disabled={readOnly}
                 onChange={(changeEvent) => updateNestedSkillField("planning", "behaviorRules", parseListText(changeEvent.target.value))}
                 placeholder="用顿号、逗号或换行分隔"
                 className={fieldClass}
@@ -2615,7 +3209,7 @@ function SkillStudioDraftCard({
               <span className={labelClass}>{skillStudioDraftFieldLabels.skill.passingScore}</span>
               <Input
                 value={textField(evaluation.passingScore)}
-                disabled={submitted}
+                disabled={readOnly}
                 onChange={(changeEvent) => updateNestedSkillField("evaluation", "passingScore", Number(changeEvent.target.value) || changeEvent.target.value)}
                 className={fieldClass}
               />
@@ -2624,7 +3218,7 @@ function SkillStudioDraftCard({
               <span className={labelClass}>{skillStudioDraftFieldLabels.skill.domainRules}</span>
               <Input
                 value={listText(evaluation.domainRules)}
-                disabled={submitted}
+                disabled={readOnly}
                 onChange={(changeEvent) => updateNestedSkillField("evaluation", "domainRules", parseListText(changeEvent.target.value))}
                 placeholder="用顿号、逗号或换行分隔"
                 className={fieldClass}
@@ -2657,7 +3251,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.id}</span>
                     <Input
                       value={textField(recipe.id)}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "id", changeEvent.target.value)}
                       className={cn(fieldClass, "font-mono")}
                     />
@@ -2666,7 +3260,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.name}</span>
                     <Input
                       value={textField(recipe.name)}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "name", changeEvent.target.value)}
                       className={fieldClass}
                     />
@@ -2677,7 +3271,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.output_kind}</span>
                     <Input
                       value={textField(recipe.output_kind)}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "output_kind", changeEvent.target.value)}
                       className={fieldClass}
                     />
@@ -2686,7 +3280,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.action_keys}</span>
                     <Input
                       value={listText(recipe.action_keys)}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "action_keys", parseListText(changeEvent.target.value))}
                       placeholder="用顿号、逗号或换行分隔"
                       className={fieldClass}
@@ -2697,7 +3291,7 @@ function SkillStudioDraftCard({
                   <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.systemPrompt}</span>
                   <Textarea
                     value={textField(recipe.systemPrompt)}
-                    disabled={submitted}
+                    disabled={readOnly}
                     onChange={(changeEvent) => updateRecipeField(index, "systemPrompt", changeEvent.target.value)}
                     className={cn(textAreaClass, "min-h-24")}
                   />
@@ -2707,7 +3301,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.required_elements}</span>
                     <Input
                       value={listText(recipe.required_elements)}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "required_elements", parseListText(changeEvent.target.value))}
                       placeholder="用顿号、逗号或换行分隔"
                       className={fieldClass}
@@ -2717,7 +3311,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.needs_multimodal_input}</span>
                     <Input
                       value={String(Boolean(recipe.needs_multimodal_input))}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "needs_multimodal_input", changeEvent.target.value === "true")}
                       placeholder="true / false"
                       className={fieldClass}
@@ -2729,7 +3323,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.planner_cue}</span>
                     <Textarea
                       value={textField(recipe.planner_cue)}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "planner_cue", changeEvent.target.value)}
                       className={textAreaClass}
                     />
@@ -2738,7 +3332,7 @@ function SkillStudioDraftCard({
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.output_summary}</span>
                     <Textarea
                       value={textField(recipe.output_summary)}
-                      disabled={submitted}
+                      disabled={readOnly}
                       onChange={(changeEvent) => updateRecipeField(index, "output_summary", changeEvent.target.value)}
                       className={textAreaClass}
                     />
@@ -2761,20 +3355,34 @@ function SkillStudioDraftCard({
             <Braces className="size-3.5" />
             查看原始 JSON
           </span>
-          {submitted && (
-            <span className="flex items-center gap-1 text-[11px] text-emerald-100/80">
-              <CheckCircle2 className="size-3" />
-              已提交
+          {readOnly && (
+            <span className={cn(
+              "flex items-center gap-1 text-[11px]",
+              cancelled ? "text-muted-foreground" : "text-emerald-100/80",
+            )}>
+              {cancelled ? <X className="size-3" /> : <CheckCircle2 className="size-3" />}
+              {cancelled ? "已取消" : "已提交"}
             </span>
           )}
         </summary>
         <div className="border-t border-white/[0.06]">
           <Textarea
             value={draftText}
-            disabled={submitted}
+            disabled={readOnly}
             onChange={(changeEvent) => {
-              setDraftText(changeEvent.target.value);
+              const nextText = changeEvent.target.value;
+              setDraftText(nextText);
               if (jsonError) setJsonError(null);
+              try {
+                const parsed = JSON.parse(nextText);
+                if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) {
+                  const nextDraft = parsed as Record<string, unknown>;
+                  setDraftObject(nextDraft);
+                  onDraftChange?.(event, nextDraft);
+                }
+              } catch {
+                // Keep the user's raw JSON text while they are still editing.
+              }
             }}
             spellCheck={false}
             className="min-h-44 resize-y border-0 bg-transparent font-mono text-[11px] leading-5 text-foreground/80 shadow-none focus-visible:ring-0 disabled:opacity-70"
@@ -2782,17 +3390,45 @@ function SkillStudioDraftCard({
         </div>
       </details>
       {jsonError && <div className="mt-2 text-xs text-amber-200">{jsonError}</div>}
-      <div className="mt-3 flex items-center gap-2">
-        <Button
-          type="button"
-          size="sm"
-          className="h-8 rounded-lg px-3 text-xs"
-          disabled={!onSubmit || submitted}
-          onClick={submitDraft}
-        >
-          确认添加
-        </Button>
-        <span className="text-[11px] text-muted-foreground">保存前可展开各项继续微调</span>
+      <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
+        <div className="text-[11px] text-muted-foreground">
+          {submitted
+            ? "已添加到虾画 Skills / Recipes"
+            : cancelled
+              ? "已取消，本草稿不会保存"
+              : "保存前可展开各项继续微调"}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="h-8 rounded-lg px-3 text-xs"
+            disabled={readOnly}
+            onClick={cancelDraft}
+          >
+            取消
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 rounded-lg px-3 text-xs"
+            disabled={readOnly}
+            onClick={() => toast.info("请在输入框描述要调整的方向，我会基于当前草稿继续修改")}
+          >
+            继续调整
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            className="h-8 rounded-lg px-3 text-xs"
+            disabled={!onSubmit || readOnly}
+            onClick={submitDraft}
+          >
+            确认添加
+          </Button>
+        </div>
       </div>
     </div>
   );
@@ -2816,16 +3452,23 @@ function SkillStudioEventCard({
   event,
   onSubmitQuestionResponse,
   onSubmitDraftResponse,
+  onDraftChange,
+  onCancelDraft,
 }: {
   event: SkillStudioUiEvent;
   onSubmitQuestionResponse?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
-    selections: Record<string, string>,
+    selections: SkillStudioQuestionSelections,
   ) => Promise<boolean>;
   onSubmitDraftResponse?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => Promise<boolean>;
+  onDraftChange?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => void;
+  onCancelDraft?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
 }) {
   if (event.type === "skill_studio.status") {
     return <SkillStudioStatusCard event={event} />;
@@ -2833,7 +3476,14 @@ function SkillStudioEventCard({
   if (event.type === "skill_studio.questions") {
     return <SkillStudioQuestionsCard event={event} onSubmit={onSubmitQuestionResponse} />;
   }
-  return <SkillStudioDraftCard event={event} onSubmit={onSubmitDraftResponse} />;
+  return (
+    <SkillStudioDraftCard
+      event={event}
+      onSubmit={onSubmitDraftResponse}
+      onDraftChange={onDraftChange}
+      onCancel={onCancelDraft}
+    />
+  );
 }
 
 const MessageBubble = memo(function MessageBubble({
@@ -2854,6 +3504,8 @@ const MessageBubble = memo(function MessageBubble({
   onCancelCanvasCommandApproval,
   onSubmitSkillStudioQuestionResponse,
   onSubmitSkillStudioDraftResponse,
+  onSkillStudioDraftChange,
+  onCancelSkillStudioDraft,
 }: {
   message: ChatMessage;
   variant?: SuperChatPanelVariant;
@@ -2872,12 +3524,17 @@ const MessageBubble = memo(function MessageBubble({
   onCancelCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
   onSubmitSkillStudioQuestionResponse?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
-    selections: Record<string, string>,
+    selections: SkillStudioQuestionSelections,
   ) => Promise<boolean>;
   onSubmitSkillStudioDraftResponse?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => Promise<boolean>;
+  onSkillStudioDraftChange?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => void;
+  onCancelSkillStudioDraft?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
 }) {
   const isUser = message.role === "user";
   const isTool = isToolMessage(message);
@@ -2898,6 +3555,10 @@ const MessageBubble = memo(function MessageBubble({
   const skillStudioEvents = !isUser && !isTool
     ? visibleSkillStudioEventsForMessage(message)
     : [];
+  const clarificationSummaryEvents = !isUser && !isTool
+    ? visibleAssistantClarificationEventsForMessage(message)
+    : [];
+  const waitingForUserReply = !isUser && !isTool && messageIsWaitingForUserReply(message);
   const skillStudioFlowItems = !isUser && !isTool
     ? buildSkillStudioFlowItems(displayText, skillStudioEvents)
     : [];
@@ -3180,11 +3841,19 @@ const MessageBubble = memo(function MessageBubble({
                         event={item.event}
                         onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
                         onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                        onDraftChange={onSkillStudioDraftChange}
+                        onCancelDraft={onCancelSkillStudioDraft}
                       />
                     );
                   }
                   return <CanvasContextActivityCard key={item.key} activity={item.activity} />;
                 })}
+                {clarificationSummaryEvents.map((event, index) => (
+                  <AssistantClarificationSummaryCard
+                    key={`clarification-summary:${event.clarification_id || index}`}
+                    event={event}
+                  />
+                ))}
               </div>
             ) : (
               <div className="space-y-2">
@@ -3197,6 +3866,8 @@ const MessageBubble = memo(function MessageBubble({
                           event={item.event}
                           onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
                           onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                          onDraftChange={onSkillStudioDraftChange}
+                          onCancelDraft={onCancelSkillStudioDraft}
                         />
                       );
                     }
@@ -3207,15 +3878,24 @@ const MessageBubble = memo(function MessageBubble({
                         ? <HighlightedCompletionText key={item.key} text={item.text} />
                         : <MessageText key={item.key} text={item.text} markdown={!isUser && !isTool} />;
                   })
-                ) : (
-                  !suppressCanvasExecutionNarration && displayText && (
-                    isErrorReply && !isUser && !isTool
-                      ? <HighlightedErrorText text={displayText} />
-                      : isCompletionNotice && !isUser && !isTool
-                        ? <HighlightedCompletionText text={displayText} />
-                        : <MessageText text={displayText} markdown={!isUser && !isTool} />
-                  )
-                )}
+                ) : !suppressCanvasExecutionNarration && displayText ? (
+                  isErrorReply && !isUser && !isTool
+                    ? <HighlightedErrorText text={displayText} />
+                    : isCompletionNotice && !isUser && !isTool
+                      ? <HighlightedCompletionText text={displayText} />
+                      : <MessageText text={displayText} markdown={!isUser && !isTool} />
+                ) : waitingForUserReply ? (
+                    <div className="inline-flex items-center gap-2 rounded-full border border-white/[0.08] bg-white/[0.035] px-3 py-1.5 text-xs text-muted-foreground">
+                      <ListTree className="size-3.5" />
+                      <span>正在等待您的回复</span>
+                    </div>
+                ) : null}
+                {clarificationSummaryEvents.map((event, index) => (
+                  <AssistantClarificationSummaryCard
+                    key={`clarification-summary:${event.clarification_id || index}`}
+                    event={event}
+                  />
+                ))}
               </div>
             )}
             <StructuredRenderer blocks={visibleBlocks} onOpenMedia={onOpenMedia} />
@@ -6020,6 +6700,7 @@ export function SuperChatPanel({
   const composerShellRef = useRef<HTMLDivElement | null>(null);
   const composerBeamRef = useRef<BorderBeamController | null>(null);
   const canvasCommandModeButtonRef = useRef<HTMLButtonElement | null>(null);
+  const skillStudioDraftPersistTimerRef = useRef<number | null>(null);
   const onFreezoneUserMessageRef = useRef(onFreezoneUserMessage);
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
   const taskEventBus = useEventBus();
@@ -6633,6 +7314,53 @@ export function SuperChatPanel({
     });
   }, [effectiveFreezoneCanvasId, params.project]);
 
+  const persistSkillStudioUiEvent = useCallback((
+    turnId: string | null | undefined,
+    event: Record<string, unknown>,
+    options: { debounce?: boolean } = {},
+  ) => {
+    if (!params.project || !effectiveFreezoneCanvasId || !turnId) return;
+    const postEvent = () => {
+      void api.post("api/v1/chat/ui-events", {
+        json: {
+          scope: {
+            kind: "project",
+            id: params.project,
+            surface: "freezone",
+            canvasId: effectiveFreezoneCanvasId,
+            agentId: typeof event.agent_id === "string" ? event.agent_id : effectiveFreezoneAgentId,
+          },
+          turn_id: turnId,
+          event,
+        },
+      }).catch((error) => {
+        console.warn("[skill-studio] failed to persist superchat ui event", {
+          canvasId: effectiveFreezoneCanvasId,
+          turnId,
+          error,
+        });
+      });
+    };
+    if (!options.debounce) {
+      postEvent();
+      return;
+    }
+    if (skillStudioDraftPersistTimerRef.current !== null) {
+      window.clearTimeout(skillStudioDraftPersistTimerRef.current);
+    }
+    skillStudioDraftPersistTimerRef.current = window.setTimeout(() => {
+      skillStudioDraftPersistTimerRef.current = null;
+      postEvent();
+    }, 450);
+  }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project]);
+
+  useEffect(() => () => {
+    if (skillStudioDraftPersistTimerRef.current !== null) {
+      window.clearTimeout(skillStudioDraftPersistTimerRef.current);
+      skillStudioDraftPersistTimerRef.current = null;
+    }
+  }, []);
+
   const handleApplyCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval) => {
     if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
     resolvedCanvasCommandApprovalKeysRef.current.add(approval.key);
@@ -6835,6 +7563,15 @@ export function SuperChatPanel({
         : activeMessages,
     [activeMessages, searchQuery],
   );
+  const activeClarificationEvent = useMemo(
+    () => latestPendingAssistantClarificationEvent(visibleMessages),
+    [visibleMessages],
+  );
+  const activeSkillStudioQuestionEvent = useMemo(
+    () => latestPendingSkillStudioQuestionEvent(visibleMessages),
+    [visibleMessages],
+  );
+  const hasActiveComposerPrompt = Boolean(activeSkillStudioQuestionEvent || activeClarificationEvent);
   const orphanCanvasCommandSurfaces = useMemo(() => {
     type OrphanSurface = { id: string; turnId: string | null };
     const surfaces = new Map<string, OrphanSurface>();
@@ -7452,7 +8189,7 @@ export function SuperChatPanel({
 
   const submitSkillStudioQuestionResponse = useCallback(async (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
-    selections: Record<string, string>,
+    selections: SkillStudioQuestionSelections,
   ): Promise<boolean> => {
     if (!event.bridge_key) {
       toast.error("Skill Studio 桥接信息缺失，请重试");
@@ -7492,6 +8229,57 @@ export function SuperChatPanel({
     } catch (error) {
       console.error("[superchat] skill studio result submit failed", error);
       toast.error("提交 Skill Studio 选择失败，请重试");
+      return false;
+    }
+  }, [updateChatUiEvent]);
+
+  const submitAssistantClarificationResponse = useCallback(async (
+    event: AssistantClarificationUiEvent,
+    answers: AssistantClarificationAnswers,
+  ): Promise<boolean> => {
+    if (!event.bridge_key) {
+      toast.error("补充信息桥接缺失，请重试");
+      return false;
+    }
+    try {
+      const action = answers.__action === "recommended"
+        ? "recommended"
+        : answers.__action === "skip"
+          ? "skip"
+          : "submit";
+      const payload = {
+        ...buildAssistantClarificationToolResultForTest(event, answers),
+        action,
+        clarification_status: action === "submit" ? "answered" : action,
+        skipped: action === "skip",
+        used_recommended: action === "recommended",
+      };
+      await api.post("api/v1/chat/clarification-tool-result", { json: payload });
+      if (event.turn_id) {
+        updateChatUiEvent(
+          event.turn_id,
+          (candidate) =>
+            Boolean(
+              candidate
+              && typeof candidate === "object"
+              && (candidate as Record<string, unknown>).type === "assistant.clarification.request"
+              && (
+                (event.bridge_key && (candidate as Record<string, unknown>).bridge_key === event.bridge_key)
+                || (event.clarification_id && (candidate as Record<string, unknown>).clarification_id === event.clarification_id)
+              ),
+            ),
+          (candidate) => ({
+            ...(candidate as Record<string, unknown>),
+            submitted: true,
+            action,
+            answers: payload.answers,
+          }),
+        );
+      }
+      return true;
+    } catch (error) {
+      console.error("[superchat] clarification result submit failed", error);
+      toast.error("提交补充信息失败，请重试");
       return false;
     }
   }, [updateChatUiEvent]);
@@ -7546,6 +8334,56 @@ export function SuperChatPanel({
       return false;
     }
   }, [queryClient, updateChatUiEvent]);
+
+  const handleSkillStudioDraftChange = useCallback((
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draftPayload: Record<string, unknown>,
+  ) => {
+    if (!event.turn_id) return;
+    const persistedEvent = {
+      type: "skill_studio.draft",
+      bridge_key: event.bridge_key,
+      skill_studio_session_id: event.skill_studio_session_id,
+      project_id: event.project_id ?? params.project,
+      canvas_id: event.canvas_id ?? effectiveFreezoneCanvasId,
+      agent_id: event.agent_id ?? effectiveFreezoneAgentId,
+      mode: event.mode,
+      draft: draftPayload,
+    };
+    updateChatUiEvent(
+      event.turn_id,
+      (candidate) => skillStudioEventMatches(candidate, event),
+      (candidate) => ({
+        ...(candidate as Record<string, unknown>),
+        draft: draftPayload,
+      }),
+    );
+    persistSkillStudioUiEvent(event.turn_id, persistedEvent, { debounce: true });
+  }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, updateChatUiEvent]);
+
+  const handleCancelSkillStudioDraft = useCallback((
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+  ) => {
+    if (!event.turn_id) return;
+    const persistedEvent = {
+      type: "skill_studio.draft",
+      bridge_key: event.bridge_key,
+      skill_studio_session_id: event.skill_studio_session_id,
+      project_id: event.project_id ?? params.project,
+      canvas_id: event.canvas_id ?? effectiveFreezoneCanvasId,
+      agent_id: event.agent_id ?? effectiveFreezoneAgentId,
+      cancelled: true,
+    };
+    updateChatUiEvent(
+      event.turn_id,
+      (candidate) => skillStudioEventMatches(candidate, event),
+      (candidate) => ({
+        ...(candidate as Record<string, unknown>),
+        cancelled: true,
+      }),
+    );
+    persistSkillStudioUiEvent(event.turn_id, persistedEvent);
+  }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, updateChatUiEvent]);
 
   const handleComposerKeyDown = (event: ReactKeyboardEvent) => {
     if (event.key !== "Enter" || event.shiftKey) return;
@@ -7856,6 +8694,8 @@ export function SuperChatPanel({
                       onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
                       onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                       onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                      onSkillStudioDraftChange={handleSkillStudioDraftChange}
+                      onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     />
                   </div>
                 ))}
@@ -7877,6 +8717,8 @@ export function SuperChatPanel({
                     streaming={chat.busy}
                     onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                    onSkillStudioDraftChange={handleSkillStudioDraftChange}
+                    onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                   />
                 )}
                 {orphanCanvasCommandSurfaces.map((surface) => (
@@ -7917,6 +8759,8 @@ export function SuperChatPanel({
                     onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
                     onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                    onSkillStudioDraftChange={handleSkillStudioDraftChange}
+                    onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                   />
                 ))}
                 {thinkingCanvasContextActivity && (
@@ -7938,6 +8782,8 @@ export function SuperChatPanel({
                     canvasContextActivities={[thinkingCanvasContextActivity]}
                     onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                    onSkillStudioDraftChange={handleSkillStudioDraftChange}
+                    onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                   />
                 )}
               </div>
@@ -8012,7 +8858,19 @@ export function SuperChatPanel({
                 {dragFileState === "invalid" ? t("aiAssistant.unsupportedDropFiles") : t("aiAssistant.dropFiles")}
               </div>
             )}
-            {showFreezoneSkillSuggestions && (
+            {activeSkillStudioQuestionEvent && (
+              <SkillStudioQuestionsCard
+                event={activeSkillStudioQuestionEvent}
+                onSubmit={submitSkillStudioQuestionResponse}
+              />
+            )}
+            {activeClarificationEvent && (
+              <AssistantClarificationInputCard
+                event={activeClarificationEvent}
+                onSubmit={submitAssistantClarificationResponse}
+              />
+            )}
+            {!hasActiveComposerPrompt && showFreezoneSkillSuggestions && (
               <div className="border-b border-white/10 bg-black/20 px-3 py-2.5">
                 <div className="mb-1.5 px-0.5 text-xs text-muted-foreground/85">
                   技能
@@ -8051,7 +8909,7 @@ export function SuperChatPanel({
                 </div>
               </div>
             )}
-            {visibleComposerAttachments.length > 0 && (
+            {!hasActiveComposerPrompt && visibleComposerAttachments.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
                 {visibleComposerAttachments.map((attachment) => (
                   <span
@@ -8072,7 +8930,7 @@ export function SuperChatPanel({
                 ))}
               </div>
             )}
-            {queuedMessages.length > 0 && (
+            {!hasActiveComposerPrompt && queuedMessages.length > 0 && (
               <div className="border-t border-border/60 px-4 py-2">
                 <div className="mb-1.5 text-xs font-medium text-muted-foreground">
                   {t("aiAssistant.queuedCount", { count: queuedMessages.length })}
@@ -8120,7 +8978,7 @@ export function SuperChatPanel({
                 </div>
               </div>
             )}
-            {isFreezoneLayout && selectedFreezoneNodes.length > 0 && (
+            {!hasActiveComposerPrompt && isFreezoneLayout && selectedFreezoneNodes.length > 0 && (
               <div className={cn("px-4", visibleComposerAttachments.length > 0 ? "pt-2" : "pt-3")}>
                 <div className="mb-1 flex items-center justify-between text-[11px] text-muted-foreground">
                   <span>当前选中</span>
@@ -8149,160 +9007,164 @@ export function SuperChatPanel({
                 </div>
               </div>
             )}
-            <Textarea
-              ref={draftInputRef}
-              value={draft}
-              onChange={(event) => {
-                setSelectedHistoryMessageIndex(null);
-                setDraft(event.target.value);
-              }}
-              onKeyDown={(event) => {
-                if (
-                  showFreezoneSkillSuggestions
-                  && (event.key === "ArrowDown" || event.key === "ArrowUp")
-                ) {
-                  event.preventDefault();
-                  setActiveFreezoneSkillSuggestionIndex((index) =>
-                    moveFreezoneSkillSuggestionIndex(
-                      index,
-                      event.key === "ArrowDown" ? 1 : -1,
-                      visibleFreezoneSkillSuggestions.length,
-                    ),
-                  );
-                  return;
-                }
-                if (
-                  showFreezoneSkillSuggestions
-                  && event.key === "Enter"
-                  && !event.shiftKey
-                  && visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex]
-                ) {
-                  event.preventDefault();
-                  insertFreezoneSkillSuggestion(
-                    visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex].id,
-                  );
-                  return;
-                }
-                if (
-                  queuedMessages.length > 0
-                  && draft.trim().length === 0
-                  && (event.key === "ArrowUp" || event.key === "ArrowDown")
-                ) {
-                  event.preventDefault();
-                  selectQueuedMessageByOffset(event.key === "ArrowUp" ? -1 : 1);
-                  return;
-                }
-                if (
-                  event.key === "ArrowUp"
-                  && queuedMessages.length === 0
-                  && (draft.trim().length === 0 || selectedHistoryMessageIndex !== null)
-                ) {
-                  event.preventDefault();
-                  selectHistoryMessage("older");
-                  return;
-                }
-                if (
-                  event.key === "ArrowDown"
-                  && queuedMessages.length === 0
-                  && selectedHistoryMessageIndex !== null
-                ) {
-                  event.preventDefault();
-                  selectHistoryMessage("newer");
-                  return;
-                }
-                if (shouldSubmitComposerEnter(event)) {
-                  event.preventDefault();
-                  submit();
-                }
-              }}
-              dir="auto"
-              placeholder={isFreezoneLayout ? t("aiAssistant.freezonePlaceholder") : t("aiAssistant.placeholder")}
-              className={cn(
-                "max-h-[220px] min-h-14 resize-none border-0 bg-transparent px-5 py-4 text-base shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent",
-                isFreezoneLayout && "min-h-11 px-3.5 py-3 text-sm",
-              )}
-              rows={1}
-            />
-            <div className="flex items-center justify-between px-3 py-2">
-              <div className="flex items-center gap-1">
-                {isFreezoneLayout && (
-                  <div>
+            {!hasActiveComposerPrompt && (
+              <>
+                <Textarea
+                  ref={draftInputRef}
+                  value={draft}
+                  onChange={(event) => {
+                    setSelectedHistoryMessageIndex(null);
+                    setDraft(event.target.value);
+                  }}
+                  onKeyDown={(event) => {
+                    if (
+                      showFreezoneSkillSuggestions
+                      && (event.key === "ArrowDown" || event.key === "ArrowUp")
+                    ) {
+                      event.preventDefault();
+                      setActiveFreezoneSkillSuggestionIndex((index) =>
+                        moveFreezoneSkillSuggestionIndex(
+                          index,
+                          event.key === "ArrowDown" ? 1 : -1,
+                          visibleFreezoneSkillSuggestions.length,
+                        ),
+                      );
+                      return;
+                    }
+                    if (
+                      showFreezoneSkillSuggestions
+                      && event.key === "Enter"
+                      && !event.shiftKey
+                      && visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex]
+                    ) {
+                      event.preventDefault();
+                      insertFreezoneSkillSuggestion(
+                        visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex].id,
+                      );
+                      return;
+                    }
+                    if (
+                      queuedMessages.length > 0
+                      && draft.trim().length === 0
+                      && (event.key === "ArrowUp" || event.key === "ArrowDown")
+                    ) {
+                      event.preventDefault();
+                      selectQueuedMessageByOffset(event.key === "ArrowUp" ? -1 : 1);
+                      return;
+                    }
+                    if (
+                      event.key === "ArrowUp"
+                      && queuedMessages.length === 0
+                      && (draft.trim().length === 0 || selectedHistoryMessageIndex !== null)
+                    ) {
+                      event.preventDefault();
+                      selectHistoryMessage("older");
+                      return;
+                    }
+                    if (
+                      event.key === "ArrowDown"
+                      && queuedMessages.length === 0
+                      && selectedHistoryMessageIndex !== null
+                    ) {
+                      event.preventDefault();
+                      selectHistoryMessage("newer");
+                      return;
+                    }
+                    if (shouldSubmitComposerEnter(event)) {
+                      event.preventDefault();
+                      submit();
+                    }
+                  }}
+                  dir="auto"
+                  placeholder={isFreezoneLayout ? t("aiAssistant.freezonePlaceholder") : t("aiAssistant.placeholder")}
+                  className={cn(
+                    "max-h-[220px] min-h-14 resize-none border-0 bg-transparent px-5 py-4 text-base shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent",
+                    isFreezoneLayout && "min-h-11 px-3.5 py-3 text-sm",
+                  )}
+                  rows={1}
+                />
+                <div className="flex items-center justify-between px-3 py-2">
+                  <div className="flex items-center gap-1">
+                    {isFreezoneLayout && (
+                      <div>
+                        <Button
+                          ref={canvasCommandModeButtonRef}
+                          type="button"
+                          variant="ghost"
+                          size="sm"
+                          className="h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+                          onClick={() => setCanvasCommandModeMenuOpen((open) => !open)}
+                        >
+                          {canvasCommandExecutionMode === "manual_confirm" ? (
+                            <>
+                              <ShieldAlert className="size-3.5" />
+                              手动确认
+                            </>
+                          ) : (
+                            <>
+                              <Wrench className="size-3.5" />
+                              自动生成
+                            </>
+                          )}
+                        </Button>
+                      </div>
+                    )}
+                    {ENABLE_SUPERCHAT_FILE_UPLOAD && (
+                      <Button
+                        variant="ghost"
+                        size="icon"
+                        className="size-8"
+                        disabled={!chat.connected}
+                        onClick={() => fileInputRef.current?.click()}
+                        aria-label={t("aiAssistant.attach")}
+                        title={t("aiAssistant.attach")}
+                      >
+                        <Plus className="size-4" />
+                      </Button>
+                    )}
+                  </div>
+                  <div className="flex shrink-0 items-end gap-1.5">
+                    {recording && (
+                      <div className="mr-1 flex items-center gap-1.5 text-sm text-primary">
+                        <span className="size-2 animate-pulse rounded-full bg-primary" />
+                        <span>{t("aiAssistant.listening")}</span>
+                      </div>
+                    )}
                     <Button
-                      ref={canvasCommandModeButtonRef}
-                      type="button"
                       variant="ghost"
-                      size="sm"
-                      className="h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
-                      onClick={() => setCanvasCommandModeMenuOpen((open) => !open)}
+                      size="icon"
+                      className={cn("size-8 rounded-full text-white/85 hover:bg-white/[0.08] hover:text-white", recording && "text-primary")}
+                      disabled={!chat.connected}
+                      onClick={toggleSpeech}
+                      aria-label={recording ? t("aiAssistant.stopVoice") : t("aiAssistant.voiceInput")}
+                      title={recording ? t("aiAssistant.stopVoice") : t("aiAssistant.voiceInput")}
                     >
-                      {canvasCommandExecutionMode === "manual_confirm" ? (
-                        <>
-                          <ShieldAlert className="size-3.5" />
-                          手动确认
-                        </>
+                      {recording ? <MicOff className="size-4.5" /> : <Mic className="size-4.5" />}
+                    </Button>
+                    <Button
+                      type="button"
+                      size="icon"
+                      className={cn(
+                        "size-8 rounded-full shadow-none disabled:bg-white/30 disabled:text-black/45",
+                        chat.busy
+                          ? "bg-white/10 text-white hover:bg-white/15"
+                          : "bg-white text-black hover:bg-white/90",
+                      )}
+                      disabled={chat.busy ? false : !canSend}
+                      onClick={chat.busy ? chat.abort : submit}
+                      aria-label={chat.busy ? t("aiAssistant.stop") : t("aiAssistant.send")}
+                      title={chat.busy ? t("aiAssistant.stop") : t("aiAssistant.send")}
+                    >
+                      {chat.busy ? (
+                        <span className="size-2.5 rounded-[2.5px] bg-current" aria-hidden />
                       ) : (
-                        <>
-                          <Wrench className="size-3.5" />
-                          自动生成
-                        </>
+                        <ArrowUp className="size-[18px]" />
                       )}
                     </Button>
                   </div>
-                )}
-                {ENABLE_SUPERCHAT_FILE_UPLOAD && (
-                  <Button
-                    variant="ghost"
-                    size="icon"
-                    className="size-8"
-                    disabled={!chat.connected}
-                    onClick={() => fileInputRef.current?.click()}
-                    aria-label={t("aiAssistant.attach")}
-                    title={t("aiAssistant.attach")}
-                  >
-                    <Plus className="size-4" />
-                  </Button>
-                )}
-              </div>
-              <div className="flex shrink-0 items-end gap-1.5">
-                {recording && (
-                  <div className="mr-1 flex items-center gap-1.5 text-sm text-primary">
-                    <span className="size-2 animate-pulse rounded-full bg-primary" />
-                    <span>{t("aiAssistant.listening")}</span>
-                  </div>
-                )}
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className={cn("size-8 rounded-full text-white/85 hover:bg-white/[0.08] hover:text-white", recording && "text-primary")}
-                  disabled={!chat.connected}
-                  onClick={toggleSpeech}
-                  aria-label={recording ? t("aiAssistant.stopVoice") : t("aiAssistant.voiceInput")}
-                  title={recording ? t("aiAssistant.stopVoice") : t("aiAssistant.voiceInput")}
-                >
-                  {recording ? <MicOff className="size-4.5" /> : <Mic className="size-4.5" />}
-                </Button>
-                <Button
-                  type="button"
-                  size="icon"
-                  className={cn(
-                    "size-8 rounded-full shadow-none disabled:bg-white/30 disabled:text-black/45",
-                    chat.busy
-                      ? "bg-white/10 text-white hover:bg-white/15"
-                      : "bg-white text-black hover:bg-white/90",
-                  )}
-                  disabled={chat.busy ? false : !canSend}
-                  onClick={chat.busy ? chat.abort : submit}
-                  aria-label={chat.busy ? t("aiAssistant.stop") : t("aiAssistant.send")}
-                  title={chat.busy ? t("aiAssistant.stop") : t("aiAssistant.send")}
-                >
-                  {chat.busy ? (
-                    <span className="size-2.5 rounded-[2.5px] bg-current" aria-hidden />
-                  ) : (
-                    <ArrowUp className="size-[18px]" />
-                  )}
-                </Button>
-              </div>
-            </div>
+                </div>
+              </>
+            )}
           </div>
           {!isFreezoneLayout && (
             <p className="mx-auto mt-[13px] w-full max-w-[680px] text-center text-[11px] leading-4 text-white/25">

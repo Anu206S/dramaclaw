@@ -3,6 +3,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeMessage } from "@/features/superchat/message";
+import { buildCanvasCommandToolResultPayloadForTest } from "@/features/freezone/canvasCommandToolResult";
 import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
   canvasContextToolResultFrameForTest,
@@ -17,12 +18,15 @@ import {
   useSuperChat,
 } from "@/features/superchat/use-superchat";
 import {
+  buildAssistantClarificationResponseForTest,
+  buildAssistantClarificationToolResultForTest,
   buildSkillStudioCatalogSaveItemsForTest,
   buildSkillStudioDraftToolResultForTest,
   skillStudioDraftFieldLabelsForTest,
   buildSkillStudioFlowItemsForTest,
   buildSkillStudioQuestionResponseForTest,
   buildSkillStudioQuestionToolResultForTest,
+  messageIsWaitingForUserReplyForTest,
   messageHasSkillStudioUiEventForTest,
   skillStudioEventsFromUiEventsForTest,
   visibleSkillStudioEventsForMessageForTest,
@@ -165,6 +169,114 @@ describe("mergeHistorySnapshot", () => {
 
     expect(merged.map((item) => item.id)).toEqual(["backend-user-1", "backend-assistant-1"]);
   });
+
+  it("keeps locally submitted prompt state when history still has the pending card", () => {
+    const current: ChatMessage[] = [
+      message("backend-user-1", "user", "我想创建一个宣传海报 skill", 10, "turn-1"),
+      {
+        id: "assistant-turn-1",
+        role: "assistant",
+        text: "",
+        timestamp: 30,
+        turnId: "turn-1",
+        uiEvents: [
+          {
+            type: "skill_studio.questions",
+            bridge_key: "skill-key-1",
+            skill_studio_session_id: "studio-1",
+            questions: [],
+            submitted: true,
+            action: "submit",
+            selections: { audience: { option_ids: ["locals"], custom_text: "" } },
+          },
+        ],
+      },
+    ];
+    const history: ChatMessage[] = [
+      message("backend-user-1", "user", "我想创建一个宣传海报 skill", 10, "turn-1"),
+      {
+        id: "backend-assistant-1",
+        role: "assistant",
+        text: "",
+        timestamp: 20,
+        turnId: "turn-1",
+        uiEvents: [
+          {
+            type: "skill_studio.questions",
+            bridge_key: "skill-key-1",
+            skill_studio_session_id: "studio-1",
+            questions: [],
+          },
+        ],
+      },
+    ];
+
+    const merged = mergeHistorySnapshot(current, history, "turn-1");
+    const assistant = merged.find((item) => item.role === "assistant");
+
+    expect(assistant?.uiEvents?.[0]).toMatchObject({
+      type: "skill_studio.questions",
+      bridge_key: "skill-key-1",
+      submitted: true,
+      action: "submit",
+      selections: { audience: { option_ids: ["locals"], custom_text: "" } },
+    });
+  });
+
+  it("keeps locally edited draft state when history still has the original draft", () => {
+    const current: ChatMessage[] = [
+      message("backend-user-1", "user", "生成 skill 草稿", 10, "turn-1"),
+      {
+        id: "assistant-turn-1",
+        role: "assistant",
+        text: "",
+        timestamp: 30,
+        turnId: "turn-1",
+        uiEvents: [
+          {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+            skill_studio_session_id: "studio-1",
+            draft: {
+              skill: { id: "edited-skill", description: "编辑后的草稿" },
+              recipes: [],
+            },
+          },
+        ],
+      },
+    ];
+    const history: ChatMessage[] = [
+      message("backend-user-1", "user", "生成 skill 草稿", 10, "turn-1"),
+      {
+        id: "backend-assistant-1",
+        role: "assistant",
+        text: "",
+        timestamp: 20,
+        turnId: "turn-1",
+        uiEvents: [
+          {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+            skill_studio_session_id: "studio-1",
+            skill: { id: "original-skill", description: "原始草稿" },
+            recipes: [],
+          },
+        ],
+      },
+    ];
+
+    const merged = mergeHistorySnapshot(current, history, "turn-1");
+    const assistant = merged.find((item) => item.role === "assistant");
+
+    expect(assistant?.uiEvents).toHaveLength(1);
+    expect(assistant?.uiEvents?.[0]).toMatchObject({
+      type: "skill_studio.draft",
+      bridge_key: "draft-key-1",
+      draft: {
+        skill: { id: "edited-skill", description: "编辑后的草稿" },
+      },
+    });
+  });
 });
 
 describe("normalizeMessage", () => {
@@ -252,6 +364,53 @@ describe("upsertServerAssistantMessage", () => {
     expect(assistant?.text).toBe("已进入问答环节");
     expect(assistant?.uiEvents).toEqual([uiEvent]);
   });
+
+  it("merges same draft ui event when the final assistant message arrives", () => {
+    const current: ChatMessage[] = [
+      message("user-turn-1", "user", "创建 Skill", 10, "turn-1"),
+      {
+        id: "assistant-turn-1",
+        role: "assistant",
+        text: "",
+        timestamp: 20,
+        turnId: "turn-1",
+        uiEvents: [
+          {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+            skill_studio_session_id: "studio-1",
+            skill: { id: "original-skill" },
+          },
+          {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+            skill_studio_session_id: "studio-1",
+            draft: { skill: { id: "edited-skill" }, recipes: [] },
+          },
+        ],
+      },
+    ];
+
+    const merged = upsertServerAssistantMessageForTest(
+      current,
+      {
+        id: 3,
+        role: "assistant",
+        content: "继续处理",
+        turn_id: "turn-1",
+        created_at: "2026-07-08T03:47:06.538231+00:00",
+      },
+      "turn-1",
+    );
+
+    const assistant = merged.find((item) => item.role === "assistant");
+    expect(assistant?.uiEvents).toHaveLength(1);
+    expect(assistant?.uiEvents?.[0]).toMatchObject({
+      type: "skill_studio.draft",
+      bridge_key: "draft-key-1",
+      draft: { skill: { id: "edited-skill" } },
+    });
+  });
 });
 
 describe("updateAssistantUiEvents", () => {
@@ -300,6 +459,36 @@ describe("updateAssistantUiEvents", () => {
 });
 
 describe("Skill Studio question response", () => {
+  it("marks an assistant message with pending questions as waiting for the user", () => {
+    const pending = message("assistant-skill-question", "assistant", "", 100);
+    pending.uiEvents = [
+      {
+        type: "skill_studio.questions",
+        title: "创建宣传海报 Skill",
+        questions: [
+          {
+            id: "audience",
+            title: "目标受众是谁？",
+            options: [{ id: "locals", label: "本地居民" }],
+          },
+        ],
+      },
+    ];
+
+    const submitted = message("assistant-skill-question-done", "assistant", "", 100);
+    submitted.uiEvents = [
+      {
+        type: "skill_studio.questions",
+        submitted: true,
+        title: "创建宣传海报 Skill",
+        questions: [],
+      },
+    ];
+
+    expect(messageIsWaitingForUserReplyForTest(pending)).toBe(true);
+    expect(messageIsWaitingForUserReplyForTest(submitted)).toBe(false);
+  });
+
   it("builds a chat message from selected card options", () => {
     const text = buildSkillStudioQuestionResponseForTest(
       {
@@ -359,6 +548,35 @@ describe("Skill Studio question response", () => {
     expect(text).toContain("偏好的视觉风格是？：未选择");
   });
 
+  it("describes multiple options and custom text in question answers", () => {
+    const text = buildSkillStudioQuestionResponseForTest(
+      {
+        type: "skill_studio.questions",
+        skill_studio_session_id: "skill_studio_multi",
+        questions: [
+          {
+            id: "elements",
+            title: "海报通常需要包含哪些内容元素？",
+            selection_mode: "multiple",
+            options: [
+              { id: "intro", label: "家乡名称与简介" },
+              { id: "feature", label: "特色图片/插画" },
+              { id: "slogan", label: "宣传标语" },
+            ],
+          },
+        ],
+      },
+      {
+        elements: {
+          option_ids: ["intro", "feature"],
+          custom_text: "再加一个适合社媒传播的互动话题",
+        },
+      },
+    );
+
+    expect(text).toContain("海报通常需要包含哪些内容元素？：家乡名称与简介；特色图片/插画；补充：再加一个适合社媒传播的互动话题");
+  });
+
   it("builds a bridge tool result payload instead of a new chat message", () => {
     const payload = buildSkillStudioQuestionToolResultForTest(
       {
@@ -394,6 +612,152 @@ describe("Skill Studio question response", () => {
     });
     expect(payload.message).toContain("主要做什么？：策划");
   });
+
+  it("summarizes canvas command failures without exposing protocol details to users", () => {
+    const payload = buildCanvasCommandToolResultPayloadForTest({
+      bridgeKey: "bridge-a",
+      projectId: "project-a",
+      canvasId: "canvas-a",
+      result: {
+        applied: 0,
+        openedUiActions: 0,
+        createdNodeIds: [],
+        errors: [
+          "envelopes[0].commands[0]: edge output role planning_text is not accepted by target imageGenNode for link_type prompt_for. Expected source role input_text.",
+        ],
+        commandResults: [
+          {
+            commandIndex: -1,
+            type: "validate",
+            status: "error",
+            label: "校验画布命令",
+            error:
+              "edge output role planning_text is not accepted by target imageGenNode for link_type prompt_for. Expected source role input_text.",
+          },
+        ],
+      },
+    });
+
+    expect(payload.user_message).toBe("当前文本需要先作为生成提示词连接到图片节点，我会按可执行的提示词来源来处理。");
+    expect(payload.agent_hint).toContain("Do not mention");
+    expect(payload.agent_hint).toContain("prompt_for");
+    expect(payload.message).toBe(payload.user_message);
+    expect(payload.errors.join("\n")).toContain("planning_text");
+    expect(payload.user_message).not.toContain("planning_text");
+    expect(payload.user_message).not.toContain("input_text");
+    expect(payload.user_message).not.toContain("prompt_for");
+  });
+
+  it("keeps structured multiple-choice answers in bridge payload", () => {
+    const payload = buildSkillStudioQuestionToolResultForTest(
+      {
+        type: "skill_studio.questions",
+        bridge_key: "skill-key-2",
+        questions: [
+          {
+            id: "content",
+            title: "内容元素？",
+            selection_mode: "multiple",
+            options: [
+              { id: "photo", label: "特色图片" },
+              { id: "qr", label: "二维码/Logo" },
+            ],
+          },
+        ],
+      },
+      {
+        content: {
+          option_ids: ["photo", "qr"],
+          custom_text: "需要留一个主标题位置",
+        },
+      },
+    );
+
+    expect(payload.selections).toEqual({
+      content: {
+        option_ids: ["photo", "qr"],
+        custom_text: "需要留一个主标题位置",
+      },
+    });
+    expect(payload.message).toContain("内容元素？：特色图片；二维码/Logo；补充：需要留一个主标题位置");
+  });
+});
+
+describe("Assistant clarification response", () => {
+  it("builds a reusable clarification summary from selected answers", () => {
+    const text = buildAssistantClarificationResponseForTest(
+      {
+        type: "assistant.clarification.request",
+        clarification_id: "clarify_01",
+        title: "向用户提问",
+        questions: [
+          {
+            id: "skill_kind",
+            title: "你想创建的 skill 是做什么的？",
+            options: [
+              { id: "workflow", label: "工作流自动化" },
+              { id: "domain", label: "领域知识" },
+            ],
+          },
+          {
+            id: "scope",
+            title: "这个 skill 的使用范围是？",
+            options: [
+              { id: "user", label: "用户级（推荐）" },
+              { id: "project", label: "项目级" },
+            ],
+          },
+        ],
+      },
+      {
+        skill_kind: { option_ids: ["workflow"], custom_text: "用于海报生成" },
+        scope: { option_ids: ["user"], custom_text: "" },
+      },
+    );
+
+    expect(text).toContain("你想创建的 skill 是做什么的？\n工作流自动化；补充：用于海报生成");
+    expect(text).toContain("这个 skill 的使用范围是？\n用户级（推荐）");
+  });
+
+  it("builds a generic bridge tool result payload", () => {
+    const payload = buildAssistantClarificationToolResultForTest(
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-key-1",
+        project_id: "project-a",
+        canvas_id: "canvas-a",
+        agent_id: "agent-1",
+        turn_id: "turn-a",
+        clarification_id: "clarify_01",
+        questions: [
+          {
+            id: "skill_kind",
+            title: "你想创建的 skill 是做什么的？",
+            options: [{ id: "workflow", label: "工作流自动化" }],
+          },
+        ],
+      },
+      {
+        skill_kind: { option_ids: ["workflow"], custom_text: "" },
+      },
+    );
+
+    expect(payload).toMatchObject({
+      bridge_key: "clarify-key-1",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      tool_call_status: "completed",
+      clarification_status: "answered",
+      action: "submit",
+      answers: {
+        skill_kind: { option_ids: ["workflow"], custom_text: "" },
+      },
+      ok: true,
+    });
+    expect(payload.message).toContain("你想创建的 skill 是做什么的？");
+  });
 });
 
 describe("Skill Studio status events", () => {
@@ -427,6 +791,65 @@ describe("Skill Studio status events", () => {
         questions: [],
       },
     ]).map((event) => event.type)).toEqual(["skill_studio.questions"]);
+  });
+
+  it("merges repeated Skill Studio question events into the latest state", () => {
+    const events = skillStudioEventsFromUiEventsForTest([
+      {
+        type: "skill_studio.questions",
+        bridge_key: "skill-key-1",
+        skill_studio_session_id: "studio-1",
+        questions: [],
+      },
+      {
+        type: "skill_studio.questions",
+        bridge_key: "skill-key-1",
+        skill_studio_session_id: "studio-1",
+        submitted: true,
+        action: "submit",
+        selections: { audience: "locals" },
+      },
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "skill_studio.questions",
+      bridge_key: "skill-key-1",
+      submitted: true,
+      selections: { audience: "locals" },
+    });
+  });
+
+  it("merges repeated Skill Studio draft events into the latest draft state", () => {
+    const events = skillStudioEventsFromUiEventsForTest([
+      {
+        type: "skill_studio.draft",
+        bridge_key: "draft-key-1",
+        skill_studio_session_id: "studio-1",
+        skill: { id: "original-skill" },
+      },
+      {
+        type: "skill_studio.draft",
+        bridge_key: "draft-key-1",
+        skill_studio_session_id: "studio-1",
+        draft: { skill: { id: "edited-skill" }, recipes: [] },
+      },
+      {
+        type: "skill_studio.draft",
+        bridge_key: "draft-key-1",
+        skill_studio_session_id: "studio-1",
+        submitted: true,
+        draft: { skill: { id: "submitted-skill" }, recipes: [] },
+      },
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "skill_studio.draft",
+      bridge_key: "draft-key-1",
+      submitted: true,
+      draft: { skill: { id: "submitted-skill" } },
+    });
   });
 
   it("hides routing status once assistant prose has started", () => {

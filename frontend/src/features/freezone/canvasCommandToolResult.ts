@@ -1,4 +1,8 @@
 import type { CanvasChatCommandApplyResult } from "@/features/freezone/canvasChatCommands";
+import {
+  canvasCommandAgentHintFromResult,
+  canvasCommandUserMessageFromResult,
+} from "@/features/freezone/canvasCommandUserMessages";
 import { api } from "@/lib/api";
 
 type CanvasApplyStatus = "applied" | "partially_applied" | "failed" | "cancelled_by_user";
@@ -24,6 +28,8 @@ export type CanvasCommandToolResultPayload = {
   created_node_ids: string[];
   command_results: Array<Record<string, unknown>>;
   message: string;
+  user_message?: string;
+  agent_hint?: string;
 };
 
 function canvasApplyStatusFromResult(result: CanvasChatCommandApplyResult): CanvasApplyStatus {
@@ -54,13 +60,61 @@ export function reportCanvasCommandToolResult({
   cancelled?: boolean;
 }) {
   if (!bridgeKey) return;
+  const payload = buildCanvasCommandToolResultPayload({
+    bridgeKey,
+    turnId,
+    anchorTextPrefix,
+    projectId,
+    canvasId,
+    agentId,
+    result,
+    cancelled,
+  });
+  window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, { detail: payload }));
+  const { type: _type, ...body } = payload;
+  void api.post("api/v1/chat/canvas-command-tool-result", {
+    json: body,
+    timeout: 30_000,
+  }).catch((error) => {
+    console.warn("[freezone-canvas-command] failed to report canvas command result", error);
+  });
+}
+
+function buildCanvasCommandToolResultPayload({
+  bridgeKey,
+  turnId,
+  anchorTextPrefix,
+  projectId,
+  canvasId,
+  agentId,
+  result,
+  cancelled = false,
+}: {
+  bridgeKey?: string | null;
+  turnId?: string | null;
+  anchorTextPrefix?: string | null;
+  projectId?: string | null;
+  canvasId?: string | null;
+  agentId?: string | null;
+  result?: CanvasChatCommandApplyResult;
+  cancelled?: boolean;
+}): CanvasCommandToolResultPayload {
   const canvasApplyStatus: CanvasApplyStatus = cancelled
     ? "cancelled_by_user"
     : result
       ? canvasApplyStatusFromResult(result)
       : "failed";
-
-  const payload: CanvasCommandToolResultPayload = {
+  const userMessage = cancelled
+    ? "画布操作已取消，没有应用到画布。"
+    : canvasApplyStatus === "failed"
+      ? canvasCommandUserMessageFromResult(result?.errors, result?.commandResults)
+      : undefined;
+  const agentHint = cancelled
+    ? "Do not claim the canvas change was applied; ask the user before retrying."
+    : canvasApplyStatus === "failed"
+      ? canvasCommandAgentHintFromResult(result?.errors, result?.commandResults)
+      : undefined;
+  return {
     type: "canvas.command.result",
     received_at: Date.now(),
     turn_id: turnId ?? null,
@@ -79,17 +133,13 @@ export function reportCanvasCommandToolResult({
     created_node_ids: result?.createdNodeIds ?? [],
     command_results: result?.commandResults ?? [],
     message: cancelled
-      ? "User cancelled the canvas command before execution."
+      ? "画布操作已取消，没有应用到画布。"
       : canvasApplyStatus === "failed"
-        ? "Frontend executor failed to apply the canvas command."
+        ? userMessage ?? "画布操作没有完成，我会换一种方式再试。"
         : "Frontend executor reported the canvas command result.",
+    ...(userMessage ? { user_message: userMessage } : {}),
+    ...(agentHint ? { agent_hint: agentHint } : {}),
   };
-  window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, { detail: payload }));
-  const { type: _type, ...body } = payload;
-  void api.post("api/v1/chat/canvas-command-tool-result", {
-    json: body,
-    timeout: 30_000,
-  }).catch((error) => {
-    console.warn("[freezone-canvas-command] failed to report canvas command result", error);
-  });
 }
+
+export const buildCanvasCommandToolResultPayloadForTest = buildCanvasCommandToolResultPayload;

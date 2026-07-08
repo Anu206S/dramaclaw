@@ -45,6 +45,12 @@ vi.mock("@tanstack/react-router", () => ({
   useParams: () => ({ project: "project-a" }),
 }));
 
+vi.mock("@tanstack/react-query", () => ({
+  useQueryClient: () => ({
+    invalidateQueries: vi.fn(),
+  }),
+}));
+
 vi.mock("@/task-center/event-bus-context", () => ({
   useEventBus: () => ({
     on: vi.fn(() => vi.fn()),

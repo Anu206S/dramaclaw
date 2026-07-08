@@ -75,10 +75,52 @@ function makeVirtualNode(command: {
   } as CanvasNode;
 }
 
+function validateModelEnumField(
+  issues: CanvasCommandValidationIssue[],
+  path: string,
+  node: CanvasNode,
+  data: Partial<CanvasNodeData>,
+): void {
+  const schema = buildCanvasNodeActionCatalog(node).editable_schema;
+  for (const [field, value] of Object.entries(data)) {
+    if (field !== "model") continue;
+    if (value === undefined || value === null || value === "") continue;
+    const fieldSchema = schema[field];
+    if (fieldSchema?.type !== "enum") continue;
+    const options = fieldSchema.options ?? [];
+    if (options.length === 0) continue;
+    if (options.some((option) => Object.is(option, value))) continue;
+    addIssue(
+      issues,
+      path,
+      `field ${field} value ${JSON.stringify(value)} is not a valid option for ${node.type}. ` +
+        `Allowed values: ${options.map((option) => JSON.stringify(option)).join(", ")}. ` +
+        "Request freezone_get_node_create_schema for this node_type and use exact options, or omit the field to use the frontend default.",
+    );
+  }
+}
+
 function expectedSourceRolesForLinkType(linkType: string): CanvasNodeIoRole[] {
   if (linkType === "context_for") return ["planning_text", "context_text"];
   if (linkType === "prompt_for") return ["input_text"];
   return [];
+}
+
+function inferredSourceRoleForBlankText(
+  linkType: string,
+  sourceNode: CanvasNode,
+  targetNode: CanvasNode,
+): CanvasNodeIoRole | null {
+  if (sourceNode.type !== CANVAS_NODE_TYPES.textAnnotation) return null;
+  const acceptedTargetRoles = getCanvasNodeSemanticSpec(targetNode.type)?.acceptedInputRoles ?? [];
+  if (linkType === "prompt_for" && acceptedTargetRoles.includes("input_text")) {
+    return "input_text";
+  }
+  if (linkType === "context_for") {
+    if (acceptedTargetRoles.includes("context_text")) return "context_text";
+    if (acceptedTargetRoles.includes("planning_text")) return "planning_text";
+  }
+  return null;
 }
 
 function validateEdgeIoRole(
@@ -94,7 +136,7 @@ function validateEdgeIoRole(
   const sourceRole = getCanvasNodePrimaryOutputRole({
     nodeType: sourceNode.type,
     data: sourceNode.data,
-  });
+  }) ?? inferredSourceRoleForBlankText(linkType, sourceNode, targetNode);
   const acceptedTargetRoles = getCanvasNodeSemanticSpec(targetNode.type)?.acceptedInputRoles ?? [];
   if (!sourceRole || !expectedSourceRoles.includes(sourceRole) || !acceptedTargetRoles.includes(sourceRole)) {
     addIssue(
@@ -102,7 +144,8 @@ function validateEdgeIoRole(
       path,
       `edge output role ${sourceRole || "none"} is not accepted by target ${targetNode.type} for link_type ${linkType}. ` +
       `Expected source role ${expectedSourceRoles.join(" or ")}; target accepts ${acceptedTargetRoles.join(", ") || "none"}. ` +
-      `For prompt_for from textAnnotationNode to a generator, the source must be direct input_text. ` +
+      `For prompt_for from textAnnotationNode to a generator, the source text must be direct input text. ` +
+      `If the text node has no semanticOutputRole, prompt_for may infer input_text automatically. ` +
       `If the source is currently planning_text, do not change that existing brief/planning node to input_text merely to satisfy prompt_for. ` +
       `Use one of two fixes: if it is only documentation, remove the edge and group it with the generator instead of connecting it directly; ` +
       `if generation should use the planning content, create a separate textAnnotationNode with semanticOutputRole="input_text" for the actual prompt, optionally connect planning_text -> input_text with context_for, then connect input_text -> generator with prompt_for.`,
@@ -157,6 +200,17 @@ export function validateCanvasChatCommandEnvelopes(
           if (reserved.length > 0) {
             addIssue(issues, path, `reserved data fields are not allowed: ${reserved.join(", ")}`);
           }
+          validateModelEnumField(
+            issues,
+            path,
+            virtualNode ?? ({
+              id: `__validate__:${command.node_type}`,
+              type: command.node_type,
+              position: { x: 0, y: 0 },
+              data,
+            } as CanvasNode),
+            data,
+          );
           break;
         }
         case "add_next_node": {
@@ -197,6 +251,19 @@ export function validateCanvasChatCommandEnvelopes(
           if (reserved.length > 0) {
             addIssue(issues, path, `reserved data fields are not allowed: ${reserved.join(", ")}`);
           }
+          if (nodeType) {
+            validateModelEnumField(
+              issues,
+              path,
+              {
+                id: command.client_id ?? `__validate__:${nodeType}`,
+                type: nodeType,
+                position: { x: 0, y: 0 },
+                data,
+              } as CanvasNode,
+              data,
+            );
+          }
           break;
         }
         case "update_node_data": {
@@ -221,6 +288,12 @@ export function validateCanvasChatCommandEnvelopes(
             if (invalid.length > 0) {
               addIssue(issues, path, `fields are not editable on this node: ${invalid.join(", ")}`);
             }
+            validateModelEnumField(
+              issues,
+              path,
+              { ...target, data: { ...target.data, ...data } as CanvasNodeData },
+              data,
+            );
           }
           break;
         }

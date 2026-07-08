@@ -195,7 +195,7 @@ describe("canvas ontology", () => {
       id: "edge-2",
       source: "story-text",
       target: "image-node",
-      link_type: null,
+      link_type: "prompt_for",
     });
 
     const explicitSemanticEdge = {
@@ -261,11 +261,11 @@ describe("canvas ontology", () => {
     expect(context.objects[0]?.node_id).toBe("candidate-frame");
     expect(context.links).toHaveLength(2);
     expect(context.links.find((link) => link.id === "edge-2")).toMatchObject({
-      link_type: null,
+      link_type: "prompt_for",
     });
     expect(context.slots.map((slot) => slot.slot_kind)).toContain("frame");
     expect(context.objects.find((object) => object.node_id === "story-text")).toMatchObject({
-      primary_output_role: "planning_text",
+      primary_output_role: null,
       accepted_input_roles: ["planning_text", "context_text"],
     });
     expect(context.objects.find((object) => object.node_id === "input-text")).toMatchObject({

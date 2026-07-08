@@ -51,9 +51,12 @@ try:
     from novelvideo.freezone.canvas_command_bridge import (
         canvas_command_bridge_key,
         canvas_context_bridge_key,
+        clarification_bridge_key,
+        put_pending_clarification_event,
         put_pending_canvas_command,
         put_pending_canvas_context,
         put_pending_skill_studio_event,
+        wait_clarification_result,
         skill_studio_bridge_key,
         wait_canvas_command_result,
         wait_canvas_context_result,
@@ -63,9 +66,12 @@ except Exception as exc:
     _CANVAS_COMMAND_BRIDGE_IMPORT_ERROR = exc
     canvas_command_bridge_key = None
     canvas_context_bridge_key = None
+    clarification_bridge_key = None
+    put_pending_clarification_event = None
     put_pending_canvas_command = None
     put_pending_canvas_context = None
     put_pending_skill_studio_event = None
+    wait_clarification_result = None
     skill_studio_bridge_key = None
     wait_canvas_command_result = None
     wait_canvas_context_result = None
@@ -314,6 +320,100 @@ def _emit_skill_studio_event(
                 "frontend returns a Skill Studio tool result."
             ),
         }
+    )
+
+
+def _emit_clarification_event(
+    project: str | None,
+    canvas: str | None,
+    event: dict[str, Any],
+) -> str:
+    if (
+        clarification_bridge_key is None
+        or put_pending_clarification_event is None
+        or wait_clarification_result is None
+    ):
+        return tool_error(
+            "Clarification bridge is unavailable; cannot present the Freezone UI event. "
+            f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
+        )
+    key = clarification_bridge_key(project_id=project, canvas_id=canvas, event=event)
+    put_pending_clarification_event(
+        key=key,
+        project_id=project,
+        canvas_id=canvas,
+        event=event,
+    )
+    try:
+        timeout_seconds = max(
+            1,
+            int(os.environ.get("DRAMACLAW_CLARIFICATION_RESULT_TIMEOUT_SECONDS", "600")),
+        )
+    except ValueError:
+        timeout_seconds = 600
+    resolved = wait_clarification_result(key, timeout_seconds=timeout_seconds)
+    if resolved is not None:
+        return tool_result(resolved)
+    return tool_result(
+        {
+            "ok": False,
+            "status": "clarification_frontend_timeout",
+            "tool_call_status": "completed",
+            "clarification_status": "pending_user_input",
+            "bridge_key": key,
+            "project_id": project,
+            "canvas_id": canvas,
+            "type": event.get("type"),
+            "clarification_id": event.get("clarification_id"),
+            "message": "Clarification UI is still waiting for the user's frontend response.",
+            "agent_instruction": (
+                "Do not continue or summarize the user's choices until the frontend returns "
+                "a clarification tool result."
+            ),
+        }
+    )
+
+
+def _handle_request_user_clarification(args: dict[str, Any], **_: Any) -> str:
+    project = (
+        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+    )
+    canvas = (
+        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+    )
+    clarification_id = str(args.get("clarification_id") or args.get("request_id") or "").strip()
+    if not clarification_id:
+        return tool_result(
+            {
+                "ok": False,
+                "type": "assistant.clarification.request",
+                "status": "clarification_id_required",
+                "error": "clarification_id is required",
+            }
+        )
+    questions = _safe_list(args.get("questions"))
+    if not questions:
+        return tool_result(
+            {
+                "ok": False,
+                "type": "assistant.clarification.request",
+                "status": "questions_required",
+                "error": "questions must contain at least one question",
+                "clarification_id": clarification_id,
+            }
+        )
+    return _emit_clarification_event(
+        project,
+        canvas,
+        {
+            "type": "assistant.clarification.request",
+            "clarification_id": clarification_id,
+            "title": str(args.get("title") or "").strip(),
+            "description": str(args.get("description") or "").strip(),
+            "questions": questions,
+            "allow_recommended": bool(args.get("allow_recommended", False)),
+            "allow_skip": bool(args.get("allow_skip", True)),
+        },
     )
 
 
@@ -1532,6 +1632,20 @@ _SKILL_STUDIO_QUESTION_SCHEMA = {
             "description": "2-4 selectable options.",
             "items": _SKILL_STUDIO_OPTION_SCHEMA,
         },
+        "mode": {
+            "type": "string",
+            "enum": ["single", "multiple"],
+            "description": "Selection mode. Use multiple when the user may choose several options.",
+        },
+        "selection_mode": {
+            "type": "string",
+            "enum": ["single", "multiple"],
+            "description": "Alias of mode. Prefer mode for generic clarification.",
+        },
+        "allow_custom": {
+            "type": "boolean",
+            "description": "Whether the frontend should allow a free-form custom answer for this question.",
+        },
     },
     "required": ["id", "title", "options"],
 }
@@ -1778,6 +1892,43 @@ TOOLS = (
             _SCOPE_PROPS,
         ),
         _handle_canvas_command_catalog,
+    ),
+    (
+        "freezone_request_user_clarification",
+        _schema(
+            "freezone_request_user_clarification",
+            "Ask the user structured clarification questions in the Freezone frontend and wait for their submitted answers. Use for any workflow that needs user choices before continuing; do not use it to write canvas nodes or save catalog files.",
+            {
+                "clarification_id": {
+                    "type": "string",
+                    "description": "Stable id for this clarification request.",
+                },
+                "title": {
+                    "type": "string",
+                    "description": "Short title shown above the question card.",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "Optional one-sentence explanation shown to the user.",
+                },
+                "questions": {
+                    "type": "array",
+                    "description": "High-level user-facing questions. Use 1-5 questions, each with 2-5 options.",
+                    "items": _SKILL_STUDIO_QUESTION_SCHEMA,
+                },
+                "allow_recommended": {
+                    "type": "boolean",
+                    "description": "Whether the frontend should show a use-recommended option.",
+                },
+                "allow_skip": {
+                    "type": "boolean",
+                    "description": "Whether the frontend should allow skipping this clarification.",
+                },
+                **_SCOPE_PROPS,
+            },
+            ["clarification_id", "questions"],
+        ),
+        _handle_request_user_clarification,
     ),
     (
         "freezone_present_skill_studio_questions",

@@ -441,16 +441,86 @@ function turnCompletedInHistory(
   );
 }
 
+function recordString(value: Record<string, unknown>, key: string): string | null {
+  const candidate = value[key];
+  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : null;
+}
+
+function uiEventMergeKey(event: unknown): string | null {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const value = event as Record<string, unknown>;
+  const type = recordString(value, "type");
+  if (!type) return null;
+  const stableId =
+    recordString(value, "bridge_key")
+    ?? recordString(value, "skill_studio_session_id")
+    ?? recordString(value, "clarification_id");
+  if (!stableId) return null;
+  return `${type}:${stableId}`;
+}
+
+function mergeUiEventLists(base: unknown[] | undefined, overlay: unknown[] | undefined): unknown[] | undefined {
+  const events: unknown[] = [];
+  for (const event of [...(base ?? []), ...(overlay ?? [])]) {
+    const key = uiEventMergeKey(event);
+    if (!key) {
+      const serialized = JSON.stringify(event);
+      if (!events.some((candidate) => JSON.stringify(candidate) === serialized)) events.push(event);
+      continue;
+    }
+    const existingIndex = events.findIndex((candidate) => uiEventMergeKey(candidate) === key);
+    if (existingIndex >= 0) {
+      events[existingIndex] = {
+        ...(events[existingIndex] as Record<string, unknown>),
+        ...(event as Record<string, unknown>),
+      };
+    } else {
+      events.push(event);
+    }
+  }
+  return events.length > 0 ? events : undefined;
+}
+
+function isRecoverableUiEventState(event: unknown): boolean {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return false;
+  const value = event as Record<string, unknown>;
+  if (value.submitted === true || value.cancelled === true) return true;
+  return value.type === "skill_studio.draft"
+    && Boolean(value.draft && typeof value.draft === "object" && !Array.isArray(value.draft));
+}
+
+function mergeRecoverableUiEventsFromCurrent(history: ChatMessage[], current: ChatMessage[]): ChatMessage[] {
+  const recoverableByTurn = new Map<string, unknown[]>();
+  for (const message of current) {
+    if (message.role !== "assistant" || !message.turnId || !message.uiEvents?.length) continue;
+    const recoverableEvents = message.uiEvents.filter(isRecoverableUiEventState);
+    if (recoverableEvents.length === 0) continue;
+    recoverableByTurn.set(message.turnId, [
+      ...(recoverableByTurn.get(message.turnId) ?? []),
+      ...recoverableEvents,
+    ]);
+  }
+  if (recoverableByTurn.size === 0) return history;
+  return history.map((message) => {
+    if (message.role !== "assistant" || !message.turnId) return message;
+    const recoverableEvents = recoverableByTurn.get(message.turnId);
+    if (!recoverableEvents?.length) return message;
+    const uiEvents = mergeUiEventLists(message.uiEvents, recoverableEvents);
+    return uiEvents ? { ...message, uiEvents } : message;
+  });
+}
+
 export function mergeHistorySnapshot(
   current: ChatMessage[],
   history: ChatMessage[],
   protectedTurnId: string | null = null,
   preserveTransient = false,
 ): ChatMessage[] {
-  if (current.length === 0) return history;
+  const historyWithRecoverableUiEvents = mergeRecoverableUiEventsFromCurrent(history, current);
+  if (current.length === 0) return historyWithRecoverableUiEvents;
   if (history.length === 0) return current;
   if (!protectedTurnId && !preserveTransient) {
-    return history;
+    return historyWithRecoverableUiEvents;
   }
 
   const preserved = current.filter((message) => {
@@ -458,17 +528,17 @@ export function mergeHistorySnapshot(
     if (protectedTurnId && !isProtectedTurn) return false;
     if (message.role === "tool") {
       if (!preserveTransient && !isProtectedTurn) return false;
-      return !hasEquivalentHistoryMessage(message, history);
+      return !hasEquivalentHistoryMessage(message, historyWithRecoverableUiEvents);
     }
-    if (hasCompletedTurnInHistory(message, history, current)) return false;
-    return !hasEquivalentHistoryMessage(message, history);
+    if (hasCompletedTurnInHistory(message, historyWithRecoverableUiEvents, current)) return false;
+    return !hasEquivalentHistoryMessage(message, historyWithRecoverableUiEvents);
   });
 
   const protectedLocalUser = protectedTurnId
     ? current.find((entry) => entry.turnId === protectedTurnId && entry.role === "user")
     : null;
   const protectedBackendUser = protectedLocalUser
-    ? history.find(
+    ? historyWithRecoverableUiEvents.find(
       (entry) =>
         entry.role === "user"
         && normalizedText(entry.text) === normalizedText(protectedLocalUser.text)
@@ -476,7 +546,7 @@ export function mergeHistorySnapshot(
     )
     : null;
   const protectedBackendAssistant = protectedBackendUser
-    ? history.find(
+    ? historyWithRecoverableUiEvents.find(
       (entry) =>
         entry.role === "assistant"
         && entry.timestamp >= protectedBackendUser.timestamp,
@@ -495,7 +565,7 @@ export function mergeHistorySnapshot(
     };
   });
 
-  return sortMessages([...history, ...stablePreserved]);
+  return sortMessages([...historyWithRecoverableUiEvents, ...stablePreserved]);
 }
 
 function upsertAssistantMessage(
@@ -596,15 +666,11 @@ function upsertServerAssistantMessage(
       .filter((message) => message.role === "assistant" && message.turnId === normalizedTurnId)
       .flatMap((message) => message.uiEvents ?? [])
     : [];
-  const mergedUiEvents = [...transientUiEvents, ...(nextMessage.uiEvents ?? [])];
-  const dedupedUiEvents = mergedUiEvents.filter((event, index) => {
-    const key = JSON.stringify(event);
-    return mergedUiEvents.findIndex((candidate) => JSON.stringify(candidate) === key) === index;
-  });
+  const dedupedUiEvents = mergeUiEventLists(transientUiEvents, nextMessage.uiEvents);
   const mergedMessage = {
     ...nextMessage,
     ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}),
-    ...(dedupedUiEvents.length > 0 ? { uiEvents: dedupedUiEvents } : {}),
+    ...(dedupedUiEvents && dedupedUiEvents.length > 0 ? { uiEvents: dedupedUiEvents } : {}),
   };
   const existingIndex = messages.findIndex((message) => message.id === mergedMessage.id);
   const withoutTransient = normalizedTurnId
@@ -1227,6 +1293,28 @@ export function useSuperChat({
         dispatchCanvasContextRequestFrame(frame);
         break;
       case "skill_studio.event": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
+        const turnId =
+          pendingClientTurnIdRef.current
+          ?? activeTurnIdRef.current
+          ?? (typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null);
+        if (!turnId || frame.event == null) break;
+        markTurnActive(turnId);
+        const event = frame.event && typeof frame.event === "object" && !Array.isArray(frame.event)
+          ? {
+              ...(frame.event as Record<string, unknown>),
+              bridge_key: typeof frame.bridge_key === "string" ? frame.bridge_key : undefined,
+              project_id: typeof frame.project_id === "string" ? frame.project_id : undefined,
+              canvas_id: typeof frame.canvas_id === "string" ? frame.canvas_id : undefined,
+              agent_id: typeof frame.agent_id === "string" ? frame.agent_id : undefined,
+              anchor_text_prefix: streamTextRef.current.trim() ? streamTextRef.current : undefined,
+              turn_id: turnId,
+            }
+          : frame.event;
+        setMessages((current) => upsertAssistantUiEvent(current, turnId, event));
+        break;
+      }
+      case "assistant.clarification.event": {
         if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
         const turnId =
           pendingClientTurnIdRef.current
