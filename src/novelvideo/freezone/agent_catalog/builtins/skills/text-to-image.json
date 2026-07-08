@@ -1,0 +1,50 @@
+{
+  "id": "text-to-image",
+  "enabled": true,
+  "version": 1,
+  "description": "文生图工作流：文本提示词 -> 图片生成。",
+  "category": "basic",
+  "aliases": ["text_to_image", "txt2img", "t2i", "文生图", "文本生成图片"],
+  "triggers": {
+    "keywords": ["文生图", "文本生成图片", "文字生成图片", "txt2img", "text to image"]
+  },
+  "planning": {
+    "planning_notes": "创建一个文本提示词节点和一个图片生成节点，并按顺序连接。",
+    "prompt_guide": "文本节点承载用户对主体、风格、构图和细节的描述；图片节点根据上游文本生成图片。"
+  },
+  "workflow_templates": [
+    {
+      "id": "text-to-image",
+      "description": "输入图片生成提示词，再生成图片。",
+      "aliases": ["text_to_image", "txt2img", "t2i", "文生图", "文本生成图片"],
+      "condition": {
+        "text_only": true,
+        "message_keywords": ["文生图", "文本生成图片", "图片"]
+      },
+      "steps": [
+        {
+          "id": "text_prompt",
+          "step_number": 1,
+          "goal_template": "文本提示词",
+          "node_type": "textGeneration",
+          "action_key": "general-text",
+          "prompt_strategy": "user_message",
+          "input_strategy": {"type": "none"},
+          "need_review": false,
+          "multiplicity": "single"
+        },
+        {
+          "id": "image_output",
+          "step_number": 2,
+          "goal_template": "生成图片",
+          "node_type": "imageGeneration",
+          "action_key": "general-image",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "text_prompt"},
+          "need_review": false,
+          "multiplicity": "single"
+        }
+      ]
+    }
+  ]
+}

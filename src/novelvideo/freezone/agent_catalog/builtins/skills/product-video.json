@@ -1,0 +1,35 @@
+{
+  "id": "product-video",
+  "enabled": true,
+  "version": 1,
+  "description": "产品视频/商品演示工作流：产品输入、功能拆解、演示脚本、关键画面、视频片段、讲解音频、成片合成。",
+  "category": "video",
+  "aliases": ["product_video", "product", "商品演示", "产品视频"],
+  "triggers": {
+    "keywords": ["产品视频", "商品演示", "产品演示", "功能讲解", "使用场景"]
+  },
+  "planning": {
+    "planning_notes": "按产品输入 -> 功能拆解 -> 演示脚本 -> 关键画面 -> 视频片段，同时从演示脚本生成讲解文案与音频，最终进入成片合成。",
+    "prompt_guide": "突出产品功能、卖点、使用步骤和演示镜头顺序。"
+  },
+  "workflow_templates": [
+    {
+      "id": "product-video",
+      "description": "产品视频 / 商品演示标准流程。",
+      "aliases": ["product_video", "product", "商品演示", "产品视频"],
+      "condition": {
+        "message_keywords": ["产品视频", "商品演示", "产品演示"]
+      },
+      "steps": [
+        {"id": "product_input", "step_number": 1, "goal_template": "产品输入", "node_type": "textGeneration", "action_key": "general-text", "prompt_strategy": "user_message", "input_strategy": {"type": "none"}, "need_review": false, "multiplicity": "single"},
+        {"id": "feature_breakdown", "step_number": 2, "goal_template": "功能拆解", "node_type": "textGeneration", "action_key": "general-text", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "product_input"}, "need_review": false, "multiplicity": "single"},
+        {"id": "demo_script", "step_number": 3, "goal_template": "演示脚本", "node_type": "textGeneration", "action_key": "general-text", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "feature_breakdown"}, "need_review": false, "multiplicity": "single"},
+        {"id": "demo_frame", "step_number": 4, "goal_template": "演示关键画面", "node_type": "imageGeneration", "action_key": "general-image", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "demo_script"}, "need_review": false, "multiplicity": "single"},
+        {"id": "demo_video", "step_number": 5, "goal_template": "演示视频片段", "node_type": "videoGeneration", "action_key": "general-video", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "demo_frame"}, "need_review": false, "multiplicity": "single"},
+        {"id": "voiceover_text", "step_number": 6, "goal_template": "讲解文案", "node_type": "textGeneration", "action_key": "general-text", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "demo_script"}, "need_review": false, "multiplicity": "single"},
+        {"id": "voiceover", "step_number": 7, "goal_template": "讲解音频", "node_type": "audioGeneration", "action_key": "general-text", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "voiceover_text"}, "need_review": false, "multiplicity": "single"},
+        {"id": "compose", "step_number": 8, "goal_template": "成片合成", "node_type": "videoComposeNode", "prompt_strategy": "template", "input_strategy": {"type": "previous_steps", "step_ids": ["demo_video", "voiceover"]}, "need_review": false, "multiplicity": "single"}
+      ]
+    }
+  ]
+}

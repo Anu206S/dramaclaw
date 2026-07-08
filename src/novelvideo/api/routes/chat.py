@@ -216,6 +216,24 @@ def _canvas_bridge_profile_for_scope(scope: ChatScope) -> str:
     return "director"
 
 
+def _candidate_canvas_bridge_dirs_for_scope(username: str, scope: ChatScope) -> list[Any]:
+    if not _is_freezone_scope(scope):
+        return [_canvas_bridge_dir(username, profile="director")]
+    dirs = [
+        _canvas_bridge_dir(username, profile=_canvas_bridge_profile_for_scope(scope)),
+        _canvas_bridge_dir(username, profile="freezone"),
+    ]
+    unique: list[Any] = []
+    seen: set[str] = set()
+    for path in dirs:
+        marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(path)
+    return unique
+
+
 def _freezone_agent_profile(scope: ChatScope) -> str:
     return f"freezone:{scope.agent_id or 'main'}"
 
@@ -236,6 +254,48 @@ def _freezone_agent_id_from_payload(payload: Any) -> str:
         or "main"
     ).strip()
     return agent_id or "main"
+
+
+def _candidate_canvas_bridge_dirs(username: str, payload: Any) -> list[Any]:
+    """Return bridge dirs that may contain the pending file for a canvas tool call.
+
+    Older/freezone-main workers wrote pending files into the Freezone workspace's
+    base bridge directory, while newer agent-profiled workers use a
+    ``freezone_<agent>`` subdirectory.  Resolve against the directory that
+    actually contains the pending file so Hermes does not keep waiting after the
+    browser has already applied the command.
+    """
+    if getattr(payload, "canvas_id", None):
+        dirs = [
+            _canvas_bridge_dir(
+                username,
+                profile=f"freezone:{_freezone_agent_id_from_payload(payload)}",
+            ),
+            _canvas_bridge_dir(username, profile="freezone"),
+        ]
+    else:
+        dirs = [_canvas_bridge_dir(username, profile="director")]
+    unique: list[Any] = []
+    seen: set[str] = set()
+    for path in dirs:
+        marker = str(path)
+        if marker in seen:
+            continue
+        seen.add(marker)
+        unique.append(path)
+    return unique
+
+
+def _bridge_dir_for_pending_key(username: str, payload: Any) -> Any:
+    key = str(getattr(payload, "bridge_key", "") or "").strip()
+    candidates = _candidate_canvas_bridge_dirs(username, payload)
+    for directory in candidates:
+        try:
+            if (directory / f"{key}.pending.json").exists():
+                return directory
+        except Exception:
+            continue
+    return candidates[0]
 
 
 async def _close_freezone_agent_worker(username: str, agent_id: str | None) -> bool:
@@ -306,12 +366,7 @@ def _resolve_canvas_command_tool_result_payload(
     return resolve_canvas_command(
         key,
         result,
-        bridge_dir=_canvas_bridge_dir(
-            username,
-            profile=f"freezone:{_freezone_agent_id_from_payload(payload)}"
-            if result.get("canvas_id")
-            else "director",
-        ),
+        bridge_dir=_bridge_dir_for_pending_key(username, payload),
     )
 
 
@@ -337,12 +392,7 @@ def _resolve_canvas_context_tool_result_payload(
     return resolve_canvas_context(
         key,
         result,
-        bridge_dir=_canvas_bridge_dir(
-            username,
-            profile=f"freezone:{_freezone_agent_id_from_payload(payload)}"
-            if result.get("canvas_id")
-            else "director",
-        ),
+        bridge_dir=_bridge_dir_for_pending_key(username, payload),
     )
 
 
@@ -731,16 +781,16 @@ async def _watch_pending_canvas_commands(
 ) -> None:
     if not _is_freezone_scope(scope):
         return
-    bridge_dir = _canvas_bridge_dir(username, profile=_canvas_bridge_profile_for_scope(scope))
+    bridge_dirs = _candidate_canvas_bridge_dirs_for_scope(username, scope)
     while True:
         await asyncio.sleep(0.4)
-        try:
-            pending_paths = sorted(
-                bridge_dir.glob("*.pending.json"),
-                key=lambda item: item.stat().st_mtime,
-            )
-        except Exception:
-            continue
+        pending_paths = []
+        for bridge_dir in bridge_dirs:
+            try:
+                pending_paths.extend(bridge_dir.glob("*.pending.json"))
+            except Exception:
+                continue
+        pending_paths = sorted(pending_paths, key=lambda item: item.stat().st_mtime)
         for path in pending_paths:
             try:
                 if path.stat().st_mtime < started_at - 1.0:
@@ -793,16 +843,16 @@ async def _watch_pending_canvas_context_requests(
 ) -> None:
     if not _is_freezone_scope(scope):
         return
-    bridge_dir = _canvas_bridge_dir(username, profile=_canvas_bridge_profile_for_scope(scope))
+    bridge_dirs = _candidate_canvas_bridge_dirs_for_scope(username, scope)
     while True:
         await asyncio.sleep(0.4)
-        try:
-            pending_paths = sorted(
-                bridge_dir.glob("*.pending.json"),
-                key=lambda item: item.stat().st_mtime,
-            )
-        except Exception:
-            continue
+        pending_paths = []
+        for bridge_dir in bridge_dirs:
+            try:
+                pending_paths.extend(bridge_dir.glob("*.pending.json"))
+            except Exception:
+                continue
+        pending_paths = sorted(pending_paths, key=lambda item: item.stat().st_mtime)
         for path in pending_paths:
             try:
                 if path.stat().st_mtime < started_at - 1.0:

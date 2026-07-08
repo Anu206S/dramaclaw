@@ -4,6 +4,7 @@
   "version": 5,
   "description": "通用的产品广告视频流程，从品牌/产品分析到创意大纲、广告脚本（含分镜表、旁白、色彩调色板、技术规格）、多宫格分镜图、逐镜高清放大、视频片段，并自动准备一个待手动剪辑的 video-clip 成片节点，适用于品牌宣传片、产品广告、TVC/CM、社交媒体广告视频等商业场景",
   "category": "video",
+  "aliases": ["ad_video", "ad", "advertising", "广告视频"],
   "triggers": {
     "keywords": [
       "广告视频",

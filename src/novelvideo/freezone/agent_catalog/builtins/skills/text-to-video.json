@@ -1,0 +1,61 @@
+{
+  "id": "text-to-video",
+  "enabled": true,
+  "version": 1,
+  "description": "文生视频工作流：文本提示词 -> 关键图 -> 视频生成。",
+  "category": "basic",
+  "aliases": ["text_to_video", "txt2video", "t2v", "文生视频", "文本生成视频", "文字生图再生视频", "文生图再生视频", "文本生成图片再生成视频", "文字生成图片再生成视频", "文本到图片到视频", "文字到图片到视频"],
+  "triggers": {
+    "keywords": ["文生视频", "文本生成视频", "文字生图再生视频", "文生图再生视频", "text to video"]
+  },
+  "planning": {
+    "planning_notes": "创建文本提示词、关键图、视频三个节点，并按文本->图片->视频顺序连接。",
+    "prompt_guide": "先用文本生成关键画面，再用关键画面生成视频片段。"
+  },
+  "workflow_templates": [
+    {
+      "id": "text-to-video",
+      "description": "先根据文本生成关键图，再根据关键图生成视频。",
+      "aliases": ["text_to_video", "txt2video", "t2v", "文生视频", "文本生成视频"],
+      "condition": {
+        "text_only": true,
+        "message_keywords": ["文生视频", "文本生成视频", "文生图再生视频", "视频"]
+      },
+      "steps": [
+        {
+          "id": "text_prompt",
+          "step_number": 1,
+          "goal_template": "视频文本提示词",
+          "node_type": "textGeneration",
+          "action_key": "general-text",
+          "prompt_strategy": "user_message",
+          "input_strategy": {"type": "none"},
+          "need_review": false,
+          "multiplicity": "single"
+        },
+        {
+          "id": "image_keyframe",
+          "step_number": 2,
+          "goal_template": "生成关键图",
+          "node_type": "imageGeneration",
+          "action_key": "general-image",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "text_prompt"},
+          "need_review": false,
+          "multiplicity": "single"
+        },
+        {
+          "id": "video_output",
+          "step_number": 3,
+          "goal_template": "生成视频",
+          "node_type": "videoGeneration",
+          "action_key": "general-video",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "image_keyframe"},
+          "need_review": false,
+          "multiplicity": "single"
+        }
+      ]
+    }
+  ]
+}

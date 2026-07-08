@@ -1532,6 +1532,17 @@ function CanvasCommandApprovalCard({
   onApply: (approval: PendingCanvasCommandApproval) => void;
   onCancel: (approval: PendingCanvasCommandApproval) => void;
 }) {
+  const [now, setNow] = useState(() => Date.now());
+  const remaining = approval.expiresAt
+    ? Math.max(0, Math.ceil((approval.expiresAt - now) / 1000))
+    : null;
+
+  useEffect(() => {
+    if (!approval.expiresAt || isExecuting) return;
+    const tick = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(tick);
+  }, [approval.expiresAt, isExecuting]);
+
   return (
     <div className="mt-3 w-full min-w-0 overflow-hidden rounded-xl border border-amber-400/25 bg-background/95 text-xs text-muted-foreground shadow-lg backdrop-blur-sm">
       <div className="flex items-start gap-2 border-b border-amber-400/15 px-3 py-2">
@@ -1539,16 +1550,16 @@ function CanvasCommandApprovalCard({
         <div className="min-w-0 flex-1">
           <div className="text-sm font-medium text-foreground">待确认的画布操作</div>
           <p className="mt-1 text-xs leading-5 text-muted-foreground">Agent 计划执行 {approval.commandCount} 个操作，确认后才会应用到画布。</p>
-          {approval.expiresAt ? (
-            <p className="mt-1 text-[11px] leading-4 text-amber-500">
-              {Math.max(0, Math.ceil((approval.expiresAt - Date.now()) / 1000))} 秒后自动取消
-            </p>
-          ) : null}
         </div>
         <Badge variant="outline" className="rounded-md uppercase">{isExecuting ? "执行中" : "确认"}</Badge>
       </div>
       <CanvasCommandPlanList plans={approval.plans} />
-      <div className="flex flex-wrap justify-end gap-2 border-t border-amber-400/15 px-3 py-2.5">
+      <div className="flex flex-wrap items-center justify-end gap-2 border-t border-amber-400/15 px-3 py-2.5">
+        {remaining !== null && !isExecuting ? (
+          <span className="mr-auto text-[11px] leading-4 text-amber-500">
+            {remaining}s 后自动取消
+          </span>
+        ) : null}
         <Button size="xs" variant="outline" disabled={isExecuting} onClick={() => onCancel(approval)}>取消</Button>
         <Button size="xs" disabled={isExecuting} onClick={() => onApply(approval)}>{isExecuting ? "执行中..." : "确认执行"}</Button>
       </div>

@@ -1,0 +1,33 @@
+{
+  "id": "music-video",
+  "enabled": true,
+  "version": 1,
+  "description": "MV / 音乐视频工作流：音频/歌词输入、节奏段落、视觉风格、关键视觉、视频段落、成片合成。",
+  "category": "video",
+  "aliases": ["mv", "music_video", "音乐视频"],
+  "triggers": {
+    "keywords": ["MV", "音乐视频", "歌词视觉化", "节奏镜头", "music video"]
+  },
+  "planning": {
+    "planning_notes": "从音频/歌词输入拆分节奏段落与视觉风格，再生成关键视觉、视频段落并进入成片合成。",
+    "prompt_guide": "围绕歌曲节奏、歌词情绪和视觉符号构建影像段落。"
+  },
+  "workflow_templates": [
+    {
+      "id": "music-video",
+      "description": "MV / 音乐视频标准流程。",
+      "aliases": ["mv", "music_video", "音乐视频"],
+      "condition": {
+        "message_keywords": ["MV", "音乐视频", "歌词", "节奏"]
+      },
+      "steps": [
+        {"id": "song_input", "step_number": 1, "goal_template": "音频/歌词输入", "node_type": "textGeneration", "action_key": "general-text", "prompt_strategy": "user_message", "input_strategy": {"type": "none"}, "need_review": false, "multiplicity": "single"},
+        {"id": "rhythm_map", "step_number": 2, "goal_template": "节奏段落", "node_type": "textGeneration", "action_key": "general-text", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "song_input"}, "need_review": false, "multiplicity": "single"},
+        {"id": "visual_style", "step_number": 3, "goal_template": "视觉风格", "node_type": "textGeneration", "action_key": "general-text", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "song_input"}, "need_review": false, "multiplicity": "single"},
+        {"id": "mv_frame", "step_number": 4, "goal_template": "关键视觉", "node_type": "imageGeneration", "action_key": "general-image", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_steps", "step_ids": ["rhythm_map", "visual_style"]}, "need_review": false, "multiplicity": "single"},
+        {"id": "mv_video", "step_number": 5, "goal_template": "视频段落", "node_type": "videoGeneration", "action_key": "general-video", "prompt_strategy": "llm_refine", "input_strategy": {"type": "previous_step", "step_id": "mv_frame"}, "need_review": false, "multiplicity": "single"},
+        {"id": "compose", "step_number": 6, "goal_template": "成片合成", "node_type": "videoComposeNode", "prompt_strategy": "template", "input_strategy": {"type": "previous_steps", "step_ids": ["song_input", "mv_video"]}, "need_review": false, "multiplicity": "single"}
+      ]
+    }
+  ]
+}
