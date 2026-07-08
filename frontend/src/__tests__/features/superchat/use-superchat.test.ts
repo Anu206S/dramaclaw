@@ -12,8 +12,21 @@ import {
   sanitizeMessagesForCache,
   scopeForProjectForTest,
   scopeSessionKeyForTest,
+  updateAssistantUiEventsForTest,
+  upsertServerAssistantMessageForTest,
   useSuperChat,
 } from "@/features/superchat/use-superchat";
+import {
+  buildSkillStudioCatalogSaveItemsForTest,
+  buildSkillStudioDraftToolResultForTest,
+  skillStudioDraftFieldLabelsForTest,
+  buildSkillStudioFlowItemsForTest,
+  buildSkillStudioQuestionResponseForTest,
+  buildSkillStudioQuestionToolResultForTest,
+  messageHasSkillStudioUiEventForTest,
+  skillStudioEventsFromUiEventsForTest,
+  visibleSkillStudioEventsForMessageForTest,
+} from "@/features/superchat/superchat-panel";
 import type { ChatMessage, ChatRole } from "@/features/superchat/types";
 
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
@@ -201,6 +214,461 @@ This Freezone chat can change the current canvas by returning a JSON block.
     });
 
     expect(normalized?.uiEvents).toBe(uiEvents);
+  });
+});
+
+describe("upsertServerAssistantMessage", () => {
+  it("preserves transient ui events when the final assistant message arrives", () => {
+    const uiEvent = {
+      type: "skill_studio.questions",
+      skill_studio_session_id: "skill_studio_01",
+      questions: [],
+    };
+    const current: ChatMessage[] = [
+      message("user-turn-1", "user", "创建 Skill", 10, "turn-1"),
+      {
+        id: "assistant-turn-1",
+        role: "assistant",
+        text: "",
+        timestamp: 20,
+        turnId: "turn-1",
+        uiEvents: [uiEvent],
+      },
+    ];
+
+    const merged = upsertServerAssistantMessageForTest(
+      current,
+      {
+        id: 3,
+        role: "assistant",
+        content: "已进入问答环节",
+        turn_id: "turn-1",
+        created_at: "2026-07-08T03:47:06.538231+00:00",
+      },
+      "turn-1",
+    );
+
+    const assistant = merged.find((item) => item.role === "assistant");
+    expect(assistant?.text).toBe("已进入问答环节");
+    expect(assistant?.uiEvents).toEqual([uiEvent]);
+  });
+});
+
+describe("updateAssistantUiEvents", () => {
+  it("persists submitted Skill Studio question selections on the assistant message", () => {
+    const current: ChatMessage[] = [
+      {
+        id: "assistant-turn-1",
+        role: "assistant",
+        text: "",
+        timestamp: 20,
+        turnId: "turn-1",
+        uiEvents: [
+          {
+            type: "skill_studio.questions",
+            skill_studio_session_id: "skill_studio_01",
+            questions: [],
+          },
+        ],
+      },
+    ];
+
+    const next = updateAssistantUiEventsForTest(
+      current,
+      "turn-1",
+      (event) =>
+        Boolean(
+          event
+            && typeof event === "object"
+            && (event as Record<string, unknown>).type === "skill_studio.questions",
+        ),
+      (event) => ({
+        ...(event as Record<string, unknown>),
+        submitted: true,
+        action: "submit",
+        selections: { audience: "young" },
+      }),
+    );
+
+    expect(next[0]?.uiEvents?.[0]).toMatchObject({
+      type: "skill_studio.questions",
+      submitted: true,
+      action: "submit",
+      selections: { audience: "young" },
+    });
+  });
+});
+
+describe("Skill Studio question response", () => {
+  it("builds a chat message from selected card options", () => {
+    const text = buildSkillStudioQuestionResponseForTest(
+      {
+        type: "skill_studio.questions",
+        skill_studio_session_id: "skill_studio_01",
+        title: "创建宣传海报 Skill",
+        questions: [
+          {
+            id: "audience",
+            title: "核心使用场景是什么？",
+            options: [
+              { id: "social", label: "用于社媒平台发布", description: "小红书/抖音等" },
+            ],
+          },
+          {
+            id: "style",
+            title: "偏好的视觉风格是？",
+            options: [
+              { id: "ink", label: "水墨国风/新中式" },
+              { id: "modern", label: "现代简约/信息图风" },
+            ],
+          },
+        ],
+      },
+      { audience: "social", style: "modern" },
+    );
+
+    expect(text).toContain("Skill Studio 会话：skill_studio_01");
+    expect(text).toContain("创建宣传海报 Skill");
+    expect(text).toContain("核心使用场景是什么？：用于社媒平台发布（小红书/抖音等）");
+    expect(text).toContain("偏好的视觉风格是？：现代简约/信息图风");
+    expect(text).toContain("请基于以上选择继续生成 Skill / Recipe 草稿。");
+  });
+
+  it("keeps unanswered questions visible when partially submitted", () => {
+    const text = buildSkillStudioQuestionResponseForTest(
+      {
+        type: "skill_studio.questions",
+        skill_studio_session_id: "skill_studio_01",
+        questions: [
+          {
+            id: "audience",
+            title: "核心使用场景是什么？",
+            options: [{ id: "social", label: "用于社媒平台发布" }],
+          },
+          {
+            id: "style",
+            title: "偏好的视觉风格是？",
+            options: [{ id: "modern", label: "现代简约/信息图风" }],
+          },
+        ],
+      },
+      { audience: "social" },
+    );
+
+    expect(text).toContain("核心使用场景是什么？：用于社媒平台发布");
+    expect(text).toContain("偏好的视觉风格是？：未选择");
+  });
+
+  it("builds a bridge tool result payload instead of a new chat message", () => {
+    const payload = buildSkillStudioQuestionToolResultForTest(
+      {
+        type: "skill_studio.questions",
+        bridge_key: "skill-key-1",
+        project_id: "project-a",
+        canvas_id: "canvas-a",
+        agent_id: "agent-1",
+        turn_id: "turn-a",
+        skill_studio_session_id: "skill_studio_01",
+        questions: [
+          {
+            id: "scope",
+            title: "主要做什么？",
+            options: [{ id: "planning", label: "策划" }],
+          },
+        ],
+      },
+      { scope: "planning" },
+    );
+
+    expect(payload).toMatchObject({
+      bridge_key: "skill-key-1",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      tool_call_status: "completed",
+      skill_studio_status: "answered",
+      action: "submit",
+      selections: { scope: "planning" },
+      ok: true,
+    });
+    expect(payload.message).toContain("主要做什么？：策划");
+  });
+});
+
+describe("Skill Studio status events", () => {
+  it("marks assistant messages with a status event as Skill Studio UI", () => {
+    expect(messageHasSkillStudioUiEventForTest({
+      id: "assistant-turn-1",
+      role: "assistant",
+      text: "",
+      timestamp: 10,
+      turnId: "turn-1",
+      uiEvents: [
+        {
+          type: "skill_studio.status",
+          status: "routing",
+          message: "正在进入 Skill Studio...",
+        },
+      ],
+    })).toBe(true);
+  });
+
+  it("hides stale status once an interactive Skill Studio card is present", () => {
+    expect(skillStudioEventsFromUiEventsForTest([
+      {
+        type: "skill_studio.status",
+        status: "routing",
+        message: "正在进入 Skill Studio...",
+      },
+      {
+        type: "skill_studio.questions",
+        skill_studio_session_id: "skill_studio_01",
+        questions: [],
+      },
+    ]).map((event) => event.type)).toEqual(["skill_studio.questions"]);
+  });
+
+  it("hides routing status once assistant prose has started", () => {
+    expect(visibleSkillStudioEventsForMessageForTest({
+      id: "assistant-turn-1",
+      role: "assistant",
+      text: "我正在查看可用 Skill。",
+      timestamp: 10,
+      turnId: "turn-1",
+      uiEvents: [
+        {
+          type: "skill_studio.status",
+          status: "routing",
+          message: "正在进入 Skill Studio...",
+        },
+      ],
+    }).map((event) => event.type)).toEqual([]);
+  });
+});
+
+describe("Skill Studio draft response", () => {
+  it("uses the same Chinese field names as the catalog edit pages", () => {
+    expect(skillStudioDraftFieldLabelsForTest.skill).toMatchObject({
+      keywords: "触发关键词",
+      nodeTypes: "节点类型",
+      metaPlanningHints: "规划器提示词",
+      promptStyleGuide: "风格指引",
+      behaviorRules: "行为规则",
+      passingScore: "通过分数线",
+      domainRules: "领域规则",
+    });
+    expect(skillStudioDraftFieldLabelsForTest.recipe).toMatchObject({
+      output_kind: "生成类型",
+      action_keys: "操作类型",
+      systemPrompt: "System Prompt",
+      required_elements: "必需元素",
+      planner_cue: "规划器提示词",
+      output_summary: "输出概述",
+    });
+  });
+
+  it("builds a bridge tool result with the edited draft payload", () => {
+    const event = {
+      type: "skill_studio.draft" as const,
+      bridge_key: "skill-key-2",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      skill_studio_session_id: "skill_studio_01",
+      summary: "草稿摘要",
+      skill: {
+        id: "home-culture-poster",
+        description: "家乡文化海报",
+        category: "social",
+        planning: {
+          metaPlanningHints: "先识别地域符号",
+        },
+      },
+      recipes: [
+        {
+          id: "home-culture-poster-image",
+          name: "家乡文化海报出图",
+          output_kind: "image",
+          systemPrompt: "生成海报",
+          required_elements: ["地域符号"],
+        },
+      ],
+    };
+
+    const payload = buildSkillStudioDraftToolResultForTest(event, {
+      skill: event.skill,
+      recipes: event.recipes,
+      summary: event.summary,
+    });
+
+    expect(payload).toMatchObject({
+      bridge_key: "skill-key-2",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      action: "submit_draft",
+      skill_studio_status: "draft_submitted",
+      draft: {
+        skill: {
+          id: "home-culture-poster",
+          planning: {
+            metaPlanningHints: "先识别地域符号",
+          },
+        },
+        recipes: [
+          {
+            id: "home-culture-poster-image",
+            required_elements: ["地域符号"],
+          },
+        ],
+      },
+    });
+    expect(payload.message).toContain("home-culture-poster");
+  });
+
+  it("normalizes the draft into catalog payloads before saving", () => {
+    const items = buildSkillStudioCatalogSaveItemsForTest({
+      skill: {
+        id: "home-culture-poster",
+        description: "家乡文化海报",
+        category: "social",
+        triggers: {
+          keywords: ["家乡文化"],
+          nodeTypes: ["imageGeneration"],
+        },
+        planning: {
+          metaPlanningHints: "先识别地域符号",
+          promptStyleGuide: "水墨写意",
+          behaviorRules: ["保持文化准确"],
+        },
+        evaluation: {
+          scoreAnchors: [{ score: 8, description: "文化符号明确" }],
+          passingScore: 7,
+          domainRules: ["不得混用地域符号"],
+          visual: {
+            dimensions: [{ name: "文化识别度", weight: 0.6, description: "能看出地域特征" }],
+          },
+          text: {
+            dimensions: [{ name: "文案清晰度", weight: 0.4, description: "文案简洁" }],
+          },
+        },
+      },
+      recipes: [
+        {
+          id: "home-culture-poster-image",
+          name: "家乡文化海报出图",
+          output_kind: "image",
+          action_keys: ["home-culture-poster-image"],
+          systemPrompt: "生成海报",
+          required_elements: ["地域符号"],
+          planner_cue: "根据地域符号生成海报",
+          output_summary: "一张家乡文化海报",
+          needs_multimodal_input: true,
+        },
+      ],
+    });
+
+    expect(items).toEqual([
+      expect.objectContaining({
+        kind: "skills",
+        payload: expect.objectContaining({
+          id: "home-culture-poster",
+          enabled: true,
+          triggers: {
+            keywords: ["家乡文化"],
+            node_scopes: ["imageGeneration"],
+          },
+          planning: expect.objectContaining({
+            planning_notes: "先识别地域符号",
+            prompt_guide: "水墨写意",
+            conduct_rules: ["保持文化准确"],
+          }),
+          evaluation: expect.objectContaining({
+            quality_threshold: 7,
+            domain_constraints: ["不得混用地域符号"],
+            rating_bands: [{ score: 8, description: "文化符号明确" }],
+            visual_review_items: [
+              { name: "文化识别度", weight: 0.6, description: "能看出地域特征" },
+            ],
+            text_review_items: [
+              { name: "文案清晰度", weight: 0.4, description: "文案简洁" },
+            ],
+          }),
+        }),
+      }),
+      expect.objectContaining({
+        kind: "recipes",
+        payload: expect.objectContaining({
+          id: "home-culture-poster-image",
+          output_kind: "image",
+          action_keys: ["home-culture-poster-image"],
+          system_prompt: "生成海报",
+          must_have_items: ["地域符号"],
+          planning_prompt: "根据地域符号生成海报",
+          result_summary: "一张家乡文化海报",
+          requires_source_media: true,
+        }),
+      }),
+    ]);
+  });
+});
+
+describe("Skill Studio flow ordering", () => {
+  it("renders anchored cards at the text position where the event arrived", () => {
+    const items = buildSkillStudioFlowItemsForTest(
+      "先说明。\n后续文字。",
+      [
+        {
+          type: "skill_studio.draft",
+          anchor_text_prefix: "先说明。\n",
+          skill_studio_session_id: "skill_studio_01",
+          skill: { id: "poster-skill" },
+          recipes: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "event", "text"]);
+    expect(items[0]).toMatchObject({ kind: "text", text: "先说明。\n" });
+    expect(items[2]).toMatchObject({ kind: "text", text: "后续文字。" });
+  });
+
+  it("keeps previously anchored cards before continuation text when streaming restarts after a tool result", () => {
+    const items = buildSkillStudioFlowItemsForTest(
+      "已保存这个 Skill，接下来可以继续扩展。",
+      [
+        {
+          type: "skill_studio.draft",
+          anchor_text_prefix: "Here's the complete Skill and Recipe draft:",
+          skill_studio_session_id: "skill_studio_01",
+          skill: { id: "poster-skill" },
+          recipes: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["event", "text"]);
+    expect(items[1]).toMatchObject({ kind: "text", text: "已保存这个 Skill，接下来可以继续扩展。" });
+  });
+
+  it("keeps submitted unanchored question cards before continuation text", () => {
+    const items = buildSkillStudioFlowItemsForTest(
+      "我会根据你的选择生成草稿。",
+      [
+        {
+          type: "skill_studio.questions",
+          submitted: true,
+          skill_studio_session_id: "skill_studio_01",
+          selections: { audience: "young" },
+          questions: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["event", "text"]);
   });
 });
 

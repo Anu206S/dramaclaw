@@ -33,6 +33,7 @@ import ReactMarkdown from "react-markdown";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useParams } from "@tanstack/react-router";
+import { useQueryClient } from "@tanstack/react-query";
 import { attachBorderBeam, type BorderBeamController } from "border-beam-vanilla";
 import {
   SpecRenderer,
@@ -128,7 +129,11 @@ import {
   moveFreezoneSkillSuggestionIndex,
   toFreezoneSkillSuggestions,
 } from "@/features/superchat/freezone-skill-suggestions";
-import type { FreezoneAgentConfigPayload } from "@/lib/queries/freezone-agent-config";
+import {
+  freezoneAgentConfigQueryKey,
+  type FreezoneAgentConfigKind,
+  type FreezoneAgentConfigPayload,
+} from "@/lib/queries/freezone-agent-config";
 
 type SpecMediaDetailSection = {
   title: string;
@@ -1660,6 +1665,1177 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
   );
 }
 
+type SkillStudioQuestionOption = {
+  id?: string;
+  label?: string;
+  description?: string;
+};
+
+type SkillStudioQuestion = {
+  id?: string;
+  title?: string;
+  options?: SkillStudioQuestionOption[];
+};
+
+type SkillStudioUiEvent =
+  | {
+      type: "skill_studio.status";
+      status?: string;
+      message?: string;
+    }
+  | {
+      type: "skill_studio.questions";
+      bridge_key?: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      agent_id?: string | null;
+      turn_id?: string | null;
+      anchor_text_prefix?: string | null;
+      skill_studio_session_id?: string;
+      title?: string;
+      description?: string;
+      questions?: SkillStudioQuestion[];
+      allow_recommended?: boolean;
+      allow_skip?: boolean;
+      submitted?: boolean;
+      action?: string;
+      selections?: Record<string, string>;
+    }
+  | {
+      type: "skill_studio.draft";
+      bridge_key?: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      agent_id?: string | null;
+      turn_id?: string | null;
+      anchor_text_prefix?: string | null;
+      skill_studio_session_id?: string;
+      mode?: string;
+      summary?: string;
+      skill?: Record<string, unknown>;
+      recipes?: Array<Record<string, unknown>>;
+      warnings?: unknown[];
+      submitted?: boolean;
+    };
+
+function skillStudioEventsFromUiEvents(events: unknown[] | undefined): SkillStudioUiEvent[] {
+  if (!events || events.length === 0) return [];
+  const skillStudioEvents = events.filter((event): event is SkillStudioUiEvent => {
+    if (!event || typeof event !== "object") return false;
+    const type = (event as Record<string, unknown>).type;
+    return type === "skill_studio.status" || type === "skill_studio.questions" || type === "skill_studio.draft";
+  });
+  const hasInteractiveCard = skillStudioEvents.some((event) =>
+    event.type === "skill_studio.questions" || event.type === "skill_studio.draft",
+  );
+  return hasInteractiveCard
+    ? skillStudioEvents.filter((event) => event.type !== "skill_studio.status")
+    : skillStudioEvents;
+}
+
+export const skillStudioEventsFromUiEventsForTest = skillStudioEventsFromUiEvents;
+
+function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUiEvent[] {
+  const events = skillStudioEventsFromUiEvents(messageUiEvents(message));
+  if (!message.text.trim()) return events;
+  return events.filter((event) => event.type !== "skill_studio.status");
+}
+
+export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEventsForMessage;
+
+type SkillStudioFlowItem =
+  | { kind: "text"; key: string; text: string }
+  | { kind: "event"; key: string; event: SkillStudioUiEvent };
+
+const skillStudioDraftFieldLabels = {
+  skill: {
+    id: "ID",
+    category: "Category",
+    description: "Description",
+    keywords: "触发关键词",
+    nodeTypes: "节点类型",
+    metaPlanningHints: "规划器提示词",
+    promptStyleGuide: "风格指引",
+    behaviorRules: "行为规则",
+    passingScore: "通过分数线",
+    domainRules: "领域规则",
+  },
+  recipe: {
+    id: "ID",
+    name: "名称",
+    output_kind: "生成类型",
+    action_keys: "操作类型",
+    systemPrompt: "System Prompt",
+    required_elements: "必需元素",
+    planner_cue: "规划器提示词",
+    output_summary: "输出概述",
+    needs_multimodal_input: "依赖上游多模态输入",
+  },
+};
+
+export const skillStudioDraftFieldLabelsForTest = skillStudioDraftFieldLabels;
+
+function buildSkillStudioFlowItems(text: string, events: SkillStudioUiEvent[]): SkillStudioFlowItem[] {
+  if (events.length === 0) {
+    return text ? [{ kind: "text", key: "text:0", text }] : [];
+  }
+  const anchored: Array<{ event: SkillStudioUiEvent; index: number; offset: number }> = [];
+  const previousAnchored: Array<{ event: SkillStudioUiEvent; index: number }> = [];
+  const unanchored: Array<{ event: SkillStudioUiEvent; index: number }> = [];
+  for (const [index, event] of events.entries()) {
+    const anchor = typeof event.anchor_text_prefix === "string" ? event.anchor_text_prefix : "";
+    if (anchor && text.startsWith(anchor)) {
+      anchored.push({ event, index, offset: anchor.length });
+    } else if (anchor || (event.type !== "skill_studio.status" && event.submitted === true)) {
+      previousAnchored.push({ event, index });
+    } else {
+      unanchored.push({ event, index });
+    }
+  }
+  anchored.sort((left, right) => left.offset - right.offset || left.index - right.index);
+  const items: SkillStudioFlowItem[] = [];
+  for (const item of previousAnchored) {
+    items.push({ kind: "event", key: `${item.event.type}:${item.index}`, event: item.event });
+  }
+  let cursor = 0;
+  for (const item of anchored) {
+    if (item.offset > cursor) {
+      items.push({ kind: "text", key: `text:${cursor}`, text: text.slice(cursor, item.offset) });
+      cursor = item.offset;
+    }
+    items.push({ kind: "event", key: `${item.event.type}:${item.index}`, event: item.event });
+  }
+  if (text.slice(cursor)) {
+    items.push({ kind: "text", key: `text:${cursor}`, text: text.slice(cursor) });
+  }
+  for (const item of unanchored) {
+    items.push({ kind: "event", key: `${item.event.type}:${item.index}`, event: item.event });
+  }
+  return items;
+}
+
+export const buildSkillStudioFlowItemsForTest = buildSkillStudioFlowItems;
+
+function messageHasSkillStudioUiEvent(message: ChatMessage): boolean {
+  return skillStudioEventsFromUiEvents(messageUiEvents(message)).length > 0;
+}
+
+export const messageHasSkillStudioUiEventForTest = messageHasSkillStudioUiEvent;
+
+function textField(value: unknown): string {
+  return typeof value === "string" ? value.trim() : "";
+}
+
+function prettyJson(value: unknown): string {
+  try {
+    return JSON.stringify(value, null, 2);
+  } catch {
+    return "{}";
+  }
+}
+
+function parseListText(value: string): string[] {
+  return value
+    .split(/[,，、\n]/u)
+    .map((item) => item.trim())
+    .filter(Boolean);
+}
+
+function listText(value: unknown): string {
+  return Array.isArray(value) ? value.map((item) => String(item ?? "").trim()).filter(Boolean).join("、") : "";
+}
+
+function getRecord(value: unknown): Record<string, unknown> {
+  return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
+}
+
+function getRecordArray(value: unknown): Array<Record<string, unknown>> {
+  return Array.isArray(value)
+    ? value.filter((item): item is Record<string, unknown> =>
+        Boolean(item) && typeof item === "object" && !Array.isArray(item),
+      )
+    : [];
+}
+
+function cleanStringArray(value: unknown): string[] {
+  return Array.isArray(value)
+    ? value.map((item) => String(item ?? "").trim()).filter(Boolean)
+    : [];
+}
+
+function isSkillStudioRecipeOutputKind(value: unknown): value is "text" | "image" | "video" | "audio" {
+  return value === "text" || value === "image" || value === "video" || value === "audio";
+}
+
+type SkillStudioCatalogSaveItem = {
+  kind: FreezoneAgentConfigKind;
+  payload: FreezoneAgentConfigPayload;
+};
+
+function firstNonEmptyText(...values: unknown[]): string {
+  for (const value of values) {
+    const text = textField(value);
+    if (text) return text;
+  }
+  return "";
+}
+
+function optionalFiniteNumber(value: unknown): number | undefined {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) return parsed;
+  }
+  return undefined;
+}
+
+function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): FreezoneAgentConfigPayload {
+  const triggers = getRecord(skill.triggers);
+  const planning = getRecord(skill.planning);
+  const evaluation = getRecord(skill.evaluation);
+  const visual = getRecord(evaluation.visual);
+  const text = getRecord(evaluation.text);
+  const payload: FreezoneAgentConfigPayload = {
+    id: textField(skill.id),
+    enabled: skill.enabled !== false,
+    description: textField(skill.description),
+    category: firstNonEmptyText(skill.category, "general"),
+    triggers: {
+      keywords: cleanStringArray(triggers.keywords),
+      node_scopes: cleanStringArray(
+        triggers.node_scopes ?? triggers.nodeTypes ?? triggers.node_types,
+      ),
+    },
+    planning: {
+      planning_notes: firstNonEmptyText(planning.planning_notes, planning.metaPlanningHints),
+      prompt_guide: firstNonEmptyText(planning.prompt_guide, planning.promptStyleGuide),
+      conduct_rules: cleanStringArray(planning.conduct_rules ?? planning.behaviorRules),
+      default_aspect_ratios: getRecord(planning.default_aspect_ratios ?? planning.defaultAspectRatios),
+      model_preferences: getRecord(planning.model_preferences ?? planning.modelPreferences),
+    },
+    evaluation: {
+      rating_bands: getRecordArray(evaluation.rating_bands ?? evaluation.scoreAnchors).map((item) => ({
+        score: optionalFiniteNumber(item.score) ?? 0,
+        description: textField(item.description),
+      })),
+      quality_threshold: optionalFiniteNumber(evaluation.quality_threshold ?? evaluation.passingScore),
+      domain_constraints: cleanStringArray(evaluation.domain_constraints ?? evaluation.domainRules),
+      visual_review_items: getRecordArray(
+        evaluation.visual_review_items ?? visual.dimensions,
+      ).map(normalizedSkillStudioReviewItem),
+      text_review_items: getRecordArray(
+        evaluation.text_review_items ?? text.dimensions,
+      ).map(normalizedSkillStudioReviewItem),
+    },
+  };
+  return payload;
+}
+
+function normalizedSkillStudioReviewItem(item: Record<string, unknown>) {
+  return {
+    name: textField(item.name),
+    weight: optionalFiniteNumber(item.weight) ?? 1,
+    description: textField(item.description),
+  };
+}
+
+function normalizedSkillStudioRecipePayload(recipe: Record<string, unknown>): FreezoneAgentConfigPayload {
+  const outputKind = isSkillStudioRecipeOutputKind(recipe.output_kind)
+    ? recipe.output_kind
+    : isSkillStudioRecipeOutputKind(recipe.generationType)
+      ? recipe.generationType
+      : "image";
+  return {
+    id: textField(recipe.id),
+    enabled: recipe.enabled !== false,
+    name: textField(recipe.name),
+    output_kind: outputKind,
+    action_keys: cleanStringArray(recipe.action_keys ?? recipe.operationTypes),
+    system_prompt: firstNonEmptyText(recipe.system_prompt, recipe.systemPrompt),
+    must_have_items: cleanStringArray(recipe.must_have_items ?? recipe.required_elements),
+    planning_prompt: firstNonEmptyText(recipe.planning_prompt, recipe.planner_cue),
+    result_summary: firstNonEmptyText(recipe.result_summary, recipe.output_summary),
+    requires_source_media:
+      recipe.requires_source_media === true || recipe.needs_multimodal_input === true,
+    force_enhancement: recipe.force_enhancement === true,
+    skip_detail_check: recipe.skip_detail_check === true,
+  };
+}
+
+function assertSkillStudioCatalogPayload(kind: FreezoneAgentConfigKind, payload: FreezoneAgentConfigPayload) {
+  if (kind === "skills") {
+    const triggers = getRecord(payload.triggers);
+    if (
+      !textField(payload.id)
+      || !textField(payload.category)
+      || !textField(payload.description)
+      || cleanStringArray(triggers.keywords).length === 0
+    ) {
+      throw new Error("invalid skill catalog payload");
+    }
+    return;
+  }
+  if (
+    !textField(payload.id)
+    || !textField(payload.name)
+    || !isSkillStudioRecipeOutputKind(payload.output_kind)
+    || cleanStringArray(payload.action_keys).length === 0
+    || !textField(payload.system_prompt)
+  ) {
+    throw new Error("invalid recipe catalog payload");
+  }
+}
+
+function buildSkillStudioCatalogSaveItems(draft: Record<string, unknown>): SkillStudioCatalogSaveItem[] {
+  const items: SkillStudioCatalogSaveItem[] = [];
+  const skill = getRecord(draft.skill);
+  if (Object.keys(skill).length > 0) {
+    const payload = normalizedSkillStudioSkillPayload(skill);
+    assertSkillStudioCatalogPayload("skills", payload);
+    items.push({ kind: "skills", payload });
+  }
+  const recipes = Array.isArray(draft.recipes)
+    ? draft.recipes.filter((recipe): recipe is Record<string, unknown> =>
+        Boolean(recipe) && typeof recipe === "object" && !Array.isArray(recipe),
+      )
+    : [];
+  for (const recipe of recipes) {
+    const payload = normalizedSkillStudioRecipePayload(recipe);
+    assertSkillStudioCatalogPayload("recipes", payload);
+    items.push({ kind: "recipes", payload });
+  }
+  if (items.length === 0) {
+    throw new Error("empty skill studio catalog draft");
+  }
+  return items;
+}
+
+export const buildSkillStudioCatalogSaveItemsForTest = buildSkillStudioCatalogSaveItems;
+
+function skillStudioQuestionKey(question: SkillStudioQuestion, index: number): string {
+  return question.id?.trim() || `question_${index + 1}`;
+}
+
+function skillStudioOptionKey(option: SkillStudioQuestionOption, index: number): string {
+  return option.id?.trim() || `option_${index + 1}`;
+}
+
+function findSkillStudioOption(
+  question: SkillStudioQuestion,
+  selectedOptionId: string | undefined,
+): SkillStudioQuestionOption | null {
+  if (!selectedOptionId) return null;
+  return (question.options ?? []).find((option, index) => skillStudioOptionKey(option, index) === selectedOptionId) ?? null;
+}
+
+function formatSkillStudioOption(option: SkillStudioQuestionOption): string {
+  const label = option.label?.trim() || option.id?.trim() || "未命名选项";
+  const description = option.description?.trim();
+  return description ? `${label}（${description}）` : label;
+}
+
+function selectedSkillStudioOptionLabel(
+  question: SkillStudioQuestion,
+  questionIndex: number,
+  selections: Record<string, string>,
+): string {
+  const selectedOption = findSkillStudioOption(
+    question,
+    selections[skillStudioQuestionKey(question, questionIndex)],
+  );
+  return selectedOption ? formatSkillStudioOption(selectedOption) : "未选择";
+}
+
+export function buildSkillStudioQuestionResponseForTest(
+  event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
+  selections: Record<string, string>,
+): string {
+  const lines = [
+    "我已在 Skill Studio 问题卡片中完成选择。",
+    event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
+    event.title ? `卡片：${event.title}` : "",
+  ].filter(Boolean);
+
+  const answers = (event.questions ?? [])
+    .map((question, index) => ({ question, index }))
+    .filter(({ question }) => (question.options ?? []).length > 0)
+    .map(({ question, index }) =>
+      `- ${question.title || `问题 ${index + 1}`}：${selectedSkillStudioOptionLabel(question, index, selections)}`,
+    );
+
+  return [
+    ...lines,
+    "选择如下：",
+    ...answers,
+    "请基于以上选择继续生成 Skill / Recipe 草稿。",
+  ].join("\n");
+}
+
+export function buildSkillStudioQuestionToolResultForTest(
+  event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
+  selections: Record<string, string>,
+) {
+  const safeSelections = Object.fromEntries(
+    Object.entries(selections).filter(([key]) => !key.startsWith("__")),
+  );
+  return {
+    turn_id: event.turn_id ?? undefined,
+    bridge_key: event.bridge_key ?? "",
+    project_id: event.project_id ?? undefined,
+    canvas_id: event.canvas_id ?? undefined,
+    agent_id: event.agent_id ?? undefined,
+    tool_call_status: "completed",
+    skill_studio_status: "answered",
+    ok: true,
+    action: "submit",
+    selections: safeSelections,
+    message: buildSkillStudioQuestionResponseForTest(event, safeSelections),
+  };
+}
+
+function draftPayloadFromEvent(event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) {
+  return {
+    summary: event.summary || "",
+    skill: event.skill && typeof event.skill === "object" ? event.skill : {},
+    recipes: Array.isArray(event.recipes) ? event.recipes : [],
+    warnings: Array.isArray(event.warnings) ? event.warnings : [],
+  };
+}
+
+export function buildSkillStudioDraftToolResultForTest(
+  event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+  draft: Record<string, unknown>,
+) {
+  const skill = draft.skill && typeof draft.skill === "object" && !Array.isArray(draft.skill)
+    ? draft.skill as Record<string, unknown>
+    : {};
+  const recipes = Array.isArray(draft.recipes) ? draft.recipes : [];
+  const summary = typeof draft.summary === "string" ? draft.summary : event.summary || "";
+  const warnings = Array.isArray(draft.warnings) ? draft.warnings : [];
+  return {
+    turn_id: event.turn_id ?? undefined,
+    bridge_key: event.bridge_key ?? "",
+    project_id: event.project_id ?? undefined,
+    canvas_id: event.canvas_id ?? undefined,
+    agent_id: event.agent_id ?? undefined,
+    tool_call_status: "completed",
+    skill_studio_status: "draft_submitted",
+    ok: true,
+    action: "submit_draft",
+    draft: { summary, skill, recipes, warnings },
+    message: [
+      "我已在 Skill Studio 草稿卡片中确认/编辑草稿。",
+      event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
+      textField(skill.id) ? `Skill：${textField(skill.id)}` : "",
+      recipes.length > 0 ? `Recipes：${recipes.map((recipe) => textField((recipe as Record<string, unknown>).id)).filter(Boolean).join("、")}` : "",
+      "请基于该草稿继续下一步。",
+    ].filter(Boolean).join("\n"),
+  };
+}
+
+function buildSkillStudioRecommendedResponse(event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>): string {
+  return [
+    "请使用推荐配置继续 Skill Studio 流程。",
+    event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
+    event.title ? `卡片：${event.title}` : "",
+    "请基于当前目标直接生成一个可编辑的 Skill / Recipe 草稿。",
+  ].filter(Boolean).join("\n");
+}
+
+function buildSkillStudioSkipResponse(event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>): string {
+  return [
+    "我选择跳过问题卡片，直接进入 Skill Studio 草稿生成。",
+    event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
+    event.title ? `卡片：${event.title}` : "",
+    "请根据已有上下文生成 Skill / Recipe 草稿。",
+  ].filter(Boolean).join("\n");
+}
+
+function skillStudioEventMatches(
+  candidate: unknown,
+  event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" | "skill_studio.draft" }>,
+): boolean {
+  if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
+  const value = candidate as Record<string, unknown>;
+  if (value.type !== event.type) return false;
+  if (event.bridge_key && value.bridge_key === event.bridge_key) return true;
+  if (event.skill_studio_session_id && value.skill_studio_session_id === event.skill_studio_session_id) {
+    return true;
+  }
+  return false;
+}
+
+function SkillStudioQuestionsCard({
+  event,
+  onSubmit,
+}: {
+  event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>;
+  onSubmit?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
+    selections: Record<string, string>,
+  ) => Promise<boolean>;
+}) {
+  const questions = Array.isArray(event.questions) ? event.questions : [];
+  const [selections, setSelections] = useState<Record<string, string>>(() =>
+    event.selections && typeof event.selections === "object" ? event.selections : {},
+  );
+  const [submitted, setSubmitted] = useState(event.submitted === true);
+  const [activeQuestionKey, setActiveQuestionKey] = useState<string | null>(() =>
+    questions[0] ? skillStudioQuestionKey(questions[0], 0) : null,
+  );
+  const selectableQuestions = questions
+    .map((question, index) => ({ question, index }))
+    .filter(({ question }) => (question.options ?? []).length > 0);
+  const answeredCount = selectableQuestions.filter(({ question, index }) =>
+    Boolean(selections[skillStudioQuestionKey(question, index)]),
+  ).length;
+  const hasAnySelection = answeredCount > 0;
+  const canSubmitSelections = selectableQuestions.length > 0 && hasAnySelection;
+  const allQuestionsAnswered = selectableQuestions.length > 0 && answeredCount === selectableQuestions.length;
+  const selectedSummary = useCallback(
+    (question: SkillStudioQuestion, index: number) => selectedSkillStudioOptionLabel(question, index, selections),
+    [selections],
+  );
+  const submitSelections = useCallback(() => {
+    if (!onSubmit || submitted) return;
+    void onSubmit(event, selections).then((ok) => {
+      if (ok) setSubmitted(true);
+    });
+  }, [event, onSubmit, selections, submitted]);
+  const selectOption = useCallback((
+    question: SkillStudioQuestion,
+    questionIndex: number,
+    optionKey: string,
+  ) => {
+    if (submitted) return;
+    const questionKey = skillStudioQuestionKey(question, questionIndex);
+    setSelections((current) => {
+      const next = { ...current, [questionKey]: optionKey };
+      const nextUnanswered = selectableQuestions.find(({ question: candidate, index }) => {
+        const candidateKey = skillStudioQuestionKey(candidate, index);
+        return candidateKey !== questionKey && !next[candidateKey];
+      });
+      setActiveQuestionKey(nextUnanswered
+        ? skillStudioQuestionKey(nextUnanswered.question, nextUnanswered.index)
+        : questionKey);
+      return next;
+    });
+  }, [selectableQuestions, submitted]);
+  const readOnly = submitted;
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-black/30 p-3 text-sm shadow-[0_12px_40px_rgba(0,0,0,0.18)] backdrop-blur-sm">
+      <div className="mb-2 flex items-center gap-2 text-foreground">
+        <span className="flex size-6 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] text-cyan-100">
+          <ListTree className="size-3.5" />
+        </span>
+        <span className="font-medium tracking-normal">{event.title || "确定 Skill 方向"}</span>
+      </div>
+      {event.description && (
+        <p className="mb-3 text-xs leading-5 text-muted-foreground">{event.description}</p>
+      )}
+      <div className="space-y-2">
+        {questions.map((question, index) => (
+          <div
+            key={question.id || index}
+            className={cn(
+              "rounded-lg border px-3 py-2.5 transition-colors",
+              activeQuestionKey === skillStudioQuestionKey(question, index)
+                ? readOnly
+                  ? "border-white/[0.09] bg-white/[0.035]"
+                  : "border-cyan-300/30 bg-white/[0.055]"
+                : "border-white/[0.07] bg-white/[0.025] hover:bg-white/[0.04]",
+            )}
+          >
+            <button
+              type="button"
+              className="flex w-full items-start justify-between gap-3 text-left"
+              disabled={readOnly}
+              onClick={() => {
+                if (!readOnly) setActiveQuestionKey(skillStudioQuestionKey(question, index));
+              }}
+            >
+              <span className="min-w-0">
+                <span className="block text-xs font-medium text-foreground/85">
+                  {question.title || `问题 ${index + 1}`}
+                </span>
+                {selections[skillStudioQuestionKey(question, index)] && (
+                  <span className="mt-1 block truncate text-[11px] text-muted-foreground">
+                    {selectedSummary(question, index)}
+                  </span>
+                )}
+              </span>
+              <span className={cn(
+                "shrink-0 rounded-full px-1.5 py-0.5 text-[10px]",
+                selections[skillStudioQuestionKey(question, index)]
+                  ? "bg-cyan-300/10 text-cyan-100/80"
+                  : "bg-white/[0.04] text-muted-foreground",
+              )}>
+                {selections[skillStudioQuestionKey(question, index)] ? "已选" : "未选"}
+              </span>
+            </button>
+            {!readOnly && activeQuestionKey === skillStudioQuestionKey(question, index) && (
+              <div className="mt-2.5 flex flex-wrap gap-1.5">
+                {(question.options ?? []).map((option, optionIndex) => {
+                  const questionKey = skillStudioQuestionKey(question, index);
+                  const optionKey = skillStudioOptionKey(option, optionIndex);
+                  const selected = selections[questionKey] === optionKey;
+                  return (
+                    <button
+                      key={option.id || optionIndex}
+                      type="button"
+                      disabled={readOnly}
+                      aria-pressed={selected}
+                      className={cn(
+                        "rounded-full border px-2.5 py-1 text-left text-xs leading-4 transition-colors disabled:cursor-default",
+                        selected
+                          ? "border-cyan-200/45 bg-cyan-200/12 text-cyan-50 shadow-[inset_0_0_0_1px_rgba(255,255,255,0.04)]"
+                          : "border-white/[0.09] bg-white/[0.035] text-foreground/75 hover:border-white/20 hover:bg-white/[0.07] hover:text-foreground",
+                      )}
+                      onClick={() => {
+                        if (readOnly) return;
+                        selectOption(question, index, optionKey);
+                      }}
+                      title={option.description}
+                    >
+                      {option.label || option.id || `选项 ${optionIndex + 1}`}
+                    </button>
+                  );
+                })}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+      <div className="mt-3 flex flex-wrap items-center gap-2">
+        {selectableQuestions.length > 0 && (
+          <Button
+            type="button"
+            size="xs"
+            disabled={readOnly || !onSubmit || !canSubmitSelections}
+            onClick={submitSelections}
+          >
+            {allQuestionsAnswered ? "提交选择" : "用当前选择继续"}
+          </Button>
+        )}
+        {event.allow_recommended && (
+          <Button
+            type="button"
+            size="xs"
+            variant="outline"
+            disabled={readOnly || !onSubmit}
+            onClick={() => {
+              if (readOnly) return;
+              void onSubmit?.(event, { __action: "recommended" }).then((ok) => {
+                if (ok) setSubmitted(true);
+              });
+            }}
+          >
+            使用推荐配置
+          </Button>
+        )}
+        {event.allow_skip && (
+          <Button
+            type="button"
+            size="xs"
+            variant="ghost"
+            disabled={readOnly || !onSubmit}
+            onClick={() => {
+              if (readOnly) return;
+              void onSubmit?.(event, { __action: "skip" }).then((ok) => {
+                if (ok) setSubmitted(true);
+              });
+            }}
+          >
+            跳过生成草稿
+          </Button>
+        )}
+      </div>
+      {selectableQuestions.length > 0 && (
+        <div className="mt-2 flex items-center gap-1.5 text-[11px] text-muted-foreground/80">
+          {readOnly && <CheckCircle2 className="size-3" />}
+          <span>
+            {readOnly ? "已提交" : "已选择"} {answeredCount} / {selectableQuestions.length}
+          </span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function SkillStudioDraftCard({
+  event,
+  onSubmit,
+}: {
+  event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>;
+  onSubmit?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => Promise<boolean>;
+}) {
+  const [draftObject, setDraftObject] = useState<Record<string, unknown>>(() => draftPayloadFromEvent(event));
+  const [draftText, setDraftText] = useState(() => prettyJson(draftObject));
+  const [submitted, setSubmitted] = useState(false);
+  const [jsonError, setJsonError] = useState<string | null>(null);
+  const skill = getRecord(draftObject.skill);
+  const recipes = Array.isArray(draftObject.recipes)
+    ? draftObject.recipes.filter((recipe): recipe is Record<string, unknown> => Boolean(recipe && typeof recipe === "object" && !Array.isArray(recipe)))
+    : [];
+  const triggers = getRecord(skill.triggers);
+  const planning = getRecord(skill.planning);
+  const evaluation = getRecord(skill.evaluation);
+  const syncDraftObject = useCallback((updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
+    setDraftObject((current) => {
+      const next = updater(current);
+      setDraftText(prettyJson(next));
+      return next;
+    });
+    if (jsonError) setJsonError(null);
+  }, [jsonError]);
+  const updateSkillField = useCallback((key: string, value: unknown) => {
+    syncDraftObject((current) => ({
+      ...current,
+      skill: {
+        ...getRecord(current.skill),
+        [key]: value,
+      },
+    }));
+  }, [syncDraftObject]);
+  const updateNestedSkillField = useCallback((section: "triggers" | "planning" | "evaluation", key: string, value: unknown) => {
+    syncDraftObject((current) => {
+      const currentSkill = getRecord(current.skill);
+      return {
+        ...current,
+        skill: {
+          ...currentSkill,
+          [section]: {
+            ...getRecord(currentSkill[section]),
+            [key]: value,
+          },
+        },
+      };
+    });
+  }, [syncDraftObject]);
+  const updateRecipeField = useCallback((recipeIndex: number, key: string, value: unknown) => {
+    syncDraftObject((current) => {
+      const currentRecipes = Array.isArray(current.recipes) ? current.recipes : [];
+      return {
+        ...current,
+        recipes: currentRecipes.map((recipe, index) => index === recipeIndex
+          ? { ...getRecord(recipe), [key]: value }
+          : recipe),
+      };
+    });
+  }, [syncDraftObject]);
+  const submitDraft = useCallback(() => {
+    if (!onSubmit || submitted) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(draftText);
+    } catch {
+      setJsonError("JSON 格式不正确，请检查后再提交");
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setJsonError("草稿必须是 JSON 对象");
+      return;
+    }
+    setJsonError(null);
+    void onSubmit(event, parsed as Record<string, unknown>).then((ok) => {
+      if (ok) setSubmitted(true);
+    });
+  }, [draftText, event, onSubmit, submitted]);
+  const fieldClass = "h-8 rounded-lg border-white/[0.08] bg-black/20 text-xs shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
+  const labelClass = "mb-1 block text-[11px] font-medium text-muted-foreground";
+  const textAreaClass = "min-h-16 resize-y rounded-lg border-white/[0.08] bg-black/20 text-xs leading-5 shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-3 text-sm shadow-[0_18px_50px_rgba(0,0,0,0.2)] backdrop-blur-sm">
+      <div className="mb-2 flex items-center gap-2 text-foreground">
+        <span className="flex size-6 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] text-emerald-100/90">
+          <Package className="size-3.5" />
+        </span>
+        <span className="font-medium">Skill / Recipe 草稿</span>
+        {event.mode && (
+          <Badge variant="outline" className="h-5 rounded-md border-white/[0.1] px-1.5 text-[10px] text-muted-foreground">
+            {event.mode === "edit" ? "编辑" : "新建"}
+          </Badge>
+        )}
+      </div>
+      {event.summary && (
+        <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{event.summary}</p>
+      )}
+      <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.045]">
+        <div className="p-3">
+          <div className="flex items-center gap-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <Package className="size-3.5" />
+            <span>Skill</span>
+          </div>
+          <div className="mt-1.5 flex flex-wrap items-center gap-2">
+            <span className="font-mono text-sm font-semibold leading-5 text-foreground">
+              {textField(skill.id) || "untitled-skill"}
+            </span>
+            {textField(skill.category) && (
+              <span className="rounded-full bg-white/[0.07] px-2 py-0.5 text-[10px] text-muted-foreground">
+                {textField(skill.category)}
+              </span>
+            )}
+          </div>
+          <p className="mt-1.5 line-clamp-3 text-xs leading-5 text-muted-foreground">
+            {textField(skill.description) || "暂无描述"}
+          </p>
+        </div>
+
+        <details className="group border-t border-white/[0.07]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+            <span className="flex min-w-0 items-center gap-2 text-foreground/85">
+              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              <Braces className="size-3.5 shrink-0 text-muted-foreground" />
+              <span>基础信息</span>
+            </span>
+          </summary>
+          <div className="space-y-2 border-t border-white/[0.06] px-3 pb-3 pt-2">
+            <div className="grid gap-2 md:grid-cols-2">
+              <label>
+                <span className={labelClass}>{skillStudioDraftFieldLabels.skill.id}</span>
+                <Input
+                  value={textField(skill.id)}
+                  disabled={submitted}
+                  onChange={(changeEvent) => updateSkillField("id", changeEvent.target.value)}
+                  className={cn(fieldClass, "font-mono")}
+                />
+              </label>
+              <label>
+                <span className={labelClass}>{skillStudioDraftFieldLabels.skill.category}</span>
+                <Input
+                  value={textField(skill.category)}
+                  disabled={submitted}
+                  onChange={(changeEvent) => updateSkillField("category", changeEvent.target.value)}
+                  className={fieldClass}
+                />
+              </label>
+            </div>
+            <label className="block">
+              <span className={labelClass}>{skillStudioDraftFieldLabels.skill.description}</span>
+              <Textarea
+                value={textField(skill.description)}
+                disabled={submitted}
+                onChange={(changeEvent) => updateSkillField("description", changeEvent.target.value)}
+                className={textAreaClass}
+              />
+            </label>
+          </div>
+        </details>
+
+        <details className="group border-t border-white/[0.07]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+            <span className="flex min-w-0 items-center gap-2 text-foreground/85">
+              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              <Search className="size-3.5 shrink-0 text-muted-foreground" />
+              <span>{skillStudioDraftFieldLabels.skill.keywords}</span>
+            </span>
+            {listText(triggers.keywords) && (
+              <span className="truncate text-[11px] text-muted-foreground">{listText(triggers.keywords)}</span>
+            )}
+          </summary>
+          <div className="grid gap-2 border-t border-white/[0.06] px-3 pb-3 pt-2 md:grid-cols-2">
+            <label>
+              <span className={labelClass}>{skillStudioDraftFieldLabels.skill.keywords}</span>
+              <Input
+                value={listText(triggers.keywords)}
+                disabled={submitted}
+                onChange={(changeEvent) => updateNestedSkillField("triggers", "keywords", parseListText(changeEvent.target.value))}
+                placeholder="用顿号、逗号或换行分隔"
+                className={fieldClass}
+              />
+            </label>
+            <label>
+              <span className={labelClass}>{skillStudioDraftFieldLabels.skill.nodeTypes}</span>
+              <Input
+                value={listText(triggers.nodeTypes)}
+                disabled={submitted}
+                onChange={(changeEvent) => updateNestedSkillField("triggers", "nodeTypes", parseListText(changeEvent.target.value))}
+                placeholder="如：imageGenNode、textAnnotationNode"
+                className={fieldClass}
+              />
+            </label>
+          </div>
+        </details>
+
+        <details className="group border-t border-white/[0.07]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+            <span className="flex min-w-0 items-center gap-2 text-foreground/85">
+              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              <ListTree className="size-3.5 shrink-0 text-muted-foreground" />
+              <span>规划策略</span>
+            </span>
+          </summary>
+          <div className="space-y-2 border-t border-white/[0.06] px-3 pb-3 pt-2">
+            <div className="grid gap-2 md:grid-cols-2">
+              <label>
+                <span className={labelClass}>{skillStudioDraftFieldLabels.skill.metaPlanningHints}</span>
+                <Textarea
+                  value={textField(planning.metaPlanningHints)}
+                  disabled={submitted}
+                  onChange={(changeEvent) => updateNestedSkillField("planning", "metaPlanningHints", changeEvent.target.value)}
+                  className={textAreaClass}
+                />
+              </label>
+              <label>
+                <span className={labelClass}>{skillStudioDraftFieldLabels.skill.promptStyleGuide}</span>
+                <Textarea
+                  value={textField(planning.promptStyleGuide)}
+                  disabled={submitted}
+                  onChange={(changeEvent) => updateNestedSkillField("planning", "promptStyleGuide", changeEvent.target.value)}
+                  className={textAreaClass}
+                />
+              </label>
+            </div>
+            <label className="block">
+              <span className={labelClass}>{skillStudioDraftFieldLabels.skill.behaviorRules}</span>
+              <Input
+                value={listText(planning.behaviorRules)}
+                disabled={submitted}
+                onChange={(changeEvent) => updateNestedSkillField("planning", "behaviorRules", parseListText(changeEvent.target.value))}
+                placeholder="用顿号、逗号或换行分隔"
+                className={fieldClass}
+              />
+            </label>
+          </div>
+        </details>
+
+        <details className="group border-t border-white/[0.07]">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+            <span className="flex min-w-0 items-center gap-2 text-foreground/85">
+              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+              <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" />
+              <span>评估标准</span>
+            </span>
+          </summary>
+          <div className="grid gap-2 border-t border-white/[0.06] px-3 pb-3 pt-2 md:grid-cols-[120px_1fr]">
+            <label>
+              <span className={labelClass}>{skillStudioDraftFieldLabels.skill.passingScore}</span>
+              <Input
+                value={textField(evaluation.passingScore)}
+                disabled={submitted}
+                onChange={(changeEvent) => updateNestedSkillField("evaluation", "passingScore", Number(changeEvent.target.value) || changeEvent.target.value)}
+                className={fieldClass}
+              />
+            </label>
+            <label>
+              <span className={labelClass}>{skillStudioDraftFieldLabels.skill.domainRules}</span>
+              <Input
+                value={listText(evaluation.domainRules)}
+                disabled={submitted}
+                onChange={(changeEvent) => updateNestedSkillField("evaluation", "domainRules", parseListText(changeEvent.target.value))}
+                placeholder="用顿号、逗号或换行分隔"
+                className={fieldClass}
+              />
+            </label>
+          </div>
+        </details>
+      </div>
+      {recipes.length > 0 && (
+        <div className="mt-2 overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.035]">
+          <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <File className="size-3.5" />
+            <span>Recipes ({recipes.length})</span>
+          </div>
+          {recipes.map((recipe, index) => (
+            <details key={textField(recipe.id) || index} className="group border-b border-white/[0.07] last:border-b-0">
+              <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+                <span className="flex min-w-0 items-center gap-2">
+                  <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                  <span className="rounded-full border border-white/[0.08] bg-white/[0.04] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                    {textField(recipe.output_kind) || "类型"}
+                  </span>
+                  <span className="truncate text-foreground/85">{textField(recipe.name) || textField(recipe.id) || `Recipe ${index + 1}`}</span>
+                </span>
+                {textField(recipe.id) && <span className="max-w-32 truncate font-mono text-[11px] text-muted-foreground">{textField(recipe.id)}</span>}
+              </summary>
+              <div className="space-y-2 border-t border-white/[0.06] px-3 pb-3 pt-2">
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.id}</span>
+                    <Input
+                      value={textField(recipe.id)}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "id", changeEvent.target.value)}
+                      className={cn(fieldClass, "font-mono")}
+                    />
+                  </label>
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.name}</span>
+                    <Input
+                      value={textField(recipe.name)}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "name", changeEvent.target.value)}
+                      className={fieldClass}
+                    />
+                  </label>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.output_kind}</span>
+                    <Input
+                      value={textField(recipe.output_kind)}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "output_kind", changeEvent.target.value)}
+                      className={fieldClass}
+                    />
+                  </label>
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.action_keys}</span>
+                    <Input
+                      value={listText(recipe.action_keys)}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "action_keys", parseListText(changeEvent.target.value))}
+                      placeholder="用顿号、逗号或换行分隔"
+                      className={fieldClass}
+                    />
+                  </label>
+                </div>
+                <label className="block">
+                  <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.systemPrompt}</span>
+                  <Textarea
+                    value={textField(recipe.systemPrompt)}
+                    disabled={submitted}
+                    onChange={(changeEvent) => updateRecipeField(index, "systemPrompt", changeEvent.target.value)}
+                    className={cn(textAreaClass, "min-h-24")}
+                  />
+                </label>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.required_elements}</span>
+                    <Input
+                      value={listText(recipe.required_elements)}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "required_elements", parseListText(changeEvent.target.value))}
+                      placeholder="用顿号、逗号或换行分隔"
+                      className={fieldClass}
+                    />
+                  </label>
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.needs_multimodal_input}</span>
+                    <Input
+                      value={String(Boolean(recipe.needs_multimodal_input))}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "needs_multimodal_input", changeEvent.target.value === "true")}
+                      placeholder="true / false"
+                      className={fieldClass}
+                    />
+                  </label>
+                </div>
+                <div className="grid gap-2 md:grid-cols-2">
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.planner_cue}</span>
+                    <Textarea
+                      value={textField(recipe.planner_cue)}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "planner_cue", changeEvent.target.value)}
+                      className={textAreaClass}
+                    />
+                  </label>
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.output_summary}</span>
+                    <Textarea
+                      value={textField(recipe.output_summary)}
+                      disabled={submitted}
+                      onChange={(changeEvent) => updateRecipeField(index, "output_summary", changeEvent.target.value)}
+                      className={textAreaClass}
+                    />
+                  </label>
+                </div>
+              </div>
+            </details>
+          ))}
+        </div>
+      )}
+      {Array.isArray(event.warnings) && event.warnings.length > 0 && (
+        <div className="mt-2 rounded-md border border-amber-400/20 bg-amber-400/[0.05] px-2 py-1.5 text-xs text-amber-100/90">
+          {event.warnings.map((warning) => String(warning)).join("；")}
+        </div>
+      )}
+      <details className="group mt-2 overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.035]">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+          <span className="flex items-center gap-2 text-muted-foreground">
+            <ChevronRight className="size-3.5 transition-transform group-open:rotate-90" />
+            <Braces className="size-3.5" />
+            查看原始 JSON
+          </span>
+          {submitted && (
+            <span className="flex items-center gap-1 text-[11px] text-emerald-100/80">
+              <CheckCircle2 className="size-3" />
+              已提交
+            </span>
+          )}
+        </summary>
+        <div className="border-t border-white/[0.06]">
+          <Textarea
+            value={draftText}
+            disabled={submitted}
+            onChange={(changeEvent) => {
+              setDraftText(changeEvent.target.value);
+              if (jsonError) setJsonError(null);
+            }}
+            spellCheck={false}
+            className="min-h-44 resize-y border-0 bg-transparent font-mono text-[11px] leading-5 text-foreground/80 shadow-none focus-visible:ring-0 disabled:opacity-70"
+          />
+        </div>
+      </details>
+      {jsonError && <div className="mt-2 text-xs text-amber-200">{jsonError}</div>}
+      <div className="mt-3 flex items-center gap-2">
+        <Button
+          type="button"
+          size="sm"
+          className="h-8 rounded-lg px-3 text-xs"
+          disabled={!onSubmit || submitted}
+          onClick={submitDraft}
+        >
+          确认添加
+        </Button>
+        <span className="text-[11px] text-muted-foreground">保存前可展开各项继续微调</span>
+      </div>
+    </div>
+  );
+}
+
+function SkillStudioStatusCard({ event }: { event: Extract<SkillStudioUiEvent, { type: "skill_studio.status" }> }) {
+  return (
+    <div className="rounded-xl border border-white/[0.08] bg-black/25 px-3 py-2.5 text-sm backdrop-blur-sm">
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <span className="flex size-5 items-center justify-center rounded-md bg-white/[0.05] text-cyan-100/80">
+          <ListTree className="size-3" />
+        </span>
+        <span className="font-medium">{event.message || "正在进入 Skill Studio..."}</span>
+        <DotsIndicator />
+      </div>
+    </div>
+  );
+}
+
+function SkillStudioEventCard({
+  event,
+  onSubmitQuestionResponse,
+  onSubmitDraftResponse,
+}: {
+  event: SkillStudioUiEvent;
+  onSubmitQuestionResponse?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
+    selections: Record<string, string>,
+  ) => Promise<boolean>;
+  onSubmitDraftResponse?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => Promise<boolean>;
+}) {
+  if (event.type === "skill_studio.status") {
+    return <SkillStudioStatusCard event={event} />;
+  }
+  if (event.type === "skill_studio.questions") {
+    return <SkillStudioQuestionsCard event={event} onSubmit={onSubmitQuestionResponse} />;
+  }
+  return <SkillStudioDraftCard event={event} onSubmit={onSubmitDraftResponse} />;
+}
+
 const MessageBubble = memo(function MessageBubble({
   message,
   variant = "default",
@@ -1676,6 +2852,8 @@ const MessageBubble = memo(function MessageBubble({
   executingCanvasCommandApprovalIds = new Set<string>(),
   onApplyCanvasCommandApproval,
   onCancelCanvasCommandApproval,
+  onSubmitSkillStudioQuestionResponse,
+  onSubmitSkillStudioDraftResponse,
 }: {
   message: ChatMessage;
   variant?: SuperChatPanelVariant;
@@ -1692,6 +2870,14 @@ const MessageBubble = memo(function MessageBubble({
   executingCanvasCommandApprovalIds?: Set<string>;
   onApplyCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
   onCancelCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
+  onSubmitSkillStudioQuestionResponse?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
+    selections: Record<string, string>,
+  ) => Promise<boolean>;
+  onSubmitSkillStudioDraftResponse?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => Promise<boolean>;
 }) {
   const isUser = message.role === "user";
   const isTool = isToolMessage(message);
@@ -1709,6 +2895,12 @@ const MessageBubble = memo(function MessageBubble({
     isUser,
     isTool,
   });
+  const skillStudioEvents = !isUser && !isTool
+    ? visibleSkillStudioEventsForMessage(message)
+    : [];
+  const skillStudioFlowItems = !isUser && !isTool
+    ? buildSkillStudioFlowItems(displayText, skillStudioEvents)
+    : [];
   const hasValidationContextActivity = canvasContextActivities.some(canvasContextActivityIsValidation);
   const visibleCanvasCommandFeedbacks = dedupeCanvasCommandFeedbacks(canvasCommandFeedbacks)
     .filter((feedback) => !(hasValidationContextActivity && canvasCommandFeedbackIsValidationOnly(feedback)));
@@ -1718,7 +2910,10 @@ const MessageBubble = memo(function MessageBubble({
     && !isTool
     && (visibleCanvasCommandFeedbacks.length > 0 || canvasCommandApprovals.length > 0)
     && looksLikeCanvasExecutionNarration(message.text);
-  const hasCanvasCommandSurface = visibleCanvasCommandFeedbacks.length > 0 || canvasCommandApprovals.length > 0;
+  const hasCanvasCommandSurface =
+    visibleCanvasCommandFeedbacks.length > 0
+    || canvasCommandApprovals.length > 0
+    || canvasContextActivities.length > 0;
   const canvasCommandFlowItems = useMemo(
     () => isUser
       ? []
@@ -1727,12 +2922,14 @@ const MessageBubble = memo(function MessageBubble({
         canvasCommandApprovals,
         visibleCanvasCommandFeedbacks,
         canvasContextActivities,
+        skillStudioEvents,
       ),
     [
       canvasCommandApprovals,
       canvasContextActivities,
       displayText,
       isUser,
+      skillStudioEvents,
       suppressCanvasExecutionNarration,
       visibleCanvasCommandFeedbacks,
     ],
@@ -1976,15 +3173,50 @@ const MessageBubble = memo(function MessageBubble({
                   if (item.kind === "feedback") {
                     return <CanvasCommandFeedbackCard key={item.key} feedback={item.feedback} />;
                   }
+                  if (item.kind === "skill_studio") {
+                    return (
+                      <SkillStudioEventCard
+                        key={item.key}
+                        event={item.event}
+                        onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
+                        onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                      />
+                    );
+                  }
                   return <CanvasContextActivityCard key={item.key} activity={item.activity} />;
                 })}
               </div>
-            ) : !suppressCanvasExecutionNarration && displayText && (
-              isErrorReply && !isUser && !isTool
-                ? <HighlightedErrorText text={displayText} />
-                : isCompletionNotice && !isUser && !isTool
-                  ? <HighlightedCompletionText text={displayText} />
-                  : <MessageText text={displayText} markdown={!isUser && !isTool} />
+            ) : (
+              <div className="space-y-2">
+                {skillStudioFlowItems.length > 0 ? (
+                  skillStudioFlowItems.map((item) => {
+                    if (item.kind === "event") {
+                      return (
+                        <SkillStudioEventCard
+                          key={item.key}
+                          event={item.event}
+                          onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
+                          onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                        />
+                      );
+                    }
+                    if (suppressCanvasExecutionNarration || !item.text) return null;
+                    return isErrorReply && !isUser && !isTool
+                      ? <HighlightedErrorText key={item.key} text={item.text} />
+                      : isCompletionNotice && !isUser && !isTool
+                        ? <HighlightedCompletionText key={item.key} text={item.text} />
+                        : <MessageText key={item.key} text={item.text} markdown={!isUser && !isTool} />;
+                  })
+                ) : (
+                  !suppressCanvasExecutionNarration && displayText && (
+                    isErrorReply && !isUser && !isTool
+                      ? <HighlightedErrorText text={displayText} />
+                      : isCompletionNotice && !isUser && !isTool
+                        ? <HighlightedCompletionText text={displayText} />
+                        : <MessageText text={displayText} markdown={!isUser && !isTool} />
+                  )
+                )}
+              </div>
             )}
             <StructuredRenderer blocks={visibleBlocks} onOpenMedia={onOpenMedia} />
           </>
@@ -3671,7 +4903,8 @@ type CanvasCommandFlowItem =
   | { kind: "text"; key: string; text: string }
   | { kind: "approval"; key: string; approval: PendingCanvasCommandApproval }
   | { kind: "feedback"; key: string; feedback: CanvasCommandFeedback }
-  | { kind: "context"; key: string; activity: CanvasContextActivity };
+  | { kind: "context"; key: string; activity: CanvasContextActivity }
+  | { kind: "skill_studio"; key: string; event: SkillStudioUiEvent };
 
 type CanvasCommandSurfaceEvent =
   | {
@@ -3694,6 +4927,13 @@ type CanvasCommandSurfaceEvent =
       order: number;
       anchorTextPrefix?: string | null;
       activity: CanvasContextActivity;
+    }
+  | {
+      kind: "skill_studio";
+      key: string;
+      order: number;
+      anchorTextPrefix?: string | null;
+      event: SkillStudioUiEvent;
     };
 
 const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
@@ -4104,6 +5344,20 @@ function canvasContextReadSemanticAnchorIndex(text: string, activity: CanvasCont
 }
 
 function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasCommandSurfaceEvent): number {
+  if (event.kind === "skill_studio") {
+    const anchorEndIndex = canvasCommandAnchorEndIndex(text, event.anchorTextPrefix);
+    const hasStaleAnchor =
+      typeof event.anchorTextPrefix === "string"
+      && event.anchorTextPrefix.length > 0
+      && !text.startsWith(event.anchorTextPrefix);
+    if (
+      event.event.type !== "skill_studio.status"
+      && (event.event.submitted === true || hasStaleAnchor)
+    ) {
+      return 0;
+    }
+    return anchorEndIndex;
+  }
   const anchorIndex = canvasCommandAnchorEndIndex(text, event.anchorTextPrefix);
   const semanticIndex = canvasCommandSemanticAnchorIndex(text, event);
   if (
@@ -4173,8 +5427,9 @@ function buildCanvasCommandFlowItems(
   approvals: PendingCanvasCommandApproval[],
   feedbacks: CanvasCommandFeedback[],
   contextActivities: CanvasContextActivity[],
+  skillStudioEvents: SkillStudioUiEvent[] = [],
 ): CanvasCommandFlowItem[] {
-  if (approvals.length === 0 && feedbacks.length === 0 && contextActivities.length === 0) return [];
+  if (approvals.length === 0 && feedbacks.length === 0 && contextActivities.length === 0 && skillStudioEvents.length === 0) return [];
   const dedupedFeedbacks = dedupeCanvasCommandFeedbacks(feedbacks);
   const events: CanvasCommandSurfaceEvent[] = [
     ...approvals.map((approval, index): CanvasCommandSurfaceEvent => ({
@@ -4198,6 +5453,13 @@ function buildCanvasCommandFlowItems(
       anchorTextPrefix: activity.anchorTextPrefix,
       activity,
     })),
+    ...skillStudioEvents.map((event, index): CanvasCommandSurfaceEvent => ({
+      kind: "skill_studio",
+      key: `skill_studio:${event.type}:${index}`,
+      order: approvals.length + feedbacks.length + contextActivities.length + index,
+      anchorTextPrefix: typeof event.anchor_text_prefix === "string" ? event.anchor_text_prefix : null,
+      event,
+    })),
   ].sort((left, right) => {
     const leftIndex = canvasCommandSurfaceEventAnchorEndIndex(text, left);
     const rightIndex = canvasCommandSurfaceEventAnchorEndIndex(text, right);
@@ -4218,6 +5480,8 @@ function buildCanvasCommandFlowItems(
       items.push({ kind: "approval", key: event.key, approval: event.approval });
     } else if (event.kind === "feedback") {
       items.push({ kind: "feedback", key: event.key, feedback: event.feedback });
+    } else if (event.kind === "skill_studio") {
+      items.push({ kind: "skill_studio", key: event.key, event: event.event });
     } else {
       items.push({ kind: "context", key: event.key, activity: event.activity });
     }
@@ -4716,6 +5980,7 @@ export function SuperChatPanel({
 }: SuperChatPanelProps = {}) {
   const { t } = useTranslation();
   const params = useParams({ strict: false }) as { project?: string };
+  const queryClient = useQueryClient();
   const username = useAuthStore((s) => s.username);
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
@@ -4742,6 +6007,7 @@ export function SuperChatPanel({
   const [freezoneSkillCatalog, setFreezoneSkillCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
   const [freezoneSkillCatalogLoaded, setFreezoneSkillCatalogLoaded] = useState(false);
   const [activeFreezoneSkillSuggestionIndex, setActiveFreezoneSkillSuggestionIndex] = useState(0);
+  const freezoneSkillSuggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
   const restoreDraftFocusRef = useRef(false);
@@ -4768,6 +6034,7 @@ export function SuperChatPanel({
     freezoneAgentId: variant === "freezone" ? freezoneAgentId : null,
     connectionEnabled,
   });
+  const updateChatUiEvent = chat.updateUiEvent;
   const [pendingCanvasCommandApprovals, setPendingCanvasCommandApprovals] = useState<PendingCanvasCommandApproval[]>([]);
   const [canvasCommandFeedbackByMessageId, setCanvasCommandFeedbackByMessageId] = useState<Record<string, CanvasCommandFeedback[]>>({});
   const [canvasContextActivitiesByMessageId, setCanvasContextActivitiesByMessageId] = useState<Record<string, CanvasContextActivity[]>>({});
@@ -4848,7 +6115,14 @@ export function SuperChatPanel({
         ? Math.min(index, visibleFreezoneSkillSuggestions.length - 1)
         : 0,
     );
+    freezoneSkillSuggestionRefs.current.length = visibleFreezoneSkillSuggestions.length;
   }, [visibleFreezoneSkillSuggestions.length]);
+
+  useEffect(() => {
+    if (!showFreezoneSkillSuggestions) return;
+    const activeElement = freezoneSkillSuggestionRefs.current[activeFreezoneSkillSuggestionIndex];
+    activeElement?.scrollIntoView({ block: "nearest" });
+  }, [activeFreezoneSkillSuggestionIndex, showFreezoneSkillSuggestions]);
   const selectedFreezoneNodes = useMemo(
     () => (isFreezoneLayout ? getSelectedFreezoneNodes(canvasNodes, selectedCanvasNodeId) : []),
     [canvasNodes, isFreezoneLayout, selectedCanvasNodeId],
@@ -5679,6 +6953,13 @@ export function SuperChatPanel({
         message.text.trim().length > 0,
     );
     if (hasAssistantText) return null;
+    const hasSkillStudioStatus = activeMessages.some(
+      (message) =>
+        message.role === "assistant" &&
+        message.turnId === turnId &&
+        messageHasSkillStudioUiEvent(message),
+    );
+    if (hasSkillStudioStatus) return null;
     const hasContextActivity = (canvasContextActivitiesByMessageId[turnId]?.length ?? 0) > 0;
     const hasFeedback =
       (canvasCommandFeedbackByMessageId[turnId]?.length ?? 0) > 0 ||
@@ -6169,6 +7450,103 @@ export function SuperChatPanel({
     });
   };
 
+  const submitSkillStudioQuestionResponse = useCallback(async (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
+    selections: Record<string, string>,
+  ): Promise<boolean> => {
+    if (!event.bridge_key) {
+      toast.error("Skill Studio 桥接信息缺失，请重试");
+      return false;
+    }
+    try {
+      const action = selections.__action === "recommended"
+        ? "recommended"
+        : selections.__action === "skip"
+          ? "skip"
+          : "submit";
+      const payload = {
+        ...buildSkillStudioQuestionToolResultForTest(event, selections),
+        action,
+        skill_studio_status: action === "submit" ? "answered" : action,
+        message:
+          action === "recommended"
+            ? buildSkillStudioRecommendedResponse(event)
+            : action === "skip"
+              ? buildSkillStudioSkipResponse(event)
+              : buildSkillStudioQuestionResponseForTest(event, selections),
+      };
+      await api.post("api/v1/chat/skill-studio-tool-result", { json: payload });
+      if (event.turn_id) {
+        updateChatUiEvent(
+          event.turn_id,
+          (candidate) => skillStudioEventMatches(candidate, event),
+          (candidate) => ({
+            ...(candidate as Record<string, unknown>),
+            submitted: true,
+            action,
+            selections: payload.selections,
+          }),
+        );
+      }
+      return true;
+    } catch (error) {
+      console.error("[superchat] skill studio result submit failed", error);
+      toast.error("提交 Skill Studio 选择失败，请重试");
+      return false;
+    }
+  }, [updateChatUiEvent]);
+
+  const submitSkillStudioDraftResponse = useCallback(async (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draftPayload: Record<string, unknown>,
+  ): Promise<boolean> => {
+    if (!event.bridge_key) {
+      toast.error("Skill Studio 桥接信息缺失，请重试");
+      return false;
+    }
+    try {
+      const payload = buildSkillStudioDraftToolResultForTest(event, draftPayload);
+      const catalogItems = buildSkillStudioCatalogSaveItems(draftPayload);
+      await Promise.all(
+        catalogItems.map((item) =>
+          apiCall<FreezoneAgentConfigPayload>(`freezone/agent-config/${item.kind}`, {
+            method: "POST",
+            json: item.payload,
+          }),
+        ),
+      );
+      const savedKinds = new Set(catalogItems.map((item) => item.kind));
+      for (const kind of savedKinds) {
+        void queryClient.invalidateQueries({
+          queryKey: freezoneAgentConfigQueryKey(kind),
+        });
+      }
+      if (savedKinds.has("skills")) {
+        const skills = await apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills");
+        setFreezoneSkillCatalog(skills);
+        setFreezoneSkillCatalogLoaded(true);
+      }
+      await api.post("api/v1/chat/skill-studio-tool-result", { json: payload });
+      if (event.turn_id) {
+        updateChatUiEvent(
+          event.turn_id,
+          (candidate) => skillStudioEventMatches(candidate, event),
+          (candidate) => ({
+            ...(candidate as Record<string, unknown>),
+            submitted: true,
+            draft: payload.draft,
+          }),
+        );
+      }
+      toast.success("已添加到虾画 Skills / Recipes");
+      return true;
+    } catch (error) {
+      console.error("[superchat] skill studio draft submit failed", error);
+      toast.error("添加 Skill / Recipe 失败，请检查必填字段后重试");
+      return false;
+    }
+  }, [queryClient, updateChatUiEvent]);
+
   const handleComposerKeyDown = (event: ReactKeyboardEvent) => {
     if (event.key !== "Enter" || event.shiftKey) return;
     if (event.defaultPrevented) return;
@@ -6476,6 +7854,8 @@ export function SuperChatPanel({
                       executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
                       onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
                       onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
+                      onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
+                      onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                     />
                   </div>
                 ))}
@@ -6495,6 +7875,8 @@ export function SuperChatPanel({
                     onTogglePin={() => undefined}
                     deferStructuredRender={deferStructuredRender}
                     streaming={chat.busy}
+                    onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
+                    onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                   />
                 )}
                 {orphanCanvasCommandSurfaces.map((surface) => (
@@ -6533,6 +7915,8 @@ export function SuperChatPanel({
                     executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
                     onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
                     onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
+                    onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
+                    onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                   />
                 ))}
                 {thinkingCanvasContextActivity && (
@@ -6552,6 +7936,8 @@ export function SuperChatPanel({
                     onTogglePin={() => undefined}
                     streaming={chat.busy}
                     canvasContextActivities={[thinkingCanvasContextActivity]}
+                    onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
+                    onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                   />
                 )}
               </div>
@@ -6635,6 +8021,9 @@ export function SuperChatPanel({
                   {visibleFreezoneSkillSuggestions.map((skill, index) => (
                     <button
                       key={skill.id}
+                      ref={(element) => {
+                        freezoneSkillSuggestionRefs.current[index] = element;
+                      }}
                       type="button"
                       className={cn(
                         "flex h-8 w-full items-center gap-2 rounded-md px-1 text-left text-sm transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06] focus-visible:outline-none",

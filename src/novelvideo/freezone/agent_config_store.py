@@ -51,6 +51,7 @@ def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> 
             continue
         user_payload.setdefault("_catalog_source", "user")
         user_items.append(user_payload)
+    user_items.sort(key=_user_agent_config_sort_key)
 
     builtin_items = [
         {**builtin_items_by_id[item_id], "_catalog_source": "builtin"}
@@ -134,6 +135,10 @@ def _read_agent_config_items(root: Path) -> list[dict]:
         item_id = payload.get("id")
         if not isinstance(item_id, str) or not _SAFE_ITEM_ID.fullmatch(item_id):
             continue
+        try:
+            payload["_catalog_updated_at"] = path.stat().st_mtime
+        except OSError:
+            payload["_catalog_updated_at"] = 0
         items.append(payload)
     return items
 
@@ -144,3 +149,12 @@ def _builtin_agent_config_exists(kind: AgentConfigKind, item_id: str) -> bool:
 
 def _strip_response_metadata(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if not key.startswith("_catalog_")}
+
+
+def _user_agent_config_sort_key(payload: dict) -> tuple[int, float, str]:
+    priority = 1 if payload.get("_catalog_base_source") == "builtin" else 0
+    updated_at = payload.get("_catalog_updated_at")
+    if not isinstance(updated_at, int | float):
+        updated_at = 0
+    item_id = str(payload.get("id") or "")
+    return (priority, -float(updated_at), item_id)

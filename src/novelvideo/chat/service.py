@@ -290,6 +290,102 @@ If the user asks to generate a short video in Freezone, guide or perform the nee
 operations. Only redirect when the user explicitly asks to use the DramaClaw main project pipeline.
 [/FREEZONE_CANVAS_ASSISTANT]"""
 
+_FREEZONE_SKILL_STUDIO_TRIGGER_RE = re.compile(
+    r"(?:"
+    r"(?:创建|新建|新增|生成|做|制作|编辑|修改|更新|保存|沉淀|整理|抽成|转成|变成)"
+    r"[\s\S]{0,24}(?:Skill|Skills|Recipe|Recipes|skill|skills|recipe|recipes|技能|配方)"
+    r"|(?:Skill|Skills|Recipe|Recipes|skill|skills|recipe|recipes|技能|配方)"
+    r"[\s\S]{0,24}(?:创建|新建|新增|生成|编辑|修改|更新|保存|沉淀|整理)"
+    r"|(?:保存|沉淀|整理|抽成|转成|变成)[\s\S]{0,18}(?:模板|可复用能力|复用能力)"
+    r")",
+    re.IGNORECASE,
+)
+
+_FREEZONE_SKILL_STUDIO_INSTRUCTIONS = """[FREEZONE_SKILL_STUDIO]
+This block is present only when the user explicitly wants to create, edit, save, or distill Xi画 Skills / Recipes.
+
+Routing:
+- Skill Studio creates catalog configuration drafts. It is not a canvas write operation.
+- Normal creative work, canvas node edits, and short-video ideation must stay in the normal Freezone path unless the user explicitly asks to create/edit/save/distill a Skill or Recipe.
+- In Skill Studio turns, you must not emit Freezone canvas commands or claim that canvas nodes changed.
+
+Output contract:
+- For clarification questions, call freezone_present_skill_studio_questions.
+- For generated or modified drafts, call freezone_present_agent_catalog_draft.
+- Do not paste the final JSON as the chat answer.
+- Do not return only a diff or patch.
+- Do not claim the Skill or Recipe is saved; saving happens only after the user confirms in the UI.
+- Use one skill_studio_session_id across the questions, draft, and later edits for the same draft flow.
+
+Draft rules:
+- Generate complete Skill / Recipe drafts, not partial fields.
+- Keep ids lowercase and limited to letters, numbers, underscores, and hyphens.
+- Do not ask the user for low-level fields such as id, category, action_keys, or systemPrompt; infer them.
+- If the request is ambiguous, ask 3-5 high-level option questions instead of field-by-field questions.
+- Manual card edits are the source of truth after the draft is shown; later natural-language changes must be based on the current draft.
+[/FREEZONE_SKILL_STUDIO]"""
+
+def _freezone_skill_studio_requested(prompt: str | None) -> bool:
+    text = str(prompt or "").strip()
+    if not text:
+        return False
+    return bool(_FREEZONE_SKILL_STUDIO_TRIGGER_RE.search(text))
+
+
+def _freezone_agent_catalog_summary(username: str, *, limit: int = 40) -> str:
+    try:
+        from novelvideo.freezone.agent_config_store import list_user_agent_config_items
+    except Exception:
+        return "catalog_summary_unavailable"
+
+    lines: list[str] = []
+    for kind in ("skills", "recipes"):
+        try:
+            items = list_user_agent_config_items(username, kind)
+        except Exception:
+            lines.append(f"{kind}: unavailable")
+            continue
+        visible = [item for item in items if item.get("enabled") is not False and item.get("hidden") is not True]
+        lines.append(f"{kind}:")
+        if not visible:
+            lines.append("- none")
+            continue
+        for item in visible[:limit]:
+            source = str(item.get("_catalog_source") or "user")
+            if item.get("_catalog_base_source") == "builtin":
+                source = "customized"
+            if kind == "skills":
+                triggers = item.get("triggers") if isinstance(item.get("triggers"), dict) else {}
+                keywords = triggers.get("keywords") if isinstance(triggers, dict) else []
+                keyword_text = ", ".join(str(value) for value in keywords[:6]) if isinstance(keywords, list) else ""
+                lines.append(
+                    "- "
+                    f"id={item.get('id')}; source={source}; category={item.get('category')}; "
+                    f"description={item.get('description')}; keywords={keyword_text}"
+                )
+            else:
+                action_keys = item.get("action_keys")
+                action_text = ", ".join(str(value) for value in action_keys[:6]) if isinstance(action_keys, list) else ""
+                lines.append(
+                    "- "
+                    f"id={item.get('id')}; source={source}; name={item.get('name')}; "
+                    f"output_kind={item.get('output_kind')}; action_keys={action_text}"
+                )
+        if len(visible) > limit:
+            lines.append(f"- ... {len(visible) - limit} more")
+    return "\n".join(lines)
+
+
+def _freezone_skill_studio_context(username: str, prompt: str | None) -> str:
+    if not _freezone_skill_studio_requested(prompt):
+        return ""
+    return (
+        f"\n\n{_FREEZONE_SKILL_STUDIO_INSTRUCTIONS}\n\n"
+        "[FREEZONE_AGENT_CATALOG_SUMMARY]\n"
+        f"{_freezone_agent_catalog_summary(username)}\n"
+        "[/FREEZONE_AGENT_CATALOG_SUMMARY]"
+    )
+
 
 _FREEZONE_CANVAS_PROMPT_MARKERS = (
     "[SUPERTALE_CANVAS_ROUTING]",
@@ -366,7 +462,9 @@ def _prompt_with_user_context(
         else ""
     )
     surface_instructions = (
-        f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}{canvas_context}"
+        f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}"
+        f"{_freezone_skill_studio_context(username, prompt)}"
+        f"{canvas_context}"
         if tool_mode == "freezone_canvas"
         else ""
     )

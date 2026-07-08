@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 import pytest
@@ -160,16 +161,76 @@ def test_builtin_agent_config_item_merges_partial_user_overlay(
 
     listed = agent_config_store.list_user_agent_config_items("alice", "skills")
 
-    assert listed == [
-        {
-            "id": "story-skill",
-            "description": "内置故事规则",
-            "category": "general",
-            "enabled": False,
-            "_catalog_source": "user",
-            "_catalog_base_source": "builtin",
-        }
+    assert len(listed) == 1
+    assert listed[0] == {
+        "id": "story-skill",
+        "description": "内置故事规则",
+        "category": "general",
+        "enabled": False,
+        "_catalog_source": "user",
+        "_catalog_base_source": "builtin",
+        "_catalog_updated_at": listed[0]["_catalog_updated_at"],
+    }
+
+
+def test_agent_config_items_sort_user_then_customized_then_builtin_by_mtime(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    builtin_root = tmp_path / "agent_catalog" / "builtins"
+    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", builtin_root)
+    skill_root = builtin_root / "skills"
+    skill_root.mkdir(parents=True)
+    for item_id in ["builtin-a", "custom-a", "custom-b"]:
+        (skill_root / f"{item_id}.json").write_text(
+            json.dumps({"id": item_id, "description": item_id}, ensure_ascii=False),
+            encoding="utf-8",
+        )
+
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload={"id": "custom-a", "description": "定制旧"},
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload={"id": "user-old", "description": "用户旧"},
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload={"id": "custom-b", "description": "定制新"},
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload={"id": "user-new", "description": "用户新"},
+    )
+    user_root = agent_config_store.user_agent_config_dir("alice", "skills")
+    mtimes = {
+        "custom-a": 10,
+        "user-old": 20,
+        "custom-b": 30,
+        "user-new": 40,
+    }
+    for item_id, mtime in mtimes.items():
+        os.utime(user_root / f"{item_id}.json", (mtime, mtime))
+
+    listed = agent_config_store.list_user_agent_config_items("alice", "skills")
+
+    assert [item["id"] for item in listed] == [
+        "user-new",
+        "user-old",
+        "custom-b",
+        "custom-a",
+        "builtin-a",
     ]
+    assert listed[0]["_catalog_source"] == "user"
+    assert "_catalog_base_source" not in listed[0]
+    assert listed[2]["_catalog_base_source"] == "builtin"
+    assert listed[-1]["_catalog_source"] == "builtin"
 
 
 def test_invalid_builtin_catalog_files_are_ignored(

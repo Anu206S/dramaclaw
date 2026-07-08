@@ -54,6 +54,104 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_build_workflow_plan" in names
     assert "freezone_resolve_catalog_workflow" in names
     assert "freezone_create_workflow_graph" in names
+    assert "freezone_present_skill_studio_questions" in names
+    assert "freezone_present_agent_catalog_draft" in names
+
+
+def test_freezone_plugin_skill_studio_tools_wait_for_frontend_results(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+    wait_keys = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):
+        assert project_id == "project-a"
+        assert canvas_id == "canvas-a"
+        assert event["type"].startswith("skill_studio.")
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    def fake_wait_result(key, timeout_seconds):
+        wait_keys.append((key, timeout_seconds))
+        return {
+            "ok": True,
+            "status": "skill_studio_frontend_result",
+            "tool_call_status": "completed",
+            "skill_studio_status": "answered",
+            "bridge_key": key,
+            "selections": {"scope": "planning"},
+            "message": "User submitted Skill Studio choices.",
+        }
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+    monkeypatch.setattr(plugin, "wait_skill_studio_result", fake_wait_result)
+
+    questions = handlers["freezone_present_skill_studio_questions"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "title": "确定方向",
+            "questions": [
+                {
+                    "id": "scope",
+                    "title": "主要做什么？",
+                    "options": [{"id": "planning", "label": "策划"}],
+                }
+            ],
+            "allow_recommended": True,
+            "allow_skip": True,
+        }
+    )
+    draft = handlers["freezone_present_agent_catalog_draft"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+            "skill": {"id": "demo_skill"},
+            "recipes": [{"id": "demo_recipe"}],
+            "summary": "草稿已生成",
+            "warnings": ["检查 ID"],
+        }
+    )
+
+    assert questions["ok"] is True
+    assert questions["status"] == "skill_studio_frontend_result"
+    assert questions["bridge_key"] == "skill-studio-1"
+    assert questions["selections"] == {"scope": "planning"}
+    assert draft["ok"] is True
+    assert draft["status"] == "skill_studio_frontend_result"
+    assert draft["bridge_key"] == "skill-studio-2"
+    assert pending_events[0]["event"]["type"] == "skill_studio.questions"
+    assert pending_events[0]["event"]["questions"][0]["id"] == "scope"
+    assert pending_events[1]["event"]["type"] == "skill_studio.draft"
+    assert pending_events[1]["event"]["skill"]["id"] == "demo_skill"
+    assert pending_events[1]["event"]["recipes"][0]["id"] == "demo_recipe"
+    assert wait_keys[0][0] == "skill-studio-1"
+    assert wait_keys[1][0] == "skill-studio-2"
+
+
+def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
+    plugin = _load_plugin_module()
+    schemas = {name: schema for name, schema, _handler in plugin.TOOLS}
+
+    questions_schema = schemas["freezone_present_skill_studio_questions"]["parameters"]
+    question_item = questions_schema["properties"]["questions"]["items"]
+    option_item = question_item["properties"]["options"]["items"]
+    draft_schema = schemas["freezone_present_agent_catalog_draft"]["parameters"]
+    skill_schema = draft_schema["properties"]["skill"]
+    recipe_item = draft_schema["properties"]["recipes"]["items"]
+
+    assert questions_schema["required"] == ["skill_studio_session_id", "questions"]
+    assert question_item["required"] == ["id", "title", "options"]
+    assert option_item["required"] == ["id", "label"]
+    assert skill_schema["required"] == ["id", "description", "category"]
+    assert recipe_item["required"] == ["id", "name", "output_kind", "systemPrompt"]
+    assert recipe_item["properties"]["output_kind"]["enum"] == ["text", "image", "video", "audio"]
 
 
 def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
