@@ -7,7 +7,7 @@ import { apiCall } from "@/api/client";
 export type FreezoneAgentConfigKind = "skills" | "recipes";
 export type FreezoneAgentConfigPayload = Record<string, unknown> & { id?: string };
 
-const freezoneAgentConfigQueryKey = (kind: FreezoneAgentConfigKind) => [
+export const freezoneAgentConfigQueryKey = (kind: FreezoneAgentConfigKind) => [
   "freezone-agent-config",
   kind,
 ];

@@ -29,7 +29,11 @@ from novelvideo.chat import service as chat_service
 from novelvideo.chat.hermes_pool import canvas_bridge_dir_for_profile
 from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
 from novelvideo.chat.store import ChatScope, chat_store
-from novelvideo.freezone.canvas_command_bridge import resolve_canvas_command, resolve_canvas_context
+from novelvideo.freezone.canvas_command_bridge import (
+    resolve_canvas_command,
+    resolve_canvas_context,
+    resolve_skill_studio_result,
+)
 from novelvideo.ports import get_usage_meter
 from novelvideo.project_context import ProjectContext, resolve_project_context
 from novelvideo.shared.billing_errors import (
@@ -143,6 +147,22 @@ class CanvasContextToolResultIn(BaseModel):
     canvas_context_status: str | None = None
     ok: bool = True
     responses: list[dict[str, Any]] = []
+    errors: list[str] = []
+    message: str | None = None
+
+
+class SkillStudioToolResultIn(BaseModel):
+    turn_id: str | None = None
+    bridge_key: str
+    project_id: str | None = None
+    canvas_id: str | None = None
+    agent_id: str | None = Field(default=None, validation_alias=AliasChoices("agent_id", "agentId"))
+    tool_call_status: str = "completed"
+    skill_studio_status: str = "answered"
+    ok: bool = True
+    action: str = "submit"
+    selections: dict[str, Any] = Field(default_factory=dict)
+    draft: dict[str, Any] | None = None
     errors: list[str] = []
     message: str | None = None
 
@@ -396,6 +416,47 @@ def _resolve_canvas_context_tool_result_payload(
     )
 
 
+def _resolve_skill_studio_tool_result_payload(
+    payload: SkillStudioToolResultIn,
+    *,
+    username: str,
+) -> dict[str, Any]:
+    key = payload.bridge_key.strip()
+    if not key:
+        raise HTTPException(status_code=400, detail="bridge_key is required")
+    ok = payload.ok and payload.tool_call_status == "completed" and not payload.errors
+    if ok:
+        agent_instruction = "Continue the Skill Studio flow using the frontend response."
+        message = payload.message or "Frontend returned the user's Skill Studio response."
+    else:
+        agent_instruction = "Do not continue the Skill Studio flow; handle the frontend error or ask the user to retry."
+        message = payload.message or "Frontend reported that the Skill Studio interaction failed."
+    result = {
+        "ok": ok,
+        "turn_id": payload.turn_id,
+        "tool_call_status": payload.tool_call_status,
+        "skill_studio_status": payload.skill_studio_status,
+        "action": payload.action,
+        "selections": payload.selections,
+        "draft": payload.draft,
+        "errors": payload.errors,
+        "project_id": payload.project_id,
+        "canvas_id": payload.canvas_id,
+        "message": message,
+        "agent_instruction": agent_instruction,
+    }
+    return resolve_skill_studio_result(
+        key,
+        result,
+        bridge_dir=_canvas_bridge_dir(
+            username,
+            profile=f"freezone:{_freezone_agent_id_from_payload(payload)}"
+            if result.get("canvas_id")
+            else "director",
+        ),
+    )
+
+
 def _canvas_context_ui_event(
     payload: CanvasContextToolResultIn,
     resolved: dict[str, Any],
@@ -461,6 +522,16 @@ async def resolve_canvas_context_tool_result(
                 _ = project_ctx
         except Exception:
             logger.exception("failed to persist canvas.context.result ui event")
+    return {"ok": True, "data": resolved}
+
+
+@router.post("/chat/skill-studio-tool-result")
+async def resolve_skill_studio_tool_result(
+    payload: SkillStudioToolResultIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    username = str(user["username"])
+    resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
     return {"ok": True, "data": resolved}
 
 
@@ -769,6 +840,29 @@ def _load_pending_canvas_context(path: Any) -> dict[str, Any] | None:
     }
 
 
+def _load_pending_skill_studio_event(path: Any) -> dict[str, Any] | None:
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    if not isinstance(payload, dict) or payload.get("kind") != "skill_studio_event":
+        return None
+    event = payload.get("event")
+    if not isinstance(event, dict):
+        return None
+    event_type = str(event.get("type") or "").strip()
+    if event_type not in {"skill_studio.questions", "skill_studio.draft"}:
+        return None
+    if not str(event.get("skill_studio_session_id") or "").strip():
+        return None
+    return {
+        "key": str(payload.get("key") or path.name.removesuffix(".pending.json")),
+        "project_id": payload.get("project_id"),
+        "canvas_id": payload.get("canvas_id"),
+        "event": event,
+    }
+
+
 async def _watch_pending_canvas_commands(
     *,
     websocket: WebSocket,
@@ -824,6 +918,80 @@ async def _watch_pending_canvas_commands(
                     "agent_id": scope.agent_id or "main",
                     "bridge_key": key,
                     "envelope": envelope,
+                },
+                send_lock,
+            )
+            if not sent:
+                return
+
+
+async def _watch_pending_skill_studio_events(
+    *,
+    websocket: WebSocket,
+    username: str,
+    scope: ChatScope,
+    turn_id: str,
+    send_lock: asyncio.Lock | None,
+    emitted_bridge_keys: set[str],
+    started_at: float,
+) -> None:
+    if not _is_freezone_scope(scope):
+        return
+    bridge_dir = _canvas_bridge_dir(username, profile=_canvas_bridge_profile_for_scope(scope))
+    while True:
+        await asyncio.sleep(0.4)
+        try:
+            pending_paths = sorted(
+                bridge_dir.glob("*.pending.json"),
+                key=lambda item: item.stat().st_mtime,
+            )
+        except Exception:
+            continue
+        for path in pending_paths:
+            try:
+                if path.stat().st_mtime < started_at - 1.0:
+                    continue
+            except Exception:
+                continue
+            key = path.name.removesuffix(".pending.json")
+            if key in emitted_bridge_keys:
+                continue
+            if (bridge_dir / f"{key}.result.json").exists():
+                continue
+            pending = _load_pending_skill_studio_event(path)
+            if pending is None:
+                continue
+            if pending.get("project_id") and pending.get("project_id") != scope.id:
+                continue
+            emitted_bridge_keys.add(key)
+            ui_event = {
+                **pending["event"],
+                "bridge_key": key,
+                "project_id": pending.get("project_id") or scope.id,
+                "canvas_id": pending.get("canvas_id") or scope.canvas_id,
+                "agent_id": scope.agent_id or "main",
+                "turn_id": turn_id,
+            }
+            try:
+                chat_store.append_ui_event(username, scope, turn_id, ui_event)
+            except Exception:
+                logger.exception("failed to persist skill_studio.event ui event")
+            logger.info(
+                "emitting skill_studio.event from pending bridge turn_id=%s canvas_id=%s type=%s",
+                turn_id,
+                pending.get("canvas_id"),
+                pending["event"].get("type"),
+            )
+            sent = await _send_json_best_effort(
+                websocket,
+                {
+                    "type": "skill_studio.event",
+                    "scope": scope.to_dict(),
+                    "turn_id": turn_id,
+                    "canvas_id": pending.get("canvas_id"),
+                    "agent_id": scope.agent_id or "main",
+                    "bridge_key": key,
+                    "event": pending["event"],
                 },
                 send_lock,
             )
@@ -893,6 +1061,23 @@ async def _watch_pending_canvas_context_requests(
                 return
 
 
+def _skill_studio_status_frame(
+    *,
+    scope: ChatScope,
+    turn_id: str,
+    text: str,
+) -> dict[str, Any] | None:
+    if not chat_service._freezone_skill_studio_requested(text):  # type: ignore[attr-defined]
+        return None
+    return {
+        "type": "skill_studio.status",
+        "scope": scope.to_dict(),
+        "turn_id": turn_id,
+        "status": "routing",
+        "message": "正在进入 Skill Studio...",
+    }
+
+
 async def _stream_project_turn(
     *,
     websocket: WebSocket,
@@ -955,6 +1140,20 @@ async def _stream_project_turn(
             started_at=time.time(),
         )
     )
+    pending_skill_studio_task = asyncio.create_task(
+        _watch_pending_skill_studio_events(
+            websocket=websocket,
+            username=username,
+            scope=scope,
+            turn_id=turn_id,
+            send_lock=send_lock,
+            emitted_bridge_keys=emitted_bridge_keys,
+            started_at=time.time(),
+        )
+    )
+    skill_studio_status = _skill_studio_status_frame(scope=scope, turn_id=turn_id, text=text)
+    if skill_studio_status is not None:
+        await _send_json_best_effort(websocket, skill_studio_status, send_lock)
     done_sent = False
     assistant_sent_text = ""
 
@@ -997,6 +1196,17 @@ async def _stream_project_turn(
                     "success": True,
                     "result": {"text": tool_body},
                     "error": None,
+                },
+                send_lock,
+            )
+        elif event_type == "skill_studio.event":
+            await _send_json_best_effort(
+                websocket,
+                {
+                    "type": "skill_studio.event",
+                    "scope": scope.to_dict(),
+                    "turn_id": event.get("turn_id") or turn_id,
+                    "event": event.get("event"),
                 },
                 send_lock,
             )
@@ -1052,12 +1262,15 @@ async def _stream_project_turn(
         heartbeat_task.cancel()
         pending_canvas_task.cancel()
         pending_canvas_context_task.cancel()
+        pending_skill_studio_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
         with contextlib.suppress(asyncio.CancelledError):
             await pending_canvas_task
         with contextlib.suppress(asyncio.CancelledError):
             await pending_canvas_context_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await pending_skill_studio_task
         if not done_sent:
             await _send_json_best_effort(
                 websocket,

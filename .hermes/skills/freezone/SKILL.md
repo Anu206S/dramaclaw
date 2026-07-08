@@ -21,6 +21,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 - **全局画布请求**：用户说"看看画布""整理当前画布"时，优先使用当前注入的画布上下文；不足时再读取。
 - **运行已有工作流**：复用已有节点、内容和连线，优先运行已有工作流；不要重新规划一套重复节点，除非用户明确要求新增、重写或替换。
 - **注册工作流**：用户询问支持哪些工作流时，使用 `freezone_list_workflows`。用户明确要求创建已注册工作流时，交给 `workflows` skill 并调用 `freezone_create_workflow_graph`；不要手写节点、连线或分组命令。用户只要求规划/预览时，使用 `freezone_build_workflow_plan`。
+- **Skill Studio 配置类**：用户明确要求创建、编辑、保存、沉淀 Skill / Recipe / 技能 / 配方时，这是 catalog 配置草稿流程，不是画布写入，也不是纯文本完成。不要调用画布写入工具，不要声称已保存；需要澄清方向时调用 `freezone_present_skill_studio_questions`，生成或修改草稿时调用 `freezone_present_agent_catalog_draft`，由 Freezone bridge 触发前端卡片展示。
 
 ### 开放意图的默认响应
 

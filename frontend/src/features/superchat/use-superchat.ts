@@ -526,6 +526,63 @@ function upsertAssistantMessage(
   ]);
 }
 
+function upsertAssistantUiEvent(
+  messages: ChatMessage[],
+  turnId: string,
+  event: unknown,
+): ChatMessage[] {
+  const id = `assistant-${turnId}`;
+  const existingIndex = messages.findIndex((message) => message.id === id);
+  if (existingIndex >= 0) {
+    return sortMessages(
+      messages.map((message, index) => {
+        if (index !== existingIndex) return message;
+        const uiEvents = [...(message.uiEvents ?? []), event];
+        return {
+          ...message,
+          text: message.text || "",
+          uiEvents,
+          timestamp: Date.now(),
+        };
+      }),
+    );
+  }
+  return sortMessages([
+    ...messages,
+    {
+      id,
+      role: "assistant",
+      text: "",
+      turnId,
+      uiEvents: [event],
+      timestamp: Date.now(),
+    },
+  ]);
+}
+
+function updateAssistantUiEvents(
+  messages: ChatMessage[],
+  turnId: string,
+  shouldUpdate: (event: unknown) => boolean,
+  updateEvent: (event: unknown) => unknown,
+): ChatMessage[] {
+  let changed = false;
+  const nextMessages = messages.map((message) => {
+    if (message.role !== "assistant" || message.turnId !== turnId || !message.uiEvents?.length) {
+      return message;
+    }
+    const uiEvents = message.uiEvents.map((event) => {
+      if (!shouldUpdate(event)) return event;
+      changed = true;
+      return updateEvent(event);
+    });
+    return { ...message, uiEvents };
+  });
+  return changed ? nextMessages : messages;
+}
+
+export const updateAssistantUiEventsForTest = updateAssistantUiEvents;
+
 function upsertServerAssistantMessage(
   messages: ChatMessage[],
   payload: unknown,
@@ -534,7 +591,21 @@ function upsertServerAssistantMessage(
   const nextMessage = normalizeMessage(payload, "assistant");
   if (!nextMessage) return messages;
   const normalizedTurnId = nextMessage.turnId ?? (turnId?.trim() || undefined);
-  const mergedMessage = normalizedTurnId ? { ...nextMessage, turnId: normalizedTurnId } : nextMessage;
+  const transientUiEvents = normalizedTurnId
+    ? messages
+      .filter((message) => message.role === "assistant" && message.turnId === normalizedTurnId)
+      .flatMap((message) => message.uiEvents ?? [])
+    : [];
+  const mergedUiEvents = [...transientUiEvents, ...(nextMessage.uiEvents ?? [])];
+  const dedupedUiEvents = mergedUiEvents.filter((event, index) => {
+    const key = JSON.stringify(event);
+    return mergedUiEvents.findIndex((candidate) => JSON.stringify(candidate) === key) === index;
+  });
+  const mergedMessage = {
+    ...nextMessage,
+    ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}),
+    ...(dedupedUiEvents.length > 0 ? { uiEvents: dedupedUiEvents } : {}),
+  };
   const existingIndex = messages.findIndex((message) => message.id === mergedMessage.id);
   const withoutTransient = normalizedTurnId
     ? messages.filter(
@@ -550,6 +621,8 @@ function upsertServerAssistantMessage(
   }
   return sortMessages([...withoutTransient, mergedMessage]);
 }
+
+export const upsertServerAssistantMessageForTest = upsertServerAssistantMessage;
 
 function resultText(result: unknown): string {
   if (typeof result === "string") return result;
@@ -1153,6 +1226,45 @@ export function useSuperChat({
       case "canvas.context.request":
         dispatchCanvasContextRequestFrame(frame);
         break;
+      case "skill_studio.event": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
+        const turnId =
+          pendingClientTurnIdRef.current
+          ?? activeTurnIdRef.current
+          ?? (typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null);
+        if (!turnId || frame.event == null) break;
+        markTurnActive(turnId);
+        const event = frame.event && typeof frame.event === "object" && !Array.isArray(frame.event)
+          ? {
+              ...(frame.event as Record<string, unknown>),
+              bridge_key: typeof frame.bridge_key === "string" ? frame.bridge_key : undefined,
+              project_id: typeof frame.project_id === "string" ? frame.project_id : undefined,
+              canvas_id: typeof frame.canvas_id === "string" ? frame.canvas_id : undefined,
+              agent_id: typeof frame.agent_id === "string" ? frame.agent_id : undefined,
+              anchor_text_prefix: streamTextRef.current.trim() ? streamTextRef.current : undefined,
+              turn_id: turnId,
+            }
+          : frame.event;
+        setMessages((current) => upsertAssistantUiEvent(current, turnId, event));
+        break;
+      }
+      case "skill_studio.status": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
+        const turnId =
+          pendingClientTurnIdRef.current
+          ?? activeTurnIdRef.current
+          ?? (typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null);
+        if (!turnId) break;
+        markTurnActive(turnId);
+        setMessages((current) =>
+          upsertAssistantUiEvent(current, turnId, {
+            type: "skill_studio.status",
+            status: typeof frame.status === "string" ? frame.status : "routing",
+            message: typeof frame.message === "string" ? frame.message : "正在进入 Skill Studio...",
+          }),
+        );
+        break;
+      }
       case "chat.done":
         if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
           const remoteScopeKey = frameScopeSessionKey(frame);
@@ -1450,6 +1562,14 @@ export function useSuperChat({
     // novelvideo's native chat endpoint does not expose external session-control commands.
   }, []);
 
+  const updateUiEvent = useCallback((
+    turnId: string,
+    shouldUpdate: (event: unknown) => boolean,
+    updateEvent: (event: unknown) => unknown,
+  ) => {
+    setMessages((current) => updateAssistantUiEvents(current, turnId, shouldUpdate, updateEvent));
+  }, []);
+
   const persistMessageSet = useCallback((kind: "pinned" | "deleted", next: Set<string>) => {
     safeLocalStorageSet(`superchat:${kind}:${scopeKey}`, JSON.stringify([...next]));
   }, [scopeKey]);
@@ -1518,5 +1638,6 @@ export function useSuperChat({
     streamText,
     switchModel,
     togglePin,
+    updateUiEvent,
   };
 }

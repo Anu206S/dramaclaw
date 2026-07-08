@@ -185,6 +185,24 @@ export type ServerFrame =
       turn_id?: string;
     }
   | { type: "chat.done"; turn_id?: string; scope?: ChatScope }
+  | {
+      type: "skill_studio.event";
+      turn_id?: string;
+      scope?: ChatScope;
+      bridge_key?: string;
+      project_id?: string | null;
+      canvas_id?: string | null;
+      agent_id?: string | null;
+      agentId?: string | null;
+      event?: unknown;
+    }
+  | {
+      type: "skill_studio.status";
+      turn_id?: string;
+      scope?: ChatScope;
+      status?: string;
+      message?: string;
+    }
   | { type: "project.created"; project: string }
   | { type: "error"; message: string; turn_id?: string }
   | { type: string; [key: string]: unknown };

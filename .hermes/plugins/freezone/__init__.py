@@ -53,8 +53,11 @@ try:
         canvas_context_bridge_key,
         put_pending_canvas_command,
         put_pending_canvas_context,
+        put_pending_skill_studio_event,
+        skill_studio_bridge_key,
         wait_canvas_command_result,
         wait_canvas_context_result,
+        wait_skill_studio_result,
     )
 except Exception as exc:
     _CANVAS_COMMAND_BRIDGE_IMPORT_ERROR = exc
@@ -62,8 +65,11 @@ except Exception as exc:
     canvas_context_bridge_key = None
     put_pending_canvas_command = None
     put_pending_canvas_context = None
+    put_pending_skill_studio_event = None
+    skill_studio_bridge_key = None
     wait_canvas_command_result = None
     wait_canvas_context_result = None
+    wait_skill_studio_result = None
 
 TOOLSET = "freezone"
 FREEZONE_ACP_TOOLSET = "freezone-acp"
@@ -253,6 +259,141 @@ def _handle_canvas_command_catalog(args: dict[str, Any], **_: Any) -> str:
         project=project,
         canvas=canvas,
         requests=[{"type": "canvas_command_catalog"}],
+    )
+
+
+def _safe_list(value: Any) -> list[Any]:
+    return value if isinstance(value, list) else []
+
+
+def _emit_skill_studio_event(
+    project: str | None,
+    canvas: str | None,
+    event: dict[str, Any],
+) -> str:
+    if (
+        skill_studio_bridge_key is None
+        or put_pending_skill_studio_event is None
+        or wait_skill_studio_result is None
+    ):
+        return tool_error(
+            "Skill Studio bridge is unavailable; cannot present the Freezone UI event. "
+            f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
+        )
+    key = skill_studio_bridge_key(project_id=project, canvas_id=canvas, event=event)
+    put_pending_skill_studio_event(
+        key=key,
+        project_id=project,
+        canvas_id=canvas,
+        event=event,
+    )
+    try:
+        timeout_seconds = max(
+            1,
+            int(os.environ.get("DRAMACLAW_SKILL_STUDIO_RESULT_TIMEOUT_SECONDS", "600")),
+        )
+    except ValueError:
+        timeout_seconds = 600
+    resolved = wait_skill_studio_result(key, timeout_seconds=timeout_seconds)
+    if resolved is not None:
+        return tool_result(resolved)
+    return tool_result(
+        {
+            "ok": False,
+            "status": "skill_studio_frontend_timeout",
+            "tool_call_status": "completed",
+            "skill_studio_status": "pending_user_input",
+            "bridge_key": key,
+            "project_id": project,
+            "canvas_id": canvas,
+            "type": event.get("type"),
+            "skill_studio_session_id": event.get("skill_studio_session_id"),
+            "message": "Skill Studio UI is still waiting for the user's frontend response.",
+            "agent_instruction": (
+                "Do not continue the Skill Studio flow or summarize the options until the "
+                "frontend returns a Skill Studio tool result."
+            ),
+        }
+    )
+
+
+def _handle_present_skill_studio_questions(args: dict[str, Any], **_: Any) -> str:
+    project = (
+        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+    )
+    canvas = (
+        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+    )
+    session_id = str(args.get("skill_studio_session_id") or args.get("session_id") or "").strip()
+    if not session_id:
+        return tool_result(
+            {
+                "ok": False,
+                "type": "skill_studio.questions",
+                "status": "skill_studio_session_id_required",
+                "error": "skill_studio_session_id is required",
+            }
+        )
+    questions = _safe_list(args.get("questions"))
+    if not questions:
+        return tool_result(
+            {
+                "ok": False,
+                "type": "skill_studio.questions",
+                "status": "questions_required",
+                "error": "questions must contain at least one question",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    return _emit_skill_studio_event(
+        project,
+        canvas,
+        {
+            "type": "skill_studio.questions",
+            "skill_studio_session_id": session_id,
+            "title": str(args.get("title") or "").strip(),
+            "description": str(args.get("description") or "").strip(),
+            "questions": questions,
+            "allow_recommended": bool(args.get("allow_recommended", True)),
+            "allow_skip": bool(args.get("allow_skip", True)),
+        },
+    )
+
+
+def _handle_present_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
+    project = (
+        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+    )
+    canvas = (
+        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+    )
+    session_id = str(args.get("skill_studio_session_id") or args.get("session_id") or "").strip()
+    if not session_id:
+        return tool_result(
+            {
+                "ok": False,
+                "type": "skill_studio.draft",
+                "status": "skill_studio_session_id_required",
+                "error": "skill_studio_session_id is required",
+            }
+        )
+    mode = str(args.get("mode") or "create").strip() or "create"
+    if mode not in {"create", "edit"}:
+        mode = "create"
+    skill = args.get("skill") if isinstance(args.get("skill"), dict) else {}
+    recipes = _safe_list(args.get("recipes"))
+    return _emit_skill_studio_event(
+        project,
+        canvas,
+        {
+            "type": "skill_studio.draft",
+            "skill_studio_session_id": session_id,
+            "mode": mode,
+            "skill": skill,
+            "recipes": recipes,
+            "summary": str(args.get("summary") or "").strip(),
+            "warnings": _safe_list(args.get("warnings")),
+        },
     )
 
 
@@ -1352,6 +1493,129 @@ _SCOPE_PROPS = {
     "canvasId": {"type": "string", "description": "Alias of canvas_id."},
 }
 
+_SKILL_STUDIO_OPTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Stable lowercase option id.",
+        },
+        "label": {
+            "type": "string",
+            "description": "Short user-facing option label.",
+        },
+        "description": {
+            "type": "string",
+            "description": "One-sentence user-facing explanation of this option.",
+        },
+    },
+    "required": ["id", "label"],
+}
+
+_SKILL_STUDIO_QUESTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Stable lowercase question id.",
+        },
+        "title": {
+            "type": "string",
+            "description": "User-facing question title.",
+        },
+        "description": {
+            "type": "string",
+            "description": "Optional short explanation for the question.",
+        },
+        "options": {
+            "type": "array",
+            "description": "2-4 selectable options.",
+            "items": _SKILL_STUDIO_OPTION_SCHEMA,
+        },
+    },
+    "required": ["id", "title", "options"],
+}
+
+_SKILL_STUDIO_SKILL_SCHEMA = {
+    "type": "object",
+    "description": "Complete Xi画 Skill catalog draft.",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Lowercase id using letters, numbers, underscores, or hyphens.",
+        },
+        "description": {
+            "type": "string",
+            "description": "User-facing skill description.",
+        },
+        "category": {
+            "type": "string",
+            "description": "Skill category.",
+        },
+        "triggers": {
+            "type": "object",
+            "description": "Trigger rules such as keywords and nodeTypes.",
+            "properties": {
+                "keywords": {"type": "array", "items": {"type": "string"}},
+                "nodeTypes": {"type": "array", "items": {"type": "string"}},
+            },
+        },
+        "planning": {
+            "type": "object",
+            "description": "Planner behavior hints and rules.",
+        },
+        "evaluation": {
+            "type": "object",
+            "description": "Evaluation rubric.",
+        },
+    },
+    "required": ["id", "description", "category"],
+}
+
+_SKILL_STUDIO_RECIPE_SCHEMA = {
+    "type": "object",
+    "description": "Complete Xi画 Recipe catalog draft.",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Lowercase id using letters, numbers, underscores, or hyphens.",
+        },
+        "name": {"type": "string", "description": "User-facing recipe name."},
+        "output_kind": {
+            "type": "string",
+            "enum": ["text", "image", "video", "audio"],
+            "description": "Generated output kind.",
+        },
+        "action_keys": {
+            "type": "array",
+            "description": "Operation/action keys this recipe matches.",
+            "items": {"type": "string"},
+        },
+        "systemPrompt": {
+            "type": "string",
+            "description": "System prompt used by this recipe.",
+        },
+        "required_elements": {
+            "type": "array",
+            "description": "Must-have elements in the generated result.",
+            "items": {"type": "string"},
+        },
+        "planner_cue": {
+            "type": "string",
+            "description": "Short cue for the planner.",
+        },
+        "output_summary": {
+            "type": "string",
+            "description": "Short output summary.",
+        },
+        "needs_multimodal_input": {
+            "type": "boolean",
+            "description": "Whether the recipe needs image/video/audio input.",
+        },
+    },
+    "required": ["id", "name", "output_kind", "systemPrompt"],
+}
+
 
 _LINK_TYPE_VALUES = [
     "context_for",
@@ -1514,6 +1778,64 @@ TOOLS = (
             _SCOPE_PROPS,
         ),
         _handle_canvas_command_catalog,
+    ),
+    (
+        "freezone_present_skill_studio_questions",
+        _schema(
+            "freezone_present_skill_studio_questions",
+            "Present high-level clickable questions for Xi画 Skill Studio. Use only when the user explicitly wants to create/edit/save/distill a Skill or Recipe and more direction is needed. This does not write the canvas or save catalog files.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id shared by questions, draft, and later edits in this Skill Studio flow.",
+                },
+                "title": {"type": "string", "description": "Question card title."},
+                "description": {"type": "string", "description": "Short user-facing explanation."},
+                "questions": {
+                    "type": "array",
+                    "description": "3-5 high-level questions. Each question has id, title, and options with id/label/description.",
+                    "items": _SKILL_STUDIO_QUESTION_SCHEMA,
+                },
+                "allow_recommended": {
+                    "type": "boolean",
+                    "description": "Whether to show a use-recommended option.",
+                },
+                "allow_skip": {
+                    "type": "boolean",
+                    "description": "Whether to show a skip-to-draft option.",
+                },
+            },
+            ["skill_studio_session_id", "questions"],
+        ),
+        _handle_present_skill_studio_questions,
+    ),
+    (
+        "freezone_present_agent_catalog_draft",
+        _schema(
+            "freezone_present_agent_catalog_draft",
+            "Present a complete editable Skill/Recipe catalog draft for Xi画 Skill Studio. Use after questions or when enough context exists. Do not paste final JSON in prose and do not claim it is saved.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id shared by questions, draft, and later edits in this Skill Studio flow.",
+                },
+                "mode": {"type": "string", "enum": ["create", "edit"], "description": "Draft mode."},
+                "skill": _SKILL_STUDIO_SKILL_SCHEMA,
+                "recipes": {
+                    "type": "array",
+                    "description": "Complete Recipe drafts.",
+                    "items": _SKILL_STUDIO_RECIPE_SCHEMA,
+                },
+                "summary": {"type": "string", "description": "Short user-facing summary."},
+                "warnings": {
+                    "type": "array",
+                    "description": "User-facing draft warnings.",
+                    "items": {"type": "string"},
+                },
+            },
+            ["skill_studio_session_id", "mode"],
+        ),
+        _handle_present_agent_catalog_draft,
     ),
     (
         "freezone_get_link_type_catalog",

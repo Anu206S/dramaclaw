@@ -10,6 +10,88 @@ import {
 import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-execution-narration";
 
 describe("canvas command flow placement", () => {
+  it("orders Skill Studio cards with later canvas approvals in the same message", () => {
+    const items = buildCanvasCommandFlowItemsForTest(
+      "我会先创建 Skill 草稿，然后再创建一个示例节点。",
+      [
+        {
+          id: "approval-1",
+          key: "approval-1",
+          messageId: "assistant-turn-a",
+          turnId: "turn-a",
+          bridgeKey: "bridge-1",
+          receivedAt: 1,
+          envelopes: [],
+          commandCount: 1,
+          plans: [
+            {
+              index: 0,
+              type: "create_node",
+              label: "创建图片节点",
+              details: [],
+            },
+          ],
+          anchorTextPrefix: "我会先创建 Skill 草稿，然后再创建一个示例节点。",
+          surfaceOrder: 10,
+        },
+      ],
+      [],
+      [],
+      [
+        {
+          type: "skill_studio.questions",
+          submitted: true,
+          skill_studio_session_id: "skill-studio-a",
+          questions: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["skill_studio", "text", "approval"]);
+  });
+
+  it("keeps previously anchored Skill Studio cards before historical continuation text", () => {
+    const items = buildCanvasCommandFlowItemsForTest(
+      "已为「家乡文化海报」完成 Skill Studio 全流程。",
+      [],
+      [],
+      [],
+      [
+        {
+          type: "skill_studio.questions",
+          anchor_text_prefix: "我先为你整理几个关键问题。",
+          skill_studio_session_id: "skill-studio-a",
+          questions: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["skill_studio", "text"]);
+    expect(items[1]).toMatchObject({
+      kind: "text",
+      text: "已为「家乡文化海报」完成 Skill Studio 全流程。",
+    });
+  });
+
+  it("keeps currently anchored Skill Studio cards after their preceding text", () => {
+    const items = buildCanvasCommandFlowItemsForTest(
+      "我先为你整理几个关键问题。",
+      [],
+      [],
+      [],
+      [
+        {
+          type: "skill_studio.questions",
+          anchor_text_prefix: "我先为你整理几个关键问题。",
+          skill_studio_session_id: "skill-studio-a",
+          questions: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "skill_studio"]);
+  });
+
   it("keeps user-facing assistant text visible when it only mentions a canvas tool name", () => {
     expect(looksLikeCanvasExecutionNarration(
       "如需进一步操作，可以通过 freezone_run_node_action 调用配置动作。",

@@ -784,6 +784,42 @@ def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainl
     assert "do not generate/plan scripts" not in prompt
 
 
+def test_freezone_prompt_omits_skill_studio_contract_for_normal_canvas_requests(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "加一个视频节点",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "[FREEZONE_SKILL_STUDIO]" not in prompt
+    assert "freezone_present_agent_catalog_draft" not in prompt
+
+
+def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "帮我创建一个电商详情页 Skill",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "[FREEZONE_SKILL_STUDIO]" in prompt
+    assert "freezone_present_skill_studio_questions" in prompt
+    assert "freezone_present_agent_catalog_draft" in prompt
+    assert "skill_studio_session_id" in prompt
+    assert "Do not claim the Skill or Recipe is saved" in prompt
+    assert "must not emit Freezone canvas commands" in prompt
+
+
 def test_tool_mode_infers_freezone_from_frontend_canvas_injection():
     prompt = """加个视频节点
 

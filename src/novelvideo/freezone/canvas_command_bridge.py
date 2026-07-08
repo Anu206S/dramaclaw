@@ -58,6 +58,22 @@ def canvas_context_bridge_key(
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:32]
 
 
+def skill_studio_bridge_key(
+    *,
+    project_id: str | None,
+    canvas_id: str | None,
+    event: dict[str, Any],
+) -> str:
+    payload = {
+        "kind": "skill_studio_event",
+        "project_id": project_id or "",
+        "canvas_id": canvas_id or "",
+        "event": event,
+        "nonce": time.time_ns(),
+    }
+    return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:32]
+
+
 def _path(kind: str, key: str, bridge_dir: str | Path | None = None) -> Path:
     safe_key = "".join(ch for ch in key if ch.isalnum() or ch in {"-", "_"})[:128]
     return _bridge_dir(bridge_dir) / f"{safe_key}.{kind}.json"
@@ -136,6 +152,28 @@ def put_pending_canvas_context(
     )
 
 
+def put_pending_skill_studio_event(
+    *,
+    key: str,
+    project_id: str | None,
+    canvas_id: str | None,
+    event: dict[str, Any],
+    bridge_dir: str | Path | None = None,
+) -> None:
+    _unlink_if_exists(_path("result", key, bridge_dir))
+    _write_json(
+        _path("pending", key, bridge_dir),
+        {
+            "key": key,
+            "kind": "skill_studio_event",
+            "project_id": project_id,
+            "canvas_id": canvas_id,
+            "event": event,
+            "created_at": time.time(),
+        },
+    )
+
+
 def resolve_canvas_command(
     key: str,
     result: dict[str, Any],
@@ -152,6 +190,15 @@ def resolve_canvas_command(
 
 
 def resolve_canvas_context(
+    key: str,
+    result: dict[str, Any],
+    *,
+    bridge_dir: str | Path | None = None,
+) -> dict[str, Any]:
+    return resolve_canvas_command(key, result, bridge_dir=bridge_dir)
+
+
+def resolve_skill_studio_result(
     key: str,
     result: dict[str, Any],
     *,
@@ -177,6 +224,21 @@ def wait_canvas_command_result(
 
 
 def wait_canvas_context_result(
+    key: str,
+    timeout_seconds: float,
+    poll_seconds: float = 0.2,
+    *,
+    bridge_dir: str | Path | None = None,
+) -> dict[str, Any] | None:
+    return wait_canvas_command_result(
+        key,
+        timeout_seconds=timeout_seconds,
+        poll_seconds=poll_seconds,
+        bridge_dir=bridge_dir,
+    )
+
+
+def wait_skill_studio_result(
     key: str,
     timeout_seconds: float,
     poll_seconds: float = 0.2,
