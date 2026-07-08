@@ -1,0 +1,50 @@
+{
+  "id": "image-to-video",
+  "enabled": true,
+  "version": 1,
+  "description": "图生视频工作流：图片输入 -> 视频生成。",
+  "category": "basic",
+  "aliases": ["image_to_video", "img2video", "i2v", "图生视频", "图片生成视频"],
+  "triggers": {
+    "keywords": ["图生视频", "图片生成视频", "图片转视频", "img2video", "image to video"]
+  },
+  "planning": {
+    "planning_notes": "创建一个图片输入节点和一个视频生成节点，并按顺序连接。",
+    "prompt_guide": "图片节点承载上传图片或已生成图片，视频节点根据上游图片生成视频片段。"
+  },
+  "workflow_templates": [
+    {
+      "id": "image-to-video",
+      "description": "使用图片作为源画面生成视频。",
+      "aliases": ["image_to_video", "img2video", "i2v", "图生视频", "图片生成视频"],
+      "condition": {
+        "hasInputTypes": ["image"],
+        "message_keywords": ["图生视频", "图片生成视频", "视频"]
+      },
+      "steps": [
+        {
+          "id": "image_input",
+          "step_number": 1,
+          "goal_template": "图片输入",
+          "node_type": "imageGeneration",
+          "action_key": "general-image",
+          "prompt_strategy": "user_message",
+          "input_strategy": {"type": "user_assets", "filter": "image"},
+          "need_review": false,
+          "multiplicity": "single"
+        },
+        {
+          "id": "video_output",
+          "step_number": 2,
+          "goal_template": "生成视频",
+          "node_type": "videoGeneration",
+          "action_key": "general-video",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "image_input"},
+          "need_review": false,
+          "multiplicity": "single"
+        }
+      ]
+    }
+  ]
+}

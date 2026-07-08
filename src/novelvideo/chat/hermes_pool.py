@@ -541,6 +541,8 @@ class HermesPool:
             "HOME": str(home),
             "HERMES_HOME": str(home),
             "TMPDIR": str(home / "tmp"),
+            "ST_EDITION": os.environ.get("ST_EDITION", ""),
+            "ST_CONTROL_PLANE_DSN": os.environ.get("ST_CONTROL_PLANE_DSN", ""),
             "DRAMACLAW_USER": username,
             "DRAMACLAW_AGENT_TOKEN": token.value,
             "DRAMACLAW_AGENT_TOKEN_TYPE": "Bearer",

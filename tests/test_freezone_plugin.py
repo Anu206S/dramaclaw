@@ -24,6 +24,22 @@ def _load_plugin_module():
     return module
 
 
+def _load_catalog_module():
+    path = (
+        Path(__file__).resolve().parents[1]
+        / ".hermes"
+        / "plugins"
+        / "freezone"
+        / "json_workflow_catalog.py"
+    )
+    spec = importlib.util.spec_from_file_location("test_freezone_json_workflow_catalog", path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
 def test_freezone_plugin_registers_canvas_command_tools():
     plugin = _load_plugin_module()
 
@@ -36,7 +52,278 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_get_mainline_projection_assets" in names
     assert "freezone_list_workflows" in names
     assert "freezone_build_workflow_plan" in names
+    assert "freezone_resolve_catalog_workflow" in names
     assert "freezone_create_workflow_graph" in names
+
+
+def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setenv("DRAMACLAW_USER", "alice")
+
+    def fake_list_user_agent_config_items(username, kind):
+        assert username == "alice"
+        if kind == "skills":
+            return [
+                {
+                    "id": "custom-fruit-ad",
+                    "name": "自定义水果广告",
+                    "description": "用户导入的水果广告工作流",
+                    "_catalog_source": "user",
+                    "triggers": {"keywords": ["水果广告"]},
+                    "workflowTemplates": [
+                        {
+                            "id": "fruit-ad-full",
+                            "name": "水果广告完整流程",
+                            "condition": {"messageKeywords": ["水果", "广告"]},
+                            "steps": [
+                                {
+                                    "id": "creative",
+                                    "stepNumber": 1,
+                                    "operationType": "custom-fruit-outline",
+                                    "goalTemplate": "生成水果广告创意",
+                                    "promptStrategy": "llm_refine",
+                                    "inputStrategy": {"type": "none"},
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ]
+        if kind == "recipes":
+            return [
+                {
+                    "id": "custom-fruit-outline",
+                    "name": "水果广告创意",
+                    "_catalog_source": "user",
+                    "generationType": "text",
+                    "systemPrompt": "输出一条提示词/指令。",
+                }
+            ]
+        raise AssertionError(kind)
+
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
+
+    resolved = catalog.resolve_catalog_workflow({"user_goal": "创建一个水果广告工作流"})
+    assert resolved["matched"] is True
+    assert resolved["recommended"]["workflow_type"] == "catalog.custom_fruit_ad.fruit_ad_full"
+
+    plan = catalog.build_catalog_workflow_plan(
+        {
+            "workflow_type": "catalog.custom_fruit_ad.fruit_ad_full",
+            "user_goal": "创建一个水果广告工作流",
+        }
+    )
+    assert plan["ok"] is True
+    assert plan["nodes"][1]["data"]["workflowCatalog"]["promptBuilder"]["recipeRef"] == (
+        "output/{user}/_account/freezone/agent_config/recipes/custom-fruit-outline.json"
+    )
+
+
+def test_freezone_list_workflows_exposes_catalog_source_type(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_USER", "local")
+    monkeypatch.setenv("ST_EDITION", "ce")
+
+    result = plugin._handle_list_workflows({})
+    by_type = {item["workflow_type"]: item for item in result["workflows"]}
+
+    assert by_type["catalog.text_to_image.text_to_image"]["type"] == "内置"
+    assert by_type["catalog.text_to_image.text_to_image"]["catalog_source"] == "builtin"
+
+
+def test_freezone_catalog_username_uses_local_for_ce(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setenv("ST_EDITION", "ce")
+    monkeypatch.setenv("DRAMACLAW_USER", "dengyuxuan")
+    monkeypatch.setenv("SUPERTALE_USER", "dengyuxuan")
+    monkeypatch.setenv("USER", "tao")
+
+    assert catalog._catalog_username() == "local"
+
+
+def test_freezone_catalog_username_uses_login_user_for_supertale(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("DRAMACLAW_USER", "dengyuxuan")
+    monkeypatch.setenv("USER", "tao")
+
+    assert catalog._catalog_username() == "dengyuxuan"
+
+
+def test_freezone_catalog_requires_user_selection_for_multiple_matched_skills(monkeypatch):
+    catalog = _load_catalog_module()
+
+    def fake_list_user_agent_config_items(_username, kind):
+        if kind != "skills":
+            return []
+        return [
+            {
+                "id": "fruit-ad",
+                "name": "水果广告",
+                "triggers": {"keywords": ["广告"]},
+                "workflowTemplates": [
+                    {
+                        "id": "detail",
+                        "condition": {"messageKeywords": ["水果"]},
+                        "steps": [],
+                    }
+                ],
+            },
+            {
+                "id": "digital-ad",
+                "name": "数码广告",
+                "triggers": {"keywords": ["广告"]},
+                "workflowTemplates": [
+                    {
+                        "id": "detail",
+                        "condition": {"messageKeywords": ["详情页"]},
+                        "steps": [],
+                    }
+                ],
+            },
+        ]
+
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
+
+    resolved = catalog.resolve_catalog_workflow({"user_goal": "创建一个水果广告详情页"})
+
+    assert resolved["matched"] is True
+    assert resolved["ambiguous"] is True
+    assert resolved["matched_skill_count"] == 2
+    assert resolved["next_step"]["requires_user_selection"] is True
+    assert "tool" not in resolved["next_step"]
+    assert set(resolved["next_step"]["candidate_workflow_types"]) == {
+        "catalog.fruit_ad.detail",
+        "catalog.digital_ad.detail",
+    }
+
+
+def test_freezone_plugin_resolves_catalog_workflow_without_canvas_write():
+    plugin = _load_plugin_module()
+
+    result = plugin._handle_resolve_catalog_workflow(
+        {"user_goal": "我有一个女总裁复仇短剧创意，想按 skills recipes 配置生成工作流"}
+    )
+
+    assert result["ok"] is True
+    assert result["matched"] is True
+    assert result["recommended"]["workflow_type"].startswith("catalog.short_drama")
+    assert result["ambiguous"] is True
+    assert result["matched_skill_count"] > 1
+    assert result["next_step"]["requires_user_selection"] is True
+    assert "tool" not in result["next_step"]
+
+
+def test_freezone_catalog_recipe_fields_are_separated_from_node_prompt():
+    plugin = _load_plugin_module()
+
+    plan = plugin.build_workflow_plan(
+        {
+            "workflow_type": "catalog.video_ad.video_ad_full",
+            "user_goal": "创建一个电商产品广告视频工作流",
+        }
+    )
+
+    assert plan["ok"] is True
+    node = next(
+        item
+        for item in plan["nodes"]
+        if item["data"].get("workflowCatalog", {}).get("operationType")
+        == "video-ad-creative-outline"
+    )
+    data = node["data"]
+    catalog = data["workflowCatalog"]
+
+    assert "【Recipe Prompt】" not in data["prompt"]
+    assert "【建议模型】" not in data["prompt"]
+    assert "【输入依赖】" not in data["prompt"]
+    assert "【用户需求】" not in data["prompt"]
+    assert "【规划提示】" not in data["prompt"]
+    assert "【期望输出】" not in data["prompt"]
+    assert data["prompt"] == "创建一个电商产品广告视频工作流"
+    assert catalog["recipeSettings"]["outputKind"] == "text"
+    assert catalog["recipeSettings"]["requiresSourceMedia"] is True
+    assert catalog["promptBuilder"]["recipeId"] == "video-ad-creative-outline"
+    assert catalog["promptBuilder"]["isPromptRecipe"] is True
+    assert (
+        catalog["promptBuilder"]["recipeRef"]
+        == "agent_catalog/builtins/recipes/video-ad-creative-outline.json"
+    )
+    assert "systemPrompt" not in catalog["promptBuilder"]
+
+    image_node = next(
+        item
+        for item in plan["nodes"]
+        if item["data"].get("workflowCatalog", {}).get("operationType")
+        == "video-storyboard-grid"
+    )
+    assert "创建一个电商产品广告视频工作流" in image_node["data"]["prompt"]
+    assert "任务：将广告脚本中的所有 Shot 合成为多宫格分镜图" in image_node["data"]["prompt"]
+
+
+def test_freezone_canvas_command_slim_result_omits_large_details():
+    plugin = _load_plugin_module()
+
+    summary = plugin._summarize_canvas_command_result(
+        {
+            "ok": True,
+            "tool_call_status": "completed",
+            "canvas_apply_status": "applied",
+            "applied": True,
+            "cancelled": False,
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "applied_count": 2,
+            "opened_ui_actions": 0,
+            "created_node_ids": ["node-a", "node-b"],
+            "command_results": [{"very": "large"}],
+            "message": "Frontend executor applied the canvas command.",
+        },
+        bridge_key="bridge-a",
+        commands=[
+            {"type": "create_node"},
+            {"type": "create_edge"},
+            {"type": "create_node"},
+        ],
+    )
+
+    assert summary["ok"] is True
+    assert summary["created_node_count"] == 2
+    assert summary["command_counts"] == {"create_node": 2, "create_edge": 1}
+    assert "created_node_ids" not in summary
+    assert "command_results" not in summary
+
+
+def test_freezone_single_write_commands_request_slim_result(monkeypatch):
+    plugin = _load_plugin_module()
+    captured: dict[str, object] = {}
+
+    def fake_emit_canvas_commands(project, canvas, commands, **kwargs):
+        captured.update(
+            {
+                "project": project,
+                "canvas": canvas,
+                "commands": commands,
+                "kwargs": kwargs,
+            }
+        )
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit_canvas_commands)
+
+    result = plugin._handle_delete_nodes(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "node_ids": ["node-a", "node-b"],
+        }
+    )
+
+    assert result == {"ok": True}
+    assert captured["commands"] == [
+        {"type": "delete_nodes", "node_ids": ["node-a", "node-b"]}
+    ]
+    assert captured["kwargs"]["slim_result"] is True
 
 
 def test_freezone_plugin_routes_registered_workflows_through_builder():
@@ -64,6 +351,35 @@ def test_freezone_plugin_routes_registered_workflows_through_builder():
 
     assert manual_result["ok"] is False
     assert manual_result["status"] == "wrong_tool_registered_workflow"
+
+
+def test_freezone_legacy_workflow_types_route_to_json_catalog():
+    plugin = _load_plugin_module()
+
+    expected = {
+        "text_to_image": "catalog.text_to_image.text_to_image",
+        "image_to_video": "catalog.image_to_video.image_to_video",
+        "text_to_video": "catalog.text_to_video.text_to_video",
+        "image_to_text": "catalog.image_to_text.image_to_text",
+        "text_to_audio": "catalog.text_to_audio.text_to_audio",
+        "product_video": "catalog.product_video.product_video",
+        "mv": "catalog.music_video.music_video",
+        "short_drama": "catalog.short_drama.short_drama_from_script",
+        "ad_video": "catalog.video_ad.video_ad_full",
+    }
+
+    for workflow_type, expected_type in expected.items():
+        plan = plugin.build_workflow_plan(
+            {
+                "workflow_type": workflow_type,
+                "user_goal": "测试工作流",
+            }
+        )
+
+        assert plan["ok"] is True
+        assert plan["workflow_type"] == expected_type
+        assert plan["nodes"]
+        assert plan["edges"]
 
 
 def test_freezone_plugin_create_node_schema_hides_internal_node_types():

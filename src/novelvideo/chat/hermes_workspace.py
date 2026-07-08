@@ -33,7 +33,7 @@ FREEZONE_HERMES_PLUGINS = {"freezone"}
 _warned_repo_state_fallback = False
 
 
-_DEFAULT_HERMES_MODEL = "qwen-plus"
+_DEFAULT_HERMES_MODEL = "DC-hermes-LLM"
 _DEFAULT_HERMES_MODEL_PROVIDER = "custom"
 _DEFAULT_HERMES_MODEL_API_MODE = "chat_completions"
 _DEFAULT_HERMES_MODEL_CONTEXT_LENGTH = "131072"

@@ -38,6 +38,14 @@ except Exception as exc:
     build_workflow_graph_commands = None
     build_workflow_plan = None
 
+_JSON_WORKFLOW_CATALOG_IMPORT_ERROR: Exception | None = None
+try:
+    from json_workflow_catalog import registered_catalog_workflows, resolve_catalog_workflow
+except Exception as exc:
+    _JSON_WORKFLOW_CATALOG_IMPORT_ERROR = exc
+    registered_catalog_workflows = None
+    resolve_catalog_workflow = None
+
 _CANVAS_COMMAND_BRIDGE_IMPORT_ERROR: Exception | None = None
 try:
     from novelvideo.freezone.canvas_command_bridge import (
@@ -755,6 +763,7 @@ def _emit_canvas_commands(
     commands: list[Any],
     *,
     allow_registered_workflow_batch: bool = False,
+    slim_result: bool = False,
 ) -> str:
     if not isinstance(commands, list) or not commands:
         return _emit_command_error(
@@ -807,7 +816,15 @@ def _emit_canvas_commands(
             timeout_seconds = 600
         resolved = wait_canvas_command_result(key, timeout_seconds=timeout_seconds)
         if resolved is not None:
-            return tool_result(resolved)
+            return tool_result(
+                _summarize_canvas_command_result(
+                    resolved,
+                    bridge_key=key,
+                    commands=commands,
+                )
+                if slim_result
+                else resolved
+            )
         return tool_result(
             {
                 "ok": False,
@@ -830,6 +847,42 @@ def _emit_canvas_commands(
     )
 
 
+def _summarize_canvas_command_result(
+    resolved: dict[str, Any],
+    *,
+    bridge_key: str,
+    commands: list[Any],
+) -> dict[str, Any]:
+    command_counts: dict[str, int] = {}
+    for command in commands:
+        if not isinstance(command, dict):
+            continue
+        command_type = str(command.get("type") or "unknown").strip() or "unknown"
+        command_counts[command_type] = command_counts.get(command_type, 0) + 1
+    errors = resolved.get("errors") if isinstance(resolved.get("errors"), list) else []
+    return {
+        "ok": bool(resolved.get("ok")),
+        "tool_call_status": resolved.get("tool_call_status") or "completed",
+        "canvas_apply_status": resolved.get("canvas_apply_status"),
+        "applied": bool(resolved.get("applied")),
+        "cancelled": bool(resolved.get("cancelled")),
+        "bridge_key": bridge_key,
+        "project_id": resolved.get("project_id"),
+        "canvas_id": resolved.get("canvas_id"),
+        "applied_count": resolved.get("applied_count"),
+        "opened_ui_actions": resolved.get("opened_ui_actions"),
+        "created_node_count": len(resolved.get("created_node_ids") or []),
+        "command_count": len(commands),
+        "command_counts": command_counts,
+        "error_count": len(errors),
+        "errors": [str(item)[:240] for item in errors[:3]],
+        "message": resolved.get("message") or "Canvas command finished.",
+        "agent_instruction": resolved.get("agent_instruction") or (
+            "Canvas command result has been summarized. Do not ask for or print the full commands."
+        ),
+    }
+
+
 def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
     project = (
         str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
@@ -840,7 +893,7 @@ def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
     commands = args.get("commands")
     if commands is None and isinstance(args.get("body"), dict):
         commands = args["body"].get("commands")
-    return _emit_canvas_commands(project, canvas, commands)
+    return _emit_canvas_commands(project, canvas, commands, slim_result=True)
 
 
 def _handle_build_workflow_plan(args: dict[str, Any], **_: Any) -> str:
@@ -853,17 +906,45 @@ def _handle_build_workflow_plan(args: dict[str, Any], **_: Any) -> str:
 
 
 def _handle_list_workflows(args: dict[str, Any], **_: Any) -> str:
+    workflow_by_type: dict[str, dict[str, Any]] = {}
+    for item in REGISTERED_WORKFLOWS:
+        workflow_type = str(item.get("workflow_type") or "")
+        if workflow_type:
+            workflow_by_type[workflow_type] = item
+    if registered_catalog_workflows is not None:
+        try:
+            for item in registered_catalog_workflows():
+                workflow_type = str(item.get("workflow_type") or "")
+                if workflow_type:
+                    workflow_by_type[workflow_type] = item
+        except Exception:
+            pass
     workflows = [
         {
             "workflow_type": str(item.get("workflow_type") or ""),
             "label": str(item.get("label") or item.get("workflow_type") or ""),
             "aliases": item.get("aliases") if isinstance(item.get("aliases"), list) else [],
             "template_kind": item.get("template_kind") or item.get("builder") or "",
+            "source": item.get("source") or "",
+            "catalog_source": item.get("catalog_source") or "",
+            "type": item.get("catalog_source_label") or (
+                "内置" if item.get("source") == "workflow_json" else ""
+            ),
         }
-        for item in REGISTERED_WORKFLOWS
+        for item in workflow_by_type.values()
         if item.get("workflow_type")
     ]
+    workflows.sort(key=lambda item: item["workflow_type"])
     return tool_result({"ok": True, "count": len(workflows), "workflows": workflows})
+
+
+def _handle_resolve_catalog_workflow(args: dict[str, Any], **_: Any) -> str:
+    if resolve_catalog_workflow is None:
+        return tool_error(
+            "Freezone JSON workflow resolver is unavailable. "
+            f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
+        )
+    return tool_result(resolve_catalog_workflow(args))
 
 
 def _handle_create_workflow_graph(args: dict[str, Any], **_: Any) -> str:
@@ -882,7 +963,13 @@ def _handle_create_workflow_graph(args: dict[str, Any], **_: Any) -> str:
         str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
     )
     commands = built.get("commands")
-    return _emit_canvas_commands(project, canvas, commands, allow_registered_workflow_batch=True)
+    return _emit_canvas_commands(
+        project,
+        canvas,
+        commands,
+        allow_registered_workflow_batch=True,
+        slim_result=True,
+    )
 
 
 def _position_from_args(args: dict[str, Any]) -> dict[str, Any] | None:
@@ -902,7 +989,7 @@ def _single_write_command(args: dict[str, Any], command: dict[str, Any]) -> str:
     canvas = (
         str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
     )
-    return _emit_canvas_commands(project, canvas, [command])
+    return _emit_canvas_commands(project, canvas, [command], slim_result=True)
 
 
 def _handle_create_node(args: dict[str, Any], **_: Any) -> str:
@@ -1602,6 +1689,28 @@ TOOLS = (
             },
         ),
         _handle_build_workflow_plan,
+    ),
+    (
+        "freezone_resolve_catalog_workflow",
+        _schema(
+            "freezone_resolve_catalog_workflow",
+            "Read-only first step for JSON-backed workflows. Resolve a user goal to Freezone built-in plus current-user agent_config skills and recipes catalog skill/template candidates without changing the canvas. Use this when the user asks to follow the skills/recipes JSON flow step by step.",
+            {
+                "user_goal": {
+                    "type": "string",
+                    "description": "User's natural-language request, brief, or chat message to match against agent_catalog skills triggers and template conditions.",
+                },
+                "message": {
+                    "type": "string",
+                    "description": "Alias of user_goal.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum candidate count to return. Default 5.",
+                },
+            },
+        ),
+        _handle_resolve_catalog_workflow,
     ),
     (
         "freezone_create_workflow_graph",
