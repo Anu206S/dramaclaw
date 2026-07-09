@@ -5,6 +5,7 @@ import type {
   ApprovalRequest,
   ChatAttachment,
   ChatMessage,
+  ChatRole,
   ChatScope,
   ClientFrame,
   ModelEntry,
@@ -27,6 +28,7 @@ import {
   type CanvasContextToolResultPayload,
 } from "@/features/freezone/canvasContextToolResult";
 import { FREEZONE_CANVAS_WRITE_TOOL_NAME_SET } from "@/features/freezone/canvasCommandTools";
+import { CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE } from "@/features/freezone/chatNodeReferences";
 import { api } from "@/lib/api";
 import {
   isStaleByTtl,
@@ -149,6 +151,136 @@ function updateCachedMessagesForScope(
   saveCachedMessages(scopeKey, updater(loadCachedMessages(scopeKey)));
 }
 
+function isFreezoneScope(scope?: ChatScope | null): boolean {
+  if (!scope) return false;
+  return scope.kind === "freezone" || (scope.kind === "project" && scope.surface === "freezone");
+}
+
+function isFreezoneScopeKey(scopeKey: string): boolean {
+  return scopeKey.startsWith("supertale:freezone:") || scopeKey.includes(":freezone");
+}
+
+function recordValue(value: unknown): Record<string, unknown> | null {
+  return value && typeof value === "object" && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : null;
+}
+
+function stringValue(value: unknown): string | undefined {
+  return typeof value === "string" && value.trim() ? value : undefined;
+}
+
+function isFreezoneCanvasReferenceAttachmentLike(value: unknown): value is Record<string, unknown> {
+  const record = recordValue(value);
+  if (!record) return false;
+  return (
+    record.type === CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE ||
+    record.kind === CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE
+  );
+}
+
+function normalizeFreezoneCanvasReferenceAttachment(value: unknown): ChatAttachment | null {
+  if (!isFreezoneCanvasReferenceAttachmentLike(value)) return null;
+  const id = stringValue(value.id);
+  const label = stringValue(value.label) ?? stringValue(value.fileName);
+  const content = stringValue(value.content) ?? stringValue(value.url);
+  const path = stringValue(value.path);
+  const url = stringValue(value.url);
+  const fileName = stringValue(value.fileName) ?? label;
+  return {
+    id: id ?? `${CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE}:${label ?? path ?? url ?? "node"}`,
+    type: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+    kind: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+    mimeType: stringValue(value.mimeType),
+    fileName,
+    content,
+    url,
+    path,
+    label,
+  };
+}
+
+function collectFreezoneCanvasReferenceAttachments(source: unknown, depth = 0): ChatAttachment[] {
+  const record = recordValue(source);
+  if (!record || depth > 2) return [];
+  const references: ChatAttachment[] = [];
+  for (const field of ["attachments", "media", "rawAttachments", "rawMedia"] as const) {
+    const items = record[field];
+    if (!Array.isArray(items)) continue;
+    for (const item of items) {
+      const attachment = normalizeFreezoneCanvasReferenceAttachment(item);
+      if (attachment) references.push(attachment);
+    }
+  }
+  if (record.raw) {
+    references.push(...collectFreezoneCanvasReferenceAttachments(record.raw, depth + 1));
+  }
+  return references;
+}
+
+function freezoneAttachmentKeys(attachment: ChatAttachment): string[] {
+  return [
+    attachment.id,
+    attachment.label,
+    attachment.fileName,
+    attachment.path,
+    attachment.url,
+  ].filter((value): value is string => typeof value === "string" && value.trim().length > 0);
+}
+
+function sameFreezoneCanvasReference(left: ChatAttachment, right: ChatAttachment): boolean {
+  const leftKeys = new Set(freezoneAttachmentKeys(left));
+  return freezoneAttachmentKeys(right).some((key) => leftKeys.has(key));
+}
+
+function hydrateFreezoneCanvasReferences(message: ChatMessage, source: unknown): ChatMessage {
+  const references = collectFreezoneCanvasReferenceAttachments(source).reduce<ChatAttachment[]>(
+    (items, reference) => {
+      const existingIndex = items.findIndex((item) => sameFreezoneCanvasReference(item, reference));
+      if (existingIndex < 0) return [...items, reference];
+      if (!items[existingIndex]?.content && reference.content) {
+        const next = [...items];
+        next[existingIndex] = reference;
+        return next;
+      }
+      return items;
+    },
+    [],
+  );
+  if (references.length === 0) return message;
+
+  const existing = message.attachments ?? [];
+  const canvasExisting = existing.filter(isFreezoneCanvasReferenceAttachmentLike);
+  const nonCanvasAttachments = existing.filter(
+    (attachment) =>
+      !isFreezoneCanvasReferenceAttachmentLike(attachment) &&
+      !references.some((reference) => sameFreezoneCanvasReference(attachment, reference)),
+  );
+  const hydratedCanvas = canvasExisting.map((attachment) => {
+    if (attachment.content) return attachment;
+    const replacement = references.find((reference) => sameFreezoneCanvasReference(attachment, reference));
+    return replacement ?? attachment;
+  });
+  const appendedReferences = references.filter(
+    (reference) =>
+      !hydratedCanvas.some((attachment) => sameFreezoneCanvasReference(attachment, reference)),
+  );
+  const attachments = [...nonCanvasAttachments, ...hydratedCanvas, ...appendedReferences];
+  return { ...message, attachments };
+}
+
+function normalizeMessageForScope(
+  message: unknown,
+  fallbackRole: ChatRole = "assistant",
+  scope?: ChatScope | null,
+): ChatMessage | null {
+  const normalized = normalizeMessage(message, fallbackRole);
+  if (!normalized || !isFreezoneScope(scope)) return normalized;
+  return hydrateFreezoneCanvasReferences(normalized, message);
+}
+
+export const normalizeMessageForScopeForTest = normalizeMessageForScope;
+
 // `normalizeMessage` stores the whole source message under `raw`. Across a
 // load→save round-trip the loaded (already-normalized) object becomes the new
 // `raw`, so an un-stripped `raw` nests one level deeper every refresh and the
@@ -166,12 +298,25 @@ function denestRaw(raw: unknown): unknown {
 // Slim a message down for the refresh-recovery cache: drop the inline
 // attachment payload (base64 data URLs etc. — by far the largest field, and
 // redundant since url/path/metadata are kept) and the nested `raw` chain.
-export function sanitizeMessagesForCache(messages: ChatMessage[]): ChatMessage[] {
+type MessageCacheSanitizeOptions = {
+  preserveFreezoneCanvasReferences?: boolean;
+};
+
+export function sanitizeMessagesForCache(
+  messages: ChatMessage[],
+  options: MessageCacheSanitizeOptions = {},
+): ChatMessage[] {
   return messages.map((message) => {
     const denestedRaw = denestRaw(message.raw);
     const attachments = message.attachments?.length
       ? message.attachments.map((attachment) => {
           if (attachment.content === undefined) return attachment;
+          if (
+            options.preserveFreezoneCanvasReferences &&
+            isFreezoneCanvasReferenceAttachmentLike(attachment)
+          ) {
+            return attachment;
+          }
           const { content: _content, ...rest } = attachment;
           return rest;
         })
@@ -195,7 +340,13 @@ function loadCachedMessages(scopeKey: string): ChatMessage[] {
         ? (parsed as { messages: unknown[] }).messages
         : [];
     return raw
-      .map((message) => normalizeMessage(message))
+      .map((message) =>
+        normalizeMessageForScope(
+          message,
+          "assistant",
+          isFreezoneScopeKey(scopeKey) ? { kind: "freezone", id: scopeKey } : null,
+        ),
+      )
       .filter((message): message is ChatMessage => Boolean(message));
   } catch {
     return [];
@@ -209,7 +360,9 @@ function saveCachedMessages(
 ) {
   const payload = {
     updatedAt: now,
-    messages: sanitizeMessagesForCache(messages.slice(-MESSAGE_CACHE_LIMIT)),
+    messages: sanitizeMessagesForCache(messages.slice(-MESSAGE_CACHE_LIMIT), {
+      preserveFreezoneCanvasReferences: isFreezoneScopeKey(scopeKey),
+    }),
   };
   safeLocalStorageSet(messageCacheKey(scopeKey), JSON.stringify(payload));
 }
@@ -335,9 +488,9 @@ function isChatScope(value: unknown): value is ChatScope {
   );
 }
 
-function mergeHistory(messages: unknown[]): ChatMessage[] {
+function mergeHistory(messages: unknown[], scope?: ChatScope | null): ChatMessage[] {
   return messages
-    .map((message) => normalizeMessage(message))
+    .map((message) => normalizeMessageForScope(message, "assistant", scope))
     .filter((message): message is ChatMessage => Boolean(message));
 }
 
@@ -657,8 +810,9 @@ function upsertServerAssistantMessage(
   messages: ChatMessage[],
   payload: unknown,
   turnId?: string,
+  scope?: ChatScope | null,
 ): ChatMessage[] {
-  const nextMessage = normalizeMessage(payload, "assistant");
+  const nextMessage = normalizeMessageForScope(payload, "assistant", scope);
   if (!nextMessage) return messages;
   const normalizedTurnId = nextMessage.turnId ?? (turnId?.trim() || undefined);
   const transientUiEvents = normalizedTurnId
@@ -1091,7 +1245,10 @@ export function useSuperChat({
         const frameScope = isChatScope(frame.scope) ? frame.scope : undefined;
         if (!scopeMatches(frameScope, desiredScopeRef.current)) break;
         setHistoryReady(true);
-        const history = mergeHistory(Array.isArray(frame.history) ? frame.history : []);
+        const history = mergeHistory(
+          Array.isArray(frame.history) ? frame.history : [],
+          frameScope ?? desiredScopeRef.current,
+        );
         const currentMessages = messagesRef.current;
         const protectedTurnId = activeTurnIdRef.current ?? recentlyCompletedTurnIdRef.current;
         setMessages((current) => {
@@ -1226,12 +1383,13 @@ export function useSuperChat({
         break;
       }
       case "assistant.message": {
+        const messageScope = frameScope(frame) ?? desiredScopeRef.current;
         if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
           const remoteScopeKey = frameScopeSessionKey(frame);
           const turnId = typeof frame.turn_id === "string" ? frame.turn_id : undefined;
           if (remoteScopeKey) {
             updateCachedMessagesForScope(remoteScopeKey, (current) =>
-              upsertServerAssistantMessage(current, frame.message, turnId),
+              upsertServerAssistantMessage(current, frame.message, turnId, messageScope),
             );
             if (turnId) clearActiveTurn(remoteScopeKey, turnId);
           }
@@ -1242,6 +1400,7 @@ export function useSuperChat({
             current,
             frame.message,
             typeof frame.turn_id === "string" ? frame.turn_id : undefined,
+            messageScope,
           ),
         );
         break;
@@ -1588,14 +1747,14 @@ export function useSuperChat({
           },
         })
         .json<ChatNotificationResponse>();
-      const message = normalizeMessage(response.data, "assistant");
+      const message = normalizeMessageForScope(response.data, "assistant", desiredScope);
       if (message) {
         setMessages((current) => sortMessages([...current, message]));
       }
       return true;
     } catch (error) {
       console.error("[superchat] append notification failed", error);
-      const fallback = normalizeMessage(
+      const fallback = normalizeMessageForScope(
         {
           id: `task-notification-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
           role: "assistant",
@@ -1603,6 +1762,7 @@ export function useSuperChat({
           created_at: new Date().toISOString(),
         },
         "assistant",
+        desiredScope,
       );
       if (fallback) {
         setMessages((current) => sortMessages([...current, fallback]));
