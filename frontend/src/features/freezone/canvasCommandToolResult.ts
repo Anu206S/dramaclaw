@@ -119,7 +119,7 @@ function buildCanvasCommandToolResultPayload({
     received_at: Date.now(),
     turn_id: turnId ?? null,
     anchor_text_prefix: anchorTextPrefix ?? null,
-    bridge_key: bridgeKey,
+    bridge_key: bridgeKey ?? "",
     project_id: projectId ?? null,
     canvas_id: canvasId ?? null,
     agent_id: agentId ?? null,
