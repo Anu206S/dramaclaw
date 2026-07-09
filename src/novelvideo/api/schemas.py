@@ -1025,6 +1025,14 @@ class FreezoneImageToVideoRequest(BaseModel):
         default_factory=list,
         description="图片参考静态地址列表，支持 1-9 张。第一张默认作为主参考图/首帧参考图",
     )
+    image_reference: bool = Field(
+        default=False,
+        description=(
+            "图片仅作参考(r2v)而非首帧(i2v)。true=纯参考生视频，所有图片作为参考图、"
+            "不把第一张当首帧；false=第一张作首帧。目前对 HappyHorse 生效（HappyHorse "
+            "的参考生视频与首帧图生视频是两个独立模式）"
+        ),
+    )
     prompt: str = Field(default="", description="用户补充视频描述，可为空")
     camera_template_id: Optional[str] = Field(
         default=None,

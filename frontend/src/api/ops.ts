@@ -335,6 +335,13 @@ export async function submitFreezoneVideoKeyframes(
 export interface FreezoneVideoI2vPayload extends FreezoneNodeContext {
   /** 1-9 image static URLs. First entry is the primary/first-frame ref. */
   imageUrls: string[];
+  /**
+   * Treat images as pure references (r2v) instead of a first frame (i2v).
+   * Set for genMode "imageReference". Only HappyHorse honors this — its
+   * 参考生视频 and 首帧图生视频 are distinct upstream modes; without it a single
+   * reference image would be sent as a first frame.
+   */
+  imageReference?: boolean;
   prompt?: string;
   cameraTemplateId?: string | null;
   marks?: FreezoneVideoMark[];
@@ -359,6 +366,7 @@ export async function submitFreezoneVideoI2v(
       method: "POST",
       json: {
         image_urls: payload.imageUrls.slice(0, 9),
+        image_reference: payload.imageReference ?? false,
         prompt: payload.prompt ?? "",
         camera_template_id: payload.cameraTemplateId ?? null,
         marks: (payload.marks ?? []).map((m) => ({

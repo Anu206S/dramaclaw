@@ -416,6 +416,7 @@ def build_freezone_image_to_video_prompt(
     camera_template_id: str | None = None,
     marks: list[dict[str, Any]] | None = None,
     reference_image_count: int = 1,
+    pure_reference: bool = False,
 ) -> str:
     parts: list[str] = []
 
@@ -430,18 +431,29 @@ def build_freezone_image_to_video_prompt(
     if marks_block:
         parts.append(marks_block)
 
-    if int(reference_image_count or 1) > 1:
+    if pure_reference:
+        # 参考生视频(r2v)：图片只作主体/风格参考，绝不能当首帧——否则提示词会与
+        # 后端 reference_images 路由自相矛盾，模型仍以参考图为视频首帧（issue #50）。
         parts.append(
-            "图片参考约束：综合参考多张输入图片，优先保持主体身份、外观、服装、场景线索与整体风格一致，"
-            "不要把多张图拼贴成多画面。"
+            "图片参考约束：把输入图片作为主体/风格参考，保持主体身份、外观、服装、场景线索与整体风格一致；"
+            "不要把参考图作为视频首帧，也不要拼贴成多画面。"
+        )
+        parts.append(
+            "输出要求：生成单条连贯视频镜头，动作自然，运动平滑，避免闪烁、变形、跳帧、主体身份漂移。"
         )
     else:
+        if int(reference_image_count or 1) > 1:
+            parts.append(
+                "图片参考约束：综合参考多张输入图片，优先保持主体身份、外观、服装、场景线索与整体风格一致，"
+                "不要把多张图拼贴成多画面。"
+            )
+        else:
+            parts.append(
+                "首帧约束：严格继承输入图片中的主体、构图、服装、光线和场景信息，把输入图作为视频首帧参考。"
+            )
         parts.append(
-            "首帧约束：严格继承输入图片中的主体、构图、服装、光线和场景信息，把输入图作为视频首帧参考。"
+            "输出要求：生成单条连贯视频镜头，动作自然，运动平滑，避免闪烁、变形、跳帧、主体身份漂移和首帧偏移。"
         )
-    parts.append(
-        "输出要求：生成单条连贯视频镜头，动作自然，运动平滑，避免闪烁、变形、跳帧、主体身份漂移和首帧偏移。"
-    )
     return "\n".join(part for part in parts if part)
 
 

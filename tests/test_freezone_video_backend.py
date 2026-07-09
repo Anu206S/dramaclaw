@@ -118,6 +118,32 @@ def test_build_freezone_image_to_video_prompt_supports_multi_image_references() 
     assert "跟随拍摄" in prompt
 
 
+def test_build_freezone_image_to_video_prompt_pure_reference_never_says_first_frame() -> None:
+    """纯参考(r2v)：即便单图也不能出现「首帧」语义，否则与后端 reference_images 路由矛盾。
+
+    回归守卫（issue #50）：单图 image_reference 模式曾因 count==1 落到「首帧约束」
+    分支，导致提示词仍命令模型把参考图当视频首帧。
+    """
+    prompt = build_freezone_image_to_video_prompt(
+        user_prompt="宁姚手持宝剑，从天而降。",
+        reference_image_count=1,
+        pure_reference=True,
+    )
+
+    assert "图片参考约束" in prompt
+    assert "不要把参考图作为视频首帧" in prompt
+    assert "首帧约束" not in prompt
+    assert "首帧偏移" not in prompt
+
+    # 对照：非纯参考的单图仍是首帧图生视频，保留首帧约束。
+    first_frame_prompt = build_freezone_image_to_video_prompt(
+        user_prompt="宁姚手持宝剑。",
+        reference_image_count=1,
+        pure_reference=False,
+    )
+    assert "首帧约束" in first_frame_prompt
+
+
 def test_build_freezone_image_to_video_prompt_supports_box_marks() -> None:
     prompt = build_freezone_image_to_video_prompt(
         user_prompt="老人微微转头。",
@@ -274,6 +300,93 @@ async def test_freezone_video_gen_allows_newapi_fast_text_to_video(monkeypatch, 
     assert captured["create"]["backend"] == "newapi_seedance-1.0-pro-fast"
     assert captured["generate"]["image_path"] is None
     assert captured["generate"]["references"] == []
+
+
+@pytest.mark.asyncio
+async def test_happyhorse_image_reference_stays_reference_not_first_frame(
+    monkeypatch, tmp_path: Path
+) -> None:
+    """HappyHorse「图片参考」= 参考生视频(r2v)，图片只作参考、不作首帧。
+
+    参考图应全部进 metadata.reference_images，且不产生 payload["images"] /
+    metadata.image_url（那是首帧/i2v 模式）。i2v 端点在 image_reference 模式下把
+    所有图片打成「图片参考」role（无「首帧」），生成器据此走纯参考路径。
+    回归守卫：不得再把第一张参考图提升为首帧（曾因 issue #50 误加）。
+    """
+    from novelvideo.generators import video_generator as vg
+    from novelvideo.generators.video_generator import NewApiVideoGenerator
+
+    ref_a = tmp_path / "ref_a.png"
+    ref_a.write_bytes(b"\x89PNG\r\n\x1a\na")
+    ref_b = tmp_path / "ref_b.png"
+    ref_b.write_bytes(b"\x89PNG\r\n\x1a\nb")
+
+    generator = NewApiVideoGenerator(
+        api_key="test-key",
+        endpoint="https://gateway.test",
+        model="happyhorse-1.0",
+        resolution="1080p",
+    )
+
+    captured: dict[str, dict] = {}
+
+    async def fake_relay(value, *, default_ext="png"):
+        return f"https://cdn.test/{Path(value).name}"
+
+    monkeypatch.setattr(
+        NewApiVideoGenerator, "_relay_frame_input", staticmethod(fake_relay)
+    )
+
+    async def fake_post_json(self, url, payload):
+        captured["payload"] = payload
+        return {"id": "task-happyhorse-r2v"}
+
+    async def fake_get_json(self, url):
+        return {"status": "completed", "url": "https://cdn.test/out.mp4"}
+
+    async def fake_download(self, url, output_path):
+        path = Path(output_path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(b"fake mp4")
+        return b"fake mp4"
+
+    monkeypatch.setattr(NewApiVideoGenerator, "_post_json", fake_post_json)
+    monkeypatch.setattr(NewApiVideoGenerator, "_get_json", fake_get_json)
+    monkeypatch.setattr(NewApiVideoGenerator, "_download_video", fake_download)
+
+    async def _noop_reserve(*_args, **_kwargs):
+        return ""
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(vg, "_reserve_video_model_call", _noop_reserve)
+    monkeypatch.setattr(vg, "_confirm_video_model_call", _noop)
+    monkeypatch.setattr(vg, "_refund_video_model_call", _noop)
+
+    result = await generator.generate(
+        image_path=None,
+        prompt="参考这两张图生成视频",
+        output_path=str(tmp_path / "out.mp4"),
+        aspect_ratio="16:9",
+        duration=5.0,
+        references=[
+            ShotReference("image", str(ref_a), "图片参考"),
+            ShotReference("image", str(ref_b), "图片参考"),
+        ],
+    )
+
+    assert result.status == VideoGenStatus.DONE
+    payload = captured["payload"]
+    # 纯参考模式：没有首帧输入。
+    assert "images" not in payload
+    metadata = payload["metadata"]
+    assert "image_url" not in metadata
+    # 两张图都作为参考图传入。
+    assert metadata.get("reference_images") == [
+        "https://cdn.test/ref_a.png",
+        "https://cdn.test/ref_b.png",
+    ]
 
 
 def test_seedance2_model_selection_prefers_omni_model_for_mixed_references() -> None:

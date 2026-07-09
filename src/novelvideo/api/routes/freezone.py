@@ -6832,15 +6832,23 @@ async def freezone_video_i2v(
             "multiple image references currently only support Seedance 2.0 or HappyHorse models",
         )
 
+    # HappyHorse 的「参考生视频(r2v)」与「首帧图生视频(i2v)」是两个独立模式：r2v 把
+    # 图片放进 reference_images、不设首帧；i2v 才用首帧。前端「图片参考」与「图生视频」
+    # 都调本端点，单图时无法靠数量区分，故由 body.image_reference 显式指明是否纯参考。
+    pure_reference = body.image_reference and is_freezone_happyhorse_backend(backend)
     reference_items = []
     for idx, path in enumerate(source_paths):
-        role = "首帧" if idx == 0 else "图片参考"
+        if pure_reference:
+            role = "图片参考"
+        else:
+            role = "首帧" if idx == 0 else "图片参考"
         reference_items.append({"type": "image", "path": path, "role": role})
     final_prompt = build_freezone_image_to_video_prompt(
         user_prompt=body.prompt,
         camera_template_id=body.camera_template_id,
         marks=[item.model_dump() for item in body.marks],
         reference_image_count=len(source_paths),
+        pure_reference=pure_reference,
     )
     job_id = _new_job_id()
 

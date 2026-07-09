@@ -385,6 +385,24 @@ function isGrokVideoChannelModel(modelId: string | null | undefined): boolean {
   return normalized.includes("grokvideochannel");
 }
 
+// HappyHorse 按 huimeng API 文档只支持文生视频 / 图生视频 / 图片参考三种输入，
+// 不支持 Seedance 2.0 的「全能参考」多模态混合，也没有首尾帧。命中后 UI 把
+// 全能参考 / 首尾帧两个 tab 禁掉，避免走到会失败的 omni 路径(issue #50)。
+function isHappyHorseModel(modelId: string | null | undefined): boolean {
+  const normalized = String(modelId ?? "")
+    .replace(/[\s._-]/g, "")
+    .toLowerCase();
+  return normalized.includes("happyhorse");
+}
+
+// HappyHorse 允许的生成模式。上面几个自动切换 effect 会用它把该模型上不支持的
+// 模式（allReference / firstLastFrame）纠正到最接近的受支持模式。
+const HAPPYHORSE_SUPPORTED_MODES: ReadonlySet<VideoGenMode> = new Set([
+  "textToVideo",
+  "imageToVideo",
+  "imageReference",
+]);
+
 function videoModelReferenceDisabledReason(
   modelId: string | null | undefined,
   counts: { images: number; videos: number; audios: number },
@@ -776,6 +794,7 @@ export const VideoNode = memo(
     // 真人素材审核开关只对 Seedance 2.0 系列模型生效。归一化掉分隔符后匹配
     // `seedance2`，覆盖 `huimeng_seedance20_fast` / 未来可能的 `seedance_2_0` 等 id。
     const isSeedance20Model = /seedance2/i.test(modelId.replace(/[\s._-]/g, ""));
+    const isHappyHorse = isHappyHorseModel(modelId);
     const humanReview = Boolean(data.humanReview);
     const count: VideoGenCount = (data.count ?? 1) as VideoGenCount;
     useEffect(() => {
@@ -1552,8 +1571,11 @@ export const VideoNode = memo(
     useEffect(() => {
       if (data.genMode != null) return;
       if (referenceImages.length === 0) return;
-      updateNodeData(id, { genMode: "firstLastFrame" });
-    }, [data.genMode, id, referenceImages.length, updateNodeData]);
+      // HappyHorse 没有首尾帧，图片走「图片参考」(i2v 端点，1-9 图通吃)。
+      updateNodeData(id, {
+        genMode: isHappyHorse ? "imageReference" : "firstLastFrame",
+      });
+    }, [data.genMode, id, isHappyHorse, referenceImages.length, updateNodeData]);
 
     // Audio refs only carry meaning under the omni-gen (allReference) path —
     // textToVideo / firstLastFrame / imageToVideo discard them. So when an
@@ -1568,10 +1590,12 @@ export const VideoNode = memo(
     useEffect(() => {
       const prev = prevHasAudioRef.current;
       prevHasAudioRef.current = hasAudioUpstream;
+      // HappyHorse 不支持音频输入，不做「音频→全能参考」的强制切换。
+      if (isHappyHorse) return;
       if (!prev && hasAudioUpstream && data.genMode !== "allReference") {
         updateNodeData(id, { genMode: "allReference" });
       }
-    }, [data.genMode, hasAudioUpstream, id, updateNodeData]);
+    }, [data.genMode, hasAudioUpstream, id, isHappyHorse, updateNodeData]);
 
     // 上游接入视频素材时，只有「全能参考」能消费视频；其它模式（文生 / 图生 /
     // 首尾帧 / 图片参考）都会把视频丢弃。所以只要上游存在视频就强制切到
@@ -1579,9 +1603,12 @@ export const VideoNode = memo(
     // 与音频的「0→≥1 transition」不同，这里每次都纠正，确保视频在场期间无法切走。
     useEffect(() => {
       if (upstreamCounts.videos === 0) return;
+      // HappyHorse 不支持全能参考(视频编辑)，不强制切到 allReference——否则会与
+      // 下面的「happyhorse 模式纠正」effect 互相拉扯成死循环。
+      if (isHappyHorse) return;
       if (genMode === "allReference") return;
       updateNodeData(id, { genMode: "allReference" });
-    }, [upstreamCounts.videos, genMode, id, updateNodeData]);
+    }, [upstreamCounts.videos, genMode, id, isHappyHorse, updateNodeData]);
 
     // 文生视频不接受任何素材引用。即便用户先手动选了 textToVideo 再接入
     // 图片/音频（此时上面两个自动切换 effect 都因 genMode 已显式而 bail），
@@ -1590,11 +1617,19 @@ export const VideoNode = memo(
     useEffect(() => {
       if (genMode !== "textToVideo") return;
       if (upstreamCounts.images === 0 && upstreamCounts.audios === 0) return;
+      if (isHappyHorse) {
+        // HappyHorse 不支持音频；只在接入图片时切到「图片参考」，纯音频保持文生。
+        if (upstreamCounts.images > 0) {
+          updateNodeData(id, { genMode: "imageReference" });
+        }
+        return;
+      }
       updateNodeData(id, {
         genMode: upstreamCounts.audios > 0 ? "allReference" : "firstLastFrame",
       });
     }, [
       genMode,
+      isHappyHorse,
       upstreamCounts.images,
       upstreamCounts.audios,
       id,
@@ -1608,8 +1643,21 @@ export const VideoNode = memo(
     useEffect(() => {
       if (genMode !== "firstLastFrame") return;
       if (upstreamCounts.images <= 2) return;
+      // HappyHorse 的 firstLastFrame 已被禁用，由下面的模式纠正 effect 统一处理。
+      if (isHappyHorse) return;
       updateNodeData(id, { genMode: "allReference" });
-    }, [genMode, upstreamCounts.images, id, updateNodeData]);
+    }, [genMode, isHappyHorse, upstreamCounts.images, id, updateNodeData]);
+
+    // HappyHorse 只支持文生 / 图生 / 图片参考。切到该模型（或素材联动）后若停在
+    // 不支持的模式（allReference / firstLastFrame），纠正到最接近的受支持模式：
+    // 有图片走「图片参考」，否则回退「文生视频」。放在最后，压过上面的联动。(#50)
+    useEffect(() => {
+      if (!isHappyHorse) return;
+      if (HAPPYHORSE_SUPPORTED_MODES.has(genMode)) return;
+      updateNodeData(id, {
+        genMode: upstreamCounts.images > 0 ? "imageReference" : "textToVideo",
+      });
+    }, [isHappyHorse, genMode, upstreamCounts.images, id, updateNodeData]);
 
     useEffect(
       () => () => {
@@ -1929,6 +1977,9 @@ export const VideoNode = memo(
           doSubmit = (targetId) =>
             submitFreezoneVideoI2v(projectId, {
               imageUrls,
+              // 「图片参考」= 纯参考(r2v)，不把图当首帧；「图生视频」= 首帧(i2v)。
+              // 目前仅 HappyHorse 区分这两个上游模式（见后端 i2v 端点）。
+              imageReference: genMode === "imageReference",
               prompt: composedPrompt,
               cameraTemplateId,
               aspectRatio: submitAspectRatio,
@@ -2882,6 +2933,7 @@ export const VideoNode = memo(
                   <GenModeSelect
                     value={genMode}
                     upstreamCounts={upstreamCounts}
+                    modelId={modelId}
                     onChange={(nextMode) => updateNodeData(id, { genMode: nextMode })}
                   />
                   <NodeContextPromptPaletteButton
@@ -3136,14 +3188,24 @@ VideoNode.displayName = "VideoNode";
 interface GenModeSelectProps {
   value: VideoGenMode;
   upstreamCounts: { videos: number; images: number; audios: number };
+  modelId?: string | null;
   onChange: (next: VideoGenMode) => void;
 }
 
 function videoModeDisabledReason(
   mode: VideoGenMode,
   upstreamCounts: { videos: number; images: number; audios: number },
+  modelId?: string | null,
 ): string | null {
-  if (upstreamCounts.videos > 0 && mode !== "allReference") {
+  // HappyHorse 只支持文生 / 图生 / 图片参考三种模式，禁掉全能参考与首尾帧。
+  const happyHorse = isHappyHorseModel(modelId);
+  if (happyHorse && !HAPPYHORSE_SUPPORTED_MODES.has(mode)) {
+    return "HappyHorse 仅支持文生视频 / 图生视频 / 图片参考";
+  }
+  // 「上游含视频只能全能参考」规则对 HappyHorse 不适用：它没有全能参考、也不消费
+  // 视频，若照套则视频在场时三个支持模式也被禁 → 所有 tab 全灰、无法切换。视频对
+  // HappyHorse 本就会被忽略，这里让支持模式保持可选。
+  if (!happyHorse && upstreamCounts.videos > 0 && mode !== "allReference") {
     return "上游含视频素材时只能用「全能参考」";
   }
   if (
@@ -3161,7 +3223,7 @@ function videoModeDisabledReason(
   return null;
 }
 
-function GenModeSelect({ value, upstreamCounts, onChange }: GenModeSelectProps) {
+function GenModeSelect({ value, upstreamCounts, modelId, onChange }: GenModeSelectProps) {
   const { t } = useTranslation();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -3233,7 +3295,7 @@ function GenModeSelect({ value, upstreamCounts, onChange }: GenModeSelectProps) 
         >
           {MODE_TABS.map((tab) => {
             const isActive = tab.key === value;
-            const disabledReason = videoModeDisabledReason(tab.key, upstreamCounts);
+            const disabledReason = videoModeDisabledReason(tab.key, upstreamCounts, modelId);
             const isDisabled = disabledReason != null && !isActive;
             return (
               <button
