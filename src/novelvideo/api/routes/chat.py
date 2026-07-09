@@ -166,6 +166,9 @@ class SkillStudioToolResultIn(BaseModel):
     action: str = "submit"
     selections: dict[str, Any] = Field(default_factory=dict)
     draft: dict[str, Any] | None = None
+    saved_to_catalog: bool = False
+    saved_skill_ids: list[str] = Field(default_factory=list)
+    saved_recipe_ids: list[str] = Field(default_factory=list)
     errors: list[str] = []
     message: str | None = None
 
@@ -439,6 +442,25 @@ def _resolve_canvas_context_tool_result_payload(
     )
 
 
+def _skill_studio_draft_catalog_ids(draft: dict[str, Any] | None) -> tuple[list[str], list[str]]:
+    if not isinstance(draft, dict):
+        return [], []
+    skill = draft.get("skill")
+    skill_id = ""
+    if isinstance(skill, dict):
+        skill_id = str(skill.get("id") or "").strip()
+    recipe_ids: list[str] = []
+    recipes = draft.get("recipes")
+    if isinstance(recipes, list):
+        for recipe in recipes:
+            if not isinstance(recipe, dict):
+                continue
+            recipe_id = str(recipe.get("id") or "").strip()
+            if recipe_id:
+                recipe_ids.append(recipe_id)
+    return ([skill_id] if skill_id else []), recipe_ids
+
+
 def _resolve_skill_studio_tool_result_payload(
     payload: SkillStudioToolResultIn,
     *,
@@ -448,9 +470,21 @@ def _resolve_skill_studio_tool_result_payload(
     if not key:
         raise HTTPException(status_code=400, detail="bridge_key is required")
     ok = payload.ok and payload.tool_call_status == "completed" and not payload.errors
+    draft_skill_ids, draft_recipe_ids = _skill_studio_draft_catalog_ids(payload.draft)
+    saved_to_catalog = payload.saved_to_catalog or payload.skill_studio_status == "catalog_saved"
+    saved_skill_ids = payload.saved_skill_ids or draft_skill_ids
+    saved_recipe_ids = payload.saved_recipe_ids or draft_recipe_ids
     if ok:
-        agent_instruction = "Continue the Skill Studio flow using the frontend response."
-        message = payload.message or "Frontend returned the user's Skill Studio response."
+        if saved_to_catalog:
+            agent_instruction = (
+                "The frontend has saved this Skill/Recipe draft to the Freezone catalog. "
+                "Treat it as official saved catalog content that can be used immediately. "
+                "Do not ask the user to save it again."
+            )
+            message = payload.message or "Frontend saved the Skill/Recipe draft to the Freezone catalog."
+        else:
+            agent_instruction = "Continue the Skill Studio flow using the frontend response."
+            message = payload.message or "Frontend returned the user's Skill Studio response."
     else:
         agent_instruction = "Do not continue the Skill Studio flow; handle the frontend error or ask the user to retry."
         message = payload.message or "Frontend reported that the Skill Studio interaction failed."
@@ -462,6 +496,9 @@ def _resolve_skill_studio_tool_result_payload(
         "action": payload.action,
         "selections": payload.selections,
         "draft": payload.draft,
+        "saved_to_catalog": saved_to_catalog,
+        "saved_skill_ids": saved_skill_ids,
+        "saved_recipe_ids": saved_recipe_ids,
         "errors": payload.errors,
         "project_id": payload.project_id,
         "canvas_id": payload.canvas_id,
@@ -559,6 +596,11 @@ def _persist_skill_studio_result_ui_event(
         event["selections"] = payload.selections
     if payload.draft is not None:
         event["draft"] = payload.draft
+    if payload.saved_to_catalog or payload.skill_studio_status == "catalog_saved":
+        event["saved_to_catalog"] = True
+        draft_skill_ids, draft_recipe_ids = _skill_studio_draft_catalog_ids(payload.draft)
+        event["saved_skill_ids"] = payload.saved_skill_ids or draft_skill_ids
+        event["saved_recipe_ids"] = payload.saved_recipe_ids or draft_recipe_ids
     chat_store.append_ui_event(username, scope, turn_id, event)
 
 

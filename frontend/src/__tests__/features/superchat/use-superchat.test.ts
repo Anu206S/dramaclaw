@@ -1023,8 +1023,11 @@ describe("Skill Studio draft response", () => {
       canvas_id: "canvas-a",
       agent_id: "agent-1",
       turn_id: "turn-a",
-      action: "submit_draft",
-      skill_studio_status: "draft_submitted",
+      action: "confirm_add",
+      skill_studio_status: "catalog_saved",
+      saved_to_catalog: true,
+      saved_skill_ids: ["home-culture-poster"],
+      saved_recipe_ids: ["home-culture-poster-image"],
       draft: {
         skill: {
           id: "home-culture-poster",
@@ -1041,6 +1044,7 @@ describe("Skill Studio draft response", () => {
       },
     });
     expect(payload.message).toContain("home-culture-poster");
+    expect(payload.message).toContain("已保存为正式 Skill / Recipe");
   });
 
   it("normalizes the draft into catalog payloads before saving", () => {

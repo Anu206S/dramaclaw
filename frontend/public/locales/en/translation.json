@@ -332,6 +332,16 @@
       "Xia Director is picking the essentials",
       "Xia Director is catching the spark"
     ],
+    "freezoneWaitingResponse": "Waiting for Xia Draw",
+    "freezoneWaitingResponses": [
+      "Xia Draw is reading the canvas",
+      "Xia Draw is understanding the nodes",
+      "Xia Draw is organizing canvas context",
+      "Xia Draw is choosing the next step",
+      "Xia Draw is preparing canvas actions",
+      "Xia Draw is composing the reply",
+      "Xia Draw is placing the idea on the canvas"
+    ],
     "send": "Send",
     "queueMessage": "Queue message",
     "queuedCount": "{{count}} queued",
