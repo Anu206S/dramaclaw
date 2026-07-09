@@ -6427,6 +6427,17 @@ function findCanvasCommandFeedbackMessageId(messages: ChatMessage[], turnId?: st
   return latestTool?.id ?? null;
 }
 
+function findCanvasCommandApprovalMessageId(messages: ChatMessage[], turnId?: string | null): string | null {
+  const candidates = [...messages].reverse();
+  if (turnId) {
+    const assistant = candidates.find((message) => message.turnId === turnId && message.role === "assistant");
+    if (assistant) return assistant.id;
+    return null;
+  }
+  const latestAssistant = candidates.find((message) => message.role === "assistant");
+  return latestAssistant?.id ?? null;
+}
+
 function resolveCanvasCommandApprovalMessageId(input: {
   anchorMessageId?: string | null;
   messages: ChatMessage[];
@@ -6435,7 +6446,7 @@ function resolveCanvasCommandApprovalMessageId(input: {
   receivedAt?: number | null;
 }): string {
   if (input.anchorMessageId) return input.anchorMessageId;
-  const sameTurnMessageId = findCanvasCommandFeedbackMessageId(input.messages, input.turnId);
+  const sameTurnMessageId = findCanvasCommandApprovalMessageId(input.messages, input.turnId);
   if (sameTurnMessageId) return sameTurnMessageId;
   if (input.turnId) return `assistant-${input.turnId}`;
   if (input.latestAssistantMessageId) return input.latestAssistantMessageId;
@@ -7582,7 +7593,7 @@ export function SuperChatPanel({
     const hasVisibleAssistantSurface = (id: string, turnId: string | null) =>
       visibleMessages.some(
         (message) =>
-          message.role !== "user" &&
+          message.role === "assistant" &&
           (message.id === id || (turnId && message.turnId === turnId)),
       );
     const addSurface = (id: string | null | undefined, turnId: string | null | undefined) => {
@@ -8676,8 +8687,11 @@ export function SuperChatPanel({
                       streaming={isStreamingAssistantMessage(message)}
                       canvasCommandApprovals={pendingCanvasCommandApprovals.filter(
                         (approval) =>
-                          approval.messageId === message.id ||
-                          (message.role !== "user" && approval.turnId && approval.turnId === message.turnId),
+                          message.role === "assistant" &&
+                          (
+                            approval.messageId === message.id ||
+                            (approval.turnId && approval.turnId === message.turnId)
+                          ),
                       )}
                       canvasCommandFeedbacks={mergeCanvasCommandFeedbackSources(
                         canvasCommandFeedbacksFromUiEvents(messageUiEvents(message)),
