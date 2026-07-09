@@ -1603,7 +1603,10 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
   const collapseSuccessfulDetails = !failed && steps.length > 2;
   const compactTitle = canvasCommandFeedbackCompactTitle(feedback);
   const userFailureMessage = failed
-    ? canvasCommandUserMessageFromResult(feedback.errors, feedback.commandResults)
+    ? canvasCommandUserMessageFromResult(
+        feedback.errors,
+        feedback.commandResults.map((step) => ({ error: step.error })),
+      )
     : null;
 
   if ((initiallyCompact || collapseSuccessfulDetails) && !expanded) {
@@ -1730,6 +1733,7 @@ type SkillStudioUiEvent =
       type: "skill_studio.status";
       status?: string;
       message?: string;
+      anchor_text_prefix?: string | null;
     }
   | {
       type: "skill_studio.questions";
