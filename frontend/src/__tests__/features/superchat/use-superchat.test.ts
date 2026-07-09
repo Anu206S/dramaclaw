@@ -9,6 +9,7 @@ import {
   canvasContextToolResultFrameForTest,
   dispatchCanvasCommandFrameForTest,
   mergeHistorySnapshot,
+  normalizeMessageForScopeForTest,
   pruneOldMessageCaches,
   sanitizeMessagesForCache,
   scopeForProjectForTest,
@@ -17,6 +18,11 @@ import {
   upsertServerAssistantMessageForTest,
   useSuperChat,
 } from "@/features/superchat/use-superchat";
+import {
+  CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+  CANVAS_NODE_REFERENCE_SCHEMA_VERSION,
+  isCanvasNodeReferenceAttachment,
+} from "@/features/freezone/chatNodeReferences";
 import {
   buildAssistantClarificationResponseForTest,
   buildAssistantClarificationToolResultForTest,
@@ -326,6 +332,91 @@ This Freezone chat can change the current canvas by returning a JSON block.
     });
 
     expect(normalized?.uiEvents).toBe(uiEvents);
+  });
+});
+
+describe("normalizeMessageForScope", () => {
+  const freezoneScope = scopeForProjectForTest("project-a", "freezone", "canvas-a", "agent-a");
+  const directorScope = scopeForProjectForTest("project-a", "director");
+  const canvasReferencePayload = {
+    schema_version: CANVAS_NODE_REFERENCE_SCHEMA_VERSION,
+    project: "project-a",
+    canvas_id: "canvas-a",
+    nodes: [
+      {
+        node_id: "node-text",
+        node_type: "textAnnotationNode",
+        label: "文本",
+        text_field: "content",
+        text_content: "你好",
+        media_type: null,
+        source_url: null,
+        preview_url: null,
+        slot_target: null,
+        mainline_context: null,
+        candidate_origin: null,
+        position: { x: 0, y: 0 },
+        action_catalog: { actions: [] },
+      },
+    ],
+    edges: [],
+  };
+  const canvasReferenceMedia = {
+    id: "canvas_node_reference:文本",
+    kind: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+    type: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+    label: "文本",
+    content: JSON.stringify(canvasReferencePayload),
+  };
+
+  it("hydrates cached Freezone canvas node references from raw media", () => {
+    const normalized = normalizeMessageForScopeForTest(
+      {
+        id: "user-1",
+        role: "user",
+        text: "帮我连接到图片节点",
+        attachments: [
+          {
+            id: "canvas_node_reference:文本",
+            type: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+            kind: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+            label: "文本",
+            fileName: "文本",
+          },
+        ],
+        rawMedia: [canvasReferenceMedia],
+      },
+      "assistant",
+      freezoneScope,
+    );
+
+    expect(normalized?.attachments).toHaveLength(1);
+    expect(normalized?.attachments?.[0].content).toBe(JSON.stringify(canvasReferencePayload));
+    expect(isCanvasNodeReferenceAttachment(normalized!.attachments![0])).toBe(true);
+  });
+
+  it("does not hydrate canvas node references for the director scope", () => {
+    const normalized = normalizeMessageForScopeForTest(
+      {
+        id: "user-1",
+        role: "user",
+        text: "帮我连接到图片节点",
+        attachments: [
+          {
+            id: "canvas_node_reference:文本",
+            type: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+            kind: CANVAS_NODE_REFERENCE_ATTACHMENT_TYPE,
+            label: "文本",
+            fileName: "文本",
+          },
+        ],
+        rawMedia: [canvasReferenceMedia],
+      },
+      "assistant",
+      directorScope,
+    );
+
+    expect(normalized?.attachments).toEqual([]);
   });
 });
 
