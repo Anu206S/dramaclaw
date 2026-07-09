@@ -1770,6 +1770,9 @@ type SkillStudioUiEvent =
       draft?: Record<string, unknown>;
       submitted?: boolean;
       cancelled?: boolean;
+      saved_to_catalog?: boolean;
+      saved_skill_ids?: string[];
+      saved_recipe_ids?: string[];
     };
 
 function uiEventRecordString(value: Record<string, unknown>, key: string): string | null {
@@ -2370,6 +2373,10 @@ export function buildSkillStudioDraftToolResultForTest(
   const recipes = Array.isArray(draft.recipes) ? draft.recipes : [];
   const summary = typeof draft.summary === "string" ? draft.summary : event.summary || "";
   const warnings = Array.isArray(draft.warnings) ? draft.warnings : [];
+  const savedSkillIds = textField(skill.id) ? [textField(skill.id)] : [];
+  const savedRecipeIds = recipes
+    .map((recipe) => textField((recipe as Record<string, unknown>).id))
+    .filter((id): id is string => Boolean(id));
   return {
     turn_id: event.turn_id ?? undefined,
     bridge_key: event.bridge_key ?? "",
@@ -2377,16 +2384,19 @@ export function buildSkillStudioDraftToolResultForTest(
     canvas_id: event.canvas_id ?? undefined,
     agent_id: event.agent_id ?? undefined,
     tool_call_status: "completed",
-    skill_studio_status: "draft_submitted",
+    skill_studio_status: "catalog_saved",
     ok: true,
-    action: "submit_draft",
+    action: "confirm_add",
+    saved_to_catalog: true,
+    saved_skill_ids: savedSkillIds,
+    saved_recipe_ids: savedRecipeIds,
     draft: { summary, skill, recipes, warnings },
     message: [
-      "我已在 Skill Studio 草稿卡片中确认/编辑草稿。",
+      "我已在 Skill Studio 草稿卡片中确认添加，已保存为正式 Skill / Recipe。",
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
       textField(skill.id) ? `Skill：${textField(skill.id)}` : "",
-      recipes.length > 0 ? `Recipes：${recipes.map((recipe) => textField((recipe as Record<string, unknown>).id)).filter(Boolean).join("、")}` : "",
-      "请基于该草稿继续下一步。",
+      savedRecipeIds.length > 0 ? `Recipes：${savedRecipeIds.join("、")}` : "",
+      "该 Skill / Recipe 已写入虾画配置，可立即使用。请不要再要求用户保存为正式能力。",
     ].filter(Boolean).join("\n"),
   };
 }
@@ -3927,7 +3937,10 @@ function ComposerWaitingStatus({
   variant?: SuperChatPanelVariant;
 }) {
   const { t } = useTranslation();
-  const waitingResponseOptions = t("aiAssistant.waitingResponses", { returnObjects: true });
+  const waitingResponseOptions = t(
+    variant === "freezone" ? "aiAssistant.freezoneWaitingResponses" : "aiAssistant.waitingResponses",
+    { returnObjects: true },
+  );
   const randomLabels = Array.isArray(waitingResponseOptions)
     ? waitingResponseOptions.filter((item): item is string => typeof item === "string" && item.trim().length > 0)
     : [];
@@ -8334,12 +8347,16 @@ export function SuperChatPanel({
         updateChatUiEvent(
           event.turn_id,
           (candidate) => skillStudioEventMatches(candidate, event),
-          (candidate) => ({
-            ...(candidate as Record<string, unknown>),
-            submitted: true,
-            draft: payload.draft,
-          }),
-        );
+            (candidate) => ({
+              ...(candidate as Record<string, unknown>),
+              submitted: true,
+              draft: payload.draft,
+              saved_to_catalog: payload.saved_to_catalog,
+              saved_skill_ids: payload.saved_skill_ids,
+              saved_recipe_ids: payload.saved_recipe_ids,
+              action: payload.action,
+            }),
+          );
       }
       toast.success("已添加到虾画 Skills / Recipes");
       return true;
@@ -8831,7 +8848,7 @@ export function SuperChatPanel({
         <div className={cn("sticky bottom-0 z-40 shrink-0 bg-transparent p-3", isFreezoneLayout && "px-4 pb-4 pt-1")}>
           <div className={cn("relative mx-auto mb-2.5 h-7 w-full max-w-[760px]", isFreezoneLayout && "max-w-none")}>
             <ComposerWaitingStatus
-              label={t("aiAssistant.waitingResponse")}
+              label={isFreezoneLayout ? t("aiAssistant.freezoneWaitingResponse") : t("aiAssistant.waitingResponse")}
               visible={showWaitingIndicator}
               variant={variant}
             />

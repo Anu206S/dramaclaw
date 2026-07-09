@@ -60,6 +60,10 @@ describe("locale translation files", () => {
 
     expect(zh.aiAssistant.freezonePlaceholder).toBe("想画什么、改哪里，直接告诉虾画");
     expect(en.aiAssistant.freezonePlaceholder).toBe("Tell Xia Draw what to create or where to refine");
+    expect(zh.aiAssistant.freezoneWaitingResponse).toBe("等待虾画回复");
+    expect(zh.aiAssistant.freezoneWaitingResponses).toContain("虾画正在看画布");
+    expect(en.aiAssistant.freezoneWaitingResponse).toBe("Waiting for Xia Draw");
+    expect(en.aiAssistant.freezoneWaitingResponses).toContain("Xia Draw is reading the canvas");
   });
 
   it("defines project queue kind labels in Chinese", () => {
