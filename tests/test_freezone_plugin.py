@@ -55,7 +55,6 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_build_workflow_plan" in names
     assert "freezone_resolve_catalog_workflow" in names
     assert "freezone_create_workflow_graph" in names
-    assert "freezone_present_skill_studio_questions" in names
     assert "freezone_present_agent_catalog_draft" in names
 
 
@@ -119,7 +118,7 @@ def test_freezone_plugin_clarification_tool_waits_for_frontend_result(monkeypatc
     assert pending_events[0]["event"]["questions"][0]["mode"] == "multiple"
 
 
-def test_freezone_plugin_skill_studio_tools_wait_for_frontend_results(monkeypatch):
+def test_freezone_plugin_skill_studio_draft_tool_waits_for_frontend_result(monkeypatch):
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
     pending_events = []
@@ -150,23 +149,6 @@ def test_freezone_plugin_skill_studio_tools_wait_for_frontend_results(monkeypatc
     monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
     monkeypatch.setattr(plugin, "wait_skill_studio_result", fake_wait_result)
 
-    questions = handlers["freezone_present_skill_studio_questions"](
-        {
-            "project_id": "project-a",
-            "canvas_id": "canvas-a",
-            "skill_studio_session_id": "skill_studio_01",
-            "title": "确定方向",
-            "questions": [
-                {
-                    "id": "scope",
-                    "title": "主要做什么？",
-                    "options": [{"id": "planning", "label": "策划"}],
-                }
-            ],
-            "allow_recommended": True,
-            "allow_skip": True,
-        }
-    )
     draft = handlers["freezone_present_agent_catalog_draft"](
         {
             "project_id": "project-a",
@@ -180,38 +162,67 @@ def test_freezone_plugin_skill_studio_tools_wait_for_frontend_results(monkeypatc
         }
     )
 
-    assert questions["ok"] is True
-    assert questions["status"] == "skill_studio_frontend_result"
-    assert questions["bridge_key"] == "skill-studio-1"
-    assert questions["selections"] == {"scope": "planning"}
     assert draft["ok"] is True
     assert draft["status"] == "skill_studio_frontend_result"
-    assert draft["bridge_key"] == "skill-studio-2"
-    assert pending_events[0]["event"]["type"] == "skill_studio.questions"
-    assert pending_events[0]["event"]["questions"][0]["id"] == "scope"
-    assert pending_events[1]["event"]["type"] == "skill_studio.draft"
-    assert pending_events[1]["event"]["skill"]["id"] == "demo_skill"
-    assert pending_events[1]["event"]["recipes"][0]["id"] == "demo_recipe"
+    assert draft["bridge_key"] == "skill-studio-1"
+    assert pending_events[0]["event"]["type"] == "skill_studio.draft"
+    assert pending_events[0]["event"]["skill"]["id"] == "demo_skill"
+    assert pending_events[0]["event"]["recipes"][0]["id"] == "demo_recipe"
     assert wait_keys[0][0] == "skill-studio-1"
-    assert wait_keys[1][0] == "skill-studio-2"
 
 
 def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     plugin = _load_plugin_module()
     schemas = {name: schema for name, schema, _handler in plugin.TOOLS}
 
-    questions_schema = schemas["freezone_present_skill_studio_questions"]["parameters"]
-    question_item = questions_schema["properties"]["questions"]["items"]
-    option_item = question_item["properties"]["options"]["items"]
+    clarification_schema = schemas["freezone_request_user_clarification"]["parameters"]
+    clarification_description = schemas["freezone_request_user_clarification"]["description"]
+    clarification_question_item = clarification_schema["properties"]["questions"]["items"]
+    clarification_option_item = clarification_question_item["properties"]["options"]["items"]
     draft_schema = schemas["freezone_present_agent_catalog_draft"]["parameters"]
     skill_schema = draft_schema["properties"]["skill"]
     recipe_item = draft_schema["properties"]["recipes"]["items"]
 
-    assert questions_schema["required"] == ["skill_studio_session_id", "questions"]
-    assert question_item["required"] == ["id", "title", "options"]
-    assert option_item["required"] == ["id", "label"]
-    assert skill_schema["required"] == ["id", "description", "category"]
-    assert recipe_item["required"] == ["id", "name", "output_kind", "systemPrompt"]
+    assert "including Skill Studio setup questions" in clarification_description
+    assert "decide the next step from the current context" in clarification_description
+    assert "freezone_present_skill_studio_questions" not in schemas
+    assert clarification_schema["required"] == ["clarification_id", "questions"]
+    assert clarification_question_item["required"] == ["id", "title", "options"]
+    assert clarification_option_item["required"] == ["id", "label"]
+    assert skill_schema["required"] == [
+        "id",
+        "description",
+        "category",
+        "triggers",
+        "planning",
+        "evaluation",
+    ]
+    assert skill_schema["properties"]["triggers"]["required"] == ["keywords", "nodeTypes"]
+    assert skill_schema["properties"]["planning"]["required"] == [
+        "planning_notes",
+        "prompt_guide",
+        "conduct_rules",
+        "default_aspect_ratios",
+        "model_preferences",
+    ]
+    assert skill_schema["properties"]["evaluation"]["required"] == [
+        "rating_bands",
+        "quality_threshold",
+        "domain_constraints",
+        "visual_review_items",
+        "text_review_items",
+    ]
+    assert recipe_item["required"] == [
+        "id",
+        "name",
+        "output_kind",
+        "action_keys",
+        "systemPrompt",
+        "required_elements",
+        "planner_cue",
+        "output_summary",
+        "needs_multimodal_input",
+    ]
     assert recipe_item["properties"]["output_kind"]["enum"] == ["text", "image", "video", "audio"]
 
 

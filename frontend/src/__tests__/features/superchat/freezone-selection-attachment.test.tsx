@@ -478,7 +478,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     expect(superChatMocks.send).not.toHaveBeenCalled();
   });
 
-  it("keeps user message actions inside the bubble and copies with the legacy clipboard fallback", () => {
+  it("reveals user message actions below the bubble and copies with the legacy clipboard fallback", () => {
     superChatMocks.messages = [
       {
         id: "message-a",
@@ -505,7 +505,9 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
 
     const copyButton = screen.getByLabelText("Copy");
     expect(copyButton.parentElement).toHaveClass("absolute");
-    expect(copyButton.parentElement).toHaveClass("right-1.5");
+    expect(copyButton.parentElement).toHaveClass("bottom-0");
+    expect(copyButton.parentElement).toHaveClass("right-0");
+    expect(copyButton.parentElement?.parentElement).toHaveClass("hover:pb-10");
 
     fireEvent.click(copyButton);
 

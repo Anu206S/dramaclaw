@@ -263,6 +263,14 @@ def test_resolve_skill_studio_tool_result_writes_bridge_result(monkeypatch, tmp_
 
 def test_resolve_saved_skill_studio_tool_result_tells_agent_catalog_is_formal(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path)
+    saved_items: list[tuple[str, dict]] = []
+
+    def fake_save_user_agent_config_item(*, username: str, kind: str, payload: dict) -> dict:
+        assert username == "alice"
+        saved_items.append((kind, payload))
+        return payload
+
+    monkeypatch.setattr(chat_route, "save_user_agent_config_item", fake_save_user_agent_config_item)
     payload = chat_route.SkillStudioToolResultIn(
         turn_id="turn-a",
         bridge_key="skill-key-2",
@@ -284,7 +292,36 @@ def test_resolve_saved_skill_studio_tool_result_tells_agent_catalog_is_formal(mo
     assert resolved["saved_recipe_ids"] == ["home-culture-poster-image"]
     assert "saved" in resolved["agent_instruction"]
     assert "Do not ask the user to save it again" in resolved["agent_instruction"]
+    assert saved_items == [
+        ("skills", {"id": "home-culture-poster"}),
+        ("recipes", {"id": "home-culture-poster-image"}),
+    ]
     assert wait_skill_studio_result("skill-key-2", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
+
+
+def test_resolve_cancelled_skill_studio_tool_result_stops_flow(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path)
+    payload = chat_route.SkillStudioToolResultIn(
+        turn_id="turn-a",
+        bridge_key="skill-key-3",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        agent_id="agent-1",
+        skill_studio_status="catalog_cancelled",
+        action="cancel",
+        draft={"skill": {"id": "home-culture-poster"}, "recipes": []},
+        message="用户已取消 Skill Studio 草稿保存。",
+    )
+
+    resolved = chat_route._resolve_skill_studio_tool_result_payload(payload, username="alice")
+
+    assert resolved["ok"] is True
+    assert resolved["skill_studio_status"] == "catalog_cancelled"
+    assert resolved["saved_to_catalog"] is False
+    assert "Do not continue" in resolved["agent_instruction"]
+    assert "canvas" in resolved["agent_instruction"]
+    assert "Continue the Skill Studio flow" not in resolved["agent_instruction"]
+    assert wait_skill_studio_result("skill-key-3", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
 
 
 @pytest.mark.anyio
@@ -394,6 +431,97 @@ async def test_resolve_skill_studio_draft_tool_result_persists_submitted_ui_even
     assert submitted_events[-1]["bridge_key"] == "draft-key-1"
     assert submitted_events[-1]["action"] == "submit_draft"
     assert submitted_events[-1]["draft"] == draft
+
+
+@pytest.mark.anyio
+async def test_receive_bridge_results_during_turn_resolves_skill_studio_result(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path / "bridge")
+    saved_items: list[tuple[str, dict]] = []
+
+    def fake_save_user_agent_config_item(*, username: str, kind: str, payload: dict) -> dict:
+        assert username == "admin"
+        saved_items.append((kind, payload))
+        return payload
+
+    monkeypatch.setattr(chat_route, "save_user_agent_config_item", fake_save_user_agent_config_item)
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.frames = [
+                {
+                    "type": "skill_studio.result",
+                    "turn_id": "turn-a",
+                    "bridge_key": "skill-ws-key-1",
+                    "project_id": "project-a",
+                    "canvas_id": "canvas-a",
+                    "agent_id": "agent-1",
+                    "skill_studio_status": "catalog_saved",
+                    "action": "confirm_add",
+                    "saved_to_catalog": True,
+                    "draft": {
+                        "skill": {"id": "home-culture-video"},
+                        "recipes": [{"id": "home-culture-video-script"}],
+                    },
+                }
+            ]
+
+        async def receive_json(self):
+            if self.frames:
+                return self.frames.pop(0)
+            raise chat_route.WebSocketDisconnect()
+
+    await chat_route._receive_bridge_results_during_turn(
+        websocket=FakeWebSocket(),  # type: ignore[arg-type]
+        username="admin",
+    )
+
+    resolved = wait_skill_studio_result("skill-ws-key-1", timeout_seconds=0.1, bridge_dir=tmp_path / "bridge")
+    assert resolved is not None
+    assert resolved["skill_studio_status"] == "catalog_saved"
+    assert resolved["saved_skill_ids"] == ["home-culture-video"]
+    assert resolved["saved_recipe_ids"] == ["home-culture-video-script"]
+    assert saved_items == [
+        ("skills", {"id": "home-culture-video"}),
+        ("recipes", {"id": "home-culture-video-script"}),
+    ]
+
+
+@pytest.mark.anyio
+async def test_receive_bridge_results_during_turn_resolves_clarification_result(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path / "bridge")
+
+    class FakeWebSocket:
+        def __init__(self) -> None:
+            self.frames = [
+                {
+                    "type": "assistant.clarification.result",
+                    "turn_id": "turn-a",
+                    "bridge_key": "clarify-test-key",
+                    "project_id": "project-a",
+                    "canvas_id": "canvas-a",
+                    "agent_id": "agent-1",
+                    "clarification_status": "answered",
+                    "action": "submit",
+                    "answers": {"scope": {"option_ids": ["locals"], "custom_text": ""}},
+                    "message": "用户已完成选择，请结合当前上下文继续。",
+                }
+            ]
+
+        async def receive_json(self):
+            if self.frames:
+                return self.frames.pop(0)
+            raise chat_route.WebSocketDisconnect()
+
+    await chat_route._receive_bridge_results_during_turn(
+        websocket=FakeWebSocket(),  # type: ignore[arg-type]
+        username="admin",
+    )
+
+    resolved = wait_clarification_result("clarify-test-key", timeout_seconds=0.1, bridge_dir=tmp_path / "bridge")
+    assert resolved is not None
+    assert resolved["clarification_status"] == "answered"
+    assert resolved["answers"]["scope"]["option_ids"] == ["locals"]
+    assert resolved["agent_instruction"] == "Continue using the frontend clarification response."
 
 
 @pytest.mark.anyio

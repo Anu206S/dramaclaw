@@ -53,7 +53,45 @@ export type ClientFrame =
       message?: string | null;
       user_message?: string | null;
       agent_hint?: string | null;
-    };
+	    }
+	  | {
+	      type: "skill_studio.result";
+	      turn_id?: string | null;
+	      bridge_key: string;
+	      project_id?: string | null;
+	      canvas_id?: string | null;
+	      agent_id?: string | null;
+      agentId?: string | null;
+      tool_call_status?: "completed" | "cancelled" | "failed";
+      skill_studio_status?: string;
+      ok?: boolean;
+      action?: string;
+      selections?: Record<string, unknown>;
+      draft?: Record<string, unknown> | null;
+	      saved_to_catalog?: boolean;
+	      saved_skill_ids?: string[];
+	      saved_recipe_ids?: string[];
+	      errors?: string[];
+	      message?: string | null;
+	    }
+	  | {
+	      type: "assistant.clarification.result";
+	      turn_id?: string | null;
+	      bridge_key: string;
+	      project_id?: string | null;
+	      canvas_id?: string | null;
+	      agent_id?: string | null;
+	      agentId?: string | null;
+	      tool_call_status?: "completed" | "cancelled" | "failed";
+	      clarification_status?: string;
+	      ok?: boolean;
+	      action?: string;
+	      answers?: Record<string, unknown>;
+	      skipped?: boolean;
+	      used_recommended?: boolean;
+	      errors?: string[];
+	      message?: string | null;
+	    };
 
 export type ChatScope = {
   kind: "home" | "project" | "freezone" | "asset" | "task";
