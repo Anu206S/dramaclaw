@@ -459,8 +459,13 @@ describe("SettingsDialog tabs", () => {
     fireEvent.change(screen.getByPlaceholderText("风格指引..."), {
       target: { value: "sytleguide" },
     });
-    fireEvent.change(screen.getByPlaceholderText("行为规则..."), {
+    const behaviorRulesInput = screen.getByPlaceholderText("行为规则...");
+    fireEvent.change(behaviorRulesInput, {
       target: { value: "behaviorrules" },
+    });
+    fireEvent.keyDown(behaviorRulesInput, {
+      key: "Enter",
+      code: "Enter",
     });
     fireEvent.change(screen.getByPlaceholderText("如：7"), { target: { value: "7" } });
     fireEvent.change(screen.getByPlaceholderText("输入规则"), {

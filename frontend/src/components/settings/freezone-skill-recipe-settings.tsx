@@ -50,7 +50,7 @@ interface SkillDraft {
   nodeScopes: string[];
   planningNotes: string;
   promptGuide: string;
-  conductRules: string;
+  conductRules: string[];
   qualityThreshold: string;
   domainConstraints: string;
 }
@@ -637,7 +637,7 @@ function NewSkillEditor({
     nodeScopes: [],
     planningNotes: "",
     promptGuide: "",
-    conductRules: "",
+    conductRules: [],
     qualityThreshold: "",
     domainConstraints: "",
   });
@@ -666,7 +666,7 @@ function NewSkillEditor({
         nodeScopes: [],
         planningNotes: "",
         promptGuide: "",
-        conductRules: "",
+        conductRules: [],
         qualityThreshold: "",
         domainConstraints: "",
       });
@@ -725,7 +725,7 @@ function NewSkillEditor({
       planning: {
         planning_notes: skillDraft.planningNotes,
         prompt_guide: skillDraft.promptGuide,
-        conduct_rules: splitDraftList(skillDraft.conductRules),
+        conduct_rules: skillDraft.conductRules,
       },
       evaluation: {
         rating_bands: ratingBands.map((anchor) => ({
@@ -834,7 +834,8 @@ function NewSkillEditor({
               value={skillDraft.promptGuide}
               onChange={(value) => updateSkillDraft({ promptGuide: value })}
             />
-            <EditorField
+            <TagInputField
+              layout="stacked"
               label={t("settings.freezoneCatalog.newSkill.conductRules")}
               placeholder={t("settings.freezoneCatalog.newSkill.conductRulesPlaceholder")}
               value={skillDraft.conductRules}
@@ -991,7 +992,7 @@ function skillDraftFromPayload(payload: FreezoneAgentConfigPayload | null): {
       nodeScopes: getStringArray(triggers.node_scopes),
       planningNotes: getString(planning.planning_notes),
       promptGuide: getString(planning.prompt_guide),
-      conductRules: getStringArray(planning.conduct_rules).join("\n"),
+      conductRules: getStringArray(planning.conduct_rules),
       qualityThreshold: optionalNumberText(evaluation.quality_threshold),
       domainConstraints: getStringArray(evaluation.domain_constraints).join("\n"),
     },
@@ -1163,6 +1164,7 @@ function EditorField({
 function TagInputField({
   hint,
   label,
+  layout = "inline",
   onChange,
   placeholder,
   required,
@@ -1170,34 +1172,49 @@ function TagInputField({
 }: {
   hint?: string;
   label: string;
+  layout?: "inline" | "stacked";
   onChange: (value: string[]) => void;
   placeholder?: string;
   required?: boolean;
   value: string[];
 }) {
   const [draft, setDraft] = useState("");
+  const items = Array.isArray(value) ? value : getStringArray(value);
 
   const addDraft = () => {
     const next = draft.trim();
     if (!next) return;
-    onChange(value.includes(next) ? value : [...value, next]);
+    onChange(items.includes(next) ? items : [...items, next]);
     setDraft("");
   };
 
   const removeTag = (tag: string) => {
-    onChange(value.filter((item) => item !== tag));
+    onChange(items.filter((item) => item !== tag));
   };
 
   return (
     <label className="block">
       <EditorLabel required={required}>{label}</EditorLabel>
-      <div className="flex min-h-9 flex-wrap items-center gap-1.5 rounded-md border border-input/80 bg-input/20 px-2 py-1 transition-colors focus-within:border-ring/70 focus-within:ring-1 focus-within:ring-ring/30">
-        {value.map((tag) => (
+      <div
+        className={cn(
+          "flex min-h-9 items-center gap-1.5 rounded-md border border-input/80 bg-input/20 px-2 py-1 transition-colors focus-within:border-ring/70 focus-within:ring-1 focus-within:ring-ring/30",
+          layout === "stacked" ? "flex-col items-stretch" : "flex-wrap",
+        )}
+      >
+        {items.map((tag) => (
           <span
             key={tag}
-            className="inline-flex h-6 max-w-full items-center gap-1 rounded bg-white/[0.07] px-2 text-xs text-foreground"
+            className={cn(
+              "inline-flex max-w-full items-center gap-1 rounded bg-white/[0.07] px-2 text-xs text-foreground",
+              layout === "stacked" ? "min-h-7 w-full py-1" : "h-6",
+            )}
           >
-            <span className="truncate">{tag}</span>
+            <span className={cn(
+              "min-w-0 flex-1",
+              layout === "stacked" ? "whitespace-normal break-words leading-4" : "truncate",
+            )}>
+              {tag}
+            </span>
             <button
               type="button"
               aria-label={`删除 ${tag}`}
@@ -1222,14 +1239,17 @@ function TagInputField({
               addDraft();
               return;
             }
-            if ((event.key === "Backspace" || event.key === "Delete") && !draft && value.length) {
+            if ((event.key === "Backspace" || event.key === "Delete") && !draft && items.length) {
               event.preventDefault();
-              onChange(value.slice(0, -1));
+              onChange(items.slice(0, -1));
             }
           }}
           onBlur={addDraft}
-          placeholder={value.length ? undefined : placeholder}
-          className="h-6 min-w-24 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground"
+          placeholder={items.length ? undefined : placeholder}
+          className={cn(
+            "h-6 min-w-24 flex-1 bg-transparent text-sm text-foreground outline-none placeholder:text-muted-foreground",
+            layout === "stacked" && "w-full flex-none",
+          )}
         />
       </div>
       {hint ? <span className="mt-1 block text-[10px] text-muted-foreground">{hint}</span> : null}
@@ -1805,5 +1825,11 @@ function getString(value: unknown) {
 }
 
 function getStringArray(value: unknown) {
-  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+  if (Array.isArray(value)) {
+    return value
+      .map((item) => (typeof item === "string" ? item.trim() : ""))
+      .filter(Boolean);
+  }
+  if (typeof value === "string") return splitDraftList(value);
+  return [];
 }

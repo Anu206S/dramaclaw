@@ -417,49 +417,6 @@ def _handle_request_user_clarification(args: dict[str, Any], **_: Any) -> str:
     )
 
 
-def _handle_present_skill_studio_questions(args: dict[str, Any], **_: Any) -> str:
-    project = (
-        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
-    )
-    canvas = (
-        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
-    )
-    session_id = str(args.get("skill_studio_session_id") or args.get("session_id") or "").strip()
-    if not session_id:
-        return tool_result(
-            {
-                "ok": False,
-                "type": "skill_studio.questions",
-                "status": "skill_studio_session_id_required",
-                "error": "skill_studio_session_id is required",
-            }
-        )
-    questions = _safe_list(args.get("questions"))
-    if not questions:
-        return tool_result(
-            {
-                "ok": False,
-                "type": "skill_studio.questions",
-                "status": "questions_required",
-                "error": "questions must contain at least one question",
-                "skill_studio_session_id": session_id,
-            }
-        )
-    return _emit_skill_studio_event(
-        project,
-        canvas,
-        {
-            "type": "skill_studio.questions",
-            "skill_studio_session_id": session_id,
-            "title": str(args.get("title") or "").strip(),
-            "description": str(args.get("description") or "").strip(),
-            "questions": questions,
-            "allow_recommended": bool(args.get("allow_recommended", True)),
-            "allow_skip": bool(args.get("allow_skip", True)),
-        },
-    )
-
-
 def _handle_present_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     project = (
         str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
@@ -1650,6 +1607,37 @@ _SKILL_STUDIO_QUESTION_SCHEMA = {
     "required": ["id", "title", "options"],
 }
 
+_SKILL_STUDIO_ASPECT_RATIO_SCHEMA = {
+    "type": "object",
+    "description": "Default aspect ratio by output task kind.",
+    "additionalProperties": {"type": "string"},
+}
+
+_SKILL_STUDIO_MODEL_PREFERENCE_SCHEMA = {
+    "type": "object",
+    "description": "Preferred model by output task kind.",
+    "additionalProperties": {"type": "string"},
+}
+
+_SKILL_STUDIO_RATING_BAND_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "score": {"type": "number", "description": "Score anchor from 0 to 10."},
+        "description": {"type": "string", "description": "Rubric text for this score anchor."},
+    },
+    "required": ["score", "description"],
+}
+
+_SKILL_STUDIO_REVIEW_ITEM_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "name": {"type": "string", "description": "Review dimension name."},
+        "weight": {"type": "number", "description": "Dimension weight from 0 to 1."},
+        "description": {"type": "string", "description": "Review dimension description."},
+    },
+    "required": ["name", "weight", "description"],
+}
+
 _SKILL_STUDIO_SKILL_SCHEMA = {
     "type": "object",
     "description": "Complete Xi画 Skill catalog draft.",
@@ -1668,22 +1656,80 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
         },
         "triggers": {
             "type": "object",
-            "description": "Trigger rules such as keywords and nodeTypes.",
+            "description": "Trigger rules such as keywords and nodeTypes. Use an empty array when no node type trigger applies.",
             "properties": {
                 "keywords": {"type": "array", "items": {"type": "string"}},
                 "nodeTypes": {"type": "array", "items": {"type": "string"}},
             },
+            "required": ["keywords", "nodeTypes"],
         },
         "planning": {
             "type": "object",
             "description": "Planner behavior hints and rules.",
+            "properties": {
+                "planning_notes": {
+                    "type": "string",
+                    "description": "Planner-facing context hints for this skill.",
+                },
+                "prompt_guide": {
+                    "type": "string",
+                    "description": "Prompt style and structure guidance.",
+                },
+                "conduct_rules": {
+                    "type": "array",
+                    "description": "Behavior rules the agent should follow in this domain.",
+                    "items": {"type": "string"},
+                },
+                "default_aspect_ratios": _SKILL_STUDIO_ASPECT_RATIO_SCHEMA,
+                "model_preferences": _SKILL_STUDIO_MODEL_PREFERENCE_SCHEMA,
+            },
+            "required": [
+                "planning_notes",
+                "prompt_guide",
+                "conduct_rules",
+                "default_aspect_ratios",
+                "model_preferences",
+            ],
         },
         "evaluation": {
             "type": "object",
             "description": "Evaluation rubric.",
+            "properties": {
+                "rating_bands": {
+                    "type": "array",
+                    "description": "Score anchors for evaluating output quality.",
+                    "items": _SKILL_STUDIO_RATING_BAND_SCHEMA,
+                },
+                "quality_threshold": {
+                    "type": "number",
+                    "description": "Passing score threshold.",
+                },
+                "domain_constraints": {
+                    "type": "array",
+                    "description": "Domain-specific constraints.",
+                    "items": {"type": "string"},
+                },
+                "visual_review_items": {
+                    "type": "array",
+                    "description": "Visual review dimensions.",
+                    "items": _SKILL_STUDIO_REVIEW_ITEM_SCHEMA,
+                },
+                "text_review_items": {
+                    "type": "array",
+                    "description": "Text review dimensions.",
+                    "items": _SKILL_STUDIO_REVIEW_ITEM_SCHEMA,
+                },
+            },
+            "required": [
+                "rating_bands",
+                "quality_threshold",
+                "domain_constraints",
+                "visual_review_items",
+                "text_review_items",
+            ],
         },
     },
-    "required": ["id", "description", "category"],
+    "required": ["id", "description", "category", "triggers", "planning", "evaluation"],
 }
 
 _SKILL_STUDIO_RECIPE_SCHEMA = {
@@ -1727,7 +1773,17 @@ _SKILL_STUDIO_RECIPE_SCHEMA = {
             "description": "Whether the recipe needs image/video/audio input.",
         },
     },
-    "required": ["id", "name", "output_kind", "systemPrompt"],
+    "required": [
+        "id",
+        "name",
+        "output_kind",
+        "action_keys",
+        "systemPrompt",
+        "required_elements",
+        "planner_cue",
+        "output_summary",
+        "needs_multimodal_input",
+    ],
 }
 
 
@@ -1897,7 +1953,7 @@ TOOLS = (
         "freezone_request_user_clarification",
         _schema(
             "freezone_request_user_clarification",
-            "Ask the user structured clarification questions in the Freezone frontend and wait for their submitted answers. Use for any workflow that needs user choices before continuing; do not use it to write canvas nodes or save catalog files.",
+            "Ask the user structured clarification questions in the Freezone frontend and wait for their submitted answers. Use for user choices before continuing the current chat or workflow, including Skill Studio setup questions. The submitted answers only mean the user completed the choices; decide the next step from the current context. This tool does not write canvas nodes or save catalog files.",
             {
                 "clarification_id": {
                     "type": "string",
@@ -1929,36 +1985,6 @@ TOOLS = (
             ["clarification_id", "questions"],
         ),
         _handle_request_user_clarification,
-    ),
-    (
-        "freezone_present_skill_studio_questions",
-        _schema(
-            "freezone_present_skill_studio_questions",
-            "Present high-level clickable questions for Xi画 Skill Studio. Use only when the user explicitly wants to create/edit/save/distill a Skill or Recipe and more direction is needed. This does not write the canvas or save catalog files.",
-            {
-                "skill_studio_session_id": {
-                    "type": "string",
-                    "description": "Stable id shared by questions, draft, and later edits in this Skill Studio flow.",
-                },
-                "title": {"type": "string", "description": "Question card title."},
-                "description": {"type": "string", "description": "Short user-facing explanation."},
-                "questions": {
-                    "type": "array",
-                    "description": "3-5 high-level questions. Each question has id, title, and options with id/label/description.",
-                    "items": _SKILL_STUDIO_QUESTION_SCHEMA,
-                },
-                "allow_recommended": {
-                    "type": "boolean",
-                    "description": "Whether to show a use-recommended option.",
-                },
-                "allow_skip": {
-                    "type": "boolean",
-                    "description": "Whether to show a skip-to-draft option.",
-                },
-            },
-            ["skill_studio_session_id", "questions"],
-        ),
-        _handle_present_skill_studio_questions,
     ),
     (
         "freezone_present_agent_catalog_draft",

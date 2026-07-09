@@ -35,6 +35,7 @@ from novelvideo.freezone.canvas_command_bridge import (
     resolve_canvas_context,
     resolve_skill_studio_result,
 )
+from novelvideo.freezone.agent_config_store import save_user_agent_config_item
 from novelvideo.ports import get_usage_meter
 from novelvideo.project_context import ProjectContext, resolve_project_context
 from novelvideo.shared.billing_errors import (
@@ -461,6 +462,42 @@ def _skill_studio_draft_catalog_ids(draft: dict[str, Any] | None) -> tuple[list[
     return ([skill_id] if skill_id else []), recipe_ids
 
 
+def _save_skill_studio_draft_catalog(
+    *,
+    username: str,
+    draft: dict[str, Any] | None,
+) -> tuple[list[str], list[str], list[str]]:
+    if not isinstance(draft, dict):
+        return [], [], ["Skill Studio draft is missing."]
+
+    saved_skill_ids: list[str] = []
+    saved_recipe_ids: list[str] = []
+    errors: list[str] = []
+    skill = draft.get("skill")
+    if isinstance(skill, dict) and str(skill.get("id") or "").strip():
+        try:
+            saved = save_user_agent_config_item(username=username, kind="skills", payload=skill)
+            saved_skill_ids.append(str(saved.get("id") or skill.get("id")))
+        except Exception as exc:
+            errors.append(f"Failed to save Skill: {exc}")
+
+    recipes = draft.get("recipes")
+    if isinstance(recipes, list):
+        for index, recipe in enumerate(recipes):
+            if not isinstance(recipe, dict) or not str(recipe.get("id") or "").strip():
+                continue
+            try:
+                saved = save_user_agent_config_item(username=username, kind="recipes", payload=recipe)
+                saved_recipe_ids.append(str(saved.get("id") or recipe.get("id")))
+            except Exception as exc:
+                recipe_id = str(recipe.get("id") or f"#{index + 1}")
+                errors.append(f"Failed to save Recipe {recipe_id}: {exc}")
+
+    if not saved_skill_ids and not saved_recipe_ids and not errors:
+        errors.append("Skill Studio draft does not contain a Skill or Recipe id.")
+    return saved_skill_ids, saved_recipe_ids, errors
+
+
 def _resolve_skill_studio_tool_result_payload(
     payload: SkillStudioToolResultIn,
     *,
@@ -474,6 +511,19 @@ def _resolve_skill_studio_tool_result_payload(
     saved_to_catalog = payload.saved_to_catalog or payload.skill_studio_status == "catalog_saved"
     saved_skill_ids = payload.saved_skill_ids or draft_skill_ids
     saved_recipe_ids = payload.saved_recipe_ids or draft_recipe_ids
+    errors = list(payload.errors)
+    cancelled = (
+        payload.action == "cancel"
+        or payload.skill_studio_status == "catalog_cancelled"
+    )
+    if ok and saved_to_catalog:
+        saved_skill_ids, saved_recipe_ids, catalog_errors = _save_skill_studio_draft_catalog(
+            username=username,
+            draft=payload.draft,
+        )
+        if catalog_errors:
+            errors.extend(catalog_errors)
+            ok = False
     if ok:
         if saved_to_catalog:
             agent_instruction = (
@@ -482,6 +532,14 @@ def _resolve_skill_studio_tool_result_payload(
                 "Do not ask the user to save it again."
             )
             message = payload.message or "Frontend saved the Skill/Recipe draft to the Freezone catalog."
+        elif cancelled:
+            agent_instruction = (
+                "The user cancelled saving this Skill/Recipe draft. "
+                "Do not continue this Skill Studio flow; acknowledge the cancellation and stop. "
+                "Do not create canvas nodes, do not execute workflows, and do not continue to another stage "
+                "unless the user explicitly asks for a next step."
+            )
+            message = payload.message or "Frontend reported that the user cancelled saving the Skill/Recipe draft."
         else:
             agent_instruction = "Continue the Skill Studio flow using the frontend response."
             message = payload.message or "Frontend returned the user's Skill Studio response."
@@ -499,7 +557,7 @@ def _resolve_skill_studio_tool_result_payload(
         "saved_to_catalog": saved_to_catalog,
         "saved_skill_ids": saved_skill_ids,
         "saved_recipe_ids": saved_recipe_ids,
-        "errors": payload.errors,
+        "errors": errors,
         "project_id": payload.project_id,
         "canvas_id": payload.canvas_id,
         "message": message,
@@ -727,6 +785,57 @@ async def resolve_clarification_tool_result(
     except Exception:
         logger.exception("failed to persist clarification result ui event")
     return {"ok": True, "data": resolved}
+
+
+async def _receive_bridge_results_during_turn(
+    *,
+    websocket: WebSocket,
+    username: str,
+) -> None:
+    while True:
+        try:
+            raw = await websocket.receive_json()
+        except asyncio.CancelledError:
+            raise
+        except RuntimeError as exc:
+            if "WebSocket is not connected" in str(exc):
+                return
+            raise
+        except WebSocketDisconnect:
+            return
+
+        event_type = str(raw.get("type") or "")
+        if event_type == "canvas.command.result":
+            payload = CanvasCommandToolResultIn.model_validate(raw)
+            _resolve_canvas_command_tool_result_payload(payload, username=username)
+            if payload.cancelled or payload.canvas_apply_status == "cancelled_by_user":
+                await _close_canvas_command_worker(username, payload)
+            continue
+
+        if event_type == "canvas.context.result":
+            payload = CanvasContextToolResultIn.model_validate(raw)
+            _resolve_canvas_context_tool_result_payload(payload, username=username)
+            continue
+
+        if event_type == "skill_studio.result":
+            payload = SkillStudioToolResultIn.model_validate(raw)
+            _resolve_skill_studio_tool_result_payload(payload, username=username)
+            try:
+                _persist_skill_studio_result_ui_event(username=username, payload=payload)
+            except Exception:
+                logger.exception("failed to persist skill studio result ui event")
+            continue
+
+        if event_type == "assistant.clarification.result":
+            payload = ClarificationToolResultIn.model_validate(raw)
+            _resolve_clarification_tool_result_payload(payload, username=username)
+            try:
+                _persist_clarification_result_ui_event(username=username, payload=payload)
+            except Exception:
+                logger.exception("failed to persist clarification result ui event")
+            continue
+
+        logger.debug("ignoring websocket event during active chat turn: %s", event_type)
 
 
 async def _authenticate_ws(websocket: WebSocket) -> dict[str, Any]:
@@ -1406,6 +1515,9 @@ async def _stream_project_turn(
     heartbeat_task = asyncio.create_task(
         _chat_heartbeat(websocket, scope=scope, turn_id=turn_id, send_lock=send_lock)
     )
+    bridge_result_receive_task = asyncio.create_task(
+        _receive_bridge_results_during_turn(websocket=websocket, username=username)
+    )
     emitted_bridge_keys: set[str] = set()
     pending_canvas_task = asyncio.create_task(
         _watch_pending_canvas_commands(
@@ -1571,12 +1683,15 @@ async def _stream_project_turn(
         )
     finally:
         heartbeat_task.cancel()
+        bridge_result_receive_task.cancel()
         pending_canvas_task.cancel()
         pending_canvas_context_task.cancel()
         pending_skill_studio_task.cancel()
         pending_clarification_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
+        with contextlib.suppress(asyncio.CancelledError):
+            await bridge_result_receive_task
         with contextlib.suppress(asyncio.CancelledError):
             await pending_canvas_task
         with contextlib.suppress(asyncio.CancelledError):
@@ -1844,6 +1959,24 @@ async def chat_ws(websocket: WebSocket) -> None:
             if event_type == "canvas.context.result":
                 payload = CanvasContextToolResultIn.model_validate(raw)
                 _resolve_canvas_context_tool_result_payload(payload, username=username)
+                continue
+
+            if event_type == "skill_studio.result":
+                payload = SkillStudioToolResultIn.model_validate(raw)
+                _resolve_skill_studio_tool_result_payload(payload, username=username)
+                try:
+                    _persist_skill_studio_result_ui_event(username=username, payload=payload)
+                except Exception:
+                    logger.exception("failed to persist skill studio result ui event")
+                continue
+
+            if event_type == "assistant.clarification.result":
+                payload = ClarificationToolResultIn.model_validate(raw)
+                _resolve_clarification_tool_result_payload(payload, username=username)
+                try:
+                    _persist_clarification_result_ui_event(username=username, payload=payload)
+                except Exception:
+                    logger.exception("failed to persist clarification result ui event")
                 continue
 
             if event_type != "chat.message":

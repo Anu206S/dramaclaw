@@ -765,7 +765,6 @@ function upsertAssistantUiEvent(
           ...message,
           text: message.text || "",
           uiEvents,
-          timestamp: Date.now(),
         };
       }),
     );
@@ -782,6 +781,21 @@ function upsertAssistantUiEvent(
     },
   ]);
 }
+
+export const upsertAssistantUiEventForTest = upsertAssistantUiEvent;
+
+function resolveUiEventTurnId(
+  frameTurnId: unknown,
+  pendingTurnId: string | null,
+  activeTurnId: string | null,
+): string | null {
+  if (typeof frameTurnId === "string" && frameTurnId.trim()) {
+    return frameTurnId;
+  }
+  return pendingTurnId ?? activeTurnId;
+}
+
+export const resolveUiEventTurnIdForTest = resolveUiEventTurnId;
 
 function updateAssistantUiEvents(
   messages: ChatMessage[],
@@ -1158,7 +1172,9 @@ export function useSuperChat({
     const ws = wsRef.current;
     if (ws?.readyState === WebSocket.OPEN) {
       ws.send(JSON.stringify(frame));
+      return true;
     }
+    return false;
   }, []);
 
   const requestHistory = useCallback(() => {
@@ -1453,10 +1469,11 @@ export function useSuperChat({
         break;
       case "skill_studio.event": {
         if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
-        const turnId =
-          pendingClientTurnIdRef.current
-          ?? activeTurnIdRef.current
-          ?? (typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null);
+        const turnId = resolveUiEventTurnId(
+          frame.turn_id,
+          pendingClientTurnIdRef.current,
+          activeTurnIdRef.current,
+        );
         if (!turnId || frame.event == null) break;
         markTurnActive(turnId);
         const event = frame.event && typeof frame.event === "object" && !Array.isArray(frame.event)
@@ -1475,10 +1492,11 @@ export function useSuperChat({
       }
       case "assistant.clarification.event": {
         if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
-        const turnId =
-          pendingClientTurnIdRef.current
-          ?? activeTurnIdRef.current
-          ?? (typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null);
+        const turnId = resolveUiEventTurnId(
+          frame.turn_id,
+          pendingClientTurnIdRef.current,
+          activeTurnIdRef.current,
+        );
         if (!turnId || frame.event == null) break;
         markTurnActive(turnId);
         const event = frame.event && typeof frame.event === "object" && !Array.isArray(frame.event)
@@ -1497,10 +1515,11 @@ export function useSuperChat({
       }
       case "skill_studio.status": {
         if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
-        const turnId =
-          pendingClientTurnIdRef.current
-          ?? activeTurnIdRef.current
-          ?? (typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null);
+        const turnId = resolveUiEventTurnId(
+          frame.turn_id,
+          pendingClientTurnIdRef.current,
+          activeTurnIdRef.current,
+        );
         if (!turnId) break;
         markTurnActive(turnId);
         setMessages((current) =>
@@ -1771,6 +1790,14 @@ export function useSuperChat({
     }
   }, [desiredScope]);
 
+  const submitSkillStudioResult = useCallback((payload: Omit<Extract<ClientFrame, { type: "skill_studio.result" }>, "type">) => {
+    return sendFrame({ type: "skill_studio.result", ...payload });
+  }, [sendFrame]);
+
+  const submitAssistantClarificationResult = useCallback((payload: Omit<Extract<ClientFrame, { type: "assistant.clarification.result" }>, "type">) => {
+    return sendFrame({ type: "assistant.clarification.result", ...payload });
+  }, [sendFrame]);
+
   const abort = useCallback(() => {
     const turnId = activeTurnIdRef.current ?? pendingClientTurnIdRef.current;
     if (turnId) {
@@ -1878,11 +1905,13 @@ export function useSuperChat({
     resolveApproval,
     selectRelayInstance,
     send,
-    selectedInstanceId,
-    sessionControl,
-    setSettings,
-    settings,
-    pinnedIds,
+	    selectedInstanceId,
+	    sessionControl,
+	    setSettings,
+	    settings,
+	    submitAssistantClarificationResult,
+	    submitSkillStudioResult,
+	    pinnedIds,
     streamText,
     switchModel,
     togglePin,

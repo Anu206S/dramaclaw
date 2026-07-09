@@ -11,10 +11,12 @@ import {
   mergeHistorySnapshot,
   normalizeMessageForScopeForTest,
   pruneOldMessageCaches,
+  resolveUiEventTurnIdForTest,
   sanitizeMessagesForCache,
   scopeForProjectForTest,
   scopeSessionKeyForTest,
   updateAssistantUiEventsForTest,
+  upsertAssistantUiEventForTest,
   upsertServerAssistantMessageForTest,
   useSuperChat,
 } from "@/features/superchat/use-superchat";
@@ -27,14 +29,19 @@ import {
   buildAssistantClarificationResponseForTest,
   buildAssistantClarificationToolResultForTest,
   buildSkillStudioCatalogSaveItemsForTest,
+  buildSkillStudioDraftCancelToolResultForTest,
   buildSkillStudioDraftToolResultForTest,
   skillStudioDraftFieldLabelsForTest,
   buildSkillStudioFlowItemsForTest,
+  buildSkillStudioQuestionTimelineItemsForTest,
   buildSkillStudioQuestionResponseForTest,
   buildSkillStudioQuestionToolResultForTest,
   messageIsWaitingForUserReplyForTest,
   messageHasSkillStudioUiEventForTest,
+  shouldHideSkillStudioStatusOnlyMessageForTest,
+  shouldShowComposerWaitingIndicator,
   skillStudioEventsFromUiEventsForTest,
+  visibleCanvasContextActivitiesForMessageForTest,
   visibleSkillStudioEventsForMessageForTest,
 } from "@/features/superchat/superchat-panel";
 import type { ChatMessage, ChatRole } from "@/features/superchat/types";
@@ -550,6 +557,44 @@ describe("updateAssistantUiEvents", () => {
 });
 
 describe("Skill Studio question response", () => {
+  it("uses the server turn id for incoming UI events before pending local turns", () => {
+    expect(resolveUiEventTurnIdForTest("server-turn", "pending-turn", "active-turn")).toBe("server-turn");
+    expect(resolveUiEventTurnIdForTest("  ", "pending-turn", "active-turn")).toBe("pending-turn");
+    expect(resolveUiEventTurnIdForTest(null, null, "active-turn")).toBe("active-turn");
+  });
+
+  it("hides generic waiting status while a composer prompt is active", () => {
+    expect(shouldShowComposerWaitingIndicator({
+      busy: true,
+      hasAssistantText: false,
+      streamText: "",
+      pendingCanvasCommandApprovalCount: 0,
+      hasPendingVisibleUserMessage: true,
+      hasThinkingCanvasContextActivity: false,
+      hasActiveComposerPrompt: true,
+    })).toBe(false);
+  });
+
+  it("keeps an existing assistant event message in its original timeline position", () => {
+    const current = [
+      message("assistant-turn-1", "assistant", "", 10, "turn-1"),
+      message("user-turn-2", "user", "用户提交后的下一条消息", 20, "turn-2"),
+    ];
+
+    const next = upsertAssistantUiEventForTest(current, "turn-1", {
+      type: "assistant.clarification.request",
+      clarification_id: "clarify-1",
+      submitted: true,
+    });
+
+    expect(next.map((item) => item.id)).toEqual(["assistant-turn-1", "user-turn-2"]);
+    expect(next[0]?.timestamp).toBe(10);
+    expect(next[0]?.uiEvents?.[0]).toMatchObject({
+      type: "assistant.clarification.request",
+      clarification_id: "clarify-1",
+    });
+  });
+
   it("marks an assistant message with pending questions as waiting for the user", () => {
     const pending = message("assistant-skill-question", "assistant", "", 100);
     pending.uiEvents = [
@@ -611,7 +656,8 @@ describe("Skill Studio question response", () => {
     expect(text).toContain("创建宣传海报 Skill");
     expect(text).toContain("核心使用场景是什么？：用于社媒平台发布（小红书/抖音等）");
     expect(text).toContain("偏好的视觉风格是？：现代简约/信息图风");
-    expect(text).toContain("请基于以上选择继续生成 Skill / Recipe 草稿。");
+    expect(text).toContain("用户已完成选择，请结合当前上下文继续。");
+    expect(text).not.toContain("继续生成 Skill / Recipe 草稿");
   });
 
   it("keeps unanswered questions visible when partially submitted", () => {
@@ -666,6 +712,60 @@ describe("Skill Studio question response", () => {
     );
 
     expect(text).toContain("海报通常需要包含哪些内容元素？：家乡名称与简介；特色图片/插画；补充：再加一个适合社媒传播的互动话题");
+  });
+
+  it("builds compact timeline items for submitted question cards", () => {
+    const items = buildSkillStudioQuestionTimelineItemsForTest(
+      [
+        {
+          id: "audience",
+          title: "目标受众是谁？",
+          options: [{ id: "travelers", label: "外地游客", description: "潜在旅行者" }],
+        },
+        {
+          id: "elements",
+          title: "希望突出哪些内容？",
+          selection_mode: "multiple",
+          options: [
+            { id: "food", label: "地方美食" },
+            { id: "heritage", label: "非遗文化" },
+          ],
+        },
+        {
+          id: "extra",
+          title: "其他补充",
+          options: [],
+        },
+      ],
+      {
+        audience: "travelers",
+        elements: {
+          option_ids: ["food", "heritage"],
+          custom_text: "突出苏州桃花坞年画",
+        },
+      },
+    );
+
+    expect(items).toEqual([
+      {
+        key: "audience",
+        title: "目标受众是谁？",
+        summary: "外地游客（潜在旅行者）",
+        answered: true,
+      },
+      {
+        key: "elements",
+        title: "希望突出哪些内容？",
+        summary: "地方美食；非遗文化；补充：突出苏州桃花坞年画",
+        answered: true,
+      },
+      {
+        key: "extra",
+        title: "其他补充",
+        summary: "未选择",
+        answered: false,
+      },
+    ]);
   });
 
   it("builds a bridge tool result payload instead of a new chat message", () => {
@@ -959,6 +1059,78 @@ describe("Skill Studio status events", () => {
       ],
     }).map((event) => event.type)).toEqual([]);
   });
+
+  it("hides routing status once an assistant clarification card is visible", () => {
+    expect(visibleSkillStudioEventsForMessageForTest({
+      id: "assistant-turn-1",
+      role: "assistant",
+      text: "",
+      timestamp: 10,
+      turnId: "turn-1",
+      uiEvents: [
+        {
+          type: "skill_studio.status",
+          status: "routing",
+          message: "正在进入 Skill Studio...",
+        },
+        {
+          type: "assistant.clarification.request",
+          bridge_key: "clarify-key-1",
+          title: "家乡文化短片 Skill 配置",
+          submitted: true,
+          action: "submit",
+          questions: [],
+          answers: {},
+        },
+      ],
+    }).map((event) => event.type)).toEqual([]);
+  });
+
+  it("hides status-only Skill Studio messages once the same turn has a submitted card", () => {
+    const statusOnly = message("assistant-status", "assistant", "", 10, "turn-1");
+    statusOnly.uiEvents = [
+      {
+        type: "skill_studio.status",
+        status: "routing",
+        message: "正在进入 Skill Studio...",
+      },
+    ];
+
+    expect(shouldHideSkillStudioStatusOnlyMessageForTest(statusOnly, new Set(["turn-1"]))).toBe(true);
+    expect(shouldHideSkillStudioStatusOnlyMessageForTest(statusOnly, new Set(["turn-2"]))).toBe(false);
+  });
+
+  it("hides canvas context reads once a Skill Studio card is available", () => {
+    const assistant = message("assistant-turn-1", "assistant", "", 10, "turn-1");
+    assistant.uiEvents = [
+      {
+        type: "skill_studio.draft",
+        skill_studio_session_id: "studio-1",
+        draft: { skill: { id: "home-culture" }, recipes: [] },
+      },
+    ];
+
+    const visible = visibleCanvasContextActivitiesForMessageForTest(assistant, [
+      {
+        key: "context:node-params",
+        turnId: "turn-1",
+        bridgeKey: "node-params",
+        status: "done",
+        labels: ["节点参数"],
+        errors: [],
+      },
+      {
+        key: "context:validate",
+        turnId: "turn-1",
+        bridgeKey: "validate",
+        status: "done",
+        labels: ["命令校验"],
+        errors: [],
+      },
+    ]);
+
+    expect(visible.map((activity) => activity.key)).toEqual(["context:validate"]);
+  });
 });
 
 describe("Skill Studio draft response", () => {
@@ -1045,6 +1217,39 @@ describe("Skill Studio draft response", () => {
     });
     expect(payload.message).toContain("home-culture-poster");
     expect(payload.message).toContain("已保存为正式 Skill / Recipe");
+  });
+
+  it("builds a bridge tool result when the draft is cancelled", () => {
+    const event = {
+      type: "skill_studio.draft" as const,
+      bridge_key: "skill-key-2",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      skill_studio_session_id: "skill_studio_01",
+      draft: { skill: { id: "home-culture-poster" }, recipes: [] },
+    };
+
+    const payload = buildSkillStudioDraftCancelToolResultForTest(event);
+
+    expect(payload).toMatchObject({
+      bridge_key: "skill-key-2",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      action: "cancel",
+      skill_studio_status: "catalog_cancelled",
+      cancelled: true,
+      saved_to_catalog: false,
+      saved_skill_ids: [],
+      saved_recipe_ids: [],
+    });
+    expect(payload.message).toContain("用户已取消 Skill Studio 草稿保存");
+    expect(payload.message).toContain("本次草稿不会写入虾画配置");
+    expect(payload.message).toContain("不要自动继续创建画布");
+    expect(payload.message).not.toContain("继续回复");
   });
 
   it("normalizes the draft into catalog payloads before saving", () => {
@@ -1187,6 +1392,24 @@ describe("Skill Studio flow ordering", () => {
     );
 
     expect(items.map((item) => item.kind)).toEqual(["event", "text"]);
+  });
+
+  it("keeps cancelled draft cards before continuation text", () => {
+    const items = buildSkillStudioFlowItemsForTest(
+      "已取消保存，我会继续按当前上下文回复。",
+      [
+        {
+          type: "skill_studio.draft",
+          cancelled: true,
+          skill_studio_session_id: "skill_studio_01",
+          skill: { id: "poster-skill" },
+          recipes: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["event", "text"]);
+    expect(items[1]).toMatchObject({ kind: "text", text: "已取消保存，我会继续按当前上下文回复。" });
   });
 });
 

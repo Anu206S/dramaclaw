@@ -799,6 +799,26 @@ def test_freezone_prompt_omits_skill_studio_contract_for_normal_canvas_requests(
     assert "freezone_present_agent_catalog_draft" not in prompt
 
 
+def test_freezone_prompt_includes_clarification_card_rule_for_interactive_questions(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "你给我提几个问题测试一下我对重庆了解多少",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "选择式澄清/互动类" in prompt
+    assert "freezone_request_user_clarification" in prompt
+    assert "不要询问内部实现细节" in prompt
+    assert "[FREEZONE_SKILL_STUDIO]" not in prompt
+    assert "freezone_present_agent_catalog_draft" not in prompt
+
+
 def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     monkeypatch, tmp_path
 ):

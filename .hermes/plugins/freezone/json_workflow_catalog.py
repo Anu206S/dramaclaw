@@ -48,6 +48,146 @@ _STAGE_BY_NODE_TYPE = {
     "videoComposeNode": "compose",
 }
 
+_FALLBACK_WORKFLOW_SPECS: tuple[dict[str, Any], ...] = (
+    {
+        "id": "text-to-image",
+        "name": "文生图",
+        "description": "根据文本需求生成图片节点。",
+        "aliases": ["text_to_image"],
+        "keywords": ["文生图", "图片", "海报", "image"],
+        "template_id": "text-to-image",
+        "template_name": "文生图",
+        "operation_type": "text-to-image",
+        "goal": "根据用户需求生成图片提示词并创建图片生成节点",
+        "node_type": "imageGeneration",
+        "generation_type": "image",
+    },
+    {
+        "id": "image-to-video",
+        "name": "图生视频",
+        "description": "基于图片素材生成视频节点。",
+        "aliases": ["image_to_video"],
+        "keywords": ["图生视频", "图片转视频", "视频"],
+        "template_id": "image-to-video",
+        "template_name": "图生视频",
+        "operation_type": "image-to-video",
+        "goal": "基于用户图片素材生成视频片段",
+        "node_type": "videoGeneration",
+        "generation_type": "video",
+    },
+    {
+        "id": "text-to-video",
+        "name": "文生视频",
+        "description": "根据文本需求生成视频节点。",
+        "aliases": ["text_to_video"],
+        "keywords": ["文生视频", "视频", "短片"],
+        "template_id": "text-to-video",
+        "template_name": "文生视频",
+        "operation_type": "text-to-video",
+        "goal": "根据用户需求生成视频片段",
+        "node_type": "videoGeneration",
+        "generation_type": "video",
+    },
+    {
+        "id": "image-to-text",
+        "name": "图像理解",
+        "description": "从图片素材中提取文本描述。",
+        "aliases": ["image_to_text"],
+        "keywords": ["图像理解", "图片分析", "识图"],
+        "template_id": "image-to-text",
+        "template_name": "图像理解",
+        "operation_type": "image-to-text",
+        "goal": "分析用户图片素材并输出结构化描述",
+        "node_type": "textGeneration",
+        "generation_type": "text",
+    },
+    {
+        "id": "text-to-audio",
+        "name": "文生音频",
+        "description": "根据文本需求生成音频节点。",
+        "aliases": ["text_to_audio"],
+        "keywords": ["音频", "配音", "音乐", "audio"],
+        "template_id": "text-to-audio",
+        "template_name": "文生音频",
+        "operation_type": "text-to-audio",
+        "goal": "根据用户需求生成音频内容",
+        "node_type": "audioGeneration",
+        "generation_type": "audio",
+    },
+    {
+        "id": "product-video",
+        "name": "产品视频",
+        "description": "围绕产品卖点生成视频工作流。",
+        "aliases": ["product_video"],
+        "keywords": ["产品视频", "商品", "产品", "卖点"],
+        "template_id": "product-video",
+        "template_name": "产品视频",
+        "operation_type": "product-video",
+        "goal": "围绕产品卖点生成视频内容",
+        "node_type": "videoGeneration",
+        "generation_type": "video",
+    },
+    {
+        "id": "music-video",
+        "name": "音乐视频",
+        "description": "根据音乐或主题生成 MV 工作流。",
+        "aliases": ["mv", "music_video"],
+        "keywords": ["MV", "音乐视频", "music"],
+        "template_id": "music-video",
+        "template_name": "音乐视频",
+        "operation_type": "music-video",
+        "goal": "根据音乐或主题生成 MV 视频内容",
+        "node_type": "videoGeneration",
+        "generation_type": "video",
+    },
+    {
+        "id": "short-drama",
+        "name": "短剧",
+        "description": "根据剧本或创意生成短剧工作流。",
+        "aliases": ["short_drama"],
+        "keywords": [{"keyword": "短剧", "weight": 2}, "故事", "剧本", "复仇"],
+        "template_id": "short-drama-from-script",
+        "template_name": "短剧脚本流程",
+        "operation_type": "short-drama-from-script",
+        "goal": "根据用户剧本或故事创意生成短剧制作节点",
+        "node_type": "videoGeneration",
+        "generation_type": "video",
+    },
+    {
+        "id": "video-ad",
+        "name": "广告视频",
+        "description": "生成产品或品牌广告视频工作流。",
+        "aliases": ["ad_video", "video_ad"],
+        "keywords": ["产品", "品牌", "宣传", "创意"],
+        "template_id": "video-ad-full",
+        "template_name": "广告视频完整流程",
+        "operation_type": "video-ad-creative-outline",
+        "goal": "生成广告创意大纲",
+        "node_type": "textGeneration",
+        "generation_type": "text",
+        "steps": [
+            {
+                "id": "ad-outline",
+                "step_number": 1,
+                "goal_template": "生成广告创意大纲",
+                "node_type": "textGeneration",
+                "action_key": "video-ad-creative-outline",
+                "prompt_strategy": "user_message",
+                "input_strategy": {"type": "none"},
+            },
+            {
+                "id": "storyboard-grid",
+                "step_number": 2,
+                "goal_template": "将广告脚本中的所有 Shot 合成为多宫格分镜图",
+                "node_type": "imageGeneration",
+                "action_key": "video-storyboard-grid",
+                "prompt_strategy": "llm_refine",
+                "input_strategy": {"type": "previous_step", "step_id": "ad-outline"},
+            },
+        ],
+    },
+)
+
 
 def registered_catalog_workflows() -> list[dict[str, Any]]:
     """Return assistant-visible workflow entries backed by JSON skills."""
@@ -734,14 +874,116 @@ def _recipe_index() -> dict[str, dict[str, Any]]:
 
 
 def _load_agent_config_items(kind: str, fallback_dir: Path) -> list[dict[str, Any]]:
+    fallback_items = _load_json_dir(fallback_dir)
+    if not fallback_items:
+        fallback_items = _fallback_agent_config_items(kind)
     if list_user_agent_config_items is not None:
         username = _catalog_username()
         if username:
             try:
-                return list_user_agent_config_items(username, kind)
+                loaded_items = list_user_agent_config_items(username, kind)
+                return _merge_agent_config_items(fallback_items, loaded_items)
             except Exception:
                 pass
-    return _load_json_dir(fallback_dir)
+    return fallback_items
+
+
+def _merge_agent_config_items(
+    builtin_items: list[dict[str, Any]],
+    loaded_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge code fallback builtins with user/config-store items."""
+
+    by_id: dict[str, dict[str, Any]] = {
+        _text(item.get("id")): {**item, "_catalog_source": item.get("_catalog_source") or "builtin"}
+        for item in builtin_items
+        if _text(item.get("id"))
+    }
+    ordered: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for item in loaded_items:
+        if not isinstance(item, dict):
+            continue
+        item_id = _text(item.get("id"))
+        if not item_id:
+            continue
+        if item.get("hidden") is True:
+            by_id.pop(item_id, None)
+            seen.add(item_id)
+            continue
+        base = by_id.pop(item_id, {})
+        merged = {**base, **item}
+        merged.setdefault("_catalog_source", item.get("_catalog_source") or "user")
+        ordered.append(merged)
+        seen.add(item_id)
+    ordered.extend(item for item_id, item in sorted(by_id.items()) if item_id not in seen)
+    return ordered
+
+
+def _fallback_agent_config_items(kind: str) -> list[dict[str, Any]]:
+    if kind == "skills":
+        return [_fallback_skill(spec) for spec in _FALLBACK_WORKFLOW_SPECS]
+    if kind == "recipes":
+        return [_fallback_recipe(spec) for spec in _FALLBACK_WORKFLOW_SPECS] + [
+            {
+                "id": "video-storyboard-grid",
+                "name": "广告多宫格分镜图",
+                "output_kind": "image",
+                "action_keys": ["video-storyboard-grid"],
+                "system_prompt": "Image generation AI prompt generation. 输出用于生成多宫格广告分镜图的提示词/指令。",
+                "requires_source_media": True,
+                "_catalog_source": "builtin",
+            }
+        ]
+    return []
+
+
+def _fallback_skill(spec: dict[str, Any]) -> dict[str, Any]:
+    template_id = _text(spec.get("template_id"))
+    steps = spec.get("steps")
+    if not isinstance(steps, list):
+        steps = [
+            {
+                "id": template_id,
+                "step_number": 1,
+                "goal_template": _text(spec.get("goal")),
+                "node_type": _text(spec.get("node_type")),
+                "action_key": _text(spec.get("operation_type")),
+                "prompt_strategy": "llm_refine",
+                "input_strategy": {"type": "user_assets"},
+            }
+        ]
+    return {
+        "id": _text(spec.get("id")),
+        "name": _text(spec.get("name")),
+        "description": _text(spec.get("description")),
+        "category": "builtin",
+        "aliases": list(spec.get("aliases") or []),
+        "triggers": {"keywords": list(spec.get("keywords") or [])},
+        "workflow_templates": [
+            {
+                "id": template_id,
+                "name": _text(spec.get("template_name")),
+                "description": _text(spec.get("description")),
+                "condition": {"message_keywords": list(spec.get("keywords") or [])},
+                "steps": steps,
+            }
+        ],
+        "_catalog_source": "builtin",
+    }
+
+
+def _fallback_recipe(spec: dict[str, Any]) -> dict[str, Any]:
+    operation_type = _text(spec.get("operation_type"))
+    return {
+        "id": operation_type,
+        "name": _text(spec.get("goal")) or _text(spec.get("name")),
+        "output_kind": _text(spec.get("generation_type")) or "text",
+        "action_keys": [operation_type],
+        "system_prompt": "Prompt generation recipe. 输出可交给下游节点执行的提示词/指令。",
+        "requires_source_media": True,
+        "_catalog_source": "builtin",
+    }
 
 
 def _catalog_username() -> str:
