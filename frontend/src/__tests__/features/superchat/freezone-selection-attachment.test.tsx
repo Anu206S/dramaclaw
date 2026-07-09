@@ -806,6 +806,80 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     expect(await screen.findByText("画布执行")).toBeInTheDocument();
   });
 
+  it("renders canvas command approval once when the same turn has a tool card", async () => {
+    superChatMocks.showToolEvents = true;
+    superChatMocks.messages = [
+      {
+        id: "assistant-turn-a",
+        role: "assistant",
+        text: "我将执行画布操作。",
+        timestamp: 1,
+        turnId: "turn-a",
+      },
+      {
+        id: "tool-turn-a",
+        role: "tool",
+        text: "freezone_emit_canvas_command",
+        timestamp: 2,
+        turnId: "turn-a",
+        raw: {
+          type: "tool.call",
+          name: "freezone_emit_canvas_command",
+          input: {
+            canvas_id: "canvas-a",
+            commands: [
+              {
+                type: "create_node",
+                node_type: "imageGenNode",
+                data: { prompt: "test image" },
+              },
+            ],
+          },
+        },
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("freezone/canvas-command-approval", {
+        detail: {
+          canvasId: "canvas-a",
+          turnId: "turn-a",
+          bridgeKey: "bridge-a",
+          envelopes: [
+            {
+              schema_version: "canvas_chat_commands.v1",
+              commands: [
+                {
+                  type: "create_node",
+                  node_type: "imageGenNode",
+                  data: { prompt: "test image" },
+                },
+              ],
+            },
+          ],
+          receivedAt: Date.now(),
+        },
+      }));
+    });
+
+    await waitFor(() => {
+      expect(screen.getAllByText("待确认的画布操作")).toHaveLength(1);
+    });
+  });
+
   it("restores a persisted canvas command approval when no assistant message exists yet", async () => {
     superChatMocks.messages = [
       {
