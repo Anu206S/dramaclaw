@@ -1140,7 +1140,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     });
 
     expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
-    expect(screen.getByText(/秒后自动取消/)).toBeInTheDocument();
+    expect(screen.getByText(/s 后自动取消/)).toBeInTheDocument();
   });
 
   it("renders Freezone tool calls as activity cards", async () => {
