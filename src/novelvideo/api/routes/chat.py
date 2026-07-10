@@ -51,6 +51,7 @@ router = APIRouter()
 logger = logging.getLogger(__name__)
 
 AI_ASSISTANT_CHAT_FEATURE_KEY = "ai_assistant_chat"
+EMPTY_AGENT_REPLY_MESSAGE = "这轮操作没有收到虾导的有效回复，请稍后重试。"
 
 
 @router.post("/chat/cancel")
@@ -1150,6 +1151,14 @@ def _pending_canvas_command_timed_out(path: Any, *, stale_seconds: float = 45.0)
         return False
 
 
+def _drop_resolved_pending_bridge_file(*, bridge_dir: Any, key: str, pending_path: Any) -> bool:
+    if not (bridge_dir / f"{key}.result.json").exists():
+        return False
+    with contextlib.suppress(FileNotFoundError):
+        pending_path.unlink()
+    return True
+
+
 def _resolve_stale_pending_canvas_command(
     *,
     bridge_dir: Any,
@@ -1194,6 +1203,49 @@ def _resolve_stale_pending_canvas_command(
         turn_id,
         pending.get("canvas_id") or scope.canvas_id,
         len(commands) if isinstance(commands, list) else 0,
+    )
+    return True
+
+
+def _resolve_stale_pending_canvas_context(
+    *,
+    bridge_dir: Any,
+    path: Any,
+    key: str,
+    pending: dict[str, Any],
+    scope: ChatScope,
+    turn_id: str,
+) -> bool:
+    if not _pending_canvas_command_timed_out(path):
+        return False
+    envelope = pending.get("envelope") if isinstance(pending, dict) else None
+    requests = envelope.get("requests") if isinstance(envelope, dict) else None
+    resolve_canvas_context(
+        key,
+        {
+            "ok": False,
+            "turn_id": turn_id,
+            "tool_call_status": "failed",
+            "canvas_context_status": "timeout",
+            "responses": [],
+            "errors": ["Timed out waiting for frontend canvas context response."],
+            "project_id": pending.get("project_id") or scope.id,
+            "canvas_id": pending.get("canvas_id") or scope.canvas_id,
+            "message": "Canvas context request timed out before the frontend reported a result.",
+            "user_message": "读取画布上下文等待超时，请确认画布页面仍然打开后重试。",
+            "agent_instruction": (
+                "Do not wait indefinitely. Tell the user the canvas context request timed out "
+                "and ask them to retry after checking the canvas connection."
+            ),
+        },
+        bridge_dir=bridge_dir,
+    )
+    logger.warning(
+        "auto-resolved stale canvas.context pending bridge_key=%s turn_id=%s canvas_id=%s requests=%s",
+        key,
+        turn_id,
+        pending.get("canvas_id") or scope.canvas_id,
+        len(requests) if isinstance(requests, list) else 0,
     )
     return True
 
@@ -1267,14 +1319,15 @@ async def _watch_pending_canvas_commands(
         pending_items = sorted(pending_items, key=lambda item: item[1].stat().st_mtime)
         for bridge_dir, path in pending_items:
             try:
-                if path.stat().st_mtime < started_at - 1.0:
-                    continue
+                is_preexisting_pending = path.stat().st_mtime < started_at - 1.0
             except Exception:
                 continue
             key = path.name.removesuffix(".pending.json")
-            if key in emitted_bridge_keys:
-                continue
-            if (bridge_dir / f"{key}.result.json").exists():
+            if _drop_resolved_pending_bridge_file(
+                bridge_dir=bridge_dir,
+                key=key,
+                pending_path=path,
+            ):
                 continue
             pending = _load_pending_canvas_command(path)
             if pending is None:
@@ -1289,6 +1342,10 @@ async def _watch_pending_canvas_commands(
                 scope=scope,
                 turn_id=turn_id,
             ):
+                continue
+            if is_preexisting_pending:
+                continue
+            if key in emitted_bridge_keys:
                 continue
             emitted_bridge_keys.add(key)
             envelope = pending["envelope"]
@@ -1345,7 +1402,11 @@ async def _watch_pending_skill_studio_events(
             key = path.name.removesuffix(".pending.json")
             if key in emitted_bridge_keys:
                 continue
-            if (bridge_dir / f"{key}.result.json").exists():
+            if _drop_resolved_pending_bridge_file(
+                bridge_dir=bridge_dir,
+                key=key,
+                pending_path=path,
+            ):
                 continue
             pending = _load_pending_skill_studio_event(path)
             if pending is None:
@@ -1419,7 +1480,11 @@ async def _watch_pending_clarification_events(
             key = path.name.removesuffix(".pending.json")
             if key in emitted_bridge_keys:
                 continue
-            if (bridge_dir / f"{key}.result.json").exists():
+            if _drop_resolved_pending_bridge_file(
+                bridge_dir=bridge_dir,
+                key=key,
+                pending_path=path,
+            ):
                 continue
             pending = _load_pending_clarification_event(path)
             if pending is None:
@@ -1485,19 +1550,33 @@ async def _watch_pending_canvas_context_requests(
         pending_items = sorted(pending_items, key=lambda item: item[1].stat().st_mtime)
         for bridge_dir, path in pending_items:
             try:
-                if path.stat().st_mtime < started_at - 1.0:
-                    continue
+                is_preexisting_pending = path.stat().st_mtime < started_at - 1.0
             except Exception:
                 continue
             key = path.name.removesuffix(".pending.json")
-            if key in emitted_bridge_keys:
-                continue
-            if (bridge_dir / f"{key}.result.json").exists():
+            if _drop_resolved_pending_bridge_file(
+                bridge_dir=bridge_dir,
+                key=key,
+                pending_path=path,
+            ):
                 continue
             pending = _load_pending_canvas_context(path)
             if pending is None:
                 continue
             if pending.get("project_id") and pending.get("project_id") != scope.id:
+                continue
+            if _resolve_stale_pending_canvas_context(
+                bridge_dir=bridge_dir,
+                path=path,
+                key=key,
+                pending=pending,
+                scope=scope,
+                turn_id=turn_id,
+            ):
+                continue
+            if is_preexisting_pending:
+                continue
+            if key in emitted_bridge_keys:
                 continue
             emitted_bridge_keys.add(key)
             envelope = pending["envelope"]
@@ -1902,7 +1981,7 @@ async def _stream_home_turn(
             previous_assistant,
             text,
         )
-        assistant_text = assistant_text.strip() or "(agent returned no content)"
+        assistant_text = assistant_text.strip() or EMPTY_AGENT_REPLY_MESSAGE
         message = chat_store.append_message(username, scope, "assistant", assistant_text)
         persisted = True
         await _send_json_best_effort(

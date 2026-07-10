@@ -324,6 +324,17 @@ This Freezone chat can change the current canvas by returning a JSON block.
     expect(normalized?.text).toBe("你好");
   });
 
+  it("maps internal empty Hermes replies to a user-facing message", () => {
+    const normalized = normalizeMessage({
+      id: "backend-assistant-empty",
+      role: "assistant",
+      content: "(hermes returned no content)",
+      created_at: "2026-07-10T08:00:00Z",
+    });
+
+    expect(normalized?.text).toBe("这轮操作没有收到虾导的有效回复，请稍后重试。");
+  });
+
   it("preserves backend ui events for persisted canvas feedback", () => {
     const uiEvents = [
       {

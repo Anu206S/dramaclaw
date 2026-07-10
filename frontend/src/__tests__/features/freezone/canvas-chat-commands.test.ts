@@ -4308,6 +4308,124 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("accepts generic output url from queued generation actions", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "商品主图",
+      },
+    );
+
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        if (!payload.requestId) return;
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+          output: { url: "/static/project/image.png" },
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: imageNodeId,
+                action: "generate_image",
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.commandResults).toEqual([
+        expect.objectContaining({
+          status: "success",
+          nodeId: imageNodeId,
+          action: "generate_image",
+          output: { url: "/static/project/image.png" },
+        }),
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("accepts queued generation actions that persist an async task handle", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "商品主图",
+      },
+    );
+
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        if (!payload.requestId) return;
+        useCanvasStore
+          .getState()
+          .updateNodeData(payload.nodeId, {
+            generationTaskKey: "freezone_gen:job-a",
+            generationTaskType: "freezone_gen",
+          });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: imageNodeId,
+                action: "generate_image",
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.commandResults).toEqual([
+        expect.objectContaining({
+          status: "success",
+          nodeId: imageNodeId,
+          action: "generate_image",
+        }),
+      ]);
+      expect(useCanvasStore.getState().nodes.find((node) => node.id === imageNodeId)?.data).toMatchObject({
+        isGenerating: true,
+        generationTaskKey: "freezone_gen:job-a",
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("does not auto-run upstream generation dependencies for a single node action", async () => {
     const store = useCanvasStore.getState();
     const upstreamImageGenId = store.addNode(
