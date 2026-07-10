@@ -275,6 +275,28 @@ def resolve_catalog_workflow(args: dict[str, Any]) -> dict[str, Any]:
     limit = _int(args.get("limit"), 5)
     if limit < 1:
         limit = 5
+    exact = _exact_catalog_workflow_candidate(args, user_goal)
+    if exact is not None:
+        return {
+            "ok": True,
+            "resolver": "workflow_json_catalog.v1",
+            "user_goal": user_goal,
+            "matched": True,
+            "ambiguous": False,
+            "matched_skill_count": 1,
+            "recommended": exact,
+            "candidates": [exact],
+            "next_step": {
+                "requires_user_confirmation": True,
+                "message": "已精确命中 JSON workflow skill/template；请确认后继续生成工作流计划。",
+                "tool": "freezone_build_workflow_plan",
+                "arguments": {
+                    "workflow_type": exact.get("workflow_type"),
+                    "user_goal": user_goal,
+                },
+            },
+        }
+
     skills = _load_skills()
     candidates: list[dict[str, Any]] = []
     for skill in skills:
@@ -305,6 +327,8 @@ def resolve_catalog_workflow(args: dict[str, Any]) -> dict[str, Any]:
                     or _text(skill.get("description")),
                     "step_count": len(template.get("steps") or []) if template else 0,
                     "source": "workflow_json",
+                    "catalog_source": _catalog_source(skill),
+                    "catalog_source_label": _catalog_source_label(skill),
                 }
             )
     candidates.sort(
@@ -366,6 +390,40 @@ def resolve_catalog_workflow(args: dict[str, Any]) -> dict[str, Any]:
         "candidates": top_candidates,
         "next_step": next_step,
     }
+
+
+def _exact_catalog_workflow_candidate(args: dict[str, Any], user_goal: str) -> dict[str, Any] | None:
+    requested_type = _text(args.get("workflow_type") or args.get("workflowType") or args.get("type"))
+    normalized_request = _alias_key(requested_type or user_goal)
+    if not normalized_request:
+        return None
+    aliases = catalog_workflow_aliases()
+    workflow_type = aliases.get(normalized_request)
+    if workflow_type is None and normalized_request.startswith(CATALOG_PREFIX):
+        workflow_type = normalized_request
+    if workflow_type is None:
+        return None
+    for workflow in registered_catalog_workflows():
+        if _alias_key(workflow.get("workflow_type")) != _alias_key(workflow_type):
+            continue
+        parsed = _parse_catalog_type(_text(workflow.get("workflow_type")))
+        skill_id = parsed[0] if parsed else ""
+        template_id = parsed[1] if parsed else ""
+        return {
+            "workflow_type": workflow.get("workflow_type"),
+            "skill_id": skill_id,
+            "skill_name": str(workflow.get("label") or "").replace("（配置）", "").split(" / ")[0],
+            "template_id": template_id or "",
+            "template_name": str(workflow.get("label") or "").replace("（配置）", ""),
+            "score": 99.0,
+            "reasons": [f"精确匹配 workflow_type/alias：{requested_type or user_goal}"],
+            "description": workflow.get("description") or "",
+            "step_count": 0,
+            "source": "workflow_json",
+            "catalog_source": workflow.get("catalog_source") or "",
+            "catalog_source_label": workflow.get("catalog_source_label") or "",
+        }
+    return None
 
 
 def _build_plan(
@@ -733,6 +791,16 @@ def _skill_score(skill: dict[str, Any], message: str) -> tuple[float, list[str]]
         if bit and bit.lower() in text:
             score += 0.75
             reasons.append(f"命中 skill 标识：{bit}")
+    for alias in _string_list(skill.get("aliases")):
+        alias_text = alias.lower()
+        if not alias_text:
+            continue
+        if alias_text == text:
+            score += 3.0
+            reasons.append(f"精确命中 skill 别名：{alias}")
+        elif alias_text in text:
+            score += 1.5
+            reasons.append(f"命中 skill 别名：{alias}")
     return score, reasons[:8]
 
 
@@ -759,6 +827,16 @@ def _template_resolution_score(template: dict[str, Any], message: str) -> tuple[
     if template_id and template_id.lower().replace("-", " ") in text:
         score += 0.75
         reasons.append(f"命中模板标识：{template_id}")
+    for alias in _string_list(template.get("aliases")):
+        alias_text = alias.lower()
+        if not alias_text:
+            continue
+        if alias_text == text:
+            score += 3.0
+            reasons.append(f"精确命中模板别名：{alias}")
+        elif alias_text in text:
+            score += 1.5
+            reasons.append(f"命中模板别名：{alias}")
     return score, reasons[:8]
 
 

@@ -368,6 +368,18 @@ def test_freezone_catalog_requires_user_selection_for_multiple_matched_skills(mo
     }
 
 
+def test_freezone_catalog_resolver_exact_alias_skips_ambiguous_scoring():
+    catalog = _load_catalog_module()
+
+    resolved = catalog.resolve_catalog_workflow({"workflow_type": "text_to_video"})
+
+    assert resolved["matched"] is True
+    assert resolved["ambiguous"] is False
+    assert resolved["recommended"]["workflow_type"] == "catalog.text_to_video.text_to_video"
+    assert resolved["recommended"]["score"] == 99.0
+    assert resolved["next_step"]["tool"] == "freezone_build_workflow_plan"
+
+
 def test_freezone_plugin_resolves_catalog_workflow_without_canvas_write():
     plugin = _load_plugin_module()
 
@@ -521,6 +533,24 @@ def test_freezone_plugin_routes_registered_workflows_through_builder():
 
     assert manual_result["ok"] is False
     assert manual_result["status"] == "wrong_tool_registered_workflow"
+
+
+def test_freezone_workflow_graph_normalizes_legacy_catalog_model_ids():
+    plugin = _load_plugin_module()
+
+    built = plugin.build_workflow_graph_commands({"workflow_type": "catalog.video_ad"})
+
+    assert built["ok"] is True
+    create_nodes = [
+        command
+        for command in built["commands"]
+        if command.get("type") == "create_node" and isinstance(command.get("data"), dict)
+    ]
+    models = [command["data"].get("model") for command in create_nodes]
+    assert "nano-banana-2" not in models
+    assert "omni-flash" not in models
+    assert "newapi_nanobanana2" in models
+    assert "newapi_seedance-2.0-fast" in models
 
 
 def test_freezone_legacy_workflow_types_route_to_json_catalog():

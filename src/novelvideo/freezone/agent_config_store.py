@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
@@ -14,6 +15,7 @@ AgentConfigKind = Literal["skills", "recipes"]
 
 _SAFE_ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 BUILTIN_AGENT_CATALOG_DIR = Path(__file__).with_name("agent_catalog") / "builtins"
+_CATALOG_CACHE: dict[tuple[str, str, tuple, tuple], list[dict]] = {}
 
 
 def builtin_agent_catalog_dir(kind: AgentConfigKind | str) -> Path:
@@ -28,14 +30,26 @@ def user_agent_config_dir(username: str, kind: AgentConfigKind | str) -> Path:
 
 def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> list[dict]:
     checked_kind = _validate_kind(kind)
+    builtin_root = builtin_agent_catalog_dir(checked_kind)
+    user_root = user_agent_config_dir(username, checked_kind)
+    cache_key = (
+        username,
+        checked_kind,
+        _directory_signature(builtin_root),
+        _directory_signature(user_root),
+    )
+    cached = _CATALOG_CACHE.get(cache_key)
+    if cached is not None:
+        return deepcopy(cached)
+
     builtin_items_by_id: dict[str, dict] = {}
-    for payload in _read_agent_config_items(builtin_agent_catalog_dir(checked_kind)):
+    for payload in _read_agent_config_items(builtin_root):
         item_id = str(payload["id"])
         builtin_items_by_id[item_id] = payload
 
     user_items_by_id = {
         str(payload["id"]): payload
-        for payload in _read_agent_config_items(user_agent_config_dir(username, checked_kind))
+        for payload in _read_agent_config_items(user_root)
     }
     user_items: list[dict] = []
     for item_id in sorted(user_items_by_id):
@@ -58,7 +72,10 @@ def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> 
         for item_id in sorted(builtin_items_by_id)
         if item_id not in user_items_by_id
     ]
-    return [*user_items, *builtin_items]
+    items = [*user_items, *builtin_items]
+    _CATALOG_CACHE.clear()
+    _CATALOG_CACHE[cache_key] = deepcopy(items)
+    return items
 
 
 def save_user_agent_config_item(
@@ -79,6 +96,7 @@ def save_user_agent_config_item(
         encoding="utf-8",
     )
     os.replace(tmp, target)
+    _CATALOG_CACHE.clear()
     return stored_payload
 
 
@@ -101,10 +119,12 @@ def delete_user_agent_config_item(
             encoding="utf-8",
         )
         os.replace(tmp, target)
+        _CATALOG_CACHE.clear()
         return True
     if not target.exists():
         return False
     target.unlink()
+    _CATALOG_CACHE.clear()
     return True
 
 
@@ -141,6 +161,21 @@ def _read_agent_config_items(root: Path) -> list[dict]:
             payload["_catalog_updated_at"] = 0
         items.append(payload)
     return items
+
+
+def _directory_signature(root: Path) -> tuple:
+    if not root.exists():
+        return (str(root), "missing")
+    if not root.is_dir():
+        return (str(root), "not-dir")
+    files: list[tuple[str, int, int]] = []
+    for path in sorted(root.glob("*.json"), key=lambda item: item.name):
+        try:
+            stat = path.stat()
+        except OSError:
+            continue
+        files.append((path.name, stat.st_mtime_ns, stat.st_size))
+    return (str(root), tuple(files))
 
 
 def _builtin_agent_config_exists(kind: AgentConfigKind, item_id: str) -> bool:

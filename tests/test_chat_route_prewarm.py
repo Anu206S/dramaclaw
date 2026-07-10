@@ -6,6 +6,7 @@ from novelvideo.chat.store import ChatScope
 from novelvideo.freezone.canvas_command_bridge import (
     put_pending_clarification_event,
     put_pending_skill_studio_event,
+    wait_canvas_command_result,
     wait_clarification_result,
     wait_skill_studio_result,
 )
@@ -83,6 +84,29 @@ def test_freezone_canvas_bridge_dir_is_agent_scoped(monkeypatch, tmp_path) -> No
     assert main_dir.parent == second_dir.parent
     assert main_dir.parent.name == "supertale_canvas_command_bridge"
     assert ".hermes-freezone" in main_dir.parts
+
+
+def test_canvas_command_wait_writes_timeout_result(tmp_path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    result = wait_canvas_command_result(
+        "bridge-a",
+        timeout_seconds=0,
+        poll_seconds=0.01,
+        bridge_dir=bridge_dir,
+        timeout_result={
+            "ok": False,
+            "tool_call_status": "failed",
+            "canvas_apply_status": "timeout",
+            "cancelled": True,
+            "errors": ["Timed out waiting for frontend canvas command result."],
+        },
+    )
+
+    assert result is not None
+    assert result["ok"] is False
+    assert result["canvas_apply_status"] == "timeout"
+    assert result["cancelled"] is True
+    assert (bridge_dir / "bridge-a.result.json").exists()
 
 
 def test_canvas_command_tool_result_prefers_user_message_and_agent_hint(monkeypatch, tmp_path) -> None:

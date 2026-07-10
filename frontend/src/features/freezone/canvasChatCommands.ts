@@ -125,6 +125,7 @@ export type CanvasChatCommand =
       type: "run_workflow";
       node_ids?: string[];
       scope?: "selection" | "canvas";
+      regenerate?: boolean;
     };
 
 export type CanvasChatCommandEnvelope = {
@@ -334,6 +335,15 @@ const GENERATION_NODE_ACTIONS = new Set([
   "run_skill",
 ]);
 
+const REGENERATABLE_GENERATION_NODE_ACTIONS = new Set([
+  "generate_text_video",
+  "generate_story_script",
+  "generate_image",
+  "generate_audio",
+  "generate_video",
+  "generate_3gs_world",
+]);
+
 const UI_OPEN_NODE_ACTIONS = new Set([
   "open_video_compose_modal",
 ]);
@@ -502,6 +512,26 @@ function cleanActionParameters(value: unknown): JsonRecord | undefined {
     parameters[key] = nextValue;
   }
   return Object.keys(parameters).length > 0 ? parameters : undefined;
+}
+
+function isTruthyRegenerateValue(value: unknown): boolean {
+  if (value === true) return true;
+  if (typeof value === "number") return value === 1;
+  if (typeof value !== "string") return false;
+  return ["1", "true", "yes", "y", "重新生成", "重生成", "覆盖"].includes(value.trim().toLowerCase());
+}
+
+function isRegenerateRequested(parameters?: JsonRecord): boolean {
+  if (!parameters) return false;
+  return (
+    isTruthyRegenerateValue(parameters.regenerate) ||
+    isTruthyRegenerateValue(parameters.force_regenerate) ||
+    isTruthyRegenerateValue(parameters.forceRegenerate) ||
+    isTruthyRegenerateValue(parameters.overwrite_existing) ||
+    isTruthyRegenerateValue(parameters.overwriteExisting) ||
+    isTruthyRegenerateValue(parameters.force) ||
+    isTruthyRegenerateValue(parameters.overwrite)
+  );
 }
 
 function cleanOptionalString(value: unknown): string | undefined {
@@ -714,10 +744,12 @@ function parseCommand(value: unknown): CanvasChatCommand | null {
         ? value.node_ids.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
         : undefined;
       const scope = value.scope === "canvas" || value.scope === "selection" ? value.scope : undefined;
+      const regenerate = isTruthyRegenerateValue(value.regenerate ?? value.force_regenerate ?? value.forceRegenerate);
       return {
         type: "run_workflow",
         node_ids: nodeIds && nodeIds.length > 0 ? nodeIds : undefined,
         scope,
+        regenerate: regenerate || undefined,
       };
     }
     default:
@@ -2259,6 +2291,27 @@ function applyCanvasChatCommandsInternal(
           }
           case "run_node_action": {
             const targetId = resolveNodeId(command.node_id, clientIdMap);
+            const isCompletedGeneration =
+              options.queueNodeActions &&
+              REGENERATABLE_GENERATION_NODE_ACTIONS.has(command.action) &&
+              hasGeneratedResult(targetId, command.action);
+            if (isCompletedGeneration && !isRegenerateRequested(command.parameters)) {
+              result.commandResults.push({
+                commandIndex: currentCommandIndex,
+                type: command.type,
+                status: "success",
+                label: "节点已有内容，未重新生成",
+                nodeId: targetId,
+                action: command.action,
+                output: {
+                  skipped: true,
+                  reason: "already_completed",
+                  requires_regenerate_confirmation: true,
+                },
+              });
+              selectAndFocusNode(targetId);
+              break;
+            }
             if (options.queueNodeActions) {
               assertNodeActionAvailable(targetId, command.action);
               const shouldRunUpstreamDependencies = !CURRENT_MEDIA_NODE_ACTIONS.has(command.action);
@@ -2325,7 +2378,11 @@ function applyCanvasChatCommandsInternal(
               node_ids: command.node_ids?.map((nodeId) => resolveNodeId(nodeId, clientIdMap)),
             };
             const allActions = workflowNodeActions(resolvedCommand, currentCommandIndex, { skipCompleted: false });
-            const actions = workflowNodeActions(resolvedCommand, currentCommandIndex);
+            const actions = workflowNodeActions(
+              resolvedCommand,
+              currentCommandIndex,
+              { skipCompleted: command.regenerate !== true },
+            );
             if (actions.length === 0) {
               if (allActions.length === 0) {
                 throw new Error("工作流中没有可执行的生成节点。");
@@ -2334,15 +2391,23 @@ function applyCanvasChatCommandsInternal(
                 commandIndex: currentCommandIndex,
                 type: command.type,
                 status: "success",
-                label: "工作流已完成",
+                label: "工作流已完成，未重新生成",
                 nodeId: allActions[0]?.nodeId,
+                output: {
+                  skipped: true,
+                  reason: "workflow_already_completed",
+                  requires_regenerate_confirmation: true,
+                },
               });
               result.applied += 1;
               break;
             }
             if (options.queueNodeActions) {
               for (const action of actions) {
+                const actionKey = `${action.nodeId}:${action.action}`;
+                if (queuedNodeActionKeys.has(actionKey)) continue;
                 assertNodeActionAvailable(action.nodeId, action.action);
+                queuedNodeActionKeys.add(actionKey);
                 pendingNodeActions.push(action);
               }
             } else {

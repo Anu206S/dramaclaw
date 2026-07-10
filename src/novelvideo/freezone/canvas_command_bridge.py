@@ -260,6 +260,7 @@ def wait_canvas_command_result(
     poll_seconds: float = 0.2,
     *,
     bridge_dir: str | Path | None = None,
+    timeout_result: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     deadline = time.time() + max(0.0, timeout_seconds)
     while time.time() <= deadline:
@@ -267,6 +268,8 @@ def wait_canvas_command_result(
         if result is not None:
             return result
         time.sleep(max(0.05, poll_seconds))
+    if timeout_result is not None:
+        return resolve_canvas_command(key, timeout_result, bridge_dir=bridge_dir)
     return None
 
 
@@ -276,12 +279,14 @@ def wait_canvas_context_result(
     poll_seconds: float = 0.2,
     *,
     bridge_dir: str | Path | None = None,
+    timeout_result: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     return wait_canvas_command_result(
         key,
         timeout_seconds=timeout_seconds,
         poll_seconds=poll_seconds,
         bridge_dir=bridge_dir,
+        timeout_result=timeout_result,
     )
 
 
