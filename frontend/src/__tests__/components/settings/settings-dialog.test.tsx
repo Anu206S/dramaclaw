@@ -112,6 +112,7 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.recipesPendingTitle": "Recipe 配置入口已预留",
         "settings.freezoneCatalog.recipesPendingDescription": "等待后端 Recipe catalog 接入后，这里会展示和编辑虾画 Recipes。",
         "settings.freezoneCatalog.newSkill.title": "新增 Skill",
+        "settings.freezoneCatalog.newSkill.editTitle": "编辑 Skill",
         "settings.freezoneCatalog.newSkill.close": "关闭新增 Skill",
         "settings.freezoneCatalog.newSkill.cancel": "取消",
         "settings.freezoneCatalog.newSkill.save": "保存",
@@ -476,6 +477,19 @@ describe("SettingsDialog tabs", () => {
     expect(screen.getByRole("button", { name: "删除 关键词" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除 关键词2" })).not.toBeInTheDocument();
     expect(screen.getByRole("button", { name: "删除 节点类型" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "编辑 关键词" }));
+    const keywordEditInput = screen.getByRole("textbox", { name: "编辑 关键词" });
+    expect(keywordEditInput).toHaveValue("关键词");
+    expect(screen.queryByRole("button", { name: "编辑 关键词" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "删除 关键词" })).toBeInTheDocument();
+    fireEvent.change(keywordEditInput, {
+      target: { value: "关键词编辑" },
+    });
+    fireEvent.keyDown(keywordEditInput, {
+      key: "Enter",
+      code: "Enter",
+    });
+    expect(screen.getByRole("button", { name: "删除 关键词编辑" })).toBeInTheDocument();
 
     const addDimensionButtons = screen.getAllByRole("button", { name: "添加维度" });
     fireEvent.click(addDimensionButtons[0]);
@@ -500,7 +514,7 @@ describe("SettingsDialog tabs", () => {
       description: "des",
       category: "category",
       triggers: {
-        keywords: ["关键词"],
+        keywords: ["关键词编辑"],
         node_scopes: ["节点类型"],
       },
       planning: {
@@ -857,6 +871,8 @@ describe("SettingsDialog tabs", () => {
     fireEvent.click(screen.getByRole("tab", { name: "虾画 Skills" }));
     fireEvent.click(screen.getByRole("button", { name: "编辑 story-skill" }));
 
+    expect(screen.getByText("编辑 Skill")).toBeInTheDocument();
+    expect(screen.queryByText("新增 Skill")).not.toBeInTheDocument();
     expect(screen.getByDisplayValue("story-skill")).toBeInTheDocument();
     expect(screen.getByDisplayValue("故事规则")).toBeInTheDocument();
     expect(screen.getAllByText("故事").length).toBeGreaterThan(0);

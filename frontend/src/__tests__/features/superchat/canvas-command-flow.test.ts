@@ -47,10 +47,10 @@ describe("canvas command flow placement", () => {
       ],
     );
 
-    expect(items.map((item) => item.kind)).toEqual(["skill_studio", "text", "approval"]);
+    expect(items.map((item) => item.kind)).toEqual(["text", "skill_studio", "approval"]);
   });
 
-  it("keeps previously anchored Skill Studio cards before historical continuation text", () => {
+  it("keeps stale-anchor Skill Studio draft cards after historical continuation text", () => {
     const items = buildCanvasCommandFlowItemsForTest(
       "已为「家乡文化海报」完成 Skill Studio 全流程。",
       [],
@@ -66,8 +66,8 @@ describe("canvas command flow placement", () => {
       ],
     );
 
-    expect(items.map((item) => item.kind)).toEqual(["skill_studio", "text"]);
-    expect(items[1]).toMatchObject({
+    expect(items.map((item) => item.kind)).toEqual(["text", "skill_studio"]);
+    expect(items[0]).toMatchObject({
       kind: "text",
       text: "已为「家乡文化海报」完成 Skill Studio 全流程。",
     });

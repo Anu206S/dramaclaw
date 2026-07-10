@@ -5,6 +5,7 @@ import type {
   ApprovalRequest,
   ChatAttachment,
   ChatMessage,
+  ChatMessagePart,
   ChatRole,
   ChatScope,
   ClientFrame,
@@ -634,6 +635,88 @@ function mergeUiEventLists(base: unknown[] | undefined, overlay: unknown[] | und
   return events.length > 0 ? events : undefined;
 }
 
+function appendTextPart(parts: ChatMessagePart[] | undefined, text: string): ChatMessagePart[] | undefined {
+  if (!text) return parts;
+  const nextParts = [...(parts ?? [])];
+  const last = nextParts[nextParts.length - 1];
+  if (last?.type === "text") {
+    nextParts[nextParts.length - 1] = { ...last, text: `${last.text}${text}` };
+  } else {
+    nextParts.push({ id: `text-${nextParts.length + 1}`, type: "text", text });
+  }
+  return nextParts;
+}
+
+function assistantPartsWithText(
+  parts: ChatMessagePart[] | undefined,
+  previousText: string,
+  nextText: string,
+): ChatMessagePart[] | undefined {
+  if (!nextText) return parts;
+  if (previousText && nextText.startsWith(previousText)) {
+    return appendTextPart(parts, nextText.slice(previousText.length));
+  }
+  if (nextText === previousText) return parts;
+  return [{ id: "text-1", type: "text", text: nextText }];
+}
+
+type AssistantEventPartType = Exclude<ChatMessagePart["type"], "text">;
+
+function eventPartType(event: unknown): AssistantEventPartType | null {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const type = (event as Record<string, unknown>).type;
+  if (typeof type !== "string") return null;
+  if (type === "skill_studio.status") return null;
+  if (type.startsWith("skill_studio.")) return "skill_studio";
+  if (type.startsWith("assistant.clarification.")) return "clarification";
+  return null;
+}
+
+function assistantPartsWithUiEvent(
+  parts: ChatMessagePart[] | undefined,
+  event: unknown,
+): ChatMessagePart[] | undefined {
+  const type = eventPartType(event);
+  if (!type) return parts;
+  const key = uiEventMergeKey(event);
+  const nextParts = [...(parts ?? [])];
+  const existingIndex = key
+    ? nextParts.findIndex((part) => part.type !== "text" && uiEventMergeKey(part.event) === key)
+    : -1;
+  if (existingIndex >= 0) {
+    const existing = nextParts[existingIndex];
+    if (existing.type !== "text") {
+      nextParts[existingIndex] = { ...existing, event };
+    }
+    return nextParts;
+  }
+  nextParts.push({ id: key ?? `${type}-${nextParts.length + 1}`, type, event });
+  return nextParts;
+}
+
+function assistantPartsWithPart(
+  parts: ChatMessagePart[] | undefined,
+  part: ChatMessagePart,
+): ChatMessagePart[] {
+  const nextParts = [...(parts ?? [])];
+  const existingIndex = nextParts.findIndex((item) => item.id === part.id);
+  if (existingIndex >= 0) {
+    nextParts[existingIndex] = part;
+    return nextParts;
+  }
+  nextParts.push(part);
+  return nextParts;
+}
+
+function assistantPartsWithoutPart(
+  parts: ChatMessagePart[] | undefined,
+  partId: string,
+): ChatMessagePart[] | undefined {
+  if (!parts?.length) return parts;
+  const nextParts = parts.filter((part) => part.id !== partId);
+  return nextParts.length > 0 ? nextParts : undefined;
+}
+
 function isRecoverableUiEventState(event: unknown): boolean {
   if (!event || typeof event !== "object" || Array.isArray(event)) return false;
   const value = event as Record<string, unknown>;
@@ -732,7 +815,12 @@ function upsertAssistantMessage(
     return sortMessages(
       messages.map((message, index) =>
         index === existingIndex
-          ? { ...message, text, timestamp: Date.now() }
+          ? {
+              ...message,
+              text,
+              parts: assistantPartsWithText(message.parts, message.text, text),
+              timestamp: Date.now(),
+            }
           : message,
       ),
     );
@@ -743,11 +831,14 @@ function upsertAssistantMessage(
       id,
       role: "assistant",
       text,
+      parts: assistantPartsWithText(undefined, "", text),
       turnId,
       timestamp: Date.now(),
     },
   ]);
 }
+
+export const upsertAssistantMessageForTest = upsertAssistantMessage;
 
 function upsertAssistantUiEvent(
   messages: ChatMessage[],
@@ -764,6 +855,7 @@ function upsertAssistantUiEvent(
         return {
           ...message,
           text: message.text || "",
+          parts: assistantPartsWithUiEvent(message.parts, event),
           uiEvents,
         };
       }),
@@ -775,6 +867,7 @@ function upsertAssistantUiEvent(
       id,
       role: "assistant",
       text: "",
+      parts: assistantPartsWithUiEvent(undefined, event),
       turnId,
       uiEvents: [event],
       timestamp: Date.now(),
@@ -805,15 +898,20 @@ function updateAssistantUiEvents(
 ): ChatMessage[] {
   let changed = false;
   const nextMessages = messages.map((message) => {
-    if (message.role !== "assistant" || message.turnId !== turnId || !message.uiEvents?.length) {
+    if (message.role !== "assistant" || message.turnId !== turnId) {
       return message;
     }
-    const uiEvents = message.uiEvents.map((event) => {
+    const uiEvents = message.uiEvents?.map((event) => {
       if (!shouldUpdate(event)) return event;
       changed = true;
       return updateEvent(event);
     });
-    return { ...message, uiEvents };
+    const parts = message.parts?.map((part) => {
+      if (part.type === "text" || !shouldUpdate(part.event)) return part;
+      changed = true;
+      return { ...part, event: updateEvent(part.event) };
+    });
+    return { ...message, ...(uiEvents ? { uiEvents } : {}), ...(parts ? { parts } : {}) };
   });
   return changed ? nextMessages : messages;
 }
@@ -834,10 +932,20 @@ function upsertServerAssistantMessage(
       .filter((message) => message.role === "assistant" && message.turnId === normalizedTurnId)
       .flatMap((message) => message.uiEvents ?? [])
     : [];
+  const transientParts = normalizedTurnId
+    ? messages
+      .filter((message) => message.role === "assistant" && message.turnId === normalizedTurnId)
+      .flatMap((message) => message.parts ?? [])
+    : [];
   const dedupedUiEvents = mergeUiEventLists(transientUiEvents, nextMessage.uiEvents);
   const mergedMessage = {
     ...nextMessage,
     ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}),
+    ...(nextMessage.parts?.length
+      ? { parts: nextMessage.parts }
+      : transientParts.length > 0
+        ? { parts: transientParts }
+        : {}),
     ...(dedupedUiEvents && dedupedUiEvents.length > 0 ? { uiEvents: dedupedUiEvents } : {}),
   };
   const existingIndex = messages.findIndex((message) => message.id === mergedMessage.id);
@@ -907,6 +1015,29 @@ export function shouldPreserveToolMessage(payload: ServerFrame): boolean {
   );
 }
 
+export function shouldRenderToolStatusPart(payload: ServerFrame): boolean {
+  if (!shouldPreserveToolMessage(payload)) return false;
+  if (payload.type === "tool.call") {
+    return false;
+  }
+  if ("name" in payload && typeof payload.name === "string" && EXECUTABLE_HIDDEN_TOOL_NAMES.has(payload.name)) {
+    return false;
+  }
+  const text =
+    payload.type === "tool.result" && typeof payload.result === "string"
+      ? payload.result
+      : payload.type === "tool.result" &&
+          payload.result &&
+          typeof payload.result === "object" &&
+          typeof (payload.result as Record<string, unknown>).text === "string"
+        ? String((payload.result as Record<string, unknown>).text)
+        : "";
+  return !(
+    text.includes("canvas_chat_commands.v1") ||
+    text.includes("canvas_command_emitted")
+  );
+}
+
 function upsertToolMessage(messages: ChatMessage[], kind: string, payload: unknown): ChatMessage[] {
   const nextMessage = buildToolMessage(kind, payload);
   if (!nextMessage.turnId) return sortMessages([...messages, nextMessage]);
@@ -928,6 +1059,19 @@ function upsertToolMessage(messages: ChatMessage[], kind: string, payload: unkno
         : message,
     ),
   );
+}
+
+function toolStatusPartId(kind: string, payload: ServerFrame, turnId: string): string {
+  const name = "name" in payload && typeof payload.name === "string" ? payload.name : kind;
+  return `tool_status:${turnId}:${kind}:${name}`;
+}
+
+function toolStatusPart(kind: string, payload: ServerFrame, turnId: string): ChatMessagePart {
+  return {
+    id: toolStatusPartId(kind, payload, turnId),
+    type: "tool_status",
+    event: buildToolMessage(kind, payload),
+  };
 }
 
 function dispatchCanvasCommandFrame(payload: ServerFrame, anchorTextPrefix?: string | null): void {
@@ -1237,6 +1381,99 @@ export function useSuperChat({
     });
   }, []);
 
+  const persistAssistantMessageParts = useCallback((turnId: string, parts: ChatMessagePart[] | undefined) => {
+    if (!parts?.some((part) => part.type !== "text")) return;
+    void api.post("api/v1/chat/ui-events", {
+      json: {
+        scope: desiredScopeRef.current,
+        turn_id: turnId,
+      event: {
+        type: "assistant.message_parts",
+        parts,
+      },
+      },
+    }).catch(() => undefined);
+  }, []);
+
+  const upsertAssistantMessagePart = useCallback((
+    target: { messageId?: string | null; turnId?: string | null },
+    part: ChatMessagePart,
+  ) => {
+    setMessages((current) => {
+      const existingIndex = current.findIndex((message) =>
+        message.role === "assistant"
+        && (
+          (target.messageId && message.id === target.messageId)
+          || (target.turnId && message.turnId === target.turnId)
+        ),
+      );
+      if (existingIndex >= 0) {
+        let persistedTurnId: string | undefined;
+        const next = sortMessages(current.map((message, index) => {
+          if (index !== existingIndex) return message;
+          const parts = assistantPartsWithPart(message.parts, part);
+          persistedTurnId = message.turnId;
+          return { ...message, parts, text: message.text || "", timestamp: Date.now() };
+        }));
+        if (persistedTurnId) {
+          persistAssistantMessageParts(
+            persistedTurnId,
+            next.find((message) => message.role === "assistant" && message.turnId === persistedTurnId)?.parts,
+          );
+        }
+        saveCachedMessages(scopeKey, next);
+        return next;
+      }
+      if (!target.turnId) return current;
+      const parts = assistantPartsWithPart(undefined, part);
+      persistAssistantMessageParts(target.turnId, parts);
+      const next = sortMessages([
+        ...current,
+        {
+          id: target.messageId || `assistant-${target.turnId}`,
+          role: "assistant",
+          text: "",
+          parts,
+          turnId: target.turnId,
+          timestamp: Date.now(),
+        },
+      ]);
+      saveCachedMessages(scopeKey, next);
+      return next;
+    });
+  }, [persistAssistantMessageParts, scopeKey]);
+
+  const removeAssistantMessagePart = useCallback((
+    target: { messageId?: string | null; turnId?: string | null },
+    partId: string,
+  ) => {
+    setMessages((current) => {
+      let persistedTurnId: string | undefined;
+      const next = current.map((message) => {
+        if (
+          message.role !== "assistant"
+          || !(
+            (target.messageId && message.id === target.messageId)
+            || (target.turnId && message.turnId === target.turnId)
+          )
+        ) {
+          return message;
+        }
+        const parts = assistantPartsWithoutPart(message.parts, partId);
+        persistedTurnId = message.turnId;
+        return { ...message, ...(parts ? { parts } : { parts: undefined }) };
+      });
+      if (persistedTurnId) {
+        persistAssistantMessageParts(
+          persistedTurnId,
+          next.find((message) => message.role === "assistant" && message.turnId === persistedTurnId)?.parts,
+        );
+      }
+      saveCachedMessages(scopeKey, next);
+      return next;
+    });
+  }, [persistAssistantMessageParts, scopeKey]);
+
   const finalizeStream = useCallback(() => {
     const turnId = activeTurnIdRef.current ?? `turn-${Date.now()}`;
     if (cancelledTurnIdsRef.current.has(turnId)) {
@@ -1245,12 +1482,17 @@ export function useSuperChat({
     }
     setMessages((current) => {
       if (!streamTextRef.current.trim()) return current;
-      return upsertAssistantMessage(current, turnId, streamTextRef.current);
+      const next = upsertAssistantMessage(current, turnId, streamTextRef.current);
+      persistAssistantMessageParts(
+        turnId,
+        next.find((message) => message.role === "assistant" && message.turnId === turnId)?.parts,
+      );
+      return next;
     });
     markTurnInactive(turnId);
     // Post-done history refresh is intentionally disabled; final assistant
     // messages are now pushed through assistant.message.
-  }, [markTurnInactive]);
+  }, [markTurnInactive, persistAssistantMessageParts]);
 
   const handleFrame = useCallback((frame: ServerFrame) => {
     switch (frame.type) {
@@ -1432,6 +1674,12 @@ export function useSuperChat({
         if (settings.showToolEvents || shouldPreserveToolMessage(frame)) {
           setMessages((current) => upsertToolMessage(current, frame.type, frame));
         }
+        if (shouldRenderToolStatusPart(frame) && typeof frame.turn_id === "string" && frame.turn_id.trim()) {
+          upsertAssistantMessagePart(
+            { turnId: frame.turn_id },
+            toolStatusPart(frame.type, frame, frame.turn_id),
+          );
+        }
         break;
       case "tool.result":
         if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) {
@@ -1460,6 +1708,12 @@ export function useSuperChat({
         if (settings.showToolEvents || shouldPreserveToolMessage(frame)) {
           setMessages((current) => upsertToolMessage(current, frame.type, frame));
         }
+        if (shouldRenderToolStatusPart(frame) && typeof frame.turn_id === "string" && frame.turn_id.trim()) {
+          upsertAssistantMessagePart(
+            { turnId: frame.turn_id },
+            toolStatusPart(frame.type, frame, frame.turn_id),
+          );
+        }
         break;
       case "canvas.command":
         dispatchCanvasCommandFrame(frame, streamTextRef.current.trim() ? streamTextRef.current : null);
@@ -1487,7 +1741,14 @@ export function useSuperChat({
               turn_id: turnId,
             }
           : frame.event;
-        setMessages((current) => upsertAssistantUiEvent(current, turnId, event));
+        setMessages((current) => {
+          const next = upsertAssistantUiEvent(current, turnId, event);
+          persistAssistantMessageParts(
+            turnId,
+            next.find((message) => message.role === "assistant" && message.turnId === turnId)?.parts,
+          );
+          return next;
+        });
         break;
       }
       case "assistant.clarification.event": {
@@ -1510,7 +1771,14 @@ export function useSuperChat({
               turn_id: turnId,
             }
           : frame.event;
-        setMessages((current) => upsertAssistantUiEvent(current, turnId, event));
+        setMessages((current) => {
+          const next = upsertAssistantUiEvent(current, turnId, event);
+          persistAssistantMessageParts(
+            turnId,
+            next.find((message) => message.role === "assistant" && message.turnId === turnId)?.parts,
+          );
+          return next;
+        });
         break;
       }
       case "skill_studio.status": {
@@ -1568,7 +1836,15 @@ export function useSuperChat({
       default:
         break;
     }
-  }, [finalizeStream, markTurnActive, markTurnInactive, scopeKey, settings.showToolEvents]);
+  }, [
+    finalizeStream,
+    markTurnActive,
+    markTurnInactive,
+    persistAssistantMessageParts,
+    scopeKey,
+    settings.showToolEvents,
+    upsertAssistantMessagePart,
+  ]);
 
   useEffect(() => {
     handleFrameRef.current = handleFrame;
@@ -1908,10 +2184,12 @@ export function useSuperChat({
 	    selectedInstanceId,
 	    sessionControl,
 	    setSettings,
-	    settings,
-	    submitAssistantClarificationResult,
-	    submitSkillStudioResult,
-	    pinnedIds,
+    settings,
+    submitAssistantClarificationResult,
+    submitSkillStudioResult,
+    upsertAssistantMessagePart,
+    removeAssistantMessagePart,
+    pinnedIds,
     streamText,
     switchModel,
     togglePin,

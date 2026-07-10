@@ -29,7 +29,12 @@ import {
   Volume2,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
-import type { DragEvent as ReactDragEvent, KeyboardEvent as ReactKeyboardEvent, ReactNode } from "react";
+import type {
+  DragEvent as ReactDragEvent,
+  KeyboardEvent as ReactKeyboardEvent,
+  MouseEvent as ReactMouseEvent,
+  ReactNode,
+} from "react";
 import { createPortal } from "react-dom";
 import ReactMarkdown from "react-markdown";
 import { useTranslation } from "react-i18next";
@@ -1718,6 +1723,8 @@ type AssistantClarificationUiEvent = {
   agent_id?: string | null;
   turn_id?: string | null;
   anchor_text_prefix?: string | null;
+  received_at?: number;
+  receivedAt?: number;
   clarification_id?: string;
   title?: string;
   description?: string;
@@ -1726,7 +1733,10 @@ type AssistantClarificationUiEvent = {
   allow_skip?: boolean;
   submitted?: boolean;
   action?: string;
+  clarification_status?: string;
   answers?: AssistantClarificationAnswers;
+  skipped?: boolean;
+  used_recommended?: boolean;
 };
 
 type SkillStudioUiEvent =
@@ -1735,6 +1745,8 @@ type SkillStudioUiEvent =
       status?: string;
       message?: string;
       anchor_text_prefix?: string | null;
+      received_at?: number;
+      receivedAt?: number;
     }
   | {
       type: "skill_studio.questions";
@@ -1744,6 +1756,8 @@ type SkillStudioUiEvent =
       agent_id?: string | null;
       turn_id?: string | null;
       anchor_text_prefix?: string | null;
+      received_at?: number;
+      receivedAt?: number;
       skill_studio_session_id?: string;
       title?: string;
       description?: string;
@@ -1762,6 +1776,8 @@ type SkillStudioUiEvent =
       agent_id?: string | null;
       turn_id?: string | null;
       anchor_text_prefix?: string | null;
+      received_at?: number;
+      receivedAt?: number;
       skill_studio_session_id?: string;
       mode?: string;
       summary?: string;
@@ -1793,6 +1809,22 @@ function uiEventStableKey(event: unknown): string | null {
   return stableId ? `${type}:${stableId}` : null;
 }
 
+function uiEventReceivedAt(event: unknown): number | null {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const value = event as Record<string, unknown>;
+  if (typeof value.received_at === "number" && Number.isFinite(value.received_at)) return value.received_at;
+  if (typeof value.receivedAt === "number" && Number.isFinite(value.receivedAt)) return value.receivedAt;
+  return null;
+}
+
+function uiEventFirstReceivedAt(...events: unknown[]): number {
+  for (const event of events) {
+    const receivedAt = uiEventReceivedAt(event);
+    if (receivedAt != null) return receivedAt;
+  }
+  return Date.now();
+}
+
 function mergeUiEventsByStableKey<T>(events: T[]): T[] {
   const merged: T[] = [];
   for (const event of events) {
@@ -1803,9 +1835,18 @@ function mergeUiEventsByStableKey<T>(events: T[]): T[] {
     }
     const existingIndex = merged.findIndex((candidate) => uiEventStableKey(candidate) === key);
     if (existingIndex >= 0) {
+      const existingReceivedAt = uiEventReceivedAt(merged[existingIndex]);
+      const nextReceivedAt = uiEventReceivedAt(event);
+      const firstReceivedAt =
+        existingReceivedAt == null
+          ? nextReceivedAt
+          : nextReceivedAt == null
+            ? existingReceivedAt
+            : Math.min(existingReceivedAt, nextReceivedAt);
       merged[existingIndex] = {
         ...(merged[existingIndex] as Record<string, unknown>),
         ...(event as Record<string, unknown>),
+        ...(firstReceivedAt == null ? {} : { received_at: firstReceivedAt }),
       } as T;
     } else {
       merged.push(event);
@@ -1847,6 +1888,11 @@ function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUi
 }
 
 export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEventsForMessage;
+
+function messageHasSkillStudioDraftEvent(message: ChatMessage): boolean {
+  if (message.role !== "assistant") return false;
+  return skillStudioEventsFromUiEvents(messageUiEvents(message)).some((event) => event.type === "skill_studio.draft");
+}
 
 function pendingSkillStudioQuestionEventsForMessage(message: ChatMessage): Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>[] {
   return skillStudioEventsFromUiEvents(messageUiEvents(message))
@@ -1913,6 +1959,7 @@ function visibleAssistantClarificationEventsForMessage(message: ChatMessage): As
 }
 
 function pendingAssistantClarificationEventsForMessage(message: ChatMessage): AssistantClarificationUiEvent[] {
+  if (messageHasSkillStudioDraftEvent(message)) return [];
   return assistantClarificationEventsFromUiEvents(messageUiEvents(message)).filter((event) => event.submitted !== true);
 }
 
@@ -1937,6 +1984,15 @@ export const messageIsWaitingForUserReplyForTest = messageIsWaitingForUserReply;
 type SkillStudioFlowItem =
   | { kind: "text"; key: string; text: string }
   | { kind: "event"; key: string; event: SkillStudioUiEvent };
+
+type AssistantInteractionFlowEvent =
+  | { kind: "skill_studio"; key: string; order: number; event: SkillStudioUiEvent }
+  | { kind: "clarification"; key: string; order: number; event: AssistantClarificationUiEvent };
+
+type AssistantInteractionFlowItem =
+  | { kind: "text"; key: string; text: string }
+  | { kind: "skill_studio"; key: string; event: SkillStudioUiEvent }
+  | { kind: "clarification"; key: string; event: AssistantClarificationUiEvent };
 
 const skillStudioDraftFieldLabels = {
   skill: {
@@ -1971,23 +2027,15 @@ function buildSkillStudioFlowItems(text: string, events: SkillStudioUiEvent[]): 
     return text ? [{ kind: "text", key: "text:0", text }] : [];
   }
   const anchored: Array<{ event: SkillStudioUiEvent; index: number; offset: number }> = [];
-  const previousAnchored: Array<{ event: SkillStudioUiEvent; index: number }> = [];
-  const unanchored: Array<{ event: SkillStudioUiEvent; index: number }> = [];
   for (const [index, event] of events.entries()) {
     const anchor = typeof event.anchor_text_prefix === "string" ? event.anchor_text_prefix : "";
     if (anchor && text.startsWith(anchor)) {
       anchored.push({ event, index, offset: anchor.length });
-    } else if (anchor || skillStudioEventIsResolvedCard(event)) {
-      previousAnchored.push({ event, index });
-    } else {
-      unanchored.push({ event, index });
     }
   }
   anchored.sort((left, right) => left.offset - right.offset || left.index - right.index);
+  const anchoredIndexes = new Set(anchored.map((item) => item.index));
   const items: SkillStudioFlowItem[] = [];
-  for (const item of previousAnchored) {
-    items.push({ kind: "event", key: `${item.event.type}:${item.index}`, event: item.event });
-  }
   let cursor = 0;
   for (const item of anchored) {
     if (item.offset > cursor) {
@@ -1999,19 +2047,85 @@ function buildSkillStudioFlowItems(text: string, events: SkillStudioUiEvent[]): 
   if (text.slice(cursor)) {
     items.push({ kind: "text", key: `text:${cursor}`, text: text.slice(cursor) });
   }
-  for (const item of unanchored) {
-    items.push({ kind: "event", key: `${item.event.type}:${item.index}`, event: item.event });
+  for (const [index, event] of events.entries()) {
+    if (!anchoredIndexes.has(index)) {
+      items.push({ kind: "event", key: `${event.type}:${index}`, event });
+    }
   }
   return items;
 }
 
 export const buildSkillStudioFlowItemsForTest = buildSkillStudioFlowItems;
 
-function skillStudioEventIsResolvedCard(event: SkillStudioUiEvent): boolean {
-  if (event.type === "skill_studio.status") return false;
-  if (event.submitted === true) return true;
-  return event.type === "skill_studio.draft" && event.cancelled === true;
+function commonPrefixLength(left: string, right: string): number {
+  const max = Math.min(left.length, right.length);
+  let index = 0;
+  while (index < max && left[index] === right[index]) index += 1;
+  return index;
 }
+
+function assistantInteractionEventAnchorEndIndex(text: string, event: AssistantInteractionFlowEvent): number {
+  const hasAnchor = typeof event.event.anchor_text_prefix === "string";
+  const anchor = hasAnchor ? event.event.anchor_text_prefix ?? "" : "";
+  if (!hasAnchor || !anchor) return 0;
+  if (text.startsWith(anchor)) return anchor.length;
+  const sharedPrefixLength = commonPrefixLength(text, anchor);
+  if (sharedPrefixLength >= Math.min(16, text.length, anchor.length)) return sharedPrefixLength;
+  return text.length;
+}
+
+function assistantInteractionEventOrder(event: AssistantInteractionFlowEvent): number {
+  return uiEventReceivedAt(event.event) ?? event.order;
+}
+
+function buildAssistantInteractionFlowItems(
+  text: string,
+  skillStudioEvents: SkillStudioUiEvent[],
+  clarificationEvents: AssistantClarificationUiEvent[],
+): AssistantInteractionFlowItem[] {
+  const events: AssistantInteractionFlowEvent[] = [
+    ...clarificationEvents.map((event, index): AssistantInteractionFlowEvent => ({
+      kind: "clarification",
+      key: `clarification:${event.bridge_key || event.clarification_id || index}`,
+      order: index,
+      event,
+    })),
+    ...skillStudioEvents.map((event, index): AssistantInteractionFlowEvent => ({
+      kind: "skill_studio",
+      key: `skill_studio:${event.type}:${uiEventRecordString(event as Record<string, unknown>, "bridge_key") ?? uiEventRecordString(event as Record<string, unknown>, "skill_studio_session_id") ?? index}`,
+      order: clarificationEvents.length + index,
+      event,
+    })),
+  ].sort((left, right) => {
+    const leftIndex = assistantInteractionEventAnchorEndIndex(text, left);
+    const rightIndex = assistantInteractionEventAnchorEndIndex(text, right);
+    return leftIndex - rightIndex || assistantInteractionEventOrder(left) - assistantInteractionEventOrder(right) || left.order - right.order;
+  });
+  if (events.length === 0) {
+    return text ? [{ kind: "text", key: "text:0", text }] : [];
+  }
+  const items: AssistantInteractionFlowItem[] = [];
+  let cursor = 0;
+  for (const event of events) {
+    const anchorEnd = assistantInteractionEventAnchorEndIndex(text, event);
+    const nextCursor = Math.max(cursor, Math.min(anchorEnd, text.length));
+    if (nextCursor > cursor) {
+      items.push({ kind: "text", key: `text:${cursor}:${nextCursor}`, text: text.slice(cursor, nextCursor) });
+      cursor = nextCursor;
+    }
+    if (event.kind === "clarification") {
+      items.push({ kind: "clarification", key: event.key, event: event.event });
+    } else {
+      items.push({ kind: "skill_studio", key: event.key, event: event.event });
+    }
+  }
+  if (text.slice(cursor)) {
+    items.push({ kind: "text", key: `text:${cursor}`, text: text.slice(cursor) });
+  }
+  return items;
+}
+
+export const buildAssistantInteractionFlowItemsForTest = buildAssistantInteractionFlowItems;
 
 function messageHasSkillStudioUiEvent(message: ChatMessage): boolean {
   return skillStudioEventsFromUiEvents(messageUiEvents(message)).length > 0;
@@ -2106,6 +2220,9 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
   const evaluation = getRecord(skill.evaluation);
   const visual = getRecord(evaluation.visual);
   const text = getRecord(evaluation.text);
+  const workflowTemplates = normalizedSkillStudioWorkflowTemplates(
+    skill.workflow_templates ?? skill.workflowTemplates,
+  );
   const payload: FreezoneAgentConfigPayload = {
     id: textField(skill.id),
     enabled: skill.enabled !== false,
@@ -2139,6 +2256,9 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
       ).map(normalizedSkillStudioReviewItem),
     },
   };
+  if (workflowTemplates.length > 0) {
+    payload.workflow_templates = workflowTemplates;
+  }
   return payload;
 }
 
@@ -2148,6 +2268,16 @@ function normalizedSkillStudioReviewItem(item: Record<string, unknown>) {
     weight: optionalFiniteNumber(item.weight) ?? 1,
     description: textField(item.description),
   };
+}
+
+function normalizedSkillStudioWorkflowTemplates(value: unknown): Array<Record<string, unknown>> {
+  return getRecordArray(value).map((template) => {
+    const steps = getRecordArray(template.steps);
+    return {
+      ...template,
+      steps: steps.map((step) => ({ ...step })),
+    };
+  });
 }
 
 function normalizedSkillStudioRecipePayload(recipe: Record<string, unknown>): FreezoneAgentConfigPayload {
@@ -2187,18 +2317,36 @@ function SkillStudioListField({
   value: string[];
 }) {
   const [draft, setDraft] = useState("");
+  const editInputRef = useRef<HTMLInputElement | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
   const addDraft = useCallback(() => {
     const nextItems = parseListText(draft);
     if (nextItems.length === 0) return;
     onChange(Array.from(new Set([...value, ...nextItems])));
     setDraft("");
   }, [draft, onChange, value]);
-  const removeItem = useCallback((item: string) => {
-    onChange(value.filter((candidate) => candidate !== item));
+  const removeItem = useCallback((indexToRemove: number) => {
+    onChange(value.filter((_, index) => index !== indexToRemove));
   }, [onChange, value]);
+  const beginEditItem = useCallback((index: number, item: string) => {
+    setEditingIndex(index);
+    setEditingDraft(item);
+    requestAnimationFrame(() => editInputRef.current?.focus({ preventScroll: true }));
+  }, []);
+  const commitEditItem = useCallback(() => {
+    if (editingIndex === null) return;
+    const nextItem = editingDraft.trim();
+    const nextItems = nextItem
+      ? value.map((item, index) => (index === editingIndex ? nextItem : item))
+      : value.filter((_, index) => index !== editingIndex);
+    onChange(Array.from(new Set(nextItems.filter(Boolean))));
+    setEditingIndex(null);
+    setEditingDraft("");
+  }, [editingDraft, editingIndex, onChange, value]);
 
   return (
-    <label className="block">
+    <div className="block">
       <span className="mb-1 block text-[11px] font-medium text-muted-foreground">{label}</span>
       <div
         className={cn(
@@ -2207,17 +2355,51 @@ function SkillStudioListField({
           disabled && "opacity-70",
         )}
       >
-        {value.map((item) => (
+        {value.map((item, index) => (
           <span
-            key={item}
+            key={`${item}:${index}`}
             className="inline-flex min-h-6 max-w-full items-center gap-1 rounded-md bg-white/[0.07] px-2 py-0.5 text-xs text-foreground"
           >
-            <span className="min-w-0 whitespace-normal break-words leading-4">{item}</span>
+            {editingIndex === index ? (
+              <input
+                ref={editInputRef}
+                aria-label={`编辑 ${item}`}
+                value={editingDraft}
+                onChange={(event) => setEditingDraft(event.target.value)}
+                onBlur={commitEditItem}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitEditItem();
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setEditingIndex(null);
+                    setEditingDraft("");
+                  }
+                }}
+                style={{ width: `${Math.min(Math.max(editingDraft.length + 1.5, 4.5), 26)}em` }}
+                className="h-5 max-w-full rounded-sm bg-black/20 px-1.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/30"
+              />
+            ) : disabled ? (
+              <span className="min-w-0 whitespace-normal break-words leading-4">{item}</span>
+            ) : (
+              <button
+                type="button"
+                aria-label={`编辑 ${item}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => beginEditItem(index, item)}
+                className="min-w-0 rounded-sm text-left whitespace-normal break-words leading-4 transition-colors hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-cyan-300/30"
+              >
+                {item}
+              </button>
+            )}
             {!disabled && (
               <button
                 type="button"
                 aria-label={`删除 ${item}`}
-                onClick={() => removeItem(item)}
+                onClick={() => removeItem(index)}
                 className="grid size-3.5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
               >
                 <X className="size-3" />
@@ -2246,7 +2428,7 @@ function SkillStudioListField({
           />
         )}
       </div>
-    </label>
+    </div>
   );
 }
 
@@ -2480,6 +2662,7 @@ export function buildSkillStudioQuestionToolResultForTest(
   ) as SkillStudioQuestionSelections;
   return {
     turn_id: event.turn_id ?? undefined,
+    anchor_text_prefix: event.anchor_text_prefix ?? undefined,
     bridge_key: event.bridge_key ?? "",
     project_id: event.project_id ?? undefined,
     canvas_id: event.canvas_id ?? undefined,
@@ -2527,6 +2710,7 @@ export function buildAssistantClarificationToolResultForTest(
   ) as AssistantClarificationAnswers;
   return {
     turn_id: event.turn_id ?? undefined,
+    anchor_text_prefix: event.anchor_text_prefix ?? undefined,
     bridge_key: event.bridge_key ?? "",
     project_id: event.project_id ?? undefined,
     canvas_id: event.canvas_id ?? undefined,
@@ -2813,9 +2997,9 @@ function SkillStudioQuestionsCard({
 
   return (
 	    <div className="bg-transparent px-4 pb-3 pt-3 text-sm">
-	      <div className="mb-2.5 flex items-center justify-between gap-3">
+	      <div className="mb-2.5 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
 	        <div className="min-w-0">
-	          <div className="truncate text-sm font-medium leading-5 text-foreground">
+	          <div className="line-clamp-2 break-words text-sm font-medium leading-5 text-foreground">
 	            {activeQuestion?.title || event.title || "需要你补充一点信息"}
 	          </div>
 	          {event.description && (
@@ -2963,6 +3147,11 @@ function AssistantClarificationSummaryCard({ event }: { event: AssistantClarific
   const answers = event.answers && typeof event.answers === "object" ? event.answers : {};
   const timelineItems = buildSkillStudioQuestionTimelineItems(questions, answers);
   const answeredCount = timelineItems.filter((item) => item.answered).length;
+  const skipped = event.skipped === true || event.action === "skip";
+  const statusLabel = skipped ? "已跳过" : "已提交";
+  const countLabel = skipped
+    ? `已跳过问题 · ${timelineItems.length} 个`
+    : `已提交回答 · ${answeredCount} / ${timelineItems.length} 个`;
   return (
     <div className="rounded-2xl border border-white/[0.07] bg-white/[0.025] px-3 py-3 text-sm shadow-[0_14px_40px_rgba(0,0,0,0.16)] backdrop-blur-sm">
       <div className="mb-3 flex items-center justify-between gap-3">
@@ -2974,11 +3163,11 @@ function AssistantClarificationSummaryCard({ event }: { event: AssistantClarific
             <span className="truncate font-medium tracking-normal">{event.title || "问题回答"}</span>
           </div>
           <div className="mt-1 text-[11px] text-muted-foreground">
-            已提交回答 · {answeredCount} / {timelineItems.length} 个
+            {countLabel}
           </div>
         </div>
         <span className="shrink-0 rounded-full border border-emerald-300/15 bg-emerald-400/[0.08] px-2 py-0.5 text-[11px] text-emerald-100/75">
-          已提交
+          {statusLabel}
         </span>
       </div>
       <div className="relative ml-2.5 space-y-0.5">
@@ -3097,9 +3286,9 @@ function AssistantClarificationInputCard({
 
   return (
 	    <div className="bg-transparent px-4 pb-3 pt-3 text-sm">
-	      <div className="mb-2.5 flex items-center justify-between gap-3">
+	      <div className="mb-2.5 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
 	        <div className="min-w-0">
-	          <div className="truncate text-sm font-medium leading-5 text-foreground">
+	          <div className="line-clamp-2 break-words text-sm font-medium leading-5 text-foreground">
 	            {activeQuestion?.title || event.title || "需要你补充一点信息"}
 	          </div>
 	          {event.description && (
@@ -3241,6 +3430,7 @@ function SkillStudioDraftCard({
   onSubmit,
   onDraftChange,
   onCancel,
+  onPreserveScrollAnchor,
 }: {
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>;
   onSubmit?: (
@@ -3252,6 +3442,7 @@ function SkillStudioDraftCard({
     draft: Record<string, unknown>,
   ) => void;
   onCancel?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
+  onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
 }) {
   const [draftObject, setDraftObject] = useState<Record<string, unknown>>(() => draftPayloadFromEvent(event));
   const [draftText, setDraftText] = useState(() => prettyJson(draftObject));
@@ -3265,6 +3456,7 @@ function SkillStudioDraftCard({
   const triggers = getRecord(skill.triggers);
   const planning = getRecord(skill.planning);
   const evaluation = getRecord(skill.evaluation);
+  const workflowTemplates = getRecordArray(skill.workflow_templates ?? skill.workflowTemplates);
   const syncDraftObject = useCallback((updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
     setDraftObject((current) => {
       const next = updater(current);
@@ -3343,12 +3535,21 @@ function SkillStudioDraftCard({
     setCancelled(true);
     onCancel?.(event);
   }, [cancelled, event, onCancel, submitted]);
+  const preserveDetailsScroll = useCallback((clickEvent: ReactMouseEvent<HTMLDivElement>) => {
+    const target = clickEvent.target instanceof HTMLElement ? clickEvent.target : null;
+    const summary = target?.closest("summary");
+    if (!summary || !clickEvent.currentTarget.contains(summary)) return;
+    onPreserveScrollAnchor?.(summary as HTMLElement);
+  }, [onPreserveScrollAnchor]);
   const readOnly = submitted || cancelled;
   const fieldClass = "h-8 rounded-lg border-white/[0.08] bg-black/20 text-xs shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
   const labelClass = "mb-1 block text-[11px] font-medium text-muted-foreground";
   const textAreaClass = "min-h-16 resize-y rounded-lg border-white/[0.08] bg-black/20 text-xs leading-5 shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
   return (
-    <div className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-3 text-sm shadow-[0_18px_50px_rgba(0,0,0,0.2)] backdrop-blur-sm">
+    <div
+      className="rounded-xl border border-white/[0.08] bg-white/[0.035] p-3 text-sm shadow-[0_18px_50px_rgba(0,0,0,0.2)] backdrop-blur-sm"
+      onClickCapture={preserveDetailsScroll}
+    >
       <div className="mb-2 flex items-center gap-2 text-foreground">
         <span className="flex size-6 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] text-emerald-100/90">
           <Package className="size-3.5" />
@@ -3443,6 +3644,57 @@ function SkillStudioDraftCard({
 	            />
 	          </div>
 	        </details>
+
+        {workflowTemplates.length > 0 && (
+          <details className="group border-t border-white/[0.07]">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+              <span className="flex min-w-0 items-center gap-2 text-foreground/85">
+                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                <ListTree className="size-3.5 shrink-0 text-muted-foreground" />
+                <span>工作流模板</span>
+              </span>
+              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.08] px-2 py-0.5 text-[10px] text-cyan-100/80">
+                {workflowTemplates.length} 个模板
+              </span>
+            </summary>
+            <div className="space-y-2 border-t border-white/[0.06] px-3 pb-3 pt-2">
+              {workflowTemplates.map((template, templateIndex) => {
+                const steps = getRecordArray(template.steps);
+                return (
+                  <div key={textField(template.id) || templateIndex} className="rounded-lg border border-white/[0.07] bg-black/15 p-2">
+                    <div className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-xs font-medium text-foreground/90">
+                        {textField(template.name) || textField(template.id) || `模板 ${templateIndex + 1}`}
+                      </span>
+                      <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        {steps.length} 步
+                      </span>
+                    </div>
+                    {textField(template.description) && (
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                        {textField(template.description)}
+                      </p>
+                    )}
+                    {steps.length > 0 && (
+                      <ol className="mt-2 space-y-1">
+                        {steps.map((step, stepIndex) => (
+                          <li key={textField(step.id) || stepIndex} className="flex min-w-0 gap-2 text-[11px] text-muted-foreground">
+                            <span className="shrink-0 tabular-nums text-foreground/60">
+                              {Number(step.step_number) || stepIndex + 1}.
+                            </span>
+                            <span className="truncate">
+                              {textField(step.goal_template) || textField(step.action_key) || textField(step.node_type) || "未命名步骤"}
+                            </span>
+                          </li>
+                        ))}
+                      </ol>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        )}
 
         <details className="group border-t border-white/[0.07]">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
@@ -3562,16 +3814,13 @@ function SkillStudioDraftCard({
                       className={fieldClass}
                     />
                   </label>
-                  <label>
-                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.action_keys}</span>
-                    <Input
-                      value={listText(recipe.action_keys)}
-                      disabled={readOnly}
-                      onChange={(changeEvent) => updateRecipeField(index, "action_keys", parseListText(changeEvent.target.value))}
-                      placeholder="用顿号、逗号或换行分隔"
-                      className={fieldClass}
-                    />
-                  </label>
+                  <SkillStudioListField
+                    label={skillStudioDraftFieldLabels.recipe.action_keys}
+                    value={stringListField(recipe.action_keys)}
+                    disabled={readOnly}
+                    onChange={(value) => updateRecipeField(index, "action_keys", value)}
+                    placeholder="输入类型后按 Enter"
+                  />
                 </div>
                 <label className="block">
                   <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.systemPrompt}</span>
@@ -3583,16 +3832,13 @@ function SkillStudioDraftCard({
                   />
                 </label>
                 <div className="grid gap-2 md:grid-cols-2">
-                  <label>
-                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.required_elements}</span>
-                    <Input
-                      value={listText(recipe.required_elements)}
-                      disabled={readOnly}
-                      onChange={(changeEvent) => updateRecipeField(index, "required_elements", parseListText(changeEvent.target.value))}
-                      placeholder="用顿号、逗号或换行分隔"
-                      className={fieldClass}
-                    />
-                  </label>
+                  <SkillStudioListField
+                    label={skillStudioDraftFieldLabels.recipe.required_elements}
+                    value={stringListField(recipe.required_elements)}
+                    disabled={readOnly}
+                    onChange={(value) => updateRecipeField(index, "required_elements", value)}
+                    placeholder="输入元素后按 Enter"
+                  />
                   <label>
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.needs_multimodal_input}</span>
                     <Input
@@ -3712,14 +3958,10 @@ function SkillStudioDraftCard({
 
 function SkillStudioStatusCard({ event }: { event: Extract<SkillStudioUiEvent, { type: "skill_studio.status" }> }) {
   return (
-    <div className="rounded-xl border border-white/[0.08] bg-black/25 px-3 py-2.5 text-sm backdrop-blur-sm">
-      <div className="flex items-center gap-2 text-muted-foreground">
-        <span className="flex size-5 items-center justify-center rounded-md bg-white/[0.05] text-cyan-100/80">
-          <ListTree className="size-3" />
-        </span>
-        <span className="font-medium">{event.message || "正在进入 Skill Studio..."}</span>
-        <DotsIndicator />
-      </div>
+    <div className="flex items-center gap-2 px-1 py-1 text-xs text-muted-foreground">
+      <ListTree className="size-3.5 shrink-0 text-cyan-100/70" />
+      <span>{event.message || "正在进入 Skill Studio..."}</span>
+      <DotsIndicator />
     </div>
   );
 }
@@ -3730,6 +3972,7 @@ function SkillStudioEventCard({
   onSubmitDraftResponse,
   onDraftChange,
   onCancelDraft,
+  onPreserveScrollAnchor,
 }: {
   event: SkillStudioUiEvent;
   onSubmitQuestionResponse?: (
@@ -3745,6 +3988,7 @@ function SkillStudioEventCard({
     draft: Record<string, unknown>,
   ) => void;
   onCancelDraft?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
+  onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
 }) {
   if (event.type === "skill_studio.status") {
     return <SkillStudioStatusCard event={event} />;
@@ -3758,6 +4002,7 @@ function SkillStudioEventCard({
       onSubmit={onSubmitDraftResponse}
       onDraftChange={onDraftChange}
       onCancel={onCancelDraft}
+      onPreserveScrollAnchor={onPreserveScrollAnchor}
     />
   );
 }
@@ -3782,6 +4027,7 @@ const MessageBubble = memo(function MessageBubble({
   onSubmitSkillStudioDraftResponse,
   onSkillStudioDraftChange,
   onCancelSkillStudioDraft,
+  onPreserveScrollAnchor,
 }: {
   message: ChatMessage;
   variant?: SuperChatPanelVariant;
@@ -3811,6 +4057,7 @@ const MessageBubble = memo(function MessageBubble({
     draft: Record<string, unknown>,
   ) => void;
   onCancelSkillStudioDraft?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
+  onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
 }) {
   const isUser = message.role === "user";
   const isTool = isToolMessage(message);
@@ -3835,8 +4082,11 @@ const MessageBubble = memo(function MessageBubble({
     ? visibleAssistantClarificationEventsForMessage(message)
     : [];
   const waitingForUserReply = !isUser && !isTool && messageIsWaitingForUserReply(message);
-  const skillStudioFlowItems = !isUser && !isTool
-    ? buildSkillStudioFlowItems(displayText, skillStudioEvents)
+  const assistantInteractionFlowItems = !isUser && !isTool
+    ? buildAssistantInteractionFlowItems(displayText, skillStudioEvents, clarificationSummaryEvents)
+    : [];
+  const assistantOrderedParts = !isUser && !isTool && message.parts?.some((part) => part.type !== "text")
+    ? message.parts
     : [];
   const visibleCanvasContextActivities = !isUser && !isTool
     ? visibleCanvasContextActivitiesForMessage(message, canvasContextActivities)
@@ -3855,7 +4105,7 @@ const MessageBubble = memo(function MessageBubble({
     || canvasCommandApprovals.length > 0
     || visibleCanvasContextActivities.length > 0;
   const canvasCommandFlowItems = useMemo(
-    () => isUser
+    () => isUser || !hasCanvasCommandSurface
       ? []
       : buildCanvasCommandFlowItems(
         suppressCanvasExecutionNarration ? "" : displayText,
@@ -3863,11 +4113,14 @@ const MessageBubble = memo(function MessageBubble({
         visibleCanvasCommandFeedbacks,
         visibleCanvasContextActivities,
         skillStudioEvents,
+        clarificationSummaryEvents,
       ),
     [
       canvasCommandApprovals,
       displayText,
+      hasCanvasCommandSurface,
       isUser,
+      clarificationSummaryEvents,
       skillStudioEvents,
       suppressCanvasExecutionNarration,
       visibleCanvasContextActivities,
@@ -4093,14 +4346,65 @@ const MessageBubble = memo(function MessageBubble({
           </div>
         ) : (
           <>
-            {canvasCommandFlowItems.length > 0 ? (
+            {assistantOrderedParts.length > 0 ? (
               <div className="space-y-1.5">
-                {clarificationSummaryEvents.map((event, index) => (
-                  <AssistantClarificationSummaryCard
-                    key={`clarification-summary:${event.clarification_id || index}`}
-                    event={event}
-                  />
-                ))}
+                {assistantOrderedParts.map((part) => {
+                  if (part.type === "text") {
+                    if (suppressCanvasExecutionNarration || !part.text) return null;
+                    return isErrorReply && !isUser && !isTool
+                      ? <HighlightedErrorText key={part.id} text={part.text} />
+                      : isCompletionNotice && !isUser && !isTool
+                        ? <HighlightedCompletionText key={part.id} text={part.text} />
+                        : <MessageText key={part.id} text={part.text} markdown={!isUser && !isTool} />;
+                  }
+                  if (part.type === "canvas_approval") {
+                    const approval = part.event as PendingCanvasCommandApproval;
+                    return (
+                      <CanvasCommandApprovalCard
+                        key={part.id}
+                        approval={approval}
+                        isExecuting={executingCanvasCommandApprovalIds.has(approval.id)}
+                        onApply={onApplyCanvasCommandApproval ?? (() => undefined)}
+                        onCancel={onCancelCanvasCommandApproval ?? (() => undefined)}
+                      />
+                    );
+                  }
+                  if (part.type === "canvas_feedback") {
+                    return <CanvasCommandFeedbackCard key={part.id} feedback={part.event as CanvasCommandFeedback} />;
+                  }
+                  if (part.type === "canvas_context") {
+                    return <CanvasContextActivityCard key={part.id} activity={part.event as CanvasContextActivity} />;
+                  }
+                  if (part.type === "skill_studio") {
+                    return (
+                      <SkillStudioEventCard
+                        key={part.id}
+                        event={part.event as SkillStudioUiEvent}
+                        onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
+                        onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                        onDraftChange={onSkillStudioDraftChange}
+                        onCancelDraft={onCancelSkillStudioDraft}
+                        onPreserveScrollAnchor={onPreserveScrollAnchor}
+                      />
+                    );
+                  }
+                  if (part.type === "clarification") {
+                    return (
+                      <AssistantClarificationSummaryCard
+                        key={part.id}
+                        event={part.event as AssistantClarificationUiEvent}
+                      />
+                    );
+                  }
+                  if (part.type === "tool_status") {
+                    const toolMessage = part.event as ChatMessage;
+                    return <FreezoneToolActivityCard key={part.id} message={toolMessage} />;
+                  }
+                  return null;
+                })}
+              </div>
+            ) : canvasCommandFlowItems.length > 0 ? (
+              <div className="space-y-1.5">
                 {canvasCommandFlowItems.map((item) => {
                   if (item.kind === "text") {
                     return <MessageText key={item.key} text={item.text} markdown={!isUser && !isTool} />;
@@ -4128,6 +4432,15 @@ const MessageBubble = memo(function MessageBubble({
                         onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
                         onDraftChange={onSkillStudioDraftChange}
                         onCancelDraft={onCancelSkillStudioDraft}
+                        onPreserveScrollAnchor={onPreserveScrollAnchor}
+                      />
+                    );
+                  }
+                  if (item.kind === "clarification") {
+                    return (
+                      <AssistantClarificationSummaryCard
+                        key={item.key}
+                        event={item.event}
                       />
                     );
                   }
@@ -4136,15 +4449,17 @@ const MessageBubble = memo(function MessageBubble({
               </div>
             ) : (
               <div className="space-y-2">
-                {clarificationSummaryEvents.map((event, index) => (
-                  <AssistantClarificationSummaryCard
-                    key={`clarification-summary:${event.clarification_id || index}`}
-                    event={event}
-                  />
-                ))}
-                {skillStudioFlowItems.length > 0 ? (
-                  skillStudioFlowItems.map((item) => {
-                    if (item.kind === "event") {
+                {assistantInteractionFlowItems.length > 0 ? (
+                  assistantInteractionFlowItems.map((item) => {
+                    if (item.kind === "clarification") {
+                      return (
+                        <AssistantClarificationSummaryCard
+                          key={item.key}
+                          event={item.event}
+                        />
+                      );
+                    }
+                    if (item.kind === "skill_studio") {
                       return (
                         <SkillStudioEventCard
                           key={item.key}
@@ -4153,6 +4468,7 @@ const MessageBubble = memo(function MessageBubble({
                           onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
                           onDraftChange={onSkillStudioDraftChange}
                           onCancelDraft={onCancelSkillStudioDraft}
+                          onPreserveScrollAnchor={onPreserveScrollAnchor}
                         />
                       );
                     }
@@ -5868,7 +6184,8 @@ type CanvasCommandFlowItem =
   | { kind: "approval"; key: string; approval: PendingCanvasCommandApproval }
   | { kind: "feedback"; key: string; feedback: CanvasCommandFeedback }
   | { kind: "context"; key: string; activity: CanvasContextActivity }
-  | { kind: "skill_studio"; key: string; event: SkillStudioUiEvent };
+  | { kind: "skill_studio"; key: string; event: SkillStudioUiEvent }
+  | { kind: "clarification"; key: string; event: AssistantClarificationUiEvent };
 
 type CanvasCommandSurfaceEvent =
   | {
@@ -5898,6 +6215,13 @@ type CanvasCommandSurfaceEvent =
       order: number;
       anchorTextPrefix?: string | null;
       event: SkillStudioUiEvent;
+    }
+  | {
+      kind: "clarification";
+      key: string;
+      order: number;
+      anchorTextPrefix?: string | null;
+      event: AssistantClarificationUiEvent;
     };
 
 const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
@@ -6308,16 +6632,17 @@ function canvasContextReadSemanticAnchorIndex(text: string, activity: CanvasCont
 }
 
 function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasCommandSurfaceEvent): number {
-  if (event.kind === "skill_studio") {
+  if (event.kind === "skill_studio" || event.kind === "clarification") {
+    if (event.anchorTextPrefix == null || event.anchorTextPrefix === "") return 0;
     const anchorEndIndex = canvasCommandAnchorEndIndex(text, event.anchorTextPrefix);
     const hasStaleAnchor =
       typeof event.anchorTextPrefix === "string"
       && event.anchorTextPrefix.length > 0
       && !text.startsWith(event.anchorTextPrefix);
-    if (
-      (skillStudioEventIsResolvedCard(event.event) || hasStaleAnchor)
-    ) {
-      return 0;
+    if (hasStaleAnchor) {
+      const sharedPrefixLength = commonPrefixLength(text, event.anchorTextPrefix);
+      if (sharedPrefixLength >= Math.min(16, text.length, event.anchorTextPrefix.length)) return sharedPrefixLength;
+      return text.length;
     }
     return anchorEndIndex;
   }
@@ -6391,8 +6716,9 @@ function buildCanvasCommandFlowItems(
   feedbacks: CanvasCommandFeedback[],
   contextActivities: CanvasContextActivity[],
   skillStudioEvents: SkillStudioUiEvent[] = [],
+  clarificationEvents: AssistantClarificationUiEvent[] = [],
 ): CanvasCommandFlowItem[] {
-  if (approvals.length === 0 && feedbacks.length === 0 && contextActivities.length === 0 && skillStudioEvents.length === 0) return [];
+  if (approvals.length === 0 && feedbacks.length === 0 && contextActivities.length === 0 && skillStudioEvents.length === 0 && clarificationEvents.length === 0) return [];
   const dedupedFeedbacks = dedupeCanvasCommandFeedbacks(feedbacks);
   const events: CanvasCommandSurfaceEvent[] = [
     ...approvals.map((approval, index): CanvasCommandSurfaceEvent => ({
@@ -6419,7 +6745,14 @@ function buildCanvasCommandFlowItems(
     ...skillStudioEvents.map((event, index): CanvasCommandSurfaceEvent => ({
       kind: "skill_studio",
       key: `skill_studio:${event.type}:${index}`,
-      order: approvals.length + feedbacks.length + contextActivities.length + index,
+      order: uiEventReceivedAt(event) ?? approvals.length + feedbacks.length + contextActivities.length + index,
+      anchorTextPrefix: typeof event.anchor_text_prefix === "string" ? event.anchor_text_prefix : null,
+      event,
+    })),
+    ...clarificationEvents.map((event, index): CanvasCommandSurfaceEvent => ({
+      kind: "clarification",
+      key: `clarification:${event.bridge_key || event.clarification_id || index}`,
+      order: uiEventReceivedAt(event) ?? approvals.length + feedbacks.length + contextActivities.length + skillStudioEvents.length + index,
       anchorTextPrefix: typeof event.anchor_text_prefix === "string" ? event.anchor_text_prefix : null,
       event,
     })),
@@ -6445,6 +6778,8 @@ function buildCanvasCommandFlowItems(
       items.push({ kind: "feedback", key: event.key, feedback: event.feedback });
     } else if (event.kind === "skill_studio") {
       items.push({ kind: "skill_studio", key: event.key, event: event.event });
+    } else if (event.kind === "clarification") {
+      items.push({ kind: "clarification", key: event.key, event: event.event });
     } else {
       items.push({ kind: "context", key: event.key, activity: event.activity });
     }
@@ -6462,6 +6797,18 @@ function mergeCanvasCommandFeedbackSources(...sources: Array<CanvasCommandFeedba
   const items = sources.flatMap((source) => source ?? []);
   if (items.length === 0) return [];
   return dedupeCanvasCommandFeedbacks(items);
+}
+
+function canvasApprovalPartId(approval: PendingCanvasCommandApproval): string {
+  return `canvas_approval:${approval.id}`;
+}
+
+function canvasFeedbackPartId(feedback: CanvasCommandFeedback): string {
+  return `canvas_feedback:${feedback.key}`;
+}
+
+function canvasContextPartId(activity: CanvasContextActivity): string {
+  return `canvas_context:${activity.key}`;
 }
 
 export const mergeCanvasCommandFeedbacksForTest = mergeCanvasCommandFeedbackSources;
@@ -6990,6 +7337,7 @@ export function SuperChatPanel({
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
   const shouldStickToBottomRef = useRef(true);
+  const suppressAutoScrollUntilRef = useRef(0);
   const historyScrollKeyRef = useRef<string | null>(null);
   const composerShellRef = useRef<HTMLDivElement | null>(null);
   const composerBeamRef = useRef<BorderBeamController | null>(null);
@@ -7365,8 +7713,16 @@ export function SuperChatPanel({
     const resolvedKeys = resolvedCanvasCommandApprovalKeysRef.current;
     if (resolvedKeys.has(approval.key) || resolvedKeys.has(canvasCommandApprovalApplyKey(approval))) return true;
     setPendingCanvasCommandApprovals((current) => mergePendingCanvasCommandApproval(current, approval));
+    chat.upsertAssistantMessagePart(
+      { messageId: approval.messageId, turnId: approval.turnId },
+      {
+        id: canvasApprovalPartId(approval),
+        type: "canvas_approval",
+        event: approval,
+      },
+    );
     return true;
-  }, [buildApprovalFromDetail]);
+  }, [buildApprovalFromDetail, chat]);
 
   useEffect(
     () => subscribeCanvasCommandApprovals((detail) => handleCanvasCommandApproval({ ...detail, autoExpires: true })),
@@ -7427,16 +7783,52 @@ export function SuperChatPanel({
       ?? latestAssistantMessageId
       ?? `canvas-command-result:${detail.receivedAt ?? Date.now()}`;
     const feedbackKey = canvasCommandFeedbackKey(detail.bridgeKey, turnId, detail.receivedAt);
+    const envelopes = detail.envelopes ?? [];
+    const plans = canvasCommandPlansFromEnvelopes(envelopes);
     appendCanvasCommandFeedback(
       messageId,
       feedbackKey,
       detail.result,
-      canvasCommandPlansFromEnvelopes(detail.envelopes),
+      plans,
       detail.anchorTextPrefix,
       detail.receivedAt,
     );
+    const feedback: CanvasCommandFeedback = {
+      ...detail.result,
+      commandResults: detail.result.commandResults,
+      key: feedbackKey,
+      plans,
+      anchorTextPrefix: detail.anchorTextPrefix ?? undefined,
+      surfaceOrder: detail.receivedAt,
+    };
+    for (const approval of pendingCanvasCommandApprovals) {
+      if (!pendingCanvasCommandApprovalMatches(approval, {
+        id: canvasCommandApprovalKey(detail.bridgeKey, turnId, envelopes, detail.receivedAt),
+        key: canvasCommandApprovalKey(detail.bridgeKey, turnId, envelopes, detail.receivedAt),
+        messageId,
+        turnId,
+        bridgeKey: detail.bridgeKey ?? null,
+        agentId: detail.agentId ?? null,
+        receivedAt: detail.receivedAt ?? Date.now(),
+        envelopes,
+        commandCount: envelopes.reduce((sum, envelope) => sum + envelope.commands.length, 0),
+        plans,
+      })) continue;
+      chat.removeAssistantMessagePart(
+        { messageId: approval.messageId, turnId: approval.turnId },
+        canvasApprovalPartId(approval),
+      );
+    }
+    chat.upsertAssistantMessagePart(
+      { messageId, turnId },
+      {
+        id: canvasFeedbackPartId(feedback),
+        type: "canvas_feedback",
+        event: feedback,
+      },
+    );
     setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApprovalsForResult(current, detail));
-  }, [activeMessages, appendCanvasCommandFeedback, effectiveFreezoneCanvasId, freezoneAgentMatches, latestAssistantMessageId, variant]);
+  }, [activeMessages, appendCanvasCommandFeedback, chat, effectiveFreezoneCanvasId, freezoneAgentMatches, latestAssistantMessageId, pendingCanvasCommandApprovals, variant]);
 
   useEffect(() => {
     const handleEvent = (event: Event) => {
@@ -7486,19 +7878,28 @@ export function SuperChatPanel({
               : null;
       const surfaceOrder = Date.now();
       if (turnId) {
+        const activity: CanvasContextActivity = {
+          key: `context:${bridgeKey}`,
+          turnId,
+          bridgeKey,
+          status: "running",
+          labels,
+          errors: [],
+          anchorTextPrefix,
+          surfaceOrder,
+        };
         setCanvasContextActivitiesByMessageId((current) => ({
           ...current,
-          [turnId]: mergeCanvasContextActivity(current[turnId], {
-            key: `context:${bridgeKey}`,
-            turnId,
-            bridgeKey,
-            status: "running",
-            labels,
-            errors: [],
-            anchorTextPrefix,
-            surfaceOrder,
-          }),
+          [turnId]: mergeCanvasContextActivity(current[turnId], activity),
         }));
+        chat.upsertAssistantMessagePart(
+          { turnId },
+          {
+            id: canvasContextPartId(activity),
+            type: "canvas_context",
+            event: activity,
+          },
+        );
       }
     };
 
@@ -7510,6 +7911,7 @@ export function SuperChatPanel({
     activeMessages,
     chat.activeTurnId,
     chat.streamText,
+    chat,
     effectiveFreezoneCanvasId,
     freezoneAgentMatches,
     variant,
@@ -7537,6 +7939,14 @@ export function SuperChatPanel({
         ...current,
         [messageId]: mergeCanvasContextActivity(current[messageId], activity),
       }));
+      chat.upsertAssistantMessagePart(
+        { messageId, turnId: activity.turnId },
+        {
+          id: canvasContextPartId(activity),
+          type: "canvas_context",
+          event: activity,
+        },
+      );
     };
     const handleCanvasContextResult = (event: Event) => {
       const detail = (event as CustomEvent<CanvasContextToolResultPayload>).detail;
@@ -7564,14 +7974,24 @@ export function SuperChatPanel({
       setCanvasContextActivitiesByMessageId((current) => {
         const next = { ...current };
         let updated = false;
+        let partTargetMessageId = fallbackMessageId;
         for (const [messageId, activities] of Object.entries(current)) {
           if (!activities.some((item) => item.bridgeKey === detail.bridge_key)) continue;
           next[messageId] = mergeCanvasContextActivity(activities, activity);
+          partTargetMessageId = messageId;
           updated = true;
         }
         if (!updated) {
           next[fallbackMessageId] = mergeCanvasContextActivity(current[fallbackMessageId], activity);
         }
+        chat.upsertAssistantMessagePart(
+          { messageId: partTargetMessageId, turnId: activity.turnId },
+          {
+            id: canvasContextPartId(activity),
+            type: "canvas_context",
+            event: activity,
+          },
+        );
         return next;
       });
     };
@@ -7581,7 +8001,7 @@ export function SuperChatPanel({
       window.removeEventListener(FREEZONE_CANVAS_CONTEXT_ACTIVITY_EVENT, handleCanvasContextActivity);
       window.removeEventListener(FREEZONE_CANVAS_CONTEXT_TOOL_RESULT_EVENT, handleCanvasContextResult);
     };
-  }, [activeMessages, effectiveFreezoneCanvasId, freezoneAgentMatches, latestAssistantMessageId, variant]);
+  }, [activeMessages, chat, effectiveFreezoneCanvasId, freezoneAgentMatches, latestAssistantMessageId, variant]);
 
   const persistCanvasCommandUiEvent = useCallback((
     turnId: string | null | undefined,
@@ -7716,7 +8136,7 @@ export function SuperChatPanel({
           anchorTextPrefix: approval.anchorTextPrefix,
           projectId: params.project,
           canvasId: effectiveFreezoneCanvasId,
-          agentId: approval.agentId,
+          agentId: approval.agentId ?? effectiveFreezoneAgentId,
           result,
         });
         const feedbackKey = canvasCommandFeedbackKey(approval.bridgeKey, approval.turnId, undefined, approval.key);
@@ -7738,6 +8158,26 @@ export function SuperChatPanel({
             receivedAt,
           );
         }
+        const feedback: CanvasCommandFeedback = {
+          ...result,
+          commandResults: result.commandResults,
+          key: feedbackKey,
+          plans: approval.plans,
+          anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
+          surfaceOrder: receivedAt,
+        };
+        chat.removeAssistantMessagePart(
+          { messageId: approval.messageId, turnId: approval.turnId },
+          canvasApprovalPartId(approval),
+        );
+        chat.upsertAssistantMessagePart(
+          { messageId: approval.messageId, turnId: approval.turnId },
+          {
+            id: canvasFeedbackPartId(feedback),
+            type: "canvas_feedback",
+            event: feedback,
+          },
+        );
         persistCanvasCommandUiEvent(approval.turnId, {
           schema_version: "canvas_command_result.v1",
           type: "canvas_command_result",
@@ -7754,7 +8194,7 @@ export function SuperChatPanel({
         setExecutingCanvasCommandApprovalIds(new Set(executingCanvasCommandApprovalIdsRef.current));
       }
     })();
-  }, [appendCanvasCommandFeedback, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent]);
+  }, [appendCanvasCommandFeedback, chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent]);
 
   const handleCancelCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval, reason: CanvasCommandApprovalCancelReason = "user") => {
     if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
@@ -7788,7 +8228,7 @@ export function SuperChatPanel({
       anchorTextPrefix: approval.anchorTextPrefix,
       projectId: params.project,
       canvasId: effectiveFreezoneCanvasId,
-      agentId: approval.agentId,
+      agentId: approval.agentId ?? effectiveFreezoneAgentId,
       result,
       cancelled: true,
     });
@@ -7823,8 +8263,28 @@ export function SuperChatPanel({
         receivedAt,
       );
     }
+    const feedback: CanvasCommandFeedback = {
+      ...result,
+      commandResults: result.commandResults,
+      key: feedbackKey,
+      plans: approval.plans,
+      anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
+      surfaceOrder: receivedAt,
+    };
+    chat.removeAssistantMessagePart(
+      { messageId: approval.messageId, turnId: approval.turnId },
+      canvasApprovalPartId(approval),
+    );
+    chat.upsertAssistantMessagePart(
+      { messageId: approval.messageId, turnId: approval.turnId },
+      {
+        id: canvasFeedbackPartId(feedback),
+        type: "canvas_feedback",
+        event: feedback,
+      },
+    );
     setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApproval(current, approval));
-  }, [appendCanvasCommandFeedback, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent, t]);
+  }, [appendCanvasCommandFeedback, chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent, t]);
 
   useEffect(() => {
     if (canvasCommandExecutionMode !== "auto_execute") return;
@@ -8031,13 +8491,30 @@ export function SuperChatPanel({
           : (!lastUserMessage || !lastUserHasAssistantReply)
       )
     );
-  const scrollToChatBottom = useCallback((behavior: ScrollBehavior = "auto") => {
+  const scrollToChatBottom = useCallback((behavior: ScrollBehavior = "auto", options?: { force?: boolean }) => {
+    if (!options?.force && suppressAutoScrollUntilRef.current > Date.now()) return;
     const el = scrollRef.current;
     if (!el) return;
     const top = Math.max(0, el.scrollHeight - el.clientHeight);
     el.scrollTo({ top, behavior });
     shouldStickToBottomRef.current = true;
     setShowScrollToBottom(false);
+  }, []);
+  const preserveScrollAnchor = useCallback((anchor: HTMLElement | null) => {
+    const el = scrollRef.current;
+    if (!el || !anchor) return;
+    const beforeTop = anchor.getBoundingClientRect().top;
+    suppressAutoScrollUntilRef.current = Date.now() + 700;
+    shouldStickToBottomRef.current = false;
+    const restore = () => {
+      if (!anchor.isConnected) return;
+      const afterTop = anchor.getBoundingClientRect().top;
+      el.scrollTop += afterTop - beforeTop;
+    };
+    window.requestAnimationFrame(() => {
+      restore();
+      window.requestAnimationFrame(restore);
+    });
   }, []);
 
   useEffect(() => {
@@ -8055,7 +8532,7 @@ export function SuperChatPanel({
 
   useEffect(() => {
     const frame = window.requestAnimationFrame(() => {
-      if (shouldStickToBottomRef.current || chat.busy) {
+      if (shouldStickToBottomRef.current) {
         scrollToChatBottom();
       }
     });
@@ -8066,7 +8543,7 @@ export function SuperChatPanel({
     const list = messageListRef.current;
     if (!list || typeof ResizeObserver === "undefined") return;
     const observer = new ResizeObserver(() => {
-      if (!shouldStickToBottomRef.current && !chat.busy) return;
+      if (!shouldStickToBottomRef.current) return;
       window.requestAnimationFrame(() => scrollToChatBottom());
     });
     observer.observe(list);
@@ -8521,16 +8998,35 @@ export function SuperChatPanel({
         return false;
       }
       if (event.turn_id) {
+        const receivedAt = uiEventFirstReceivedAt(event);
+        const persistedEvent = {
+          type: "skill_studio.questions",
+          bridge_key: event.bridge_key,
+          skill_studio_session_id: event.skill_studio_session_id,
+          project_id: event.project_id ?? params.project,
+          canvas_id: event.canvas_id ?? effectiveFreezoneCanvasId,
+          agent_id: event.agent_id ?? effectiveFreezoneAgentId,
+          anchor_text_prefix: event.anchor_text_prefix ?? null,
+          received_at: receivedAt,
+          title: event.title,
+          description: event.description,
+          questions: event.questions,
+          submitted: true,
+          action,
+          selections: payload.selections,
+        };
         updateChatUiEvent(
           event.turn_id,
           (candidate) => skillStudioEventMatches(candidate, event),
           (candidate) => ({
             ...(candidate as Record<string, unknown>),
+            received_at: uiEventFirstReceivedAt(candidate, event),
             submitted: true,
             action,
             selections: payload.selections,
           }),
         );
+        persistSkillStudioUiEvent(event.turn_id, persistedEvent);
       }
       return true;
     } catch (error) {
@@ -8538,7 +9034,7 @@ export function SuperChatPanel({
       toast.error("提交 Skill Studio 选择失败，请重试");
       return false;
     }
-  }, [chat, updateChatUiEvent]);
+  }, [chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, updateChatUiEvent]);
 
   const submitAssistantClarificationResponse = useCallback(async (
     event: AssistantClarificationUiEvent,
@@ -8561,10 +9057,10 @@ export function SuperChatPanel({
 	        skipped: action === "skip",
 	        used_recommended: action === "recommended",
 	      };
-	      if (!chat.submitAssistantClarificationResult(payload)) {
-	        toast.error("补充信息连接未就绪，请重试");
-	        return false;
-	      }
+      if (!chat.submitAssistantClarificationResult(payload)) {
+        toast.error("补充信息连接未就绪，请重试");
+        return false;
+      }
       if (event.turn_id) {
         updateChatUiEvent(
           event.turn_id,
@@ -8580,9 +9076,14 @@ export function SuperChatPanel({
             ),
           (candidate) => ({
             ...(candidate as Record<string, unknown>),
+            received_at: uiEventFirstReceivedAt(candidate, event),
             submitted: true,
             action,
+            clarification_status: action === "submit" ? "answered" : action,
             answers: payload.answers,
+            skipped: action === "skip",
+            used_recommended: action === "recommended",
+            anchor_text_prefix: event.anchor_text_prefix ?? null,
           }),
         );
       }
@@ -8626,11 +9127,30 @@ export function SuperChatPanel({
           .catch(() => undefined);
       }
       if (event.turn_id) {
+        const receivedAt = uiEventFirstReceivedAt(event);
+        const persistedEvent = {
+          type: "skill_studio.draft",
+          bridge_key: event.bridge_key,
+          skill_studio_session_id: event.skill_studio_session_id,
+          project_id: event.project_id ?? params.project,
+          canvas_id: event.canvas_id ?? effectiveFreezoneCanvasId,
+          agent_id: event.agent_id ?? effectiveFreezoneAgentId,
+          anchor_text_prefix: event.anchor_text_prefix ?? null,
+          received_at: receivedAt,
+          mode: event.mode,
+          draft: payload.draft,
+          submitted: true,
+          saved_to_catalog: payload.saved_to_catalog,
+          saved_skill_ids: payload.saved_skill_ids,
+          saved_recipe_ids: payload.saved_recipe_ids,
+          action: payload.action,
+        };
         updateChatUiEvent(
           event.turn_id,
           (candidate) => skillStudioEventMatches(candidate, event),
             (candidate) => ({
               ...(candidate as Record<string, unknown>),
+              received_at: uiEventFirstReceivedAt(candidate, event),
               submitted: true,
               draft: payload.draft,
               saved_to_catalog: payload.saved_to_catalog,
@@ -8639,6 +9159,7 @@ export function SuperChatPanel({
               action: payload.action,
             }),
           );
+        persistSkillStudioUiEvent(event.turn_id, persistedEvent);
       }
       toast.success("已添加到虾画 Skills / Recipes");
       return true;
@@ -8647,13 +9168,14 @@ export function SuperChatPanel({
       toast.error("添加 Skill / Recipe 失败，请检查必填字段后重试");
       return false;
     }
-  }, [chat, queryClient, updateChatUiEvent]);
+  }, [chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
 
   const handleSkillStudioDraftChange = useCallback((
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draftPayload: Record<string, unknown>,
   ) => {
     if (!event.turn_id) return;
+    const receivedAt = uiEventFirstReceivedAt(event);
     const persistedEvent = {
       type: "skill_studio.draft",
       bridge_key: event.bridge_key,
@@ -8661,6 +9183,8 @@ export function SuperChatPanel({
       project_id: event.project_id ?? params.project,
       canvas_id: event.canvas_id ?? effectiveFreezoneCanvasId,
       agent_id: event.agent_id ?? effectiveFreezoneAgentId,
+      anchor_text_prefix: event.anchor_text_prefix ?? null,
+      received_at: receivedAt,
       mode: event.mode,
       draft: draftPayload,
     };
@@ -8669,6 +9193,7 @@ export function SuperChatPanel({
       (candidate) => skillStudioEventMatches(candidate, event),
       (candidate) => ({
         ...(candidate as Record<string, unknown>),
+        received_at: uiEventFirstReceivedAt(candidate, event),
         draft: draftPayload,
       }),
     );
@@ -8688,6 +9213,7 @@ export function SuperChatPanel({
       toast.error("Skill Studio 连接未就绪，请重试");
       return;
     }
+    const receivedAt = uiEventFirstReceivedAt(event);
     const persistedEvent = {
       type: "skill_studio.draft",
       bridge_key: event.bridge_key,
@@ -8695,6 +9221,8 @@ export function SuperChatPanel({
       project_id: event.project_id ?? params.project,
       canvas_id: event.canvas_id ?? effectiveFreezoneCanvasId,
       agent_id: event.agent_id ?? effectiveFreezoneAgentId,
+      anchor_text_prefix: event.anchor_text_prefix ?? null,
+      received_at: receivedAt,
       cancelled: true,
     };
     updateChatUiEvent(
@@ -8702,6 +9230,7 @@ export function SuperChatPanel({
       (candidate) => skillStudioEventMatches(candidate, event),
       (candidate) => ({
         ...(candidate as Record<string, unknown>),
+        received_at: uiEventFirstReceivedAt(candidate, event),
         cancelled: true,
       }),
     );
@@ -9022,6 +9551,7 @@ export function SuperChatPanel({
                       onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                       onSkillStudioDraftChange={handleSkillStudioDraftChange}
                       onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
+                      onPreserveScrollAnchor={preserveScrollAnchor}
                     />
                   </div>
                 ))}
@@ -9045,6 +9575,7 @@ export function SuperChatPanel({
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
+                    onPreserveScrollAnchor={preserveScrollAnchor}
                   />
                 )}
                 {orphanCanvasCommandSurfaces.map((surface) => (
@@ -9087,6 +9618,7 @@ export function SuperChatPanel({
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
+                    onPreserveScrollAnchor={preserveScrollAnchor}
                   />
                 ))}
                 {thinkingCanvasContextActivity && (
@@ -9110,6 +9642,7 @@ export function SuperChatPanel({
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
+                    onPreserveScrollAnchor={preserveScrollAnchor}
                   />
                 )}
               </div>
@@ -9126,7 +9659,7 @@ export function SuperChatPanel({
               )}
               title="回到底部"
               aria-label="回到底部"
-              onClick={() => scrollToChatBottom("auto")}
+              onClick={() => scrollToChatBottom("auto", { force: true })}
             >
               <ArrowDown className="h-4 w-4" />
             </Button>

@@ -260,6 +260,26 @@ export type ServerFrame =
 
 export type ChatRole = "user" | "assistant" | "system" | "tool";
 
+export type ChatMessagePart =
+  | {
+      id: string;
+      type: "text";
+      text: string;
+      seq?: number;
+    }
+  | {
+      id: string;
+      type:
+        | "skill_studio"
+        | "clarification"
+        | "canvas_approval"
+        | "canvas_feedback"
+        | "canvas_context"
+        | "tool_status";
+      event: unknown;
+      seq?: number;
+    };
+
 export type ChatAttachment = {
   id?: string;
   type?: string;
@@ -280,6 +300,7 @@ export type ChatMessage = {
   turnId?: string;
   displayName?: string;
   attachments?: ChatAttachment[];
+  parts?: ChatMessagePart[];
   uiEvents?: unknown[];
   timestamp: number;
   raw?: unknown;

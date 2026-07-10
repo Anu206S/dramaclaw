@@ -325,6 +325,7 @@ Output contract:
 
 Draft rules:
 - Generate complete Skill / Recipe drafts, not partial fields.
+- When the Skill is meant to build or repeat a multi-node canvas process, include workflow_templates with ordered steps that reference the relevant Recipe action_keys.
 - Keep ids lowercase and limited to letters, numbers, underscores, and hyphens.
 - Do not ask the user for low-level fields such as id, category, action_keys, or systemPrompt; infer them.
 - If the request is ambiguous, ask 3-5 high-level option questions instead of field-by-field questions.

@@ -121,6 +121,11 @@ class ChatUiEventIn(BaseModel):
     event: dict[str, Any]
 
 
+class FreezoneCanvasAgentsIn(BaseModel):
+    project_id: str
+    canvas_id: str
+
+
 class CanvasCommandToolResultIn(BaseModel):
     turn_id: str | None = None
     bridge_key: str
@@ -177,6 +182,7 @@ class SkillStudioToolResultIn(BaseModel):
 
 class ClarificationToolResultIn(BaseModel):
     turn_id: str | None = None
+    anchor_text_prefix: str | None = None
     bridge_key: str
     project_id: str | None = None
     canvas_id: str | None = None
@@ -243,6 +249,33 @@ async def append_chat_ui_event(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": event}
+
+
+@router.post("/chat/freezone-canvas-agents")
+async def list_freezone_canvas_agents(
+    payload: FreezoneCanvasAgentsIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    project_id = payload.project_id.strip()
+    canvas_id = payload.canvas_id.strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    if not canvas_id:
+        raise HTTPException(status_code=400, detail="canvas_id is required")
+    scope = ChatScope(
+        kind="project",
+        id=project_id,
+        surface="freezone",
+        canvas_id=canvas_id,
+        agent_id="main",
+    )
+    await _project_context_for_scope(user, scope)
+    agents = chat_store.list_freezone_canvas_agent_summaries(
+        str(user["username"]),
+        project_id=project_id,
+        canvas_id=canvas_id,
+    )
+    return {"ok": True, "data": {"agents": agents}}
 
 
 def _canvas_bridge_dir(username: str, *, profile: str = "director") -> Any:
@@ -688,6 +721,7 @@ def _persist_clarification_result_ui_event(
             "answers": payload.answers,
             "skipped": payload.skipped,
             "used_recommended": payload.used_recommended,
+            "anchor_text_prefix": payload.anchor_text_prefix,
         },
     )
 
