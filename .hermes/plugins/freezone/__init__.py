@@ -1008,11 +1008,32 @@ def _emit_canvas_commands(
         try:
             timeout_seconds = max(
                 1,
-                int(os.environ.get("DRAMACLAW_CANVAS_COMMAND_RESULT_TIMEOUT_SECONDS", "600")),
+                int(os.environ.get("DRAMACLAW_CANVAS_COMMAND_RESULT_TIMEOUT_SECONDS", "75")),
             )
         except ValueError:
-            timeout_seconds = 600
-        resolved = wait_canvas_command_result(key, timeout_seconds=timeout_seconds)
+            timeout_seconds = 75
+        timeout_result = {
+            "ok": False,
+            "tool_call_status": "failed",
+            "canvas_apply_status": "timeout",
+            "applied": False,
+            "cancelled": True,
+            "errors": ["Timed out waiting for frontend canvas command result."],
+            "bridge_key": key,
+            "project_id": project,
+            "canvas_id": canvas,
+            "message": "Canvas command timed out before the frontend reported a result.",
+            "user_message": "画布操作等待超时，已自动取消，没有应用新的画布变更。",
+            "agent_instruction": (
+                "Do not claim success. Tell the user the canvas command timed out and ask "
+                "them to retry after checking the canvas connection."
+            ),
+        }
+        resolved = wait_canvas_command_result(
+            key,
+            timeout_seconds=timeout_seconds,
+            timeout_result=timeout_result,
+        )
         if resolved is not None:
             return tool_result(
                 _summarize_canvas_command_result(
@@ -1023,22 +1044,7 @@ def _emit_canvas_commands(
                 if slim_result
                 else resolved
             )
-        return tool_result(
-            {
-                "ok": False,
-                "tool_call_status": "completed",
-                "canvas_apply_status": "pending_user_confirmation",
-                "applied": False,
-                "cancelled": False,
-                "errors": ["Timed out waiting for frontend canvas command result."],
-                "bridge_key": key,
-                "message": "Canvas command is still waiting for frontend confirmation or apply result.",
-                "agent_instruction": (
-                    "Do not claim success yet. Wait for the frontend result or ask the user to "
-                    "confirm whether the command should be retried."
-                ),
-            }
-        )
+        return tool_result(timeout_result)
     return tool_error(
         "Canvas command bridge is unavailable; cannot wait for frontend apply result. "
         f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
@@ -1407,7 +1413,9 @@ def _handle_run_node_action(args: dict[str, Any], **_: Any) -> str:
     command: dict[str, Any] = {"type": "run_node_action", "node_id": node_id, "action": action}
     parameters = args.get("parameters") or args.get("params")
     if isinstance(parameters, dict):
-        command["parameters"] = parameters
+        command["parameters"] = dict(parameters)
+    if bool(args.get("regenerate") or args.get("force_regenerate") or args.get("forceRegenerate")):
+        command.setdefault("parameters", {})["regenerate"] = True
     return _single_write_command(args, command)
 
 
@@ -1496,20 +1504,23 @@ def _request_canvas_context_from_frontend(
             )
         except ValueError:
             timeout_seconds = 60
-        resolved = wait_canvas_context_result(key, timeout_seconds=timeout_seconds)
+        timeout_result = {
+            "ok": False,
+            "tool_call_status": "failed",
+            "canvas_context_status": "timeout",
+            "errors": ["Timed out waiting for frontend canvas context response."],
+            "bridge_key": key,
+            **({"project_id": project} if project else {}),
+            **({"canvas_id": canvas} if canvas else {}),
+        }
+        resolved = wait_canvas_context_result(
+            key,
+            timeout_seconds=timeout_seconds,
+            timeout_result=timeout_result,
+        )
         if resolved is not None:
             return tool_result(resolved)
-        return tool_result(
-            {
-                "ok": False,
-                "tool_call_status": "failed",
-                "canvas_context_status": "timeout",
-                "errors": ["Timed out waiting for frontend canvas context response."],
-                "bridge_key": key,
-                **({"project_id": project} if project else {}),
-                **({"canvas_id": canvas} if canvas else {}),
-            }
-        )
+        return tool_result(timeout_result)
     return tool_error(
         "Canvas context bridge is unavailable; cannot wait for frontend context result. "
         f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
@@ -1895,6 +1906,18 @@ _CANVAS_COMMAND_ITEM_SCHEMA = {
             "description": "Node data. Do not put nodeType or imageGenerationParams here.",
         },
         "client_id": {"type": "string", "description": "Same-batch alias for newly created nodes."},
+        "node_id": {"type": "string", "description": "Existing node id for update_node_data or run_node_action."},
+        "node_ids": {"type": "array", "items": {"type": "string"}, "description": "Existing node ids for group/delete/run_workflow."},
+        "action": {"type": "string", "description": "Action id for run_node_action."},
+        "parameters": {
+            "type": "object",
+            "description": "Optional run_node_action parameters. For generation actions, omit regenerate unless the user explicitly asks to regenerate/overwrite existing output.",
+        },
+        "regenerate": {
+            "type": "boolean",
+            "description": "Only for run_workflow: true means regenerate completed workflow nodes. Omit for normal continue/complete requests so completed nodes are skipped.",
+        },
+        "scope": {"type": "string", "enum": ["selection", "canvas"], "description": "Optional run_workflow scope."},
         "source": {"type": "string"},
         "target": {"type": "string"},
         "link_type": {
@@ -2584,9 +2607,14 @@ TOOLS = (
                 },
                 "parameters": {
                     "type": "object",
-                    "description": "Optional parameters for actions whose action_catalog exposes parameter_schema.",
+                    "description": "Optional parameters for actions whose action_catalog exposes parameter_schema. For generation actions, omit regenerate unless the user explicitly asks to regenerate/overwrite existing output.",
                 },
                 "params": {"type": "object", "description": "Alias of parameters."},
+                "regenerate": {
+                    "type": "boolean",
+                    "description": "Set true only when the user explicitly asks to regenerate/overwrite this node. Normal continue/complete requests skip nodes that already have output.",
+                },
+                "force_regenerate": {"type": "boolean", "description": "Alias of regenerate."},
             },
             ["node_id", "action"],
         ),

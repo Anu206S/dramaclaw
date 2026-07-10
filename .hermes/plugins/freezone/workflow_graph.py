@@ -74,6 +74,22 @@ LINK_TYPE_RULES = {
     ),
 }
 
+MODEL_ALIASES_BY_NODE_TYPE = {
+    "imageGenNode": {
+        "nano-banana-2": "newapi_nanobanana2",
+        "nanobanana2": "newapi_nanobanana2",
+        "nano_banana_2": "newapi_nanobanana2",
+        "gpt-image-2": "newapi_gpt_image2",
+        "openai/gpt-image-2": "newapi_gpt_image2",
+    },
+    "videoNode": {
+        "omni-flash": "newapi_seedance-2.0-fast",
+        "omni_flash": "newapi_seedance-2.0-fast",
+        "seedance-2.0-fast": "newapi_seedance-2.0-fast",
+        "seedance_2_0_fast": "newapi_seedance-2.0-fast",
+    },
+}
+
 STAGE_ORDER = {
     "input": 0,
     "resource": 0,
@@ -587,6 +603,7 @@ def _node_data(
         result.setdefault("content", description.strip())
         result.setdefault("prompt", description.strip())
         result.setdefault("description", description.strip())
+    _normalize_model_alias(result, node_type)
     if node_type == "audioNode":
         result.setdefault("audioKind", "speech")
         result.setdefault("audioUrl", None)
@@ -605,6 +622,17 @@ def _node_data(
         result.setdefault("isGenerating", False)
         result.setdefault("generationStartedAt", None)
     return result
+
+
+def _normalize_model_alias(data: dict[str, Any], node_type: str) -> None:
+    model = data.get("model")
+    if not isinstance(model, str) or not model.strip():
+        return
+    aliases = MODEL_ALIASES_BY_NODE_TYPE.get(node_type) or {}
+    normalized_key = model.strip().lower()
+    replacement = aliases.get(normalized_key)
+    if replacement:
+        data["model"] = replacement
 
 
 def _edge_pairs(raw_edges: Any) -> list[tuple[str, str, str | None]]:

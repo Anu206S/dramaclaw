@@ -1435,6 +1435,19 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             errors: [],
           });
         } catch (error) {
+          const message = error instanceof Error ? error.message : String(error || "unknown error");
+          const errors = [`读取画布上下文失败：${message}`];
+          emitCanvasContextActivity({
+            turnId,
+            anchorTextPrefix,
+            bridgeKey: bridgeKey ?? `context:${turnId ?? canvasId}:${Date.now()}`,
+            canvasId,
+            agentId,
+            status: "failed",
+            labels: ["画布上下文"],
+            errors,
+            receivedAt: Date.now(),
+          });
           reportCanvasContextToolResult({
             bridgeKey,
             turnId,
@@ -1443,7 +1456,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             canvasId,
             agentId,
             responses: [],
-            errors: [error instanceof Error ? error.message : String(error)],
+            errors,
           });
         } finally {
           setChatOpen(true);

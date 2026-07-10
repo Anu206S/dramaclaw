@@ -1143,6 +1143,61 @@ def _load_pending_canvas_context(path: Any) -> dict[str, Any] | None:
     }
 
 
+def _pending_canvas_command_timed_out(path: Any, *, stale_seconds: float = 45.0) -> bool:
+    try:
+        return (time.time() - path.stat().st_mtime) >= stale_seconds
+    except Exception:
+        return False
+
+
+def _resolve_stale_pending_canvas_command(
+    *,
+    bridge_dir: Any,
+    path: Any,
+    key: str,
+    pending: dict[str, Any],
+    scope: ChatScope,
+    turn_id: str,
+) -> bool:
+    if not _pending_canvas_command_timed_out(path):
+        return False
+    envelope = pending.get("envelope") if isinstance(pending, dict) else None
+    commands = envelope.get("commands") if isinstance(envelope, dict) else None
+    resolve_canvas_command(
+        key,
+        {
+            "ok": False,
+            "turn_id": turn_id,
+            "tool_call_status": "failed",
+            "canvas_apply_status": "timeout",
+            "applied": False,
+            "cancelled": True,
+            "errors": ["Timed out waiting for frontend canvas command result."],
+            "applied_count": 0,
+            "opened_ui_actions": [],
+            "created_node_ids": [],
+            "command_results": [],
+            "project_id": pending.get("project_id") or scope.id,
+            "canvas_id": pending.get("canvas_id") or scope.canvas_id,
+            "message": "Canvas command timed out before the frontend reported a result.",
+            "user_message": "画布操作等待超时，已自动取消，没有应用新的画布变更。",
+            "agent_instruction": (
+                "Do not claim success. Tell the user the canvas command timed out and ask "
+                "them to retry after checking the canvas connection."
+            ),
+        },
+        bridge_dir=bridge_dir,
+    )
+    logger.warning(
+        "auto-resolved stale canvas.command pending bridge_key=%s turn_id=%s canvas_id=%s commands=%s",
+        key,
+        turn_id,
+        pending.get("canvas_id") or scope.canvas_id,
+        len(commands) if isinstance(commands, list) else 0,
+    )
+    return True
+
+
 def _load_pending_skill_studio_event(path: Any) -> dict[str, Any] | None:
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -1203,14 +1258,14 @@ async def _watch_pending_canvas_commands(
     bridge_dirs = _candidate_canvas_bridge_dirs_for_scope(username, scope)
     while True:
         await asyncio.sleep(0.4)
-        pending_paths = []
+        pending_items = []
         for bridge_dir in bridge_dirs:
             try:
-                pending_paths.extend(bridge_dir.glob("*.pending.json"))
+                pending_items.extend((bridge_dir, path) for path in bridge_dir.glob("*.pending.json"))
             except Exception:
                 continue
-        pending_paths = sorted(pending_paths, key=lambda item: item.stat().st_mtime)
-        for path in pending_paths:
+        pending_items = sorted(pending_items, key=lambda item: item[1].stat().st_mtime)
+        for bridge_dir, path in pending_items:
             try:
                 if path.stat().st_mtime < started_at - 1.0:
                     continue
@@ -1225,6 +1280,15 @@ async def _watch_pending_canvas_commands(
             if pending is None:
                 continue
             if pending.get("project_id") and pending.get("project_id") != scope.id:
+                continue
+            if _resolve_stale_pending_canvas_command(
+                bridge_dir=bridge_dir,
+                path=path,
+                key=key,
+                pending=pending,
+                scope=scope,
+                turn_id=turn_id,
+            ):
                 continue
             emitted_bridge_keys.add(key)
             envelope = pending["envelope"]
@@ -1412,14 +1476,14 @@ async def _watch_pending_canvas_context_requests(
     bridge_dirs = _candidate_canvas_bridge_dirs_for_scope(username, scope)
     while True:
         await asyncio.sleep(0.4)
-        pending_paths = []
+        pending_items = []
         for bridge_dir in bridge_dirs:
             try:
-                pending_paths.extend(bridge_dir.glob("*.pending.json"))
+                pending_items.extend((bridge_dir, path) for path in bridge_dir.glob("*.pending.json"))
             except Exception:
                 continue
-        pending_paths = sorted(pending_paths, key=lambda item: item.stat().st_mtime)
-        for path in pending_paths:
+        pending_items = sorted(pending_items, key=lambda item: item[1].stat().st_mtime)
+        for bridge_dir, path in pending_items:
             try:
                 if path.stat().st_mtime < started_at - 1.0:
                     continue

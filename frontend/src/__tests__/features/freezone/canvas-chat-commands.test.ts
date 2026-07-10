@@ -5283,6 +5283,187 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("deduplicates node actions when a node action and workflow overlap", async () => {
+    const store = useCanvasStore.getState();
+    const textNodeId = store.addNode(
+      CANVAS_NODE_TYPES.textAnnotation,
+      { x: 0, y: 0 },
+      {
+        content: "商品主图提示词",
+      },
+    );
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 360, y: 0 },
+      {
+        prompt: "商品主图",
+      },
+    );
+    store.addEdge(textNodeId, imageNodeId);
+    const groupId = store.groupNodes([textNodeId, imageNodeId], {
+      label: "商品图片工作流",
+    });
+    if (!groupId) throw new Error("expected workflow group");
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId) return;
+        useCanvasStore
+          .getState()
+          .updateNodeData(payload.nodeId, {
+            imageUrl: "/static/project/image.png",
+          });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: imageNodeId,
+                action: "generate_image",
+              },
+              { type: "run_workflow", node_ids: [groupId] },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("skips a completed generation node unless regeneration is explicit", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "商品主图",
+        imageUrl: "/static/project/existing-image.png",
+      },
+    );
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: imageNodeId,
+                action: "generate_image",
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([]);
+      expect(result.commandResults).toEqual([
+        expect.objectContaining({
+          label: "节点已有内容，未重新生成",
+          nodeId: imageNodeId,
+          action: "generate_image",
+          output: expect.objectContaining({
+            skipped: true,
+            reason: "already_completed",
+          }),
+        }),
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("regenerates a completed generation node when regeneration is explicit", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "商品主图",
+        imageUrl: "/static/project/existing-image.png",
+      },
+    );
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId) return;
+        useCanvasStore
+          .getState()
+          .updateNodeData(payload.nodeId, {
+            imageUrl: "/static/project/regenerated-image.png",
+          });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: imageNodeId,
+                action: "generate_image",
+                parameters: { regenerate: true },
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("runs upstream workflow actions when run_workflow targets a terminal compose node", async () => {
     const store = useCanvasStore.getState();
     const imageNodeId = store.addNode(
@@ -6039,7 +6220,7 @@ describe("canvas chat commands", () => {
       expect(result.errors).toEqual([]);
       expect(events).toEqual([]);
       expect(
-        result.commandResults.some((step) => step.label === "工作流已完成"),
+        result.commandResults.some((step) => step.label === "工作流已完成，未重新生成"),
       ).toBe(true);
     } finally {
       unsubscribe();
@@ -6092,8 +6273,78 @@ describe("canvas chat commands", () => {
       expect(result.errors).toEqual([]);
       expect(events).toEqual([]);
       expect(
-        result.commandResults.some((step) => step.label === "工作流已完成"),
+        result.commandResults.some((step) => step.label === "工作流已完成，未重新生成"),
       ).toBe(true);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("regenerates a completed workflow group when regeneration is explicit", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "商品主图",
+        imageUrl: "/static/project/existing-image.png",
+      },
+    );
+    const videoNodeId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        prompt: "商品视频",
+        videoUrl: "/static/project/existing-video.mp4",
+      },
+    );
+    store.addEdge(imageNodeId, videoNodeId);
+    const groupId = store.groupNodes([imageNodeId, videoNodeId], {
+      label: "商品视频工作流",
+    });
+    if (!groupId) throw new Error("expected workflow group");
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId) return;
+        useCanvasStore
+          .getState()
+          .updateNodeData(payload.nodeId, {
+            ...(payload.action === "generate_image"
+              ? { imageUrl: "/static/project/regenerated-image.png" }
+              : {}),
+            ...(payload.action === "generate_video"
+              ? { videoUrl: "/static/project/regenerated-video.mp4" }
+              : {}),
+          });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [{ type: "run_workflow", node_ids: [groupId], regenerate: true }],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
+        { nodeId: videoNodeId, action: "generate_video" },
+      ]);
     } finally {
       unsubscribe();
     }

@@ -95,6 +95,34 @@ def test_agent_config_items_include_builtin_catalog_with_user_override(
     assert listed[1]["_catalog_source"] == "builtin"
 
 
+def test_agent_config_cache_invalidates_when_catalog_file_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    builtin_root = tmp_path / "agent_catalog" / "builtins"
+    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", builtin_root)
+    skill_root = builtin_root / "skills"
+    skill_root.mkdir(parents=True)
+    target = skill_root / "story-skill.json"
+    target.write_text(
+        json.dumps({"id": "story-skill", "description": "第一版"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    first = agent_config_store.list_user_agent_config_items("alice", "skills")
+    assert first[0]["description"] == "第一版"
+    first[0]["description"] = "调用方不应污染缓存"
+
+    target.write_text(
+        json.dumps({"id": "story-skill", "description": "第二版更长"}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+
+    second = agent_config_store.list_user_agent_config_items("alice", "skills")
+    assert second[0]["description"] == "第二版更长"
+
+
 def test_builtin_agent_config_item_can_be_hidden_by_user_overlay(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
