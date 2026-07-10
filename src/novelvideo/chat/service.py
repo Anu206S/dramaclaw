@@ -3878,7 +3878,7 @@ async def _stream_assistant_reply_hermes(
                 assistant_text = _completion_text_or_existing(event.text, assistant_text)
 
         if not assistant_text.strip():
-            assistant_text = "(hermes returned no content)"
+            assistant_text = "这轮操作没有收到虾导的有效回复，请稍后重试。"
         if not tool_ui_specs and not fallback_tool_ui_specs:
             inferred_display_call = _infer_display_tool_call_from_text(
                 prompt,
@@ -3912,7 +3912,7 @@ async def _stream_assistant_reply_hermes(
                     username,
                     store_scope,
                     "assistant",
-                    "(hermes returned no content)",
+                    "这轮操作没有收到虾导的有效回复，请稍后重试。",
                     media=[],
                     turn_id=turn_id,
                 )
@@ -3920,7 +3920,7 @@ async def _stream_assistant_reply_hermes(
                 result_message = add_assistant_message(
                     username,
                     project,
-                    "(hermes returned no content)",
+                    "这轮操作没有收到虾导的有效回复，请稍后重试。",
                     [],
                     project_dir=project_dir,
                     project_state_dir=project_state_dir,

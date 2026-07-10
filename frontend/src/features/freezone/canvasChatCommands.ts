@@ -1439,6 +1439,21 @@ function hasGeneratedResult(nodeId: string, action: string): boolean {
   return true;
 }
 
+function hasActiveGenerationHandle(nodeId: string): boolean {
+  const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
+  if (!data) return false;
+  return Boolean(
+    nonEmptyString(data.generationTaskKey) ??
+    nonEmptyString(data.generationTaskJobId) ??
+    nonEmptyString(data.generationJobId) ??
+    nonEmptyString(data.taskKey) ??
+    nonEmptyString(data.task_key) ??
+    nonEmptyString(data.job_id) ??
+    nonEmptyString(data.jobId) ??
+    nonEmptyString(data.skillRunId)
+  );
+}
+
 function isSubmittedGenerationOutput(output: unknown): boolean {
   if (!isRecord(output)) return false;
   if (output.submitted === true || output.status === "submitted") return true;
@@ -1461,13 +1476,28 @@ function hasGeneratedResultOutput(action: string, output: unknown): boolean {
     return isRecord(scriptResult) && Array.isArray(scriptResult.rows) && scriptResult.rows.length > 0;
   }
   if (action === "generate_image") {
-    return Boolean(nonEmptyString(output.imageUrl) ?? nonEmptyString(output.image_url));
+    return Boolean(
+      nonEmptyString(output.imageUrl) ??
+      nonEmptyString(output.image_url) ??
+      nonEmptyString(output.output_url) ??
+      nonEmptyString(output.url)
+    );
   }
   if (action === "generate_video" || action === "generate_text_video") {
-    return Boolean(nonEmptyString(output.videoUrl) ?? nonEmptyString(output.video_url));
+    return Boolean(
+      nonEmptyString(output.videoUrl) ??
+      nonEmptyString(output.video_url) ??
+      nonEmptyString(output.output_url) ??
+      nonEmptyString(output.url)
+    );
   }
   if (action === "generate_audio") {
-    return Boolean(nonEmptyString(output.audioUrl) ?? nonEmptyString(output.audio_url));
+    return Boolean(
+      nonEmptyString(output.audioUrl) ??
+      nonEmptyString(output.audio_url) ??
+      nonEmptyString(output.output_url) ??
+      nonEmptyString(output.url)
+    );
   }
   if (action === "generate_3gs_world") {
     if (typeof output.plyUrl === "string" && output.plyUrl.trim().length > 0) return true;
@@ -1494,13 +1524,15 @@ async function waitForGeneratedResultField(
   if (!GENERATION_NODE_ACTIONS.has(action)) return true;
   if (hasGeneratedResultOutput(action, output)) return true;
   if (hasGeneratedResult(nodeId, action)) return true;
+  if (hasActiveGenerationHandle(nodeId)) return true;
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     if (hasGeneratedResultOutput(action, output)) return true;
     if (hasGeneratedResult(nodeId, action)) return true;
+    if (hasActiveGenerationHandle(nodeId)) return true;
   }
-  return hasGeneratedResultOutput(action, output) || hasGeneratedResult(nodeId, action);
+  return hasGeneratedResultOutput(action, output) || hasGeneratedResult(nodeId, action) || hasActiveGenerationHandle(nodeId);
 }
 
 function markNodeActionRunning(nodeId: string, action: string): void {

@@ -224,6 +224,7 @@ def resolve_canvas_command(
         **result,
     }
     _write_json(_path("result", key, bridge_dir), payload)
+    _unlink_if_exists(_path("pending", key, bridge_dir))
     return payload
 
 

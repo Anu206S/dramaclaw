@@ -5,9 +5,19 @@ import { hasStructuredContent } from "@/features/superchat/spec-extract";
 
 const INTERNAL_CONTEXT_BLOCK_RE =
   /\n?\[((?:DRAMACLAW|SUPERTALE)_[A-Z0-9_]+)\][\s\S]*?\[\/\1\]\n?/g;
+const EMPTY_AGENT_REPLY_TEXT = "这轮操作没有收到虾导的有效回复，请稍后重试。";
+const EMPTY_AGENT_REPLY_PLACEHOLDERS = new Set([
+  "(hermes returned no content)",
+  "(agent returned no content)",
+]);
 
 function stripInternalContextBlocks(text: string): string {
   return text.replace(INTERNAL_CONTEXT_BLOCK_RE, "\n").trim();
+}
+
+function normalizeDisplayText(text: string): string {
+  const trimmed = text.trim();
+  return EMPTY_AGENT_REPLY_PLACEHOLDERS.has(trimmed) ? EMPTY_AGENT_REPLY_TEXT : text;
 }
 
 function textFromContent(content: unknown): string {
@@ -27,13 +37,13 @@ function textFromContent(content: unknown): string {
 }
 
 export function extractMessageText(message: unknown): string {
-  if (typeof message === "string") return stripInternalContextBlocks(message);
+  if (typeof message === "string") return normalizeDisplayText(stripInternalContextBlocks(message));
   if (!message || typeof message !== "object") return "";
   const value = message as Record<string, unknown>;
-  if (typeof value.text === "string") return stripInternalContextBlocks(value.text);
-  if (typeof value.message === "string") return stripInternalContextBlocks(value.message);
-  if (typeof value.content === "string") return stripInternalContextBlocks(value.content);
-  return stripInternalContextBlocks(textFromContent(value.content));
+  if (typeof value.text === "string") return normalizeDisplayText(stripInternalContextBlocks(value.text));
+  if (typeof value.message === "string") return normalizeDisplayText(stripInternalContextBlocks(value.message));
+  if (typeof value.content === "string") return normalizeDisplayText(stripInternalContextBlocks(value.content));
+  return normalizeDisplayText(stripInternalContextBlocks(textFromContent(value.content)));
 }
 
 function normalizeRole(role: unknown): ChatRole {
