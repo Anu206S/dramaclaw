@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import type { ChatAttachment, ChatMessage, ChatRole } from "@/features/superchat/types";
+import type { ChatAttachment, ChatMessage, ChatMessagePart, ChatRole } from "@/features/superchat/types";
 import { hasStructuredContent } from "@/features/superchat/spec-extract";
 
 const INTERNAL_CONTEXT_BLOCK_RE =
@@ -85,6 +85,62 @@ function normalizeUiEvents(value: Record<string, unknown>): unknown[] | undefine
   return events && events.length > 0 ? events : undefined;
 }
 
+function normalizeMessageParts(value: Record<string, unknown>): ChatMessagePart[] | undefined {
+  const rawParts = Array.isArray(value.parts)
+    ? value.parts
+    : Array.isArray(value.message_parts)
+      ? value.message_parts
+      : undefined;
+  if (!rawParts) return undefined;
+  const parts = rawParts.flatMap((part, index): ChatMessagePart[] => {
+    if (!part || typeof part !== "object" || Array.isArray(part)) return [];
+    const raw = part as Record<string, unknown>;
+    const type = raw.type;
+    const id = normalizeId(raw.id) ?? `part-${index}`;
+    const seq = typeof raw.seq === "number" && Number.isFinite(raw.seq) ? raw.seq : undefined;
+    if (type === "tool_status" && isHiddenCanvasWriteToolStatusPart(raw.event)) return [];
+    if (type === "text") {
+      const text = typeof raw.text === "string" ? raw.text : "";
+      return text ? [{ id, type: "text", text, ...(seq == null ? {} : { seq }) }] : [];
+    }
+    if (
+      type === "skill_studio" ||
+      type === "clarification" ||
+      type === "canvas_approval" ||
+      type === "canvas_feedback" ||
+      type === "canvas_context" ||
+      type === "tool_status"
+    ) {
+      return [{ id, type, event: raw.event, ...(seq == null ? {} : { seq }) }];
+    }
+    return [];
+  });
+  return parts.length > 0 ? parts : undefined;
+}
+
+function isHiddenCanvasWriteToolStatusPart(event: unknown): boolean {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return false;
+  const raw = (event as Record<string, unknown>).raw;
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
+  const name = (raw as Record<string, unknown>).name;
+  return typeof name === "string" && (
+    name === "freezone_emit_canvas_command" ||
+    name === "freezone_create_workflow_graph" ||
+    name === "freezone_create_node" ||
+    name === "freezone_add_next_node" ||
+    name === "freezone_update_node_data" ||
+    name === "freezone_create_edge" ||
+    name === "freezone_delete_nodes" ||
+    name === "freezone_delete_edges" ||
+    name === "freezone_move_nodes" ||
+    name === "freezone_layout_nodes" ||
+    name === "freezone_group_nodes" ||
+    name === "freezone_select_nodes" ||
+    name === "freezone_run_node_action" ||
+    name === "freezone_open_mainline_projection"
+  );
+}
+
 function mediaKindToType(kind: unknown): string | undefined {
   if (kind === "image" || kind === "video" || kind === "audio" || kind === "file") {
     return kind;
@@ -98,7 +154,8 @@ export function normalizeMessage(message: unknown, fallbackRole: ChatRole = "ass
     ? (message as Record<string, unknown>)
     : {};
   const uiEvents = normalizeUiEvents(value);
-  if (!text && !hasStructuredContent(message) && !uiEvents) return null;
+  const parts = normalizeMessageParts(value);
+  if (!text && !hasStructuredContent(message) && !uiEvents && !parts) return null;
   const id =
     normalizeId(value.id)
     ?? normalizeId(value.messageId)
@@ -108,7 +165,7 @@ export function normalizeMessage(message: unknown, fallbackRole: ChatRole = "ass
   const turnId = normalizeTurnId(value);
   const displayName = typeof value.displayName === "string" ? value.displayName : undefined;
   const attachments = extractAttachments(value);
-  return { id, role, text, turnId, displayName, attachments, uiEvents, timestamp, raw: message };
+  return { id, role, text, turnId, displayName, attachments, parts, uiEvents, timestamp, raw: message };
 }
 
 function extractAttachments(value: Record<string, unknown>): ChatAttachment[] {

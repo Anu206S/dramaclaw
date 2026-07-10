@@ -1649,6 +1649,83 @@ _SKILL_STUDIO_REVIEW_ITEM_SCHEMA = {
     "required": ["name", "weight", "description"],
 }
 
+_SKILL_STUDIO_WORKFLOW_STEP_SCHEMA = {
+    "type": "object",
+    "description": "One executable step in a Xi画 Skill workflow template.",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Stable step id inside this workflow template.",
+        },
+        "step_number": {
+            "type": "number",
+            "description": "1-based execution order.",
+        },
+        "goal_template": {
+            "type": "string",
+            "description": "Human-readable goal for this step.",
+        },
+        "node_type": {
+            "type": "string",
+            "description": "Freezone node type this step creates or updates.",
+        },
+        "action_key": {
+            "type": "string",
+            "description": "Recipe/action key used by this step.",
+        },
+        "model": {
+            "type": "string",
+            "description": "Optional preferred model for this step.",
+        },
+        "prompt_strategy": {
+            "type": "string",
+            "description": "How the prompt should be produced, such as user_message, llm_refine, or previous_output.",
+        },
+        "input_strategy": {
+            "type": "object",
+            "description": "Where this step gets inputs from, such as none, user_assets, or previous steps.",
+        },
+        "need_review": {
+            "type": "boolean",
+            "description": "Whether the user should review this step before continuing.",
+        },
+        "multiplicity": {
+            "type": "string",
+            "description": "How many outputs to create, such as single, fixed_count, or per_input.",
+        },
+    },
+    "required": ["id", "step_number", "goal_template", "node_type", "action_key"],
+}
+
+_SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA = {
+    "type": "object",
+    "description": "Reusable canvas workflow template for this Xi画 Skill.",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Stable workflow template id.",
+        },
+        "name": {
+            "type": "string",
+            "description": "User-facing workflow template name.",
+        },
+        "description": {
+            "type": "string",
+            "description": "What this workflow template builds.",
+        },
+        "condition": {
+            "type": "object",
+            "description": "When this workflow template should be selected.",
+        },
+        "steps": {
+            "type": "array",
+            "description": "Ordered workflow steps.",
+            "items": _SKILL_STUDIO_WORKFLOW_STEP_SCHEMA,
+        },
+    },
+    "required": ["id", "description", "steps"],
+}
+
 _SKILL_STUDIO_SKILL_SCHEMA = {
     "type": "object",
     "description": "Complete Xi画 Skill catalog draft.",
@@ -1738,6 +1815,14 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                 "visual_review_items",
                 "text_review_items",
             ],
+        },
+        "workflow_templates": {
+            "type": "array",
+            "description": (
+                "Optional executable canvas workflow templates for this Skill. "
+                "Include this when the Skill should build or extend a multi-node Freezone workflow."
+            ),
+            "items": _SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA,
         },
     },
     "required": ["id", "description", "category", "triggers", "planning", "evaluation"],

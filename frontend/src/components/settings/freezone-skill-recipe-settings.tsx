@@ -713,43 +713,53 @@ function NewSkillEditor({
     };
 
   const rawSkillJson = useMemo(
-    () => ({
-      ...(initialPayload ?? {}),
-      id: skillDraft.id,
-      description: skillDraft.description,
-      category: skillDraft.category || "general",
-      triggers: {
-        keywords: skillDraft.keywords,
-        node_scopes: skillDraft.nodeScopes,
-      },
-      planning: {
-        planning_notes: skillDraft.planningNotes,
-        prompt_guide: skillDraft.promptGuide,
-        conduct_rules: skillDraft.conductRules,
-      },
-      evaluation: {
-        rating_bands: ratingBands.map((anchor) => ({
-          score: parseNumericDraft(anchor.score, 0),
-          description: anchor.description,
-        })),
-        visual_review_items: visualReviewItems.map((dimension) => ({
-          name: dimension.name,
-          weight: parseNumericDraft(dimension.weight, 1),
-          description: dimension.description,
-        })),
-        text_review_items: textReviewItems.map((dimension) => ({
-          name: dimension.name,
-          weight: parseNumericDraft(dimension.weight, 1),
-          description: dimension.description,
-        })),
-        quality_threshold: parseOptionalNumericDraft(skillDraft.qualityThreshold),
-        domain_constraints: splitDraftList(skillDraft.domainConstraints),
-      },
-    }),
+    () => {
+      const workflowTemplates = getRecordArray(
+        initialPayload?.workflow_templates ?? initialPayload?.workflowTemplates,
+      ).map((template) => ({
+        ...template,
+        steps: getRecordArray(template.steps).map((step) => ({ ...step })),
+      }));
+      return {
+        ...(initialPayload ?? {}),
+        id: skillDraft.id,
+        description: skillDraft.description,
+        category: skillDraft.category || "general",
+        triggers: {
+          keywords: skillDraft.keywords,
+          node_scopes: skillDraft.nodeScopes,
+        },
+        planning: {
+          planning_notes: skillDraft.planningNotes,
+          prompt_guide: skillDraft.promptGuide,
+          conduct_rules: skillDraft.conductRules,
+        },
+        evaluation: {
+          rating_bands: ratingBands.map((anchor) => ({
+            score: parseNumericDraft(anchor.score, 0),
+            description: anchor.description,
+          })),
+          visual_review_items: visualReviewItems.map((dimension) => ({
+            name: dimension.name,
+            weight: parseNumericDraft(dimension.weight, 1),
+            description: dimension.description,
+          })),
+          text_review_items: textReviewItems.map((dimension) => ({
+            name: dimension.name,
+            weight: parseNumericDraft(dimension.weight, 1),
+            description: dimension.description,
+          })),
+          quality_threshold: parseOptionalNumericDraft(skillDraft.qualityThreshold),
+          domain_constraints: splitDraftList(skillDraft.domainConstraints),
+        },
+        ...(workflowTemplates.length > 0 ? { workflow_templates: workflowTemplates } : {}),
+      };
+    },
     [initialPayload, ratingBands, skillDraft, textReviewItems, visualReviewItems],
   );
   const rawSkillJsonText = useMemo(() => JSON.stringify(rawSkillJson, null, 2), [rawSkillJson]);
   const canSave = isValidSkillDraft(skillDraft) && !saving;
+  const isEditing = Boolean(initialPayload);
 
   return (
     <Dialog open={open} onOpenChange={handleOpenChange}>
@@ -760,7 +770,11 @@ function NewSkillEditor({
       >
         <DialogHeader className="flex-row items-center justify-between gap-4 border-b border-border px-6 py-5">
           <DialogTitle className="text-lg font-semibold text-foreground">
-            {t("settings.freezoneCatalog.newSkill.title")}
+            {t(
+              isEditing
+                ? "settings.freezoneCatalog.newSkill.editTitle"
+                : "settings.freezoneCatalog.newSkill.title",
+            )}
           </DialogTitle>
           <button
             type="button"
@@ -1179,6 +1193,9 @@ function TagInputField({
   value: string[];
 }) {
   const [draft, setDraft] = useState("");
+  const editInputRef = useRef<HTMLInputElement | null>(null);
+  const [editingIndex, setEditingIndex] = useState<number | null>(null);
+  const [editingDraft, setEditingDraft] = useState("");
   const items = Array.isArray(value) ? value : getStringArray(value);
 
   const addDraft = () => {
@@ -1188,12 +1205,29 @@ function TagInputField({
     setDraft("");
   };
 
-  const removeTag = (tag: string) => {
-    onChange(items.filter((item) => item !== tag));
+  const removeTag = (indexToRemove: number) => {
+    onChange(items.filter((_, index) => index !== indexToRemove));
+  };
+
+  const beginEditTag = (index: number, tag: string) => {
+    setEditingIndex(index);
+    setEditingDraft(tag);
+    requestAnimationFrame(() => editInputRef.current?.focus({ preventScroll: true }));
+  };
+
+  const commitEditTag = () => {
+    if (editingIndex === null) return;
+    const nextTag = editingDraft.trim();
+    const nextItems = nextTag
+      ? items.map((item, index) => (index === editingIndex ? nextTag : item))
+      : items.filter((_, index) => index !== editingIndex);
+    onChange(Array.from(new Set(nextItems.filter(Boolean))));
+    setEditingIndex(null);
+    setEditingDraft("");
   };
 
   return (
-    <label className="block">
+    <div className="block">
       <EditorLabel required={required}>{label}</EditorLabel>
       <div
         className={cn(
@@ -1201,24 +1235,59 @@ function TagInputField({
           layout === "stacked" ? "flex-col items-stretch" : "flex-wrap",
         )}
       >
-        {items.map((tag) => (
+        {items.map((tag, index) => (
           <span
-            key={tag}
+            key={`${tag}:${index}`}
             className={cn(
               "inline-flex max-w-full items-center gap-1 rounded bg-white/[0.07] px-2 text-xs text-foreground",
               layout === "stacked" ? "min-h-7 w-full py-1" : "h-6",
             )}
           >
-            <span className={cn(
-              "min-w-0 flex-1",
-              layout === "stacked" ? "whitespace-normal break-words leading-4" : "truncate",
-            )}>
-              {tag}
-            </span>
+            {editingIndex === index ? (
+              <input
+                ref={editInputRef}
+                aria-label={`编辑 ${tag}`}
+                value={editingDraft}
+                onChange={(event) => setEditingDraft(event.target.value)}
+                onBlur={commitEditTag}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitEditTag();
+                    return;
+                  }
+                  if (event.key === "Escape") {
+                    event.preventDefault();
+                    setEditingIndex(null);
+                    setEditingDraft("");
+                  }
+                }}
+                style={layout === "stacked"
+                  ? undefined
+                  : { width: `${Math.min(Math.max(editingDraft.length + 1.5, 4.5), 26)}em` }}
+                className={cn(
+                  "h-5 max-w-full rounded-sm bg-black/20 px-1.5 text-xs outline-none focus-visible:ring-1 focus-visible:ring-ring/40",
+                  layout === "stacked" && "w-full min-w-0 flex-1",
+                )}
+              />
+            ) : (
+              <button
+                type="button"
+                aria-label={`编辑 ${tag}`}
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => beginEditTag(index, tag)}
+                className={cn(
+                  "min-w-0 flex-1 rounded-sm text-left transition-colors hover:text-cyan-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40",
+                  layout === "stacked" ? "whitespace-normal break-words leading-4" : "truncate",
+                )}
+              >
+                {tag}
+              </button>
+            )}
             <button
               type="button"
               aria-label={`删除 ${tag}`}
-              onClick={() => removeTag(tag)}
+              onClick={() => removeTag(index)}
               className="grid size-3.5 shrink-0 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
             >
               <X className="size-3" />
@@ -1253,7 +1322,7 @@ function TagInputField({
         />
       </div>
       {hint ? <span className="mt-1 block text-[10px] text-muted-foreground">{hint}</span> : null}
-    </label>
+    </div>
   );
 }
 

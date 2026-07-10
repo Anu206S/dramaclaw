@@ -3704,6 +3704,7 @@
       "recipesPendingDescription": "当前后端还没有虾画 Recipe catalog 接口，所以这里先保留管理入口。接入后会在这里展示、搜索、编辑和导入导出 Recipes。",
       "newSkill": {
         "title": "新增 Skill",
+        "editTitle": "编辑 Skill",
         "close": "关闭新增 Skill",
         "cancel": "取消",
         "save": "保存",

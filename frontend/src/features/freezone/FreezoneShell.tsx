@@ -104,10 +104,13 @@ import {
 } from "@/features/freezone/canvasChatCommands";
 import {
   addFreezoneCanvasAgent,
-  loadFreezoneCanvasAgents,
+  loadFreezoneCanvasAgentsWithSource,
+  mergeFreezoneCanvasAgentsFromServer,
+  readFreezoneAgentIdFromUrl,
   selectFreezoneCanvasAgent,
   shouldConnectFreezoneCanvasAgent,
   updateFreezoneCanvasAgentFromUserMessage,
+  type FreezoneCanvasAgent,
   type FreezoneCanvasAgentState,
 } from "@/features/freezone/canvasAgents";
 import { validateCanvasChatCommandEnvelopes } from "@/features/freezone/context/canvasCommandValidator";
@@ -167,6 +170,19 @@ function loadStoredPanelWidth(key: string, fallback: number, min: number, max: n
 function storePanelWidth(key: string, value: number): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(key, String(Math.round(value)));
+}
+
+async function listServerFreezoneCanvasAgents(
+  projectId: string,
+  canvasId: string,
+): Promise<FreezoneCanvasAgent[]> {
+  const response = await api.post("api/v1/chat/freezone-canvas-agents", {
+    json: { project_id: projectId, canvas_id: canvasId },
+  }).json<{
+    ok?: boolean;
+    data?: { agents?: FreezoneCanvasAgent[] };
+  }>();
+  return Array.isArray(response.data?.agents) ? response.data.agents : [];
 }
 
 function pushJsonTextCanvasCommandCandidate(candidates: unknown[], text: unknown): void {
@@ -1702,29 +1718,58 @@ function FreezoneChatDock({
     ),
   );
   const [resizingPane, setResizingPane] = useState<"chat" | "history" | null>(null);
-  const [agentState, setAgentState] = useState<FreezoneCanvasAgentState>(() =>
-    loadFreezoneCanvasAgents(projectId, canvasId),
-  );
+  const localAgentSelectionRef = useRef(false);
+  const [agentState, setAgentState] = useState<FreezoneCanvasAgentState>(() => {
+    const loaded = loadFreezoneCanvasAgentsWithSource(projectId, canvasId);
+    localAgentSelectionRef.current = loaded.hadStoredState;
+    return loaded.state;
+  });
   const [busyAgentIds, setBusyAgentIds] = useState<Set<string>>(() => new Set());
   const activeAgentId = agentState.activeAgentId;
 
   useEffect(() => {
-    setAgentState(loadFreezoneCanvasAgents(projectId, canvasId));
+    const loaded = loadFreezoneCanvasAgentsWithSource(projectId, canvasId);
+    localAgentSelectionRef.current = loaded.hadStoredState;
+    setAgentState(loaded.state);
+  }, [canvasId, projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const hadLocalSelection = localAgentSelectionRef.current;
+    const explicitAgentId = readFreezoneAgentIdFromUrl();
+    void listServerFreezoneCanvasAgents(projectId, canvasId)
+      .then((serverAgents) => {
+        if (cancelled || serverAgents.length === 0) return;
+        setAgentState(
+          mergeFreezoneCanvasAgentsFromServer(projectId, canvasId, serverAgents, {
+            explicitAgentId,
+            preferServerActive: !hadLocalSelection && !explicitAgentId,
+          }),
+        );
+      })
+      .catch(() => undefined);
+    return () => {
+      cancelled = true;
+    };
   }, [canvasId, projectId]);
 
   const handleSelectAgent = useCallback((agentId: string) => {
+    localAgentSelectionRef.current = true;
     setAgentState(selectFreezoneCanvasAgent(projectId, canvasId, agentId));
   }, [canvasId, projectId]);
 
   const handleAddAgent = useCallback(() => {
+    localAgentSelectionRef.current = true;
     setAgentState(addFreezoneCanvasAgent(projectId, canvasId).state);
   }, [canvasId, projectId]);
 
   const handleHeaderAddAgent = useCallback(() => {
+    localAgentSelectionRef.current = true;
     setAgentState(addFreezoneCanvasAgent(projectId, canvasId).state);
   }, [canvasId, projectId]);
 
   const handleAgentUserMessage = useCallback((agentId: string, message: string, timestamp: number) => {
+    localAgentSelectionRef.current = true;
     setAgentState(updateFreezoneCanvasAgentFromUserMessage(projectId, canvasId, agentId, message, timestamp));
   }, [canvasId, projectId]);
 

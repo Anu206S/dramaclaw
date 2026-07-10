@@ -170,6 +170,141 @@ class ChatStore:
             return legacy_db_path
         return db_path
 
+    def _freezone_canvas_agents_dir(
+        self,
+        username: str,
+        *,
+        project_id: str,
+        canvas_id: str,
+    ) -> Path:
+        return (
+            _state_root()
+            / username
+            / str(project_id)
+            / "_chat"
+            / "freezone"
+            / str(canvas_id)
+            / "agents"
+        )
+
+    def _freezone_canvas_legacy_db(
+        self,
+        username: str,
+        *,
+        project_id: str,
+        canvas_id: str,
+    ) -> Path:
+        return (
+            _state_root()
+            / username
+            / str(project_id)
+            / "_chat"
+            / "freezone"
+            / str(canvas_id)
+            / "chat.db"
+        )
+
+    @staticmethod
+    def _timestamp_ms(value: str) -> int:
+        try:
+            normalized = value.replace("Z", "+00:00")
+            return int(datetime.fromisoformat(normalized).timestamp() * 1000)
+        except Exception:
+            return 0
+
+    def _freezone_agent_summary_from_db(self, agent_id: str, db_path: Path) -> dict[str, Any] | None:
+        if not db_path.exists():
+            return None
+        conn = sqlite3.connect(db_path)
+        conn.row_factory = sqlite3.Row
+        try:
+            tables = {
+                str(row["name"])
+                for row in conn.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table'"
+                ).fetchall()
+            }
+            if "chat_messages" not in tables:
+                return None
+            latest = conn.execute(
+                """
+                SELECT content, created_at
+                  FROM chat_messages
+                 WHERE role <> 'trace'
+                 ORDER BY id DESC
+                 LIMIT 1
+                """
+            ).fetchone()
+            if latest is None:
+                return None
+            first_user = conn.execute(
+                """
+                SELECT content
+                  FROM chat_messages
+                 WHERE role = 'user'
+                 ORDER BY id ASC
+                 LIMIT 1
+                """
+            ).fetchone()
+        finally:
+            conn.close()
+        title = str(first_user["content"] if first_user is not None else latest["content"] or "").strip()
+        title = re.sub(r"\s+", " ", title) or agent_id
+        if len(title) > 32:
+            title = f"{title[:31]}…"
+        timestamp = self._timestamp_ms(str(latest["created_at"] or ""))
+        return {
+            "id": agent_id,
+            "name": title,
+            "createdAt": timestamp,
+            "lastActiveAt": timestamp,
+        }
+
+    def list_freezone_canvas_agent_summaries(
+        self,
+        username: str,
+        *,
+        project_id: str,
+        canvas_id: str,
+        limit: int = 20,
+    ) -> list[dict[str, Any]]:
+        agents_dir = self._freezone_canvas_agents_dir(
+            username,
+            project_id=project_id,
+            canvas_id=canvas_id,
+        )
+        candidates: list[tuple[str, Path]] = []
+        if agents_dir.exists():
+            candidates.extend(
+                (path.parent.name, path)
+                for path in agents_dir.glob("*/chat.db")
+                if path.parent.name
+            )
+        legacy_db = self._freezone_canvas_legacy_db(
+            username,
+            project_id=project_id,
+            canvas_id=canvas_id,
+        )
+        main_db = agents_dir / "main" / "chat.db"
+        if legacy_db.exists() and not main_db.exists():
+            candidates.append(("main", legacy_db))
+
+        summaries: list[dict[str, Any]] = []
+        seen: set[str] = set()
+        for agent_id, db_path in candidates:
+            if agent_id in seen:
+                continue
+            seen.add(agent_id)
+            summary = self._freezone_agent_summary_from_db(agent_id, db_path)
+            if summary is not None:
+                summaries.append(summary)
+        bounded_limit = max(1, min(int(limit), 100))
+        return sorted(
+            summaries,
+            key=lambda summary: int(summary.get("lastActiveAt") or 0),
+            reverse=True,
+        )[:bounded_limit]
+
     def connect(self, username: str, scope: ChatScope, *, db_path: Path | None = None) -> sqlite3.Connection:
         db_path = db_path or self.db_for(username, scope)
         db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -390,10 +525,23 @@ class ChatStore:
                     }
                 )
                 target_index = len(messages) - 1
+            parts_events = [
+                event
+                for event in events
+                if str(event.get("type") or "") == "assistant.message_parts"
+                and isinstance(event.get("parts"), list)
+            ]
+            visible_events = [
+                event
+                for event in events
+                if str(event.get("type") or "") != "assistant.message_parts"
+            ]
+            if parts_events:
+                messages[target_index]["parts"] = parts_events[-1]["parts"]
             existing = messages[target_index].get("ui_events")
             if not isinstance(existing, list):
                 existing = []
-            messages[target_index]["ui_events"] = [*existing, *events]
+            messages[target_index]["ui_events"] = [*existing, *visible_events]
 
     def list_messages(
         self,

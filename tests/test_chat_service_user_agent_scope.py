@@ -1076,6 +1076,73 @@ def test_freezone_agent_history_uses_separate_chat_db(monkeypatch, tmp_path):
     ).exists()
 
 
+def test_freezone_canvas_agent_summaries_pick_recent_server_agent(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    main_scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="main",
+    )
+    second_scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+    other_canvas_scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-b",
+        agent_id="agent-3",
+    )
+
+    chat_store.append_message("admin", main_scope, "user", "主会话")
+    chat_store.append_message("admin", other_canvas_scope, "user", "别的画布")
+    chat_store.append_message("admin", second_scope, "user", "最近的服务端会话标题很长需要截断")
+    chat_store.append_message("admin", second_scope, "assistant", "agent-2 reply")
+
+    summaries = chat_store.list_freezone_canvas_agent_summaries(
+        "admin",
+        project_id="project-a",
+        canvas_id="canvas-a",
+    )
+
+    assert [summary["id"] for summary in summaries] == ["agent-2", "main"]
+    assert summaries[0]["name"] == "最近的服务端会话标题很长需要截断"
+    assert summaries[0]["lastActiveAt"] > summaries[1]["lastActiveAt"]
+
+
+def test_freezone_canvas_agent_summaries_default_to_latest_twenty(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    for index in range(25):
+        scope = ChatScope(
+            kind="project",
+            id="project-a",
+            surface="freezone",
+            canvas_id="canvas-a",
+            agent_id=f"agent-{index + 1}",
+        )
+        chat_store.append_message("admin", scope, "user", f"agent {index + 1}")
+
+    summaries = chat_store.list_freezone_canvas_agent_summaries(
+        "admin",
+        project_id="project-a",
+        canvas_id="canvas-a",
+    )
+
+    assert len(summaries) == 20
+    assert summaries[0]["id"] == "agent-25"
+    assert summaries[-1]["id"] == "agent-6"
+
+
 @pytest.mark.anyio
 async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))

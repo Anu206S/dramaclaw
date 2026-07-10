@@ -13,9 +13,11 @@ import {
   pruneOldMessageCaches,
   resolveUiEventTurnIdForTest,
   sanitizeMessagesForCache,
+  shouldRenderToolStatusPart,
   scopeForProjectForTest,
   scopeSessionKeyForTest,
   updateAssistantUiEventsForTest,
+  upsertAssistantMessageForTest,
   upsertAssistantUiEventForTest,
   upsertServerAssistantMessageForTest,
   useSuperChat,
@@ -28,6 +30,7 @@ import {
 import {
   buildAssistantClarificationResponseForTest,
   buildAssistantClarificationToolResultForTest,
+  buildAssistantInteractionFlowItemsForTest,
   buildSkillStudioCatalogSaveItemsForTest,
   buildSkillStudioDraftCancelToolResultForTest,
   buildSkillStudioDraftToolResultForTest,
@@ -292,6 +295,89 @@ describe("mergeHistorySnapshot", () => {
   });
 });
 
+describe("assistant message ordered parts", () => {
+  it("keeps text and interaction cards in arrival order within one turn", () => {
+    let messages: ChatMessage[] = [];
+
+    messages = upsertAssistantMessageForTest(messages, "turn-ordered", "第一段文字");
+    messages = upsertAssistantUiEventForTest(messages, "turn-ordered", {
+      type: "skill_studio.questions",
+      bridge_key: "questions-1",
+      skill_studio_session_id: "studio-1",
+      title: "方向确认",
+      questions: [],
+    });
+    messages = upsertAssistantMessageForTest(messages, "turn-ordered", "第一段文字\n\n第二段文字");
+    messages = upsertAssistantUiEventForTest(messages, "turn-ordered", {
+      type: "skill_studio.draft",
+      bridge_key: "draft-1",
+      skill_studio_session_id: "studio-1",
+      summary: "草稿",
+      skill: { id: "skill-1" },
+      recipes: [],
+    });
+    messages = upsertAssistantMessageForTest(
+      messages,
+      "turn-ordered",
+      "第一段文字\n\n第二段文字\n\n第三段文字",
+    );
+
+    const assistant = messages.find((item) => item.turnId === "turn-ordered" && item.role === "assistant");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual([
+      "text",
+      "skill_studio",
+      "text",
+      "skill_studio",
+      "text",
+    ]);
+    expect(assistant?.parts?.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+      "第一段文字",
+      "\n\n第二段文字",
+      "\n\n第三段文字",
+    ]);
+  });
+});
+
+describe("updateAssistantUiEvents", () => {
+  it("updates matching ordered parts even when uiEvents are absent", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-turn-a",
+        role: "assistant",
+        text: "",
+        turnId: "turn-a",
+        timestamp: 1,
+        parts: [
+          {
+            id: "clarification:bridge-a",
+            type: "clarification",
+            event: {
+              type: "assistant.clarification.request",
+              bridge_key: "bridge-a",
+              submitted: false,
+            },
+          },
+        ],
+      },
+    ];
+
+    const updated = updateAssistantUiEventsForTest(
+      messages,
+      "turn-a",
+      (event) =>
+        Boolean(
+          event
+          && typeof event === "object"
+          && (event as Record<string, unknown>).bridge_key === "bridge-a",
+        ),
+      (event) => ({ ...(event as Record<string, unknown>), submitted: true }),
+    );
+
+    expect(updated).not.toBe(messages);
+    expect((updated[0].parts?.[0] as { event?: { submitted?: boolean } }).event?.submitted).toBe(true);
+  });
+});
+
 describe("normalizeMessage", () => {
   it("strips internal DramaClaw context blocks from displayed text", () => {
     const normalized = normalizeMessage({
@@ -350,6 +436,28 @@ This Freezone chat can change the current canvas by returning a JSON block.
     });
 
     expect(normalized?.uiEvents).toBe(uiEvents);
+  });
+
+  it("keeps ordered canvas and tool parts from cache or server history", () => {
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      text: "",
+      parts: [
+        {
+          id: "feedback-a",
+          type: "canvas_feedback",
+          event: { key: "feedback-a", applied: true },
+        },
+        {
+          id: "tool-a",
+          type: "tool_status",
+          event: { role: "tool", text: "创建节点", raw: { type: "tool.result" } },
+        },
+      ],
+    });
+
+    expect(normalized?.parts?.map((part) => part.type)).toEqual(["canvas_feedback", "tool_status"]);
   });
 });
 
@@ -634,6 +742,34 @@ describe("Skill Studio question response", () => {
 
     expect(messageIsWaitingForUserReplyForTest(pending)).toBe(true);
     expect(messageIsWaitingForUserReplyForTest(submitted)).toBe(false);
+  });
+
+  it("does not keep a stale clarification card active after a draft exists", () => {
+    const stale = message("assistant-clarification-stale", "assistant", "(hermes timed out)", 100);
+    stale.uiEvents = [
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-key-1",
+        title: "家乡文化海报 Skill 设定",
+        questions: [
+          {
+            id: "audience",
+            title: "海报主要面向哪类人群？",
+            options: [{ id: "tourist", label: "外地游客" }],
+          },
+        ],
+      },
+      {
+        type: "skill_studio.draft",
+        bridge_key: "draft-key-1",
+        draft: {
+          skill: { id: "home-culture-poster" },
+          recipes: [],
+        },
+      },
+    ];
+
+    expect(messageIsWaitingForUserReplyForTest(stale)).toBe(false);
   });
 
   it("builds a chat message from selected card options", () => {
@@ -930,6 +1066,7 @@ describe("Assistant clarification response", () => {
         canvas_id: "canvas-a",
         agent_id: "agent-1",
         turn_id: "turn-a",
+        anchor_text_prefix: "我先问几个问题。",
         clarification_id: "clarify_01",
         questions: [
           {
@@ -950,6 +1087,7 @@ describe("Assistant clarification response", () => {
       canvas_id: "canvas-a",
       agent_id: "agent-1",
       turn_id: "turn-a",
+      anchor_text_prefix: "我先问几个问题。",
       tool_call_status: "completed",
       clarification_status: "answered",
       action: "submit",
@@ -1289,6 +1427,20 @@ describe("Skill Studio draft response", () => {
             dimensions: [{ name: "文案清晰度", weight: 0.4, description: "文案简洁" }],
           },
         },
+        workflow_templates: [
+          {
+            id: "home-culture-poster-flow",
+            description: "生成家乡文化海报工作流",
+            steps: [
+              {
+                id: "brief",
+                step_number: 1,
+                node_type: "textAnnotationNode",
+                action_key: "home-culture-poster-brief",
+              },
+            ],
+          },
+        ],
       },
       recipes: [
         {
@@ -1331,6 +1483,20 @@ describe("Skill Studio draft response", () => {
               { name: "文案清晰度", weight: 0.4, description: "文案简洁" },
             ],
           }),
+          workflow_templates: [
+            {
+              id: "home-culture-poster-flow",
+              description: "生成家乡文化海报工作流",
+              steps: [
+                {
+                  id: "brief",
+                  step_number: 1,
+                  node_type: "textAnnotationNode",
+                  action_key: "home-culture-poster-brief",
+                },
+              ],
+            },
+          ],
         }),
       }),
       expect.objectContaining({
@@ -1351,6 +1517,80 @@ describe("Skill Studio draft response", () => {
 });
 
 describe("Skill Studio flow ordering", () => {
+  it("places submitted clarification summaries at their saved text anchor", () => {
+    const items = buildAssistantInteractionFlowItemsForTest(
+      "你要做的是 Skill 配置草稿。我先用几道关键选择题帮你定方向。\n\n方向已明确，正在生成草稿。",
+      [
+        {
+          type: "skill_studio.draft",
+          anchor_text_prefix: "你要做的是 Skill 配置草稿。我先用几道关键选择题帮你定方向。\n\n方向已明确，正在生成草稿。",
+          skill_studio_session_id: "skill_studio_01",
+          skill: { id: "home-culture-poster" },
+          recipes: [],
+        },
+      ],
+      [
+        {
+          type: "assistant.clarification.request",
+          submitted: true,
+          bridge_key: "clarification-key",
+          anchor_text_prefix: "你要做的是 Skill 配置草稿。我先用几道关键选择题帮你定方向。\n\n",
+          questions: [],
+          answers: {},
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "clarification", "text", "skill_studio"]);
+    expect(items[0]).toMatchObject({
+      kind: "text",
+      text: "你要做的是 Skill 配置草稿。我先用几道关键选择题帮你定方向。\n\n",
+    });
+  });
+
+  it("keeps interaction cards before text when they arrived before streaming text", () => {
+    const items = buildAssistantInteractionFlowItemsForTest(
+      "我会根据你的选择继续生成草稿。",
+      [],
+      [
+        {
+          type: "assistant.clarification.request",
+          submitted: true,
+          bridge_key: "clarification-key",
+          questions: [],
+          answers: {},
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["clarification", "text"]);
+    expect(items[1]).toMatchObject({ kind: "text", text: "我会根据你的选择继续生成草稿。" });
+  });
+
+  it("keeps a draft card at its arrival point when later text is appended after cancellation", () => {
+    const firstText = "好的，明确了：我来生成完整的 Skill 配置草稿。";
+    const continuation = "\n\n好的，已取消本次 Skill 草稿的保存，不会写入任何配置。";
+    const items = buildAssistantInteractionFlowItemsForTest(
+      `${firstText}${continuation}`,
+      [
+        {
+          type: "skill_studio.draft",
+          cancelled: true,
+          received_at: 100,
+          anchor_text_prefix: `${firstText}（正在提交草稿卡片）`,
+          skill_studio_session_id: "skill_studio_01",
+          skill: { id: "poster-skill" },
+          recipes: [],
+        },
+      ],
+      [],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "skill_studio", "text"]);
+    expect(items[0]).toMatchObject({ kind: "text", text: firstText });
+    expect(items[2]).toMatchObject({ kind: "text", text: continuation });
+  });
+
   it("renders anchored cards at the text position where the event arrived", () => {
     const items = buildSkillStudioFlowItemsForTest(
       "先说明。\n后续文字。",
@@ -1370,7 +1610,7 @@ describe("Skill Studio flow ordering", () => {
     expect(items[2]).toMatchObject({ kind: "text", text: "后续文字。" });
   });
 
-  it("keeps previously anchored cards before continuation text when streaming restarts after a tool result", () => {
+  it("keeps stale-anchor cards after continuation text when streaming restarts after a tool result", () => {
     const items = buildSkillStudioFlowItemsForTest(
       "已保存这个 Skill，接下来可以继续扩展。",
       [
@@ -1384,11 +1624,37 @@ describe("Skill Studio flow ordering", () => {
       ],
     );
 
-    expect(items.map((item) => item.kind)).toEqual(["event", "text"]);
-    expect(items[1]).toMatchObject({ kind: "text", text: "已保存这个 Skill，接下来可以继续扩展。" });
+    expect(items.map((item) => item.kind)).toEqual(["text", "event"]);
+    expect(items[0]).toMatchObject({ kind: "text", text: "已保存这个 Skill，接下来可以继续扩展。" });
   });
 
-  it("keeps submitted unanchored question cards before continuation text", () => {
+  it("keeps submitted question cards after assistant narration when their saved anchor is stale", () => {
+    const items = buildSkillStudioFlowItemsForTest(
+      [
+        "你要做一个「家乡文化海报」工作流 Skill——我先按 Skill Studio 的方式问几个关键选择，再据此起草完整 Skill/Recipe。",
+        "这是 Skill Studio 配置，不是画布写入。先收几个方向信息，再生成完整 Skill/Recipe 草稿。",
+        "已根据你的选择整理完整 Skill 草稿，正在提交可视化卡片供你确认与微调。",
+      ].join("\n\n"),
+      [
+        {
+          type: "skill_studio.questions",
+          submitted: true,
+          anchor_text_prefix: "我先进入 Skill Studio。",
+          skill_studio_session_id: "skill_studio_01",
+          selections: { audience: "local" },
+          questions: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "event"]);
+    expect(items[0]).toMatchObject({
+      kind: "text",
+      text: expect.stringContaining("你要做一个「家乡文化海报」工作流 Skill"),
+    });
+  });
+
+  it("keeps submitted unanchored question cards after assistant text", () => {
     const items = buildSkillStudioFlowItemsForTest(
       "我会根据你的选择生成草稿。",
       [
@@ -1402,10 +1668,10 @@ describe("Skill Studio flow ordering", () => {
       ],
     );
 
-    expect(items.map((item) => item.kind)).toEqual(["event", "text"]);
+    expect(items.map((item) => item.kind)).toEqual(["text", "event"]);
   });
 
-  it("keeps cancelled draft cards before continuation text", () => {
+  it("keeps cancelled draft cards after text when no anchor is available", () => {
     const items = buildSkillStudioFlowItemsForTest(
       "已取消保存，我会继续按当前上下文回复。",
       [
@@ -1419,8 +1685,28 @@ describe("Skill Studio flow ordering", () => {
       ],
     );
 
-    expect(items.map((item) => item.kind)).toEqual(["event", "text"]);
-    expect(items[1]).toMatchObject({ kind: "text", text: "已取消保存，我会继续按当前上下文回复。" });
+    expect(items.map((item) => item.kind)).toEqual(["text", "event"]);
+    expect(items[0]).toMatchObject({ kind: "text", text: "已取消保存，我会继续按当前上下文回复。" });
+  });
+
+  it("keeps cancelled draft cards at the saved anchor before continuation text", () => {
+    const items = buildSkillStudioFlowItemsForTest(
+      "已生成 Skill 草稿，正在提交卡片。\n已取消保存，我会继续按当前上下文回复。",
+      [
+        {
+          type: "skill_studio.draft",
+          cancelled: true,
+          anchor_text_prefix: "已生成 Skill 草稿，正在提交卡片。\n",
+          skill_studio_session_id: "skill_studio_01",
+          skill: { id: "poster-skill" },
+          recipes: [],
+        },
+      ],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["text", "event", "text"]);
+    expect(items[0]).toMatchObject({ kind: "text", text: "已生成 Skill 草稿，正在提交卡片。\n" });
+    expect(items[2]).toMatchObject({ kind: "text", text: "已取消保存，我会继续按当前上下文回复。" });
   });
 });
 
@@ -1562,6 +1848,37 @@ describe("canvas command bridge events", () => {
         bridge_key: "bridge-a",
       },
     });
+  });
+});
+
+describe("tool status parts", () => {
+  it("does not render hidden canvas write tool calls as assistant status parts", () => {
+    expect(shouldRenderToolStatusPart({
+      type: "tool.call",
+      turn_id: "turn-a",
+      name: "freezone_create_node",
+      arguments: { node_type: "imageGenNode" },
+    })).toBe(false);
+  });
+
+  it("does not render direct hidden canvas write tool results as assistant status parts", () => {
+    expect(shouldRenderToolStatusPart({
+      type: "tool.result",
+      turn_id: "turn-a",
+      name: "freezone_create_node",
+      result: "已创建节点",
+    })).toBe(false);
+  });
+
+  it("does not render canvas command result payloads as assistant status parts", () => {
+    expect(shouldRenderToolStatusPart({
+      type: "tool.result",
+      turn_id: "turn-a",
+      name: "freezone_emit_canvas_command",
+      result: JSON.stringify({
+        envelope: { schema_version: "canvas_chat_commands.v1", commands: [] },
+      }),
+    })).toBe(false);
   });
 });
 

@@ -15,6 +15,11 @@ export type FreezoneCanvasAgentState = {
   activeAgentId: string;
 };
 
+export type FreezoneCanvasAgentLoadResult = {
+  state: FreezoneCanvasAgentState;
+  hadStoredState: boolean;
+};
+
 export function shouldConnectFreezoneCanvasAgent({
   active,
   busy,
@@ -109,9 +114,87 @@ export function loadFreezoneCanvasAgents(
   canvasId: string,
   now = Date.now(),
 ): FreezoneCanvasAgentState {
+  return loadFreezoneCanvasAgentsWithSource(projectId, canvasId, now).state;
+}
+
+export function loadFreezoneCanvasAgentsWithSource(
+  projectId: string,
+  canvasId: string,
+  now = Date.now(),
+): FreezoneCanvasAgentLoadResult {
+  const hadStoredState = (() => {
+    try {
+      return window.localStorage.getItem(storageKey(projectId, canvasId)) !== null;
+    } catch {
+      return false;
+    }
+  })();
   const state = readState(projectId, canvasId, now);
   writeState(projectId, canvasId, state);
-  return state;
+  return { state, hadStoredState };
+}
+
+export function readFreezoneAgentIdFromUrl(): string | null {
+  try {
+    const value = new URLSearchParams(window.location.search).get("agent");
+    const normalized = value?.trim() ?? "";
+    return normalized ? normalized : null;
+  } catch {
+    return null;
+  }
+}
+
+export function mergeFreezoneCanvasAgentsFromServer(
+  projectId: string,
+  canvasId: string,
+  serverAgents: FreezoneCanvasAgent[],
+  {
+    preferServerActive,
+    explicitAgentId = null,
+  }: {
+    preferServerActive: boolean;
+    explicitAgentId?: string | null;
+  },
+): FreezoneCanvasAgentState {
+  const state = readState(projectId, canvasId);
+  const sanitizedServerAgents = serverAgents
+    .filter((agent) => typeof agent.id === "string" && agent.id.trim())
+    .map((agent) => ({
+      id: agent.id.trim(),
+      name: typeof agent.name === "string" && agent.name.trim() ? agent.name.trim() : agent.id.trim(),
+      createdAt: Number.isFinite(agent.createdAt) ? agent.createdAt : Date.now(),
+      lastActiveAt: Number.isFinite(agent.lastActiveAt) ? agent.lastActiveAt : Date.now(),
+    }));
+  const serverById = new Map(sanitizedServerAgents.map((agent) => [agent.id, agent]));
+  const mergedAgents = state.agents.map((agent) => {
+    const serverAgent = serverById.get(agent.id);
+    if (!serverAgent) return agent;
+    serverById.delete(agent.id);
+    return {
+      ...agent,
+      name: isGeneratedAgentName(agent.name) ? serverAgent.name : agent.name,
+      createdAt: Math.min(agent.createdAt, serverAgent.createdAt),
+      lastActiveAt: Math.max(agent.lastActiveAt, serverAgent.lastActiveAt),
+    };
+  });
+  mergedAgents.push(...serverById.values());
+
+  const validIds = new Set(mergedAgents.map((agent) => agent.id));
+  let activeAgentId = state.activeAgentId;
+  if (explicitAgentId && validIds.has(explicitAgentId)) {
+    activeAgentId = explicitAgentId;
+  } else if (preferServerActive && sanitizedServerAgents.length > 0) {
+    activeAgentId = sanitizedServerAgents[0].id;
+  } else if (!validIds.has(activeAgentId)) {
+    activeAgentId = DEFAULT_FREEZONE_AGENT_ID;
+  }
+
+  const next = {
+    agents: mergedAgents,
+    activeAgentId,
+  };
+  writeState(projectId, canvasId, next);
+  return next;
 }
 
 export function addFreezoneCanvasAgent(

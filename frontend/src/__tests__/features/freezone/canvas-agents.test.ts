@@ -6,6 +6,8 @@ import {
   addFreezoneCanvasAgent,
   DEFAULT_FREEZONE_AGENT_ID,
   loadFreezoneCanvasAgents,
+  loadFreezoneCanvasAgentsWithSource,
+  mergeFreezoneCanvasAgentsFromServer,
   selectFreezoneCanvasAgent,
   shouldConnectFreezoneCanvasAgent,
   updateFreezoneCanvasAgentFromUserMessage,
@@ -17,8 +19,10 @@ describe("Freezone canvas agents", () => {
   });
 
   it("creates a default main agent for a canvas", () => {
-    const state = loadFreezoneCanvasAgents("project-a", "canvas-a", 1000);
+    const loaded = loadFreezoneCanvasAgentsWithSource("project-a", "canvas-a", 1000);
+    const state = loaded.state;
 
+    expect(loaded.hadStoredState).toBe(false);
     expect(state.activeAgentId).toBe(DEFAULT_FREEZONE_AGENT_ID);
     expect(state.agents).toEqual([
       {
@@ -28,6 +32,7 @@ describe("Freezone canvas agents", () => {
         lastActiveAt: 1000,
       },
     ]);
+    expect(loadFreezoneCanvasAgentsWithSource("project-a", "canvas-a", 2000).hadStoredState).toBe(true);
   });
 
   it("adds new conversations without changing another canvas", () => {
@@ -109,5 +114,41 @@ describe("Freezone canvas agents", () => {
     expect(shouldConnectFreezoneCanvasAgent({ active: true, busy: false })).toBe(true);
     expect(shouldConnectFreezoneCanvasAgent({ active: false, busy: true })).toBe(true);
     expect(shouldConnectFreezoneCanvasAgent({ active: false, busy: false })).toBe(false);
+  });
+
+  it("restores the latest server agent when local selection is missing", () => {
+    loadFreezoneCanvasAgents("project-a", "canvas-a", 1000);
+
+    const restored = mergeFreezoneCanvasAgentsFromServer(
+      "project-a",
+      "canvas-a",
+      [
+        { id: "agent-2", name: "服务端最近会话", createdAt: 2000, lastActiveAt: 5000 },
+        { id: "main", name: "服务端主会话", createdAt: 1000, lastActiveAt: 3000 },
+      ],
+      { preferServerActive: true },
+    );
+
+    expect(restored.activeAgentId).toBe("agent-2");
+    expect(restored.agents.map((agent) => agent.id)).toEqual(["main", "agent-2"]);
+    expect(restored.agents.find((agent) => agent.id === "agent-2")?.name).toBe("服务端最近会话");
+  });
+
+  it("keeps a stored local selection over the latest server agent", () => {
+    loadFreezoneCanvasAgents("project-a", "canvas-a", 1000);
+    addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
+    selectFreezoneCanvasAgent("project-a", "canvas-a", "main");
+
+    const restored = mergeFreezoneCanvasAgentsFromServer(
+      "project-a",
+      "canvas-a",
+      [
+        { id: "agent-2", name: "服务端最近会话", createdAt: 2000, lastActiveAt: 5000 },
+      ],
+      { preferServerActive: false },
+    );
+
+    expect(restored.activeAgentId).toBe("main");
+    expect(restored.agents.find((agent) => agent.id === "agent-2")?.lastActiveAt).toBe(5000);
   });
 });
