@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { act, renderHook } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { normalizeMessage } from "@/features/superchat/message";
 import { buildCanvasCommandToolResultPayloadForTest } from "@/features/freezone/canvasCommandToolResult";
@@ -52,6 +52,13 @@ import type { ChatMessage, ChatRole } from "@/features/superchat/types";
 
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
 const DAY_MS = 24 * 60 * 60 * 1000;
+const apiPostMock = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
+
+vi.mock("@/lib/api", () => ({
+  api: {
+    post: apiPostMock,
+  },
+}));
 
 function message(
   id: string,
@@ -490,6 +497,39 @@ This Freezone chat can change the current canvas by returning a JSON block.
     });
   });
 
+  it("restores assistant text when ordered history parts only contain interaction cards", () => {
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      content: "Skill 已保存成功，可以直接使用。",
+      parts: [
+        {
+          id: "clarification-1",
+          type: "clarification",
+          event: {
+            type: "assistant.clarification.request",
+            bridge_key: "clarify-key-1",
+            submitted: true,
+          },
+        },
+        {
+          id: "draft-1",
+          type: "skill_studio",
+          event: {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+          },
+        },
+      ],
+    });
+
+    expect(normalized?.parts?.map((part) => part.type)).toEqual(["clarification", "skill_studio", "text"]);
+    expect(normalized?.parts?.[2]).toMatchObject({
+      type: "text",
+      text: "Skill 已保存成功，可以直接使用。",
+    });
+  });
+
   it("hydrates ordered interaction parts from newer persisted ui events", () => {
     const normalized = normalizeMessage({
       id: "assistant-1",
@@ -699,6 +739,69 @@ describe("upsertServerAssistantMessage", () => {
       type: "skill_studio.draft",
       bridge_key: "draft-key-1",
       draft: { skill: { id: "edited-skill" } },
+    });
+  });
+
+  it("preserves transient clarification parts when the final assistant message has draft parts", () => {
+    const current: ChatMessage[] = [
+      message("user-turn-1", "user", "创建 Skill", 10, "turn-1"),
+      {
+        id: "assistant-turn-1",
+        role: "assistant",
+        text: "先确认方向。",
+        timestamp: 20,
+        turnId: "turn-1",
+        parts: [
+          { id: "text-1", type: "text", text: "先确认方向。" },
+          {
+            id: "assistant.clarification.request:clarify-key-1",
+            type: "clarification",
+            event: {
+              type: "assistant.clarification.request",
+              bridge_key: "clarify-key-1",
+              clarification_id: "hometown-culture-poster-skill-setup",
+              submitted: true,
+              questions: [],
+            },
+          },
+        ],
+      },
+    ];
+
+    const merged = upsertServerAssistantMessageForTest(
+      current,
+      {
+        id: 3,
+        role: "assistant",
+        content: "先确认方向。\n\n草稿已生成。",
+        turn_id: "turn-1",
+        created_at: "2026-07-08T03:47:06.538231+00:00",
+        parts: [
+          { id: "text-1", type: "text", text: "先确认方向。\n\n" },
+          {
+            id: "skill_studio.draft:draft-key-1",
+            type: "skill_studio",
+            event: {
+              type: "skill_studio.draft",
+              bridge_key: "draft-key-1",
+              skill_studio_session_id: "studio-1",
+              skill: { id: "home-culture" },
+              recipes: [],
+            },
+          },
+        ],
+      },
+      "turn-1",
+    );
+
+    const assistant = merged.find((item) => item.role === "assistant");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["clarification", "text", "skill_studio", "text"]);
+    expect(assistant?.parts?.[0]).toMatchObject({
+      type: "clarification",
+      event: {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-key-1",
+      },
     });
   });
 });
@@ -1949,6 +2052,290 @@ describe("useSuperChat websocket lifecycle", () => {
     });
 
     expect(sockets).toHaveLength(0);
+  });
+
+  it("persists merged assistant parts after the final assistant message arrives", async () => {
+    apiPostMock.mockClear();
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send() {}
+      close() {}
+    }
+    const sockets: TestWebSocket[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    const hook = renderHook(() =>
+      useSuperChat({
+        project: "project-a",
+        displayName: "Tester",
+        surface: "freezone",
+        freezoneCanvasId: "canvas-a",
+        freezoneAgentId: "agent-2",
+      }),
+    );
+
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    await waitFor(() => expect(socket.onmessage).toBeTypeOf("function"));
+    await act(async () => {
+      socket.onopen?.();
+    });
+    const scope = {
+      kind: "project",
+      id: "project-a",
+      surface: "freezone",
+      canvasId: "canvas-a",
+      agentId: "agent-2",
+    };
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "assistant.clarification.event",
+          scope,
+          turn_id: "turn-1",
+          bridge_key: "clarify-key-1",
+          event: {
+            type: "assistant.clarification.request",
+            bridge_key: "clarify-key-1",
+            clarification_id: "skill-setup",
+            questions: [],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      expect(hook.result.current.messages.some((item) =>
+        item.parts?.some((part) => part.type === "clarification"),
+      )).toBe(true);
+    });
+
+    await waitFor(() =>
+      expect(apiPostMock).toHaveBeenCalledWith("api/v1/chat/ui-events", expect.objectContaining({
+        json: expect.objectContaining({
+          turn_id: "turn-1",
+          event: expect.objectContaining({
+            type: "assistant.message_parts",
+            parts: expect.arrayContaining([
+              expect.objectContaining({ type: "clarification" }),
+            ]),
+          }),
+        }),
+      })),
+    );
+    apiPostMock.mockClear();
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "assistant.message",
+          scope,
+          turn_id: "turn-1",
+          message: {
+            id: 9,
+            role: "assistant",
+            content: "草稿已生成。",
+            turn_id: "turn-1",
+            created_at: "2026-07-13T08:00:00+00:00",
+            parts: [
+              {
+                id: "skill_studio.draft:draft-key-1",
+                type: "skill_studio",
+                event: {
+                  type: "skill_studio.draft",
+                  bridge_key: "draft-key-1",
+                  skill_studio_session_id: "studio-1",
+                  draft: { skill: { id: "hometown-skill" }, recipes: [] },
+                },
+              },
+            ],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() =>
+      expect(apiPostMock).toHaveBeenCalledWith("api/v1/chat/ui-events", expect.objectContaining({
+        json: expect.objectContaining({
+          turn_id: "turn-1",
+          event: expect.objectContaining({
+            type: "assistant.message_parts",
+            parts: expect.arrayContaining([
+              expect.objectContaining({ type: "clarification" }),
+              expect.objectContaining({ type: "skill_studio" }),
+              expect.objectContaining({ type: "text", text: "草稿已生成。" }),
+            ]),
+          }),
+        }),
+      })),
+    );
+  });
+
+  it("persists updated draft part state after confirming a Skill Studio draft", async () => {
+    apiPostMock.mockClear();
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      sent: string[] = [];
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send(value: string) {
+        this.sent.push(value);
+      }
+      close() {}
+    }
+    const sockets: TestWebSocket[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    const hook = renderHook(() =>
+      useSuperChat({
+        project: "project-a",
+        displayName: "Tester",
+        surface: "freezone",
+        freezoneCanvasId: "canvas-a",
+        freezoneAgentId: "agent-2",
+      }),
+    );
+
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    await waitFor(() => expect(socket.onmessage).toBeTypeOf("function"));
+    await act(async () => {
+      socket.onopen?.();
+    });
+    const scope = {
+      kind: "project",
+      id: "project-a",
+      surface: "freezone",
+      canvasId: "canvas-a",
+      agentId: "agent-2",
+    };
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "assistant.message",
+          scope,
+          turn_id: "turn-1",
+          message: {
+            id: 10,
+            role: "assistant",
+            content: "草稿已生成。",
+            turn_id: "turn-1",
+            created_at: "2026-07-13T08:00:00+00:00",
+            parts: [
+              {
+                id: "skill_studio.draft:draft-key-1",
+                type: "skill_studio",
+                event: {
+                  type: "skill_studio.draft",
+                  bridge_key: "draft-key-1",
+                  skill_studio_session_id: "studio-1",
+                  mode: "create",
+                  draft: {
+                    summary: "草稿",
+                    skill: { id: "saved-skill" },
+                    recipes: [{ id: "saved-recipe" }],
+                    warnings: [],
+                  },
+                },
+              },
+            ],
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      expect(hook.result.current.messages.some((message) =>
+        message.parts?.some((part) => part.type === "skill_studio"),
+      )).toBe(true);
+    });
+    apiPostMock.mockClear();
+
+    act(() => {
+      const draftPart = hook.result.current.messages
+        .flatMap((message) => message.parts ?? [])
+        .find((part) => part.type === "skill_studio");
+      const draft = draftPart?.type === "skill_studio"
+        ? draftPart.event as { type: "skill_studio.draft" }
+        : null;
+      hook.result.current.updateUiEvent(
+        "turn-1",
+        (candidate) =>
+          Boolean(
+            candidate
+            && typeof candidate === "object"
+            && (candidate as Record<string, unknown>).type === "skill_studio.draft"
+            && (candidate as Record<string, unknown>).bridge_key === "draft-key-1",
+          ),
+        (candidate) => ({
+          ...(candidate as Record<string, unknown>),
+          submitted: true,
+          saved_to_catalog: true,
+          saved_skill_ids: ["saved-skill"],
+          saved_recipe_ids: ["saved-recipe"],
+          action: "confirm_add",
+          draft: {
+            summary: "草稿",
+            skill: { id: "saved-skill" },
+            recipes: [{ id: "saved-recipe" }],
+            warnings: [],
+          },
+        }),
+      );
+      expect(draft?.type).toBe("skill_studio.draft");
+    });
+
+    await waitFor(() =>
+      expect(apiPostMock).toHaveBeenCalledWith("api/v1/chat/ui-events", expect.objectContaining({
+        json: expect.objectContaining({
+          turn_id: "turn-1",
+          event: expect.objectContaining({
+            type: "assistant.message_parts",
+            parts: expect.arrayContaining([
+              expect.objectContaining({
+                type: "skill_studio",
+                event: expect.objectContaining({
+                  type: "skill_studio.draft",
+                  submitted: true,
+                  saved_to_catalog: true,
+                  saved_skill_ids: ["saved-skill"],
+                  saved_recipe_ids: ["saved-recipe"],
+                }),
+              }),
+              expect.objectContaining({ type: "text", text: "草稿已生成。" }),
+            ]),
+          }),
+        }),
+      })),
+    );
   });
 });
 

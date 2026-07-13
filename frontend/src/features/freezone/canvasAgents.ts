@@ -30,6 +30,16 @@ export function shouldConnectFreezoneCanvasAgent({
   return active || busy;
 }
 
+export function shouldKeepFreezoneChatPanelMounted({
+  open,
+  busy,
+}: {
+  open: boolean;
+  busy: boolean;
+}): boolean {
+  return open || busy;
+}
+
 const STORAGE_PREFIX = "freezone:canvas-agents:v1:";
 const GENERATED_AGENT_NAME_RE = /^(Agent(?: \d+)?|新对话)$/;
 const MAX_AGENT_TITLE_LENGTH = 32;
