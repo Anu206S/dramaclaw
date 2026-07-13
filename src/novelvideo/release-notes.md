@@ -1,15 +1,21 @@
 ---
-version: 1.0.2
+version: 1.0.7
 attention: low
 ---
-# v1.0.2
+# v1.0.7
 
 ## User-facing Highlights (zh)
 
-- **版本更新通知接入 Release Feed**: 进入平台后按当前版本展示更新内容,并在上游有新版时于通知中心提示升级。
-- **通知中心改为发版内容源**: 原有硬编码功能通知改为由包内 release notes 驱动,离线部署也能查看当前版本亮点。
+- **剧本导入更准确**: 章节标题边界识别更严格,减少正文里的“第一集/Chapter 1”被误切成新章节的情况。
+- **虾画视频节点更稳定**: 修复首尾帧和画布上下文串用导致的视频节点报错,跨画布编辑更可靠。
+- **登录与公开页面更可靠**: 登录页视频、商务微信二维码和浏览器 CSP 兼容性完成收口,减少黑屏、花屏和控制台告警。
 
 ## User-facing Highlights (en)
 
-- **Release Feed powers version updates**: The app now shows highlights for the running version and can surface an upstream upgrade in the notification center.
-- **Notification Center uses release content**: Hardcoded feature notices are replaced with packaged release notes so offline self-hosted deployments still show current-version highlights.
+- **More accurate script imports**: Chapter title boundary detection is stricter, reducing accidental splits when text mentions “Episode 1” or “Chapter 1” inside body copy.
+- **More stable Xiahua video nodes**: Video nodes now avoid first/last-frame and canvas-context leakage that could break cross-canvas editing.
+- **More reliable login and public pages**: Login video assets, business WeCom QR assets, and browser CSP compatibility were tightened to reduce black screens, visual glitches, and console warnings.
+
+## Fixes
+
+- 其余修复与内部改动见 GitHub Release 页的 Bug Fixes 与 What's Changed。

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "supertale-ce"
-version = "1.0.2"
+version = "1.0.7"
 description = "SuperTale Community Edition API and video pipeline"
 readme = "README.md"
 requires-python = ">=3.11,<3.13"
@@ -52,6 +52,7 @@ dependencies = [
     "python-ulid>=2.2.0",
     "asyncpg>=0.30.0",
     "packaging>=24.0",
+    "portalocker>=3.2.0",
 ]
 
 [project.scripts]

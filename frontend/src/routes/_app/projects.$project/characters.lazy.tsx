@@ -598,11 +598,15 @@ function CharactersPageHeader({
               size="sm"
               onClick={onRebuild}
               disabled={rebuildDisabled}
-              className="h-8 gap-1.5 rounded-[8px] px-3 text-xs font-normal shadow-none hover:bg-primary/85"
+              className="h-8 gap-1.5 rounded-[8px] bg-primary px-3 text-xs font-normal text-primary-foreground shadow-none hover:bg-primary/85 active:bg-primary/75"
             >
               <RefreshCw className="size-3.5" />
               {t("characters.autoExtract")}
-              <CreditCostInline display={buildCharactersCostDisplay} />
+              <CreditCostInline
+                display={buildCharactersCostDisplay}
+                className="text-primary-foreground"
+                iconClassName="text-primary-foreground drop-shadow-none [&_path]:fill-current"
+              />
             </Button>
           </>
         )}
@@ -3046,7 +3050,7 @@ function CharactersSplit({
 
   return (
     <div className="min-h-0 flex-1 flex overflow-hidden bg-background">
-      <div className="flex flex-col w-72 shrink-0 overflow-hidden border-r border-border/30 bg-background">
+      <div className="flex w-80 shrink-0 flex-col overflow-hidden border-r border-border/30 bg-background">
         {listPane}
       </div>
       <div className="min-w-0 flex-1 overflow-hidden bg-background">

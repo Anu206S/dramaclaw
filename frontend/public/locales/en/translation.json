@@ -147,6 +147,8 @@
         "asgardHorns": "For the realm",
         "garySnail": "Little snail pal",
         "captainShield": "Guard you well",
+        "lubanCompass": "Luban Compass",
+        "lubanTalisman": "Mechanism Talisman",
         "redCape": "Guardian cape",
         "ufoPet": "Interstellar Voyage",
         "ghostPet": "Lulu"
@@ -181,6 +183,8 @@
         "asgardHorns": "For the realm!",
         "garySnail": "Slow wins!",
         "captainShield": "I guard you!",
+        "lubanCompass": "Compass active!",
+        "lubanTalisman": "Mechanism sealed!",
         "redCape": "Pick me!",
         "ufoPet": "Bilu kala wugulu!",
         "ghostPet": "Hello there"
@@ -524,11 +528,12 @@
     "switchProject": "Switch Project",
     "allProjects": "All Projects",
     "collapse": "Collapse",
-    "collapseSidebar": "Collapse sidebar",
-    "expandSidebar": "Expand sidebar",
     "creation": "Creation",
     "production": "Production",
     "tools": "Tools",
+    "creationMode": "Creation Mode",
+    "xiaji": "Series",
+    "xiajiMenu": "Series Menu",
     "ingest": "Story Source",
     "assets": "Asset Library",
     "characters": "Characters",
@@ -879,7 +884,8 @@
       "open": "View business WeChat QR code",
       "qrAlt": "Business WeChat QR code",
       "title": "Add Business WeChat",
-      "subtitle": "Account access / User guide"
+      "subtitle": "Account access / User guide",
+      "note": "For partnerships, please add a note — we'll prioritize your request"
     },
     "stage": {
       "eyebrow": "Drama creation platform",
@@ -970,6 +976,7 @@
     "nameExistsDeleted": "A project with this name is in Trash. Restore or permanently delete it before creating a new one.",
     "noProjects": "No projects yet. Click to create one.",
     "dashboardTitle": "Project Management Center",
+    "dashboardReturn": "Back to Project Management",
     "dashboardSubtitle": "Manage your drama productions and scripts.",
     "emptyTitle": "Start your first story",
     "emptyDescription": "Create a project to begin scripting, generating sketches, and producing episodes.",
@@ -1368,6 +1375,7 @@
       "confirm": "Confirm re-import"
     },
     "logsPanel": "Import log",
+    "logCompleted": "Import complete",
     "fileDeleted": "File removed",
     "buildHint": "Build the semantic graph, then construct characters and episodes on their respective pages.",
     "emptyPreview": "No content to preview yet. Upload a file to see the structure.",
@@ -2024,6 +2032,7 @@
         },
         "seedance2GeneratePrompt": "AI optimize",
         "seedance2PromptGenerated": "Seedance2 prompt optimized",
+        "seedance2PromptGeneratedOtherBeat": "Subject prompt optimized and saved back to beat #{{n}}",
         "seedance2PromptGenerateFailed": "Seedance2 prompt generation failed",
         "videoPrompt": "Video prompt",
         "keyframePrompt": "Single-beat video prompt",
@@ -2731,7 +2740,12 @@
       "pause": "Pause",
       "use": "Use",
       "delete": "Delete",
-      "promptTitle": "Prompt"
+      "promptTitle": "Prompt",
+      "batchDownload": "Download",
+      "batchUse": "Use",
+      "selectAll": "Select all",
+      "deselectAll": "Deselect all",
+      "downloading": "Downloading…"
     },
     "shortcuts": {
       "title": "Shortcuts",
@@ -3812,7 +3826,7 @@
     "modelConfig": {
       "title": "Model Config",
       "description": "Choose a model gateway channel: the platform official gateway, or your own local NewAPI.",
-      "baseUrlHint": "The server can also pin this value via the NEWAPI_BASE_URL environment variable.",
+      "baseUrlHint": "Custom NewAPI can use NEWAPI_BASE_URL as its default address.",
       "effectiveBadge": "Active: {{channel}}",
       "loading": "Loading…",
       "requestFailed": "Request failed, please retry.",
@@ -3834,12 +3848,12 @@
         "adminUsername": "Admin Username"
       },
       "official": {
-        "description": "Enter the platform official gateway URL and API Key, then save. You may enter the root domain or the full /v1 URL.",
+        "description": "Enter the platform official channel API Key, then save.",
         "save": "Save & Enable",
         "enable": "Switch to Official",
         "saved": "Saved and switched to the official channel.",
         "enabled": "Switched to the official channel.",
-        "missingFields": "Please fill in the gateway URL and API Key.",
+        "missingFields": "Please fill in the API Key.",
         "registerLink": "Register at RelayClaw"
       },
       "custom": {

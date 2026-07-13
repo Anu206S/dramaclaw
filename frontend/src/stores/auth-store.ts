@@ -4,6 +4,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { quotaSafeStateStorage } from "@/lib/localStorageQuota";
 import { regionAbortController } from "@/lib/region-abort";
+import { LIEXIAOREN_ENTRY_PENDING_KEY } from "@/features/liexiaoren/liexiaoren-events";
 import type { OkResponse } from "@/types/api";
 
 export interface CurrentUser {
@@ -98,6 +99,9 @@ export const useAuthStore = create<AuthState>()(
           username: data.data.username,
           role: data.data.role,
         });
+        if (typeof window !== "undefined") {
+          window.sessionStorage.setItem(LIEXIAOREN_ENTRY_PENDING_KEY, "1");
+        }
         // Avatar is an EE-only feature served by its own endpoint, not /auth/me.
         void useAuthStore.getState().refreshAvatar();
       },
@@ -136,7 +140,18 @@ export const useAuthStore = create<AuthState>()(
                 signal: regionAbortController().signal,
               });
               if (!res.ok) {
-                return { user: null, authFailure: true, networkFailure: false };
+                // A 401/403 is the ONLY response that means the session cookie
+                // is missing or stale — the sole case that should tear auth
+                // down. Any other non-2xx (500/502/503 while the backend pod is
+                // mid-rollout, gateway errors) carries no auth signal: leave the
+                // session intact so a routine backend restart doesn't log every
+                // user out. We surface it as neither authFailure nor
+                // networkFailure so no caller — not even the strict route-guard
+                // default — clears local auth; the next poll recovers on 200.
+                if (res.status === 401 || res.status === 403) {
+                  return { user: null, authFailure: true, networkFailure: false };
+                }
+                return { user: null, authFailure: false, networkFailure: false };
               }
               const body = (await res.json()) as OkResponse<CurrentUser>;
               cachedCurrentUser = body.data;

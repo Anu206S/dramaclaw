@@ -147,6 +147,8 @@
         "asgardHorns": "为了王国",
         "garySnail": "小蜗牛",
         "captainShield": "护你周全",
+        "lubanCompass": "鲁班罗盘",
+        "lubanTalisman": "机关符",
         "redCape": "保你平安",
         "ufoPet": "星际航行",
         "ghostPet": "噜噜"
@@ -181,6 +183,8 @@
         "asgardHorns": "为了王国！",
         "garySnail": "慢点也赢！",
         "captainShield": "我来护你！",
+        "lubanCompass": "罗盘已启！",
+        "lubanTalisman": "机关已封！",
         "redCape": "选我没错！",
         "ufoPet": "啦咕咔咔～",
         "ghostPet": "你好呀"
@@ -524,11 +528,12 @@
     "switchProject": "切换项目",
     "allProjects": "所有项目",
     "collapse": "收起",
-    "collapseSidebar": "收起侧边栏",
-    "expandSidebar": "展开侧边栏",
     "creation": "创作",
     "production": "制作",
     "tools": "工具",
+    "creationMode": "创作方式",
+    "xiaji": "虾集",
+    "xiajiMenu": "虾集菜单",
     "ingest": "虾料",
     "assets": "虾塘",
     "characters": "角色",
@@ -879,7 +884,8 @@
       "open": "查看商务微信二维码",
       "qrAlt": "商务微信二维码",
       "title": "添加商务微信",
-      "subtitle": "账号申请 / 使用指导"
+      "subtitle": "账号申请 / 使用指导",
+      "note": "商务合作请备注，我们会优先处理"
     },
     "stage": {
       "eyebrow": "短剧创作平台",
@@ -970,6 +976,7 @@
     "nameExistsDeleted": "回收站中已有同名项目，请永久删除后再创建",
     "noProjects": "还没有项目，点击创建",
     "dashboardTitle": "项目管理中心",
+    "dashboardReturn": "返回项目管理中心",
     "dashboardSubtitle": "管理你的短剧项目和脚本",
     "emptyTitle": "开启你的第一个故事",
     "emptyDescription": "创建项目以开始撰写剧本、生成分镜、制作视频",
@@ -1368,6 +1375,7 @@
       "confirm": "确认重新导入"
     },
     "logsPanel": "导入日志",
+    "logCompleted": "导入完成",
     "fileDeleted": "文件已删除",
     "buildHint": "构建语义图谱，然后在角色 / 剧集页面分别构建",
     "emptyPreview": "上传文件后，这里会显示小说结构预览",
@@ -2024,6 +2032,7 @@
         },
         "seedance2GeneratePrompt": "AI 优化",
         "seedance2PromptGenerated": "Seedance2 提示词 已优化",
+        "seedance2PromptGeneratedOtherBeat": "主体提示词已优化，已写回镜头 #{{n}}",
         "seedance2PromptGenerateFailed": "Seedance2 提示词 生成失败",
         "videoPrompt": "视频提示词",
         "keyframePrompt": "单个 Beat 视频提示词",
@@ -2731,7 +2740,12 @@
       "pause": "暂停",
       "use": "使用",
       "delete": "删除",
-      "promptTitle": "提示词"
+      "promptTitle": "提示词",
+      "batchDownload": "批量下载",
+      "batchUse": "批量使用",
+      "selectAll": "全选",
+      "deselectAll": "取消全选",
+      "downloading": "下载中…"
     },
     "shortcuts": {
       "title": "快捷键",
@@ -3812,7 +3826,7 @@
     "modelConfig": {
       "title": "模型配置",
       "description": "选择模型网关渠道：使用平台官方网关，或自配本地 NewAPI。",
-      "baseUrlHint": "服务端也可以通过环境变量 NEWAPI_BASE_URL 固定该值。",
+      "baseUrlHint": "自定义 NewAPI 可通过环境变量 NEWAPI_BASE_URL 提供默认地址。",
       "effectiveBadge": "当前生效：{{channel}}",
       "loading": "加载中…",
       "requestFailed": "请求失败，请重试。",
@@ -3834,12 +3848,12 @@
         "adminUsername": "管理员用户名"
       },
       "official": {
-        "description": "填入平台官方网关地址与 API Key 并保存，保存后自动切换为官方渠道；地址可填根域名或完整 /v1 地址。",
+        "description": "填入平台官方渠道 API Key 并保存，保存后自动切换为官方渠道。",
         "save": "保存并启用",
         "enable": "切换到官方",
         "saved": "已保存并切换为官方渠道。",
         "enabled": "已切换为官方渠道。",
-        "missingFields": "请填写网关地址与 API Key。",
+        "missingFields": "请填写 API Key。",
         "registerLink": "请前往 RelayClaw 进行注册"
       },
       "custom": {

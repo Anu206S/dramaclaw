@@ -1292,7 +1292,7 @@ export function ScenesPanel({
           size="sm"
           onClick={handleBuildScenes}
           disabled={buildScenes.isPending}
-          className="h-8 gap-1.5 rounded-[8px] px-3 text-xs font-normal shadow-none hover:bg-primary/85"
+          className="h-8 gap-1.5 rounded-[8px] bg-primary px-3 text-xs font-normal text-primary-foreground shadow-none hover:bg-primary/85 active:bg-primary/75"
         >
           {buildScenes.isPending ? (
             <Loader2 className="size-3.5 animate-spin" />
@@ -1300,7 +1300,11 @@ export function ScenesPanel({
             <Sparkles className="size-3.5" />
           )}
           {t("assets.scenes.build")}
-          <CreditCostInline display={buildScenesCostDisplay} />
+          <CreditCostInline
+            display={buildScenesCostDisplay}
+            className="text-black"
+            iconClassName="text-black drop-shadow-none [&_path]:fill-current"
+          />
         </Button>
       </AssetHeaderActions>
       {scenes.isLoading ? (
