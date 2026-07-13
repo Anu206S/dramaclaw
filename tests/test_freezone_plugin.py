@@ -182,6 +182,9 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     draft_schema = schemas["freezone_present_agent_catalog_draft"]["parameters"]
     skill_schema = draft_schema["properties"]["skill"]
     recipe_item = draft_schema["properties"]["recipes"]["items"]
+    workflow_step_schema = skill_schema["properties"]["workflow_templates"]["items"]["properties"][
+        "steps"
+    ]["items"]
 
     assert "including Skill Studio setup questions" in clarification_description
     assert "decide the next step from the current context" in clarification_description
@@ -197,14 +200,44 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "planning",
         "evaluation",
     ]
-    assert skill_schema["properties"]["triggers"]["required"] == ["keywords", "nodeTypes"]
+    assert skill_schema["properties"]["triggers"]["required"] == ["keywords", "node_scopes"]
+    assert skill_schema["properties"]["triggers"]["properties"]["node_scopes"]["items"]["enum"] == [
+        "textGeneration",
+        "imageGeneration",
+        "videoGeneration",
+        "audioGeneration",
+    ]
+    assert workflow_step_schema["properties"]["node_type"]["enum"] == [
+        "textGeneration",
+        "imageGeneration",
+        "videoGeneration",
+        "audioGeneration",
+    ]
+    assert "textAnnotationNode" not in workflow_step_schema["properties"]["node_type"]["enum"]
+    assert "imageGenNode" not in workflow_step_schema["properties"]["node_type"]["enum"]
+    assert "Do not use internal canvas node types" in workflow_step_schema["properties"][
+        "node_type"
+    ]["description"]
     assert skill_schema["properties"]["planning"]["required"] == [
         "planning_notes",
         "prompt_guide",
         "conduct_rules",
         "default_aspect_ratios",
-        "model_preferences",
     ]
+    assert "model_preferences" not in skill_schema["properties"]["planning"]["properties"]
+    aspect_schema_description = skill_schema["properties"]["planning"]["properties"][
+        "default_aspect_ratios"
+    ]["description"]
+    aspect_schema = skill_schema["properties"]["planning"]["properties"]["default_aspect_ratios"]
+    assert "imageGeneration" in aspect_schema_description
+    assert "videoGeneration" in aspect_schema_description
+    assert "16:9" in aspect_schema_description
+    assert "5:4" in aspect_schema_description
+    assert "Do not use auto" in aspect_schema_description
+    assert aspect_schema["additionalProperties"] is False
+    assert set(aspect_schema["properties"]) == {"imageGeneration", "videoGeneration"}
+    assert "textGeneration" not in aspect_schema["properties"]
+    assert "auto" not in aspect_schema["properties"]["imageGeneration"]["enum"]
     assert skill_schema["properties"]["evaluation"]["required"] == [
         "rating_bands",
         "quality_threshold",
@@ -217,13 +250,37 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "name",
         "output_kind",
         "action_keys",
-        "systemPrompt",
-        "required_elements",
-        "planner_cue",
-        "output_summary",
-        "needs_multimodal_input",
+        "system_prompt",
+        "must_have_items",
+        "planning_prompt",
+        "result_summary",
+        "requires_source_media",
     ]
     assert recipe_item["properties"]["output_kind"]["enum"] == ["text", "image", "video", "audio"]
+    legacy_system_prompt_key = "system" + "Prompt"
+    assert legacy_system_prompt_key not in json.dumps(recipe_item, ensure_ascii=False)
+    legacy_recipe_keys = [
+        "required" + "_elements",
+        "planner" + "_cue",
+        "output" + "_summary",
+        "needs" + "_multimodal_input",
+    ]
+    for legacy_key in legacy_recipe_keys:
+        assert legacy_key not in recipe_item["properties"]
+    system_prompt_description = recipe_item["properties"]["system_prompt"]["description"]
+    assert "节点" in system_prompt_description
+    assert "提示词/指令" in system_prompt_description
+    assert "不要自己完成最终" in system_prompt_description
+    assert "角色设定" in system_prompt_description
+    assert "输出结构" in system_prompt_description
+    assert "负面提示词" in system_prompt_description
+    planning_prompt_description = recipe_item["properties"]["planning_prompt"]["description"]
+    result_summary_description = recipe_item["properties"]["result_summary"]["description"]
+    assert "short business description" in planning_prompt_description
+    assert "根据 X" in planning_prompt_description
+    assert "Do not describe scheduling mechanics" in planning_prompt_description
+    assert "short business description" in result_summary_description
+    assert "Do not mention downstream execution" in result_summary_description
 
 
 def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
@@ -266,7 +323,7 @@ def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
                     "name": "水果广告创意",
                     "_catalog_source": "user",
                     "generationType": "text",
-                    "systemPrompt": "输出一条提示词/指令。",
+                    "system_prompt": "输出一条提示词/指令。",
                 }
             ]
         raise AssertionError(kind)
@@ -431,7 +488,16 @@ def test_freezone_catalog_recipe_fields_are_separated_from_node_prompt():
         catalog["promptBuilder"]["recipeRef"]
         == "agent_catalog/builtins/recipes/video-ad-creative-outline.json"
     )
-    assert "systemPrompt" not in catalog["promptBuilder"]
+    assert set(catalog["promptBuilder"]) == {
+        "mode",
+        "userGoal",
+        "goalTemplate",
+        "inputStrategy",
+        "recipeId",
+        "recipeName",
+        "recipeRef",
+        "isPromptRecipe",
+    }
 
     image_node = next(
         item

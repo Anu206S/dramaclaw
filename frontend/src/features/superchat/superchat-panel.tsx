@@ -2000,7 +2000,7 @@ const skillStudioDraftFieldLabels = {
     category: "Category",
     description: "Description",
     keywords: "触发关键词",
-    nodeTypes: "节点类型",
+    node_scopes: "节点类型",
     metaPlanningHints: "规划器提示词",
     promptStyleGuide: "风格指引",
     behaviorRules: "行为规则",
@@ -2012,11 +2012,11 @@ const skillStudioDraftFieldLabels = {
     name: "名称",
     output_kind: "生成类型",
     action_keys: "操作类型",
-    systemPrompt: "System Prompt",
-    required_elements: "必需元素",
-    planner_cue: "规划器提示词",
-    output_summary: "输出概述",
-    needs_multimodal_input: "依赖上游多模态输入",
+    system_prompt: "System Prompt",
+    must_have_items: "必需元素",
+    planning_prompt: "规划器提示词",
+    result_summary: "输出概述",
+    requires_source_media: "依赖上游多模态输入",
   },
 };
 
@@ -2238,8 +2238,9 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
       planning_notes: firstNonEmptyText(planning.planning_notes, planning.metaPlanningHints),
       prompt_guide: firstNonEmptyText(planning.prompt_guide, planning.promptStyleGuide),
       conduct_rules: cleanStringArray(planning.conduct_rules ?? planning.behaviorRules),
-      default_aspect_ratios: getRecord(planning.default_aspect_ratios ?? planning.defaultAspectRatios),
-      model_preferences: getRecord(planning.model_preferences ?? planning.modelPreferences),
+      default_aspect_ratios: normalizedSkillStudioDefaultAspectRatios(
+        planning.default_aspect_ratios ?? planning.defaultAspectRatios,
+      ),
     },
     evaluation: {
       rating_bands: getRecordArray(evaluation.rating_bands ?? evaluation.scoreAnchors).map((item) => ({
@@ -2262,6 +2263,42 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
   return payload;
 }
 
+const SKILL_STUDIO_IMAGE_ASPECT_RATIOS = new Set([
+  "1:1",
+  "9:16",
+  "16:9",
+  "3:4",
+  "4:3",
+  "3:2",
+  "2:3",
+  "4:5",
+  "5:4",
+  "21:9",
+]);
+
+const SKILL_STUDIO_VIDEO_ASPECT_RATIOS = new Set([
+  "16:9",
+  "4:3",
+  "1:1",
+  "3:4",
+  "9:16",
+  "21:9",
+]);
+
+function normalizedSkillStudioDefaultAspectRatios(value: unknown): Record<string, string> {
+  const ratios = getRecord(value);
+  const next: Record<string, string> = {};
+  const imageRatio = textField(ratios.imageGeneration);
+  if (SKILL_STUDIO_IMAGE_ASPECT_RATIOS.has(imageRatio)) {
+    next.imageGeneration = imageRatio;
+  }
+  const videoRatio = textField(ratios.videoGeneration);
+  if (SKILL_STUDIO_VIDEO_ASPECT_RATIOS.has(videoRatio)) {
+    next.videoGeneration = videoRatio;
+  }
+  return next;
+}
+
 function normalizedSkillStudioReviewItem(item: Record<string, unknown>) {
   return {
     name: textField(item.name),
@@ -2275,29 +2312,46 @@ function normalizedSkillStudioWorkflowTemplates(value: unknown): Array<Record<st
     const steps = getRecordArray(template.steps);
     return {
       ...template,
-      steps: steps.map((step) => ({ ...step })),
+      steps: steps.map((step) => ({
+        ...step,
+        node_type: normalizedSkillStudioWorkflowNodeType(step.node_type),
+      })),
     };
   });
+}
+
+function normalizedSkillStudioWorkflowNodeType(value: unknown): string {
+  const nodeType = textField(value);
+  if (
+    nodeType === "textGeneration" ||
+    nodeType === "imageGeneration" ||
+    nodeType === "videoGeneration" ||
+    nodeType === "audioGeneration"
+  ) {
+    return nodeType;
+  }
+  if (nodeType === "textAnnotationNode" || nodeType === "scriptNode") return "textGeneration";
+  if (nodeType === "imageGenNode" || nodeType === "storyboardGenNode") return "imageGeneration";
+  if (nodeType === "videoNode") return "videoGeneration";
+  if (nodeType === "audioNode") return "audioGeneration";
+  return nodeType;
 }
 
 function normalizedSkillStudioRecipePayload(recipe: Record<string, unknown>): FreezoneAgentConfigPayload {
   const outputKind = isSkillStudioRecipeOutputKind(recipe.output_kind)
     ? recipe.output_kind
-    : isSkillStudioRecipeOutputKind(recipe.generationType)
-      ? recipe.generationType
-      : "image";
+    : "image";
   return {
     id: textField(recipe.id),
     enabled: recipe.enabled !== false,
     name: textField(recipe.name),
     output_kind: outputKind,
-    action_keys: cleanStringArray(recipe.action_keys ?? recipe.operationTypes),
-    system_prompt: firstNonEmptyText(recipe.system_prompt, recipe.systemPrompt),
-    must_have_items: cleanStringArray(recipe.must_have_items ?? recipe.required_elements),
-    planning_prompt: firstNonEmptyText(recipe.planning_prompt, recipe.planner_cue),
-    result_summary: firstNonEmptyText(recipe.result_summary, recipe.output_summary),
-    requires_source_media:
-      recipe.requires_source_media === true || recipe.needs_multimodal_input === true,
+    action_keys: cleanStringArray(recipe.action_keys),
+    system_prompt: textField(recipe.system_prompt),
+    must_have_items: cleanStringArray(recipe.must_have_items),
+    planning_prompt: textField(recipe.planning_prompt),
+    result_summary: textField(recipe.result_summary),
+    requires_source_media: recipe.requires_source_media === true,
     force_enhancement: recipe.force_enhancement === true,
     skip_detail_check: recipe.skip_detail_check === true,
   };
@@ -2451,6 +2505,8 @@ function assertSkillStudioCatalogPayload(kind: FreezoneAgentConfigKind, payload:
     || !isSkillStudioRecipeOutputKind(payload.output_kind)
     || cleanStringArray(payload.action_keys).length === 0
     || !textField(payload.system_prompt)
+    || !textField(payload.planning_prompt)
+    || !textField(payload.result_summary)
   ) {
     throw new Error("invalid recipe catalog payload");
   }
@@ -2723,6 +2779,49 @@ export function buildAssistantClarificationToolResultForTest(
     message: buildAssistantClarificationResponseForTest(event, safeAnswers),
   };
 }
+
+function buildPersistedAssistantClarificationEvent(
+  event: AssistantClarificationUiEvent,
+  {
+    action,
+    answers,
+    clarificationStatus,
+    receivedAt,
+    skipped,
+    usedRecommended,
+  }: {
+    action: string;
+    answers: AssistantClarificationAnswers;
+    clarificationStatus: string;
+    receivedAt: number;
+    skipped: boolean;
+    usedRecommended: boolean;
+  },
+): Record<string, unknown> {
+  return {
+    type: "assistant.clarification.request",
+    bridge_key: event.bridge_key,
+    project_id: event.project_id,
+    canvas_id: event.canvas_id,
+    agent_id: event.agent_id,
+    anchor_text_prefix: event.anchor_text_prefix ?? null,
+    received_at: receivedAt,
+    clarification_id: event.clarification_id,
+    title: event.title,
+    description: event.description,
+    questions: event.questions,
+    allow_recommended: event.allow_recommended,
+    allow_skip: event.allow_skip,
+    submitted: true,
+    action,
+    clarification_status: clarificationStatus,
+    answers,
+    skipped,
+    used_recommended: usedRecommended,
+  };
+}
+
+export const buildPersistedAssistantClarificationEventForTest = buildPersistedAssistantClarificationEvent;
 
 function draftPayloadFromEvent(event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) {
   if (event.draft && typeof event.draft === "object" && !Array.isArray(event.draft)) {
@@ -3823,28 +3922,28 @@ function SkillStudioDraftCard({
                   />
                 </div>
                 <label className="block">
-                  <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.systemPrompt}</span>
+                  <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.system_prompt}</span>
                   <Textarea
-                    value={textField(recipe.systemPrompt)}
+                    value={textField(recipe.system_prompt)}
                     disabled={readOnly}
-                    onChange={(changeEvent) => updateRecipeField(index, "systemPrompt", changeEvent.target.value)}
+                    onChange={(changeEvent) => updateRecipeField(index, "system_prompt", changeEvent.target.value)}
                     className={cn(textAreaClass, "min-h-24")}
                   />
                 </label>
                 <div className="grid gap-2 md:grid-cols-2">
                   <SkillStudioListField
-                    label={skillStudioDraftFieldLabels.recipe.required_elements}
-                    value={stringListField(recipe.required_elements)}
+                    label={skillStudioDraftFieldLabels.recipe.must_have_items}
+                    value={stringListField(recipe.must_have_items)}
                     disabled={readOnly}
-                    onChange={(value) => updateRecipeField(index, "required_elements", value)}
+                    onChange={(value) => updateRecipeField(index, "must_have_items", value)}
                     placeholder="输入元素后按 Enter"
                   />
                   <label>
-                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.needs_multimodal_input}</span>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.requires_source_media}</span>
                     <Input
-                      value={String(Boolean(recipe.needs_multimodal_input))}
+                      value={String(Boolean(recipe.requires_source_media))}
                       disabled={readOnly}
-                      onChange={(changeEvent) => updateRecipeField(index, "needs_multimodal_input", changeEvent.target.value === "true")}
+                      onChange={(changeEvent) => updateRecipeField(index, "requires_source_media", changeEvent.target.value === "true")}
                       placeholder="true / false"
                       className={fieldClass}
                     />
@@ -3852,20 +3951,20 @@ function SkillStudioDraftCard({
                 </div>
                 <div className="grid gap-2 md:grid-cols-2">
                   <label>
-                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.planner_cue}</span>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.planning_prompt}</span>
                     <Textarea
-                      value={textField(recipe.planner_cue)}
+                      value={textField(recipe.planning_prompt)}
                       disabled={readOnly}
-                      onChange={(changeEvent) => updateRecipeField(index, "planner_cue", changeEvent.target.value)}
+                      onChange={(changeEvent) => updateRecipeField(index, "planning_prompt", changeEvent.target.value)}
                       className={textAreaClass}
                     />
                   </label>
                   <label>
-                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.output_summary}</span>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.result_summary}</span>
                     <Textarea
-                      value={textField(recipe.output_summary)}
+                      value={textField(recipe.result_summary)}
                       disabled={readOnly}
-                      onChange={(changeEvent) => updateRecipeField(index, "output_summary", changeEvent.target.value)}
+                      onChange={(changeEvent) => updateRecipeField(index, "result_summary", changeEvent.target.value)}
                       className={textAreaClass}
                     />
                   </label>
@@ -9062,6 +9161,16 @@ export function SuperChatPanel({
         return false;
       }
       if (event.turn_id) {
+        const actionStatus = action === "submit" ? "answered" : action;
+        const receivedAt = uiEventFirstReceivedAt(event);
+        const persistedEvent = buildPersistedAssistantClarificationEvent(event, {
+          action,
+          answers: payload.answers,
+          clarificationStatus: actionStatus,
+          receivedAt,
+          skipped: action === "skip",
+          usedRecommended: action === "recommended",
+        });
         updateChatUiEvent(
           event.turn_id,
           (candidate) =>
@@ -9079,13 +9188,14 @@ export function SuperChatPanel({
             received_at: uiEventFirstReceivedAt(candidate, event),
             submitted: true,
             action,
-            clarification_status: action === "submit" ? "answered" : action,
+            clarification_status: actionStatus,
             answers: payload.answers,
             skipped: action === "skip",
             used_recommended: action === "recommended",
             anchor_text_prefix: event.anchor_text_prefix ?? null,
           }),
         );
+        persistSkillStudioUiEvent(event.turn_id, persistedEvent);
       }
       return true;
     } catch (error) {
@@ -9093,7 +9203,7 @@ export function SuperChatPanel({
       toast.error("提交补充信息失败，请重试");
       return false;
     }
-	  }, [chat, updateChatUiEvent]);
+	  }, [chat, persistSkillStudioUiEvent, updateChatUiEvent]);
 
   const submitSkillStudioDraftResponse = useCallback(async (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,

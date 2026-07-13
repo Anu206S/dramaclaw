@@ -3,6 +3,7 @@
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import { toast } from "sonner";
 
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 
@@ -127,7 +128,7 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newSkill.keywordsPlaceholder": "输入关键词",
         "settings.freezoneCatalog.newSkill.keywordsHint": "支持权重",
         "settings.freezoneCatalog.newSkill.nodeScopes": "节点类型",
-        "settings.freezoneCatalog.newSkill.nodeScopesPlaceholder": "如：image-generation",
+        "settings.freezoneCatalog.newSkill.nodeScopesPlaceholder": "textGeneration / imageGeneration / videoGeneration / audioGeneration",
         "settings.freezoneCatalog.newSkill.planningTitle": "规则配置",
         "settings.freezoneCatalog.newSkill.planningDescription": "规则策略",
         "settings.freezoneCatalog.newSkill.planningNotes": "规划器提示词",
@@ -137,11 +138,16 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newSkill.conductRules": "行为规则",
         "settings.freezoneCatalog.newSkill.conductRulesPlaceholder": "行为规则...",
         "settings.freezoneCatalog.newSkill.aspectPresets": "默认画幅",
-        "settings.freezoneCatalog.newSkill.modelNamePlaceholder": "模型名",
+        "settings.freezoneCatalog.newSkill.modelNamePlaceholder": "任务类型",
         "settings.freezoneCatalog.newSkill.ratioPlaceholder": "比例",
+        "settings.freezoneCatalog.newSkill.ratioLabel": "比例",
+        "settings.freezoneCatalog.newSkill.ratioSelectPlaceholder": "选择比例",
         "settings.freezoneCatalog.newSkill.modelHints": "模型偏好",
-        "settings.freezoneCatalog.newSkill.taskTypePlaceholder": "任务类型",
-        "settings.freezoneCatalog.newSkill.modelNameOnlyPlaceholder": "模型名称",
+        "settings.freezoneCatalog.newSkill.taskTypeLabel": "任务类型",
+        "settings.freezoneCatalog.newSkill.taskTypePlaceholder": "选择类型",
+        "settings.freezoneCatalog.newSkill.modelSelectLabel": "模型名称",
+        "settings.freezoneCatalog.newSkill.modelSelectPlaceholder": "选择模型",
+        "settings.freezoneCatalog.newSkill.modelLoading": "模型加载中…",
         "settings.freezoneCatalog.newSkill.evaluationTitle": "评估规则",
         "settings.freezoneCatalog.newSkill.evaluationDescription": "评分标准",
         "settings.freezoneCatalog.newSkill.qualityThreshold": "通过分数",
@@ -167,6 +173,9 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newSkill.collapseRawJson": "收起原始 JSON",
         "settings.freezoneCatalog.newSkill.rawJsonAria": "原始 JSON",
         "settings.freezoneCatalog.newSkill.rawJsonSyncHint": "直接编辑 JSON 会同步到上方表单字段",
+        "settings.freezoneCatalog.newSkill.copyRawJson": "复制 JSON",
+        "settings.freezoneCatalog.newSkill.rawJsonCopied": "Skill JSON 已复制",
+        "settings.freezoneCatalog.newSkill.rawJsonCopyFailed": "复制失败，请手动复制",
         "settings.freezoneCatalog.newRecipe.title": "新增 Recipe",
         "settings.freezoneCatalog.newRecipe.close": "关闭新增 Recipe",
         "settings.freezoneCatalog.newRecipe.cancel": "取消",
@@ -183,8 +192,8 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newRecipe.actionKeys": "操作标识",
         "settings.freezoneCatalog.newRecipe.actionKeysPlaceholder": "输入后按 Enter 或逗号确认",
         "settings.freezoneCatalog.newRecipe.actionKeysHint": "Agent 规划时用于匹配此 Recipe 的操作类型标识符",
-        "settings.freezoneCatalog.newRecipe.systemPrompt": "System Prompt",
-        "settings.freezoneCatalog.newRecipe.systemPromptPlaceholder": "用于增强生成提示词的系统指令...",
+        "settings.freezoneCatalog.newRecipe.system_prompt": "System Prompt",
+        "settings.freezoneCatalog.newRecipe.system_promptPlaceholder": "用于增强生成提示词的系统指令...",
         "settings.freezoneCatalog.newRecipe.mustHaveItems": "必需元素",
         "settings.freezoneCatalog.newRecipe.mustHaveItemsPlaceholder": "输入后按 Enter 或逗号确认",
         "settings.freezoneCatalog.newRecipe.mustHaveItemsHint": "生成结果必须包含的关键要素",
@@ -200,6 +209,9 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newRecipe.collapseRawJson": "收起原始 JSON",
         "settings.freezoneCatalog.newRecipe.rawJsonAria": "Recipe 原始 JSON",
         "settings.freezoneCatalog.newRecipe.rawJsonSyncHint": "当前 JSON 根据上方表单字段自动生成",
+        "settings.freezoneCatalog.newRecipe.copyRawJson": "复制 JSON",
+        "settings.freezoneCatalog.newRecipe.rawJsonCopied": "Recipe JSON 已复制",
+        "settings.freezoneCatalog.newRecipe.rawJsonCopyFailed": "复制失败，请手动复制",
       })[key] ?? options?.defaultValue ?? key,
   }),
 }));
@@ -341,6 +353,35 @@ describe("SettingsDialog tabs", () => {
     expect(rawJson.force_enhancement).toBe(false);
   });
 
+  it("copies the generated Recipe raw JSON from the raw JSON header", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Recipes" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增" }));
+    fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
+      target: { value: "copyable-recipe" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("如：电商广告图增强"), {
+      target: { value: "可复制 Recipe" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("用于增强生成提示词的系统指令..."), {
+      target: { value: "复制用系统提示" },
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "查看 / 编辑原始 JSON（高级）" }));
+    const rawJsonText = screen.getByLabelText("Recipe 原始 JSON").textContent ?? "";
+
+    fireEvent.click(screen.getByRole("button", { name: "复制 JSON" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(rawJsonText));
+    expect(toast.success).toHaveBeenCalledWith("Recipe JSON 已复制");
+  });
+
   it("does not save a Freezone Recipe until all required fields are present", () => {
     renderSettingsDialog();
 
@@ -362,6 +403,15 @@ describe("SettingsDialog tabs", () => {
     fireEvent.keyDown(actionKeysInput, { key: "Enter", code: "Enter" });
     fireEvent.change(screen.getByPlaceholderText("用于增强生成提示词的系统指令..."), {
       target: { value: "系统提示" },
+    });
+
+    expect(screen.getByRole("button", { name: "保存" })).toBeDisabled();
+
+    fireEvent.change(screen.getByPlaceholderText("给规划器的简短提示（~30字）"), {
+      target: { value: "规划提示" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("产出特征描述（~50字）"), {
+      target: { value: "输出概述" },
     });
 
     expect(screen.getByRole("button", { name: "保存" })).not.toBeDisabled();
@@ -447,13 +497,12 @@ describe("SettingsDialog tabs", () => {
       key: "Backspace",
       code: "Backspace",
     });
-    fireEvent.change(screen.getByPlaceholderText("如：image-generation"), {
-      target: { value: "节点类型" },
-    });
-    fireEvent.keyDown(screen.getByPlaceholderText("如：image-generation"), {
-      key: "Enter",
-      code: "Enter",
-    });
+    expect(
+      screen.queryByPlaceholderText(
+        "textGeneration / imageGeneration / videoGeneration / audioGeneration",
+      ),
+    ).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("checkbox", { name: "图片生成 imageGeneration" }));
     fireEvent.change(screen.getByPlaceholderText("规划提示..."), {
       target: { value: "planhints" },
     });
@@ -468,6 +517,34 @@ describe("SettingsDialog tabs", () => {
       key: "Enter",
       code: "Enter",
     });
+    expect(screen.getByLabelText("默认画幅 任务类型")).toHaveValue("");
+    expect(screen.getByLabelText("默认画幅 比例")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("默认画幅 任务类型"), {
+      target: { value: "imageGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("默认画幅 比例"), { target: { value: "16:9" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加 默认画幅" }));
+    fireEvent.change(screen.getByLabelText("默认画幅 任务类型"), {
+      target: { value: "videoGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("默认画幅 比例"), { target: { value: "16:9" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加 默认画幅" }));
+    expect(screen.getByLabelText("模型偏好 任务类型")).toHaveValue("");
+    expect(screen.getByLabelText("模型偏好 模型名称")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("模型偏好 任务类型"), {
+      target: { value: "imageGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("模型偏好 模型名称"), {
+      target: { value: "newapi_gpt_image2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加 模型偏好" }));
+    fireEvent.change(screen.getByLabelText("模型偏好 任务类型"), {
+      target: { value: "videoGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("模型偏好 模型名称"), {
+      target: { value: "newapi_seedance-2.0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加 模型偏好" }));
     fireEvent.change(screen.getByPlaceholderText("如：7"), { target: { value: "7" } });
     fireEvent.change(screen.getByPlaceholderText("输入规则"), {
       target: { value: "domainrules" },
@@ -476,7 +553,7 @@ describe("SettingsDialog tabs", () => {
 
     expect(screen.getByRole("button", { name: "删除 关键词" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "删除 关键词2" })).not.toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "删除 节点类型" })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除 imageGeneration" })).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "编辑 关键词" }));
     const keywordEditInput = screen.getByRole("textbox", { name: "编辑 关键词" });
     expect(keywordEditInput).toHaveValue("关键词");
@@ -515,12 +592,20 @@ describe("SettingsDialog tabs", () => {
       category: "category",
       triggers: {
         keywords: ["关键词编辑"],
-        node_scopes: ["节点类型"],
+        node_scopes: ["imageGeneration"],
       },
       planning: {
         planning_notes: "planhints",
         prompt_guide: "sytleguide",
         conduct_rules: ["behaviorrules"],
+        default_aspect_ratios: {
+          imageGeneration: "16:9",
+          videoGeneration: "16:9",
+        },
+        model_preferences: {
+          imageGeneration: "newapi_gpt_image2",
+          videoGeneration: "newapi_seedance-2.0",
+        },
       },
       evaluation: {
         rating_bands: [
@@ -547,6 +632,43 @@ describe("SettingsDialog tabs", () => {
         domain_constraints: ["domainrules"],
       },
     });
+  });
+
+  it("copies the generated Skill raw JSON from the raw JSON header", async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, "clipboard", {
+      configurable: true,
+      value: { writeText },
+    });
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "新增" }));
+    fireEvent.change(screen.getByPlaceholderText("my-skill"), {
+      target: { value: "copyable-skill" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("general"), {
+      target: { value: "poster" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("适用场景描述"), {
+      target: { value: "可复制 Skill" },
+    });
+    const keywordInput = screen.getByPlaceholderText("输入关键词");
+    fireEvent.change(keywordInput, {
+      target: { value: "海报" },
+    });
+    fireEvent.keyDown(keywordInput, {
+      key: "Enter",
+      code: "Enter",
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: "查看 / 编辑原始 JSON（高级）" }));
+    const rawJsonText = screen.getByLabelText("原始 JSON").textContent ?? "";
+
+    fireEvent.click(screen.getByRole("button", { name: "复制 JSON" }));
+
+    await waitFor(() => expect(writeText).toHaveBeenCalledWith(rawJsonText));
+    expect(toast.success).toHaveBeenCalledWith("Skill JSON 已复制");
   });
 
   it("saves a new Freezone Skill through account config storage", async () => {
@@ -863,7 +985,14 @@ describe("SettingsDialog tabs", () => {
         id: "story-skill",
         description: "故事规则",
         category: "general",
-        triggers: { keywords: ["故事"] },
+        triggers: { keywords: ["故事"], nodeTypes: ["imageGeneration"] },
+        planning: {
+          default_aspect_ratios: {
+            imageGeneration: "9:16",
+            textGeneration: "1:1",
+            videoGeneration: "auto",
+          },
+        },
       },
     ];
     renderSettingsDialog();
@@ -876,5 +1005,11 @@ describe("SettingsDialog tabs", () => {
     expect(screen.getByDisplayValue("story-skill")).toBeInTheDocument();
     expect(screen.getByDisplayValue("故事规则")).toBeInTheDocument();
     expect(screen.getAllByText("故事").length).toBeGreaterThan(0);
+    expect(screen.getByRole("checkbox", { name: "图片生成 imageGeneration" })).toBeChecked();
+    fireEvent.click(screen.getByRole("button", { name: "查看 / 编辑原始 JSON（高级）" }));
+    const rawJson = JSON.parse(screen.getByLabelText("原始 JSON").textContent ?? "{}");
+    expect(rawJson.planning.default_aspect_ratios).toEqual({
+      imageGeneration: "9:16",
+    });
   });
 });

@@ -17,6 +17,13 @@ from urllib.request import Request, urlopen
 
 from tools.registry import tool_error, tool_result
 
+_SKILL_STUDIO_NODE_SCOPE_VALUES = [
+    "textGeneration",
+    "imageGeneration",
+    "videoGeneration",
+    "audioGeneration",
+]
+
 _PLUGIN_DIR = Path(__file__).resolve().parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
@@ -1620,14 +1627,24 @@ _SKILL_STUDIO_QUESTION_SCHEMA = {
 
 _SKILL_STUDIO_ASPECT_RATIO_SCHEMA = {
     "type": "object",
-    "description": "Default aspect ratio by output task kind.",
-    "additionalProperties": {"type": "string"},
-}
-
-_SKILL_STUDIO_MODEL_PREFERENCE_SCHEMA = {
-    "type": "object",
-    "description": "Preferred model by output task kind.",
-    "additionalProperties": {"type": "string"},
+    "description": (
+        "Default canvas aspect ratio by catalog task type. Only imageGeneration and "
+        "videoGeneration keys are allowed. For imageGeneration choose one of 1:1, 9:16, "
+        "16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, 21:9. For videoGeneration choose one of "
+        "16:9, 4:3, 1:1, 3:4, 9:16, 21:9. Do not use auto, textGeneration, "
+        "audioGeneration, model names, or arbitrary keys for saved Skill defaults."
+    ),
+    "properties": {
+        "imageGeneration": {
+            "type": "string",
+            "enum": ["1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "4:5", "5:4", "21:9"],
+        },
+        "videoGeneration": {
+            "type": "string",
+            "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+        },
+    },
+    "additionalProperties": False,
 }
 
 _SKILL_STUDIO_RATING_BAND_SCHEMA = {
@@ -1667,7 +1684,13 @@ _SKILL_STUDIO_WORKFLOW_STEP_SCHEMA = {
         },
         "node_type": {
             "type": "string",
-            "description": "Freezone node type this step creates or updates.",
+            "enum": _SKILL_STUDIO_NODE_SCOPE_VALUES,
+            "description": (
+                "Catalog task type this step creates or updates. Must choose from "
+                "textGeneration, imageGeneration, videoGeneration, audioGeneration. "
+                "Do not use internal canvas node types such as textAnnotationNode, "
+                "imageGenNode, videoNode, or audioNode."
+            ),
         },
         "action_key": {
             "type": "string",
@@ -1744,12 +1767,23 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
         },
         "triggers": {
             "type": "object",
-            "description": "Trigger rules such as keywords and nodeTypes. Use an empty array when no node type trigger applies.",
+            "description": (
+                "Trigger rules such as keywords and catalog node scopes. "
+                "node_scopes must choose from textGeneration, imageGeneration, "
+                "videoGeneration, audioGeneration. Use an empty array when no node scope applies."
+            ),
             "properties": {
                 "keywords": {"type": "array", "items": {"type": "string"}},
-                "nodeTypes": {"type": "array", "items": {"type": "string"}},
+                "node_scopes": {
+                    "type": "array",
+                    "description": "Catalog node scopes that activate this Skill.",
+                    "items": {
+                        "type": "string",
+                        "enum": _SKILL_STUDIO_NODE_SCOPE_VALUES,
+                    },
+                },
             },
-            "required": ["keywords", "nodeTypes"],
+            "required": ["keywords", "node_scopes"],
         },
         "planning": {
             "type": "object",
@@ -1769,14 +1803,12 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                     "items": {"type": "string"},
                 },
                 "default_aspect_ratios": _SKILL_STUDIO_ASPECT_RATIO_SCHEMA,
-                "model_preferences": _SKILL_STUDIO_MODEL_PREFERENCE_SCHEMA,
             },
             "required": [
                 "planning_notes",
                 "prompt_guide",
                 "conduct_rules",
                 "default_aspect_ratios",
-                "model_preferences",
             ],
         },
         "evaluation": {
@@ -1847,24 +1879,44 @@ _SKILL_STUDIO_RECIPE_SCHEMA = {
             "description": "Operation/action keys this recipe matches.",
             "items": {"type": "string"},
         },
-        "systemPrompt": {
+        "system_prompt": {
             "type": "string",
-            "description": "System prompt used by this recipe.",
+            "description": (
+                "Recipe 节点级 system_prompt 执行指令，不是裸的最终图片/视频提示词。"
+                "通常应让当前 LLM 输出一条将被送入下游 textGeneration/imageGeneration/"
+                "videoGeneration/audioGeneration 节点执行的「提示词/指令」。必须明确："
+                "不要自己完成最终正文、脚本、画面成品或创意资产，只输出可执行的下游提示词。"
+                "必须包含【角色设定】、【输入来源】、【任务目标】、【输出结构要求】、"
+                "【质量标准】和【禁止事项/约束】。输出结构要写清下游提示词或 brief 的模块，"
+                "例如主视觉、文化元素、构图、色彩、文字/留白、负面提示词，而不是只写生成一张图。"
+            ),
         },
-        "required_elements": {
+        "must_have_items": {
             "type": "array",
-            "description": "Must-have elements in the generated result.",
+            "description": (
+                "Required modules or sections that the Recipe output must contain. Prefer structural "
+                "items for the downstream prompt/brief, not only style adjectives."
+            ),
             "items": {"type": "string"},
         },
-        "planner_cue": {
+        "planning_prompt": {
             "type": "string",
-            "description": "Short cue for the planner.",
+            "description": (
+                "Non-empty short business description of what this Recipe node does. "
+                "Use the style '根据 X，生成/提取/改写 Y。'. Do not describe scheduling "
+                "mechanics, downstream nodes, workflow internals, or when to call the Recipe."
+            ),
         },
-        "output_summary": {
+        "result_summary": {
             "type": "string",
-            "description": "Short output summary.",
+            "description": (
+                "Non-empty short business description of this Recipe node's output, such as "
+                "'3:4 竖版数码产品科技感详情图' or '家乡文化海报图片生成指令'. "
+                "Do not mention downstream execution, imageGeneration handoff, planner behavior, "
+                "or workflow mechanics."
+            ),
         },
-        "needs_multimodal_input": {
+        "requires_source_media": {
             "type": "boolean",
             "description": "Whether the recipe needs image/video/audio input.",
         },
@@ -1874,11 +1926,11 @@ _SKILL_STUDIO_RECIPE_SCHEMA = {
         "name",
         "output_kind",
         "action_keys",
-        "systemPrompt",
-        "required_elements",
-        "planner_cue",
-        "output_summary",
-        "needs_multimodal_input",
+        "system_prompt",
+        "must_have_items",
+        "planning_prompt",
+        "result_summary",
+        "requires_source_media",
     ],
 }
 

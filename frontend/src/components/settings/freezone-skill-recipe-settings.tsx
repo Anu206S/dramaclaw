@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ChevronDown, Download, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { ChevronDown, Copy, Download, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -37,10 +37,53 @@ import {
   useSaveFreezoneAgentConfigItem,
   type FreezoneAgentConfigPayload,
 } from "@/lib/queries/freezone-agent-config";
+import { useFreezoneImageModels } from "@/features/canvas/hooks/useFreezoneImageModels";
+import { useFreezoneVideoModels } from "@/features/canvas/hooks/useFreezoneVideoModels";
+import type { ModelOption } from "@/features/canvas/ui/ProviderModelPicker";
 import { cn } from "@/lib/utils";
 
 type FreezoneCatalogKind = "skills" | "recipes";
 type RecipeGenerationType = "image" | "video" | "audio" | "text";
+
+const NODE_SCOPE_OPTIONS = [
+  "textGeneration",
+  "imageGeneration",
+  "videoGeneration",
+  "audioGeneration",
+] as const;
+
+const NODE_SCOPE_LABELS: Record<(typeof NODE_SCOPE_OPTIONS)[number], string> = {
+  textGeneration: "文本生成",
+  imageGeneration: "图片生成",
+  videoGeneration: "视频生成",
+  audioGeneration: "音频生成",
+};
+
+const MODEL_PREFERENCE_TASK_OPTIONS = ["imageGeneration", "videoGeneration"] as const;
+
+const MODEL_PREFERENCE_TASK_LABELS: Record<
+  (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number],
+  string
+> = {
+  imageGeneration: "图片生成",
+  videoGeneration: "视频生成",
+};
+
+const ASPECT_RATIO_OPTIONS_BY_TASK: Record<
+  (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number],
+  string[]
+> = {
+  imageGeneration: ["1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "4:5", "5:4", "21:9"],
+  videoGeneration: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+};
+
+const ASPECT_RATIO_OPTION_SETS: Record<
+  (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number],
+  Set<string>
+> = {
+  imageGeneration: new Set(ASPECT_RATIO_OPTIONS_BY_TASK.imageGeneration),
+  videoGeneration: new Set(ASPECT_RATIO_OPTIONS_BY_TASK.videoGeneration),
+};
 
 interface SkillDraft {
   id: string;
@@ -51,6 +94,8 @@ interface SkillDraft {
   planningNotes: string;
   promptGuide: string;
   conductRules: string[];
+  defaultAspectRatios: Record<string, string>;
+  modelPreferences: Record<string, string>;
   qualityThreshold: string;
   domainConstraints: string;
 }
@@ -60,7 +105,7 @@ interface RecipeDraft {
   name: string;
   outputKind: RecipeGenerationType;
   actionKeys: string[];
-  systemPrompt: string;
+  system_prompt: string;
   mustHaveItems: string[];
   planningPrompt: string;
   resultSummary: string;
@@ -406,7 +451,7 @@ function NewRecipeEditor({
     name: "",
     outputKind: "image",
     actionKeys: [],
-    systemPrompt: "",
+    system_prompt: "",
     mustHaveItems: [],
     planningPrompt: "",
     resultSummary: "",
@@ -428,7 +473,7 @@ function NewRecipeEditor({
         name: "",
         outputKind: "image",
         actionKeys: [],
-        systemPrompt: "",
+        system_prompt: "",
         mustHaveItems: [],
         planningPrompt: "",
         resultSummary: "",
@@ -452,7 +497,7 @@ function NewRecipeEditor({
       action_keys: recipeDraft.actionKeys,
       id: recipeDraft.id,
       must_have_items: recipeDraft.mustHaveItems,
-      system_prompt: recipeDraft.systemPrompt,
+      system_prompt: recipeDraft.system_prompt,
       requires_source_media: recipeDraft.sourceMediaRequired,
       output_kind: recipeDraft.outputKind,
       name: recipeDraft.name,
@@ -543,10 +588,10 @@ function NewRecipeEditor({
           <EditorFieldGroup>
             <EditorTextarea
               required
-              label={t("settings.freezoneCatalog.newRecipe.systemPrompt")}
-              placeholder={t("settings.freezoneCatalog.newRecipe.systemPromptPlaceholder")}
-              value={recipeDraft.systemPrompt}
-              onChange={(value) => updateRecipeDraft({ systemPrompt: value })}
+              label={t("settings.freezoneCatalog.newRecipe.system_prompt")}
+              placeholder={t("settings.freezoneCatalog.newRecipe.system_promptPlaceholder")}
+              value={recipeDraft.system_prompt}
+              onChange={(value) => updateRecipeDraft({ system_prompt: value })}
               className="min-h-36"
             />
           </EditorFieldGroup>
@@ -593,6 +638,9 @@ function NewRecipeEditor({
             ariaLabel={t("settings.freezoneCatalog.newRecipe.rawJsonAria")}
             hint={t("settings.freezoneCatalog.newRecipe.rawJsonSyncHint")}
             jsonText={rawRecipeJsonText}
+            copyLabel={t("settings.freezoneCatalog.newRecipe.copyRawJson")}
+            copiedMessage={t("settings.freezoneCatalog.newRecipe.rawJsonCopied")}
+            copyFailedMessage={t("settings.freezoneCatalog.newRecipe.rawJsonCopyFailed")}
           />
         </div>
 
@@ -638,6 +686,8 @@ function NewSkillEditor({
     planningNotes: "",
     promptGuide: "",
     conductRules: [],
+    defaultAspectRatios: {},
+    modelPreferences: {},
     qualityThreshold: "",
     domainConstraints: "",
   });
@@ -645,6 +695,8 @@ function NewSkillEditor({
   const [visualReviewItems, setVisualDimensions] = useState<DimensionDraft[]>([]);
   const [textReviewItems, setTextDimensions] = useState<DimensionDraft[]>([]);
   const [rawJsonOpen, setRawJsonOpen] = useState(false);
+  const imageModels = useFreezoneImageModels();
+  const videoModels = useFreezoneVideoModels();
 
   useEffect(() => {
     if (!open) return;
@@ -667,6 +719,8 @@ function NewSkillEditor({
         planningNotes: "",
         promptGuide: "",
         conductRules: [],
+        defaultAspectRatios: {},
+        modelPreferences: {},
         qualityThreshold: "",
         domainConstraints: "",
       });
@@ -733,6 +787,8 @@ function NewSkillEditor({
           planning_notes: skillDraft.planningNotes,
           prompt_guide: skillDraft.promptGuide,
           conduct_rules: skillDraft.conductRules,
+          default_aspect_ratios: skillDraft.defaultAspectRatios,
+          model_preferences: skillDraft.modelPreferences,
         },
         evaluation: {
           rating_bands: ratingBands.map((anchor) => ({
@@ -824,9 +880,8 @@ function NewSkillEditor({
               onChange={(value) => updateSkillDraft({ keywords: value })}
               hint={t("settings.freezoneCatalog.newSkill.keywordsHint")}
             />
-            <TagInputField
+            <NodeScopeOptionsField
               label={t("settings.freezoneCatalog.newSkill.nodeScopes")}
-              placeholder={t("settings.freezoneCatalog.newSkill.nodeScopesPlaceholder")}
               value={skillDraft.nodeScopes}
               onChange={(value) => updateSkillDraft({ nodeScopes: value })}
             />
@@ -855,15 +910,19 @@ function NewSkillEditor({
               value={skillDraft.conductRules}
               onChange={(value) => updateSkillDraft({ conductRules: value })}
             />
-            <PairField
+            <AspectRatioField
               label={t("settings.freezoneCatalog.newSkill.aspectPresets")}
-              leftPlaceholder={t("settings.freezoneCatalog.newSkill.modelNamePlaceholder")}
-              rightPlaceholder={t("settings.freezoneCatalog.newSkill.ratioPlaceholder")}
+              value={skillDraft.defaultAspectRatios}
+              onChange={(value) => updateSkillDraft({ defaultAspectRatios: value })}
             />
-            <PairField
+            <ModelPreferenceField
               label={t("settings.freezoneCatalog.newSkill.modelHints")}
-              leftPlaceholder={t("settings.freezoneCatalog.newSkill.taskTypePlaceholder")}
-              rightPlaceholder={t("settings.freezoneCatalog.newSkill.modelNameOnlyPlaceholder")}
+              imageModels={imageModels.models}
+              imageModelsLoading={imageModels.isLoading}
+              videoModels={videoModels.models}
+              videoModelsLoading={videoModels.isLoading}
+              value={skillDraft.modelPreferences}
+              onChange={(value) => updateSkillDraft({ modelPreferences: value })}
             />
           </EditorSection>
 
@@ -912,42 +971,18 @@ function NewSkillEditor({
             />
           </EditorSection>
 
-          <button
-            type="button"
-            aria-label={t(
-              rawJsonOpen
-                ? "settings.freezoneCatalog.newSkill.collapseRawJson"
-                : "settings.freezoneCatalog.newSkill.rawJson",
-            )}
-            aria-expanded={rawJsonOpen}
-            onClick={() => setRawJsonOpen((value) => !value)}
-            className="mt-4 flex items-center gap-2 border-t border-border pt-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
-          >
-            <span className="font-mono">{`{}`}</span>
-            <ChevronDown
-              className={cn("size-3 transition-transform", rawJsonOpen ? "rotate-180" : "")}
-            />
-            <span>
-              {t(
-                rawJsonOpen
-                  ? "settings.freezoneCatalog.newSkill.collapseRawJson"
-                  : "settings.freezoneCatalog.newSkill.rawJson",
-              )}
-            </span>
-          </button>
-          {rawJsonOpen ? (
-            <div className="mt-2">
-              <pre
-                aria-label={t("settings.freezoneCatalog.newSkill.rawJsonAria")}
-                className="max-h-72 overflow-auto rounded-md border border-border/70 bg-white/[0.025] p-3 font-mono text-xs leading-relaxed text-foreground"
-              >
-                {rawSkillJsonText}
-              </pre>
-              <p className="mt-2 text-[10px] text-muted-foreground">
-                {t("settings.freezoneCatalog.newSkill.rawJsonSyncHint")}
-              </p>
-            </div>
-          ) : null}
+          <RawJsonDisclosure
+            open={rawJsonOpen}
+            onOpenChange={setRawJsonOpen}
+            label={t("settings.freezoneCatalog.newSkill.rawJson")}
+            collapseLabel={t("settings.freezoneCatalog.newSkill.collapseRawJson")}
+            ariaLabel={t("settings.freezoneCatalog.newSkill.rawJsonAria")}
+            hint={t("settings.freezoneCatalog.newSkill.rawJsonSyncHint")}
+            jsonText={rawSkillJsonText}
+            copyLabel={t("settings.freezoneCatalog.newSkill.copyRawJson")}
+            copiedMessage={t("settings.freezoneCatalog.newSkill.rawJsonCopied")}
+            copyFailedMessage={t("settings.freezoneCatalog.newSkill.rawJsonCopyFailed")}
+          />
         </div>
 
         <DialogFooter className="border-t border-border bg-black px-6 py-4">
@@ -979,7 +1014,7 @@ function recipeDraftFromPayload(payload: FreezoneAgentConfigPayload | null): Rec
     name: getString(payload?.name),
     outputKind: isRecipeGenerationType(payload?.output_kind) ? payload.output_kind : "image",
     actionKeys: getStringArray(payload?.action_keys),
-    systemPrompt: getString(payload?.system_prompt),
+    system_prompt: getString(payload?.system_prompt),
     mustHaveItems: getStringArray(payload?.must_have_items),
     planningPrompt: getString(payload?.planning_prompt),
     resultSummary: getString(payload?.result_summary),
@@ -1003,10 +1038,12 @@ function skillDraftFromPayload(payload: FreezoneAgentConfigPayload | null): {
       category: getString(payload?.category) || "general",
       description: getString(payload?.description),
       keywords: getStringArray(triggers.keywords),
-      nodeScopes: getStringArray(triggers.node_scopes),
+      nodeScopes: getStringArray(triggers.node_scopes ?? triggers.nodeTypes ?? triggers.node_types),
       planningNotes: getString(planning.planning_notes),
       promptGuide: getString(planning.prompt_guide),
       conductRules: getStringArray(planning.conduct_rules),
+      defaultAspectRatios: getAspectRatioRecord(planning.default_aspect_ratios),
+      modelPreferences: getStringRecord(planning.model_preferences),
       qualityThreshold: optionalNumberText(evaluation.quality_threshold),
       domainConstraints: getStringArray(evaluation.domain_constraints).join("\n"),
     },
@@ -1049,7 +1086,9 @@ function isValidRecipeDraft(draft: RecipeDraft) {
     draft.name.trim().length > 0 &&
     isRecipeGenerationType(draft.outputKind) &&
     draft.actionKeys.some((key) => key.trim().length > 0) &&
-    draft.systemPrompt.trim().length > 0
+    draft.system_prompt.trim().length > 0 &&
+    draft.planningPrompt.trim().length > 0 &&
+    draft.resultSummary.trim().length > 0
   );
 }
 
@@ -1082,6 +1121,27 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function getRecord(value: unknown): Record<string, unknown> {
   return isPlainObject(value) ? value : {};
+}
+
+function getStringRecord(value: unknown): Record<string, string> {
+  if (!isPlainObject(value)) return {};
+  return Object.fromEntries(
+    Object.entries(value)
+      .map(([key, item]) => [key.trim(), String(item ?? "").trim()] as const)
+      .filter(([key, item]) => key.length > 0 && item.length > 0),
+  );
+}
+
+function getAspectRatioRecord(value: unknown): Record<string, string> {
+  const record = getStringRecord(value);
+  const next: Record<string, string> = {};
+  for (const task of MODEL_PREFERENCE_TASK_OPTIONS) {
+    const ratio = record[task];
+    if (ratio && ASPECT_RATIO_OPTION_SETS[task].has(ratio)) {
+      next[task] = ratio;
+    }
+  }
+  return next;
 }
 
 function getRecordArray(value: unknown): Array<Record<string, unknown>> {
@@ -1326,6 +1386,61 @@ function TagInputField({
   );
 }
 
+function NodeScopeOptionsField({
+  label,
+  onChange,
+  value,
+}: {
+  label: string;
+  onChange: (value: string[]) => void;
+  value: string[];
+}) {
+  const selected = Array.isArray(value) ? value.filter(Boolean) : [];
+  const selectedSet = new Set(selected);
+
+  const toggleScope = (scope: string, checked: boolean) => {
+    if (checked) {
+      onChange(selectedSet.has(scope) ? selected : [...selected, scope]);
+      return;
+    }
+    onChange(selected.filter((item) => item !== scope));
+  };
+
+  return (
+    <div className="block">
+      <EditorLabel>{label}</EditorLabel>
+      <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        {NODE_SCOPE_OPTIONS.map((scope) => {
+          const checked = selectedSet.has(scope);
+          return (
+            <label
+              key={scope}
+              className={cn(
+                "flex min-h-12 cursor-pointer items-center gap-2 rounded-md border px-3 py-2 transition-colors",
+                checked
+                  ? "border-border/70 bg-white/[0.055] text-foreground"
+                  : "border-input/80 bg-input/20 text-foreground hover:border-cyan-500/40 hover:bg-white/[0.035]",
+              )}
+            >
+              <Checkbox
+                checked={checked}
+                onCheckedChange={(nextChecked) => toggleScope(scope, nextChecked === true)}
+              />
+              <span className="min-w-0">
+                <span className="block text-xs font-medium">{NODE_SCOPE_LABELS[scope]}</span>
+                {" "}
+                <span className="block truncate font-mono text-[10px] text-muted-foreground">
+                  {scope}
+                </span>
+              </span>
+            </label>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
 function EditorTextarea({
   className,
   label,
@@ -1405,6 +1520,9 @@ function ToggleRow({
 function RawJsonDisclosure({
   ariaLabel,
   collapseLabel,
+  copiedMessage,
+  copyFailedMessage,
+  copyLabel,
   hint,
   jsonText,
   label,
@@ -1413,25 +1531,50 @@ function RawJsonDisclosure({
 }: {
   ariaLabel: string;
   collapseLabel: string;
+  copiedMessage?: string;
+  copyFailedMessage?: string;
+  copyLabel?: string;
   hint: string;
   jsonText: string;
   label: string;
   onOpenChange: (open: boolean) => void;
   open: boolean;
 }) {
+  const handleCopyJson = async () => {
+    try {
+      await navigator.clipboard.writeText(jsonText);
+      toast.success(copiedMessage ?? copyLabel ?? label);
+    } catch {
+      toast.error(copyFailedMessage ?? copyLabel ?? label);
+    }
+  };
+
   return (
     <>
-      <button
-        type="button"
-        aria-label={open ? collapseLabel : label}
-        aria-expanded={open}
-        onClick={() => onOpenChange(!open)}
-        className="mt-4 flex items-center gap-2 border-t border-border pt-3 text-xs text-muted-foreground transition-colors hover:text-foreground"
-      >
-        <span className="font-mono">{`{}`}</span>
-        <ChevronDown className={cn("size-3 transition-transform", open ? "rotate-180" : "")} />
-        <span>{open ? collapseLabel : label}</span>
-      </button>
+      <div className="mt-4 flex items-center gap-2 border-t border-border pt-3">
+        <button
+          type="button"
+          aria-label={open ? collapseLabel : label}
+          aria-expanded={open}
+          onClick={() => onOpenChange(!open)}
+          className="flex min-w-0 flex-1 items-center gap-2 text-xs text-muted-foreground transition-colors hover:text-foreground"
+        >
+          <span className="font-mono">{`{}`}</span>
+          <ChevronDown className={cn("size-3 transition-transform", open ? "rotate-180" : "")} />
+          <span className="truncate">{open ? collapseLabel : label}</span>
+        </button>
+        {open && copyLabel ? (
+          <button
+            type="button"
+            aria-label={copyLabel}
+            title={copyLabel}
+            onClick={() => void handleCopyJson()}
+            className="grid size-7 shrink-0 place-items-center rounded-md border border-border/70 text-muted-foreground transition-colors hover:border-ring/60 hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/40"
+          >
+            <Copy className="size-3.5" />
+          </button>
+        ) : null}
+      </div>
       {open ? (
         <div className="mt-2">
           <pre
@@ -1447,37 +1590,259 @@ function RawJsonDisclosure({
   );
 }
 
-function PairField({
+function AspectRatioField({
   label,
-  leftPlaceholder,
-  rightPlaceholder,
+  onChange,
+  value,
 }: {
   label: string;
-  leftPlaceholder: string;
-  rightPlaceholder: string;
+  onChange: (value: Record<string, string>) => void;
+  value: Record<string, string>;
 }) {
+  const { t } = useTranslation();
+  const [taskType, setTaskType] =
+    useState<(typeof MODEL_PREFERENCE_TASK_OPTIONS)[number] | "">("");
+  const [ratioDraft, setRatioDraft] = useState("");
+  const ratioOptions = taskType ? ASPECT_RATIO_OPTIONS_BY_TASK[taskType] : [];
+  const entries = MODEL_PREFERENCE_TASK_OPTIONS
+    .map((task) => [task, value?.[task] ?? ""] as const)
+    .filter(([, ratio]) => ratio.trim().length > 0);
+
+  useEffect(() => {
+    if (!ratioDraft) return;
+    if (!ratioOptions.includes(ratioDraft)) {
+      setRatioDraft("");
+    }
+  }, [ratioDraft, ratioOptions]);
+
+  const addAspectRatio = () => {
+    if (!taskType || !ratioDraft) return;
+    onChange({ ...(value ?? {}), [taskType]: ratioDraft });
+    setRatioDraft("");
+  };
+
+  const removeAspectRatio = (task: string) => {
+    const next = { ...(value ?? {}) };
+    delete next[task];
+    onChange(next);
+  };
+
   return (
     <div>
       <EditorLabel>{label}</EditorLabel>
-      <div className="grid grid-cols-[minmax(0,1fr)_20px_minmax(0,1fr)_28px] items-center gap-2">
-        <Input
-          placeholder={leftPlaceholder}
-          className="h-9 rounded-md border-input/80 bg-input/20 text-foreground placeholder:text-muted-foreground focus-visible:border-ring/70 focus-visible:ring-1 focus-visible:ring-ring/30"
-        />
-        <span className="text-center text-muted-foreground">→</span>
-        <Input
-          placeholder={rightPlaceholder}
-          className="h-9 rounded-md border-input/80 bg-input/20 text-foreground placeholder:text-muted-foreground focus-visible:border-ring/70 focus-visible:ring-1 focus-visible:ring-ring/30"
-        />
+      <div className="grid grid-cols-[minmax(132px,180px)_minmax(0,1fr)_28px] items-center gap-2">
+        <select
+          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.taskTypeLabel")}`}
+          value={taskType}
+          onChange={(event) => {
+            const nextTask = event.target.value as
+              | (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number]
+              | "";
+            setTaskType(nextTask);
+            setRatioDraft("");
+          }}
+          className="h-9 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30"
+        >
+          <option value="" className="bg-black text-muted-foreground">
+            {t("settings.freezoneCatalog.newSkill.taskTypePlaceholder")}
+          </option>
+          {MODEL_PREFERENCE_TASK_OPTIONS.map((task) => (
+            <option key={task} value={task} className="bg-black text-foreground">
+              {MODEL_PREFERENCE_TASK_LABELS[task]}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.ratioLabel")}`}
+          disabled={!taskType}
+          value={ratioDraft}
+          onChange={(event) => setRatioDraft(event.target.value)}
+          className="h-9 min-w-0 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30 disabled:opacity-50"
+        >
+          <option value="" className="bg-black text-muted-foreground">
+            {t("settings.freezoneCatalog.newSkill.ratioSelectPlaceholder")}
+          </option>
+          {ratioOptions.map((ratio) => (
+            <option key={ratio} value={ratio} className="bg-black text-foreground">
+              {ratio}
+            </option>
+          ))}
+        </select>
         <button
           type="button"
-          disabled
-          aria-label="add"
-          className="grid size-8 place-items-center rounded-md text-muted-foreground opacity-50"
+          disabled={!ratioDraft}
+          aria-label={`添加 ${label}`}
+          onClick={addAspectRatio}
+          className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground disabled:opacity-40"
         >
           <Plus className="size-4" />
         </button>
       </div>
+      {entries.length ? (
+        <div className="mt-2 space-y-1.5">
+          {entries.map(([task, ratio]) => (
+            <div
+              key={task}
+              className="grid grid-cols-[minmax(104px,160px)_20px_minmax(0,1fr)_28px] items-center gap-2 rounded-md bg-white/[0.035] px-2 py-1 text-xs"
+            >
+              <span className="min-w-0 truncate text-foreground">
+                {MODEL_PREFERENCE_TASK_LABELS[task]}
+              </span>
+              <span className="text-center text-muted-foreground">→</span>
+              <span className="min-w-0 truncate font-mono text-foreground">{ratio}</span>
+              <button
+                type="button"
+                aria-label={`删除 ${label} ${task}`}
+                onClick={() => removeAspectRatio(task)}
+                className="grid size-6 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function ModelPreferenceField({
+  imageModels,
+  imageModelsLoading,
+  label,
+  onChange,
+  value,
+  videoModels,
+  videoModelsLoading,
+}: {
+  imageModels: ModelOption[];
+  imageModelsLoading: boolean;
+  label: string;
+  onChange: (value: Record<string, string>) => void;
+  value: Record<string, string>;
+  videoModels: ModelOption[];
+  videoModelsLoading: boolean;
+}) {
+  const { t } = useTranslation();
+  const [taskType, setTaskType] =
+    useState<(typeof MODEL_PREFERENCE_TASK_OPTIONS)[number] | "">("");
+  const [modelDraft, setModelDraft] = useState("");
+  const modelOptions =
+    taskType === "imageGeneration" ? imageModels : taskType === "videoGeneration" ? videoModels : [];
+  const isLoading =
+    taskType === "imageGeneration"
+      ? imageModelsLoading
+      : taskType === "videoGeneration"
+        ? videoModelsLoading
+        : false;
+  const entries = MODEL_PREFERENCE_TASK_OPTIONS
+    .map((task) => [task, value?.[task] ?? ""] as const)
+    .filter(([, modelId]) => modelId.trim().length > 0);
+
+  useEffect(() => {
+    if (!modelDraft) return;
+    if (!modelOptions.some((model) => model.id === modelDraft)) {
+      setModelDraft("");
+    }
+  }, [modelDraft, modelOptions]);
+
+  const addPreference = () => {
+    if (!taskType || !modelDraft) return;
+    onChange({ ...(value ?? {}), [taskType]: modelDraft });
+    setModelDraft("");
+  };
+
+  const removePreference = (task: string) => {
+    const next = { ...(value ?? {}) };
+    delete next[task];
+    onChange(next);
+  };
+
+  const getModelLabel = (task: string, modelId: string) => {
+    const source = task === "videoGeneration" ? videoModels : imageModels;
+    const option = source.find((model) => model.id === modelId);
+    return option ? `${option.label} (${option.id})` : modelId;
+  };
+
+  return (
+    <div>
+      <EditorLabel>{label}</EditorLabel>
+      <div className="grid grid-cols-[minmax(132px,180px)_minmax(0,1fr)_28px] items-center gap-2">
+        <select
+          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.taskTypeLabel")}`}
+          value={taskType}
+          onChange={(event) => {
+            const nextTask = event.target.value as
+              | (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number]
+              | "";
+            setTaskType(nextTask);
+            setModelDraft("");
+          }}
+          className="h-9 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30"
+        >
+          <option value="" className="bg-black text-muted-foreground">
+            {t("settings.freezoneCatalog.newSkill.taskTypePlaceholder")}
+          </option>
+          {MODEL_PREFERENCE_TASK_OPTIONS.map((task) => (
+            <option key={task} value={task} className="bg-black text-foreground">
+              {MODEL_PREFERENCE_TASK_LABELS[task]}
+            </option>
+          ))}
+        </select>
+        <select
+          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.modelSelectLabel")}`}
+          disabled={!taskType || modelOptions.length === 0}
+          value={modelDraft}
+          onChange={(event) => setModelDraft(event.target.value)}
+          className="h-9 min-w-0 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30 disabled:opacity-50"
+        >
+          <option value="" className="bg-black text-muted-foreground">
+            {isLoading
+              ? t("settings.freezoneCatalog.newSkill.modelLoading")
+              : t("settings.freezoneCatalog.newSkill.modelSelectPlaceholder")}
+          </option>
+          {modelOptions.map((model) => (
+            <option key={model.id} value={model.id} className="bg-black text-foreground">
+              {model.label} ({model.id})
+            </option>
+          ))}
+        </select>
+        <button
+          type="button"
+          disabled={!modelDraft}
+          aria-label={`添加 ${label}`}
+          onClick={addPreference}
+          className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground disabled:opacity-40"
+        >
+          <Plus className="size-4" />
+        </button>
+      </div>
+      {entries.length ? (
+        <div className="mt-2 space-y-1.5">
+          {entries.map(([task, modelId]) => (
+            <div
+              key={task}
+              className="grid grid-cols-[minmax(104px,160px)_20px_minmax(0,1fr)_28px] items-center gap-2 rounded-md bg-white/[0.035] px-2 py-1 text-xs"
+            >
+              <span className="min-w-0 truncate text-foreground">
+                {MODEL_PREFERENCE_TASK_LABELS[task]}
+              </span>
+              <span className="text-center text-muted-foreground">→</span>
+              <span className="min-w-0 truncate font-mono text-foreground">
+                {getModelLabel(task, modelId)}
+              </span>
+              <button
+                type="button"
+                aria-label={`删除 ${label} ${task}`}
+                onClick={() => removePreference(task)}
+                className="grid size-6 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
+              >
+                <X className="size-3.5" />
+              </button>
+            </div>
+          ))}
+        </div>
+      ) : null}
     </div>
   );
 }

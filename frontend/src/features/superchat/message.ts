@@ -85,6 +85,46 @@ function normalizeUiEvents(value: Record<string, unknown>): unknown[] | undefine
   return events && events.length > 0 ? events : undefined;
 }
 
+function recordString(value: Record<string, unknown>, key: string): string | null {
+  const candidate = value[key];
+  return typeof candidate === "string" && candidate.trim().length > 0 ? candidate : null;
+}
+
+function uiEventMergeKey(event: unknown): string | null {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return null;
+  const value = event as Record<string, unknown>;
+  const type = recordString(value, "type");
+  if (!type) return null;
+  const stableId =
+    recordString(value, "bridge_key")
+    ?? recordString(value, "skill_studio_session_id")
+    ?? recordString(value, "clarification_id");
+  return stableId ? `${type}:${stableId}` : null;
+}
+
+function hydrateMessagePartEvents(
+  parts: ChatMessagePart[] | undefined,
+  uiEvents: unknown[] | undefined,
+): ChatMessagePart[] | undefined {
+  if (!parts?.length || !uiEvents?.length) return parts;
+  const eventByKey = new Map<string, unknown>();
+  for (const event of uiEvents) {
+    const key = uiEventMergeKey(event);
+    if (key) eventByKey.set(key, event);
+  }
+  if (eventByKey.size === 0) return parts;
+  let changed = false;
+  const nextParts = parts.map((part) => {
+    if (part.type === "text") return part;
+    const key = uiEventMergeKey(part.event);
+    const event = key ? eventByKey.get(key) : undefined;
+    if (!event) return part;
+    changed = true;
+    return { ...part, event };
+  });
+  return changed ? nextParts : parts;
+}
+
 function normalizeMessageParts(value: Record<string, unknown>): ChatMessagePart[] | undefined {
   const rawParts = Array.isArray(value.parts)
     ? value.parts
@@ -116,6 +156,46 @@ function normalizeMessageParts(value: Record<string, unknown>): ChatMessagePart[
     return [];
   });
   return parts.length > 0 ? parts : undefined;
+}
+
+function textCursorAfterOrderedParts(text: string, parts: ChatMessagePart[]): number | null {
+  let cursor = 0;
+  for (const part of parts) {
+    if (part.type !== "text") continue;
+    if (!part.text) continue;
+    const exactIndex = text.indexOf(part.text, cursor);
+    if (exactIndex >= 0) {
+      cursor = exactIndex + part.text.length;
+      continue;
+    }
+    const trimmedText = part.text.trim();
+    if (!trimmedText) continue;
+    const trimmedIndex = text.indexOf(trimmedText, cursor);
+    if (trimmedIndex < 0) return null;
+    cursor = trimmedIndex + trimmedText.length;
+  }
+  return cursor;
+}
+
+function completeMessagePartsFromText(
+  parts: ChatMessagePart[] | undefined,
+  text: string,
+): ChatMessagePart[] | undefined {
+  if (!parts?.some((part) => part.type !== "text")) return parts;
+  if (!parts.some((part) => part.type === "text")) return parts;
+  if (!text) return parts;
+  const cursor = textCursorAfterOrderedParts(text, parts);
+  if (cursor == null || cursor >= text.length) return parts;
+  const trailingText = text.slice(cursor);
+  if (!trailingText) return parts;
+  const nextParts = [...parts];
+  const lastPart = nextParts[nextParts.length - 1];
+  if (lastPart?.type === "text") {
+    nextParts[nextParts.length - 1] = { ...lastPart, text: `${lastPart.text}${trailingText}` };
+    return nextParts;
+  }
+  nextParts.push({ id: `text-${nextParts.length + 1}`, type: "text", text: trailingText });
+  return nextParts;
 }
 
 function isHiddenCanvasWriteToolStatusPart(event: unknown): boolean {
@@ -154,7 +234,7 @@ export function normalizeMessage(message: unknown, fallbackRole: ChatRole = "ass
     ? (message as Record<string, unknown>)
     : {};
   const uiEvents = normalizeUiEvents(value);
-  const parts = normalizeMessageParts(value);
+  const parts = completeMessagePartsFromText(hydrateMessagePartEvents(normalizeMessageParts(value), uiEvents), text);
   if (!text && !hasStructuredContent(message) && !uiEvents && !parts) return null;
   const id =
     normalizeId(value.id)
