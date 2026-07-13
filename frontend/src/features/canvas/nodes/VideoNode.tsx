@@ -1980,7 +1980,7 @@ export const VideoNode = memo(
               isGenerating: false,
               generationStartedAt: null,
             });
-            return;
+            return {};
           }
           // Omni-gen: classify each upstream node by its media type.
           // backend caps: image≤9, video≤3, audio≤3, total≤12.
