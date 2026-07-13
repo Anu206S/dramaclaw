@@ -109,6 +109,7 @@ import {
   readFreezoneAgentIdFromUrl,
   selectFreezoneCanvasAgent,
   shouldConnectFreezoneCanvasAgent,
+  shouldKeepFreezoneChatPanelMounted,
   updateFreezoneCanvasAgentFromUserMessage,
   type FreezoneCanvasAgent,
   type FreezoneCanvasAgentState,
@@ -1947,6 +1948,10 @@ function FreezoneChatDock({
       </div>
     );
   });
+  const shouldKeepPanelMounted = shouldKeepFreezoneChatPanelMounted({
+    open,
+    busy: busyAgentIds.size > 0,
+  });
 
   useEffect(() => {
     if (!isDesktop) {
@@ -1959,10 +1964,15 @@ function FreezoneChatDock({
       const frame = window.requestAnimationFrame(() => setPanelVisible(true));
       return () => window.cancelAnimationFrame(frame);
     }
+    if (shouldKeepPanelMounted) {
+      setShouldRenderPanel(true);
+      setPanelVisible(false);
+      return;
+    }
     setPanelVisible(false);
     const timeout = window.setTimeout(() => setShouldRenderPanel(false), 320);
     return () => window.clearTimeout(timeout);
-  }, [isDesktop, open]);
+  }, [isDesktop, open, shouldKeepPanelMounted]);
 
   if (!isDesktop) {
     return (
@@ -2018,6 +2028,7 @@ function FreezoneChatDock({
         className={cn(
           "absolute bottom-4 right-4 top-4 z-40 hidden origin-right flex-col overflow-hidden rounded-[14px] border border-white/[0.12] bg-zinc-950/55 shadow-none backdrop-blur-2xl transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] lg:flex",
           panelVisible ? "translate-x-0 scale-100 opacity-100" : "translate-x-10 scale-[0.985] opacity-0",
+          !panelVisible && "pointer-events-none",
         )}
         style={{
           width: agentHistoryOpen ? chatWidth + agentHistoryWidth + 8 : chatWidth,

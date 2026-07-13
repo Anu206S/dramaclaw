@@ -10,6 +10,7 @@ import {
   mergeFreezoneCanvasAgentsFromServer,
   selectFreezoneCanvasAgent,
   shouldConnectFreezoneCanvasAgent,
+  shouldKeepFreezoneChatPanelMounted,
   updateFreezoneCanvasAgentFromUserMessage,
 } from "@/features/freezone/canvasAgents";
 
@@ -114,6 +115,12 @@ describe("Freezone canvas agents", () => {
     expect(shouldConnectFreezoneCanvasAgent({ active: true, busy: false })).toBe(true);
     expect(shouldConnectFreezoneCanvasAgent({ active: false, busy: true })).toBe(true);
     expect(shouldConnectFreezoneCanvasAgent({ active: false, busy: false })).toBe(false);
+  });
+
+  it("keeps the chat panel mounted while an agent is busy", () => {
+    expect(shouldKeepFreezoneChatPanelMounted({ open: true, busy: false })).toBe(true);
+    expect(shouldKeepFreezoneChatPanelMounted({ open: false, busy: true })).toBe(true);
+    expect(shouldKeepFreezoneChatPanelMounted({ open: false, busy: false })).toBe(false);
   });
 
   it("restores the latest server agent when local selection is missing", () => {

@@ -660,6 +660,16 @@ function assistantPartsWithText(
   return [{ id: "text-1", type: "text", text: nextText }];
 }
 
+function assistantPartsForPersistence(
+  parts: ChatMessagePart[] | undefined,
+  text: string | undefined,
+): ChatMessagePart[] | undefined {
+  if (!parts?.length) return parts;
+  if (!text || parts.some((part) => part.type === "text")) return parts;
+  if (!parts.some((part) => part.type !== "text")) return parts;
+  return [...parts, { id: `text-${parts.length + 1}`, type: "text", text }];
+}
+
 type AssistantEventPartType = Exclude<ChatMessagePart["type"], "text">;
 
 function eventPartType(event: unknown): AssistantEventPartType | null {
@@ -715,6 +725,27 @@ function assistantPartsWithoutPart(
   if (!parts?.length) return parts;
   const nextParts = parts.filter((part) => part.id !== partId);
   return nextParts.length > 0 ? nextParts : undefined;
+}
+
+function mergeAssistantMessageParts(
+  transientParts: ChatMessagePart[],
+  finalParts: ChatMessagePart[] | undefined,
+): ChatMessagePart[] | undefined {
+  if (!finalParts?.length) return transientParts.length > 0 ? transientParts : undefined;
+  if (transientParts.length === 0) return finalParts;
+  const finalKeys = new Set(
+    finalParts
+      .filter((part) => part.type !== "text")
+      .map((part) => uiEventMergeKey(part.event) ?? part.id),
+  );
+  const missingTransientParts = transientParts.filter((part) => {
+    if (part.type === "text") return false;
+    const key = uiEventMergeKey(part.event) ?? part.id;
+    return !finalKeys.has(key);
+  });
+  return missingTransientParts.length > 0
+    ? [...missingTransientParts, ...finalParts]
+    : finalParts;
 }
 
 function isRecoverableUiEventState(event: unknown): boolean {
@@ -938,14 +969,11 @@ function upsertServerAssistantMessage(
       .flatMap((message) => message.parts ?? [])
     : [];
   const dedupedUiEvents = mergeUiEventLists(transientUiEvents, nextMessage.uiEvents);
+  const mergedParts = mergeAssistantMessageParts(transientParts, nextMessage.parts);
   const mergedMessage = {
     ...nextMessage,
     ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}),
-    ...(nextMessage.parts?.length
-      ? { parts: nextMessage.parts }
-      : transientParts.length > 0
-        ? { parts: transientParts }
-        : {}),
+    ...(mergedParts ? { parts: mergedParts } : {}),
     ...(dedupedUiEvents && dedupedUiEvents.length > 0 ? { uiEvents: dedupedUiEvents } : {}),
   };
   const existingIndex = messages.findIndex((message) => message.id === mergedMessage.id);
@@ -1381,15 +1409,20 @@ export function useSuperChat({
     });
   }, []);
 
-  const persistAssistantMessageParts = useCallback((turnId: string, parts: ChatMessagePart[] | undefined) => {
-    if (!parts?.some((part) => part.type !== "text")) return;
+  const persistAssistantMessageParts = useCallback((
+    turnId: string,
+    parts: ChatMessagePart[] | undefined,
+    text?: string,
+  ) => {
+    const persistableParts = assistantPartsForPersistence(parts, text);
+    if (!persistableParts?.some((part) => part.type !== "text")) return;
     void api.post("api/v1/chat/ui-events", {
       json: {
         scope: desiredScopeRef.current,
         turn_id: turnId,
       event: {
         type: "assistant.message_parts",
-        parts,
+        parts: persistableParts,
       },
       },
     }).catch(() => undefined);
@@ -1416,9 +1449,11 @@ export function useSuperChat({
           return { ...message, parts, text: message.text || "", timestamp: Date.now() };
         }));
         if (persistedTurnId) {
+          const persistedMessage = next.find((message) => message.role === "assistant" && message.turnId === persistedTurnId);
           persistAssistantMessageParts(
             persistedTurnId,
-            next.find((message) => message.role === "assistant" && message.turnId === persistedTurnId)?.parts,
+            persistedMessage?.parts,
+            persistedMessage?.text,
           );
         }
         saveCachedMessages(scopeKey, next);
@@ -1464,9 +1499,11 @@ export function useSuperChat({
         return { ...message, ...(parts ? { parts } : { parts: undefined }) };
       });
       if (persistedTurnId) {
+        const persistedMessage = next.find((message) => message.role === "assistant" && message.turnId === persistedTurnId);
         persistAssistantMessageParts(
           persistedTurnId,
-          next.find((message) => message.role === "assistant" && message.turnId === persistedTurnId)?.parts,
+          persistedMessage?.parts,
+          persistedMessage?.text,
         );
       }
       saveCachedMessages(scopeKey, next);
@@ -1483,9 +1520,11 @@ export function useSuperChat({
     setMessages((current) => {
       if (!streamTextRef.current.trim()) return current;
       const next = upsertAssistantMessage(current, turnId, streamTextRef.current);
+      const persistedMessage = next.find((message) => message.role === "assistant" && message.turnId === turnId);
       persistAssistantMessageParts(
         turnId,
-        next.find((message) => message.role === "assistant" && message.turnId === turnId)?.parts,
+        persistedMessage?.parts,
+        persistedMessage?.text,
       );
       return next;
     });
@@ -1653,14 +1692,27 @@ export function useSuperChat({
           }
           break;
         }
-        setMessages((current) =>
-          upsertServerAssistantMessage(
+        setMessages((current) => {
+          const turnId = typeof frame.turn_id === "string" ? frame.turn_id : undefined;
+          const next = upsertServerAssistantMessage(
             current,
             frame.message,
-            typeof frame.turn_id === "string" ? frame.turn_id : undefined,
+            turnId,
             messageScope,
-          ),
-        );
+          );
+          const persistedTurnId =
+            turnId
+            ?? normalizeMessageForScope(frame.message, "assistant", messageScope)?.turnId;
+          if (persistedTurnId && messageScope.surface === "freezone") {
+            const persistedMessage = next.find((message) => message.role === "assistant" && message.turnId === persistedTurnId);
+            persistAssistantMessageParts(
+              persistedTurnId,
+              persistedMessage?.parts,
+              persistedMessage?.text,
+            );
+          }
+          return next;
+        });
         break;
       }
       case "tool.call":
@@ -1743,9 +1795,11 @@ export function useSuperChat({
           : frame.event;
         setMessages((current) => {
           const next = upsertAssistantUiEvent(current, turnId, event);
+          const persistedMessage = next.find((message) => message.role === "assistant" && message.turnId === turnId);
           persistAssistantMessageParts(
             turnId,
-            next.find((message) => message.role === "assistant" && message.turnId === turnId)?.parts,
+            persistedMessage?.parts,
+            persistedMessage?.text,
           );
           return next;
         });
@@ -1773,9 +1827,11 @@ export function useSuperChat({
           : frame.event;
         setMessages((current) => {
           const next = upsertAssistantUiEvent(current, turnId, event);
+          const persistedMessage = next.find((message) => message.role === "assistant" && message.turnId === turnId);
           persistAssistantMessageParts(
             turnId,
-            next.find((message) => message.role === "assistant" && message.turnId === turnId)?.parts,
+            persistedMessage?.parts,
+            persistedMessage?.text,
           );
           return next;
         });
@@ -2118,8 +2174,19 @@ export function useSuperChat({
     shouldUpdate: (event: unknown) => boolean,
     updateEvent: (event: unknown) => unknown,
   ) => {
-    setMessages((current) => updateAssistantUiEvents(current, turnId, shouldUpdate, updateEvent));
-  }, []);
+    setMessages((current) => {
+      const next = updateAssistantUiEvents(current, turnId, shouldUpdate, updateEvent);
+      if (next !== current) {
+        const persistedMessage = next.find((message) => message.role === "assistant" && message.turnId === turnId);
+        persistAssistantMessageParts(
+          turnId,
+          persistedMessage?.parts,
+          persistedMessage?.text,
+        );
+      }
+      return next;
+    });
+  }, [persistAssistantMessageParts]);
 
   const persistMessageSet = useCallback((kind: "pinned" | "deleted", next: Set<string>) => {
     safeLocalStorageSet(`superchat:${kind}:${scopeKey}`, JSON.stringify([...next]));

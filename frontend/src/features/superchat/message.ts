@@ -182,8 +182,10 @@ function completeMessagePartsFromText(
   text: string,
 ): ChatMessagePart[] | undefined {
   if (!parts?.some((part) => part.type !== "text")) return parts;
-  if (!parts.some((part) => part.type === "text")) return parts;
   if (!text) return parts;
+  if (!parts.some((part) => part.type === "text")) {
+    return [...parts, { id: `text-${parts.length + 1}`, type: "text", text }];
+  }
   const cursor = textCursorAfterOrderedParts(text, parts);
   if (cursor == null || cursor >= text.length) return parts;
   const trailingText = text.slice(cursor);
