@@ -6732,7 +6732,8 @@ function canvasContextReadSemanticAnchorIndex(text: string, activity: CanvasCont
 
 function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasCommandSurfaceEvent): number {
   if (event.kind === "skill_studio" || event.kind === "clarification") {
-    if (event.anchorTextPrefix == null || event.anchorTextPrefix === "") return 0;
+    if (event.anchorTextPrefix == null) return text.length;
+    if (event.anchorTextPrefix === "") return 0;
     const anchorEndIndex = canvasCommandAnchorEndIndex(text, event.anchorTextPrefix);
     const hasStaleAnchor =
       typeof event.anchorTextPrefix === "string"
