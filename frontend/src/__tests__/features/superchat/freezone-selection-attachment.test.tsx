@@ -126,6 +126,8 @@ vi.mock("@/features/superchat/use-superchat", () => ({
     streamText: "",
     switchModel: vi.fn(),
     togglePin: vi.fn(),
+    upsertAssistantMessagePart: vi.fn(),
+    removeAssistantMessagePart: vi.fn(),
   }),
 }));
 

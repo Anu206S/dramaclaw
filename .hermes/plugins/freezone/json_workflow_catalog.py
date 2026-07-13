@@ -337,7 +337,14 @@ def resolve_catalog_workflow(args: dict[str, Any]) -> dict[str, Any]:
             str(item.get("workflow_type") or ""),
         )
     )
-    top_candidates = candidates[:limit]
+    scored_user_candidates = [
+        candidate
+        for candidate in candidates
+        if float(candidate.get("score") or 0) > 0
+        and _text(candidate.get("catalog_source")) != "builtin"
+    ]
+    resolution_candidates = scored_user_candidates or candidates
+    top_candidates = resolution_candidates[:limit]
     top = top_candidates[0] if top_candidates else None
     second_score = float(top_candidates[1].get("score") or 0) if len(top_candidates) > 1 else 0.0
     top_score = float(top.get("score") or 0) if top else 0.0
