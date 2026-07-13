@@ -4079,5 +4079,76 @@
     "zoom": "缩放",
     "zoomIn": "放大",
     "zoomOut": "缩小"
+  },
+  "portraitTexture": {
+    "trigger": "人像质感调节",
+    "portraitAdjust": "人像调节",
+    "emotionAdjust": "情绪调节",
+    "clear": "清除",
+    "intensity": "强度",
+    "emotionPlaceholder": "自定义情绪…",
+    "portraitHint": "选择质感档位后生成，让人物更自然、更真实；人物身份与构图保持不变。",
+    "emotionHint": "仅调整面部表情与情绪，人物身份、姿势与画面保持不变。",
+    "emotions": {
+      "happy": "开心",
+      "sad": "悲伤",
+      "angry": "愤怒",
+      "surprised": "惊讶",
+      "calm": "平静",
+      "shy": "害羞"
+    },
+    "dims": {
+      "fusion": {
+        "label": "人景融合",
+        "options": {
+          "light": "轻度对齐",
+          "natural": "自然融合",
+          "deep": "深度融合"
+        }
+      },
+      "lighting": {
+        "label": "光影融合",
+        "options": {
+          "soft": "柔和补光",
+          "natural": "自然匹配",
+          "ambient": "氛围强化"
+        }
+      },
+      "skin": {
+        "label": "皮肤",
+        "options": {
+          "clear": "清透修饰",
+          "natural": "自然肤质",
+          "realistic": "真实肌理"
+        }
+      },
+      "texture": {
+        "label": "纹理",
+        "options": {
+          "soft": "柔和纹理",
+          "natural": "自然纹理",
+          "grain": "颗粒质感"
+        }
+      },
+      "sharpness": {
+        "label": "锐度",
+        "options": {
+          "soft": "柔焦",
+          "standard": "标准清晰",
+          "hd": "高清锐化"
+        }
+      }
+    },
+    "emotionSubmit": "开始生成",
+    "characterRef": "角色1",
+    "samplePlaceholder": "表情样例图待就绪（emotion-samples 目录）",
+    "emotionAnchor": "情绪定位",
+    "axisExcited": "激动",
+    "axisCalm": "平静",
+    "axisClose": "亲近",
+    "axisDistant": "疏离",
+    "cropHint": "请选择人物截取角色参考图",
+    "originalAspect": "原图比例",
+    "cropConfirm": "确认"
   }
 }

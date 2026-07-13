@@ -1548,6 +1548,70 @@ export async function submitFreezoneRelight(
   );
 }
 
+// /freezone/portrait-texture ---------------------------------------------- //
+
+export type FreezonePortraitTextureMode = "portrait_adjust" | "emotion_adjust";
+
+export interface FreezonePortraitTexturePayload {
+  sourceUrl: string;
+  mode?: FreezonePortraitTextureMode;
+  /** 人景融合档位，仅 portrait_adjust 模式使用。 */
+  fusion?: "light" | "natural" | "deep";
+  /** 光影融合档位，仅 portrait_adjust 模式使用。 */
+  lighting?: "soft" | "natural" | "ambient";
+  /** 皮肤档位，仅 portrait_adjust 模式使用。 */
+  skin?: "clear" | "natural" | "realistic";
+  /** 纹理档位，仅 portrait_adjust 模式使用。 */
+  texture?: "soft" | "natural" | "grain";
+  /** 锐度档位，仅 portrait_adjust 模式使用。 */
+  sharpness?: "soft" | "standard" | "hd";
+  /** 情绪强度，0-100，仅 emotion_adjust 模式使用。 */
+  intensity?: number;
+  /** 目标情绪描述，仅 emotion_adjust 模式使用。 */
+  emotion?: string;
+  /** 表情样例参考图，仅 emotion_adjust 模式使用。 */
+  expressionReferenceUrl?: string | null;
+  prompt?: string;
+  imageSize?: string;
+  model?: string;
+}
+
+export async function submitFreezonePortraitTexture(
+  project: string,
+  payload: FreezonePortraitTexturePayload,
+): Promise<FreezoneJobRef> {
+  // 源图要走静态 URL，base64 先上传。
+  const sourceUrl = await ensureBackendImageUrl(project, payload.sourceUrl);
+  return await apiCall<FreezoneJobRef>(
+    `projects/${encodeURIComponent(project)}/freezone/portrait-texture`,
+    {
+      method: "POST",
+      json: {
+        source_url: sourceUrl,
+        mode: payload.mode ?? "portrait_adjust",
+        fusion: payload.fusion ?? "natural",
+        lighting: payload.lighting ?? "natural",
+        skin: payload.skin ?? "natural",
+        texture: payload.texture ?? "natural",
+        sharpness: payload.sharpness ?? "standard",
+        intensity: payload.intensity ?? 50,
+        emotion: payload.emotion ?? "",
+        ...(payload.expressionReferenceUrl
+          ? {
+            expression_reference_url: await ensureBackendImageUrl(
+              project,
+              payload.expressionReferenceUrl,
+            ),
+          }
+          : {}),
+        prompt: payload.prompt ?? "",
+        image_size: payload.imageSize ?? "2K",
+        ...(payload.model ? { model: payload.model } : {}),
+      },
+    },
+  );
+}
+
 // /freezone/scene-360 ----------------------------------------------------- //
 
 /** 全景输出比例。后端不传时按 "2:1" 处理；传其他值会被 Pydantic 校验拒绝。 */

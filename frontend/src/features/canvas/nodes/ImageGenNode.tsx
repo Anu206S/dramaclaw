@@ -110,6 +110,11 @@ import { extractRequestId } from '@/features/canvas/application/generationErrorR
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import { useNodeGenerationHistory } from '@/features/canvas/hooks/useNodeGenerationHistory';
 import { ReferenceTextChip } from '@/features/canvas/nodes/shared/ReferenceTextChip';
+import { PortraitTextureChip } from '@/features/canvas/nodes/shared/PortraitTextureChip';
+import {
+  buildPortraitTexturePromptBlock,
+  parsePortraitTextureSelection,
+} from '@/features/canvas/domain/portraitTexture';
 import {
   NodeGenerationHistory,
   hasCompletedHistoryRecords,
@@ -248,7 +253,7 @@ function resolveOutputUrl(result: Record<string, unknown> | null | undefined): s
 }
 
 export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGenNodeProps) => {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const updateNodeInternals = useUpdateNodeInternals();
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
   const isBoxSelecting = useIsBoxSelecting();
@@ -307,6 +312,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     typeof data.referenceImageUrl === 'string' && data.referenceImageUrl.length > 0
       ? data.referenceImageUrl
       : null;
+  const portraitTexture = useMemo(
+    () => parsePortraitTextureSelection(data.portraitTexture),
+    [data.portraitTexture],
+  );
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
   const [isTranslatingPrompt, setIsTranslatingPrompt] = useState(false);
@@ -781,8 +790,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
 
   // 「实时读取上游」：用户可以不填 prompt，只要上游连了带 text 的节点
   // (文本/脚本/图片生成 prompt 等) 就能 submit；submit 时拼接上游 text。
+  // 人像质感调节节点的档位配置本身会生成提示词块，同样视为有效 prompt。
   const hasEffectivePrompt =
     prompt.trim().length > 0 ||
+    Boolean(portraitTexture) ||
     (
       upstreamTextJoined.length > 0 &&
       (!shouldInlineUpstreamTextAsPrompt || !hasUserEditedPromptRef.current)
@@ -818,11 +829,23 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
         || cameraSelection.aperture),
     );
     const ownPrompt = prompt.trim();
-    const effectivePrompt = shouldInlineUpstreamTextAsPrompt
+    const basePrompt = shouldInlineUpstreamTextAsPrompt
       ? (ownPrompt || (hasUserEditedPromptRef.current ? "" : upstreamTextJoined.trim()))
       : [upstreamTextJoined, ownPrompt]
         .filter((s) => s.length > 0)
         .join('\n\n');
+    // 人像质感调节激活时，把对应的约束块拼在提示词末尾（跟随界面语言）。
+    const effectivePrompt = portraitTexture
+      ? [
+        basePrompt,
+        buildPortraitTexturePromptBlock(
+          portraitTexture,
+          i18n.language?.startsWith('zh') ? 'zh' : 'en',
+        ),
+      ]
+        .filter((s) => s.length > 0)
+        .join('\n\n')
+      : basePrompt;
     const genPayload = {
       prompt: effectivePrompt,
       // 后端只接受固定的几个比例；节点上的 aspectRatio 可能是图片自然尺寸约分出的
@@ -981,7 +1004,9 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     id,
     isImage2,
     modelId,
+    i18n,
     orderedReferenceUrls,
+    portraitTexture,
     prompt,
     quality,
     size,
@@ -1704,6 +1729,16 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
             )}
           </div>
 
+          {/* 人像质感调节按钮：仅在工具栏「人像调节」派生的节点上出现，
+              位于输入框区域内、提示词首行位置（libtv 同款）。 */}
+          {portraitTexture && (
+            <div className="flex shrink-0 items-center px-3 pt-2">
+              <PortraitTextureChip
+                selection={portraitTexture}
+                onChange={(next) => updateNodeData(id, { portraitTexture: next })}
+              />
+            </div>
+          )}
           <PromptMentionEditor
             ref={promptEditorRef}
             value={prompt}

@@ -36,6 +36,12 @@ import {
   GridActionConfirmOverlay,
   type GridActionRequest,
 } from './GridActionConfirmOverlay';
+import {
+  createDefaultPortraitTextureSelection,
+  type PortraitTextureRequest,
+} from '@/features/canvas/domain/portraitTexture';
+import { EmotionCropOverlay } from './EmotionCropOverlay';
+import { EmotionEditorOverlay } from './EmotionEditorOverlay';
 
 // Image/video nodes only need the floating action toolbar once they actually
 // have a resource to act on. While the node is empty (no upload, no generated
@@ -111,6 +117,11 @@ export const SelectedNodeOverlay = memo(() => {
   const [outpaintNodeId, setOutpaintNodeId] = useState<string | null>(null);
   const [rotateNodeId, setRotateNodeId] = useState<string | null>(null);
   const [gridActionRequest, setGridActionRequest] = useState<GridActionRequest | null>(null);
+  // 情绪调节两步态：先在源节点上框选（crop），确认后打开情绪编辑器（editor）。
+  const [emotionCropNodeId, setEmotionCropNodeId] = useState<string | null>(null);
+  const [emotionEditor, setEmotionEditor] = useState<
+    { nodeId: string; croppedUrl: string } | null
+  >(null);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) {
@@ -506,6 +517,77 @@ export const SelectedNodeOverlay = memo(() => {
     setGridActionRequest(null);
   }, []);
 
+  // 人像质感调节：不走二级浮层，直接在源图片节点下游创建一个预设了
+  // portraitTexture 配置的图片生成节点（libtv 同款交互）。连线让上游图
+  // 自动成为参考图，具体档位在新节点输入框的「人像质感调节」选择器里调。
+  // 情绪调节则先进入源节点上的框选模式，确认后再打开情绪编辑器。
+  const handleOpenPortraitTexture = useCallback(
+    (request: PortraitTextureRequest) => {
+      const sourceNode = nodes.find((n) => n.id === request.nodeId);
+      if (!sourceNode) return;
+      if (request.mode === 'emotion_adjust') {
+        setEmotionCropNodeId(request.nodeId);
+        setEmotionEditor(null);
+        clearFlowSelection();
+        setSelectedNode(null);
+        return;
+      }
+      const sourceAspectRatio =
+        typeof (sourceNode.data as { aspectRatio?: unknown }).aspectRatio === 'string'
+          ? ((sourceNode.data as { aspectRatio?: string }).aspectRatio ?? DEFAULT_ASPECT_RATIO)
+          : DEFAULT_ASPECT_RATIO;
+      const position = findNodePosition(
+        sourceNode.id,
+        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
+        EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
+      );
+      const newNodeId = addNode(
+        CANVAS_NODE_TYPES.imageGen,
+        position,
+        {
+          displayName: t('portraitTexture.trigger'),
+          aspectRatio: sourceAspectRatio,
+          portraitTexture: createDefaultPortraitTextureSelection(request.mode),
+        },
+      );
+      addEdge(sourceNode.id, newNodeId);
+      setSelectedNode(newNodeId);
+    },
+    [addEdge, addNode, clearFlowSelection, findNodePosition, nodes, setSelectedNode, t]
+  );
+
+  const emotionCropNode = useMemo(() => {
+    if (!emotionCropNodeId) return null;
+    return nodes.find((node) => node.id === emotionCropNodeId) ?? null;
+  }, [emotionCropNodeId, nodes]);
+
+  const emotionCropImageSource = useMemo(
+    () => resolveNodeSourceImageUrl(emotionCropNode),
+    [emotionCropNode]
+  );
+
+  const emotionEditorNode = useMemo(() => {
+    if (!emotionEditor) return null;
+    return nodes.find((node) => node.id === emotionEditor.nodeId) ?? null;
+  }, [emotionEditor, nodes]);
+
+  const handleEmotionCropCancel = useCallback(() => {
+    setEmotionCropNodeId(null);
+  }, []);
+
+  const handleEmotionCropConfirm = useCallback(
+    (croppedUrl: string) => {
+      if (!emotionCropNodeId) return;
+      setEmotionEditor({ nodeId: emotionCropNodeId, croppedUrl });
+      setEmotionCropNodeId(null);
+    },
+    [emotionCropNodeId]
+  );
+
+  const handleEmotionEditorClose = useCallback(() => {
+    setEmotionEditor(null);
+  }, []);
+
   // 任意二级功能浮层（全景 / 多角度 / 打光 / 重绘 / 扩图 / 旋转 / 九宫格）打开时，
   // 记录它的目标节点 id。节点自身的 `selected` 操作面板会据此让位，避免和浮层
   // 在节点下方重叠——功能浮层优先级更高。(放大/高清 upscale 是在新建节点上原地
@@ -519,6 +601,8 @@ export const SelectedNodeOverlay = memo(() => {
     ?? outpaintNodeId
     ?? rotateNodeId
     ?? gridActionRequest?.nodeId
+    ?? emotionCropNodeId
+    ?? emotionEditor?.nodeId
     ?? null;
 
   useEffect(() => {
@@ -557,6 +641,7 @@ export const SelectedNodeOverlay = memo(() => {
           onOpenUpscale={handleOpenUpscale}
           onOpenOutpaint={handleOpenOutpaint}
           onOpenGridAction={handleOpenGridAction}
+          onOpenPortraitTexture={handleOpenPortraitTexture}
           onOpenRedraw={handleOpenRedraw}
           onOpenErase={handleOpenErase}
           onOpenRotate={handleOpenRotate}
@@ -626,6 +711,21 @@ export const SelectedNodeOverlay = memo(() => {
           imageSource={gridActionImageSource}
           request={gridActionRequest}
           onClose={handleCloseGridAction}
+        />
+      )}
+      {emotionCropNode && emotionCropImageSource && (
+        <EmotionCropOverlay
+          node={emotionCropNode}
+          imageSource={emotionCropImageSource}
+          onCancel={handleEmotionCropCancel}
+          onConfirm={handleEmotionCropConfirm}
+        />
+      )}
+      {emotionEditor && emotionEditorNode && (
+        <EmotionEditorOverlay
+          node={emotionEditorNode}
+          croppedImageUrl={emotionEditor.croppedUrl}
+          onClose={handleEmotionEditorClose}
         />
       )}
     </>

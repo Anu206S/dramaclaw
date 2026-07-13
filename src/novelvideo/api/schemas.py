@@ -959,6 +959,70 @@ class FreezoneRelightRequest(BaseModel):
     quality: Optional[str] = Field(default="medium", description="图片画质档位，默认 medium")
 
 
+class FreezonePortraitTextureRequest(BaseModel):
+    """人像质感调节请求。
+
+    基于一张人像源图做质感增强或情绪重塑，保持人物身份与构图不变：
+    - portrait_adjust：人像调节，五个质感维度各三档（对齐 libtv 选择器）
+    - emotion_adjust：情绪调节，按目标情绪重塑面部表情
+    """
+
+    source_url: str = Field(description="人像源图静态地址，作为图生图的 base 图")
+    mode: Literal["portrait_adjust", "emotion_adjust"] = Field(
+        default="portrait_adjust",
+        description="调节模式：portrait_adjust 人像调节 / emotion_adjust 情绪调节",
+    )
+    fusion: Literal["light", "natural", "deep"] = Field(
+        default="natural",
+        description="人景融合：轻度对齐 / 自然融合 / 深度融合（仅 portrait_adjust）",
+    )
+    lighting: Literal["soft", "natural", "ambient"] = Field(
+        default="natural",
+        description="光影融合：柔和补光 / 自然匹配 / 氛围强化（仅 portrait_adjust）",
+    )
+    skin: Literal["clear", "natural", "realistic"] = Field(
+        default="natural",
+        description="皮肤：清透修饰 / 自然肤质 / 真实肌理（仅 portrait_adjust）",
+    )
+    texture: Literal["soft", "natural", "grain"] = Field(
+        default="natural",
+        description="纹理：柔和纹理 / 自然纹理 / 颗粒质感（仅 portrait_adjust）",
+    )
+    sharpness: Literal["soft", "standard", "hd"] = Field(
+        default="standard",
+        description="锐度：柔焦 / 标准清晰 / 高清锐化（仅 portrait_adjust）",
+    )
+    intensity: int = Field(
+        default=50,
+        ge=0,
+        le=100,
+        description="情绪强度，0-100，仅 emotion_adjust 模式使用",
+    )
+    emotion: str = Field(
+        default="",
+        description="目标情绪描述，仅 emotion_adjust 模式使用，例如 开心 / 悲伤 / 愤怒",
+    )
+    expression_reference_url: Optional[str] = Field(
+        default=None,
+        description="可选的表情样例参考图静态地址，仅 emotion_adjust 模式使用",
+    )
+    prompt: str = Field(default="", description="用户补充提示词，可为空")
+    image_size: str = Field(default="2K", description="输出分辨率档位，默认 2K")
+    camera: Optional[FreezoneImageCameraConfig] = Field(
+        default=None,
+        description="可选摄像机参数，用于补充镜头语言和摄影机规格",
+    )
+    style: Optional[FreezoneImageStyleConfig] = Field(
+        default=None,
+        description="可选风格模板参数，用于把内置风格模板注入图片提示词",
+    )
+    model: str = Field(
+        default=FREEZONE_DEFAULT_IMAGE_MODEL,
+        description=f"图片模型名，默认 {FREEZONE_DEFAULT_IMAGE_MODEL}",
+    )
+    quality: Optional[str] = Field(default="medium", description="图片画质档位，默认 medium")
+
+
 class FreezoneVideoCharacterLibraryItemRequest(BaseModel):
     """视频节点角色库录入请求。
 

@@ -4079,5 +4079,76 @@
     "zoom": "Zoom",
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out"
+  },
+  "portraitTexture": {
+    "trigger": "Portrait Texture",
+    "portraitAdjust": "Portrait Adjust",
+    "emotionAdjust": "Emotion Adjust",
+    "clear": "Clear",
+    "intensity": "Intensity",
+    "emotionPlaceholder": "Custom emotion…",
+    "portraitHint": "Pick texture levels and generate — makes the person look more natural and real while keeping identity and composition unchanged.",
+    "emotionHint": "Adjusts only the facial expression and emotion while keeping identity, pose, and composition unchanged.",
+    "emotions": {
+      "happy": "Happy",
+      "sad": "Sad",
+      "angry": "Angry",
+      "surprised": "Surprised",
+      "calm": "Calm",
+      "shy": "Shy"
+    },
+    "dims": {
+      "fusion": {
+        "label": "Subject-Scene Fusion",
+        "options": {
+          "light": "Light Align",
+          "natural": "Natural Blend",
+          "deep": "Deep Fusion"
+        }
+      },
+      "lighting": {
+        "label": "Lighting Fusion",
+        "options": {
+          "soft": "Soft Fill",
+          "natural": "Natural Match",
+          "ambient": "Mood Enhance"
+        }
+      },
+      "skin": {
+        "label": "Skin",
+        "options": {
+          "clear": "Clean Retouch",
+          "natural": "Natural Finish",
+          "realistic": "True Detail"
+        }
+      },
+      "texture": {
+        "label": "Texture",
+        "options": {
+          "soft": "Soft",
+          "natural": "Natural",
+          "grain": "Filmic Grain"
+        }
+      },
+      "sharpness": {
+        "label": "Sharpness",
+        "options": {
+          "soft": "Soft Focus",
+          "standard": "Standard",
+          "hd": "HD Enhance"
+        }
+      }
+    },
+    "emotionSubmit": "Generate",
+    "characterRef": "Character 1",
+    "samplePlaceholder": "Expression sample image pending (emotion-samples folder)",
+    "emotionAnchor": "Emotion",
+    "axisExcited": "Excited",
+    "axisCalm": "Calm",
+    "axisClose": "Close",
+    "axisDistant": "Distant",
+    "cropHint": "Frame the person to capture a character reference",
+    "originalAspect": "Original",
+    "cropConfirm": "Confirm"
   }
 }

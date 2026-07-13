@@ -94,7 +94,7 @@ export function pixelCropFromPercentCrop(
   };
 }
 
-async function exportCroppedBlob(
+export async function exportCroppedBlob(
   image: HTMLImageElement,
   pixelCrop: PixelCrop,
 ): Promise<Blob> {

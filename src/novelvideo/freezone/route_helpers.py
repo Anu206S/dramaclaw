@@ -16,6 +16,7 @@ from novelvideo.api.schemas import (
     FreezoneCharacterMultiViewRequest,
     FreezoneImageCameraConfig,
     FreezoneImageStyleConfig,
+    FreezonePortraitTextureRequest,
     FreezoneRelightRequest,
     FreezoneTemplateEditRequest,
 )
@@ -632,6 +633,86 @@ RELIGHTING CONTRACT:
 - Do not add text, watermark, UI, borders, or collage layout.
 - Keep the result production-ready and visually coherent."""
     return f"{prefix}\n\n{base}" if base else prefix
+
+
+_PORTRAIT_TEXTURE_FUSION_PROMPTS = {
+    "light": "Subject-scene fusion: light alignment — keep the subject placement as-is, only fix obvious edge seams.",
+    "natural": "Subject-scene fusion: natural blend — harmonize the subject with the scene in perspective, scale, and contact shadows.",
+    "deep": "Subject-scene fusion: deep integration — fully re-ground the subject into the scene with coherent reflections, occlusion, and ambient color spill.",
+}
+_PORTRAIT_TEXTURE_LIGHTING_PROMPTS = {
+    "soft": "Lighting fusion: soft fill — gently lift shadows on the subject with soft, flattering fill light.",
+    "natural": "Lighting fusion: natural match — match the subject lighting direction, intensity, and color temperature to the scene.",
+    "ambient": "Lighting fusion: mood enhance — strengthen the ambient atmosphere and cinematic light wrap around the subject.",
+}
+_PORTRAIT_TEXTURE_SKIN_PROMPTS = {
+    "clear": "Skin: clean retouch — clear, polished skin with minor blemishes removed while staying believable.",
+    "natural": "Skin: natural finish — realistic skin tone variation and soft texture, no plastic smoothing.",
+    "realistic": "Skin: true-to-life detail — visible pores, fine facial hair, and realistic subsurface scattering.",
+}
+_PORTRAIT_TEXTURE_TEXTURE_PROMPTS = {
+    "soft": "Texture: soft — smooth, gentle micro-texture across skin, hair, and fabric.",
+    "natural": "Texture: natural — faithful material texture on skin, hair strands, and clothing.",
+    "grain": "Texture: filmic grain — add subtle photographic grain for an organic, camera-shot feel.",
+}
+_PORTRAIT_TEXTURE_SHARPNESS_PROMPTS = {
+    "soft": "Sharpness: soft focus — dreamy, slightly diffused rendering.",
+    "standard": "Sharpness: standard — crisp and clear without over-sharpening.",
+    "hd": "Sharpness: HD enhance — high-definition micro-contrast and refined edge detail.",
+}
+
+
+def build_portrait_texture_prompt(body: FreezonePortraitTextureRequest) -> str:
+    user_block = f"\n\nUser prompt:\n{body.prompt.strip()}" if body.prompt.strip() else ""
+    if body.mode == "portrait_adjust":
+        return (
+            "Enhance the realism and texture of the person in the provided source image, "
+            "removing the artificial AI-generated plastic look.\n\n"
+            "PORTRAIT TEXTURE CONTROLS:\n"
+            f"- {_PORTRAIT_TEXTURE_FUSION_PROMPTS[body.fusion]}\n"
+            f"- {_PORTRAIT_TEXTURE_LIGHTING_PROMPTS[body.lighting]}\n"
+            f"- {_PORTRAIT_TEXTURE_SKIN_PROMPTS[body.skin]}\n"
+            f"- {_PORTRAIT_TEXTURE_TEXTURE_PROMPTS[body.texture]}\n"
+            f"- {_PORTRAIT_TEXTURE_SHARPNESS_PROMPTS[body.sharpness]}\n\n"
+            "PORTRAIT TEXTURE CONTRACT:\n"
+            "- Keep hair strands crisp and individually defined, with natural flyaways.\n"
+            "- Keep eyes lively: natural catchlights, realistic iris texture, moist reflection.\n"
+            "- Preserve facial identity, age, facial structure, makeup style, expression, "
+            "pose, costume, background, camera framing, and composition exactly.\n"
+            "- Do not beautify, slim, or reshape the face or body.\n"
+            "- Do not add text, watermark, UI, borders, or collage layout.\n"
+            "- The result must look like a natural, real photograph of the same person."
+            f"{user_block}"
+        )
+    if body.mode == "emotion_adjust":
+        emotion = body.emotion.strip() or "a natural, relaxed expression"
+        reference_block = (
+            "- Reference image 2 = expression sample. Transfer its facial emotion, "
+            "expression intensity, and micro-expression cues onto the person in "
+            "reference image 1; do not copy the sample's identity, face shape, or style.\n"
+            if body.expression_reference_url
+            else ""
+        )
+        return (
+            "Adjust the facial emotion of the person in the provided source image.\n\n"
+            "EMOTION CONTROLS:\n"
+            f"- Target emotion: {emotion}.\n"
+            f"- Emotion intensity: {body.intensity}/100.\n"
+            f"{reference_block}\n"
+            "EMOTION CONTRACT:\n"
+            "- Change only the facial expression and the directly related micro-features: "
+            "eyebrows, eyes, gaze, mouth, cheek muscles, and natural head micro-tilt.\n"
+            "- The new expression must be anatomically plausible and emotionally convincing, "
+            "with coherent muscle movement across the whole face.\n"
+            "- Preserve facial identity, age, skin texture, hairstyle, makeup, pose, costume, "
+            "background, lighting, camera framing, and composition exactly.\n"
+            "- Do not change body posture except minimal natural adjustments driven by the emotion.\n"
+            "- Do not add text, watermark, UI, borders, or collage layout.\n"
+            "- The result must look like the same photo of the same person captured at a "
+            "different emotional moment."
+            f"{user_block}"
+        )
+    raise HTTPException(400, f"unsupported portrait texture mode: {body.mode}")
 
 
 def build_template_edit_prompt(body: FreezoneTemplateEditRequest) -> str:

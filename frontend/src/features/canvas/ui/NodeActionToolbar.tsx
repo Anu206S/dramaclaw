@@ -45,10 +45,12 @@ import {
   RotateCw,
   Scissors,
   Send,
+  Smile,
   Sparkles,
   Trash2,
   Unlink2,
   User,
+  UserRound,
   Users,
   Video as VideoIcon,
   Wand2,
@@ -133,6 +135,7 @@ import type {
   GridActionKey,
   GridActionRequest,
 } from "./GridActionConfirmOverlay";
+import type { PortraitTextureRequest } from "@/features/canvas/domain/portraitTexture";
 
 interface NodeActionToolbarProps {
   node: CanvasNode;
@@ -142,6 +145,7 @@ interface NodeActionToolbarProps {
   onOpenUpscale: (nodeId: string) => void;
   onOpenOutpaint: (nodeId: string) => void;
   onOpenGridAction: (request: GridActionRequest) => void;
+  onOpenPortraitTexture: (request: PortraitTextureRequest) => void;
   onOpenRedraw: (nodeId: string) => void;
   onOpenErase: (nodeId: string) => void;
   onOpenRotate: (nodeId: string) => void;
@@ -455,6 +459,7 @@ export const NodeActionToolbar = memo(
     onOpenUpscale,
     onOpenOutpaint,
     onOpenGridAction,
+    onOpenPortraitTexture,
     onOpenRedraw,
     onOpenErase,
     onOpenRotate,
@@ -497,6 +502,9 @@ export const NodeActionToolbar = memo(
     >("matting");
     const [activeGridAction, setActiveGridAction] =
       useState<GridActionKey | null>(null);
+    const [activePortraitTextureMode, setActivePortraitTextureMode] = useState<
+      "portrait_adjust" | "emotion_adjust" | null
+    >(null);
     const [isCopySuccess, setIsCopySuccess] = useState(false);
     const [isCopyTextSuccess, setIsCopyTextSuccess] = useState(false);
     const [isCopyErrorSuccess, setIsCopyErrorSuccess] = useState(false);
@@ -593,6 +601,7 @@ export const NodeActionToolbar = memo(
     // hover 即展开的编辑/九宫格下拉（打开时顺手关掉下载浮层）。
     const editMenu = useHoverMenu(closeDownloadMenu);
     const gridMenu = useHoverMenu(closeDownloadMenu);
+    const portraitTextureMenu = useHoverMenu(closeDownloadMenu);
 
     // 选中可抠图的节点时,在浏览器空闲间隙预热抠图管线,把一次性的模型/Worker/
     // WASM 初始化挪到用户点击「抠图」之前,避免点击瞬间主线程卡 2~3s。整段只跑一次。
@@ -1122,6 +1131,74 @@ export const NodeActionToolbar = memo(
           </UiChipButton>
         )}
         */}
+            {!isImageEdit &&
+              canHandleImage &&
+              (() => {
+                const portraitTextureActions: Array<{
+                  key: "portrait_adjust" | "emotion_adjust";
+                  icon: typeof Crop;
+                  label: string;
+                }> = [
+                  {
+                    key: "portrait_adjust",
+                    icon: UserRound,
+                    label: t("portraitTexture.portraitAdjust"),
+                  },
+                  {
+                    key: "emotion_adjust",
+                    icon: Smile,
+                    label: t("portraitTexture.emotionAdjust"),
+                  },
+                ];
+                return (
+                  <DropdownMenu {...portraitTextureMenu.rootProps}>
+                    <DropdownMenuTrigger asChild>
+                      <UiChipButton
+                        key="image-portrait-texture-menu"
+                        className={TOOLBAR_TEXT_BUTTON_CLASS}
+                        onClick={(event) => event.stopPropagation()}
+                        {...portraitTextureMenu.hoverProps}
+                      >
+                        <UserRound className="h-3.5 w-3.5" />
+                        {t("portraitTexture.trigger")}
+                        <ChevronDown className="h-3 w-3" />
+                      </UiChipButton>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      sideOffset={6}
+                      className={`${TOOLBAR_MENU_CONTENT_CLASS} min-w-[160px]`}
+                      onClick={(event) => event.stopPropagation()}
+                      {...portraitTextureMenu.hoverProps}
+                    >
+                      {portraitTextureActions.map((action) => {
+                        const Icon = action.icon;
+                        const isActive = action.key === activePortraitTextureMode;
+                        return (
+                          <DropdownMenuItem
+                            key={action.key}
+                            className={
+                              isActive
+                                ? "gap-2 bg-[rgb(var(--accent-rgb)/0.18)] text-accent focus:bg-[rgb(var(--accent-rgb)/0.28)] focus:text-accent"
+                                : TOOLBAR_MENU_ITEM_CLASS
+                            }
+                            onSelect={() => {
+                              setActivePortraitTextureMode(action.key);
+                              onOpenPortraitTexture({
+                                nodeId: node.id,
+                                mode: action.key,
+                              });
+                            }}
+                          >
+                            <Icon className="h-4 w-4" />
+                            {action.label}
+                          </DropdownMenuItem>
+                        );
+                      })}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                );
+              })()}
             {!isImageEdit && canHandleImage && (
               <UiChipButton
                 key="image-panorama"

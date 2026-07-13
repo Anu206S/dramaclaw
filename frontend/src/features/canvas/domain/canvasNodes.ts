@@ -6,6 +6,7 @@ import type {
   DirectorObjectLayer,
   DirectorWorldSource,
 } from '@/features/viewer-kit/three-d/directorManifest';
+import type { PortraitTextureSelection } from './portraitTexture';
 
 export const CANVAS_NODE_TYPES = {
   upload: 'uploadNode',
@@ -346,6 +347,8 @@ export interface ImageGenNodeData extends NodeImageData {
   requestAspectRatio?: string;
   count?: ImageGenCount;
   styleTemplateId?: string | null;
+  /** 人像质感调节配置；设置后生成时把对应提示词块拼进 prompt。 */
+  portraitTexture?: PortraitTextureSelection | null;
   focusRegion?: ImageGenFocusRegion | null;
   cameraSelection?: ImageGenCameraSelection | null;
   /** User-uploaded reference image, fed into the generation request. */

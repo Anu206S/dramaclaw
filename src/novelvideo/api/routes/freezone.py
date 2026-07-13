@@ -53,6 +53,7 @@ from novelvideo.api.schemas import (
     FreezoneMarkDetectRequest,
     FreezoneMarkDetectResponse,
     FreezoneOutpaintRequest,
+    FreezonePortraitTextureRequest,
     FreezoneRedrawRequest,
     FreezoneRelightRequest,
     FreezoneScene360Request,
@@ -135,6 +136,9 @@ from novelvideo.freezone.route_helpers import (
 )
 from novelvideo.freezone.route_helpers import (
     build_outpaint_prompt as _build_outpaint_prompt,
+)
+from novelvideo.freezone.route_helpers import (
+    build_portrait_texture_prompt as _build_portrait_texture_prompt,
 )
 from novelvideo.freezone.route_helpers import (
     build_redraw_prompt as _build_redraw_prompt,
@@ -4722,6 +4726,43 @@ async def freezone_template_edit(
         base_url=body.source_url,
         extra_reference_urls=[],
         aspect_ratio=_template_edit_aspect_ratio(body.mode),
+        image_size=body.image_size or "2K",
+        camera=body.camera,
+        style=body.style,
+        provider=None,
+        model=body.model or FREEZONE_DEFAULT_IMAGE_MODEL,
+        quality=body.quality or "medium",
+    )
+
+
+@router.post(
+    "/projects/{project}/freezone/portrait-texture",
+    response_model=FreezoneJobAcceptedResponse,
+    tags=[TAG_FREEZONE_IMAGE],
+)
+async def freezone_portrait_texture(
+    project: str,
+    body: FreezonePortraitTextureRequest,
+    user: dict = Depends(get_api_user),
+):
+    """图片处理：人像质感调节。人像调节还原真实质感，情绪调节重塑面部情绪。"""
+    ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    return await _start_or_enqueue_freezone_edit_job(
+        ctx=ctx,
+        username=username,
+        project=project_name,
+        project_dir=project_dir,
+        output_dir=output_dir,
+        prompt=_build_portrait_texture_prompt(body),
+        base_url=body.source_url,
+        extra_reference_urls=(
+            [body.expression_reference_url]
+            if body.mode == "emotion_adjust" and body.expression_reference_url
+            else []
+        ),
+        aspect_ratio="original",
         image_size=body.image_size or "2K",
         camera=body.camera,
         style=body.style,
