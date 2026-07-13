@@ -246,7 +246,7 @@ function TopBar({ onCreate, onRefresh, refreshing }: { onCreate: () => void; onR
         <Button
           size="sm"
           onClick={onCreate}
-          className="h-8 gap-1.5 rounded-[8px] bg-primary px-3 text-xs font-normal text-primary-foreground shadow-none hover:bg-primary/90"
+          className="h-8 gap-1.5 rounded-[8px] bg-primary px-3 text-xs font-normal text-primary-foreground shadow-none hover:bg-primary/85 active:bg-primary/75"
         >
           <Plus className="size-3.5" />
           {t("styles.createStyle")}
@@ -662,7 +662,7 @@ function StyleDetailPanel({
           size="sm"
           onClick={handleSave}
           disabled={createStyle.isPending || !dirty}
-          className="h-7 gap-1.5 rounded-[8px] px-3 text-xs font-normal shadow-none hover:bg-primary/85"
+          className="h-7 gap-1.5 rounded-[8px] bg-primary px-3 text-xs font-normal text-primary-foreground shadow-none hover:bg-primary/85 active:bg-primary/75"
         >
           {createStyle.isPending ? (
             <Loader2 className="size-3 animate-spin" />
@@ -977,7 +977,7 @@ function StylesPage() {
 
       <div className="flex min-h-0 flex-1 flex-col lg:flex-row">
         {/* LEFT: list */}
-        <div className="flex max-h-[45vh] w-full shrink-0 flex-col overflow-hidden border-b border-border/30 lg:max-h-none lg:w-[320px] lg:border-b-0 lg:border-r lg:border-border/30">
+        <div className="flex max-h-[45vh] w-full shrink-0 flex-col overflow-hidden border-b border-border/30 lg:max-h-none lg:w-[360px] lg:border-b-0 lg:border-r lg:border-border/30">
           <div className="flex-1 overflow-y-auto p-3">
             {isLoading ? (
               <SidebarListSkeleton label={t("common.loading")} />

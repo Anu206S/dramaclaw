@@ -49,6 +49,12 @@ def _append_freezone_video_node_history(
         build_node_history_record,
     )
 
+    extra: dict[str, Any] = {}
+    if payload.get("model_id"):
+        extra["model"] = str(payload["model_id"])
+    if payload.get("gen_mode"):
+        extra["gen_mode"] = str(payload["gen_mode"])
+
     record = build_node_history_record(
         task_type="freezone_video_gen",
         job_id=job_id,
@@ -60,6 +66,7 @@ def _append_freezone_video_node_history(
         result=result,
         error=error,
         prompt=payload.get("prompt"),
+        extra=extra or None,
     )
 
     return append_generation_history(
@@ -167,7 +174,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
     generate_kwargs = {
         "image_path": frame_path,
         "prompt": prompt,
-        "output_path": str(video_path),
+        "output_path": video_path.as_posix(),
         "aspect_ratio": str(config.get("ratio") or "9:16"),
         "duration": video_duration,
         "on_log": on_log,
@@ -208,7 +215,7 @@ async def _run_single_video_async(envelope: dict[str, Any], ctx: ProjectContext)
         on_log(f"添加到视频池失败 (非致命): {exc}")
 
     task_result = {
-        "video_path": str(video_path),
+        "video_path": video_path.as_posix(),
         "beat_num": beat_num,
         "video_pool_id": video_pool_id,
     }
@@ -610,7 +617,7 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
             raise RuntimeError(f"拼接失败: {result.stderr[:500]}")
 
     return {
-        "video_path": str(output_path),
+        "video_path": output_path.as_posix(),
         "add_subtitles_requested": add_subtitles,
     }
 
