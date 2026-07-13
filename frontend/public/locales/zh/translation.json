@@ -3719,7 +3719,7 @@
         "keywordsPlaceholder": "输入关键词，keyword:2 格式可指定权重",
         "keywordsHint": "支持 关键词:2 格式指定权重（默认权重 1）",
         "nodeScopes": "节点类型",
-        "nodeScopesPlaceholder": "如：image-generation，输入后按 Enter 确认",
+        "nodeScopesPlaceholder": "textGeneration / imageGeneration / videoGeneration / audioGeneration",
         "planningTitle": "规则配置",
         "planningDescription": "控制 Agent 在线领域的规则策略和提示词风格",
         "planningNotes": "规划器提示词",
@@ -3729,11 +3729,16 @@
         "conductRules": "行为规则",
         "conductRulesPlaceholder": "输入规则后按 Enter 确认，每条为独立规则",
         "aspectPresets": "默认画幅",
-        "modelNamePlaceholder": "模型名（如 nano-banana-pro）",
+        "modelNamePlaceholder": "任务类型",
         "ratioPlaceholder": "比例（如 16:9）",
+        "ratioLabel": "比例",
+        "ratioSelectPlaceholder": "选择比例",
         "modelHints": "模型偏好",
-        "taskTypePlaceholder": "任务类型",
-        "modelNameOnlyPlaceholder": "模型名称",
+        "taskTypeLabel": "任务类型",
+        "taskTypePlaceholder": "选择类型",
+        "modelSelectLabel": "模型名称",
+        "modelSelectPlaceholder": "选择模型",
+        "modelLoading": "模型加载中…",
         "evaluationTitle": "评估规则",
         "evaluationDescription": "定义质检维度和评分标准",
         "qualityThreshold": "通过分数",
@@ -3758,7 +3763,10 @@
         "rawJson": "查看 / 编辑原始 JSON（高级）",
         "collapseRawJson": "收起原始 JSON",
         "rawJsonAria": "原始 JSON",
-        "rawJsonSyncHint": "当前 JSON 根据上方表单字段自动生成"
+        "rawJsonSyncHint": "当前 JSON 根据上方表单字段自动生成",
+        "copyRawJson": "复制 JSON",
+        "rawJsonCopied": "Skill JSON 已复制",
+        "rawJsonCopyFailed": "复制失败，请手动复制"
       },
       "newRecipe": {
         "title": "新增 Recipe",
@@ -3779,8 +3787,8 @@
         "actionKeys": "操作标识",
         "actionKeysPlaceholder": "输入后按 Enter 或逗号确认",
         "actionKeysHint": "Agent 规划时用于匹配此 Recipe 的操作类型标识符",
-        "systemPrompt": "System Prompt",
-        "systemPromptPlaceholder": "用于增强生成提示词的系统指令...",
+        "system_prompt": "System Prompt",
+        "system_promptPlaceholder": "用于增强生成提示词的系统指令...",
         "mustHaveItems": "必需元素",
         "mustHaveItemsPlaceholder": "输入后按 Enter 或逗号确认",
         "mustHaveItemsHint": "生成结果必须包含的关键要素",
@@ -3795,7 +3803,10 @@
         "rawJson": "查看 / 编辑原始 JSON（高级）",
         "collapseRawJson": "收起原始 JSON",
         "rawJsonAria": "Recipe 原始 JSON",
-        "rawJsonSyncHint": "当前 JSON 根据上方表单字段自动生成"
+        "rawJsonSyncHint": "当前 JSON 根据上方表单字段自动生成",
+        "copyRawJson": "复制 JSON",
+        "rawJsonCopied": "Recipe JSON 已复制",
+        "rawJsonCopyFailed": "复制失败，请手动复制"
       }
     },
     "modelConfig": {

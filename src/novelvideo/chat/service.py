@@ -327,7 +327,17 @@ Draft rules:
 - Generate complete Skill / Recipe drafts, not partial fields.
 - When the Skill is meant to build or repeat a multi-node canvas process, include workflow_templates with ordered steps that reference the relevant Recipe action_keys.
 - Keep ids lowercase and limited to letters, numbers, underscores, and hyphens.
-- Do not ask the user for low-level fields such as id, category, action_keys, or systemPrompt; infer them.
+- Use Skill triggers.node_scopes only for catalog node scopes: textGeneration, imageGeneration, videoGeneration, audioGeneration. Do not use canvas node types such as imageGenNode, textAnnotationNode, videoNode, or audioNode in Skill triggers.
+- Use workflow_templates.steps[].node_type only for catalog task types: textGeneration, imageGeneration, videoGeneration, audioGeneration. Do not use internal canvas node types such as textAnnotationNode, imageGenNode, videoNode, or audioNode in workflow templates.
+- Use planning.default_aspect_ratios for task-type aspect defaults, for example {"imageGeneration": "16:9", "videoGeneration": "16:9"}. imageGeneration may use 1:1, 9:16, 16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, or 21:9. videoGeneration may use 16:9, 4:3, 1:1, 3:4, 9:16, or 21:9. Do not use auto for saved defaults. Do not write model_preferences or fixed model ids; image and video model options are fetched by the frontend from their separate model endpoints.
+- Use snake_case Recipe fields directly: system_prompt, must_have_items, planning_prompt, result_summary, requires_source_media.
+- Do not ask the user for low-level fields such as id, category, action_keys, or system_prompt; infer them.
+- Recipe system_prompt is a node-level execution instruction, not a bare final image/video prompt. In most Skills it should behave like a prompt compiler: tell the current LLM to output one complete prompt/instruction that will be sent to the downstream textGeneration/imageGeneration/videoGeneration/audioGeneration node. Explicitly include an "重要" constraint such as: output only the prompt/instruction for the downstream node; do not directly write the final article, script, image description result, or finished creative asset yourself.
+- Recipe system_prompt must include concrete structured sections: 【角色设定】, 【输入来源】, 【任务目标】, 【输出结构要求】, 【质量标准】, and prohibitions/constraints. For image/video Recipes, the output structure should describe the downstream prompt fields (subject, composition/shot, style, color, text/layout, continuity, negative constraints), not just say "generate one image/video".
+- Recipe must_have_items should usually be required output modules/sections for the downstream prompt or brief, not only visual style adjectives. For a poster image Recipe, prefer items such as "主视觉描述", "文化元素提取", "构图与留白", "色彩与字体建议", "负面提示词/禁止事项".
+- Recipe planning_prompt must be non-empty and describe this node's work in one short business sentence, usually "根据 X，生成/提取/改写 Y。". Do not explain scheduling mechanics, downstream nodes, workflow internals, or "when to schedule this Recipe" in this field.
+- Recipe result_summary must be non-empty and describe this node's business output in one short phrase or sentence, such as "3:4 竖版数码产品科技感详情图" or "家乡文化海报图片生成指令". Do not mention downstream execution, imageGeneration handoff, planner behavior, or workflow mechanics in this field.
+- For multi-step Skills, split planning/prompt-writing Recipes from terminal image/video generation Recipes when useful.
 - If the request is ambiguous, ask 3-5 high-level option questions instead of field-by-field questions.
 - Manual card edits are the source of truth after the draft is shown; later natural-language changes must be based on the current draft.
 [/FREEZONE_SKILL_STUDIO]"""

@@ -29,6 +29,7 @@ import {
 } from "@/features/freezone/chatNodeReferences";
 import {
   buildAssistantClarificationResponseForTest,
+  buildPersistedAssistantClarificationEventForTest,
   buildAssistantClarificationToolResultForTest,
   buildAssistantInteractionFlowItemsForTest,
   buildSkillStudioCatalogSaveItemsForTest,
@@ -459,6 +460,78 @@ This Freezone chat can change the current canvas by returning a JSON block.
 
     expect(normalized?.parts?.map((part) => part.type)).toEqual(["canvas_feedback", "tool_status"]);
   });
+
+  it("restores trailing assistant text when ordered history parts stop at an interaction card", () => {
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      content: "先确认方向。\n\n草稿已生成。\n\nSkill 已创建完成，可以继续使用。",
+      parts: [
+        {
+          id: "text-1",
+          type: "text",
+          text: "先确认方向。\n\n",
+        },
+        {
+          id: "draft-1",
+          type: "skill_studio",
+          event: {
+            type: "skill_studio.draft",
+            bridge_key: "draft-1",
+          },
+        },
+      ],
+    });
+
+    expect(normalized?.parts?.map((part) => part.type)).toEqual(["text", "skill_studio", "text"]);
+    expect(normalized?.parts?.[2]).toMatchObject({
+      type: "text",
+      text: "草稿已生成。\n\nSkill 已创建完成，可以继续使用。",
+    });
+  });
+
+  it("hydrates ordered interaction parts from newer persisted ui events", () => {
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      content: "草稿已生成。",
+      parts: [
+        {
+          id: "draft-1",
+          type: "skill_studio",
+          event: {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+            submitted: false,
+            draft: { skill: { id: "draft-skill" }, recipes: [] },
+          },
+        },
+      ],
+      ui_events: [
+        {
+          type: "skill_studio.draft",
+          bridge_key: "draft-key-1",
+          submitted: true,
+          saved_to_catalog: true,
+          saved_skill_ids: ["draft-skill"],
+          saved_recipe_ids: ["draft-recipe"],
+          draft: { skill: { id: "saved-skill" }, recipes: [] },
+        },
+      ],
+    });
+
+    expect(normalized?.parts?.[0]).toMatchObject({
+      type: "skill_studio",
+      event: {
+        type: "skill_studio.draft",
+        bridge_key: "draft-key-1",
+        submitted: true,
+        saved_to_catalog: true,
+        saved_skill_ids: ["draft-skill"],
+        draft: { skill: { id: "saved-skill" } },
+      },
+    });
+  });
 });
 
 describe("normalizeMessageForScope", () => {
@@ -805,6 +878,50 @@ describe("Skill Studio question response", () => {
     expect(text).toContain("偏好的视觉风格是？：现代简约/信息图风");
     expect(text).toContain("用户已完成选择，请结合当前上下文继续。");
     expect(text).not.toContain("继续生成 Skill / Recipe 草稿");
+  });
+
+  it("builds a persisted submitted assistant clarification event", () => {
+    const event = {
+      type: "assistant.clarification.request" as const,
+      bridge_key: "clarify-key-1",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      anchor_text_prefix: "先确认方向",
+      clarification_id: "home-culture-poster-skill-setup",
+      title: "家乡文化海报 Skill 设置",
+      description: "选完后生成草稿",
+      questions: [
+        {
+          id: "poster_count",
+          title: "海报数量",
+          options: [{ id: "single", label: "单张主视觉海报" }],
+        },
+      ],
+      allow_skip: true,
+    };
+
+    expect(buildPersistedAssistantClarificationEventForTest(event, {
+      action: "submit",
+      answers: { poster_count: "single" },
+      clarificationStatus: "answered",
+      skipped: false,
+      usedRecommended: false,
+      receivedAt: 123,
+    })).toMatchObject({
+      type: "assistant.clarification.request",
+      bridge_key: "clarify-key-1",
+      clarification_id: "home-culture-poster-skill-setup",
+      received_at: 123,
+      submitted: true,
+      action: "submit",
+      clarification_status: "answered",
+      answers: { poster_count: "single" },
+      skipped: false,
+      used_recommended: false,
+      questions: event.questions,
+    });
   });
 
   it("keeps unanswered questions visible when partially submitted", () => {
@@ -1286,7 +1403,7 @@ describe("Skill Studio draft response", () => {
   it("uses the same Chinese field names as the catalog edit pages", () => {
     expect(skillStudioDraftFieldLabelsForTest.skill).toMatchObject({
       keywords: "触发关键词",
-      nodeTypes: "节点类型",
+      node_scopes: "节点类型",
       metaPlanningHints: "规划器提示词",
       promptStyleGuide: "风格指引",
       behaviorRules: "行为规则",
@@ -1296,11 +1413,21 @@ describe("Skill Studio draft response", () => {
     expect(skillStudioDraftFieldLabelsForTest.recipe).toMatchObject({
       output_kind: "生成类型",
       action_keys: "操作类型",
-      systemPrompt: "System Prompt",
-      required_elements: "必需元素",
-      planner_cue: "规划器提示词",
-      output_summary: "输出概述",
+      system_prompt: "System Prompt",
+      must_have_items: "必需元素",
+      planning_prompt: "规划器提示词",
+      result_summary: "输出概述",
+      requires_source_media: "依赖上游多模态输入",
     });
+    const legacyRecipeKeys = [
+      "required" + "_elements",
+      "planner" + "_cue",
+      "output" + "_summary",
+      "needs" + "_multimodal_input",
+    ];
+    for (const legacyKey of legacyRecipeKeys) {
+      expect(skillStudioDraftFieldLabelsForTest.recipe).not.toHaveProperty(legacyKey);
+    }
   });
 
   it("builds a bridge tool result with the edited draft payload", () => {
@@ -1326,8 +1453,8 @@ describe("Skill Studio draft response", () => {
           id: "home-culture-poster-image",
           name: "家乡文化海报出图",
           output_kind: "image",
-          systemPrompt: "生成海报",
-          required_elements: ["地域符号"],
+          system_prompt: "生成海报",
+          must_have_items: ["地域符号"],
         },
       ],
     };
@@ -1359,7 +1486,7 @@ describe("Skill Studio draft response", () => {
         recipes: [
           {
             id: "home-culture-poster-image",
-            required_elements: ["地域符号"],
+            must_have_items: ["地域符号"],
           },
         ],
       },
@@ -1409,12 +1536,17 @@ describe("Skill Studio draft response", () => {
         category: "social",
         triggers: {
           keywords: ["家乡文化"],
-          nodeTypes: ["imageGeneration"],
+          node_scopes: ["imageGeneration"],
         },
         planning: {
           metaPlanningHints: "先识别地域符号",
           promptStyleGuide: "水墨写意",
           behaviorRules: ["保持文化准确"],
+          default_aspect_ratios: {
+            imageGeneration: "9:16",
+            textGeneration: "1:1",
+            videoGeneration: "auto",
+          },
         },
         evaluation: {
           scoreAnchors: [{ score: 8, description: "文化符号明确" }],
@@ -1448,11 +1580,11 @@ describe("Skill Studio draft response", () => {
           name: "家乡文化海报出图",
           output_kind: "image",
           action_keys: ["home-culture-poster-image"],
-          systemPrompt: "生成海报",
-          required_elements: ["地域符号"],
-          planner_cue: "根据地域符号生成海报",
-          output_summary: "一张家乡文化海报",
-          needs_multimodal_input: true,
+          system_prompt: "生成海报",
+          must_have_items: ["地域符号"],
+          planning_prompt: "根据地域符号生成海报",
+          result_summary: "一张家乡文化海报",
+          requires_source_media: true,
         },
       ],
     });
@@ -1471,6 +1603,9 @@ describe("Skill Studio draft response", () => {
             planning_notes: "先识别地域符号",
             prompt_guide: "水墨写意",
             conduct_rules: ["保持文化准确"],
+            default_aspect_ratios: {
+              imageGeneration: "9:16",
+            },
           }),
           evaluation: expect.objectContaining({
             quality_threshold: 7,
@@ -1491,7 +1626,7 @@ describe("Skill Studio draft response", () => {
                 {
                   id: "brief",
                   step_number: 1,
-                  node_type: "textAnnotationNode",
+                  node_type: "textGeneration",
                   action_key: "home-culture-poster-brief",
                 },
               ],

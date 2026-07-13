@@ -576,7 +576,7 @@ def _compose_node_prompt(
         _get(step, "operationType", "operation_type", "actionKey", "action_key")
     )
     prompt_strategy = _text(_get(step, "promptStrategy", "prompt_strategy"))
-    system_prompt = _text(_get(recipe, "systemPrompt", "system_prompt")) if recipe else ""
+    system_prompt = _text(_get(recipe, "system_prompt")) if recipe else ""
     is_prompt_recipe = _looks_like_prompt_recipe(system_prompt)
     if prompt_strategy == "user_message":
         return user_goal
@@ -639,7 +639,7 @@ def _prompt_builder(
     }
     if not recipe:
         return builder
-    system_prompt = _text(_get(recipe, "systemPrompt", "system_prompt"))
+    system_prompt = _text(_get(recipe, "system_prompt"))
     builder.update(
         {
             "recipeId": _text(recipe.get("id")),
