@@ -1632,6 +1632,13 @@ function clampVideoDurationForApproval(value: unknown, bounds: { min: number; ma
   return Math.min(Math.max(Math.round(safe), bounds.min), bounds.max);
 }
 
+function isCanvasApprovalVideoCount(value: unknown): value is CanvasApprovalVideoParams["count"] {
+  return (
+    typeof value === "number" &&
+    CANVAS_APPROVAL_VIDEO_COUNT_OPTIONS.includes(value as CanvasApprovalVideoParams["count"])
+  );
+}
+
 function videoApprovalInitialParams(
   approval: PendingCanvasCommandApproval,
   canvasNodes: CanvasNode[],
@@ -1659,7 +1666,7 @@ function videoApprovalInitialParams(
   const normalizedAspectRatio = (VIDEO_GENERATION_ASPECT_RATIOS as readonly string[]).includes(aspectRatio)
     ? aspectRatio
     : "16:9";
-  const countValue = typeof nodeData?.count === "number" && CANVAS_APPROVAL_VIDEO_COUNT_OPTIONS.includes(nodeData.count as 1 | 2 | 4)
+  const countValue = isCanvasApprovalVideoCount(nodeData?.count)
     ? nodeData.count
     : 1;
   return {

@@ -337,15 +337,6 @@ const GENERATION_NODE_ACTIONS = new Set([
   "run_skill",
 ]);
 
-const REGENERATABLE_GENERATION_NODE_ACTIONS = new Set([
-  "generate_text_video",
-  "generate_story_script",
-  "generate_image",
-  "generate_audio",
-  "generate_video",
-  "generate_3gs_world",
-]);
-
 const UI_OPEN_NODE_ACTIONS = new Set([
   "open_video_compose_modal",
 ]);
@@ -521,19 +512,6 @@ function isTruthyRegenerateValue(value: unknown): boolean {
   if (typeof value === "number") return value === 1;
   if (typeof value !== "string") return false;
   return ["1", "true", "yes", "y", "重新生成", "重生成", "覆盖"].includes(value.trim().toLowerCase());
-}
-
-function isRegenerateRequested(parameters?: JsonRecord): boolean {
-  if (!parameters) return false;
-  return (
-    isTruthyRegenerateValue(parameters.regenerate) ||
-    isTruthyRegenerateValue(parameters.force_regenerate) ||
-    isTruthyRegenerateValue(parameters.forceRegenerate) ||
-    isTruthyRegenerateValue(parameters.overwrite_existing) ||
-    isTruthyRegenerateValue(parameters.overwriteExisting) ||
-    isTruthyRegenerateValue(parameters.force) ||
-    isTruthyRegenerateValue(parameters.overwrite)
-  );
 }
 
 function cleanOptionalString(value: unknown): string | undefined {
@@ -1669,7 +1647,7 @@ function orderedNodeActionsByCanvasEdges(actions: PendingNodeAction[]): {
 function enqueueCanvasNodeActions<T>(canvasId: string | null | undefined, run: () => Promise<T>): Promise<T> {
   const key = canvasId || "default";
   const previous = canvasNodeActionQueues.get(key) ?? Promise.resolve();
-  const next = previous.catch(() => undefined).then(run);
+  const next = previous.catch(() => undefined).then(() => run());
   canvasNodeActionQueues.set(key, next.then(
     () => undefined,
     () => undefined,

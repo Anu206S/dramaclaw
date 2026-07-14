@@ -1605,11 +1605,12 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         });
         const now = Date.now();
         frames.forEach((frame, index) => {
+          const frameRecord = frame as Record<string, unknown>;
           const bridgeKey =
-            typeof frame.bridge_key === "string"
-              ? frame.bridge_key
-              : typeof frame.bridgeKey === "string"
-                ? frame.bridgeKey
+            typeof frameRecord.bridge_key === "string"
+              ? frameRecord.bridge_key
+              : typeof frameRecord.bridgeKey === "string"
+                ? frameRecord.bridgeKey
                 : null;
           if (!bridgeKey || emittedExternalCanvasCommandKeysRef.current.has(bridgeKey)) return;
           emittedExternalCanvasCommandKeysRef.current.add(bridgeKey);
