@@ -717,6 +717,195 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     }));
   });
 
+  it("lets image generation approvals edit node image parameters before applying", async () => {
+    const node = {
+      id: "image-node-1",
+      type: "imageGenNode",
+      position: { x: 0, y: 0 },
+      selected: false,
+      data: {
+        prompt: "test image",
+        model: "existing-model",
+        aspectRatio: "16:9",
+        size: "1K",
+        quality: "medium",
+        count: 1,
+      },
+    } satisfies Partial<CanvasNode> as CanvasNode;
+    useCanvasStore.getState().setCanvasData([node], []);
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "准备生成图片",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([node], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("freezone/canvas-command-approval", {
+        detail: {
+          canvasId: "canvas-a",
+          turnId: "turn-a",
+          bridgeKey: "bridge-image",
+          envelopes: [
+            {
+              schema_version: "canvas_chat_commands.v1",
+              commands: [
+                {
+                  type: "run_node_action",
+                  node_id: node.id,
+                  action: "generate_image",
+                },
+              ],
+            },
+          ],
+          receivedAt: Date.now(),
+        },
+      }));
+    });
+
+    expect(await screen.findByLabelText("图片模型")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("图片比例"), { target: { value: "9:16" } });
+    fireEvent.change(screen.getByLabelText("图片分辨率"), { target: { value: "2K" } });
+    fireEvent.change(screen.getByLabelText("图片画质"), { target: { value: "high" } });
+    fireEvent.change(screen.getByLabelText("图片数量"), { target: { value: "2" } });
+    fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
+
+    await waitFor(() =>
+      expect(apiMocks.post).toHaveBeenCalledWith("api/v1/chat/ui-events", expect.objectContaining({
+        json: expect.objectContaining({
+          turn_id: "turn-a",
+          event: expect.objectContaining({
+            type: "canvas_command_result",
+            bridge_key: "bridge-image",
+            envelopes: [
+              expect.objectContaining({
+                commands: [
+                  {
+                    type: "update_node_data",
+                    node_id: node.id,
+                    data: {
+                      model: "existing-model",
+                      aspectRatio: "9:16",
+                      size: "2K",
+                      quality: "high",
+                      count: 2,
+                    },
+                  },
+                  {
+                    type: "run_node_action",
+                    node_id: node.id,
+                    action: "generate_image",
+                  },
+                ],
+              }),
+            ],
+          }),
+        }),
+      })),
+    );
+  });
+
+  it("groups video generation parameters like the canvas video node", async () => {
+    const node = {
+      id: "video-node-1",
+      type: "videoNode",
+      position: { x: 0, y: 0 },
+      selected: false,
+      data: {
+        prompt: "test video",
+        model: "newapi_seedance-2.0",
+        aspectRatio: "16:9",
+        quality: "720P",
+        durationSec: 5,
+        generateAudio: false,
+        count: 1,
+      },
+    } satisfies Partial<CanvasNode> as CanvasNode;
+    useCanvasStore.getState().setCanvasData([node], []);
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "准备生成视频",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([node], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    act(() => {
+      window.dispatchEvent(new CustomEvent("freezone/canvas-command-approval", {
+        detail: {
+          canvasId: "canvas-a",
+          turnId: "turn-a",
+          bridgeKey: "bridge-video",
+          envelopes: [
+            {
+              schema_version: "canvas_chat_commands.v1",
+              commands: [
+                {
+                  type: "run_node_action",
+                  node_id: node.id,
+                  action: "generate_video",
+                },
+              ],
+            },
+          ],
+          receivedAt: Date.now(),
+        },
+      }));
+    });
+
+    expect(await screen.findByLabelText("视频模型")).toBeInTheDocument();
+    expect(screen.queryByLabelText("视频比例")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("视频清晰度")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("视频时长")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("视频音频")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "视频参数：16:9 · 720P · 5s · 静音" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "视频参数：16:9 · 720P · 5s · 静音" }));
+    fireEvent.click(screen.getByRole("button", { name: "9:16" }));
+    fireEvent.click(screen.getByRole("button", { name: "1080P" }));
+    fireEvent.change(screen.getByLabelText("视频时长"), { target: { value: "10" } });
+    fireEvent.click(screen.getByRole("switch", { name: "生成音频" }));
+    fireEvent.change(screen.getByLabelText("视频数量"), { target: { value: "2" } });
+
+    expect(screen.getByRole("button", { name: "视频参数：9:16 · 1080P · 10s · 有声" })).toBeInTheDocument();
+    expect(screen.getByLabelText("视频数量")).toHaveValue("2");
+  });
+
   it("does not restore a persisted canvas command approval after it was confirmed", async () => {
     superChatMocks.messages = [
       {
@@ -1271,6 +1460,82 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
 
     expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
     expect(screen.getByText(/s 后自动取消/)).toBeInTheDocument();
+  });
+
+  it("shows a cancelled feedback when a stale canvas approval remains in message parts", () => {
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "视频生成请求超时了，前端尚未返回结果。",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+        parts: [
+          {
+            id: "part-text",
+            type: "text",
+            text: "视频生成请求超时了，前端尚未返回结果。",
+          },
+          {
+            id: "canvas_approval:bridge:bridge-a:turn:turn-a",
+            type: "canvas_approval",
+            event: {
+              id: "bridge:bridge-a:turn:turn-a",
+              key: "bridge:bridge-a:turn:turn-a",
+              messageId: "assistant-a",
+              turnId: "turn-a",
+              bridgeKey: "bridge-a",
+              agentId: null,
+              receivedAt: Date.now() - 31_000,
+              autoExpires: true,
+              expiresAt: Date.now() - 1_000,
+              commandCount: 1,
+              envelopes: [
+                {
+                  schema_version: "canvas_chat_commands.v1",
+                  commands: [
+                    {
+                      type: "run_node_action",
+                      node_id: "video-node-a",
+                      action: "generate_video",
+                    },
+                  ],
+                },
+              ],
+              plans: [
+                {
+                  type: "run_node_action",
+                  label: "生成视频",
+                  primary: "video-node-a",
+                  details: [],
+                  nodeId: "video-node-a",
+                  action: "generate_video",
+                },
+              ],
+            },
+          },
+        ],
+      } as ChatMessage,
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(screen.getByText("视频生成请求超时了，前端尚未返回结果。")).toBeInTheDocument();
+    expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument();
+    expect(screen.getByText("画布操作已取消")).toBeInTheDocument();
   });
 
   it("renders Freezone tool calls as activity cards", async () => {

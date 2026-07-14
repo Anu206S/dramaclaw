@@ -1776,7 +1776,22 @@ async function executeQueuedNodeActions(
         clearPendingNodeAction(requestId);
         const actionResult = firstSignal.kind === "result"
           ? firstSignal.actionResult
-          : await waiting;
+          : action.executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
+            ? await Promise.race([
+              waiting,
+              (async (): Promise<NodeActionResult> => {
+                await requestAnimationFrameOrTimeout();
+                const handedOff = await waitForGeneratedResultField(action.nodeId, action.action);
+                return {
+                  requestId,
+                  nodeId: action.nodeId,
+                  action: action.action,
+                  status: "success" as const,
+                  output: handedOff ? { submitted: true } : {},
+                };
+              })(),
+            ])
+            : await waiting;
         clearPendingNodeAction(requestId);
         await requestAnimationFrameOrTimeout();
         const hasRequiredOutput = await waitForGeneratedResultField(
@@ -2327,27 +2342,6 @@ function applyCanvasChatCommandsInternal(
           }
           case "run_node_action": {
             const targetId = resolveNodeId(command.node_id, clientIdMap);
-            const isCompletedGeneration =
-              options.queueNodeActions &&
-              REGENERATABLE_GENERATION_NODE_ACTIONS.has(command.action) &&
-              hasGeneratedResult(targetId, command.action);
-            if (isCompletedGeneration && !isRegenerateRequested(command.parameters)) {
-              result.commandResults.push({
-                commandIndex: currentCommandIndex,
-                type: command.type,
-                status: "success",
-                label: "节点已有内容，未重新生成",
-                nodeId: targetId,
-                action: command.action,
-                output: {
-                  skipped: true,
-                  reason: "already_completed",
-                  requires_regenerate_confirmation: true,
-                },
-              });
-              selectAndFocusNode(targetId);
-              break;
-            }
             if (options.queueNodeActions) {
               assertNodeActionAvailable(targetId, command.action);
               const shouldRunUpstreamDependencies = !CURRENT_MEDIA_NODE_ACTIONS.has(command.action);
