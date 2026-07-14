@@ -16,7 +16,7 @@ import { getFreezoneVideoModelsSnapshot } from "@/features/canvas/hooks/useFreez
 import type { ModelOption } from "@/features/canvas/ui/ProviderModelPicker";
 import { BEAT_CONTEXT_AGENT_EDITABLE_FIELDS } from "@/features/freezone/canvasCommandNodeData";
 import { isCommitCandidateData } from "@/features/freezone/commit/commitEligibility";
-import { isSkillReadyToSubmit } from "@/features/freezone/context/skillNodeInputs";
+import { resolveInputsForSkill } from "@/features/freezone/context/skillNodeInputs";
 import type { SkillDefinition, SkillInputRole } from "@/features/freezone/context/skillRoles";
 import { STANDARD_TIME_OF_DAY_OPTIONS } from "@/lib/time-of-day";
 
@@ -27,6 +27,10 @@ export type CanvasNodeActionCatalogEntry = {
   execution: CanvasNodeActionExecution;
   description: string;
   command_type?: string;
+  can_run_now?: boolean;
+  preconditions?: Array<Record<string, unknown>>;
+  blocked_reasons?: string[];
+  instruction?: string;
   parameters?: Record<string, unknown>;
 };
 
@@ -287,20 +291,99 @@ function skillOutputProxyNodeTypes(node: CanvasNode): CanvasNodeType[] {
   return skillId ? KNOWN_SKILL_OUTPUT_NODE_TYPES[skillId] ?? [] : [];
 }
 
-function isSkillNodeReadyForCatalog(
+const IMAGE_LIKE_SKILL_INPUT_ROLES = new Set<SkillInputRole>([
+  "background",
+  "director_combined",
+  "frame",
+  "scene",
+  "scene_master",
+  "scene_reverse_master",
+  "sketch",
+  "source_image",
+]);
+
+const SKILL_INPUT_ROLE_LABELS: Partial<Record<SkillInputRole, string>> = {
+  background: "背景",
+  director_combined: "导演合成图",
+  frame: "分镜",
+  scene: "场景",
+  scene_master: "场景主图",
+  scene_reverse_master: "场景反打图",
+  sketch: "草图",
+  source_image: "源图片",
+};
+
+function skillRunReadinessForCatalog(
   node: CanvasNode,
   context: CanvasNodeActionCatalogContext | undefined,
-): boolean {
-  if (node.type !== CANVAS_NODE_TYPES.skill) return false;
+): {
+  canRunNow: boolean;
+  preconditions: Array<Record<string, unknown>>;
+  blockedReasons: string[];
+} | null {
+  if (node.type !== CANVAS_NODE_TYPES.skill) return null;
   const skillId = stringOrNull((node.data as { skill_id?: unknown }).skill_id);
   const skill = skillId ? KNOWN_SKILL_DEFINITIONS[skillId] : undefined;
-  if (!skill || !context?.edges?.length) return false;
+  if (!skill || !context?.nodes?.length || !context?.edges?.length) return null;
   const incomingEdges = context.edges.filter((edge) => edge.target === node.id);
-  if (incomingEdges.length === 0) return false;
-  const nodesById = context.nodes?.length
-    ? new Map(context.nodes.map((item) => [item.id, item] as const))
-    : undefined;
-  return isSkillReadyToSubmit(skill, incomingEdges, nodesById);
+  const nodesById = new Map(context.nodes.map((item) => [item.id, item] as const));
+  const resolvedInputs = resolveInputsForSkill(skill, node, incomingEdges, nodesById);
+  const preconditions: Array<Record<string, unknown>> = [];
+  const blockedReasons: string[] = [];
+  for (const input of skill.inputs) {
+    if (!input.required) continue;
+    const matched = resolvedInputs.filter((item) => item.role === input.role);
+    if (matched.length === 0) {
+      const reason = `必需输入 ${input.role} 未连接。`;
+      blockedReasons.push(reason);
+      preconditions.push({
+        type: "required_input",
+        role: input.role,
+        status: "missing",
+        message: reason,
+      });
+      continue;
+    }
+    if (input.role === "beat_context") {
+      const ready = matched.some((item) => item.beat_context || item.mainline_context?.length);
+      if (!ready) {
+        const sourceIds = matched.map((item) => item.node_id);
+        const reason = `必需输入 beat_context 未提供有效 Beat 上下文。`;
+        blockedReasons.push(reason);
+        preconditions.push({
+          type: "required_upstream_context",
+          role: input.role,
+          node_ids: sourceIds,
+          required_field: "beat_context",
+          status: "missing",
+          message: reason,
+        });
+      }
+      continue;
+    }
+    if (IMAGE_LIKE_SKILL_INPUT_ROLES.has(input.role)) {
+      const ready = matched.some((item) => item.image_url);
+      if (!ready) {
+        const sourceIds = matched.map((item) => item.node_id);
+        const roleLabel = SKILL_INPUT_ROLE_LABELS[input.role] ?? input.role;
+        const reason = `${input.role} 输入尚未就绪：上游${roleLabel}节点缺少 imageUrl。`;
+        blockedReasons.push(reason);
+        preconditions.push({
+          type: "required_upstream_output",
+          role: input.role,
+          node_ids: sourceIds,
+          required_field: "imageUrl",
+          status: "missing",
+          message: reason,
+        });
+      }
+    }
+  }
+  return {
+    canRunNow: blockedReasons.length === 0,
+    preconditions,
+    blockedReasons,
+  };
 }
 
 function directorWorldGenerationImageUrl(node: CanvasNode): string | null {
@@ -1039,13 +1122,20 @@ function addFrontendNodeActions(
 
   if (node.type === CANVAS_NODE_TYPES.skill) {
     const skillId = stringOrNull((node.data as { skill_id?: unknown }).skill_id);
-    if (skillId && isSkillNodeReadyForCatalog(node, context)) {
+    const readiness = skillId ? skillRunReadinessForCatalog(node, context) : null;
+    if (skillId && readiness) {
       actions.push({
         action: "run_skill",
         execution: "frontend_node",
         command_type: "run_node_action",
+        can_run_now: readiness.canRunNow,
+        preconditions: readiness.preconditions,
+        blocked_reasons: readiness.blockedReasons,
+        instruction: readiness.canRunNow
+          ? "can_run_now=true，可以 emit run_node_action 执行此技能。"
+          : "can_run_now=false 时不要 emit run_node_action；先完成 blocked_reasons 指向的上游输入后再重新请求 node_action_catalog 或 validate_canvas_commands。",
         description:
-          "Run this skill node with its current connected inputs and parameters. The frontend submits the skill and creates output nodes when results are ready.",
+          "Run this skill node only after required upstream inputs are connected and completed. The frontend submits the skill and creates output nodes when results are ready.",
         parameters: {
           node_id: node.id,
           skill_id: skillId,

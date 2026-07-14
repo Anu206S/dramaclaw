@@ -416,6 +416,11 @@ export function validateCanvasChatCommandEnvelopes(
             addIssue(issues, path, `action not available on node: ${command.action}`);
           } else if (action.execution === "chat_command") {
             addIssue(issues, path, `action must be expressed as a canvas chat command: ${command.action}`);
+          } else if (action.can_run_now === false) {
+            const reasons = Array.isArray(action.blocked_reasons) && action.blocked_reasons.length > 0
+              ? action.blocked_reasons.join("; ")
+              : `action is blocked: ${command.action}`;
+            addIssue(issues, path, `action preconditions are not satisfied: ${reasons}`);
           }
           if (target.type === CANVAS_NODE_TYPES.audio && command.action === "download_audio") {
             const format =

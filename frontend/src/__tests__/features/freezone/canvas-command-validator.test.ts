@@ -498,6 +498,60 @@ describe("canvas command validator", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("rejects run_skill when required upstream image inputs are still pending", () => {
+    const beatNode = node({
+      id: "beat-node",
+      type: CANVAS_NODE_TYPES.beatContext,
+      data: { beat_context: { episode: 1, beat: 1 } },
+    });
+    const pendingBackgroundNode = node({
+      id: "pending-background",
+      type: CANVAS_NODE_TYPES.imageGen,
+      data: { prompt: "背景图生成中" },
+    });
+    const skillNode = node({
+      id: "skill-node",
+      type: CANVAS_NODE_TYPES.skill,
+      data: { skill_id: "freezone.sketch_from_context" },
+    });
+    const envelope: CanvasChatCommandEnvelope = {
+      schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+      commands: [
+        {
+          type: "run_node_action",
+          node_id: "skill-node",
+          action: "run_skill",
+        },
+      ],
+    };
+
+    const result = validateCanvasChatCommandEnvelopes(
+      [envelope],
+      [beatNode, pendingBackgroundNode, skillNode],
+      [
+        {
+          id: "edge-beat",
+          source: "beat-node",
+          target: "skill-node",
+          targetHandle: "beat_context",
+          data: { role: "beat_context" },
+        },
+        {
+          id: "edge-background",
+          source: "pending-background",
+          target: "skill-node",
+          targetHandle: "background",
+          data: { role: "background" },
+        },
+      ],
+    );
+
+    expect(result.ok).toBe(false);
+    expect(result.issues[0]?.message).toContain("action preconditions are not satisfied");
+    expect(result.issues[0]?.message).toContain("background");
+    expect(result.issues[0]?.message).toContain("imageUrl");
+  });
+
   it("rejects 3GS generation on director world nodes without an image upstream", () => {
     const worldNode = node({
       id: "world-node",
