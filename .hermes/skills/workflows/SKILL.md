@@ -18,7 +18,7 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 
 当用户问“有哪些工作流 / 有哪些工作流技能 / 我的工作流技能有哪些 / 支持哪些流程 / 有哪些模板 / workflow skill”时，必须优先调用 `freezone_list_workflows` 获取当前注册列表，再按工具结果回复。工具不可用时，只说明当前无法读取已注册工作流列表，不要编造固定数量。
 
-`freezone_list_workflows` 返回的 `workflow_type` 如果以 `catalog.` 开头，表示它来自内置与当前用户 `agent_config` 的 `skills/*.json` 与 `recipes/*.json` 配置。用户明确说“配置里的工作流 / JSON 工作流 / skills 和 recipes / 按配置创建 / 从 agent catalog 创建”时，优先选择匹配的 `catalog.*` workflow_type；不要改用同名的旧内置工作流。`catalog.*` 工作流会在节点 `prompt/content` 中写入 recipe 生成提示。
+`freezone_list_workflows` 返回的 `workflow_type` 如果以 `catalog.` 开头，表示它来自内置与当前用户 `agent_config` 的 `skills/*.json` 与 `recipes/*.json` 配置。用户明确说“配置里的工作流 / JSON 工作流 / skills 和 recipes / 按配置创建 / 从 agent catalog 创建”时，优先选择匹配的 `catalog.*` workflow_type；不要改用同名的旧内置工作流。`catalog.*` 工作流在创建阶段只会创建节点、连线、分组，并把 recipe 引用挂到节点 `workflowCatalog.promptBuilder`；不要把 recipe 正文、生成规则或“创建工作流”的用户意图当成最终 `prompt/content` 写入节点。
 
 用户用自然语言描述要创建 JSON/catalog 工作流，但没有明确指定唯一 `workflow_type` 时，必须先调用 `freezone_resolve_catalog_workflow`。如果结果中 `ambiguous=true`，或 `matched_skill_count > 1`，必须列出候选项并让用户选择；不要自动创建、不要自行按第一名继续。
 
@@ -26,8 +26,8 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 
 1. 先调用 `freezone_resolve_catalog_workflow`，传入用户原始描述，只返回命中的 JSON skill/template 候选，不创建节点。
 2. 向用户反馈推荐的 skill、template、命中原因和是否存在歧义，询问是否继续生成工作流计划。
-3. 用户确认后，调用 `freezone_build_workflow_plan`，传 `workflow_type` 为确认后的 `catalog.*`，并带上 `user_goal`。该计划会根据 workflow steps 编排节点，并把 matched recipe 的 prompt 写入各节点 `content/prompt/description`。
-4. 向用户反馈计划中的节点数量、关键阶段和 recipe prompt 已写入，询问是否继续落到画布。
+3. 用户确认后，调用 `freezone_build_workflow_plan`，传 `workflow_type` 为确认后的 `catalog.*`，并带上 `user_goal`。该计划会根据 workflow steps 编排节点，并把 matched recipe 的引用与 promptBuilder 元信息写入各节点 `workflowCatalog`；节点 `content/prompt/description` 只放轻量占位说明。
+4. 向用户反馈计划中的节点数量、关键阶段和 recipe 引用已挂载，询问是否继续落到画布。
 5. 用户确认后，调用 `freezone_create_workflow_graph` 创建画布节点、连线、布局和分组。
 
 如果 `freezone_resolve_catalog_workflow` 返回 `ambiguous=true`，或 `next_step.requires_user_selection=true`，必须让用户在候选项中选择；不要自动创建。只有用户明确给出唯一 `workflow_type`，或解析结果唯一且用户明确说“直接创建/添加/生成 JSON 配置工作流”时，才可以跳过中间解释，直接用命中的 `catalog.*` 调用 `freezone_create_workflow_graph`。
