@@ -422,12 +422,79 @@ describe("canvas action catalog", () => {
         action: "run_skill",
         execution: "frontend_node",
         command_type: "run_node_action",
+        can_run_now: true,
+        blocked_reasons: [],
         description: expect.stringContaining("Run this skill node"),
         parameters: {
           node_id: "skill-sketch-a",
           skill_id: "freezone.sketch_from_context",
           result_policy: "spawn_outputs",
         },
+      }),
+    );
+  });
+
+  it("marks run_skill blocked when connected sketch inputs have not produced imageUrl", () => {
+    const beat = node({
+      id: "beat-a",
+      type: CANVAS_NODE_TYPES.beatContext,
+      data: {
+        displayName: "镜头上下文",
+        beat_context: { episode: 1, beat: 2 },
+      },
+    });
+    const pendingSketch = node({
+      id: "sketch-a",
+      type: CANVAS_NODE_TYPES.imageGen,
+      data: {
+        displayName: "正在生成的草图",
+      },
+    });
+    const skill = node({
+      id: "skill-frame-a",
+      type: CANVAS_NODE_TYPES.skill,
+      data: {
+        displayName: "根据草图生成分镜",
+        skill_id: "freezone.frame_from_context",
+      },
+    });
+
+    const catalog = buildCanvasNodeActionCatalog(skill, {
+      nodes: [beat, pendingSketch, skill],
+      edges: [
+        {
+          id: "edge-beat",
+          source: beat.id,
+          target: skill.id,
+          targetHandle: "beat_context",
+          data: { role: "beat_context" },
+        },
+        {
+          id: "edge-sketch",
+          source: pendingSketch.id,
+          target: skill.id,
+          targetHandle: "sketch",
+          data: { role: "sketch" },
+        },
+      ],
+    });
+
+    expect(catalog.actions).toContainEqual(
+      expect.objectContaining({
+        action: "run_skill",
+        command_type: "run_node_action",
+        can_run_now: false,
+        blocked_reasons: ["sketch 输入尚未就绪：上游草图节点缺少 imageUrl。"],
+        instruction: expect.stringContaining("不要 emit run_node_action"),
+        preconditions: [
+          expect.objectContaining({
+            type: "required_upstream_output",
+            role: "sketch",
+            node_ids: ["sketch-a"],
+            required_field: "imageUrl",
+            status: "missing",
+          }),
+        ],
       }),
     );
   });
