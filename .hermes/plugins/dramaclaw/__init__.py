@@ -12,7 +12,7 @@ import os
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
-from urllib.parse import quote, urlencode
+from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
 from tools.registry import tool_error, tool_result
@@ -243,7 +243,7 @@ def _guard_freezone_mainline_write(tool_name: str, handler):
 def _available() -> bool:
     return bool(
         os.environ.get("DRAMACLAW_API_URL")
-        and os.environ.get("DRAMACLAW_AGENT_TOKEN")
+        and (os.environ.get("DRAMACLAW_AGENT_TOKEN") or _local_agent_trust_enabled())
     )
 
 
@@ -259,6 +259,31 @@ def _token() -> str:
     if not value:
         raise ValueError("DRAMACLAW_AGENT_TOKEN is not set")
     return value
+
+
+def _local_agent_trust_enabled() -> bool:
+    if os.environ.get("DRAMACLAW_LOCAL_AGENT_TRUST", "").strip().lower() not in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        return False
+    parsed = urlparse(os.environ.get("DRAMACLAW_API_URL", "").strip())
+    return (parsed.hostname or "").lower() in {"127.0.0.1", "::1", "localhost"}
+
+
+def _request_headers(user_agent: str) -> dict[str, str]:
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": user_agent,
+    }
+    token = os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
+    if token:
+        headers["Authorization"] = f"Bearer {token}"
+    elif not _local_agent_trust_enabled():
+        raise ValueError("DRAMACLAW_AGENT_TOKEN is not set")
+    return headers
 
 
 def _default_project_id() -> str:
@@ -340,11 +365,7 @@ def _request(method: str, path: str, *, query: Any = None, body: Any = None) -> 
     api_path = _normalize_api_path(path)
     url = f"{_base_url()}{api_path}{_query_string(query)}"
     payload = None
-    headers = {
-        "Authorization": f"Bearer {_token()}",
-        "Accept": "application/json",
-        "User-Agent": "dramaclaw-plugin/0.1.0",
-    }
+    headers = _request_headers("dramaclaw-plugin/0.1.0")
     if body is not None:
         payload = json.dumps(body, ensure_ascii=False).encode("utf-8")
         headers["Content-Type"] = "application/json"

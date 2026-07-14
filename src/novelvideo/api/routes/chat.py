@@ -127,6 +127,13 @@ class FreezoneCanvasAgentsIn(BaseModel):
     canvas_id: str
 
 
+class PendingCanvasCommandsIn(BaseModel):
+    project_id: str
+    canvas_id: str
+    agent_id: str | None = Field(default=None, validation_alias=AliasChoices("agent_id", "agentId"))
+    seen_keys: list[str] = []
+
+
 class CanvasCommandToolResultIn(BaseModel):
     turn_id: str | None = None
     bridge_key: str
@@ -1148,6 +1155,65 @@ def _load_pending_canvas_command(path: Any) -> dict[str, Any] | None:
         "canvas_id": payload.get("canvas_id") or envelope.get("canvas_id"),
         "envelope": envelope,
     }
+
+
+@router.post("/chat/pending-canvas-commands")
+async def list_pending_canvas_commands(
+    payload: PendingCanvasCommandsIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    username = str(user["username"])
+    project_id = payload.project_id.strip()
+    canvas_id = payload.canvas_id.strip()
+    if not project_id:
+        raise HTTPException(status_code=400, detail="project_id is required")
+    if not canvas_id:
+        raise HTTPException(status_code=400, detail="canvas_id is required")
+
+    agent_id = str(payload.agent_id or "main").strip() or "main"
+    seen_keys = {str(key) for key in payload.seen_keys if str(key).strip()}
+    scope = ChatScope(
+        kind="project",
+        id=project_id,
+        surface="freezone",
+        canvas_id=canvas_id,
+        agent_id=agent_id,
+    )
+    frames: list[dict[str, Any]] = []
+    for bridge_dir in _candidate_canvas_bridge_dirs_for_scope(username, scope):
+        try:
+            pending_paths = sorted(
+                bridge_dir.glob("*.pending.json"),
+                key=lambda item: item.stat().st_mtime,
+            )
+        except Exception:
+            continue
+        for path in pending_paths:
+            key = path.name.removesuffix(".pending.json")
+            if key in seen_keys:
+                continue
+            pending = _load_pending_canvas_command(path)
+            if pending is None:
+                continue
+            if pending.get("project_id") and pending.get("project_id") != project_id:
+                continue
+            if pending.get("canvas_id") and pending.get("canvas_id") != canvas_id:
+                continue
+            envelope = pending["envelope"]
+            frames.append(
+                {
+                    "type": "canvas.command",
+                    "turn_id": f"external-agent:{key}",
+                    "canvas_id": envelope.get("canvas_id") or canvas_id,
+                    "agent_id": agent_id,
+                    "bridge_key": key,
+                    "envelope": envelope,
+                    "source": "pending_canvas_bridge",
+                }
+            )
+            if len(frames) >= 10:
+                return {"ok": True, "data": {"frames": frames}}
+    return {"ok": True, "data": {"frames": frames}}
 
 
 def _load_pending_canvas_context(path: Any) -> dict[str, Any] | None:
