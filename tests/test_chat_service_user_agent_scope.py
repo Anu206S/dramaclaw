@@ -865,6 +865,27 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "must not emit Freezone canvas commands" in prompt
 
 
+def test_freezone_prompt_requires_summary_confirmation_for_canvas_workflow_skill(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "把当前流程保存成 Skill",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "[FREEZONE_SKILL_STUDIO]" in prompt
+    assert "current canvas, current flow, selected nodes, or existing workflow" in prompt
+    assert "ask 1-2 high-level confirmation questions first" in prompt
+    assert "preserve project-specific details or abstract them into a reusable Skill" in prompt
+    assert "split key steps into Recipes or merge them into fewer Recipes" in prompt
+    assert "freezone_request_user_clarification" in prompt
+
+
 def test_tool_mode_infers_freezone_from_frontend_canvas_injection():
     prompt = """加个视频节点
 

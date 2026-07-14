@@ -44,6 +44,7 @@ import {
   messageHasSkillStudioUiEventForTest,
   shouldHideSkillStudioStatusOnlyMessageForTest,
   shouldShowComposerWaitingIndicator,
+  skillStudioEvaluationDraftFieldsForTest,
   skillStudioEventsFromUiEventsForTest,
   visibleCanvasContextActivitiesForMessageForTest,
   visibleSkillStudioEventsForMessageForTest,
@@ -1512,6 +1513,9 @@ describe("Skill Studio draft response", () => {
       behaviorRules: "行为规则",
       passingScore: "通过分数线",
       domainRules: "领域规则",
+      ratingBands: "评分档位",
+      visualReviewItems: "视觉评审项",
+      textReviewItems: "文案评审项",
     });
     expect(skillStudioDraftFieldLabelsForTest.recipe).toMatchObject({
       output_kind: "生成类型",
@@ -1531,6 +1535,39 @@ describe("Skill Studio draft response", () => {
     for (const legacyKey of legacyRecipeKeys) {
       expect(skillStudioDraftFieldLabelsForTest.recipe).not.toHaveProperty(legacyKey);
     }
+  });
+
+  it("maps canonical evaluation fields for draft display", () => {
+    const fields = skillStudioEvaluationDraftFieldsForTest({
+      quality_threshold: 7,
+      domain_constraints: ["必须为竖版 9:16 比例"],
+      rating_bands: [
+        { score: 8, description: "风格统一且文化元素表达准确" },
+      ],
+      visual_review_items: [
+        { name: "风格一致性", weight: 0.35, description: "是否符合国潮视觉风格" },
+      ],
+      text_review_items: [
+        { name: "文案传播力", weight: 0.4, description: "标题是否有记忆点" },
+      ],
+      passingScore: 5,
+      domainRules: ["旧字段不应显示"],
+      scoreAnchors: [{ score: 10, description: "旧字段不应显示" }],
+      visual: {
+        dimensions: [{ name: "旧视觉字段", weight: 1, description: "不应显示" }],
+      },
+      text: {
+        dimensions: [{ name: "旧文案字段", weight: 1, description: "不应显示" }],
+      },
+    });
+
+    expect(fields).toEqual({
+      qualityThreshold: 7,
+      domainConstraints: ["必须为竖版 9:16 比例"],
+      ratingBands: ["8：风格统一且文化元素表达准确"],
+      visualReviewItems: ["风格一致性（0.35）：是否符合国潮视觉风格"],
+      textReviewItems: ["文案传播力（0.4）：标题是否有记忆点"],
+    });
   });
 
   it("builds a bridge tool result with the edited draft payload", () => {

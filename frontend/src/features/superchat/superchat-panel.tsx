@@ -2053,6 +2053,9 @@ const skillStudioDraftFieldLabels = {
     behaviorRules: "行为规则",
     passingScore: "通过分数线",
     domainRules: "领域规则",
+    ratingBands: "评分档位",
+    visualReviewItems: "视觉评审项",
+    textReviewItems: "文案评审项",
   },
   recipe: {
     id: "ID",
@@ -2217,6 +2220,73 @@ function stringListField(...values: unknown[]): string[] {
   return [];
 }
 
+function skillStudioRatingBandList(value: unknown): string[] {
+  return getRecordArray(value)
+    .map((item) => {
+      const score = typeof item.score === "number" && Number.isFinite(item.score)
+        ? String(item.score)
+        : textField(item.score);
+      const description = textField(item.description);
+      if (score && description) return `${score}：${description}`;
+      return description || score;
+    })
+    .filter(Boolean);
+}
+
+function parseSkillStudioRatingBandList(value: string[]): Array<Record<string, unknown>> {
+  return value.map((item) => {
+    const [scoreText, ...descriptionParts] = item.split(/[：:]/u);
+    const description = descriptionParts.join("：").trim();
+    const score = Number(scoreText.trim());
+    if (Number.isFinite(score) && description) {
+      return { score, description };
+    }
+    return { score: Number.isFinite(score) ? score : 0, description: item.trim() };
+  });
+}
+
+function skillStudioReviewItemList(value: unknown): string[] {
+  return getRecordArray(value)
+    .map((item) => {
+      const name = textField(item.name);
+      const weight = typeof item.weight === "number" && Number.isFinite(item.weight)
+        ? String(item.weight)
+        : textField(item.weight);
+      const description = textField(item.description);
+      const prefix = weight ? `${name}（${weight}）` : name;
+      if (prefix && description) return `${prefix}：${description}`;
+      return description || prefix;
+    })
+    .filter(Boolean);
+}
+
+function parseSkillStudioReviewItemList(value: string[]): Array<Record<string, unknown>> {
+  return value.map((item) => {
+    const [nameAndWeight, ...descriptionParts] = item.split(/[：:]/u);
+    const description = descriptionParts.join("：").trim();
+    const weightMatch = nameAndWeight.match(/^(.*?)（([^）]+)）$/u);
+    const name = (weightMatch?.[1] ?? nameAndWeight).trim();
+    const weight = weightMatch ? Number(weightMatch[2].trim()) : undefined;
+    return {
+      name,
+      ...(Number.isFinite(weight) ? { weight } : {}),
+      description,
+    };
+  });
+}
+
+function skillStudioEvaluationDraftFields(evaluation: Record<string, unknown>) {
+  return {
+    qualityThreshold: evaluation.quality_threshold,
+    domainConstraints: stringListField(evaluation.domain_constraints),
+    ratingBands: skillStudioRatingBandList(evaluation.rating_bands),
+    visualReviewItems: skillStudioReviewItemList(evaluation.visual_review_items),
+    textReviewItems: skillStudioReviewItemList(evaluation.text_review_items),
+  };
+}
+
+export const skillStudioEvaluationDraftFieldsForTest = skillStudioEvaluationDraftFields;
+
 function getRecord(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
@@ -2259,6 +2329,12 @@ function optionalFiniteNumber(value: unknown): number | undefined {
     if (Number.isFinite(parsed)) return parsed;
   }
   return undefined;
+}
+
+function numberOrRawText(value: string): number | string {
+  if (!value.trim()) return "";
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : value;
 }
 
 function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): FreezoneAgentConfigPayload {
@@ -3602,6 +3678,7 @@ function SkillStudioDraftCard({
   const triggers = getRecord(skill.triggers);
   const planning = getRecord(skill.planning);
   const evaluation = getRecord(skill.evaluation);
+  const evaluationFields = skillStudioEvaluationDraftFields(evaluation);
   const workflowTemplates = getRecordArray(skill.workflow_templates ?? skill.workflowTemplates);
   const syncDraftObject = useCallback((updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
     setDraftObject((current) => {
@@ -3893,22 +3970,49 @@ function SkillStudioDraftCard({
             <label>
               <span className={labelClass}>{skillStudioDraftFieldLabels.skill.passingScore}</span>
               <Input
-                value={textField(evaluation.passingScore)}
+                value={String(evaluationFields.qualityThreshold ?? "")}
                 disabled={readOnly}
-                onChange={(changeEvent) => updateNestedSkillField("evaluation", "passingScore", Number(changeEvent.target.value) || changeEvent.target.value)}
+                onChange={(changeEvent) => updateNestedSkillField("evaluation", "quality_threshold", numberOrRawText(changeEvent.target.value))}
                 className={fieldClass}
               />
             </label>
             <label>
 	              <span className={labelClass}>{skillStudioDraftFieldLabels.skill.domainRules}</span>
 	              <Input
-	                value={listText(evaluation.domain_constraints ?? evaluation.domainRules)}
+	                value={listText(evaluationFields.domainConstraints)}
 	                disabled={readOnly}
-	                onChange={(changeEvent) => updateNestedSkillField("evaluation", "domain_constraints", parseListText(changeEvent.target.value), ["domainRules"])}
+	                onChange={(changeEvent) => updateNestedSkillField("evaluation", "domain_constraints", parseListText(changeEvent.target.value))}
 	                placeholder="用顿号、逗号或换行分隔"
 	                className={fieldClass}
 	              />
             </label>
+            <div className="md:col-span-2">
+              <SkillStudioListField
+                label={skillStudioDraftFieldLabels.skill.ratingBands}
+                value={evaluationFields.ratingBands}
+                disabled={readOnly}
+                onChange={(value) => updateNestedSkillField("evaluation", "rating_bands", parseSkillStudioRatingBandList(value))}
+                placeholder="如：8：风格统一且文化元素准确"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <SkillStudioListField
+                label={skillStudioDraftFieldLabels.skill.visualReviewItems}
+                value={evaluationFields.visualReviewItems}
+                disabled={readOnly}
+                onChange={(value) => updateNestedSkillField("evaluation", "visual_review_items", parseSkillStudioReviewItemList(value))}
+                placeholder="如：风格一致性（0.35）：是否符合视觉风格"
+              />
+            </div>
+            <div className="md:col-span-2">
+              <SkillStudioListField
+                label={skillStudioDraftFieldLabels.skill.textReviewItems}
+                value={evaluationFields.textReviewItems}
+                disabled={readOnly}
+                onChange={(value) => updateNestedSkillField("evaluation", "text_review_items", parseSkillStudioReviewItemList(value))}
+                placeholder="如：文案传播力（0.4）：标题是否有记忆点"
+              />
+            </div>
           </div>
         </details>
       </div>
