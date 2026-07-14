@@ -466,6 +466,7 @@ def _prompt_with_user_context(
     *,
     tool_mode: str = "default",
     surface_context: dict[str, Any] | None = None,
+    route_prompt: str | None = None,
 ) -> str:
     preferences = load_user_preferences(username)
     scope = f"project:{project}" if project else "home"
@@ -480,7 +481,7 @@ def _prompt_with_user_context(
     )
     surface_instructions = (
         f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}"
-        f"{_freezone_skill_studio_context(username, prompt)}"
+        f"{_freezone_skill_studio_context(username, route_prompt if route_prompt is not None else prompt)}"
         f"{canvas_context}"
         if tool_mode == "freezone_canvas"
         else ""
@@ -3500,6 +3501,7 @@ async def stream_assistant_reply(
     surface_context: dict[str, Any] | None = None,
     store_scope: Any | None = None,
     turn_id: str | None = None,
+    route_prompt: str | None = None,
 ) -> dict[str, Any]:
     tool_mode = _tool_mode_for_surface(
         surface,
@@ -3549,6 +3551,7 @@ async def stream_assistant_reply(
                 surface_context=surface_context,
                 store_scope=store_scope,
                 turn_id=turn_id,
+                route_prompt=route_prompt,
             )
         if backend != "claude":
             raise RuntimeError(f"Unsupported chat backend: {backend}")
@@ -3674,6 +3677,7 @@ async def _stream_assistant_reply_hermes(
     surface_context: dict[str, Any] | None = None,
     store_scope: Any | None = None,
     turn_id: str | None = None,
+    route_prompt: str | None = None,
 ) -> dict[str, Any]:
     """Stream via Hermes ACP subprocess (per-user, sandboxed).
 
@@ -3695,6 +3699,7 @@ async def _stream_assistant_reply_hermes(
         prompt,
         tool_mode=tool_mode,
         surface_context=surface_context,
+        route_prompt=route_prompt,
     )
     thread = await _hermes_pool.get_for_user(
         username,

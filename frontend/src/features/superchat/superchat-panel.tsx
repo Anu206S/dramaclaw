@@ -7727,6 +7727,7 @@ export function SuperChatPanel({
   );
 
   useEffect(() => {
+    if (variant === "freezone") return;
     const project = params.project?.trim();
     if (!project) return;
     return taskEventBus.on("*", (event) => {
@@ -7745,7 +7746,7 @@ export function SuperChatPanel({
           : `${label}失败：${event.task.error || event.task.current_task || "未提供具体错误原因"}\n请根据错误处理前置条件后再继续。`;
       void chat.appendNotification(text);
     });
-  }, [chat.appendNotification, params.project, t, taskEventBus]);
+  }, [chat.appendNotification, params.project, t, taskEventBus, variant]);
 
   const appendCanvasCommandFeedback = useCallback((
     messageId: string,

@@ -800,6 +800,30 @@ def test_freezone_prompt_omits_skill_studio_contract_for_normal_canvas_requests(
     assert "freezone_present_agent_catalog_draft" not in prompt
 
 
+def test_freezone_prompt_routes_skill_studio_by_user_text_not_canvas_context(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        (
+            "查看下当前节点详情然后返回ok\n\n"
+            "[SUPERTALE_CANVAS_NODE_REFERENCES]\n"
+            "node_type: skillNode\n"
+            "available_actions: add_next_node, run_skill\n"
+            "[/SUPERTALE_CANVAS_NODE_REFERENCES]"
+        ),
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+        route_prompt="查看下当前节点详情然后返回ok",
+    )
+
+    assert "[FREEZONE_SKILL_STUDIO]" not in prompt
+    assert "freezone_present_agent_catalog_draft" not in prompt
+    assert "node_type: skillNode" in prompt
+    assert "available_actions: add_next_node, run_skill" in prompt
+
+
 def test_freezone_prompt_includes_clarification_card_rule_for_interactive_questions(
     monkeypatch, tmp_path
 ):
