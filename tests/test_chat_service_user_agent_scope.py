@@ -1673,6 +1673,51 @@ def test_extract_tool_chat_error_maps_ok_false_without_error_text():
     )
 
 
+def test_freezone_suppresses_status_only_tool_lifecycle_failure():
+    payload = {
+        "sessionUpdate": "tool_call_update",
+        "status": "failed",
+    }
+
+    assert chat_service._suppress_freezone_tool_lifecycle_error(
+        payload,
+        tool_mode="freezone_canvas",
+    )
+    assert not chat_service._suppress_freezone_tool_lifecycle_error(
+        payload,
+        tool_mode="default",
+    )
+
+
+def test_freezone_keeps_tool_lifecycle_failure_with_business_payload():
+    payload = {
+        "sessionUpdate": "tool_call_update",
+        "status": "failed",
+        "result": {
+            "status": "failed",
+            "error": "前端桥接执行失败",
+        },
+    }
+
+    assert not chat_service._suppress_freezone_tool_lifecycle_error(
+        payload,
+        tool_mode="freezone_canvas",
+    )
+
+
+def test_freezone_strips_status_only_lifecycle_failure_prefix():
+    text = "任务执行失败：当前状态为 failed。\n\n已触发「Sketch from selected background」技能。"
+
+    assert chat_service._strip_freezone_tool_lifecycle_failure_text(
+        text,
+        tool_mode="freezone_canvas",
+    ) == "已触发「Sketch from selected background」技能。"
+    assert chat_service._strip_freezone_tool_lifecycle_failure_text(
+        text,
+        tool_mode="default",
+    ) == text
+
+
 def test_append_tool_ui_specs_adds_block_when_model_did_not_write_one():
     spec = {
         "type": "character_showcase",

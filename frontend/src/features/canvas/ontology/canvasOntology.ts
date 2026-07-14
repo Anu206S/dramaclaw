@@ -81,7 +81,9 @@ export type CanvasOntologySummaryObject = Pick<
 
 export type CanvasOntologySummaryActionNode = {
   node_id: string;
-  action_id: string;
+  skill_id: string;
+  action: "run_skill";
+  command_type: "run_node_action";
   label: string;
   execution_state: string | null;
 };
@@ -328,7 +330,9 @@ export function buildCanvasOntologySummary(
       .slice(0, 20)
       .map((object) => ({
         node_id: object.node_id,
-        action_id: object.action_id ?? "",
+        skill_id: object.action_id ?? "",
+        action: "run_skill" as const,
+        command_type: "run_node_action" as const,
         label: object.label,
         execution_state: object.execution_state,
       })),

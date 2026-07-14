@@ -1951,6 +1951,10 @@ async def _stream_home_turn(
             previous_assistant,
             text,
         ).strip()
+        final_text = chat_service._strip_freezone_tool_lifecycle_failure_text(
+            final_text,
+            tool_mode="freezone_canvas" if _is_freezone_scope(scope) else "default",
+        ).strip()
         if not final_text:
             return None
         message = chat_store.append_message(username, scope, "assistant", final_text)
@@ -1987,6 +1991,10 @@ async def _stream_home_turn(
                     previous_assistant,
                     text,
                     suppress_partial_replay=True,
+                )
+                display_text = chat_service._strip_freezone_tool_lifecycle_failure_text(
+                    display_text,
+                    tool_mode="freezone_canvas" if _is_freezone_scope(scope) else "default",
                 )
                 assistant_sent_text = display_text
                 await _send_json_best_effort(
@@ -2025,6 +2033,10 @@ async def _stream_home_turn(
             assistant_text,
             previous_assistant,
             text,
+        )
+        assistant_text = chat_service._strip_freezone_tool_lifecycle_failure_text(
+            assistant_text,
+            tool_mode="freezone_canvas" if _is_freezone_scope(scope) else "default",
         )
         assistant_text = assistant_text.strip() or EMPTY_AGENT_REPLY_MESSAGE
         message = chat_store.append_message(username, scope, "assistant", assistant_text)
