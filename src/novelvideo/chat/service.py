@@ -1725,6 +1725,44 @@ def _extract_tool_chat_error(value: Any) -> str | None:
     return visit(value)
 
 
+def _suppress_freezone_tool_lifecycle_error(value: Any, *, tool_mode: str) -> bool:
+    """Ignore Hermes lifecycle-only failures for Freezone canvas bridge tools.
+
+    Freezone canvas commands are resolved by the frontend bridge result.  A
+    bare Hermes ``tool_call_update.status=failed`` can be transient lifecycle
+    noise and must not be surfaced as the canvas command result.
+    """
+    if tool_mode != "freezone_canvas" or not isinstance(value, dict):
+        return False
+    if value.get("sessionUpdate") != "tool_call_update":
+        return False
+    status = str(value.get("status") or "").strip().lower()
+    if status not in {"failed", "error", "cancelled", "canceled"}:
+        return False
+    business_payload_keys = {
+        "chat_error",
+        "error",
+        "detail",
+        "message",
+        "result",
+        "content",
+        "data",
+        "output",
+    }
+    return not any(key in value for key in business_payload_keys)
+
+
+def _strip_freezone_tool_lifecycle_failure_text(text: str, *, tool_mode: str) -> str:
+    if tool_mode != "freezone_canvas":
+        return text
+    return re.sub(
+        r"\A\s*任务执行失败：当前状态为\s+(?:failed|error|cancelled|canceled)。\s*",
+        "",
+        text,
+        flags=re.IGNORECASE,
+    ).lstrip()
+
+
 def _ui_spec_json(spec: dict[str, Any]) -> tuple[str, str]:
     canonical = _canonicalize_ui_spec(spec)
     spec_type = canonical.get("type") if isinstance(canonical.get("type"), str) else "ui_spec"
@@ -3808,6 +3846,10 @@ async def _stream_assistant_reply_hermes(
                     prompt,
                     suppress_partial_replay=True,
                 )
+                streamed_text = _strip_freezone_tool_lifecycle_failure_text(
+                    streamed_text,
+                    tool_mode=tool_mode,
+                )
                 streamed_text = _redact_local_filesystem_paths(streamed_text)
                 await _emit_chat_event_best_effort(
                     on_event,
@@ -3819,7 +3861,12 @@ async def _stream_assistant_reply_hermes(
                 continue
             if event.type == "tool_update":
                 if event.raw is not None:
-                    tool_chat_error = _extract_tool_chat_error(event.raw)
+                    tool_chat_error = None
+                    if not _suppress_freezone_tool_lifecycle_error(
+                        event.raw,
+                        tool_mode=tool_mode,
+                    ):
+                        tool_chat_error = _extract_tool_chat_error(event.raw)
                     if tool_chat_error and tool_chat_error not in seen_tool_chat_errors:
                         seen_tool_chat_errors.add(tool_chat_error)
                         assistant_text = _merge_stream_text(
@@ -3893,6 +3940,10 @@ async def _stream_assistant_reply_hermes(
                     continue
                 assistant_text = _completion_text_or_existing(event.text, assistant_text)
 
+        assistant_text = _strip_freezone_tool_lifecycle_failure_text(
+            assistant_text,
+            tool_mode=tool_mode,
+        )
         if not assistant_text.strip():
             assistant_text = "这轮操作没有收到虾导的有效回复，请稍后重试。"
         if not tool_ui_specs and not fallback_tool_ui_specs:

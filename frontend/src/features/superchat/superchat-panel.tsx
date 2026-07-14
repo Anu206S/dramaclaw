@@ -9350,8 +9350,7 @@ export function SuperChatPanel({
   }, [chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, updateChatUiEvent]);
 
   const handleComposerKeyDown = (event: ReactKeyboardEvent) => {
-    if (event.key !== "Enter" || event.shiftKey) return;
-    if (event.defaultPrevented) return;
+    if (!shouldSubmitComposerEnter(event)) return;
     const target = event.target as HTMLElement | null;
     if (
       target &&

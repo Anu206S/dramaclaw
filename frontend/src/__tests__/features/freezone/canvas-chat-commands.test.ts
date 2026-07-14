@@ -638,6 +638,20 @@ describe("canvas chat commands", () => {
       { role: "background" },
       { targetHandle: "background" },
     );
+    const attachment = buildCanvasNodeReferenceAttachment(
+      "project-a",
+      "canvas-a",
+      useCanvasStore.getState().nodes.filter((node) => node.id === skillId),
+      useCanvasStore.getState().edges,
+      useCanvasStore.getState().nodes,
+    );
+    if (!attachment) throw new Error("test attachment was not created");
+    const referenceContext = buildCanvasNodeReferenceContext([attachment]);
+
+    expect(referenceContext).toContain('"action":"run_skill"');
+    expect(referenceContext).toContain('"command_type":"run_node_action"');
+    expect(referenceContext).toContain('"skill_id":"freezone.sketch_from_context"');
+
     const events: Array<{ nodeId: string; action: string }> = [];
     const unsubscribe = canvasEventBus.subscribe(
       "freezone/run-node-action",

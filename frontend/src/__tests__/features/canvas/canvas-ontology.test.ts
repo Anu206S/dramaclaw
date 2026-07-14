@@ -293,7 +293,9 @@ describe("canvas ontology", () => {
     expect(summary.action_nodes).toEqual([
       {
         node_id: "skill-node",
-        action_id: "freezone.frame_from_context",
+        skill_id: "freezone.frame_from_context",
+        action: "run_skill",
+        command_type: "run_node_action",
         label: "从镜头上下文生成分镜",
         execution_state: null,
       },

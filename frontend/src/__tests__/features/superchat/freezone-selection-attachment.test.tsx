@@ -506,6 +506,32 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     expect(superChatMocks.send).not.toHaveBeenCalled();
   });
 
+  it("does not submit when Enter confirms an IME composition candidate", () => {
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    const input = screen.getByPlaceholderText("想画什么、改哪里，直接告诉虾画");
+    fireEvent.change(input, { target: { value: "查看下当前画布summary 然后返回ok" } });
+    fireEvent.keyDown(input, {
+      key: "Enter",
+      code: "Enter",
+      keyCode: 229,
+      nativeEvent: { isComposing: true, keyCode: 229 },
+    });
+
+    expect(superChatMocks.send).not.toHaveBeenCalled();
+  });
+
   it("reveals user message actions below the bubble and copies with the legacy clipboard fallback", () => {
     superChatMocks.messages = [
       {

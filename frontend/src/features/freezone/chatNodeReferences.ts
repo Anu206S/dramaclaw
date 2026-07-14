@@ -1896,6 +1896,9 @@ function compactActionSummary(
       }))
     : [];
   return {
+    ...(typeof catalog.skill_id === "string" && catalog.skill_id.trim()
+      ? { skill_id: catalog.skill_id.trim() }
+      : {}),
     downstream_spawn_types: Array.isArray(catalog.downstream_spawn_types)
       ? catalog.downstream_spawn_types
       : [],
