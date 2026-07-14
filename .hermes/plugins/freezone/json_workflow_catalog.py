@@ -489,12 +489,11 @@ def _build_plan(
         )
         recipe = recipes.get(operation_type) if operation_type else None
         node_type = _node_type_for_step(step, recipe)
-        prompt = _compose_node_prompt(
+        placeholder = _compose_node_placeholder(
             skill=skill,
             template=template,
             step=step,
             recipe=recipe,
-            user_goal=user_goal,
         )
         recipe_settings = _recipe_settings(recipe)
         prompt_builder = _prompt_builder(
@@ -511,9 +510,9 @@ def _build_plan(
         data = {
             "displayName": label,
             "title": label,
-            "content": prompt,
-            "prompt": prompt,
-            "description": prompt,
+            "content": placeholder,
+            "prompt": placeholder,
+            "description": placeholder,
             "workflowCatalog": {
                 "skillId": skill_id,
                 "templateId": template_id,
@@ -535,13 +534,13 @@ def _build_plan(
         if aspect_ratio:
             data["aspectRatio"] = aspect_ratio
         if node_type == "audioNode":
-            data.setdefault("text", prompt)
+            data.setdefault("text", placeholder)
         nodes.append(
             {
                 "id": step_id,
                 "node_type": node_type,
                 "label": label,
-                "description": prompt,
+                "description": placeholder,
                 "stage": _stage_for_step(step, node_type),
                 "data": data,
             }
@@ -580,33 +579,36 @@ def _build_plan(
     }
 
 
-def _compose_node_prompt(
+def _compose_node_placeholder(
     *,
     skill: dict[str, Any],
     template: dict[str, Any],
     step: dict[str, Any],
     recipe: dict[str, Any] | None,
-    user_goal: str,
 ) -> str:
     goal = _text(_get(step, "goalTemplate", "goal_template")) or _text(step.get("id"))
     recipe_name = _text(recipe.get("name") if recipe else "")
     operation_type = _text(
         _get(step, "operationType", "operation_type", "actionKey", "action_key")
     )
-    prompt_strategy = _text(_get(step, "promptStrategy", "prompt_strategy"))
-    system_prompt = _text(_get(recipe, "system_prompt")) if recipe else ""
-    is_prompt_recipe = _looks_like_prompt_recipe(system_prompt)
-    if prompt_strategy == "user_message":
-        return user_goal
-    if prompt_strategy == "llm_refine" or is_prompt_recipe:
-        target = goal or recipe_name or operation_type or "当前节点"
-        return (
-            f"主题：{user_goal}\n"
-            f"任务：{target}\n"
-            "根据用户需求和上游节点内容生成最终可执行内容。"
-            "具体生成规则已保存到 workflowCatalog.promptBuilder。"
-        ).strip()
-    return goal or recipe_name or operation_type or user_goal
+    target = goal or recipe_name or operation_type or "当前节点"
+    output_kind = (
+        _text(_get(recipe, "output_kind", "generationType", "generation_type"))
+        if recipe
+        else ""
+    )
+    if output_kind == "image":
+        action = "生成图片"
+    elif output_kind == "video":
+        action = "生成视频"
+    elif output_kind == "audio":
+        action = "生成音频"
+    else:
+        action = "生成内容"
+    return (
+        f"待{action}：{target}\n"
+        "运行节点时会根据 workflowCatalog.promptBuilder 中的 recipe 引用、用户目标和上游节点内容生成最终提示词。"
+    ).strip()
 
 
 def _recipe_settings(recipe: dict[str, Any] | None) -> dict[str, Any]:

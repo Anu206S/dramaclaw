@@ -479,7 +479,9 @@ def test_freezone_catalog_recipe_fields_are_separated_from_node_prompt():
     assert "【用户需求】" not in data["prompt"]
     assert "【规划提示】" not in data["prompt"]
     assert "【期望输出】" not in data["prompt"]
-    assert data["prompt"] == "创建一个电商产品广告视频工作流"
+    assert "创建一个电商产品广告视频工作流" not in data["prompt"]
+    assert data["prompt"].startswith("待生成内容：生成广告创意大纲")
+    assert "workflowCatalog.promptBuilder" in data["prompt"]
     assert catalog["recipeSettings"]["outputKind"] == "text"
     assert catalog["recipeSettings"]["requiresSourceMedia"] is True
     assert catalog["promptBuilder"]["recipeId"] == "video-ad-creative-outline"
@@ -505,8 +507,11 @@ def test_freezone_catalog_recipe_fields_are_separated_from_node_prompt():
         if item["data"].get("workflowCatalog", {}).get("operationType")
         == "video-storyboard-grid"
     )
-    assert "创建一个电商产品广告视频工作流" in image_node["data"]["prompt"]
-    assert "任务：将广告脚本中的所有 Shot 合成为多宫格分镜图" in image_node["data"]["prompt"]
+    assert "创建一个电商产品广告视频工作流" not in image_node["data"]["prompt"]
+    assert image_node["data"]["prompt"].startswith(
+        "待生成图片：将广告脚本中的所有 Shot 合成为多宫格分镜图"
+    )
+    assert "workflowCatalog.promptBuilder" in image_node["data"]["prompt"]
 
 
 def test_freezone_canvas_command_slim_result_omits_large_details():

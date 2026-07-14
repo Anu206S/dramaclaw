@@ -1840,12 +1840,6 @@ def _emit_canvas_commands(
         return _emit_command_error(
             project, canvas, "empty_commands", "commands must be a non-empty array"
         )
-    project, canvas, scope_error = _resolve_canvas_scope_for_write(project, canvas)
-    if scope_error:
-        return scope_error
-    shape_error = _validate_write_commands_shape(project, canvas, commands)
-    if shape_error:
-        return shape_error
     if (
         not allow_registered_workflow_batch
         and _looks_like_manual_registered_workflow_batch(commands)
@@ -1862,6 +1856,12 @@ def _emit_canvas_commands(
                 "with workflow_type/workflow_types. If it is ambiguous, ask the user to choose."
             ),
         )
+    project, canvas, scope_error = _resolve_canvas_scope_for_write(project, canvas)
+    if scope_error:
+        return scope_error
+    shape_error = _validate_write_commands_shape(project, canvas, commands)
+    if shape_error:
+        return shape_error
     if _mcp_direct_canvas_apply_enabled():
         needs_approval, approval_reasons = _approval_required_for_commands(commands)
         if _mcp_canvas_approval_enabled() and needs_approval:
