@@ -1427,6 +1427,7 @@ function CanvasContextActivityCard({ activity }: { activity: CanvasContextActivi
   const [expanded, setExpanded] = useState(false);
   const failed = activity.status === "failed";
   const running = activity.status === "running";
+  const visualTone = canvasContextActivityVisualTone(activity);
   const label = activity.labels.length > 0 ? activity.labels.join("、") : "画布上下文";
   const isThinking = activity.labels.includes(CANVAS_CONTEXT_THINKING_LABEL);
   const isValidation = canvasContextActivityIsValidation(activity);
@@ -1445,7 +1446,7 @@ function CanvasContextActivityCard({ activity }: { activity: CanvasContextActivi
           ? `读取${label}失败`
           : `已读取${label}`;
   return (
-    <div className={cn("mt-2 w-fit max-w-full rounded-md px-0 py-1 text-xs", failed ? "text-amber-300/90" : "text-muted-foreground")}>
+    <div className={cn("mt-2 w-fit max-w-full rounded-md px-0 py-1 text-xs", visualTone === "warning" ? "text-amber-300/90" : "text-muted-foreground")}>
       <button
         type="button"
         className={cn("flex max-w-full items-center gap-2 text-left", hasErrors && "cursor-pointer")}
@@ -1588,6 +1589,25 @@ function canvasCommandFeedbackIsInvalidCommand(feedback: CanvasCommandFeedback):
   return (feedback.commandResults ?? []).some((step) => step.label === "画布命令无效");
 }
 
+type CanvasFeedbackVisualTone = "muted" | "warning" | "destructive" | "success";
+
+function canvasContextActivityVisualTone(activity: CanvasContextActivity): CanvasFeedbackVisualTone {
+  if (activity.status === "failed") {
+    return canvasContextActivityIsValidation(activity) ? "muted" : "warning";
+  }
+  return "muted";
+}
+
+export const canvasContextActivityVisualToneForTest = canvasContextActivityVisualTone;
+
+function canvasCommandFeedbackVisualTone(feedback: CanvasCommandFeedback): CanvasFeedbackVisualTone {
+  const failed = canvasCommandFeedbackHasFailure(feedback);
+  if (!failed) return "success";
+  return canvasCommandFeedbackIsValidationOnly(feedback) ? "muted" : "destructive";
+}
+
+export const canvasCommandFeedbackVisualToneForTest = canvasCommandFeedbackVisualTone;
+
 function canvasCommandFeedbackCompactTitle(feedback: CanvasCommandFeedback): string {
   const firstFailedStep = (feedback.commandResults ?? []).find((step) => step.status !== "success");
   const firstPlan = feedback.plans?.[0];
@@ -1605,6 +1625,8 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
   if (steps.length === 0 && successfulCount === 0 && feedback.errors.length === 0) return null;
   const failed = canvasCommandFeedbackHasFailure(feedback);
   const invalidCommand = canvasCommandFeedbackIsInvalidCommand(feedback);
+  const visualTone = canvasCommandFeedbackVisualTone(feedback);
+  const mutedFailure = failed && visualTone === "muted";
   const initiallyCompact = failed && successfulCount === 0;
   const collapseSuccessfulDetails = !failed && steps.length > 2;
   const compactTitle = canvasCommandFeedbackCompactTitle(feedback);
@@ -1622,7 +1644,16 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
         data-canvas-command-feedback-key={feedback.key}
         data-canvas-command-feedback-signature={canvasCommandFeedbackDedupeKey(feedback)}
         onClick={() => setExpanded(true)}
-        className={cn("mt-2 flex w-fit max-w-full items-center gap-1.5 rounded-md px-0 py-1 text-left text-xs font-medium", collapseSuccessfulDetails ? "text-emerald-300/90 hover:text-emerald-200" : invalidCommand ? "text-amber-300/90 hover:text-amber-200" : "text-destructive/90 hover:text-destructive")}
+        className={cn(
+          "mt-2 flex w-fit max-w-full items-center gap-1.5 rounded-md px-0 py-1 text-left text-xs font-medium",
+          collapseSuccessfulDetails
+            ? "text-emerald-300/90 hover:text-emerald-200"
+            : mutedFailure
+              ? "text-muted-foreground hover:text-foreground/80"
+              : invalidCommand
+                ? "text-amber-300/90 hover:text-amber-200"
+                : "text-destructive/90 hover:text-destructive",
+        )}
       >
         <span className="truncate">{collapseSuccessfulDetails ? `画布执行完成，已执行 ${successfulCount} 项` : compactTitle}</span>
         <ChevronRight className="size-3.5 shrink-0" />
@@ -1632,7 +1663,16 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
 
   return (
     <div
-      className={cn("mt-3 w-full min-w-0 overflow-hidden rounded-xl border text-xs text-muted-foreground", invalidCommand ? "border-amber-400/20 bg-amber-400/[0.035]" : failed ? "border-destructive/20 bg-destructive/[0.035]" : "border-white/[0.10] bg-background/90 backdrop-blur-sm")}
+      className={cn(
+        "mt-3 w-full min-w-0 overflow-hidden rounded-xl border text-xs text-muted-foreground",
+        mutedFailure
+          ? "border-white/[0.10] bg-background/80 backdrop-blur-sm"
+          : invalidCommand
+            ? "border-amber-400/20 bg-amber-400/[0.035]"
+            : failed
+              ? "border-destructive/20 bg-destructive/[0.035]"
+              : "border-white/[0.10] bg-background/90 backdrop-blur-sm",
+      )}
       data-canvas-command-feedback-key={feedback.key}
       data-canvas-command-feedback-signature={canvasCommandFeedbackDedupeKey(feedback)}
     >
@@ -1647,7 +1687,14 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
       {expanded && <CanvasCommandPlanList plans={feedback.plans} />}
       <div className="space-y-1 px-3 py-2">
         {userFailureMessage && (
-          <div className={cn("mb-1 rounded-md px-2 py-1.5 leading-5", invalidCommand ? "bg-amber-400/[0.06] text-amber-100/90" : "bg-destructive/[0.06] text-destructive")}>
+          <div className={cn(
+            "mb-1 rounded-md px-2 py-1.5 leading-5",
+            mutedFailure
+              ? "bg-white/[0.035] text-muted-foreground"
+              : invalidCommand
+                ? "bg-amber-400/[0.06] text-amber-100/90"
+                : "bg-destructive/[0.06] text-destructive",
+          )}>
             {userFailureMessage}
           </div>
         )}
@@ -1655,9 +1702,9 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
           const ok = step.status === "success";
           return (
             <div key={`${step.commandIndex}-${step.type}-${step.nodeId ?? ""}-${step.action ?? ""}-${index}`} className="flex items-start gap-2 leading-5">
-              {ok ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-400" /> : <AlertCircle className={cn("mt-0.5 size-3.5 shrink-0", invalidCommand ? "text-amber-300" : "text-destructive")} />}
+              {ok ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-400" /> : <AlertCircle className={cn("mt-0.5 size-3.5 shrink-0", mutedFailure ? "text-muted-foreground" : invalidCommand ? "text-amber-300" : "text-destructive")} />}
               <div className="min-w-0 flex-1">
-                <div className={cn("font-medium", ok ? "text-foreground/90" : invalidCommand ? "text-amber-300" : "text-destructive")}>{step.label}</div>
+                <div className={cn("font-medium", ok ? "text-foreground/90" : mutedFailure ? "text-muted-foreground" : invalidCommand ? "text-amber-300" : "text-destructive")}>{step.label}</div>
                 {(step.createdNodeId || step.nodeId || step.action || step.error) && (
                   <div className="mt-0.5 space-y-0.5 break-words text-[11px] text-muted-foreground">
                     {step.createdNodeId && <div>新节点：{step.createdNodeId}</div>}

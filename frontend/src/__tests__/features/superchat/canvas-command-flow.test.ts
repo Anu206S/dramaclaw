@@ -2,7 +2,9 @@ import { describe, expect, it } from "vitest";
 
 import {
   buildCanvasCommandFlowItemsForTest,
+  canvasCommandFeedbackVisualToneForTest,
   canvasCommandFeedbackIsValidationOnlyForTest,
+  canvasContextActivityVisualToneForTest,
   mergeCanvasContextActivitiesForTest,
   mergeCanvasCommandFeedbacksForTest,
   mergePendingCanvasCommandApprovalForTest,
@@ -290,6 +292,49 @@ describe("canvas command flow placement", () => {
         },
       ],
     })).toBe(false);
+  });
+
+  it("renders validation-only failures as muted agent attempts while preserving execution failures as destructive", () => {
+    expect(canvasContextActivityVisualToneForTest({
+      key: "context:validation",
+      turnId: "turn-a",
+      bridgeKey: "validation",
+      status: "failed",
+      labels: ["命令校验"],
+      errors: ["命令校验失败"],
+    })).toBe("muted");
+
+    expect(canvasCommandFeedbackVisualToneForTest({
+      key: "bridge:validation",
+      applied: 0,
+      openedUiActions: 0,
+      errors: ["画布命令无效"],
+      commandResults: [
+        {
+          commandIndex: -1,
+          type: "validate",
+          status: "error",
+          label: "画布命令无效",
+          error: "画布命令无效",
+        },
+      ],
+    })).toBe("muted");
+
+    expect(canvasCommandFeedbackVisualToneForTest({
+      key: "bridge:execution",
+      applied: 0,
+      openedUiActions: 0,
+      errors: ["生成失败"],
+      commandResults: [
+        {
+          commandIndex: 0,
+          type: "run_node_action",
+          status: "error",
+          label: "生成图片",
+          error: "生成失败",
+        },
+      ],
+    })).toBe("destructive");
   });
 
   it("dedupes the same pending approval when one event resolves the turn later", () => {
