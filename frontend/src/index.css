@@ -535,6 +535,43 @@
   cursor: grabbing;
 }
 
+/* 低缩放 LOD（zoom < 0.25，由 Canvas.tsx 挂 .canvas-lod-low）。
+
+   缩到很小时全部节点都落在视口里，节点内的文字、徽章、按钮、边框加起来有几千个
+   DOM，每帧平移都要重新栅格化——实测 172 个节点约 6100 个元素，平移只有 32 FPS，
+   而这些细节在这个尺度下本来就看不清。
+
+   这里只留下缩略图和它的祖先链，其余全部 display:none 移出渲染树（visibility:hidden
+   不够，元素仍会被遍历，实测只能到 39 FPS）。节点内元素 6130 → 481，平移 64 FPS，
+   同时画布仍然靠缩略图可辨认。
+
+   :has() 的代价只在跨越阈值那一次样式重算。 */
+.canvas-lod-low .react-flow__node > * *:not(:has(img, video)):not(img):not(video) {
+  display: none !important;
+}
+
+.canvas-lod-low .react-flow__node > *,
+.canvas-lod-low .react-flow__node > * *:has(img, video) {
+  box-shadow: none !important;
+  backdrop-filter: none !important;
+  -webkit-backdrop-filter: none !important;
+  filter: none !important;
+  transition: none !important;
+}
+
+/* 这里曾经有一条 .canvas-viewport-gesture .react-flow__node { pointer-events: none }，
+   想在平移期间免掉 :hover 的样式重算。已删除，两个原因：
+
+   一是它没用。严格配对的 A/B（同一次页面加载内来回切换，因为同一个构建在不同时段能
+   测出 p95 14.3 和 26.7，跨时段比较全是噪声）显示帧时间没有可测差异——真正省下来的
+   那笔开销是 onNodeMouseEnter/Leave 写 canvasStore，而那个已经由 Canvas.tsx 里
+   viewportGestureActiveRef 的守卫挡掉了，跟命中测试无关。
+
+   二是它有害。手势结束后这个 class 还要再挂一会儿（React Flow 的 onMoveEnd 是画面停
+   下来之后再防抖 150ms 才派发的），那段时间里所有节点都不可点：用户滚动平移把目标停到
+   光标下、马上点击——这恰恰是触控板平移最自然的操作——点击会穿透到 pane，不但不生效，
+   还会顺手清空当前选中。 */
+
 .react-flow__node.canvas-node-placement-confirm {
   overflow: visible;
 }

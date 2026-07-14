@@ -142,6 +142,14 @@ export function shouldUseOriginalImageByZoom(zoom: number): boolean {
   return Number.isFinite(zoom) && zoom >= ORIGINAL_IMAGE_ZOOM_THRESHOLD;
 }
 
+// 缩到这个比例以下时,节点上的文字/徽章/按钮已经小到看不清,但它们仍然要参与每帧栅格化。
+// 低于阈值就切到 LOD:只留缩略图,砍掉其余 DOM(见 index.css 的 .canvas-lod-low)。
+const LOW_ZOOM_LOD_THRESHOLD = 0.25;
+
+export function shouldUseLowZoomLod(zoom: number): boolean {
+  return Number.isFinite(zoom) && zoom < LOW_ZOOM_LOD_THRESHOLD;
+}
+
 export function isLikelyLocalImagePath(imageUrl: string): boolean {
   if (!imageUrl) {
     return false;

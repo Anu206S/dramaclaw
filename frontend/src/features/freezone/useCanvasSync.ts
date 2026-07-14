@@ -1190,6 +1190,13 @@ export function useCanvasSync(
       if (state.viewportBookmarks !== prev.viewportBookmarks) {
         triggerSave();
       }
+      // 视口、hover、选中等纯视图状态和 nodes/edges 同住一个 store，所以平移时这个
+      // 订阅者也会被叫醒（视口每 ~120ms 提交一次）。签名只读 nodes/edges，引用没变就
+      // 不可能变——必须在这里短路，否则每次 set() 都要把整张画布 JSON.stringify 一遍
+      // （几百 KB 的字符串 + N 个临时对象），在拖动中变成周期性的 CPU 与 GC 尖刺。
+      if (state.nodes === prev.nodes && state.edges === prev.edges) {
+        return;
+      }
       const nextSignature = canvasContentSignature(state.nodes, state.edges);
       if (suppressNextCanvasAutosaveRef.current) {
         suppressNextCanvasAutosaveRef.current = false;

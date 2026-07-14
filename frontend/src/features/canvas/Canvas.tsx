@@ -19,6 +19,7 @@ import {
   SelectionMode,
   useNodesInitialized,
   useReactFlow,
+  useStore,
   useStoreApi,
   type Connection,
   type Edge,
@@ -70,7 +71,7 @@ import {
   isPresetManagedEdge,
   isPresetManagedNode,
 } from '@/features/canvas/domain/mainlineNodeFlags';
-import { prepareNodeImage } from '@/features/canvas/application/imageData';
+import { prepareNodeImage, shouldUseLowZoomLod } from '@/features/canvas/application/imageData';
 import { isVideoFile } from '@/features/canvas/application/videoFileTypes';
 import { uploadLocalImageToBackend } from '@/features/canvas/application/uploadToolOutput';
 import {
@@ -148,6 +149,13 @@ const PAN_ACTIVATION_KEY_CODE = 'Space';
 // right click (2) opens the canvas context menu.
 const PAN_ON_DRAG_BUTTONS = [1];
 const NODE_SPAWN_PLUS_HIDE_DELAY_MS = 400;
+// onMove 每帧触发;把 currentViewport 写进 store 会让所有订阅者重跑 selector,所以节流到 ~8fps。
+const VIEWPORT_COMMIT_THROTTLE_MS = 120;
+// 画面停止移动多久就当手势结束(onMoveEnd 会丢,见 armViewportGestureIdleTimer)。
+// 只要大于手势进行中两次 onMove 的正常间隔就行——动起来时 onMove 每帧一次(~13ms),
+// 这里留了 7 倍余量。提前收掉也不会误伤:onMove 会重新 begin + 重排,而 begin 是幂等的,
+// 而且画面不动的时候本来也没有 hover 开销可省。
+const VIEWPORT_GESTURE_IDLE_MS = 100;
 
 function resolveCenteredViewport(
   container: HTMLElement | null,
@@ -752,6 +760,11 @@ export function Canvas({
   const swallowMarqueeClickRef = useRef(false);
   const suppressNextEdgeClickRef = useRef(false);
   const hoveredNodeClearTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // 平移/缩放手势进行中。拖动时光标会横扫大量节点,每越过一个就触发一次
+  // onNodeMouseEnter -> setHoveredNodeId -> 整个 canvasStore 通知一遍订阅者
+  // (含 4800 行的根 Canvas 重渲染)。缩得越小,同样的位移扫过的节点越多。
+  // 手势期间不需要 hover 态,直接屏蔽。
+  const viewportGestureActiveRef = useRef(false);
   const plusConnectStartRef = useRef<PendingConnectStart | null>(null);
   // 手动「+」拖线时，当前被高亮为合法落点的节点 DOM。手动连线走自绘预览线
   // （非 React Flow 原生连线），RF 不会给目标 handle 挂 connectingto/valid，所以
@@ -875,6 +888,9 @@ export function Canvas({
 
   const handleNodeMouseEnter = useCallback(
     (_event: ReactMouseEvent, node: CanvasNode) => {
+      if (viewportGestureActiveRef.current) {
+        return;
+      }
       clearHoveredNodeTimer();
       setHoveredNodeId(node.id);
     },
@@ -882,6 +898,9 @@ export function Canvas({
   );
 
   const handleNodeMouseLeave = useCallback(() => {
+    if (viewportGestureActiveRef.current) {
+      return;
+    }
     scheduleHoveredNodeClear();
   }, [scheduleHoveredNodeClear]);
 
@@ -1010,6 +1029,10 @@ export function Canvas({
   // 触控板平移开关：开启后用 ReactFlow 的 panOnScroll（两指滑动平移、捏合缩放），
   // 关闭则回到默认的滚轮缩放。
   const trackpadPanEnabled = useTrackpadPanStore((state) => state.enabled);
+  // 缩到很小时整张画布的节点都进了视口，每帧要栅格化上千个 DOM。低于阈值切到 LOD:
+  // 只保留缩略图，其余 DOM 用 display:none 移出渲染树（.canvas-lod-low）。
+  // selector 返回 boolean，只在跨越阈值时才重渲染，平移/缩放的每一帧不会打穿 memo。
+  const lowZoomLod = useStore((state) => shouldUseLowZoomLod(state.transform[2]));
   // 底部任务中心面板展开时，让出底部空间——隐藏画布快捷操作栏，避免与面板重叠。
   const taskPanelOpen = useAppStore((state) => state.taskPanelOpen);
   // Stable signatures of the nodes that need polling / resume, so those effects
@@ -1786,27 +1809,86 @@ export function Canvas({
   // 重跑 selector(如 BackToNodesHint 的 O(n) 可见性判断)。这里节流到 ~8fps,并在
   // onMoveEnd 必定提交最终值,既消除每帧 store 风暴,又保证落库/可见性判断及时收敛。
   const lastViewportCommitRef = useRef(0);
-  const handleMoveEnd = useCallback(
-    (_event: unknown, viewport: Viewport) => {
+  const viewportGestureIdleTimerRef = useRef<number | null>(null);
+
+  // 手势期间不派发 hover:光标扫过节点会触发 onNodeMouseEnter/Leave,而它们要写
+  // canvasStore,一写就把根组件连同所有订阅者重渲染一遍。缩得越小,同样的位移扫过的
+  // 节点越多,掉帧越不规律。下面 handleNodeMouseEnter/Leave 开头查的就是这个 ref。
+  //
+  // 只挡 store 写入,不动命中测试。曾经还额外给节点挂过 pointer-events:none(见
+  // index.css 里删掉那条的说明):帧时间上量不出收益,却会在手势收尾后吞掉用户的下一次点击。
+  //
+  // 幂等:onMove 也会调它,好让被空闲看门狗提前收掉的手势能自愈。
+  const beginViewportGesture = useCallback(() => {
+    if (viewportGestureActiveRef.current) {
+      return;
+    }
+    viewportGestureActiveRef.current = true;
+    clearHoveredNodeTimer();
+    setHoveredNodeId(null);
+  }, [clearHoveredNodeTimer]);
+
+  const endViewportGesture = useCallback(() => {
+    if (viewportGestureIdleTimerRef.current !== null) {
+      window.clearTimeout(viewportGestureIdleTimerRef.current);
+      viewportGestureIdleTimerRef.current = null;
+    }
+    viewportGestureActiveRef.current = false;
+  }, []);
+
+  // 收尾不能只靠 onMoveEnd:它压根会丢,而且丢起来一点都不罕见。
+  //   - panOnScroll(触控板平移,默认开)下,@xyflow/system 的 createPanOnScrollHandler
+  //     只在「第二个及之后的 wheel 事件」那条分支里给 end 排期。一次两指轻滑如果只产生
+  //     一个 wheel 事件,就只有 start 没有 end,它内部的 isPanScrolling 永久停在 true。
+  //   - 拖动平移时 mouseup 落在窗口外,d3-zoom 同样收不到收尾事件。
+  // 少一次 end,上面那个 ref 就永远停在 true——节点 hover 从此再也不亮,而且最后那次
+  // 视口也没人提交。所以手势期间每次 onMove 都重排一个空闲看门狗,end 没来就由它收尾。
+  const armViewportGestureIdleTimer = useCallback(() => {
+    if (viewportGestureIdleTimerRef.current !== null) {
+      window.clearTimeout(viewportGestureIdleTimerRef.current);
+    }
+    viewportGestureIdleTimerRef.current = window.setTimeout(() => {
+      viewportGestureIdleTimerRef.current = null;
+      endViewportGesture();
+      // onMoveEnd 没来,最终视口也就没人提交过,这里补上。
       lastViewportCommitRef.current = Date.now();
-      setViewportState(viewport);
-    },
-    [setViewportState]
-  );
+      setViewportState(reactFlowInstance.getViewport());
+    }, VIEWPORT_GESTURE_IDLE_MS);
+  }, [endViewportGesture, reactFlowInstance, setViewportState]);
+
+  useEffect(() => () => {
+    if (viewportGestureIdleTimerRef.current !== null) {
+      window.clearTimeout(viewportGestureIdleTimerRef.current);
+    }
+  }, []);
+
+  const handleMoveStart = useCallback(() => {
+    beginViewportGesture();
+    armViewportGestureIdleTimer();
+  }, [beginViewportGesture, armViewportGestureIdleTimer]);
 
   const handleMove = useCallback(
     (_event: unknown, viewport: Viewport) => {
+      beginViewportGesture();
+      armViewportGestureIdleTimer();
       const now = Date.now();
-      if (now - lastViewportCommitRef.current < 120) {
+      if (now - lastViewportCommitRef.current < VIEWPORT_COMMIT_THROTTLE_MS) {
         return;
       }
       lastViewportCommitRef.current = now;
       setViewportState(viewport);
     },
-    [setViewportState]
+    [beginViewportGesture, armViewportGestureIdleTimer, setViewportState]
   );
 
-  const handleMoveStart = useCallback(() => {}, []);
+  const handleMoveEnd = useCallback(
+    (_event: unknown, viewport: Viewport) => {
+      endViewportGesture();
+      lastViewportCommitRef.current = Date.now();
+      setViewportState(viewport);
+    },
+    [endViewportGesture, setViewportState]
+  );
 
   useEffect(() => {
     const wrapperElement = wrapperRef.current;
@@ -4547,10 +4629,23 @@ export function Canvas({
         multiSelectionKeyCode={MULTI_SELECTION_KEY_CODES}
         selectionKeyCode={null}
         deleteKeyCode={null}
-        onlyRenderVisibleElements
+        // 视口剔除按缩放开关,两个区间的瓶颈是反的:
+        //
+        // 缩得很小时(LOD 生效)全部节点都落在视口附近,剔除挡不掉什么,却要在节点密集
+        // 穿越视口边界时逐帧挂载/卸载组件(实测渲染节点数在 10~41 之间反复跳变),每次
+        // 挂载都要跑 effect、建 ResizeObserver、创建 video 元素——实测 13 FPS / p95 352ms。
+        // 所以这一档关掉剔除,靠 LOD(见 index.css 的 .canvas-lod-low)把每个节点的
+        // DOM 砍到只剩缩略图。
+        //
+        // 放大到正常工作缩放时反过来:画布在画布坐标系里很大,屏内可能只有个位数节点,
+        // 不剔除就要为 2 个可见节点付 170 个节点的合成代价——实测 0.5/1.0 缩放下只有
+        // 37.5 FPS、p95 40ms。开了剔除后渲染节点 170 → 0~3,DOM 元素 6100 → 47,
+        // 75.2 FPS / p95 14ms。而这一档屏内节点本来就少,边界抖动也就无从谈起
+        // (阈值正上方实测抖动 4~15 个节点,帧时间零代价)。
+        onlyRenderVisibleElements={!lowZoomLod}
         zoomOnDoubleClick={false}
         proOptions={REACT_FLOW_PRO_OPTIONS}
-        className="bg-background"
+        className={lowZoomLod ? 'bg-background canvas-lod-low' : 'bg-background'}
       >
         <Background variant={BackgroundVariant.Dots} gap={20} size={2} color="#4a4a4a" />
         {minimapVisible && (
