@@ -32,6 +32,8 @@ import {
   buildPersistedAssistantClarificationEventForTest,
   buildAssistantClarificationToolResultForTest,
   buildAssistantInteractionFlowItemsForTest,
+  amendCanvasApprovalWithImageParamsForTest,
+  amendCanvasApprovalWithVideoParamsForTest,
   buildSkillStudioCatalogSaveItemsForTest,
   buildSkillStudioDraftCancelToolResultForTest,
   buildSkillStudioDraftToolResultForTest,
@@ -1525,6 +1527,9 @@ describe("Skill Studio draft response", () => {
       planning_prompt: "规划器提示词",
       result_summary: "输出概述",
       requires_source_media: "依赖上游多模态输入",
+      enabled: "启用",
+      force_enhancement: "强制增强",
+      skip_detail_check: "跳过细节检查",
     });
     const legacyRecipeKeys = [
       "required" + "_elements",
@@ -1787,6 +1792,98 @@ describe("Skill Studio draft response", () => {
           requires_source_media: true,
         }),
       }),
+    ]);
+  });
+});
+
+describe("Canvas command approval image params", () => {
+  it("updates image node data before running generate_image", () => {
+    const approval = {
+      id: "approval-a",
+      key: "approval-a",
+      messageId: "assistant-a",
+      receivedAt: 1,
+      commandCount: 1,
+      plans: [],
+      envelopes: [
+        {
+          schema_version: "canvas_chat_commands.v1" as const,
+          commands: [
+            { type: "run_node_action" as const, node_id: "image-a", action: "generate_image" },
+          ],
+        },
+      ],
+    };
+
+    const amended = amendCanvasApprovalWithImageParamsForTest(approval as never, {
+      nodeId: "image-a",
+      model: "newapi_gpt_image2",
+      aspectRatio: "9:16",
+      size: "2K",
+      quality: "high",
+      count: 2,
+    });
+
+    expect(amended.envelopes[0].commands).toEqual([
+      {
+        type: "update_node_data",
+        node_id: "image-a",
+        data: {
+          model: "newapi_gpt_image2",
+          aspectRatio: "9:16",
+          size: "2K",
+          quality: "high",
+          count: 2,
+        },
+      },
+      { type: "run_node_action", node_id: "image-a", action: "generate_image" },
+    ]);
+  });
+});
+
+describe("Canvas command approval video params", () => {
+  it("updates video node data before running generate_video", () => {
+    const approval = {
+      id: "approval-a",
+      key: "approval-a",
+      messageId: "assistant-a",
+      receivedAt: 1,
+      commandCount: 1,
+      plans: [],
+      envelopes: [
+        {
+          schema_version: "canvas_chat_commands.v1" as const,
+          commands: [
+            { type: "run_node_action" as const, node_id: "video-a", action: "generate_video" },
+          ],
+        },
+      ],
+    };
+
+    const amended = amendCanvasApprovalWithVideoParamsForTest(approval as never, {
+      nodeId: "video-a",
+      model: "newapi_seedance-2.0",
+      aspectRatio: "9:16",
+      quality: "1080P",
+      durationSec: 10,
+      generateAudio: true,
+      count: 2,
+    });
+
+    expect(amended.envelopes[0].commands).toEqual([
+      {
+        type: "update_node_data",
+        node_id: "video-a",
+        data: {
+          model: "newapi_seedance-2.0",
+          aspectRatio: "9:16",
+          quality: "1080P",
+          durationSec: 10,
+          generateAudio: true,
+          count: 2,
+        },
+      },
+      { type: "run_node_action", node_id: "video-a", action: "generate_video" },
     ]);
   });
 });

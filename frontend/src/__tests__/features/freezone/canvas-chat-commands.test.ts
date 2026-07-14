@@ -777,6 +777,80 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("treats accepted single video generation with a task handle as handed off", async () => {
+    const videoNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 0, y: 0 },
+      {
+        prompt: "猫吃鱼",
+      },
+    );
+    const events: Array<{
+      nodeId: string;
+      action: string;
+      executionMode?: string;
+    }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({
+          nodeId: payload.nodeId,
+          action: payload.action,
+          executionMode: payload.executionMode,
+        });
+        if (!payload.requestId) return;
+        useCanvasStore.getState().updateNodeData(videoNodeId, {
+          generationTaskKey: "freezone_video:task-video-1",
+          generationTaskJobId: "job-video-1",
+        });
+        canvasEventBus.publish("freezone/node-action-accepted", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        [
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: videoNodeId,
+                action: "generate_video",
+              },
+            ],
+          },
+        ],
+        { actionTimeoutMs: 50 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        {
+          nodeId: videoNodeId,
+          action: "generate_video",
+          executionMode: "single",
+        },
+      ]);
+      expect(result.commandResults).toEqual([
+        expect.objectContaining({
+          type: "run_node_action",
+          status: "success",
+          action: "generate_video",
+          output: expect.objectContaining({
+            submitted: true,
+          }),
+        }),
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("delivers pending image generation when the target node subscribes after dispatch", async () => {
     const imageNodeId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.imageGen,
@@ -5484,7 +5558,7 @@ describe("canvas chat commands", () => {
     }
   });
 
-  it("skips a completed generation node unless regeneration is explicit", async () => {
+  it("reruns an explicit generation node action even when the node already has content", async () => {
     const store = useCanvasStore.getState();
     const imageNodeId = store.addNode(
       CANVAS_NODE_TYPES.imageGen,
@@ -5500,6 +5574,18 @@ describe("canvas chat commands", () => {
       "freezone/run-node-action",
       (payload) => {
         events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId) return;
+        useCanvasStore
+          .getState()
+          .updateNodeData(payload.nodeId, {
+            imageUrl: "/static/project/regenerated-image.png",
+          });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
       },
     );
 
@@ -5521,18 +5607,16 @@ describe("canvas chat commands", () => {
       );
 
       expect(result.errors).toEqual([]);
-      expect(events).toEqual([]);
-      expect(result.commandResults).toEqual([
-        expect.objectContaining({
-          label: "节点已有内容，未重新生成",
-          nodeId: imageNodeId,
-          action: "generate_image",
-          output: expect.objectContaining({
-            skipped: true,
-            reason: "already_completed",
-          }),
-        }),
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
       ]);
+      expect(result.commandResults).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            label: "节点已有内容，未重新生成",
+          }),
+        ]),
+      );
     } finally {
       unsubscribe();
     }

@@ -7,6 +7,7 @@ import {
   Braces,
   Check,
   CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Copy,
@@ -27,9 +28,11 @@ import {
   Wrench,
   X,
   Volume2,
+  VolumeX,
 } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
+  CSSProperties,
   DragEvent as ReactDragEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
@@ -90,7 +93,10 @@ import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
 import type { CanvasOntologyContext } from "@/features/canvas/ontology/canvasOntology";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import { useCanvasStore, type CanvasNode } from "@/stores/canvasStore";
-import type { CanvasNodeType } from "@/features/canvas/domain/canvasNodes";
+import type { CanvasNodeType, VideoGenQuality } from "@/features/canvas/domain/canvasNodes";
+import { VIDEO_GENERATION_ASPECT_RATIOS } from "@/features/canvas/application/imageData";
+import { useFreezoneImageModels } from "@/features/canvas/hooks/useFreezoneImageModels";
+import { useFreezoneVideoModels } from "@/features/canvas/hooks/useFreezoneVideoModels";
 import type {
   CanvasChatCommand,
   CanvasChatCommandApplyStep,
@@ -1535,6 +1541,428 @@ function CanvasCommandPlanList({ plans }: { plans: CanvasCommandPlan[] | undefin
   );
 }
 
+function imageGenerateCommandNodeIds(envelopes: CanvasChatCommandEnvelope[]): string[] {
+  const nodeIds: string[] = [];
+  for (const envelope of envelopes) {
+    for (const command of envelope.commands) {
+      if (command.type === "run_node_action" && command.action === "generate_image") {
+        nodeIds.push(command.node_id);
+      }
+    }
+  }
+  return nodeIds;
+}
+
+function videoGenerateCommandNodeIds(envelopes: CanvasChatCommandEnvelope[]): string[] {
+  const nodeIds: string[] = [];
+  for (const envelope of envelopes) {
+    for (const command of envelope.commands) {
+      if (command.type === "run_node_action" && command.action === "generate_video") {
+        nodeIds.push(command.node_id);
+      }
+    }
+  }
+  return nodeIds;
+}
+
+function imageApprovalInitialParams(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  fallbackModel: string,
+): CanvasApprovalImageParams | null {
+  const nodeIds = imageGenerateCommandNodeIds(approval.envelopes);
+  if (nodeIds.length !== 1) return null;
+  const nodeId = nodeIds[0];
+  const nodeData = canvasNodes.find((node) => node.id === nodeId)?.data as Record<string, unknown> | undefined;
+  const textValue = (value: unknown, fallback: string) =>
+    typeof value === "string" && value.trim() ? value.trim() : fallback;
+  const countValue = typeof nodeData?.count === "number" && CANVAS_APPROVAL_IMAGE_COUNT_OPTIONS.includes(nodeData.count as 1 | 2 | 4)
+    ? nodeData.count
+    : 1;
+  return {
+    nodeId,
+    model: textValue(nodeData?.model, fallbackModel),
+    aspectRatio: textValue(nodeData?.aspectRatio, "16:9"),
+    size: textValue(nodeData?.size, "2K"),
+    quality: textValue(nodeData?.quality, "medium"),
+    count: countValue,
+  };
+}
+
+function resolutionToVideoQuality(value: string): VideoGenQuality | null {
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "480p") return "480P";
+  if (normalized === "720p") return "720P";
+  if (normalized === "1080p") return "1080P";
+  return null;
+}
+
+function videoQualityOptionsForApproval(
+  model: { resolutionOptions?: string[] } | null | undefined,
+): readonly VideoGenQuality[] {
+  const options = (model?.resolutionOptions ?? [])
+    .map(resolutionToVideoQuality)
+    .filter((item): item is VideoGenQuality => Boolean(item));
+  return options.length > 0 ? options : CANVAS_APPROVAL_VIDEO_QUALITY_OPTIONS;
+}
+
+function normalizeVideoQualityForApproval(
+  value: unknown,
+  options: readonly VideoGenQuality[],
+): VideoGenQuality {
+  const fallback = options.includes("720P") ? "720P" : options[0] ?? "720P";
+  return typeof value === "string" && options.includes(value as VideoGenQuality)
+    ? (value as VideoGenQuality)
+    : fallback;
+}
+
+function videoDurationBoundsForApproval(
+  model: { minDuration?: number | null; maxDuration?: number | null } | null | undefined,
+): { min: number; max: number } {
+  const min = Number(model?.minDuration);
+  const max = Number(model?.maxDuration);
+  const resolvedMin = Number.isFinite(min) && min > 0 ? min : CANVAS_APPROVAL_VIDEO_DURATION_MIN;
+  const resolvedMax = Number.isFinite(max) && max >= resolvedMin ? max : CANVAS_APPROVAL_VIDEO_DURATION_MAX;
+  return { min: resolvedMin, max: resolvedMax };
+}
+
+function clampVideoDurationForApproval(value: unknown, bounds: { min: number; max: number }): number {
+  const numeric = typeof value === "number" ? value : Number(value);
+  const safe = Number.isFinite(numeric) ? numeric : bounds.min;
+  return Math.min(Math.max(Math.round(safe), bounds.min), bounds.max);
+}
+
+function videoApprovalInitialParams(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  models: Array<{
+    id: string;
+    label?: string;
+    resolutionOptions?: string[];
+    minDuration?: number | null;
+    maxDuration?: number | null;
+  }>,
+  fallbackModel: string,
+): CanvasApprovalVideoParams | null {
+  const nodeIds = videoGenerateCommandNodeIds(approval.envelopes);
+  if (nodeIds.length !== 1) return null;
+  const nodeId = nodeIds[0];
+  const nodeData = canvasNodes.find((node) => node.id === nodeId)?.data as Record<string, unknown> | undefined;
+  const textValue = (value: unknown, fallback: string) =>
+    typeof value === "string" && value.trim() ? value.trim() : fallback;
+  const rawModel = textValue(nodeData?.model, fallbackModel);
+  const selectedModel = models.find((item) => item.id === rawModel) ?? models[0];
+  const model = selectedModel?.id ?? rawModel;
+  const qualityOptions = videoQualityOptionsForApproval(selectedModel);
+  const durationBounds = videoDurationBoundsForApproval(selectedModel);
+  const aspectRatio = textValue(nodeData?.aspectRatio, "16:9");
+  const normalizedAspectRatio = (VIDEO_GENERATION_ASPECT_RATIOS as readonly string[]).includes(aspectRatio)
+    ? aspectRatio
+    : "16:9";
+  const countValue = typeof nodeData?.count === "number" && CANVAS_APPROVAL_VIDEO_COUNT_OPTIONS.includes(nodeData.count as 1 | 2 | 4)
+    ? nodeData.count
+    : 1;
+  return {
+    nodeId,
+    model,
+    aspectRatio: normalizedAspectRatio,
+    quality: normalizeVideoQualityForApproval(nodeData?.quality, qualityOptions),
+    durationSec: clampVideoDurationForApproval(nodeData?.durationSec, durationBounds),
+    generateAudio: Boolean(nodeData?.generateAudio),
+    count: countValue,
+  };
+}
+
+function amendCanvasApprovalWithImageParams(
+  approval: PendingCanvasCommandApproval,
+  params: CanvasApprovalImageParams | null,
+): PendingCanvasCommandApproval {
+  if (!params) return approval;
+  let inserted = false;
+  const imageData = {
+    model: params.model,
+    aspectRatio: params.aspectRatio,
+    size: params.size,
+    quality: params.quality,
+    count: params.count,
+  };
+  return {
+    ...approval,
+    envelopes: approval.envelopes.map((envelope) => ({
+      ...envelope,
+      commands: envelope.commands.flatMap((command) => {
+        if (
+          inserted ||
+          command.type !== "run_node_action" ||
+          command.action !== "generate_image" ||
+          command.node_id !== params.nodeId
+        ) {
+          return [command];
+        }
+        inserted = true;
+        return [
+          {
+            type: "update_node_data" as const,
+            node_id: params.nodeId,
+            data: imageData,
+          },
+          command,
+        ];
+      }),
+    })),
+  };
+}
+
+function amendCanvasApprovalWithVideoParams(
+  approval: PendingCanvasCommandApproval,
+  params: CanvasApprovalVideoParams | null,
+): PendingCanvasCommandApproval {
+  if (!params) return approval;
+  let inserted = false;
+  const videoData = {
+    model: params.model,
+    aspectRatio: params.aspectRatio,
+    quality: params.quality,
+    durationSec: params.durationSec,
+    generateAudio: params.generateAudio,
+    count: params.count,
+  };
+  return {
+    ...approval,
+    envelopes: approval.envelopes.map((envelope) => ({
+      ...envelope,
+      commands: envelope.commands.flatMap((command) => {
+        if (
+          inserted ||
+          command.type !== "run_node_action" ||
+          command.action !== "generate_video" ||
+          command.node_id !== params.nodeId
+        ) {
+          return [command];
+        }
+        inserted = true;
+        return [
+          {
+            type: "update_node_data" as const,
+            node_id: params.nodeId,
+            data: videoData,
+          },
+          command,
+        ];
+      }),
+    })),
+  };
+}
+
+export const amendCanvasApprovalWithImageParamsForTest = amendCanvasApprovalWithImageParams;
+export const amendCanvasApprovalWithVideoParamsForTest = amendCanvasApprovalWithVideoParams;
+
+function CanvasApprovalImageParamSelect({
+  ariaLabel,
+  disabled,
+  icon,
+  onChange,
+  options,
+  value,
+}: {
+  ariaLabel: string;
+  disabled?: boolean;
+  icon?: ReactNode;
+  onChange: (value: string) => void;
+  options: Array<{ value: string; label: string }>;
+  value: string;
+}) {
+  return (
+    <label className="group inline-flex h-6 max-w-full items-center gap-1 rounded-full bg-transparent px-0 text-[11px] text-foreground/90">
+      {icon && <span className="shrink-0 text-muted-foreground/80">{icon}</span>}
+      <select
+        aria-label={ariaLabel}
+        className="max-w-32 appearance-none truncate border-0 bg-transparent py-0 pl-0 pr-3 text-[11px] font-medium text-foreground outline-none transition-colors hover:text-foreground disabled:opacity-60"
+        disabled={disabled}
+        value={value}
+        onChange={(event) => onChange(event.target.value)}
+      >
+        {options.map((option) => (
+          <option key={option.value} value={option.value}>{option.label}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
+function CanvasApprovalVideoConfigChip({
+  disabled,
+  durationBounds,
+  onChange,
+  params,
+  qualityOptions,
+}: {
+  disabled?: boolean;
+  durationBounds: { min: number; max: number };
+  onChange: (patch: Partial<CanvasApprovalVideoParams>) => void;
+  params: CanvasApprovalVideoParams;
+  qualityOptions: readonly VideoGenQuality[];
+}) {
+  const triggerRef = useRef<HTMLButtonElement>(null);
+  const popoverRef = useRef<HTMLDivElement>(null);
+  const [isOpen, setIsOpen] = useState(false);
+  const [popoverStyle, setPopoverStyle] = useState<CSSProperties>({});
+  const audioLabel = params.generateAudio ? "有声" : "静音";
+
+  const updatePopoverPosition = useCallback(() => {
+    const rect = triggerRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    setPopoverStyle({
+      left: Math.min(rect.left, window.innerWidth - 244),
+      top: rect.bottom + 8,
+      width: 244,
+    });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!isOpen) return;
+    updatePopoverPosition();
+    window.addEventListener("resize", updatePopoverPosition);
+    window.addEventListener("scroll", updatePopoverPosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePopoverPosition);
+      window.removeEventListener("scroll", updatePopoverPosition, true);
+    };
+  }, [isOpen, updatePopoverPosition]);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    const onPointerDown = (event: MouseEvent) => {
+      if (
+        triggerRef.current?.contains(event.target as Node) ||
+        popoverRef.current?.contains(event.target as Node)
+      ) {
+        return;
+      }
+      setIsOpen(false);
+    };
+    document.addEventListener("mousedown", onPointerDown, true);
+    return () => document.removeEventListener("mousedown", onPointerDown, true);
+  }, [isOpen]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        disabled={disabled}
+        aria-label={`视频参数：${params.aspectRatio} · ${params.quality} · ${params.durationSec}s · ${audioLabel}`}
+        onClick={() => setIsOpen((prev) => !prev)}
+        className="inline-flex h-6 max-w-full items-center gap-1 rounded-full bg-transparent px-0 text-[11px] font-medium text-foreground outline-none transition-colors hover:text-foreground disabled:opacity-60"
+      >
+        <span>{params.aspectRatio}</span>
+        <span className="text-muted-foreground/70">·</span>
+        <span>{params.quality}</span>
+        <span className="text-muted-foreground/70">·</span>
+        <span>{params.durationSec}s</span>
+        {params.generateAudio ? (
+          <Volume2 className="size-3 text-muted-foreground/80" />
+        ) : (
+          <VolumeX className="size-3 text-muted-foreground/80" />
+        )}
+        <ChevronDown className="size-3 text-muted-foreground/80" />
+      </button>
+      {isOpen && createPortal(
+        <div
+          ref={popoverRef}
+          style={popoverStyle}
+          className="fixed z-[10000] rounded-lg border border-white/10 bg-[#2b2b2b] p-2 text-xs text-foreground shadow-2xl"
+          onPointerDown={(event) => event.stopPropagation()}
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">比例</div>
+          <div className="mb-3 grid grid-cols-4 gap-1.5">
+            {VIDEO_GENERATION_ASPECT_RATIOS.map((ratio) => {
+              const isActive = params.aspectRatio === ratio;
+              return (
+                <button
+                  key={ratio}
+                  type="button"
+                  onClick={() => onChange({ aspectRatio: ratio })}
+                  className={cn(
+                    "rounded-full px-2 py-1 text-[11px] transition-colors",
+                    isActive
+                      ? "bg-white/18 text-foreground"
+                      : "bg-white/[0.06] text-muted-foreground hover:bg-white/[0.1] hover:text-foreground",
+                  )}
+                >
+                  {ratio}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">清晰度</div>
+          <div className="mb-3 grid grid-cols-3 gap-1.5">
+            {qualityOptions.map((quality) => {
+              const isActive = params.quality === quality;
+              return (
+                <button
+                  key={quality}
+                  type="button"
+                  onClick={() => onChange({ quality })}
+                  className={cn(
+                    "rounded-full px-2 py-1 text-[11px] transition-colors",
+                    isActive
+                      ? "bg-white/18 text-foreground"
+                      : "bg-white/[0.06] text-muted-foreground hover:bg-white/[0.1] hover:text-foreground",
+                  )}
+                >
+                  {quality}
+                </button>
+              );
+            })}
+          </div>
+
+          <div className="mb-1.5 flex items-center justify-between text-[11px] font-medium text-muted-foreground">
+            <span>视频时长</span>
+            <span className="text-foreground">{params.durationSec}s</span>
+          </div>
+          <input
+            aria-label="视频时长"
+            type="range"
+            min={durationBounds.min}
+            max={durationBounds.max}
+            step={1}
+            value={params.durationSec}
+            onChange={(event) => onChange({ durationSec: Number(event.target.value) })}
+            className="mb-3 w-full"
+          />
+
+          <div className="mb-1.5 text-[11px] font-medium text-muted-foreground">生成音频</div>
+          <div className="flex items-center justify-between rounded-md bg-white/[0.06] px-2.5 py-1.5">
+            <span className="text-xs font-medium text-foreground">{audioLabel}</span>
+            <button
+              type="button"
+              role="switch"
+              aria-checked={params.generateAudio}
+              aria-label="生成音频"
+              onClick={() => onChange({ generateAudio: !params.generateAudio })}
+              className={cn(
+                "relative h-5 w-9 rounded-full transition-colors",
+                params.generateAudio ? "bg-white/35" : "bg-white/15",
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 size-4 rounded-full bg-white transition-transform",
+                  params.generateAudio ? "translate-x-4" : "translate-x-0.5",
+                )}
+              />
+            </button>
+          </div>
+        </div>,
+        document.body,
+      )}
+    </>
+  );
+}
+
 function CanvasCommandApprovalCard({
   approval,
   isExecuting = false,
@@ -1547,15 +1975,90 @@ function CanvasCommandApprovalCard({
   onCancel: (approval: PendingCanvasCommandApproval) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
+  const params = useParams({ strict: false }) as { project?: string };
+  const imageModels = useFreezoneImageModels(params.project);
+  const videoModels = useFreezoneVideoModels(params.project);
+  const canvasNodes = useCanvasStore((state) => state.nodes);
+  const fallbackImageModel = imageModels.models[0]?.id ?? "";
+  const fallbackVideoModel = videoModels.models[0]?.id ?? "";
+  const initialImageParams = useMemo(
+    () => imageApprovalInitialParams(approval, canvasNodes, fallbackImageModel),
+    [approval, canvasNodes, fallbackImageModel],
+  );
+  const initialVideoParams = useMemo(
+    () => videoApprovalInitialParams(approval, canvasNodes, videoModels.models, fallbackVideoModel),
+    [approval, canvasNodes, fallbackVideoModel, videoModels.models],
+  );
+  const [imageParams, setImageParams] = useState<CanvasApprovalImageParams | null>(() => initialImageParams);
+  const [videoParams, setVideoParams] = useState<CanvasApprovalVideoParams | null>(() => initialVideoParams);
   const remaining = approval.expiresAt
     ? Math.max(0, Math.ceil((approval.expiresAt - now) / 1000))
     : null;
+
+  useEffect(() => {
+    setImageParams(initialImageParams);
+  }, [initialImageParams]);
+
+  useEffect(() => {
+    setVideoParams(initialVideoParams);
+  }, [initialVideoParams]);
 
   useEffect(() => {
     if (!approval.expiresAt || isExecuting) return;
     const tick = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(tick);
   }, [approval.expiresAt, isExecuting]);
+
+  const amendedApproval = useMemo(
+    () => amendCanvasApprovalWithVideoParams(
+      amendCanvasApprovalWithImageParams(approval, imageParams),
+      videoParams,
+    ),
+    [approval, imageParams, videoParams],
+  );
+  const imageModelOptions = useMemo(() => {
+    const options = imageModels.models.map((model) => ({ value: model.id, label: model.label ?? model.id }));
+    if (imageParams?.model && !options.some((option) => option.value === imageParams.model)) {
+      return [{ value: imageParams.model, label: imageParams.model }, ...options];
+    }
+    return options;
+  }, [imageModels.models, imageParams?.model]);
+  const updateImageParams = useCallback((patch: Partial<CanvasApprovalImageParams>) => {
+    setImageParams((current) => current ? { ...current, ...patch } : current);
+  }, []);
+  const selectedVideoModel = useMemo(
+    () => videoModels.models.find((model) => model.id === videoParams?.model) ?? videoModels.models[0],
+    [videoModels.models, videoParams?.model],
+  );
+  const videoQualityOptions = useMemo(
+    () => videoQualityOptionsForApproval(selectedVideoModel),
+    [selectedVideoModel],
+  );
+  const videoDurationBounds = useMemo(
+    () => videoDurationBoundsForApproval(selectedVideoModel),
+    [selectedVideoModel],
+  );
+  const videoModelOptions = useMemo(() => {
+    const options = videoModels.models.map((model) => ({ value: model.id, label: model.label ?? model.id }));
+    if (videoParams?.model && !options.some((option) => option.value === videoParams.model)) {
+      return [{ value: videoParams.model, label: videoParams.model }, ...options];
+    }
+    return options;
+  }, [videoModels.models, videoParams?.model]);
+  const updateVideoParams = useCallback((patch: Partial<CanvasApprovalVideoParams>) => {
+    setVideoParams((current) => {
+      if (!current) return current;
+      const next = { ...current, ...patch };
+      const model = videoModels.models.find((item) => item.id === next.model) ?? videoModels.models[0];
+      const qualityOptions = videoQualityOptionsForApproval(model);
+      const durationBounds = videoDurationBoundsForApproval(model);
+      return {
+        ...next,
+        quality: normalizeVideoQualityForApproval(next.quality, qualityOptions),
+        durationSec: clampVideoDurationForApproval(next.durationSec, durationBounds),
+      };
+    });
+  }, [videoModels.models]);
 
   return (
     <div className="mt-3 w-full min-w-0 overflow-hidden rounded-xl border border-amber-400/25 bg-background/95 text-xs text-muted-foreground shadow-lg backdrop-blur-sm">
@@ -1568,6 +2071,84 @@ function CanvasCommandApprovalCard({
         <Badge variant="outline" className="rounded-md uppercase">{isExecuting ? "执行中" : "确认"}</Badge>
       </div>
       <CanvasCommandPlanList plans={approval.plans} />
+      {imageParams && (
+        <div className="border-t border-amber-400/10 px-3 py-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <CanvasApprovalImageParamSelect
+              ariaLabel="图片模型"
+              disabled={isExecuting}
+              icon={<Image className="size-3" />}
+              value={imageParams.model}
+              onChange={(value) => updateImageParams({ model: value })}
+              options={imageModelOptions}
+            />
+            <span className="h-4 w-px bg-white/[0.12]" />
+            <CanvasApprovalImageParamSelect
+              ariaLabel="图片比例"
+              disabled={isExecuting}
+              value={imageParams.aspectRatio}
+              onChange={(value) => updateImageParams({ aspectRatio: value })}
+              options={CANVAS_APPROVAL_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => ({
+                value: option,
+                label: option === "auto" ? "自动比例" : option,
+              }))}
+            />
+            <span className="h-4 w-px bg-white/[0.12]" />
+            <CanvasApprovalImageParamSelect
+              ariaLabel="图片分辨率"
+              disabled={isExecuting}
+              value={imageParams.size}
+              onChange={(value) => updateImageParams({ size: value })}
+              options={CANVAS_APPROVAL_IMAGE_SIZE_OPTIONS.map((option) => ({ value: option, label: option }))}
+            />
+            <span className="h-4 w-px bg-white/[0.12]" />
+            <CanvasApprovalImageParamSelect
+              ariaLabel="图片画质"
+              disabled={isExecuting}
+              value={imageParams.quality}
+              onChange={(value) => updateImageParams({ quality: value })}
+              options={CANVAS_APPROVAL_IMAGE_QUALITY_OPTIONS.map((option) => ({ value: option, label: option }))}
+            />
+            <span className="h-4 w-px bg-white/[0.12]" />
+            <CanvasApprovalImageParamSelect
+              ariaLabel="图片数量"
+              disabled={isExecuting}
+              value={String(imageParams.count)}
+              onChange={(value) => updateImageParams({ count: Number(value) })}
+              options={CANVAS_APPROVAL_IMAGE_COUNT_OPTIONS.map((option) => ({ value: String(option), label: `${option} 张` }))}
+            />
+          </div>
+        </div>
+      )}
+      {videoParams && (
+        <div className="border-t border-amber-400/10 px-3 py-1">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+            <CanvasApprovalImageParamSelect
+              ariaLabel="视频模型"
+              disabled={isExecuting}
+              value={videoParams.model}
+              onChange={(value) => updateVideoParams({ model: value })}
+              options={videoModelOptions}
+            />
+            <span className="h-3.5 w-px bg-white/[0.12]" />
+            <CanvasApprovalVideoConfigChip
+              disabled={isExecuting}
+              durationBounds={videoDurationBounds}
+              onChange={updateVideoParams}
+              params={videoParams}
+              qualityOptions={videoQualityOptions}
+            />
+            <span className="h-3.5 w-px bg-white/[0.12]" />
+            <CanvasApprovalImageParamSelect
+              ariaLabel="视频数量"
+              disabled={isExecuting}
+              value={String(videoParams.count)}
+              onChange={(value) => updateVideoParams({ count: Number(value) as 1 | 2 | 4 })}
+              options={CANVAS_APPROVAL_VIDEO_COUNT_OPTIONS.map((option) => ({ value: String(option), label: `${option} 个` }))}
+            />
+          </div>
+        </div>
+      )}
       <div className="flex flex-wrap items-center justify-end gap-2 border-t border-amber-400/15 px-3 py-2.5">
         {remaining !== null && !isExecuting ? (
           <span className="mr-auto text-[11px] leading-4 text-amber-500">
@@ -1575,7 +2156,7 @@ function CanvasCommandApprovalCard({
           </span>
         ) : null}
         <Button size="xs" variant="outline" disabled={isExecuting} onClick={() => onCancel(approval)}>取消</Button>
-        <Button size="xs" disabled={isExecuting} onClick={() => onApply(approval)}>{isExecuting ? "执行中..." : "确认执行"}</Button>
+        <Button size="xs" disabled={isExecuting} onClick={() => onApply(amendedApproval)}>{isExecuting ? "执行中..." : "确认执行"}</Button>
       </div>
     </div>
   );
@@ -1616,6 +2197,29 @@ function canvasCommandFeedbackCompactTitle(feedback: CanvasCommandFeedback): str
   if (firstPlan?.type === "run_node_action" && firstPlan.label.includes("生成视频")) return "生成视频失败";
   if (firstFailedStep?.label) return firstFailedStep.label;
   return "画布操作失败";
+}
+
+function expiredCanvasApprovalFeedback(approval: PendingCanvasCommandApproval): CanvasCommandFeedback | null {
+  if (!approval.autoExpires || !approval.expiresAt || approval.expiresAt > Date.now()) return null;
+  const error = "画布操作等待超时，已自动取消";
+  return {
+    applied: 0,
+    openedUiActions: 0,
+    errors: [error],
+    commandResults: [
+      {
+        commandIndex: -1,
+        type: "validate",
+        status: "error",
+        label: "已取消",
+        error,
+      },
+    ],
+    key: `expired:${approval.key}`,
+    plans: approval.plans,
+    anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
+    surfaceOrder: approval.surfaceOrder ?? approval.receivedAt,
+  };
 }
 
 function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedback }) {
@@ -2067,6 +2671,9 @@ const skillStudioDraftFieldLabels = {
     planning_prompt: "规划器提示词",
     result_summary: "输出概述",
     requires_source_media: "依赖上游多模态输入",
+    enabled: "启用",
+    force_enhancement: "强制增强",
+    skip_detail_check: "跳过细节检查",
   },
 };
 
@@ -4100,6 +4707,38 @@ function SkillStudioDraftCard({
                     />
                   </label>
                 </div>
+                <div className="grid gap-2 md:grid-cols-3">
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.enabled}</span>
+                    <Input
+                      value={String(recipe.enabled !== false)}
+                      disabled={readOnly}
+                      onChange={(changeEvent) => updateRecipeField(index, "enabled", changeEvent.target.value !== "false")}
+                      placeholder="true / false"
+                      className={fieldClass}
+                    />
+                  </label>
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.force_enhancement}</span>
+                    <Input
+                      value={String(recipe.force_enhancement === true)}
+                      disabled={readOnly}
+                      onChange={(changeEvent) => updateRecipeField(index, "force_enhancement", changeEvent.target.value === "true")}
+                      placeholder="true / false"
+                      className={fieldClass}
+                    />
+                  </label>
+                  <label>
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.skip_detail_check}</span>
+                    <Input
+                      value={String(recipe.skip_detail_check === true)}
+                      disabled={readOnly}
+                      onChange={(changeEvent) => updateRecipeField(index, "skip_detail_check", changeEvent.target.value === "true")}
+                      placeholder="true / false"
+                      className={fieldClass}
+                    />
+                  </label>
+                </div>
                 <div className="grid gap-2 md:grid-cols-2">
                   <label>
                     <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.planning_prompt}</span>
@@ -4609,6 +5248,15 @@ const MessageBubble = memo(function MessageBubble({
                   }
                   if (part.type === "canvas_approval") {
                     const approval = part.event as PendingCanvasCommandApproval;
+                    const stillPending = canvasCommandApprovals.some((item) =>
+                      pendingCanvasCommandApprovalMatches(item, approval),
+                    );
+                    if (!stillPending) {
+                      const expiredFeedback = expiredCanvasApprovalFeedback(approval);
+                      return expiredFeedback
+                        ? <CanvasCommandFeedbackCard key={part.id} feedback={expiredFeedback} />
+                        : null;
+                    }
                     return (
                       <CanvasCommandApprovalCard
                         key={part.id}
@@ -6410,6 +7058,27 @@ type CanvasCommandFeedback = Pick<CanvasChatCommandApplyResult, "applied" | "ope
   surfaceOrder?: number;
 };
 
+const CANVAS_APPROVAL_IMAGE_SIZE_OPTIONS = ["1K", "2K", "4K"] as const;
+const CANVAS_APPROVAL_IMAGE_QUALITY_OPTIONS = ["low", "medium", "high"] as const;
+const CANVAS_APPROVAL_IMAGE_ASPECT_RATIO_OPTIONS = [
+  "auto",
+  "1:1",
+  "9:16",
+  "16:9",
+  "3:4",
+  "4:3",
+  "3:2",
+  "2:3",
+  "4:5",
+  "5:4",
+  "21:9",
+] as const;
+const CANVAS_APPROVAL_IMAGE_COUNT_OPTIONS = [1, 2, 4] as const;
+const CANVAS_APPROVAL_VIDEO_QUALITY_OPTIONS: readonly VideoGenQuality[] = ["480P", "720P", "1080P"];
+const CANVAS_APPROVAL_VIDEO_COUNT_OPTIONS = [1, 2, 4] as const;
+const CANVAS_APPROVAL_VIDEO_DURATION_MIN = 5;
+const CANVAS_APPROVAL_VIDEO_DURATION_MAX = 15;
+
 type PendingCanvasCommandApproval = {
   id: string;
   key: string;
@@ -6425,6 +7094,25 @@ type PendingCanvasCommandApproval = {
   envelopes: CanvasChatCommandEnvelope[];
   commandCount: number;
   plans: CanvasCommandPlan[];
+};
+
+type CanvasApprovalImageParams = {
+  nodeId: string;
+  model: string;
+  aspectRatio: string;
+  size: string;
+  quality: string;
+  count: number;
+};
+
+type CanvasApprovalVideoParams = {
+  nodeId: string;
+  model: string;
+  aspectRatio: string;
+  quality: VideoGenQuality;
+  durationSec: number;
+  generateAudio: boolean;
+  count: 1 | 2 | 4;
 };
 
 type CanvasCommandApprovalCancelReason = "user" | "timeout";
