@@ -1302,6 +1302,68 @@ def test_chat_ui_events_attach_to_user_message_when_turn_has_no_assistant(monkey
     assert messages[0]["ui_events"][0]["type"] == "canvas_command_approval"
 
 
+def test_chat_message_parts_keep_canvas_feedback_after_stale_snapshot(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    scope = ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
+
+    chat_store.append_message("admin", scope, "user", "生成下分镜", turn_id="turn-a")
+    chat_store.append_message("admin", scope, "assistant", "", turn_id="turn-a")
+    context_part = {
+        "id": "canvas_context:context:bridge-a:validation",
+        "type": "canvas_context",
+        "event": {
+            "key": "context:bridge-a:validation",
+            "bridgeKey": "bridge-a:validation",
+            "status": "done",
+            "errors": [],
+        },
+    }
+    approval_part = {
+        "id": "canvas_approval:bridge:bridge-a:turn:turn-a",
+        "type": "canvas_approval",
+        "event": {
+            "key": "bridge:bridge-a:turn:turn-a",
+            "bridgeKey": "bridge-a",
+        },
+    }
+    feedback_part = {
+        "id": "canvas_feedback:bridge:bridge-a:turn:turn-a",
+        "type": "canvas_feedback",
+        "event": {
+            "key": "bridge:bridge-a:turn:turn-a",
+            "errors": ["节点动作完成但未产出 imageUrl。"],
+        },
+    }
+
+    chat_store.append_ui_event(
+        "admin",
+        scope,
+        "turn-a",
+        {"type": "assistant.message_parts", "parts": [context_part, approval_part]},
+    )
+    chat_store.append_ui_event(
+        "admin",
+        scope,
+        "turn-a",
+        {"type": "assistant.message_parts", "parts": [context_part, feedback_part]},
+    )
+    chat_store.append_ui_event(
+        "admin",
+        scope,
+        "turn-a",
+        {"type": "assistant.message_parts", "parts": [context_part]},
+    )
+
+    messages = chat_store.list_messages("admin", scope)
+    assistant = next(message for message in messages if message["role"] == "assistant")
+    part_types = [part["type"] for part in assistant["parts"]]
+    feedback = next(part for part in assistant["parts"] if part["type"] == "canvas_feedback")
+
+    assert "canvas_feedback" in part_types
+    assert "canvas_approval" not in part_types
+    assert feedback["event"]["errors"] == ["节点动作完成但未产出 imageUrl。"]
+
+
 def test_chat_scope_round_trips_freezone_canvas_payload() -> None:
     scope = ChatScope.from_payload(
         {
@@ -1689,6 +1751,36 @@ def test_freezone_suppresses_status_only_tool_lifecycle_failure():
     )
 
 
+def test_freezone_suppresses_canvas_bridge_tool_lifecycle_failure():
+    payload = {
+        "sessionUpdate": "tool_call_update",
+        "status": "failed",
+        "content": [
+            {
+                "type": "content",
+                "content": {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "ok": False,
+                            "tool_call_status": "failed",
+                            "canvas_apply_status": "failed",
+                            "errors": ["节点动作完成但未产出 imageUrl。"],
+                            "user_message": "节点动作完成但未产出 imageUrl。",
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            }
+        ],
+    }
+
+    assert chat_service._suppress_freezone_tool_lifecycle_error(
+        payload,
+        tool_mode="freezone_canvas",
+    )
+
+
 def test_freezone_keeps_tool_lifecycle_failure_with_business_payload():
     payload = {
         "sessionUpdate": "tool_call_update",
@@ -1716,6 +1808,23 @@ def test_freezone_strips_status_only_lifecycle_failure_prefix():
         text,
         tool_mode="default",
     ) == text
+
+
+def test_freezone_hides_generic_tool_lifecycle_failure_error():
+    assert (
+        chat_service._visible_tool_chat_error_for_mode(
+            "任务执行失败：当前状态为 failed。",
+            tool_mode="freezone_canvas",
+        )
+        is None
+    )
+    assert (
+        chat_service._visible_tool_chat_error_for_mode(
+            "任务执行失败：当前状态为 failed。",
+            tool_mode="default",
+        )
+        == "任务执行失败：当前状态为 failed。"
+    )
 
 
 def test_append_tool_ui_specs_adds_block_when_model_did_not_write_one():

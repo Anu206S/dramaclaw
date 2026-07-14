@@ -6,8 +6,10 @@ import {
   mergeCanvasContextActivitiesForTest,
   mergeCanvasCommandFeedbacksForTest,
   mergePendingCanvasCommandApprovalForTest,
+  resolveCanvasCommandFeedbackMessageIdForTest,
 } from "@/features/superchat/superchat-panel";
 import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-execution-narration";
+import { upsertAssistantMessageForTest } from "@/features/superchat/use-superchat";
 
 describe("canvas command flow placement", () => {
   it("orders Skill Studio cards with later canvas approvals in the same message", () => {
@@ -215,6 +217,60 @@ describe("canvas command flow placement", () => {
     expect(items[1]).toMatchObject({
       kind: "text",
       text: "已为你添加一个视频节点。\n\n已创建成功，ID 为 node-a。",
+    });
+  });
+
+  it("targets the current assistant turn when command feedback arrives before text", () => {
+    const messageId = resolveCanvasCommandFeedbackMessageIdForTest({
+      messages: [
+        {
+          id: "assistant-old",
+          role: "assistant",
+          text: "上一轮回复",
+          turnId: "turn-old",
+          timestamp: 1,
+        },
+      ],
+      turnId: "turn-new",
+      latestAssistantMessageId: "assistant-old",
+      receivedAt: 2,
+    });
+
+    expect(messageId).toBe("assistant-turn-new");
+  });
+
+  it("keeps existing canvas feedback when later assistant text arrives", () => {
+    const messages = upsertAssistantMessageForTest(
+      [
+        {
+          id: "assistant-turn-a",
+          role: "assistant",
+          text: "",
+          turnId: "turn-a",
+          timestamp: 1,
+          parts: [
+            {
+              id: "canvas_feedback:bridge-a",
+              type: "canvas_feedback",
+              event: {
+                key: "bridge-a",
+                errors: ["节点动作完成但未产出 imageUrl。"],
+                commandResults: [],
+              },
+            },
+          ],
+        },
+      ],
+      "turn-a",
+      "任务执行失败：当前状态为 failed。",
+    );
+
+    const assistant = messages.find((message) => message.id === "assistant-turn-a");
+
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["canvas_feedback", "text"]);
+    expect(assistant?.parts?.[0]).toMatchObject({
+      type: "canvas_feedback",
+      event: { errors: ["节点动作完成但未产出 imageUrl。"] },
     });
   });
 

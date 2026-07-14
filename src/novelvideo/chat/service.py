@@ -1725,6 +1725,47 @@ def _extract_tool_chat_error(value: Any) -> str | None:
     return visit(value)
 
 
+def _decode_tool_jsonish(text: str) -> Any | None:
+    raw = str(text or "").strip()
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        pass
+    try:
+        return _json_loads_with_trailing_repair(raw)
+    except ValueError:
+        return None
+
+
+def _contains_freezone_canvas_bridge_result(value: Any) -> bool:
+    """Return true when a Hermes tool update contains a Freezone bridge result."""
+    if isinstance(value, str):
+        decoded = _decode_tool_jsonish(value)
+        if decoded is None:
+            return False
+        return _contains_freezone_canvas_bridge_result(decoded)
+    if isinstance(value, list):
+        return any(_contains_freezone_canvas_bridge_result(item) for item in value)
+    if not isinstance(value, dict):
+        return False
+
+    has_bridge_status = "tool_call_status" in value or "canvas_apply_status" in value
+    has_bridge_body = (
+        "command_results" in value
+        or "applied_count" in value
+        or "opened_ui_actions" in value
+        or "created_node_ids" in value
+        or "user_message" in value
+        or "agent_instruction" in value
+    )
+    if has_bridge_status and has_bridge_body:
+        return True
+
+    return any(_contains_freezone_canvas_bridge_result(child) for child in value.values())
+
+
 def _suppress_freezone_tool_lifecycle_error(value: Any, *, tool_mode: str) -> bool:
     """Ignore Hermes lifecycle-only failures for Freezone canvas bridge tools.
 
@@ -1749,7 +1790,9 @@ def _suppress_freezone_tool_lifecycle_error(value: Any, *, tool_mode: str) -> bo
         "data",
         "output",
     }
-    return not any(key in value for key in business_payload_keys)
+    if not any(key in value for key in business_payload_keys):
+        return True
+    return _contains_freezone_canvas_bridge_result(value)
 
 
 def _strip_freezone_tool_lifecycle_failure_text(text: str, *, tool_mode: str) -> str:
@@ -1761,6 +1804,13 @@ def _strip_freezone_tool_lifecycle_failure_text(text: str, *, tool_mode: str) ->
         text,
         flags=re.IGNORECASE,
     ).lstrip()
+
+
+def _visible_tool_chat_error_for_mode(text: str | None, *, tool_mode: str) -> str | None:
+    if not text:
+        return None
+    visible = _strip_freezone_tool_lifecycle_failure_text(text, tool_mode=tool_mode)
+    return visible or None
 
 
 def _ui_spec_json(spec: dict[str, Any]) -> tuple[str, str]:
@@ -3862,11 +3912,17 @@ async def _stream_assistant_reply_hermes(
             if event.type == "tool_update":
                 if event.raw is not None:
                     tool_chat_error = None
-                    if not _suppress_freezone_tool_lifecycle_error(
-                        event.raw,
+                    raw = event.raw
+                    suppress_lifecycle_error = _suppress_freezone_tool_lifecycle_error(
+                        raw,
                         tool_mode=tool_mode,
-                    ):
-                        tool_chat_error = _extract_tool_chat_error(event.raw)
+                    )
+                    if not suppress_lifecycle_error:
+                        tool_chat_error = _extract_tool_chat_error(raw)
+                    tool_chat_error = _visible_tool_chat_error_for_mode(
+                        tool_chat_error,
+                        tool_mode=tool_mode,
+                    )
                     if tool_chat_error and tool_chat_error not in seen_tool_chat_errors:
                         seen_tool_chat_errors.add(tool_chat_error)
                         assistant_text = _merge_stream_text(

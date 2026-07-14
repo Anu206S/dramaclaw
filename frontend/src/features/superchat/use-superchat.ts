@@ -657,6 +657,10 @@ function assistantPartsWithText(
     return appendTextPart(parts, nextText.slice(previousText.length));
   }
   if (nextText === previousText) return parts;
+  const nonTextParts = parts?.filter((part) => part.type !== "text") ?? [];
+  if (nonTextParts.length > 0) {
+    return appendTextPart(nonTextParts, nextText);
+  }
   return [{ id: "text-1", type: "text", text: nextText }];
 }
 

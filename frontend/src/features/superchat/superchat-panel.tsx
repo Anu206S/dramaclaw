@@ -7153,6 +7153,23 @@ function findCanvasCommandFeedbackMessageId(messages: ChatMessage[], turnId?: st
   return latestTool?.id ?? null;
 }
 
+function resolveCanvasCommandFeedbackMessageId(input: {
+  anchorMessageId?: string | null;
+  messages: ChatMessage[];
+  turnId: string | null;
+  latestAssistantMessageId: string | null;
+  receivedAt?: number | null;
+}): string {
+  if (input.anchorMessageId) return input.anchorMessageId;
+  const sameTurnMessageId = findCanvasCommandFeedbackMessageId(input.messages, input.turnId);
+  if (sameTurnMessageId) return sameTurnMessageId;
+  if (input.turnId) return `assistant-${input.turnId}`;
+  if (input.latestAssistantMessageId) return input.latestAssistantMessageId;
+  return `canvas-command-result:${input.receivedAt ?? Date.now()}`;
+}
+
+export const resolveCanvasCommandFeedbackMessageIdForTest = resolveCanvasCommandFeedbackMessageId;
+
 function findCanvasCommandApprovalMessageId(messages: ChatMessage[], turnId?: string | null): string | null {
   const candidates = [...messages].reverse();
   if (turnId) {
@@ -7879,10 +7896,13 @@ export function SuperChatPanel({
     }
     if (!freezoneAgentMatches(detail.agentId)) return;
     const turnId = detail.turnId ?? null;
-    const messageId = detail.anchorMessageId
-      ?? findCanvasCommandFeedbackMessageId(activeMessages, turnId)
-      ?? latestAssistantMessageId
-      ?? `canvas-command-result:${detail.receivedAt ?? Date.now()}`;
+    const messageId = resolveCanvasCommandFeedbackMessageId({
+      anchorMessageId: detail.anchorMessageId,
+      messages: activeMessages,
+      turnId,
+      latestAssistantMessageId,
+      receivedAt: detail.receivedAt,
+    });
     const feedbackKey = canvasCommandFeedbackKey(detail.bridgeKey, turnId, detail.receivedAt);
     const envelopes = detail.envelopes ?? [];
     const plans = canvasCommandPlansFromEnvelopes(envelopes);
