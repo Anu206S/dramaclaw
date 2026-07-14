@@ -262,6 +262,31 @@ def test_skill_studio_status_frame_uses_backend_intent_detection() -> None:
     ) is None
 
 
+def test_skill_studio_status_frame_uses_user_text_not_canvas_context() -> None:
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-1",
+    )
+
+    enhanced_text = (
+        "查看下当前节点详情然后返回ok\n\n"
+        "[SUPERTALE_CANVAS_NODE_REFERENCES]\n"
+        "node_type: skillNode\n"
+        "available_actions: add_next_node, run_skill\n"
+        "[/SUPERTALE_CANVAS_NODE_REFERENCES]"
+    )
+
+    assert chat_route._skill_studio_status_frame(
+        scope=scope,
+        turn_id="turn-node-detail",
+        text=enhanced_text,
+        user_text="查看下当前节点详情然后返回ok",
+    ) is None
+
+
 def test_resolve_skill_studio_tool_result_writes_bridge_result(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path)
     payload = chat_route.SkillStudioToolResultIn(

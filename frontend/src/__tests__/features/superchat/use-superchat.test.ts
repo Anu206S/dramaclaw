@@ -2054,6 +2054,78 @@ describe("useSuperChat websocket lifecycle", () => {
     expect(sockets).toHaveLength(0);
   });
 
+  it("sends original user text separately from augmented transport text", async () => {
+    const sentFrames: string[] = [];
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send(frame: string) {
+        sentFrames.push(frame);
+      }
+
+      close() {}
+    }
+    const sockets: TestWebSocket[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    const hook = renderHook(() =>
+      useSuperChat({
+        project: "project-a",
+        displayName: "Tester",
+        surface: "freezone",
+        freezoneCanvasId: "canvas-a",
+      }),
+    );
+
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    await act(async () => {
+      sockets[0]?.onopen?.();
+      sockets[0]?.onmessage?.({
+        data: JSON.stringify({
+          type: "scope.changed",
+          scope: {
+            kind: "project",
+            id: "project-a",
+            surface: "freezone",
+            canvasId: "canvas-a",
+          },
+          history: [],
+        }),
+      } as MessageEvent);
+    });
+    await waitFor(() => expect(hook.result.current.connected).toBe(true));
+
+    act(() => {
+      hook.result.current.send(
+        "查看下当前节点详情然后返回ok",
+        [],
+        "查看下当前节点详情然后返回ok\n\nnode_type: skillNode\navailable_actions: run_skill",
+      );
+    });
+
+    const chatFrame = sentFrames
+      .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+      .find((frame) => frame.type === "chat.message");
+
+    expect(chatFrame).toEqual(expect.objectContaining({
+      text: expect.stringContaining("node_type: skillNode"),
+      user_text: "查看下当前节点详情然后返回ok",
+    }));
+  });
+
   it("persists merged assistant parts after the final assistant message arrives", async () => {
     apiPostMock.mockClear();
     class TestWebSocket {

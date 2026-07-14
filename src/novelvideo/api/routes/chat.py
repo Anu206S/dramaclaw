@@ -104,6 +104,7 @@ class ChatMessageIn(BaseModel):
     type: str
     scope: ChatScopePayload | None = None
     text: str
+    user_text: str | None = None
     turn_id: str | None = None
     attachments: list[ChatAttachmentIn] = []
     surface: str | None = None
@@ -1641,8 +1642,10 @@ def _skill_studio_status_frame(
     scope: ChatScope,
     turn_id: str,
     text: str,
+    user_text: str | None = None,
 ) -> dict[str, Any] | None:
-    if not chat_service._freezone_skill_studio_requested(text):  # type: ignore[attr-defined]
+    route_text = user_text if user_text is not None else text
+    if not chat_service._freezone_skill_studio_requested(route_text):  # type: ignore[attr-defined]
         return None
     return {
         "type": "skill_studio.status",
@@ -1662,6 +1665,7 @@ async def _stream_project_turn(
     text: str,
     attachments: list[ChatAttachmentIn],
     turn_id: str,
+    user_text: str | None = None,
     surface: str | None = None,
     surface_context: dict[str, Any] | None = None,
     store_scope: ChatScope | None = None,
@@ -1671,12 +1675,13 @@ async def _stream_project_turn(
     project_dir = project_ctx.output_dir if project_ctx is not None else None
     project_state_dir = project_ctx.state_dir if project_ctx is not None else None
     agent_text = _text_with_attachment_context(text, attachments)
+    display_text = str(user_text or text).strip()
     if store_scope is not None:
         chat_store.append_message(
             username,
             store_scope,
             "user",
-            text,
+            display_text,
             media=_attachment_payloads(attachments),
             turn_id=turn_id,
         )
@@ -1684,7 +1689,7 @@ async def _stream_project_turn(
         chat_service.add_user_message(
             username,
             project,
-            text,
+            display_text,
             project_dir=project_dir,
             project_state_dir=project_state_dir,
         )
@@ -1740,7 +1745,12 @@ async def _stream_project_turn(
             started_at=time.time(),
         )
     )
-    skill_studio_status = _skill_studio_status_frame(scope=scope, turn_id=turn_id, text=text)
+    skill_studio_status = _skill_studio_status_frame(
+        scope=scope,
+        turn_id=turn_id,
+        text=agent_text,
+        user_text=display_text,
+    )
     if skill_studio_status is not None:
         await _send_json_best_effort(websocket, skill_studio_status, send_lock)
     done_sent = False
@@ -1857,6 +1867,7 @@ async def _stream_project_turn(
             surface_context=surface_context,
             store_scope=store_scope,
             turn_id=turn_id,
+            route_prompt=display_text,
         )
     finally:
         heartbeat_task.cancel()
@@ -2166,6 +2177,7 @@ async def chat_ws(websocket: WebSocket) -> None:
             scope = _scope_from_model(msg.scope) if msg.scope else current_scope
             turn_id = (msg.turn_id or "").strip() or uuid.uuid4().hex
             text = msg.text.strip()
+            user_text = (msg.user_text or "").strip() or text
             if not text:
                 await _send_json_best_effort(
                     websocket, {"type": "error", "turn_id": turn_id, "message": "empty message"}
@@ -2183,6 +2195,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                         text=text,
                         attachments=msg.attachments,
                         turn_id=turn_id,
+                        user_text=user_text,
                         surface="freezone" if _is_freezone_scope(scope) else msg.surface,
                         surface_context=msg.context if _is_freezone_scope(scope) else None,
                         store_scope=scope if _is_freezone_scope(scope) else None,

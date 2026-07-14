@@ -5,6 +5,7 @@ export type ClientFrame =
       type: "chat.message";
       scope?: ChatScope;
       text: string;
+      user_text?: string;
       turn_id?: string;
       attachments?: ChatAttachment[];
       surface?: "freezone";

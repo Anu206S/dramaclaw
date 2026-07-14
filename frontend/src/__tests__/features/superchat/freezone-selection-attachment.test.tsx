@@ -14,9 +14,14 @@ import { useCanvasStore } from "@/stores/canvasStore";
 
 const superChatMocks = vi.hoisted(() => ({
   send: vi.fn(async () => true),
+  appendNotification: vi.fn(async () => undefined),
   messages: [] as ChatMessage[],
   busy: false,
   showToolEvents: false,
+}));
+
+const eventBusMocks = vi.hoisted(() => ({
+  on: vi.fn(() => vi.fn()),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -53,7 +58,7 @@ vi.mock("@tanstack/react-query", () => ({
 
 vi.mock("@/task-center/event-bus-context", () => ({
   useEventBus: () => ({
-    on: vi.fn(() => vi.fn()),
+    on: eventBusMocks.on,
   }),
 }));
 
@@ -113,6 +118,7 @@ vi.mock("@/features/superchat/use-superchat", () => ({
     relayInstances: [],
     resolveApproval: vi.fn(),
     selectRelayInstance: vi.fn(),
+    appendNotification: superChatMocks.appendNotification,
     send: superChatMocks.send,
     selectedInstanceId: "",
     sessionControl: vi.fn(),
@@ -150,9 +156,11 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
   afterEach(() => {
     vi.useRealTimers();
     superChatMocks.send.mockClear();
+    superChatMocks.appendNotification.mockClear();
     superChatMocks.messages = [];
     superChatMocks.busy = false;
     superChatMocks.showToolEvents = false;
+    eventBusMocks.on.mockClear();
     apiMocks.post.mockClear();
     useCanvasStore.getState().setCanvasData([], []);
     useCanvasStore.getState().setSelectedNode(null);
@@ -191,6 +199,24 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     );
 
     expect(screen.getByRole("button", { name: "历史 Agent" })).toBeInTheDocument();
+  });
+
+  it("does not append global task completion notifications in freezone mode", async () => {
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(eventBusMocks.on).not.toHaveBeenCalledWith("*", expect.any(Function));
+    expect(superChatMocks.appendNotification).not.toHaveBeenCalled();
   });
 
   it("does not show a selected canvas node as current-turn context after its attachment was consumed", () => {

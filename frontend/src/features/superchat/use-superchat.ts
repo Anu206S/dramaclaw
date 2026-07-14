@@ -2075,6 +2075,7 @@ export function useSuperChat({
       type: "chat.message",
       scope: desiredScope,
       text: outboundText,
+      user_text: trimmed,
       turn_id: turnId,
       attachments: attachments.length > 0 ? attachments : undefined,
       surface: surface === "freezone" ? "freezone" : undefined,
