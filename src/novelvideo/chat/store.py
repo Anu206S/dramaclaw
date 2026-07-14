@@ -467,6 +467,53 @@ class ChatStore:
         return events_by_turn
 
     @staticmethod
+    def _message_part_key(part: Any) -> str | None:
+        if not isinstance(part, dict):
+            return None
+        part_id = str(part.get("id") or "").strip()
+        if part_id:
+            return part_id
+        event = part.get("event")
+        if not isinstance(event, dict):
+            return None
+        event_type = str(event.get("type") or "").strip()
+        stable_id = (
+            str(event.get("bridge_key") or "").strip()
+            or str(event.get("skill_studio_session_id") or "").strip()
+            or str(event.get("clarification_id") or "").strip()
+        )
+        if event_type and stable_id:
+            return f"{event_type}:{stable_id}"
+        return None
+
+    @classmethod
+    def _merge_message_parts_snapshots(cls, snapshots: list[list[Any]]) -> list[Any]:
+        merged: list[Any] = []
+        for snapshot in snapshots:
+            if not isinstance(snapshot, list):
+                continue
+            snapshot_keys = {
+                key
+                for part in snapshot
+                if (key := cls._message_part_key(part))
+            }
+            preserved: list[Any] = []
+            for part in merged:
+                if not isinstance(part, dict):
+                    continue
+                part_type = str(part.get("type") or "")
+                key = cls._message_part_key(part)
+                if part_type == "canvas_approval":
+                    continue
+                if part_type == "text" and key not in snapshot_keys:
+                    continue
+                if key and key in snapshot_keys:
+                    continue
+                preserved.append(part)
+            merged = [*preserved, *snapshot]
+        return merged
+
+    @staticmethod
     def _attach_ui_events_to_messages(
         messages: list[dict[str, Any]],
         events_by_turn: dict[str, list[dict[str, Any]]],
@@ -537,7 +584,13 @@ class ChatStore:
                 if str(event.get("type") or "") != "assistant.message_parts"
             ]
             if parts_events:
-                messages[target_index]["parts"] = parts_events[-1]["parts"]
+                messages[target_index]["parts"] = ChatStore._merge_message_parts_snapshots(
+                    [
+                        event["parts"]
+                        for event in parts_events
+                        if isinstance(event.get("parts"), list)
+                    ]
+                )
             existing = messages[target_index].get("ui_events")
             if not isinstance(existing, list):
                 existing = []
