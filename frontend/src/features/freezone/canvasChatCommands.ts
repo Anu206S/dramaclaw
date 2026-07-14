@@ -132,6 +132,8 @@ export type CanvasChatCommandEnvelope = {
   schema_version: typeof CANVAS_CHAT_COMMANDS_SCHEMA_VERSION;
   project_id?: string;
   canvas_id?: string;
+  auto_apply_after_mcp_approval?: boolean;
+  autoApplyAfterMcpApproval?: boolean;
   commands: CanvasChatCommand[];
 };
 
@@ -780,6 +782,8 @@ function parseEnvelope(value: unknown): CanvasChatCommandEnvelope | null {
         : typeof value.canvasId === "string"
           ? value.canvasId
           : undefined,
+    auto_apply_after_mcp_approval: value.auto_apply_after_mcp_approval === true,
+    autoApplyAfterMcpApproval: value.autoApplyAfterMcpApproval === true,
     commands,
   };
 }

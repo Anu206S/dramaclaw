@@ -95,6 +95,7 @@ import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import {
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+  applyCanvasChatCommandsAsync,
   canvasCommandEnvelopeMatchesCanvas,
   emitCanvasCommandApproval,
   extractCanvasChatCommandEnvelopes,
@@ -153,6 +154,8 @@ const FREEZONE_CHAT_WIDTH_MAX = 760;
 const FREEZONE_AGENT_HISTORY_WIDTH_DEFAULT = 220;
 const FREEZONE_AGENT_HISTORY_WIDTH_MIN = 180;
 const FREEZONE_AGENT_HISTORY_WIDTH_MAX = 360;
+const EXTERNAL_CANVAS_COMMAND_POLL_MS = 800;
+const EXTERNAL_CANVAS_REVISION_POLL_MS = 2_000;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -184,6 +187,31 @@ async function listServerFreezoneCanvasAgents(
     data?: { agents?: FreezoneCanvasAgent[] };
   }>();
   return Array.isArray(response.data?.agents) ? response.data.agents : [];
+}
+
+async function listPendingCanvasCommandFrames({
+  projectId,
+  canvasId,
+  agentId,
+  seenKeys,
+}: {
+  projectId: string;
+  canvasId: string;
+  agentId: string;
+  seenKeys: string[];
+}): Promise<ServerFrame[]> {
+  const response = await api.post("api/v1/chat/pending-canvas-commands", {
+    json: {
+      project_id: projectId,
+      canvas_id: canvasId,
+      agent_id: agentId,
+      seen_keys: seenKeys,
+    },
+  }).json<{
+    ok?: boolean;
+    data?: { frames?: ServerFrame[] };
+  }>();
+  return Array.isArray(response.data?.frames) ? response.data.frames : [];
 }
 
 function pushJsonTextCanvasCommandCandidate(candidates: unknown[], text: unknown): void {
@@ -703,6 +731,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
   const removingProjectionRef = useRef<string | null>(null);
+  const emittedExternalCanvasCommandKeysRef = useRef<Set<string>>(new Set());
   const [hasRenderedCanvas, setHasRenderedCanvas] = useState(false);
   const [projectionStatusRefreshToken, setProjectionStatusRefreshToken] = useState(0);
   const lastProjectionStatusRevisionRef = useRef<{
@@ -728,6 +757,10 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   const canvasNodes = useCanvasStore((state) => state.nodes);
   const canvasEdges = useCanvasStore((state) => state.edges);
   const selectedNodeId = useCanvasStore((state) => state.selectedNodeId);
+  const syncRetryRef = useRef(sync.retry);
+  useEffect(() => {
+    syncRetryRef.current = sync.retry;
+  }, [sync.retry]);
   const visibleSelectedCanvasNodes = useMemo(() => {
     const selectedNodes = canvasNodes.filter((node) => node.selected);
     return selectedNodes.length > 0
@@ -825,6 +858,64 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       setHasRenderedCanvas(true);
     }
   }, [canvasId, sync.hydratedCanvasId, sync.status]);
+
+  useEffect(() => {
+    if (
+      sync.status !== "ready" ||
+      sync.hydratedCanvasId !== canvasId ||
+      sync.revision == null
+    ) {
+      return;
+    }
+    let cancelled = false;
+    let inFlight = false;
+    const pollRemoteRevision = async () => {
+      if (cancelled || inFlight || document.visibilityState === "hidden") return;
+      inFlight = true;
+      try {
+        const response = await api
+          .get(
+            `api/v1/projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}`,
+          )
+          .json<{ data?: { revision?: number } }>();
+        const remoteRevision = response.data?.revision;
+        if (
+          !cancelled &&
+          typeof remoteRevision === "number" &&
+          sync.revision != null &&
+          remoteRevision > sync.revision
+        ) {
+          syncRetryRef.current();
+        }
+      } catch {
+        // Best effort: missing a poll is fine; the next tick or page refresh catches up.
+      } finally {
+        inFlight = false;
+      }
+    };
+    const timer = window.setInterval(pollRemoteRevision, EXTERNAL_CANVAS_REVISION_POLL_MS);
+    const handleFocus = () => {
+      void pollRemoteRevision();
+    };
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === "visible") void pollRemoteRevision();
+    };
+    window.addEventListener("focus", handleFocus);
+    document.addEventListener("visibilitychange", handleVisibilityChange);
+    void pollRemoteRevision();
+    return () => {
+      cancelled = true;
+      window.clearInterval(timer);
+      window.removeEventListener("focus", handleFocus);
+      document.removeEventListener("visibilitychange", handleVisibilityChange);
+    };
+  }, [
+    canvasId,
+    projectId,
+    sync.hydratedCanvasId,
+    sync.revision,
+    sync.status,
+  ]);
 
   const projectionKeys = useMemo(
     () => projectionKeysFromMetadata(sync.metadata),
@@ -1146,9 +1237,11 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         frame?: ServerFrame;
         anchorTextPrefix?: string | null;
         receivedAt?: number;
+        externalMcpCommand?: boolean;
       }>).detail;
       const frame = detail?.frame;
       if (!frame || frame.type !== "canvas.command") return;
+      const isExternalMcpCommand = detail?.externalMcpCommand === true;
       const turnId = typeof frame.turn_id === "string" ? frame.turn_id : null;
       const bridgeKey = typeof frame.bridge_key === "string" ? frame.bridge_key : null;
       const agentId =
@@ -1250,7 +1343,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             receivedAt: eventReceivedAt + 2,
           },
         }));
-        setChatOpen(true);
+        if (!isExternalMcpCommand) setChatOpen(true);
         return;
       }
 
@@ -1324,7 +1417,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             receivedAt: eventReceivedAt + 2,
           },
         }));
-        setChatOpen(true);
+        if (!isExternalMcpCommand) setChatOpen(true);
         return;
       }
 
@@ -1349,6 +1442,121 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
         anchorTextPrefix: detail?.anchorTextPrefix ?? null,
         receivedAt: eventReceivedAt + 1,
       });
+      const autoApplyAfterMcpApproval =
+        normalizedEnvelopes.some((envelope) => envelope.auto_apply_after_mcp_approval === true) ||
+        normalizedEnvelopes.some((envelope) => envelope.autoApplyAfterMcpApproval === true);
+      if (autoApplyAfterMcpApproval) {
+        void (async () => {
+          let result: CanvasChatCommandApplyResult;
+          try {
+            result = await applyCanvasChatCommandsAsync(normalizedEnvelopes, {
+              projectId,
+              canvasId,
+            });
+          } catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            result = {
+              applied: 0,
+              openedUiActions: 0,
+              createdNodeIds: [],
+              errors: [message],
+              commandResults: [
+                {
+                  commandIndex: -1,
+                  type: "run_node_action",
+                  status: "error",
+                  label: "执行节点动作",
+                  error: message,
+                },
+              ],
+            };
+          }
+          reportCanvasCommandToolResult({
+            bridgeKey,
+            turnId,
+            anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+            projectId,
+            canvasId,
+            agentId,
+            result,
+          });
+          persistCanvasCommandResult({
+            projectId,
+            canvasId,
+            turnId,
+            envelopes: normalizedEnvelopes,
+            result,
+            anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+            receivedAt: detail?.receivedAt,
+            bridgeKey,
+          });
+          window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, {
+            detail: {
+              canvasId,
+              agentId,
+              turnId,
+              bridgeKey,
+              anchorMessageId: null,
+              envelopes: normalizedEnvelopes,
+              result,
+              anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+              receivedAt: eventReceivedAt + 2,
+            },
+          }));
+        })();
+        return;
+      }
+      if (isExternalMcpCommand) {
+        const result: CanvasChatCommandApplyResult = {
+          applied: 0,
+          openedUiActions: 0,
+          createdNodeIds: [],
+          errors: ["外部 MCP 画布命令缺少自动执行标记，前端不会打开聊天审批。"],
+          commandResults: [
+            {
+              commandIndex: -1,
+              type: "validate",
+              status: "error",
+              label: "MCP 画布命令无效",
+              error: "外部 MCP 画布命令缺少 auto_apply_after_mcp_approval。",
+            },
+          ],
+        };
+        reportCanvasCommandToolResult({
+          bridgeKey,
+          turnId,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          projectId,
+          canvasId,
+          agentId,
+          result,
+        });
+        persistCanvasCommandResult({
+          projectId,
+          canvasId,
+          turnId,
+          envelopes: normalizedEnvelopes,
+          result,
+          anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+          receivedAt: detail?.receivedAt,
+          bridgeKey,
+        });
+        window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_RESULT_EVENT, {
+          detail: {
+            canvasId,
+            agentId,
+            turnId,
+            bridgeKey,
+            anchorMessageId: null,
+            envelopes: normalizedEnvelopes,
+            result,
+            anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+            receivedAt: eventReceivedAt + 2,
+          },
+        }));
+        return;
+      }
+
       persistCanvasCommandApproval({
         projectId,
         canvasId,
@@ -1374,6 +1582,59 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     window.addEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleCanvasCommand);
     return () => {
       window.removeEventListener(SUPERCHAT_CANVAS_COMMAND_EVENT, handleCanvasCommand);
+    };
+  }, [canvasId, projectId]);
+
+  useEffect(() => {
+    emittedExternalCanvasCommandKeysRef.current.clear();
+  }, [canvasId, projectId]);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: number | null = null;
+
+    const tick = async () => {
+      if (cancelled) return;
+      try {
+        const seenKeys = Array.from(emittedExternalCanvasCommandKeysRef.current).slice(-200);
+        const frames = await listPendingCanvasCommandFrames({
+          projectId,
+          canvasId,
+          agentId: "main",
+          seenKeys,
+        });
+        const now = Date.now();
+        frames.forEach((frame, index) => {
+          const bridgeKey =
+            typeof frame.bridge_key === "string"
+              ? frame.bridge_key
+              : typeof frame.bridgeKey === "string"
+                ? frame.bridgeKey
+                : null;
+          if (!bridgeKey || emittedExternalCanvasCommandKeysRef.current.has(bridgeKey)) return;
+          emittedExternalCanvasCommandKeysRef.current.add(bridgeKey);
+          window.dispatchEvent(new CustomEvent(SUPERCHAT_CANVAS_COMMAND_EVENT, {
+            detail: {
+              frame,
+              anchorTextPrefix: "外部 Agent",
+              receivedAt: now + index,
+              externalMcpCommand: true,
+            },
+          }));
+        });
+      } catch {
+        // The page can be open before auth/API is ready. Retry quietly.
+      } finally {
+        if (!cancelled) {
+          timer = window.setTimeout(tick, EXTERNAL_CANVAS_COMMAND_POLL_MS);
+        }
+      }
+    };
+
+    timer = window.setTimeout(tick, EXTERNAL_CANVAS_COMMAND_POLL_MS);
+    return () => {
+      cancelled = true;
+      if (timer !== null) window.clearTimeout(timer);
     };
   }, [canvasId, projectId]);
 
