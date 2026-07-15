@@ -2402,6 +2402,7 @@ type SkillStudioUiEvent =
       type: "skill_studio.status";
       status?: string;
       message?: string;
+      turn_id?: string | null;
       anchor_text_prefix?: string | null;
       received_at?: number;
       receivedAt?: number;
@@ -2463,6 +2464,7 @@ function uiEventStableKey(event: unknown): string | null {
   const value = event as Record<string, unknown>;
   const type = uiEventRecordString(value, "type");
   if (!type) return null;
+  if (type === "skill_studio.status") return type;
   const stableId =
     uiEventRecordString(value, "bridge_key")
     ?? uiEventRecordString(value, "skill_studio_session_id")
@@ -3775,6 +3777,7 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
       "用户已启动 Skill Studio 草稿修改会话。",
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
       "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
+      "不要询问是否保存当前版本，也不要提供 save_now / save_current / confirm_save 这类选项；保存只由页面草稿卡的确认按钮处理。",
       "如果需要追问，请直接询问具体修改方向、范围或偏好。",
       "请基于当前完整草稿，一个问题一个问题地收集修改意图；信息足够后再输出新的完整 Skill / Recipe 草稿。",
       "下一步只能调用 freezone_request_user_clarification 或 freezone_present_agent_catalog_draft。",

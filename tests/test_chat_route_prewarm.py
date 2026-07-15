@@ -253,7 +253,7 @@ def test_skill_studio_status_frame_uses_backend_intent_detection() -> None:
         },
         "turn_id": "turn-a",
         "status": "routing",
-        "message": "正在进入 Skill Studio...",
+        "message": "正在整理 Skill 方向...",
     }
     assert chat_route._skill_studio_status_frame(
         scope=scope,
@@ -397,6 +397,8 @@ def test_resolve_revision_skill_studio_tool_result_starts_question_flow(monkeypa
     assert "current draft" in resolved["agent_instruction"]
     assert "already asked to revise" in resolved["agent_instruction"]
     assert "Do not ask whether revision is needed" in resolved["agent_instruction"]
+    assert "Do not ask whether to save the current draft" in resolved["agent_instruction"]
+    assert "save_now" in resolved["agent_instruction"]
     assert "freezone_request_user_clarification" in resolved["agent_instruction"]
     assert "exactly one question object" in resolved["agent_instruction"]
     assert "wait for the answer before deciding the next question" in resolved["agent_instruction"]
