@@ -860,8 +860,11 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "[FREEZONE_SKILL_STUDIO]" in prompt
     assert "freezone_request_user_clarification" in prompt
     assert "freezone_begin_agent_catalog_draft" in prompt
+    assert "freezone_patch_agent_catalog_draft" in prompt
     assert "freezone_put_agent_catalog_recipe" in prompt
     assert "freezone_finish_agent_catalog_draft" in prompt
+    assert "For local edits, prefer freezone_patch_agent_catalog_draft" in prompt
+    assert "Do not regenerate unchanged Recipes" in prompt
     assert "expected_recipe_count" in prompt
     assert "Use 0 only when the draft intentionally has no Recipes" in prompt
     assert "Do not pass the full Skill/Recipe catalog in one tool call" in prompt
@@ -869,9 +872,11 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "Do not claim the Skill or Recipe is saved" in prompt
     assert "Do not ask whether to\n  save the current draft" in prompt
     assert "save_now/save_current/confirm_save" in prompt
-    assert "按 output_kind 区分" in prompt
-    assert "终端生成型" in prompt
-    assert "不要把所有 Recipe 都写成 prompt compiler" in prompt
+    assert "prompt/instruction generator" in prompt
+    assert "不要直接生成最终内容" in prompt
+    assert "送入对应节点" in prompt
+    assert "终端生成型" not in prompt
+    assert "不要把所有 Recipe 都写成 prompt compiler" not in prompt
     assert "must not emit Freezone canvas commands" in prompt
 
 
@@ -1199,6 +1204,39 @@ def test_freezone_canvas_agent_summaries_default_to_latest_twenty(monkeypatch, t
     assert summaries[-1]["id"] == "agent-6"
 
 
+def test_freezone_canvas_agent_summaries_tie_break_same_millisecond(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+
+    for index in range(25):
+        scope = ChatScope(
+            kind="project",
+            id="project-a",
+            surface="freezone",
+            canvas_id="canvas-a",
+            agent_id=f"agent-{index + 1}",
+        )
+        chat_store.append_message("admin", scope, "user", f"agent {index + 1}")
+
+    def same_time_summary(agent_id, _db_path):
+        return {
+            "id": agent_id,
+            "name": agent_id,
+            "createdAt": 1000,
+            "lastActiveAt": 1000,
+        }
+
+    monkeypatch.setattr(chat_store, "_freezone_agent_summary_from_db", same_time_summary)
+
+    summaries = chat_store.list_freezone_canvas_agent_summaries(
+        "admin",
+        project_id="project-a",
+        canvas_id="canvas-a",
+    )
+
+    assert [summary["id"] for summary in summaries] == [f"agent-{index}" for index in range(25, 5, -1)]
+
+
 @pytest.mark.anyio
 async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
@@ -1393,6 +1431,55 @@ def test_chat_message_parts_keep_canvas_feedback_after_stale_snapshot(monkeypatc
     assert "canvas_feedback" in part_types
     assert "canvas_approval" not in part_types
     assert feedback["event"]["errors"] == ["节点动作完成但未产出 imageUrl。"]
+
+
+def test_chat_message_parts_drop_stale_skill_studio_status_snapshot(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    scope = ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
+
+    chat_store.append_message("admin", scope, "user", "做一个公益短片 skill", turn_id="turn-a")
+    chat_store.append_message("admin", scope, "assistant", "草稿已生成。", turn_id="turn-a")
+    question_part = {
+        "id": "skill_studio.questions:question-key",
+        "type": "skill_studio",
+        "event": {
+            "type": "skill_studio.questions",
+            "bridge_key": "question-key",
+            "submitted": True,
+            "questions": [],
+        },
+    }
+    status_part = {
+        "id": "skill_studio.status:skill_studio.status",
+        "type": "skill_studio",
+        "event": {
+            "type": "skill_studio.status",
+            "status": "draft_patch_applied",
+            "message": "已更新 Recipe: public-welfare-storyboard-images",
+        },
+    }
+    text_part = {"id": "text-3", "type": "text", "text": "草稿已生成。"}
+
+    chat_store.append_ui_event(
+        "admin",
+        scope,
+        "turn-a",
+        {"type": "assistant.message_parts", "parts": [status_part, question_part]},
+    )
+    chat_store.append_ui_event(
+        "admin",
+        scope,
+        "turn-a",
+        {"type": "assistant.message_parts", "parts": [question_part, text_part]},
+    )
+
+    messages = chat_store.list_messages("admin", scope)
+    assistant = next(message for message in messages if message["role"] == "assistant")
+
+    assert [part["type"] for part in assistant["parts"]] == ["skill_studio", "text"]
+    assert [part.get("event", {}).get("type") for part in assistant["parts"] if part["type"] == "skill_studio"] == [
+        "skill_studio.questions"
+    ]
 
 
 def test_chat_scope_round_trips_freezone_canvas_payload() -> None:
