@@ -1550,6 +1550,33 @@ describe("Skill Studio status events", () => {
     ]).map((event) => event.type)).toEqual(["skill_studio.questions"]);
   });
 
+  it("keeps only the latest Skill Studio status update before the draft arrives", () => {
+    const events = skillStudioEventsFromUiEventsForTest([
+      {
+        type: "skill_studio.status",
+        status: "routing",
+        message: "正在整理 Skill 方向...",
+      },
+      {
+        type: "skill_studio.status",
+        status: "drafting",
+        message: "正在生成 Skill 草稿...",
+      },
+      {
+        type: "skill_studio.status",
+        status: "finalizing",
+        message: "草稿较完整，正在补齐 Recipes 和校验项...",
+      },
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "skill_studio.status",
+      status: "finalizing",
+      message: "草稿较完整，正在补齐 Recipes 和校验项...",
+    });
+  });
+
   it("merges repeated Skill Studio question events into the latest state", () => {
     const events = skillStudioEventsFromUiEventsForTest([
       {
@@ -1922,6 +1949,8 @@ describe("Skill Studio draft response", () => {
     expect(payload.message).toContain("基于当前完整草稿");
     expect(payload.message).toContain("用户已经明确表示需要调整");
     expect(payload.message).toContain("不要再询问是否需要调整");
+    expect(payload.message).toContain("不要询问是否保存当前版本");
+    expect(payload.message).toContain("save_now");
     expect(payload.message).toContain("一个问题一个问题");
     expect(payload.message).toContain("只能调用 freezone_request_user_clarification 或 freezone_present_agent_catalog_draft");
     expect(payload.message).toContain("不要用普通文本总结修改结果");

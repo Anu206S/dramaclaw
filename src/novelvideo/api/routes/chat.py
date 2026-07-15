@@ -592,6 +592,8 @@ def _resolve_skill_studio_tool_result_payload(
                 "Use the current draft from this tool result as the source of truth. "
                 "The user already asked to revise the current draft. "
                 "Do not ask whether revision is needed; ask directly about the concrete revision direction, scope, or preference. "
+                "Do not ask whether to save the current draft, and do not offer save_now/save_current/confirm_save as a question option; "
+                "saving is handled only by the existing draft card UI after an updated draft is presented. "
                 "When asking with freezone_request_user_clarification, send exactly one question object in the questions array, "
                 "then wait for the answer before deciding the next question. "
                 "When enough information is available, call freezone_present_agent_catalog_draft with a complete updated draft. "
@@ -1729,17 +1731,46 @@ def _skill_studio_status_frame(
     turn_id: str,
     text: str,
     user_text: str | None = None,
+    status: str = "routing",
+    message: str | None = None,
 ) -> dict[str, Any] | None:
     route_text = user_text if user_text is not None else text
     if not chat_service._freezone_skill_studio_requested(route_text):  # type: ignore[attr-defined]
         return None
+    status_messages = {
+        "routing": "正在整理 Skill 方向...",
+        "drafting": "正在生成 Skill 草稿...",
+        "finalizing": "草稿较完整，正在补齐 Recipes 和校验项...",
+    }
     return {
         "type": "skill_studio.status",
         "scope": scope.to_dict(),
         "turn_id": turn_id,
-        "status": "routing",
-        "message": "正在进入 Skill Studio...",
+        "status": status,
+        "message": message or status_messages.get(status) or "正在整理 Skill 方向...",
     }
+
+
+async def _skill_studio_progress_status_loop(
+    *,
+    websocket: WebSocket,
+    scope: ChatScope,
+    turn_id: str,
+    text: str,
+    user_text: str | None,
+    send_lock: asyncio.Lock,
+) -> None:
+    for delay_seconds, status in ((6.0, "drafting"), (2.0, "finalizing")):
+        await asyncio.sleep(delay_seconds)
+        frame = _skill_studio_status_frame(
+            scope=scope,
+            turn_id=turn_id,
+            text=text,
+            user_text=user_text,
+            status=status,
+        )
+        if frame is not None:
+            await _send_json_best_effort(websocket, frame, send_lock)
 
 
 async def _stream_project_turn(
@@ -1839,6 +1870,20 @@ async def _stream_project_turn(
     )
     if skill_studio_status is not None:
         await _send_json_best_effort(websocket, skill_studio_status, send_lock)
+    skill_studio_progress_task = (
+        asyncio.create_task(
+            _skill_studio_progress_status_loop(
+                websocket=websocket,
+                scope=scope,
+                turn_id=turn_id,
+                text=agent_text,
+                user_text=display_text,
+                send_lock=send_lock,
+            )
+        )
+        if skill_studio_status is not None
+        else None
+    )
     done_sent = False
     assistant_sent_text = ""
 
@@ -1962,6 +2007,8 @@ async def _stream_project_turn(
         pending_canvas_context_task.cancel()
         pending_skill_studio_task.cancel()
         pending_clarification_task.cancel()
+        if skill_studio_progress_task is not None:
+            skill_studio_progress_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
         with contextlib.suppress(asyncio.CancelledError):
@@ -1974,6 +2021,9 @@ async def _stream_project_turn(
             await pending_skill_studio_task
         with contextlib.suppress(asyncio.CancelledError):
             await pending_clarification_task
+        if skill_studio_progress_task is not None:
+            with contextlib.suppress(asyncio.CancelledError):
+                await skill_studio_progress_task
         if not done_sent:
             await _send_json_best_effort(
                 websocket,

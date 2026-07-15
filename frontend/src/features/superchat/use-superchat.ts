@@ -1854,7 +1854,8 @@ export function useSuperChat({
           upsertAssistantUiEvent(current, turnId, {
             type: "skill_studio.status",
             status: typeof frame.status === "string" ? frame.status : "routing",
-            message: typeof frame.message === "string" ? frame.message : "正在进入 Skill Studio...",
+            message: typeof frame.message === "string" ? frame.message : "正在整理 Skill 方向...",
+            turn_id: turnId,
           }),
         );
         break;

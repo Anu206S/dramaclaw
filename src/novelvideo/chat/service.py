@@ -342,6 +342,9 @@ Draft revision:
   freezone_request_user_clarification for this revision flow, the questions array must contain
   exactly one question object. Wait for the user's answer before deciding the next question unless
   the requested change is already clear.
+- A start_revision result means the user is dissatisfied and wants changes. Do not ask whether to
+  save the current draft, and do not offer save_now/save_current/confirm_save as options. Saving is
+  handled only by the draft card UI after you present an updated draft.
 - After a Skill Studio save result, if the user naturally asks to revise the recently saved
   Skill/Recipe, infer the target from history, read full saved config with freezone_get_saved_skill
   and/or freezone_get_saved_recipe if needed, ask focused revision questions, then present a
