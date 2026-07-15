@@ -952,6 +952,14 @@ def _validate_recipe_patch_paths(recipe_id: str, patch_ops: list[Any]) -> None:
             )
 
 
+def _is_remove_entire_recipe_patch(patch_ops: list[Any]) -> bool:
+    if len(patch_ops) != 1 or not isinstance(patch_ops[0], dict):
+        return False
+    op = str(patch_ops[0].get("op") or "").strip()
+    path = str(patch_ops[0].get("path") or "").strip()
+    return op == "remove" and path == ""
+
+
 def _handle_patch_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     project, canvas = _skill_studio_scope_from_args(args)
     session_id = _skill_studio_session_id_from_args(args)
@@ -1007,10 +1015,20 @@ def _handle_patch_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
             recipe = recipes[recipe_index]
             if not isinstance(recipe, dict):
                 raise _DraftPatchError(f"Recipe is not an object: {recipe_id}")
-            _validate_recipe_patch_paths(recipe_id, patch_ops)
-            recipes[recipe_index] = _apply_json_pointer_patch(recipe, patch_ops)
-            message = f"已更新 Recipe：{recipe_id}"
-            patched_payload = {"target": "recipe", "recipe_id": recipe_id, "recipe_index": recipe_index}
+            if _is_remove_entire_recipe_patch(patch_ops):
+                recipes.pop(recipe_index)
+                message = f"已移除 Recipe：{recipe_id}"
+                patched_payload = {
+                    "target": "recipe",
+                    "recipe_id": recipe_id,
+                    "recipe_index": recipe_index,
+                    "removed": True,
+                }
+            else:
+                _validate_recipe_patch_paths(recipe_id, patch_ops)
+                recipes[recipe_index] = _apply_json_pointer_patch(recipe, patch_ops)
+                message = f"已更新 Recipe：{recipe_id}"
+                patched_payload = {"target": "recipe", "recipe_id": recipe_id, "recipe_index": recipe_index}
     except _DraftPatchError as exc:
         return tool_result(
             {
@@ -3828,7 +3846,8 @@ TOOLS = (
                         "Paths must start with '/', cannot modify /id, and must not rely on Recipe array indexes. "
                         "When target=recipe, recipe_id already selects the Recipe, so paths are relative to that "
                         "Recipe object, for example /system_prompt or /must_have_items; never use "
-                        "/recipes/<recipe_id>/system_prompt."
+                        "/recipes/<recipe_id>/system_prompt. To remove the entire selected Recipe, use exactly one "
+                        "operation: {\"op\":\"remove\",\"path\":\"\"}."
                     ),
                     "items": {
                         "type": "object",
@@ -3839,7 +3858,8 @@ TOOLS = (
                                 "description": (
                                     "JSON Pointer path. Skill example: /triggers/keywords/0. "
                                     "Recipe example with target=recipe and recipe_id set: /system_prompt or "
-                                    "/must_have_items, not /recipes/<recipe_id>/system_prompt."
+                                    "/must_have_items, not /recipes/<recipe_id>/system_prompt. Use an empty string "
+                                    "only with target=recipe and op=remove to delete the entire selected Recipe."
                                 ),
                             },
                             "value": {"description": "Value for replace/add operations."},
