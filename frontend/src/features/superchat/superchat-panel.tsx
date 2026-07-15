@@ -2488,6 +2488,32 @@ function uiEventFirstReceivedAt(...events: unknown[]): number {
   return Date.now();
 }
 
+function skillStudioStatusPriority(event: unknown): number {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return 0;
+  const value = event as Record<string, unknown>;
+  if (value.type !== "skill_studio.status") return 0;
+  const status = typeof value.status === "string" ? value.status : "";
+  if (status === "draft_recipe_ready") return 4;
+  if (status === "draft_skill_ready") return 3;
+  if (status === "draft_begin") return 2;
+  if (status === "finalizing" || status === "drafting" || status === "routing") return 1;
+  return 1;
+}
+
+function isRealSkillStudioProgressStatus(event: unknown): boolean {
+  return skillStudioStatusPriority(event) >= 2;
+}
+
+function filterStaleSkillStudioStatus(events: SkillStudioUiEvent[]): SkillStudioUiEvent[] {
+  return events.filter((event) => event.type !== "skill_studio.status" || isRealSkillStudioProgressStatus(event));
+}
+
+function shouldReplaceStableUiEvent(existing: unknown, next: unknown): boolean {
+  const existingKey = uiEventStableKey(existing);
+  if (existingKey !== "skill_studio.status") return true;
+  return skillStudioStatusPriority(next) >= skillStudioStatusPriority(existing);
+}
+
 function mergeUiEventsByStableKey<T>(events: T[]): T[] {
   const merged: T[] = [];
   for (const event of events) {
@@ -2498,6 +2524,7 @@ function mergeUiEventsByStableKey<T>(events: T[]): T[] {
     }
     const existingIndex = merged.findIndex((candidate) => uiEventStableKey(candidate) === key);
     if (existingIndex >= 0) {
+      if (!shouldReplaceStableUiEvent(merged[existingIndex], event)) continue;
       const existingReceivedAt = uiEventReceivedAt(merged[existingIndex]);
       const nextReceivedAt = uiEventReceivedAt(event);
       const firstReceivedAt =
@@ -2545,16 +2572,17 @@ export const hydrateOrderedPartsWithUiEventsForTest = hydrateOrderedPartsWithUiE
 
 function skillStudioEventsFromUiEvents(events: unknown[] | undefined): SkillStudioUiEvent[] {
   if (!events || events.length === 0) return [];
-  const skillStudioEvents = mergeUiEventsByStableKey(events.filter((event): event is SkillStudioUiEvent => {
+  const rawSkillStudioEvents = events.filter((event): event is SkillStudioUiEvent => {
     if (!event || typeof event !== "object") return false;
     const type = (event as Record<string, unknown>).type;
     return type === "skill_studio.status" || type === "skill_studio.questions" || type === "skill_studio.draft";
-  })) as SkillStudioUiEvent[];
+  });
+  const skillStudioEvents = mergeUiEventsByStableKey(rawSkillStudioEvents) as SkillStudioUiEvent[];
   const hasInteractiveCard = skillStudioEvents.some((event) =>
     event.type === "skill_studio.questions" || event.type === "skill_studio.draft",
   );
   return hasInteractiveCard
-    ? skillStudioEvents.filter((event) => event.type !== "skill_studio.status")
+    ? filterStaleSkillStudioStatus(skillStudioEvents)
     : skillStudioEvents;
 }
 
@@ -2566,11 +2594,11 @@ function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUi
     !(event.type === "skill_studio.questions" && event.submitted !== true),
   );
   const hasClarificationCard = assistantClarificationEventsFromUiEvents(messageUiEvents(message)).length > 0;
-  if (hasClarificationCard) return visibleEvents.filter((event) => event.type !== "skill_studio.status");
+  if (hasClarificationCard) return filterStaleSkillStudioStatus(visibleEvents);
   const hasSubmittedCard = visibleEvents.some((event) =>
     (event.type === "skill_studio.questions" || event.type === "skill_studio.draft") && event.submitted === true,
   );
-  if (hasSubmittedCard) return visibleEvents.filter((event) => event.type !== "skill_studio.status");
+  if (hasSubmittedCard) return filterStaleSkillStudioStatus(visibleEvents);
   if (!message.text.trim()) return visibleEvents;
   return visibleEvents.filter((event) => event.type !== "skill_studio.status");
 }
@@ -3779,8 +3807,9 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
       "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
       "不要询问是否保存当前版本，也不要提供 save_now / save_current / confirm_save 这类选项；保存只由页面草稿卡的确认按钮处理。",
       "如果需要追问，请直接询问具体修改方向、范围或偏好。",
-      "请基于当前完整草稿，一个问题一个问题地收集修改意图；信息足够后再输出新的完整 Skill / Recipe 草稿。",
-      "下一步只能调用 freezone_request_user_clarification 或 freezone_present_agent_catalog_draft。",
+      "请基于当前完整草稿，一个问题一个问题地收集修改意图；信息足够后使用分片草稿工具输出更新草稿。",
+      "下一步只能调用 freezone_request_user_clarification，或按顺序调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
+      "不要在单个 tool_call 里传完整 Skill / Recipe catalog。",
       "不要用普通文本总结修改结果；不要只说明改了什么；未输出更新草稿前不要让用户保存。",
     ].filter(Boolean).join("\n"),
   };

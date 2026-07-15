@@ -596,8 +596,13 @@ def _resolve_skill_studio_tool_result_payload(
                 "saving is handled only by the existing draft card UI after an updated draft is presented. "
                 "When asking with freezone_request_user_clarification, send exactly one question object in the questions array, "
                 "then wait for the answer before deciding the next question. "
-                "When enough information is available, call freezone_present_agent_catalog_draft with a complete updated draft. "
-                "Only use freezone_request_user_clarification or freezone_present_agent_catalog_draft as the next Skill Studio step. "
+                "When enough information is available, use chunked draft tools: "
+                "freezone_begin_agent_catalog_draft, freezone_put_agent_catalog_skill, "
+                "freezone_put_agent_catalog_recipe once per changed Recipe, then freezone_finish_agent_catalog_draft. "
+                "Before freezone_begin_agent_catalog_draft, decide the full planned Recipe count for the updated draft "
+                "and pass expected_recipe_count; use the full draft count, not only the changed Recipe count. "
+                "Do not pass the full Skill/Recipe catalog in one tool call. "
+                "Only use freezone_request_user_clarification or the Skill Studio chunked draft tools as the next Skill Studio step. "
                 "Do not answer with prose, do not only summarize the requested changes, and do not tell the user to save unless a draft tool call has produced the updated draft. "
                 "Do not save catalog content, do not emit canvas commands, and do not treat this as ordinary Freezone creation."
             )
@@ -1384,7 +1389,7 @@ def _load_pending_skill_studio_event(path: Any) -> dict[str, Any] | None:
     if not isinstance(event, dict):
         return None
     event_type = str(event.get("type") or "").strip()
-    if event_type not in {"skill_studio.questions", "skill_studio.draft"}:
+    if event_type not in {"skill_studio.questions", "skill_studio.draft", "skill_studio.status"}:
         return None
     if not str(event.get("skill_studio_session_id") or "").strip():
         return None
@@ -1739,8 +1744,6 @@ def _skill_studio_status_frame(
         return None
     status_messages = {
         "routing": "正在整理 Skill 方向...",
-        "drafting": "正在生成 Skill 草稿...",
-        "finalizing": "草稿较完整，正在补齐 Recipes 和校验项...",
     }
     return {
         "type": "skill_studio.status",
@@ -1749,28 +1752,6 @@ def _skill_studio_status_frame(
         "status": status,
         "message": message or status_messages.get(status) or "正在整理 Skill 方向...",
     }
-
-
-async def _skill_studio_progress_status_loop(
-    *,
-    websocket: WebSocket,
-    scope: ChatScope,
-    turn_id: str,
-    text: str,
-    user_text: str | None,
-    send_lock: asyncio.Lock,
-) -> None:
-    for delay_seconds, status in ((6.0, "drafting"), (2.0, "finalizing")):
-        await asyncio.sleep(delay_seconds)
-        frame = _skill_studio_status_frame(
-            scope=scope,
-            turn_id=turn_id,
-            text=text,
-            user_text=user_text,
-            status=status,
-        )
-        if frame is not None:
-            await _send_json_best_effort(websocket, frame, send_lock)
 
 
 async def _stream_project_turn(
@@ -1870,20 +1851,6 @@ async def _stream_project_turn(
     )
     if skill_studio_status is not None:
         await _send_json_best_effort(websocket, skill_studio_status, send_lock)
-    skill_studio_progress_task = (
-        asyncio.create_task(
-            _skill_studio_progress_status_loop(
-                websocket=websocket,
-                scope=scope,
-                turn_id=turn_id,
-                text=agent_text,
-                user_text=display_text,
-                send_lock=send_lock,
-            )
-        )
-        if skill_studio_status is not None
-        else None
-    )
     done_sent = False
     assistant_sent_text = ""
 
@@ -2007,8 +1974,6 @@ async def _stream_project_turn(
         pending_canvas_context_task.cancel()
         pending_skill_studio_task.cancel()
         pending_clarification_task.cancel()
-        if skill_studio_progress_task is not None:
-            skill_studio_progress_task.cancel()
         with contextlib.suppress(asyncio.CancelledError):
             await heartbeat_task
         with contextlib.suppress(asyncio.CancelledError):
@@ -2021,9 +1986,6 @@ async def _stream_project_turn(
             await pending_skill_studio_task
         with contextlib.suppress(asyncio.CancelledError):
             await pending_clarification_task
-        if skill_studio_progress_task is not None:
-            with contextlib.suppress(asyncio.CancelledError):
-                await skill_studio_progress_task
         if not done_sent:
             await _send_json_best_effort(
                 websocket,

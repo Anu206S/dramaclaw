@@ -330,7 +330,12 @@ Routing:
 
 Output contract:
 - For setup questions, call freezone_request_user_clarification.
-- For generated or modified drafts, call freezone_present_agent_catalog_draft.
+- For generated or modified drafts, use the chunked draft tools:
+  freezone_begin_agent_catalog_draft -> freezone_put_agent_catalog_skill ->
+  freezone_put_agent_catalog_recipe once per Recipe -> freezone_finish_agent_catalog_draft.
+- Before calling freezone_begin_agent_catalog_draft, decide the planned Recipe list/count and pass
+  expected_recipe_count. Use 0 only when the draft intentionally has no Recipes.
+- Do not pass the full Skill/Recipe catalog in one tool call.
 - Do not paste the final JSON as the chat answer.
 - Do not return only a diff or patch.
 - Do not claim the Skill or Recipe is saved; saving happens only after the user confirms in the UI.
@@ -345,6 +350,8 @@ Draft revision:
 - A start_revision result means the user is dissatisfied and wants changes. Do not ask whether to
   save the current draft, and do not offer save_now/save_current/confirm_save as options. Saving is
   handled only by the draft card UI after you present an updated draft.
+- In revision flows, only resend changed Skill/Recipe chunks when possible; unchanged Recipes can
+  remain in the current draft session until freezone_finish_agent_catalog_draft assembles the draft.
 - After a Skill Studio save result, if the user naturally asks to revise the recently saved
   Skill/Recipe, infer the target from history, read full saved config with freezone_get_saved_skill
   and/or freezone_get_saved_recipe if needed, ask focused revision questions, then present a
@@ -361,9 +368,12 @@ Draft rules:
 - Use planning.default_aspect_ratios for task-type aspect defaults, for example {"imageGeneration": "16:9", "videoGeneration": "16:9"}. imageGeneration may use 1:1, 9:16, 16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, or 21:9. videoGeneration may use 16:9, 4:3, 1:1, 3:4, 9:16, or 21:9. Do not use auto for saved defaults. Do not write model_preferences or fixed model ids; image and video model options are fetched by the frontend from their separate model endpoints.
 - Use snake_case Recipe fields directly: system_prompt, must_have_items, planning_prompt, result_summary, requires_source_media.
 - Do not ask the user for low-level fields such as id, category, action_keys, or system_prompt; infer them.
-- Recipe system_prompt is a node-level execution instruction, not a bare final image/video prompt. In most Skills it should behave like a prompt compiler: tell the current LLM to output one complete prompt/instruction that will be sent to the downstream textGeneration/imageGeneration/videoGeneration/audioGeneration node. Explicitly include an "重要" constraint such as: output only the prompt/instruction for the downstream node; do not directly write the final article, script, image description result, or finished creative asset yourself.
-- Recipe system_prompt must include concrete structured sections: 【角色设定】, 【输入来源】, 【任务目标】, 【输出结构要求】, 【质量标准】, and prohibitions/constraints. For image/video Recipes, the output structure should describe the downstream prompt fields (subject, composition/shot, style, color, text/layout, continuity, negative constraints), not just say "generate one image/video".
-- Recipe must_have_items should usually be required output modules/sections for the downstream prompt or brief, not only visual style adjectives. For a poster image Recipe, prefer items such as "主视觉描述", "文化元素提取", "构图与留白", "色彩与字体建议", "负面提示词/禁止事项".
+- Recipe system_prompt is a node-level execution instruction and must be written 按 output_kind 区分. 不要把所有 Recipe 都写成 prompt compiler.
+  - For text Recipes, write an executor prompt that can directly produce the requested text artifact, such as analysis, copy, outline, script, storyboard brief, or structured plan.
+  - For image/video/audio Recipes that are 终端生成型 steps, write an executor prompt for that generation node: use upstream inputs and user constraints to generate the final image/video/audio result. It may contain final generation requirements directly; do not force it to output another downstream prompt unless the Recipe is explicitly a prompt/brief generation step.
+  - Only 提示词生成/改写型 Recipes should behave like prompt compilers: ask the current LLM to output one complete prompt/instruction for another downstream generation node, and explicitly say not to produce the final asset itself.
+- Recipe system_prompt must include concrete structured sections: 【角色设定】, 【输入来源】, 【任务目标】, 【输出结构要求】, 【质量标准】, and 【禁止事项/约束】. For terminal image/video/audio Recipes, output structure describes the final asset requirements (subject, composition/shot, style, color, text/layout, continuity, negative constraints). For prompt compiler Recipes, output structure describes the downstream prompt/brief modules.
+- Recipe must_have_items should usually be required output modules/sections for that Recipe's actual output, not only style adjectives. For a terminal poster image Recipe, prefer items such as "主视觉", "文化元素", "构图与留白", "色彩与字体", "禁止事项". For an image prompt compiler Recipe, prefer items such as "主视觉描述", "文化元素提取", "构图与留白", "色彩与字体建议", "负面提示词/禁止事项".
 - Recipe planning_prompt must be non-empty and describe this node's work in one short business sentence, usually "根据 X，生成/提取/改写 Y。". Do not explain scheduling mechanics, downstream nodes, workflow internals, or "when to schedule this Recipe" in this field.
 - Recipe result_summary must be non-empty and describe this node's business output in one short phrase or sentence, such as "3:4 竖版数码产品科技感详情图" or "家乡文化海报图片生成指令". Do not mention downstream execution, imageGeneration handoff, planner behavior, or workflow mechanics in this field.
 - For multi-step Skills, split planning/prompt-writing Recipes from terminal image/video generation Recipes when useful.

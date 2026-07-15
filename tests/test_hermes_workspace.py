@@ -169,6 +169,10 @@ def test_hermes_initialize_timeout_allows_cold_start():
     assert hermes_sdk.INITIALIZE_TIMEOUT == 30.0
 
 
+def test_hermes_stdio_line_limit_allows_large_acp_tool_calls():
+    assert hermes_sdk.HERMES_STDIO_LINE_LIMIT_BYTES >= 4 * 1024 * 1024
+
+
 def test_hermes_detects_content_filter_finish_reason():
     payload = {
         "result": {
@@ -204,6 +208,23 @@ def test_hermes_stops_mainline_writes_but_not_freezone_canvas_writes():
         "freezone_emit_canvas_command",
         "dramaclaw_start_single_video",
     )
+
+
+def test_hermes_keeps_mainline_tool_call_limit_narrow():
+    assert hermes_sdk._turn_tool_call_limit_for_tool("dramaclaw_generate_script") == 20
+
+
+def test_hermes_allows_more_freezone_tool_calls():
+    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_emit_canvas_command") == 80
+    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe") == 80
+
+
+def test_hermes_freezone_tool_limit_message_uses_freezone_context():
+    message = hermes_sdk._tool_call_limit_stop_message("freezone_put_agent_catalog_recipe")
+
+    assert "虾画" in message
+    assert "虾导" not in message
+    assert "beat" not in message
 
 
 def test_state_root_prefers_env(monkeypatch, tmp_path):

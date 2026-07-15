@@ -227,6 +227,60 @@ async def test_watch_pending_skill_studio_events_emits_freezone_bridge_event(mon
     assert messages[-1]["ui_events"][0]["agent_id"] == "agent-1"
 
 
+@pytest.mark.anyio
+async def test_watch_pending_skill_studio_events_emits_status_progress_event(monkeypatch, tmp_path) -> None:
+    class CapturingWebSocket:
+        def __init__(self) -> None:
+            self.sent = []
+
+        async def send_json(self, payload):
+            self.sent.append(payload)
+            raise RuntimeError("stop watcher after first send")
+
+    bridge_dir = tmp_path / "bridge"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: bridge_dir)
+    event = {
+        "type": "skill_studio.status",
+        "skill_studio_session_id": "skill_studio_01",
+        "status": "draft_recipe_ready",
+        "message": "已生成 Recipe 1 / 2",
+    }
+    put_pending_skill_studio_event(
+        key="skill-status-1",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        event=event,
+        bridge_dir=bridge_dir,
+    )
+    websocket = CapturingWebSocket()
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-1",
+    )
+    chat_route.chat_store.append_message("admin", scope, "user", "创建一个 Skill", turn_id="turn-a")
+
+    await chat_route._watch_pending_skill_studio_events(
+        websocket=websocket,
+        username="admin",
+        scope=scope,
+        turn_id="turn-a",
+        send_lock=None,
+        emitted_bridge_keys=set(),
+        started_at=0,
+    )
+
+    assert websocket.sent[0]["type"] == "skill_studio.event"
+    assert websocket.sent[0]["bridge_key"] == "skill-status-1"
+    assert websocket.sent[0]["event"] == event
+    messages = chat_route.chat_store.list_messages("admin", scope)
+    assert messages[-1]["ui_events"][0]["type"] == "skill_studio.status"
+    assert messages[-1]["ui_events"][0]["message"] == "已生成 Recipe 1 / 2"
+
+
 def test_skill_studio_status_frame_uses_backend_intent_detection() -> None:
     scope = ChatScope(
         kind="project",
@@ -402,7 +456,11 @@ def test_resolve_revision_skill_studio_tool_result_starts_question_flow(monkeypa
     assert "freezone_request_user_clarification" in resolved["agent_instruction"]
     assert "exactly one question object" in resolved["agent_instruction"]
     assert "wait for the answer before deciding the next question" in resolved["agent_instruction"]
-    assert "Only use freezone_request_user_clarification or freezone_present_agent_catalog_draft" in resolved["agent_instruction"]
+    assert "freezone_begin_agent_catalog_draft" in resolved["agent_instruction"]
+    assert "freezone_finish_agent_catalog_draft" in resolved["agent_instruction"]
+    assert "expected_recipe_count" in resolved["agent_instruction"]
+    assert "full draft count" in resolved["agent_instruction"]
+    assert "Do not pass the full Skill/Recipe catalog in one tool call" in resolved["agent_instruction"]
     assert "Do not answer with prose" in resolved["agent_instruction"]
     assert "Do not save" in resolved["agent_instruction"]
     assert wait_skill_studio_result("skill-key-4", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved

@@ -859,11 +859,19 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
 
     assert "[FREEZONE_SKILL_STUDIO]" in prompt
     assert "freezone_request_user_clarification" in prompt
-    assert "freezone_present_agent_catalog_draft" in prompt
+    assert "freezone_begin_agent_catalog_draft" in prompt
+    assert "freezone_put_agent_catalog_recipe" in prompt
+    assert "freezone_finish_agent_catalog_draft" in prompt
+    assert "expected_recipe_count" in prompt
+    assert "Use 0 only when the draft intentionally has no Recipes" in prompt
+    assert "Do not pass the full Skill/Recipe catalog in one tool call" in prompt
     assert "skill_studio_session_id" in prompt
     assert "Do not claim the Skill or Recipe is saved" in prompt
     assert "Do not ask whether to\n  save the current draft" in prompt
     assert "save_now/save_current/confirm_save" in prompt
+    assert "按 output_kind 区分" in prompt
+    assert "终端生成型" in prompt
+    assert "不要把所有 Recipe 都写成 prompt compiler" in prompt
     assert "must not emit Freezone canvas commands" in prompt
 
 
