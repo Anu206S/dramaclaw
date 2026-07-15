@@ -495,6 +495,12 @@ def _build_plan(
             step=step,
             recipe=recipe,
         )
+        executable_prompt = _compose_executable_prompt(
+            step=step,
+            recipe=recipe,
+            node_type=node_type,
+            user_goal=user_goal,
+        )
         recipe_settings = _recipe_settings(recipe)
         prompt_builder = _prompt_builder(
             step=step,
@@ -533,6 +539,11 @@ def _build_plan(
         aspect_ratio = _text(_get(step, "aspectRatio", "aspect_ratio"))
         if aspect_ratio:
             data["aspectRatio"] = aspect_ratio
+        if executable_prompt:
+            if node_type == "audioNode":
+                data["text"] = executable_prompt
+            else:
+                data["prompt"] = executable_prompt
         if node_type == "audioNode":
             data.setdefault("text", placeholder)
         nodes.append(
@@ -609,6 +620,70 @@ def _compose_node_placeholder(
         f"待{action}：{target}\n"
         "运行节点时会根据 workflowCatalog.promptBuilder 中的 recipe 引用、用户目标和上游节点内容生成最终提示词。"
     ).strip()
+
+
+def _compose_executable_prompt(
+    *,
+    step: dict[str, Any],
+    recipe: dict[str, Any] | None,
+    node_type: str,
+    user_goal: str,
+) -> str:
+    goal = _text(_get(step, "goalTemplate", "goal_template")) or _text(step.get("id"))
+    recipe_name = _text(recipe.get("name") if recipe else "")
+    target = goal or recipe_name
+    media_goal = _clean_media_user_goal(user_goal)
+    if node_type == "imageGenNode":
+        parts = [
+            media_goal,
+            _clean_media_prompt_part(target),
+            "根据上游节点的有效内容生成画面，保留主体、场景、构图、风格、光线、色彩和镜头信息。",
+            "只生成纯视觉画面，不要生成说明页、提示词页、脚本页、分镜说明板或带排版文字的广告稿。",
+            "画面中不要出现任何文字、数字、标题、字幕、标签、logo、水印、价格、促销文案、UI 文案或说明性文本。",
+        ]
+        return _join_prompt_parts(parts)
+    if node_type == "videoNode":
+        parts = [
+            media_goal,
+            _clean_media_prompt_part(target),
+            "根据上游图片或文本内容生成视频，重点描述画面起始状态、主体运动、镜头运动、环境动态、情绪和节奏。",
+            "不要生成字幕、标题、标签、水印、价格、促销字样或说明性文字，除非用户明确要求画面里出现文字。",
+        ]
+        return _join_prompt_parts(parts)
+    if node_type == "audioNode":
+        parts = [
+            media_goal,
+            _clean_media_prompt_part(target),
+            "根据广告脚本或用户需求生成音频内容，保持语气、情绪和用途一致。",
+        ]
+        return _join_prompt_parts(parts)
+    return ""
+
+
+def _join_prompt_parts(parts: list[str]) -> str:
+    cleaned = [part.strip(" 。") for part in parts if part and part.strip(" 。")]
+    if not cleaned:
+        return ""
+    return "。".join(cleaned) + "。"
+
+
+def _clean_media_user_goal(value: str) -> str:
+    text = _clean_media_prompt_part(value)
+    if not text:
+        return ""
+    if "工作流" in text:
+        return ""
+    return text
+
+
+def _clean_media_prompt_part(value: str) -> str:
+    text = _text(value)
+    if not text:
+        return ""
+    text = re.sub(r"【[^】]{1,24}】", "", text)
+    text = re.sub(r"\b(workflowCatalog|promptBuilder|recipeRef|recipeId)\b", "", text)
+    text = re.sub(r"\s+", " ", text).strip(" ：:;；")
+    return text
 
 
 def _recipe_settings(recipe: dict[str, Any] | None) -> dict[str, Any]:
