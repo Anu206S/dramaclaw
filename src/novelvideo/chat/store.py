@@ -301,9 +301,16 @@ class ChatStore:
         bounded_limit = max(1, min(int(limit), 100))
         return sorted(
             summaries,
-            key=lambda summary: int(summary.get("lastActiveAt") or 0),
+            key=self._freezone_agent_summary_sort_key,
             reverse=True,
         )[:bounded_limit]
+
+    @staticmethod
+    def _freezone_agent_summary_sort_key(summary: dict[str, Any]) -> tuple[int, int, str]:
+        agent_id = str(summary.get("id") or "")
+        match = re.fullmatch(r"agent-(\d+)", agent_id)
+        agent_rank = int(match.group(1)) if match else -1
+        return (int(summary.get("lastActiveAt") or 0), agent_rank, agent_id)
 
     def connect(self, username: str, scope: ChatScope, *, db_path: Path | None = None) -> sqlite3.Connection:
         db_path = db_path or self.db_for(username, scope)
@@ -486,6 +493,15 @@ class ChatStore:
             return f"{event_type}:{stable_id}"
         return None
 
+    @staticmethod
+    def _is_transient_message_part(part: Any) -> bool:
+        if not isinstance(part, dict):
+            return False
+        if str(part.get("type") or "") != "skill_studio":
+            return False
+        event = part.get("event")
+        return isinstance(event, dict) and str(event.get("type") or "") == "skill_studio.status"
+
     @classmethod
     def _merge_message_parts_snapshots(cls, snapshots: list[list[Any]]) -> list[Any]:
         merged: list[Any] = []
@@ -504,6 +520,8 @@ class ChatStore:
                 part_type = str(part.get("type") or "")
                 key = cls._message_part_key(part)
                 if part_type == "canvas_approval":
+                    continue
+                if cls._is_transient_message_part(part):
                     continue
                 if part_type == "text" and key not in snapshot_keys:
                     continue

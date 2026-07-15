@@ -662,6 +662,7 @@ _PENDING_SKILL_STUDIO_DRAFTS[session_id] = {
 patch 应用第一版要严格：
 
 - `path` 必须以 `/` 开头。
+- `target=recipe` 时，`recipe_id` 已经定位目标 Recipe，`patch.path` 必须是 Recipe 对象内部路径，例如 `/system_prompt`、`/must_have_items`，不要写 `/recipes/<recipe_id>/system_prompt`。
 - 不支持修改 `id`，除非后续明确需要。
 - 不支持穿透不存在的父级。
 - list 只支持数字 index 和 `-` 追加。
@@ -700,6 +701,9 @@ For local edits, prefer freezone_patch_agent_catalog_draft.
 Use put_skill / put_recipe only when replacing an entire Skill or Recipe object.
 Always finish with freezone_finish_agent_catalog_draft.
 Do not regenerate unchanged Recipes.
+For target=recipe, pass recipe_id and use patch paths relative to that Recipe object,
+for example /system_prompt or /must_have_items; never use /recipes/<recipe_id>/...
+inside patch.path.
 ```
 
 也就是说：
@@ -1288,7 +1292,7 @@ Skill 草稿推荐包含以下可选字段，提高设置页管理、检索和�
 说明：
 
 - Recipe 字段统一使用下划线命名，不使用驼峰字段。
-- `system_prompt` 是 Recipe 被调度执行时的节点级系统指令，应按 `output_kind` 和 Recipe 职责区分，不把所有 Recipe 都写成 prompt compiler。
+- `system_prompt` 是 Recipe 被调度执行时的节点级元提示词，用来指导 Agent/LLM 写出可送入对应节点的 prompt、brief 或生成指令。
 - `planning_prompt` 是节点工作描述，写这个 Recipe “根据什么做什么”，不写调度机制。
 - `result_summary` 是节点产物描述，写业务结果是什么，不写下游执行或 workflow 机制。
 - `Skill.workflow_templates.steps[*].action_key` 应能匹配某个 Recipe 的 `action_keys`。
@@ -1297,23 +1301,29 @@ Skill 草稿推荐包含以下可选字段，提高设置页管理、检索和�
 
 ### Recipe `system_prompt` 编写规范
 
-Recipe 是 Skill 下可被调度的具体动作配方。`system_prompt` 应描述该 Recipe 节点如何执行。这里要区分两类 Recipe：
+Recipe 是 Skill 下可被调度的具体动作配方。`system_prompt` 不是最终图片、视频、音频或正文成品的提示词本身，而是**指导 Agent/LLM 写节点 prompt 的 prompt**。
 
-- **终端生成型 Recipe**：例如 `output_kind=image/video/audio` 且该节点就是最终图、视频或音频生成节点。`system_prompt` 可以直接描述如何基于输入生成最终资产，包括主体、镜头、构图、风格、声音、时长、质量标准和禁止事项，不需要再输出“给下游节点的 prompt”。
-- **提示词生成/改写型 Recipe**：例如该节点的职责是把上游方案改写成 imageGeneration / videoGeneration / audioGeneration prompt。此时 `system_prompt` 才应要求当前 LLM 输出一条完整的下游提示词/指令，并明确不要自己完成最终图像、视频、音频或正文成品。
+也就是说，Recipe 被调度后，当前 LLM 应根据用户目标、上游 Recipe 输出、参考素材和画布上下文，产出一条可送入对应节点继续执行的 prompt / brief / instruction。
 
-因此，不要把所有 Recipe 都写成 prompt compiler。text Recipe 也可以直接产出文案、分析、大纲、脚本、分镜 brief 或结构化方案。
+规则：
+
+- `text` Recipe：不要直接写最终文案、脚本、大纲正文；应指导当前 LLM 输出给 `textGeneration` 节点使用的完整提示词/指令。
+- `image` Recipe：不要直接写最终图片描述成品；应指导当前 LLM 把上游方案改写成给 `imageGeneration` 节点使用的完整图片生成 prompt。
+- `video` Recipe：不要直接写最终视频描述成品；应指导当前 LLM 把上游脚本、分镜或画面方案改写成给 `videoGeneration` 节点使用的视频生成 prompt。
+- `audio` Recipe：不要直接写最终音频内容；应指导当前 LLM 把上游文案、情绪和声音要求改写成给 `audioGeneration` 节点使用的音频生成 prompt。
+
+`system_prompt` 里应明确：只输出下游节点 prompt / brief / instruction，不在当前步骤直接完成最终内容生成。
 
 推荐包含以下结构：
 
 - 【角色设定】该节点执行者的专业身份。
 - 【输入来源】需要读取的用户目标、画布上下文、上游 Recipe 输出或参考素材。
-- 【任务目标】本 Recipe 要完成的转换、分析、规划或生成任务。
-- 【输出结构要求】要求输出哪些字段、段落或格式。
-- 【质量标准】判断输出是否合格的标准。
+- 【任务目标】本 Recipe 要完成的 prompt/brief 生成或改写任务。
+- 【输出结构要求】要求下游 prompt/brief 包含哪些模块、字段、段落或格式。
+- 【质量标准】判断下游 prompt/brief 是否合格的标准。
 - 【禁止事项】例如不要跳过上游输入、不要自行声称已经生成图片、不要输出与结构无关的解释。
 
-如果 Recipe 是多步骤 workflow 的中间节点，`system_prompt` 应输出可交给下游节点继续执行的结构化结果、brief 或提示词/指令。如果 Recipe 是终端图片、视频或音频生成节点，可以直接包含最终生成要求，但仍必须说明上游输入来源和输出约束。
+输出结构要求应描述下游 prompt/brief 必须包含的模块，例如主体、场景、镜头、构图、风格、色彩、文本排版、连续性和负面约束，而不是把这些要求当作当前 Recipe 的最终成品直接输出。
 
 ## 必填校验
 

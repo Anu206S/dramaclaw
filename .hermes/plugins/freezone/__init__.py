@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import uuid
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -824,6 +825,224 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
             **count_payload,
         },
     )
+
+
+class _DraftPatchError(ValueError):
+    pass
+
+
+def _decode_json_pointer(path: object) -> list[str]:
+    path_text = str(path or "")
+    if not path_text.startswith("/"):
+        raise _DraftPatchError("patch path must start with '/'")
+    return [part.replace("~1", "/").replace("~0", "~") for part in path_text.split("/")[1:]]
+
+
+def _resolve_json_pointer_parent(obj: Any, tokens: list[str]) -> tuple[Any, str]:
+    if not tokens:
+        raise _DraftPatchError("patch path must point to a field")
+    parent = obj
+    for token in tokens[:-1]:
+        if isinstance(parent, dict):
+            if token not in parent:
+                raise _DraftPatchError(f"patch parent path does not exist: {token}")
+            parent = parent[token]
+            continue
+        if isinstance(parent, list):
+            try:
+                index = int(token)
+            except ValueError as exc:
+                raise _DraftPatchError(f"list path segment must be a number: {token}") from exc
+            if index < 0 or index >= len(parent):
+                raise _DraftPatchError(f"list path index out of range: {token}")
+            parent = parent[index]
+            continue
+        raise _DraftPatchError(f"patch parent is not traversable at: {token}")
+    return parent, tokens[-1]
+
+
+def _list_index_for_patch(parent: list[Any], key: str, *, allow_append: bool, allow_end: bool) -> int:
+    if key == "-":
+        if allow_append:
+            return len(parent)
+        raise _DraftPatchError("'-' is only supported for list add")
+    try:
+        index = int(key)
+    except ValueError as exc:
+        raise _DraftPatchError(f"list path segment must be a number: {key}") from exc
+    max_index = len(parent) if allow_end else len(parent) - 1
+    if index < 0 or index > max_index:
+        raise _DraftPatchError(f"list path index out of range: {key}")
+    return index
+
+
+def _apply_json_pointer_patch(obj: dict[str, Any], patch_ops: list[Any]) -> dict[str, Any]:
+    patched = deepcopy(obj)
+    for raw_op in patch_ops:
+        if not isinstance(raw_op, dict):
+            raise _DraftPatchError("each patch operation must be an object")
+        op = str(raw_op.get("op") or "").strip()
+        path = str(raw_op.get("path") or "").strip()
+        if op not in {"replace", "add", "remove"}:
+            raise _DraftPatchError(f"unsupported patch op: {op}")
+        tokens = _decode_json_pointer(path)
+        if tokens and tokens[0] == "id":
+            raise _DraftPatchError("patching id is not supported")
+        parent, key = _resolve_json_pointer_parent(patched, tokens)
+        if isinstance(parent, dict):
+            if op in {"replace", "remove"} and key not in parent:
+                raise _DraftPatchError(f"patch path does not exist: {path}")
+            if op == "remove":
+                parent.pop(key)
+            else:
+                parent[key] = deepcopy(raw_op.get("value"))
+            continue
+        if isinstance(parent, list):
+            if op == "add":
+                parent.insert(
+                    _list_index_for_patch(parent, key, allow_append=True, allow_end=True),
+                    deepcopy(raw_op.get("value")),
+                )
+            elif op == "replace":
+                parent[_list_index_for_patch(parent, key, allow_append=False, allow_end=False)] = deepcopy(
+                    raw_op.get("value")
+                )
+            else:
+                parent.pop(_list_index_for_patch(parent, key, allow_append=False, allow_end=False))
+            continue
+        raise _DraftPatchError(f"patch target parent is not a dict or list: {path}")
+    return patched
+
+
+def _find_recipe_index_by_id(recipes: dict[Any, Any], recipe_id: str) -> Any | None:
+    for index, recipe in recipes.items():
+        if isinstance(recipe, dict) and str(recipe.get("id") or "").strip() == recipe_id:
+            return index
+    return None
+
+
+def _skill_patch_message(patch_ops: list[Any]) -> str:
+    first_path = ""
+    for op in patch_ops:
+        if isinstance(op, dict):
+            first_path = str(op.get("path") or "")
+            break
+    if first_path.startswith("/triggers/keywords"):
+        return "已更新 Skill 触发关键词"
+    if first_path.startswith("/description"):
+        return "已更新 Skill 说明"
+    if first_path.startswith("/planning"):
+        return "已更新 Skill 规划策略"
+    return "已更新 Skill 草稿"
+
+
+def _validate_recipe_patch_paths(recipe_id: str, patch_ops: list[Any]) -> None:
+    for raw_op in patch_ops:
+        if not isinstance(raw_op, dict):
+            continue
+        path = str(raw_op.get("path") or "").strip()
+        if path.startswith("/recipes/"):
+            example = path.removeprefix(f"/recipes/{recipe_id}") or "/system_prompt"
+            if example == path:
+                example = "/system_prompt"
+            raise _DraftPatchError(
+                "For target=recipe, recipe_id already selects the Recipe. "
+                f"Patch paths must be relative to that Recipe object, for example {example}; "
+                f"do not use {path}."
+            )
+
+
+def _handle_patch_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
+    project, canvas = _skill_studio_scope_from_args(args)
+    session_id = _skill_studio_session_id_from_args(args)
+    if not session_id:
+        return _skill_studio_missing_session_result()
+    draft = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id)
+    if draft is None:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_studio_draft_session_not_found",
+                "error": "No pending Skill Studio draft exists for this skill_studio_session_id",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    target = str(args.get("target") or "").strip()
+    patch_ops = _safe_list(args.get("patch"))
+    if target not in {"skill", "recipe"}:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "draft_patch_failed",
+                "error": "target must be skill or recipe",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    if not patch_ops:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "draft_patch_failed",
+                "error": "patch must contain at least one operation",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    try:
+        if target == "skill":
+            skill = draft.get("skill") if isinstance(draft.get("skill"), dict) else None
+            if skill is None:
+                raise _DraftPatchError("Cannot patch Skill before put_agent_catalog_skill")
+            patched_skill = _apply_json_pointer_patch(skill, patch_ops)
+            draft["skill"] = patched_skill
+            message = _skill_patch_message(patch_ops)
+            patched_payload = {"target": "skill"}
+        else:
+            recipe_id = str(args.get("recipe_id") or "").strip()
+            if not recipe_id:
+                raise _DraftPatchError("recipe_id is required when target is recipe")
+            recipes = draft.get("recipes") if isinstance(draft.get("recipes"), dict) else {}
+            recipe_index = _find_recipe_index_by_id(recipes, recipe_id)
+            if recipe_index is None:
+                raise _DraftPatchError(f"Recipe not found: {recipe_id}")
+            recipe = recipes[recipe_index]
+            if not isinstance(recipe, dict):
+                raise _DraftPatchError(f"Recipe is not an object: {recipe_id}")
+            _validate_recipe_patch_paths(recipe_id, patch_ops)
+            recipes[recipe_index] = _apply_json_pointer_patch(recipe, patch_ops)
+            message = f"已更新 Recipe：{recipe_id}"
+            patched_payload = {"target": "recipe", "recipe_id": recipe_id, "recipe_index": recipe_index}
+    except _DraftPatchError as exc:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "draft_patch_failed",
+                "error": str(exc),
+                "skill_studio_session_id": session_id,
+            }
+        )
+    progress = _emit_skill_studio_progress_event(
+        project or draft.get("project_id"),
+        canvas or draft.get("canvas_id"),
+        {
+            "type": "skill_studio.status",
+            "skill_studio_session_id": session_id,
+            "status": "draft_patch_applied",
+            "message": message,
+            **patched_payload,
+        },
+    )
+    if isinstance(progress, dict):
+        return tool_result(
+            {
+                **progress,
+                "ok": progress.get("ok", True),
+                "status": "draft_patch_applied",
+                "skill_studio_status": "draft_progress",
+                "message": message,
+                **patched_payload,
+            }
+        )
+    return progress
 
 
 def _handle_finish_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
@@ -3222,15 +3441,14 @@ _SKILL_STUDIO_RECIPE_SCHEMA = {
         "system_prompt": {
             "type": "string",
             "description": (
-                "Recipe 节点级 system_prompt 执行指令，必须按 output_kind 区分；"
-                "不要把所有 Recipe 都写成 prompt compiler。text Recipe 可以直接产出分析、"
-                "文案、大纲、脚本、分镜 brief 或结构化方案。image/video/audio 终端生成型 Recipe "
-                "可以直接描述如何基于输入生成最终图像、视频或音频结果，不要强制再输出下游 prompt。"
-                "只有提示词生成/改写型 Recipe 才应要求当前 LLM 输出一条给下游节点使用的提示词/指令，"
-                "并明确不要自己完成最终资产。"
+                "Recipe 节点级 system_prompt 是 prompt/instruction generator，用来指导 Agent/LLM "
+                "根据用户目标、上游输出和参考素材，写出可送入对应节点的提示词/指令或 brief。"
+                "不要直接生成最终内容：text Recipe 不直接写正文成品，image/video/audio Recipe "
+                "不直接写最终图片、视频或音频描述成品，而是要求当前 LLM 输出给对应 "
+                "textGeneration/imageGeneration/videoGeneration/audioGeneration 节点使用的一条完整提示词/指令。"
                 "必须包含【角色设定】、【输入来源】、【任务目标】、【输出结构要求】、"
-                "【质量标准】和【禁止事项/约束】。终端生成型 Recipe 的输出结构写最终资产要求；"
-                "提示词生成/改写型 Recipe 的输出结构才写下游 prompt 或 brief 的模块。"
+                "【质量标准】和【禁止事项/约束】。输出结构要求应描述下游 prompt/brief 必须包含的模块，"
+                "例如主体、场景、镜头、构图、风格、色彩、文本排版、连续性和负面约束。"
             ),
         },
         "must_have_items": {
@@ -3583,6 +3801,57 @@ TOOLS = (
             ["skill_studio_session_id", "recipe"],
         ),
         _handle_put_agent_catalog_recipe,
+    ),
+    (
+        "freezone_patch_agent_catalog_draft",
+        _schema(
+            "freezone_patch_agent_catalog_draft",
+            "Apply small JSON Pointer patches for local edits to the current Xi画 Skill Studio draft session. For local edits, prefer this tool over regenerating unchanged Skill/Recipe chunks. Use put_skill or put_recipe only when replacing an entire object. Always finish with freezone_finish_agent_catalog_draft after patching.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id for the current chunked Skill Studio draft.",
+                },
+                "target": {
+                    "type": "string",
+                    "enum": ["skill", "recipe"],
+                    "description": "Patch the Skill object or one Recipe object.",
+                },
+                "recipe_id": {
+                    "type": "string",
+                    "description": "Required when target=recipe. Locate the Recipe by id; do not patch recipes by array index.",
+                },
+                "patch": {
+                    "type": "array",
+                    "description": (
+                        "JSON Pointer patch operations for local edits. Supported ops: replace, add, remove. "
+                        "Paths must start with '/', cannot modify /id, and must not rely on Recipe array indexes. "
+                        "When target=recipe, recipe_id already selects the Recipe, so paths are relative to that "
+                        "Recipe object, for example /system_prompt or /must_have_items; never use "
+                        "/recipes/<recipe_id>/system_prompt."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "op": {"type": "string", "enum": ["replace", "add", "remove"]},
+                            "path": {
+                                "type": "string",
+                                "description": (
+                                    "JSON Pointer path. Skill example: /triggers/keywords/0. "
+                                    "Recipe example with target=recipe and recipe_id set: /system_prompt or "
+                                    "/must_have_items, not /recipes/<recipe_id>/system_prompt."
+                                ),
+                            },
+                            "value": {"description": "Value for replace/add operations."},
+                        },
+                        "required": ["op", "path"],
+                    },
+                },
+                **_SCOPE_PROPS,
+            },
+            ["skill_studio_session_id", "target", "patch"],
+        ),
+        _handle_patch_agent_catalog_draft,
     ),
     (
         "freezone_finish_agent_catalog_draft",
