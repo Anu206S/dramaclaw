@@ -293,6 +293,16 @@ Forbidden:
 
 If the user asks to generate a short video in Freezone, guide or perform the needed canvas-node
 operations. Only redirect when the user explicitly asks to use the DramaClaw main project pipeline.
+
+Skill Studio history:
+- If recent conversation history contains a Skill Studio save result and the user naturally asks to
+  revise, change, tighten, or undo that saved Skill/Recipe/draft/config, treat the turn as a Skill
+  Studio edit continuation instead of normal canvas creation.
+- In that case, use the saved draft from history as context when available; if only saved ids are
+  available, read the saved Skill/Recipe configuration with freezone_get_saved_skill and/or
+  freezone_get_saved_recipe before editing. Start with focused clarification questions when the
+  requested change is underspecified, then present a complete edit draft. Do not emit canvas
+  commands for this edit flow.
 [/FREEZONE_CANVAS_ASSISTANT]"""
 
 _FREEZONE_SKILL_STUDIO_TRIGGER_RE = re.compile(
@@ -325,6 +335,19 @@ Output contract:
 - Do not return only a diff or patch.
 - Do not claim the Skill or Recipe is saved; saving happens only after the user confirms in the UI.
 - Use one skill_studio_session_id across the questions, draft, and later edits for the same draft flow.
+
+Draft revision:
+- When the frontend returns action=start_revision or skill_studio_status=revision_started, use the
+  returned draft as the source of truth and start a revision question flow. If you call
+  freezone_request_user_clarification for this revision flow, the questions array must contain
+  exactly one question object. Wait for the user's answer before deciding the next question unless
+  the requested change is already clear.
+- After a Skill Studio save result, if the user naturally asks to revise the recently saved
+  Skill/Recipe, infer the target from history, read full saved config with freezone_get_saved_skill
+  and/or freezone_get_saved_recipe if needed, ask focused revision questions, then present a
+  complete edit draft.
+- Do not ask the user to click another button to revise saved content, and do not rely on frontend
+  short-message routing.
 
 Draft rules:
 - Generate complete Skill / Recipe drafts, not partial fields.

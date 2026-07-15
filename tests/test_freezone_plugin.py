@@ -56,6 +56,44 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_resolve_catalog_workflow" in names
     assert "freezone_create_workflow_graph" in names
     assert "freezone_present_agent_catalog_draft" in names
+    assert "freezone_get_saved_skill" in names
+    assert "freezone_get_saved_recipe" in names
+
+
+def test_freezone_plugin_reads_saved_skill_and_recipe(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    def fake_request(method, path, *, query=None, body=None):  # noqa: ARG001
+        assert method == "GET"
+        if path == "/api/v1/freezone/agent-config/skills":
+            return {
+                "ok": True,
+                "data": [
+                    {"id": "other-skill"},
+                    {"id": "home-culture-poster", "description": "完整 Skill 配置"},
+                ],
+            }
+        if path == "/api/v1/freezone/agent-config/recipes":
+            return {
+                "ok": True,
+                "data": [
+                    {"id": "home-culture-poster-image", "system_prompt": "完整 Recipe 配置"},
+                ],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    skill = handlers["freezone_get_saved_skill"]({"skill_id": "home-culture-poster"})
+    recipe = handlers["freezone_get_saved_recipe"]({"recipe_id": "home-culture-poster-image"})
+
+    assert skill["ok"] is True
+    assert skill["kind"] == "skills"
+    assert skill["item"]["description"] == "完整 Skill 配置"
+    assert recipe["ok"] is True
+    assert recipe["kind"] == "recipes"
+    assert recipe["item"]["system_prompt"] == "完整 Recipe 配置"
 
 
 def test_freezone_plugin_clarification_tool_waits_for_frontend_result(monkeypatch):
@@ -188,10 +226,14 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
 
     assert "including Skill Studio setup questions" in clarification_description
     assert "decide the next step from the current context" in clarification_description
+    assert "Ask only the questions needed for the next decision" in clarification_schema["properties"]["questions"]["description"]
+    assert "exactly one question" not in clarification_schema["properties"]["questions"]["description"]
     assert "freezone_present_skill_studio_questions" not in schemas
     assert clarification_schema["required"] == ["clarification_id", "questions"]
     assert clarification_question_item["required"] == ["id", "title", "options"]
     assert clarification_option_item["required"] == ["id", "label"]
+    assert "Do not include Recipe drafts inside skill" in skill_schema["description"]
+    assert "top-level recipes parameter" in draft_schema["properties"]["recipes"]["description"]
     assert skill_schema["required"] == [
         "id",
         "description",

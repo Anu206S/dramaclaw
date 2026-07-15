@@ -632,6 +632,92 @@ def _handle_present_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     )
 
 
+def _handle_get_saved_agent_catalog_item(
+    args: dict[str, Any],
+    *,
+    kind: str,
+    id_keys: tuple[str, ...],
+) -> str:
+    item_id = ""
+    for key in id_keys:
+        item_id = str(args.get(key) or "").strip()
+        if item_id:
+            break
+    if not item_id:
+        return tool_result(
+            {
+                "ok": False,
+                "kind": kind,
+                "status": "id_required",
+                "error": f"{id_keys[0]} is required",
+            }
+        )
+    response = _request("GET", f"/api/v1/freezone/agent-config/{kind}")
+    if not response.get("ok", False):
+        return tool_result(
+            {
+                "ok": False,
+                "kind": kind,
+                "id": item_id,
+                "status": "catalog_read_failed",
+                "error": response.get("error") or response.get("message") or "Failed to read saved catalog.",
+                "response": response,
+            }
+        )
+    items = response.get("data")
+    if not isinstance(items, list):
+        return tool_result(
+            {
+                "ok": False,
+                "kind": kind,
+                "id": item_id,
+                "status": "catalog_shape_invalid",
+                "error": "Saved catalog response data must be a list.",
+                "response": response,
+            }
+        )
+    for item in items:
+        if isinstance(item, dict) and str(item.get("id") or "").strip() == item_id:
+            return tool_result(
+                {
+                    "ok": True,
+                    "kind": kind,
+                    "id": item_id,
+                    "item": item,
+                }
+            )
+    return tool_result(
+        {
+            "ok": False,
+            "kind": kind,
+            "id": item_id,
+            "status": "not_found",
+            "error": f"Saved {kind[:-1]} not found: {item_id}",
+            "available_ids": [
+                str(item.get("id") or "")
+                for item in items
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ],
+        }
+    )
+
+
+def _handle_get_saved_skill(args: dict[str, Any], **_: Any) -> str:
+    return _handle_get_saved_agent_catalog_item(
+        args,
+        kind="skills",
+        id_keys=("skill_id", "id"),
+    )
+
+
+def _handle_get_saved_recipe(args: dict[str, Any], **_: Any) -> str:
+    return _handle_get_saved_agent_catalog_item(
+        args,
+        kind="recipes",
+        id_keys=("recipe_id", "id"),
+    )
+
+
 def _handle_selection(args: dict[str, Any], **_: Any) -> str:
     project = (
         str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
@@ -2755,7 +2841,10 @@ _SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA = {
 
 _SKILL_STUDIO_SKILL_SCHEMA = {
     "type": "object",
-    "description": "Complete Xi画 Skill catalog draft.",
+    "description": (
+        "Complete Xi画 Skill catalog draft. Do not include Recipe drafts inside skill; "
+        "put any Recipe drafts in the tool's top-level recipes parameter."
+    ),
     "properties": {
         "id": {
             "type": "string",
@@ -3133,7 +3222,7 @@ TOOLS = (
                 },
                 "questions": {
                     "type": "array",
-                    "description": "High-level user-facing questions. Use 1-5 questions, each with 2-5 options.",
+                    "description": "High-level user-facing questions. Ask only the questions needed for the next decision; use one focused question when the next step depends on one answer, or group closely related choices when they should be answered together. Each question should usually have 2-5 options.",
                     "items": _SKILL_STUDIO_QUESTION_SCHEMA,
                 },
                 "allow_recommended": {
@@ -3164,7 +3253,10 @@ TOOLS = (
                 "skill": _SKILL_STUDIO_SKILL_SCHEMA,
                 "recipes": {
                     "type": "array",
-                    "description": "Complete Recipe drafts.",
+                    "description": (
+                        "Complete Recipe drafts. Pass Recipe drafts in this top-level recipes "
+                        "parameter; do not nest recipes inside the skill object."
+                    ),
                     "items": _SKILL_STUDIO_RECIPE_SCHEMA,
                 },
                 "summary": {"type": "string", "description": "Short user-facing summary."},
@@ -3177,6 +3269,36 @@ TOOLS = (
             ["skill_studio_session_id", "mode"],
         ),
         _handle_present_agent_catalog_draft,
+    ),
+    (
+        "freezone_get_saved_skill",
+        _schema(
+            "freezone_get_saved_skill",
+            "Read one existing saved Xi画 Skill configuration by id for Skill Studio editing. Read-only: does not save catalog files, does not execute workflows, and does not write canvas nodes. Use this when revising a saved Skill and conversation history only has the saved id or an incomplete draft.",
+            {
+                "skill_id": {
+                    "type": "string",
+                    "description": "Saved Skill id to read from the current user's Freezone catalog.",
+                },
+            },
+            ["skill_id"],
+        ),
+        _handle_get_saved_skill,
+    ),
+    (
+        "freezone_get_saved_recipe",
+        _schema(
+            "freezone_get_saved_recipe",
+            "Read one existing saved Xi画 Recipe configuration by id for Skill Studio editing. Read-only: does not save catalog files, does not execute workflows, and does not write canvas nodes. Use this when revising a saved Recipe and conversation history only has the saved id or an incomplete draft.",
+            {
+                "recipe_id": {
+                    "type": "string",
+                    "description": "Saved Recipe id to read from the current user's Freezone catalog.",
+                },
+            },
+            ["recipe_id"],
+        ),
+        _handle_get_saved_recipe,
     ),
     (
         "freezone_get_link_type_catalog",
