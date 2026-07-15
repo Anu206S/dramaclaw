@@ -1142,11 +1142,20 @@ def _mcp_direct_canvas_apply_enabled() -> bool:
     }
 
 
+def _external_mcp_agent_enabled() -> bool:
+    return os.environ.get("DRAMACLAW_EXTERNAL_MCP", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
 def _mcp_canvas_approval_enabled() -> bool:
     value = os.environ.get("DRAMACLAW_MCP_CANVAS_APPROVAL", "").strip().lower()
     if value in {"0", "false", "no", "off"}:
         return False
-    return _mcp_direct_canvas_apply_enabled()
+    return _external_mcp_agent_enabled() or _mcp_direct_canvas_apply_enabled()
 
 
 def _approval_dir() -> Path:
@@ -1321,10 +1330,10 @@ def _dispatch_mcp_approved_frontend_commands(
         "bridge_key": key,
         "project_id": project,
         "canvas_id": canvas,
-        "message": "Frontend node action timed out before reporting a result.",
-        "user_message": "节点动作等待超时，前端没有回写执行结果。",
+        "message": "Frontend canvas command timed out before reporting a result.",
+        "user_message": "画布操作等待超时，前端没有回写执行结果。",
         "agent_instruction": (
-            "Do not claim success. Tell the user the frontend node action timed out and ask "
+            "Do not claim success. Tell the user the frontend canvas command timed out and ask "
             "them to keep the Freezone page open or retry."
         ),
     }
@@ -1333,6 +1342,78 @@ def _dispatch_mcp_approved_frontend_commands(
         timeout_seconds=timeout_seconds,
         timeout_result=timeout_result,
         bridge_dir=bridge_dir,
+    )
+    if resolved is not None:
+        return tool_result(
+            _summarize_canvas_command_result(
+                resolved,
+                bridge_key=key,
+                commands=commands,
+            )
+            if slim_result
+            else resolved
+        )
+    return tool_result(timeout_result)
+
+
+def _dispatch_frontend_canvas_commands(
+    *,
+    project: str,
+    canvas: str,
+    commands: list[Any],
+    slim_result: bool,
+) -> str:
+    if (
+        canvas_command_bridge_key is None
+        or put_pending_canvas_command is None
+        or wait_canvas_command_result is None
+    ):
+        return tool_error(
+            "Canvas command bridge is unavailable; cannot wait for frontend apply result. "
+            f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
+        )
+    envelope = {
+        "schema_version": "canvas_chat_commands.v1",
+        "project_id": project,
+        "canvas_id": canvas,
+        "commands": commands,
+    }
+    key = canvas_command_bridge_key(project_id=project, canvas_id=canvas, commands=commands)
+    put_pending_canvas_command(
+        key=key,
+        project_id=project,
+        canvas_id=canvas,
+        commands=commands,
+        envelope=envelope,
+    )
+    try:
+        timeout_seconds = max(
+            1,
+            int(os.environ.get("DRAMACLAW_CANVAS_COMMAND_RESULT_TIMEOUT_SECONDS", "75")),
+        )
+    except ValueError:
+        timeout_seconds = 75
+    timeout_result = {
+        "ok": False,
+        "tool_call_status": "failed",
+        "canvas_apply_status": "timeout",
+        "applied": False,
+        "cancelled": True,
+        "errors": ["Timed out waiting for frontend canvas command result."],
+        "bridge_key": key,
+        "project_id": project,
+        "canvas_id": canvas,
+        "message": "Canvas command timed out before the frontend reported a result.",
+        "user_message": "画布操作等待超时，已自动取消，没有应用新的画布变更。",
+        "agent_instruction": (
+            "Do not claim success. Tell the user the canvas command timed out and ask "
+            "them to retry after checking the canvas connection."
+        ),
+    }
+    resolved = wait_canvas_command_result(
+        key,
+        timeout_seconds=timeout_seconds,
+        timeout_result=timeout_result,
     )
     if resolved is not None:
         return tool_result(
@@ -1390,7 +1471,7 @@ def _handle_confirm_canvas_action(args: dict[str, Any], **_: Any) -> str:
                 "error": "approval payload is missing project_id, canvas_id, or commands",
             }
         )
-    if _requires_frontend_canvas_executor(commands):
+    if not _mcp_direct_canvas_apply_enabled() or _requires_frontend_canvas_executor(commands):
         return _dispatch_mcp_approved_frontend_commands(
             project=project,
             canvas=canvas,
@@ -1878,68 +1959,27 @@ def _emit_canvas_commands(
             commands,
             slim_result=slim_result,
         )
-    envelope = {
-        "schema_version": "canvas_chat_commands.v1",
-        **({"project_id": project} if project else {}),
-        **({"canvas_id": canvas} if canvas else {}),
-        "commands": commands,
-    }
-    if (
-        canvas_command_bridge_key is not None
-        and put_pending_canvas_command is not None
-        and wait_canvas_command_result is not None
-    ):
-        key = canvas_command_bridge_key(project_id=project, canvas_id=canvas, commands=commands)
-        put_pending_canvas_command(
-            key=key,
-            project_id=project,
-            canvas_id=canvas,
+    if _external_mcp_agent_enabled():
+        needs_approval, approval_reasons = _approval_required_for_commands(commands)
+        if _mcp_canvas_approval_enabled() and needs_approval:
+            return _create_mcp_canvas_approval(
+                project=project,
+                canvas=canvas,
+                commands=commands,
+                slim_result=slim_result,
+                reasons=approval_reasons,
+            )
+        return _dispatch_mcp_approved_frontend_commands(
+            project=project,
+            canvas=canvas,
             commands=commands,
-            envelope=envelope,
+            slim_result=slim_result,
         )
-        try:
-            timeout_seconds = max(
-                1,
-                int(os.environ.get("DRAMACLAW_CANVAS_COMMAND_RESULT_TIMEOUT_SECONDS", "75")),
-            )
-        except ValueError:
-            timeout_seconds = 75
-        timeout_result = {
-            "ok": False,
-            "tool_call_status": "failed",
-            "canvas_apply_status": "timeout",
-            "applied": False,
-            "cancelled": True,
-            "errors": ["Timed out waiting for frontend canvas command result."],
-            "bridge_key": key,
-            "project_id": project,
-            "canvas_id": canvas,
-            "message": "Canvas command timed out before the frontend reported a result.",
-            "user_message": "画布操作等待超时，已自动取消，没有应用新的画布变更。",
-            "agent_instruction": (
-                "Do not claim success. Tell the user the canvas command timed out and ask "
-                "them to retry after checking the canvas connection."
-            ),
-        }
-        resolved = wait_canvas_command_result(
-            key,
-            timeout_seconds=timeout_seconds,
-            timeout_result=timeout_result,
-        )
-        if resolved is not None:
-            return tool_result(
-                _summarize_canvas_command_result(
-                    resolved,
-                    bridge_key=key,
-                    commands=commands,
-                )
-                if slim_result
-                else resolved
-            )
-        return tool_result(timeout_result)
-    return tool_error(
-        "Canvas command bridge is unavailable; cannot wait for frontend apply result. "
-        f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
+    return _dispatch_frontend_canvas_commands(
+        project=project,
+        canvas=canvas,
+        commands=commands,
+        slim_result=slim_result,
     )
 
 

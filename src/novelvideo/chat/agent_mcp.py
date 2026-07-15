@@ -28,7 +28,8 @@ def _repo_root() -> Path:
 def _ensure_default_env() -> None:
     os.environ.setdefault("DRAMACLAW_API_URL", "http://127.0.0.1:8780")
     os.environ.setdefault("DRAMACLAW_LOCAL_AGENT_TRUST", "1")
-    os.environ.setdefault("DRAMACLAW_MCP_DIRECT_CANVAS_APPLY", "1")
+    os.environ.setdefault("DRAMACLAW_EXTERNAL_MCP", "1")
+    os.environ.setdefault("DRAMACLAW_MCP_DIRECT_CANVAS_APPLY", "0")
     username = (
         os.environ.get("DRAMACLAW_USER")
         or os.environ.get("SUPERTALE_USER")
