@@ -508,10 +508,11 @@ def test_freezone_catalog_recipe_fields_are_separated_from_node_prompt():
         == "video-storyboard-grid"
     )
     assert "创建一个电商产品广告视频工作流" not in image_node["data"]["prompt"]
-    assert image_node["data"]["prompt"].startswith(
-        "待生成图片：将广告脚本中的所有 Shot 合成为多宫格分镜图"
-    )
-    assert "workflowCatalog.promptBuilder" in image_node["data"]["prompt"]
+    assert "待生成图片" not in image_node["data"]["prompt"]
+    assert "workflowCatalog.promptBuilder" not in image_node["data"]["prompt"]
+    assert "提示词页" in image_node["data"]["prompt"]
+    assert "画面中不要出现任何文字" in image_node["data"]["prompt"]
+    assert "将广告脚本中的所有 Shot 合成为多宫格分镜图" in image_node["data"]["prompt"]
 
 
 def test_freezone_canvas_command_slim_result_omits_large_details():
