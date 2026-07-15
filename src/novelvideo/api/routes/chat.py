@@ -558,6 +558,10 @@ def _resolve_skill_studio_tool_result_payload(
         payload.action == "cancel"
         or payload.skill_studio_status == "catalog_cancelled"
     )
+    revision_started = (
+        payload.action == "start_revision"
+        or payload.skill_studio_status == "revision_started"
+    )
     if ok and saved_to_catalog:
         saved_skill_ids, saved_recipe_ids, catalog_errors = _save_skill_studio_draft_catalog(
             username=username,
@@ -582,6 +586,20 @@ def _resolve_skill_studio_tool_result_payload(
                 "unless the user explicitly asks for a next step."
             )
             message = payload.message or "Frontend reported that the user cancelled saving the Skill/Recipe draft."
+        elif revision_started:
+            agent_instruction = (
+                "Start a Skill Studio draft revision question flow. "
+                "Use the current draft from this tool result as the source of truth. "
+                "The user already asked to revise the current draft. "
+                "Do not ask whether revision is needed; ask directly about the concrete revision direction, scope, or preference. "
+                "When asking with freezone_request_user_clarification, send exactly one question object in the questions array, "
+                "then wait for the answer before deciding the next question. "
+                "When enough information is available, call freezone_present_agent_catalog_draft with a complete updated draft. "
+                "Only use freezone_request_user_clarification or freezone_present_agent_catalog_draft as the next Skill Studio step. "
+                "Do not answer with prose, do not only summarize the requested changes, and do not tell the user to save unless a draft tool call has produced the updated draft. "
+                "Do not save catalog content, do not emit canvas commands, and do not treat this as ordinary Freezone creation."
+            )
+            message = payload.message or "Frontend reported that the user started revising the Skill/Recipe draft."
         else:
             agent_instruction = "Continue the Skill Studio flow using the frontend response."
             message = payload.message or "Frontend returned the user's Skill Studio response."
@@ -696,6 +714,8 @@ def _persist_skill_studio_result_ui_event(
         event["selections"] = payload.selections
     if payload.draft is not None:
         event["draft"] = payload.draft
+    if payload.action == "start_revision" or payload.skill_studio_status == "revision_started":
+        event["revision_pending"] = True
     if payload.saved_to_catalog or payload.skill_studio_status == "catalog_saved":
         event["saved_to_catalog"] = True
         draft_skill_ids, draft_recipe_ids = _skill_studio_draft_catalog_ids(payload.draft)

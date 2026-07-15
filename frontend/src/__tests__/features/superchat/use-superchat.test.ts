@@ -29,6 +29,7 @@ import {
 } from "@/features/freezone/chatNodeReferences";
 import {
   buildAssistantClarificationResponseForTest,
+  activeAssistantClarificationIsSkillStudioRevisionForTest,
   buildPersistedAssistantClarificationEventForTest,
   buildAssistantClarificationToolResultForTest,
   buildAssistantInteractionFlowItemsForTest,
@@ -36,12 +37,20 @@ import {
   amendCanvasApprovalWithVideoParamsForTest,
   buildSkillStudioCatalogSaveItemsForTest,
   buildSkillStudioDraftCancelToolResultForTest,
+  buildSkillStudioDraftRevisionToolResultForTest,
   buildSkillStudioDraftToolResultForTest,
   skillStudioDraftFieldLabelsForTest,
   buildSkillStudioFlowItemsForTest,
   buildSkillStudioQuestionTimelineItemsForTest,
   buildSkillStudioQuestionResponseForTest,
   buildSkillStudioQuestionToolResultForTest,
+  assistantClarificationEventIdentityForTest,
+  skillStudioDraftFooterTextForTest,
+  skillStudioEventMatchesForTest,
+  hydrateOrderedPartsWithUiEventsForTest,
+  latestPendingAssistantClarificationEventForTest,
+  latestPendingSkillStudioQuestionEventForTest,
+  skillStudioQuestionEventIdentityForTest,
   messageIsWaitingForUserReplyForTest,
   messageHasSkillStudioUiEventForTest,
   shouldHideSkillStudioStatusOnlyMessageForTest,
@@ -346,6 +355,45 @@ describe("assistant message ordered parts", () => {
       "\n\n第二段文字",
       "\n\n第三段文字",
     ]);
+  });
+
+  it("hydrates ordered part events from the latest uiEvents without changing order", () => {
+    const parts = hydrateOrderedPartsWithUiEventsForTest(
+      [
+        {
+          id: "skill_studio.draft:draft-key-1",
+          type: "skill_studio",
+          event: {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+            draft: { skill: { id: "public-welfare-short-film" }, recipes: [] },
+          },
+        },
+        {
+          id: "assistant.clarification.request:clarify-key-1",
+          type: "clarification",
+          event: {
+            type: "assistant.clarification.request",
+            bridge_key: "clarify-key-1",
+            title: "修订方向",
+          },
+        },
+      ],
+      [
+        {
+          type: "skill_studio.draft",
+          bridge_key: "draft-key-1",
+          revision_pending: true,
+          action: "start_revision",
+        },
+      ],
+    );
+
+    expect(parts?.map((part) => part.id)).toEqual([
+      "skill_studio.draft:draft-key-1",
+      "assistant.clarification.request:clarify-key-1",
+    ]);
+    expect((parts?.[0] as { event?: { revision_pending?: boolean } }).event?.revision_pending).toBe(true);
   });
 });
 
@@ -951,6 +999,104 @@ describe("Skill Studio question response", () => {
     expect(messageIsWaitingForUserReplyForTest(stale)).toBe(false);
   });
 
+  it("uses the latest pending clarification after a draft instead of an older stale one", () => {
+    const assistant = message("assistant-clarification-sequence", "assistant", "", 100);
+    assistant.turnId = "turn-sequence";
+    assistant.uiEvents = [
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-old",
+        title: "旧问题",
+        questions: [{ id: "old_question", title: "旧问题", options: [{ id: "old", label: "旧" }] }],
+      },
+      {
+        type: "skill_studio.draft",
+        bridge_key: "draft-key",
+        draft: { skill: { id: "public-service-video" }, recipes: [] },
+      },
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-new",
+        title: "新问题",
+        questions: [{ id: "new_question", title: "新问题", options: [{ id: "new", label: "新" }] }],
+      },
+    ];
+
+    expect(latestPendingAssistantClarificationEventForTest([assistant])?.bridge_key).toBe("clarify-new");
+    expect(messageIsWaitingForUserReplyForTest(assistant)).toBe(true);
+  });
+
+  it("detects clarification cards that belong to a Skill Studio revision flow", () => {
+    const assistant = message("assistant-revision-clarification", "assistant", "", 100);
+    assistant.turnId = "turn-revision";
+    assistant.uiEvents = [
+      {
+        type: "skill_studio.draft",
+        bridge_key: "draft-key",
+        revision_pending: true,
+      },
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-revision",
+        title: "修订方向",
+        questions: [{ id: "focus", title: "先改哪里？", options: [{ id: "style", label: "风格" }] }],
+      },
+    ];
+
+    expect(activeAssistantClarificationIsSkillStudioRevisionForTest(
+      [assistant],
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-revision",
+      },
+    )).toBe(true);
+    expect(activeAssistantClarificationIsSkillStudioRevisionForTest(
+      [assistant],
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "other",
+      },
+    )).toBe(false);
+  });
+
+  it("uses the latest pending Skill Studio question in arrival order", () => {
+    const assistant = message("assistant-skill-question-sequence", "assistant", "", 100);
+    assistant.turnId = "turn-skill-sequence";
+    assistant.uiEvents = [
+      {
+        type: "skill_studio.questions",
+        bridge_key: "skill-question-old",
+        questions: [{ id: "old_question", title: "旧问题", options: [{ id: "old", label: "旧" }] }],
+      },
+      {
+        type: "skill_studio.questions",
+        bridge_key: "skill-question-new",
+        questions: [{ id: "new_question", title: "新问题", options: [{ id: "new", label: "新" }] }],
+      },
+    ];
+
+    expect(latestPendingSkillStudioQuestionEventForTest([assistant])?.bridge_key).toBe("skill-question-new");
+  });
+
+  it("uses bridge scoped identities for active composer question cards", () => {
+    expect(assistantClarificationEventIdentityForTest({
+      type: "assistant.clarification.request",
+      bridge_key: "clarify-a",
+      title: "同名问题",
+    })).toBe("clarify-a");
+    expect(assistantClarificationEventIdentityForTest({
+      type: "assistant.clarification.request",
+      bridge_key: "clarify-b",
+      title: "同名问题",
+    })).toBe("clarify-b");
+    expect(skillStudioQuestionEventIdentityForTest({
+      type: "skill_studio.questions",
+      bridge_key: "skill-question-a",
+      skill_studio_session_id: "studio-1",
+      title: "同名问题",
+    })).toBe("skill-question-a");
+  });
+
   it("builds a chat message from selected card options", () => {
     const text = buildSkillStudioQuestionResponseForTest(
       {
@@ -1138,6 +1284,29 @@ describe("Skill Studio question response", () => {
     ]);
   });
 
+  it("preserves submitted skip status in compact question cards", () => {
+    const items = buildSkillStudioQuestionTimelineItemsForTest(
+      [
+        {
+          id: "confirm",
+          title: "草稿确认",
+          options: [{ id: "needs_edit", label: "需要调整" }],
+        },
+      ],
+      {},
+      "skip",
+    );
+
+    expect(items).toEqual([
+      {
+        key: "confirm",
+        title: "草稿确认",
+        summary: "已跳过",
+        answered: true,
+      },
+    ]);
+  });
+
   it("builds a bridge tool result payload instead of a new chat message", () => {
     const payload = buildSkillStudioQuestionToolResultForTest(
       {
@@ -1320,6 +1489,31 @@ describe("Assistant clarification response", () => {
       ok: true,
     });
     expect(payload.message).toContain("你想创建的 skill 是做什么的？");
+    expect(payload.message).not.toContain("一次只提出一个问题");
+  });
+
+  it("adds one-question guidance only for Skill Studio revision clarification results", () => {
+    const payload = buildAssistantClarificationToolResultForTest(
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-key-revision",
+        clarification_id: "revise_01",
+        questions: [
+          {
+            id: "revision_focus",
+            title: "你想先调整哪个方向？",
+            options: [{ id: "style", label: "风格" }],
+          },
+        ],
+      },
+      {
+        revision_focus: { option_ids: ["style"], custom_text: "" },
+      },
+      { skillStudioRevision: true },
+    );
+
+    expect(payload.message).toContain("Skill Studio 草稿修订流程");
+    expect(payload.message).toContain("一次只提出一个问题");
   });
 });
 
@@ -1381,6 +1575,24 @@ describe("Skill Studio status events", () => {
       submitted: true,
       selections: { audience: "locals" },
     });
+  });
+
+  it("does not match different Skill Studio question cards only because they share a session", () => {
+    const initialQuestion = {
+      type: "skill_studio.questions" as const,
+      bridge_key: "initial-question-key",
+      skill_studio_session_id: "studio-1",
+      questions: [],
+    };
+    const revisionQuestion = {
+      type: "skill_studio.questions" as const,
+      bridge_key: "revision-question-key",
+      skill_studio_session_id: "studio-1",
+      questions: [],
+    };
+
+    expect(skillStudioEventMatchesForTest(initialQuestion, revisionQuestion)).toBe(false);
+    expect(skillStudioEventMatchesForTest(revisionQuestion, revisionQuestion)).toBe(true);
   });
 
   it("merges repeated Skill Studio draft events into the latest draft state", () => {
@@ -1671,6 +1883,56 @@ describe("Skill Studio draft response", () => {
     expect(payload.message).toContain("本次草稿不会写入虾画配置");
     expect(payload.message).toContain("不要自动继续创建画布");
     expect(payload.message).not.toContain("继续回复");
+  });
+
+  it("builds a bridge tool result to start a Skill Studio draft revision session", () => {
+    const event = {
+      type: "skill_studio.draft" as const,
+      bridge_key: "skill-key-3",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      skill_studio_session_id: "skill_studio_01",
+      draft: { skill: { id: "home-culture-poster" }, recipes: [] },
+    };
+    const draft = {
+      skill: {
+        id: "home-culture-poster",
+        description: "用户手动编辑后的草稿",
+      },
+      recipes: [],
+      summary: "当前草稿",
+    };
+
+    const payload = buildSkillStudioDraftRevisionToolResultForTest(event, draft);
+
+    expect(payload).toMatchObject({
+      bridge_key: "skill-key-3",
+      project_id: "project-a",
+      canvas_id: "canvas-a",
+      agent_id: "agent-1",
+      turn_id: "turn-a",
+      action: "start_revision",
+      skill_studio_status: "revision_started",
+      saved_to_catalog: false,
+      draft,
+    });
+    expect(payload.message).toContain("启动 Skill Studio 草稿修改会话");
+    expect(payload.message).toContain("基于当前完整草稿");
+    expect(payload.message).toContain("用户已经明确表示需要调整");
+    expect(payload.message).toContain("不要再询问是否需要调整");
+    expect(payload.message).toContain("一个问题一个问题");
+    expect(payload.message).toContain("只能调用 freezone_request_user_clarification 或 freezone_present_agent_catalog_draft");
+    expect(payload.message).toContain("不要用普通文本总结修改结果");
+  });
+
+  it("shows the draft as AI adjusting while a revision session is pending", () => {
+    expect(skillStudioDraftFooterTextForTest({
+      submitted: false,
+      cancelled: false,
+      revisionPending: true,
+    })).toBe("AI 调整中，请按后续问题补充修改方向");
   });
 
   it("normalizes the draft into catalog payloads before saving", () => {

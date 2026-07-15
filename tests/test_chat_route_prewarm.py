@@ -373,6 +373,39 @@ def test_resolve_cancelled_skill_studio_tool_result_stops_flow(monkeypatch, tmp_
     assert wait_skill_studio_result("skill-key-3", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
 
 
+def test_resolve_revision_skill_studio_tool_result_starts_question_flow(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path)
+    payload = chat_route.SkillStudioToolResultIn(
+        turn_id="turn-a",
+        bridge_key="skill-key-4",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        agent_id="agent-1",
+        skill_studio_status="revision_started",
+        action="start_revision",
+        draft={"skill": {"id": "home-culture-poster", "description": "当前草稿"}, "recipes": []},
+        message="用户已启动 Skill Studio 草稿修改会话。",
+    )
+
+    resolved = chat_route._resolve_skill_studio_tool_result_payload(payload, username="alice")
+
+    assert resolved["ok"] is True
+    assert resolved["skill_studio_status"] == "revision_started"
+    assert resolved["saved_to_catalog"] is False
+    assert resolved["draft"] == payload.draft
+    assert "Start a Skill Studio draft revision question flow" in resolved["agent_instruction"]
+    assert "current draft" in resolved["agent_instruction"]
+    assert "already asked to revise" in resolved["agent_instruction"]
+    assert "Do not ask whether revision is needed" in resolved["agent_instruction"]
+    assert "freezone_request_user_clarification" in resolved["agent_instruction"]
+    assert "exactly one question object" in resolved["agent_instruction"]
+    assert "wait for the answer before deciding the next question" in resolved["agent_instruction"]
+    assert "Only use freezone_request_user_clarification or freezone_present_agent_catalog_draft" in resolved["agent_instruction"]
+    assert "Do not answer with prose" in resolved["agent_instruction"]
+    assert "Do not save" in resolved["agent_instruction"]
+    assert wait_skill_studio_result("skill-key-4", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
+
+
 @pytest.mark.anyio
 async def test_resolve_skill_studio_tool_result_persists_submitted_ui_event(monkeypatch, tmp_path) -> None:
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))

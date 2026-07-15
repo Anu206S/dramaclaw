@@ -85,7 +85,7 @@ import {
   type StructuredBlock,
   type UiSpec,
 } from "@/features/superchat/spec-extract";
-import type { ChatMessage } from "@/features/superchat/types";
+import type { ChatMessage, ChatMessagePart } from "@/features/superchat/types";
 import type { ApprovalRequest, ChatAttachment } from "@/features/superchat/types";
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import type { FormatCheck, UploadResult } from "@/lib/queries/ingest";
@@ -2445,6 +2445,9 @@ type SkillStudioUiEvent =
       draft?: Record<string, unknown>;
       submitted?: boolean;
       cancelled?: boolean;
+      revision_pending?: boolean;
+      action?: string;
+      skill_studio_status?: string;
       saved_to_catalog?: boolean;
       saved_skill_ids?: string[];
       saved_recipe_ids?: string[];
@@ -2513,6 +2516,31 @@ function mergeUiEventsByStableKey<T>(events: T[]): T[] {
   return merged;
 }
 
+function hydrateOrderedPartsWithUiEvents(
+  parts: ChatMessagePart[] | undefined,
+  uiEvents: unknown[] | undefined,
+): ChatMessagePart[] | undefined {
+  if (!parts?.length || !uiEvents?.length) return parts;
+  const eventByKey = new Map<string, unknown>();
+  for (const event of uiEvents) {
+    const key = uiEventStableKey(event);
+    if (key) eventByKey.set(key, event);
+  }
+  if (eventByKey.size === 0) return parts;
+  let changed = false;
+  const nextParts = parts.map((part) => {
+    if (part.type === "text") return part;
+    const key = uiEventStableKey(part.event);
+    const latestEvent = key ? eventByKey.get(key) : undefined;
+    if (!latestEvent || latestEvent === part.event) return part;
+    changed = true;
+    return { ...part, event: latestEvent };
+  });
+  return changed ? nextParts : parts;
+}
+
+export const hydrateOrderedPartsWithUiEventsForTest = hydrateOrderedPartsWithUiEvents;
+
 function skillStudioEventsFromUiEvents(events: unknown[] | undefined): SkillStudioUiEvent[] {
   if (!events || events.length === 0) return [];
   const skillStudioEvents = mergeUiEventsByStableKey(events.filter((event): event is SkillStudioUiEvent => {
@@ -2547,13 +2575,24 @@ function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUi
 
 export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEventsForMessage;
 
-function messageHasSkillStudioDraftEvent(message: ChatMessage): boolean {
-  if (message.role !== "assistant") return false;
-  return skillStudioEventsFromUiEvents(messageUiEvents(message)).some((event) => event.type === "skill_studio.draft");
+function uiEventsAfterLatestSkillStudioDraft(events: unknown[] | undefined): unknown[] | undefined {
+  if (!events?.length) return events;
+  let latestDraftIndex = -1;
+  for (const [index, event] of events.entries()) {
+    if (
+      event
+      && typeof event === "object"
+      && !Array.isArray(event)
+      && (event as Record<string, unknown>).type === "skill_studio.draft"
+    ) {
+      latestDraftIndex = index;
+    }
+  }
+  return latestDraftIndex >= 0 ? events.slice(latestDraftIndex + 1) : events;
 }
 
 function pendingSkillStudioQuestionEventsForMessage(message: ChatMessage): Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>[] {
-  return skillStudioEventsFromUiEvents(messageUiEvents(message))
+  return skillStudioEventsFromUiEvents(uiEventsAfterLatestSkillStudioDraft(messageUiEvents(message)))
     .filter((event): event is Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }> =>
       event.type === "skill_studio.questions" && event.submitted !== true,
     );
@@ -2598,11 +2637,14 @@ export const visibleCanvasContextActivitiesForMessageForTest = visibleCanvasCont
 function latestPendingSkillStudioQuestionEvent(messages: ChatMessage[]): Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }> | null {
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;
-    const event = pendingSkillStudioQuestionEventsForMessage(message)[0];
+    const pendingEvents = pendingSkillStudioQuestionEventsForMessage(message);
+    const event = pendingEvents[pendingEvents.length - 1];
     if (event) return event;
   }
   return null;
 }
+
+export const latestPendingSkillStudioQuestionEventForTest = latestPendingSkillStudioQuestionEvent;
 
 function assistantClarificationEventsFromUiEvents(events: unknown[] | undefined): AssistantClarificationUiEvent[] {
   if (!events || events.length === 0) return [];
@@ -2617,19 +2659,55 @@ function visibleAssistantClarificationEventsForMessage(message: ChatMessage): As
 }
 
 function pendingAssistantClarificationEventsForMessage(message: ChatMessage): AssistantClarificationUiEvent[] {
-  if (messageHasSkillStudioDraftEvent(message)) return [];
-  return assistantClarificationEventsFromUiEvents(messageUiEvents(message)).filter((event) => event.submitted !== true);
+  return assistantClarificationEventsFromUiEvents(uiEventsAfterLatestSkillStudioDraft(messageUiEvents(message)))
+    .filter((event) => event.submitted !== true);
 }
+
+function assistantClarificationIsAfterRevisionPendingDraft(
+  message: ChatMessage,
+  event: AssistantClarificationUiEvent,
+): boolean {
+  const events = messageUiEvents(message) ?? [];
+  let seenRevisionPendingDraft = false;
+  const targetIdentity = assistantClarificationEventIdentity(event);
+  for (const candidate of events) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const value = candidate as Record<string, unknown>;
+    if (value.type === "skill_studio.draft" && value.revision_pending === true) {
+      seenRevisionPendingDraft = true;
+      continue;
+    }
+    if (value.type !== "assistant.clarification.request") continue;
+    const candidateEvent = value as AssistantClarificationUiEvent;
+    if (assistantClarificationEventIdentity(candidateEvent) === targetIdentity) {
+      return seenRevisionPendingDraft;
+    }
+  }
+  return false;
+}
+
+function activeAssistantClarificationIsSkillStudioRevision(
+  messages: ChatMessage[],
+  event: AssistantClarificationUiEvent,
+): boolean {
+  return messages.some((message) =>
+    message.role === "assistant" && assistantClarificationIsAfterRevisionPendingDraft(message, event),
+  );
+}
+
+export const activeAssistantClarificationIsSkillStudioRevisionForTest = activeAssistantClarificationIsSkillStudioRevision;
 
 function latestPendingAssistantClarificationEvent(messages: ChatMessage[]): AssistantClarificationUiEvent | null {
   for (const message of [...messages].reverse()) {
     if (message.role !== "assistant") continue;
-    const event = assistantClarificationEventsFromUiEvents(messageUiEvents(message))
-      .find((candidate) => candidate.submitted !== true);
+    const pendingEvents = pendingAssistantClarificationEventsForMessage(message);
+    const event = pendingEvents[pendingEvents.length - 1];
     if (event) return event;
   }
   return null;
 }
+
+export const latestPendingAssistantClarificationEventForTest = latestPendingAssistantClarificationEvent;
 
 function messageIsWaitingForUserReply(message: ChatMessage): boolean {
   if (message.role !== "assistant") return false;
@@ -3279,6 +3357,23 @@ function skillStudioQuestionKey(question: SkillStudioQuestion, index: number): s
   return question.id?.trim() || `question_${index + 1}`;
 }
 
+function skillStudioQuestionEventIdentity(event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>): string {
+  return event.bridge_key?.trim()
+    || event.skill_studio_session_id?.trim()
+    || event.title?.trim()
+    || "skill_studio.questions";
+}
+
+function assistantClarificationEventIdentity(event: AssistantClarificationUiEvent): string {
+  return event.bridge_key?.trim()
+    || event.clarification_id?.trim()
+    || event.title?.trim()
+    || "assistant.clarification.request";
+}
+
+export const skillStudioQuestionEventIdentityForTest = skillStudioQuestionEventIdentity;
+export const assistantClarificationEventIdentityForTest = assistantClarificationEventIdentity;
+
 function skillStudioOptionKey(option: SkillStudioQuestionOption, index: number): string {
   return option.id?.trim() || `option_${index + 1}`;
 }
@@ -3401,20 +3496,29 @@ type SkillStudioQuestionTimelineItem = {
   answered: boolean;
 };
 
+function skillStudioQuestionActionSummary(action: string | undefined): string | null {
+  if (action === "skip") return "已跳过";
+  if (action === "recommended") return "已用推荐配置";
+  return null;
+}
+
 function buildSkillStudioQuestionTimelineItems(
   questions: SkillStudioQuestion[],
   selections: SkillStudioQuestionSelections,
+  action?: string,
 ): SkillStudioQuestionTimelineItem[] {
+  const actionSummary = skillStudioQuestionActionSummary(action);
   return questions
     .map((question, index) => ({ question, index }))
     .filter(({ question }) => (question.options ?? []).length > 0 || skillStudioQuestionAllowsCustom(question))
     .map(({ question, index }) => {
       const key = skillStudioQuestionKey(question, index);
+      const hasAnswer = skillStudioSelectionHasAnswer(selections[key]);
       return {
         key,
         title: question.title || `问题 ${index + 1}`,
-        summary: selectedSkillStudioOptionLabel(question, index, selections),
-        answered: skillStudioSelectionHasAnswer(selections[key]),
+        summary: hasAnswer ? selectedSkillStudioOptionLabel(question, index, selections) : actionSummary ?? "未选择",
+        answered: hasAnswer || Boolean(actionSummary),
       };
     });
 }
@@ -3497,10 +3601,17 @@ export function buildAssistantClarificationResponseForTest(
 export function buildAssistantClarificationToolResultForTest(
   event: AssistantClarificationUiEvent,
   answers: AssistantClarificationAnswers,
+  options: { skillStudioRevision?: boolean } = {},
 ) {
   const safeAnswers = Object.fromEntries(
     Object.entries(answers).filter(([key]) => !key.startsWith("__")),
   ) as AssistantClarificationAnswers;
+  const message = [
+    buildAssistantClarificationResponseForTest(event, safeAnswers),
+    options.skillStudioRevision
+      ? "当前处于 Skill Studio 草稿修订流程。请根据这个回答决定下一步；如果还需要追问，请一次只提出一个问题，等用户回答后再决定是否继续追问。信息足够时直接输出完整更新后的 Skill / Recipe 草稿。"
+      : "",
+  ].filter(Boolean).join("\n\n");
   return {
     turn_id: event.turn_id ?? undefined,
     anchor_text_prefix: event.anchor_text_prefix ?? undefined,
@@ -3513,7 +3624,7 @@ export function buildAssistantClarificationToolResultForTest(
     ok: true,
     action: "submit",
     answers: safeAnswers,
-    message: buildAssistantClarificationResponseForTest(event, safeAnswers),
+    message,
   };
 }
 
@@ -3642,6 +3753,53 @@ export function buildSkillStudioDraftCancelToolResultForTest(
   };
 }
 
+export function buildSkillStudioDraftRevisionToolResultForTest(
+  event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+  draft: Record<string, unknown>,
+) {
+  return {
+    turn_id: event.turn_id ?? undefined,
+    bridge_key: event.bridge_key ?? "",
+    project_id: event.project_id ?? undefined,
+    canvas_id: event.canvas_id ?? undefined,
+    agent_id: event.agent_id ?? undefined,
+    tool_call_status: "completed" as const,
+    skill_studio_status: "revision_started",
+    ok: true,
+    action: "start_revision",
+    saved_to_catalog: false,
+    saved_skill_ids: [],
+    saved_recipe_ids: [],
+    draft,
+    message: [
+      "用户已启动 Skill Studio 草稿修改会话。",
+      event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
+      "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
+      "如果需要追问，请直接询问具体修改方向、范围或偏好。",
+      "请基于当前完整草稿，一个问题一个问题地收集修改意图；信息足够后再输出新的完整 Skill / Recipe 草稿。",
+      "下一步只能调用 freezone_request_user_clarification 或 freezone_present_agent_catalog_draft。",
+      "不要用普通文本总结修改结果；不要只说明改了什么；未输出更新草稿前不要让用户保存。",
+    ].filter(Boolean).join("\n"),
+  };
+}
+
+function skillStudioDraftFooterText({
+  submitted,
+  cancelled,
+  revisionPending,
+}: {
+  submitted: boolean;
+  cancelled: boolean;
+  revisionPending: boolean;
+}): string {
+  if (submitted) return "已添加到虾画 Skills / Recipes";
+  if (cancelled) return "已取消，本草稿不会保存";
+  if (revisionPending) return "AI 调整中，请按后续问题补充修改方向";
+  return "保存前可展开各项继续微调";
+}
+
+export const skillStudioDraftFooterTextForTest = skillStudioDraftFooterText;
+
 function buildSkillStudioRecommendedResponse(event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>): string {
   return [
     "请使用推荐配置继续 Skill Studio 流程。",
@@ -3667,12 +3825,15 @@ function skillStudioEventMatches(
   if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) return false;
   const value = candidate as Record<string, unknown>;
   if (value.type !== event.type) return false;
-  if (event.bridge_key && value.bridge_key === event.bridge_key) return true;
+  if (event.bridge_key) return value.bridge_key === event.bridge_key;
+  if (value.bridge_key) return false;
   if (event.skill_studio_session_id && value.skill_studio_session_id === event.skill_studio_session_id) {
     return true;
   }
   return false;
 }
+
+export const skillStudioEventMatchesForTest = skillStudioEventMatches;
 
 function SkillStudioQuestionsCard({
   event,
@@ -3685,14 +3846,20 @@ function SkillStudioQuestionsCard({
   ) => Promise<boolean>;
 }) {
   const questions = Array.isArray(event.questions) ? event.questions : [];
+  const eventIdentity = skillStudioQuestionEventIdentity(event);
   const [selections, setSelections] = useState<SkillStudioQuestionSelections>(() =>
     event.selections && typeof event.selections === "object" ? event.selections : {},
   );
   const [submitted, setSubmitted] = useState(event.submitted === true);
+  const [activeQuestionPosition, setActiveQuestionPosition] = useState(0);
+  useEffect(() => {
+    setSelections(event.selections && typeof event.selections === "object" ? event.selections : {});
+    setSubmitted(event.submitted === true);
+    setActiveQuestionPosition(0);
+  }, [eventIdentity]);
   const selectableQuestions = questions
     .map((question, index) => ({ question, index }))
     .filter(({ question }) => (question.options ?? []).length > 0 || skillStudioQuestionAllowsCustom(question));
-  const [activeQuestionPosition, setActiveQuestionPosition] = useState(0);
   const activeItem = selectableQuestions[Math.min(activeQuestionPosition, Math.max(selectableQuestions.length - 1, 0))] ?? null;
   const answeredCount = selectableQuestions.filter(({ question, index }) =>
     skillStudioSelectionHasAnswer(selections[skillStudioQuestionKey(question, index)]),
@@ -3701,9 +3868,13 @@ function SkillStudioQuestionsCard({
   const canSubmitSelections = selectableQuestions.length > 0 && hasAnySelection;
   const allQuestionsAnswered = selectableQuestions.length > 0 && answeredCount === selectableQuestions.length;
   const timelineItems = useMemo(
-    () => buildSkillStudioQuestionTimelineItems(questions, selections),
-    [questions, selections],
+    () => buildSkillStudioQuestionTimelineItems(questions, selections, event.action),
+    [event.action, questions, selections],
   );
+  const submittedSummary = submitted
+    ? skillStudioQuestionActionSummary(event.action)
+      ?? `已提交回答 · ${answeredCount} / ${selectableQuestions.length || timelineItems.length} 个`
+    : "";
   const goToQuestion = useCallback((position: number) => {
     if (selectableQuestions.length === 0) return;
     setActiveQuestionPosition(Math.max(0, Math.min(position, selectableQuestions.length - 1)));
@@ -3768,11 +3939,11 @@ function SkillStudioQuestionsCard({
               <span className="truncate font-medium tracking-normal">{event.title || "Skill Studio 选择"}</span>
             </div>
             <div className="mt-1 text-[11px] text-muted-foreground">
-              已提交回答 · {answeredCount} / {selectableQuestions.length || timelineItems.length} 个
+              {submittedSummary}
             </div>
           </div>
           <span className="shrink-0 rounded-full border border-emerald-300/15 bg-emerald-400/[0.08] px-2 py-0.5 text-[11px] text-emerald-100/75">
-            已提交
+            {skillStudioQuestionActionSummary(event.action) ?? "已提交"}
           </span>
         </div>
         <div className="relative ml-2.5 space-y-0.5">
@@ -4053,10 +4224,15 @@ function AssistantClarificationInputCard({
   onSubmit?: (event: AssistantClarificationUiEvent, answers: AssistantClarificationAnswers) => Promise<boolean>;
 }) {
   const questions = Array.isArray(event.questions) ? event.questions : [];
+  const eventIdentity = assistantClarificationEventIdentity(event);
   const [answers, setAnswers] = useState<AssistantClarificationAnswers>(() =>
     event.answers && typeof event.answers === "object" ? event.answers : {},
   );
   const [activeQuestionPosition, setActiveQuestionPosition] = useState(0);
+  useEffect(() => {
+    setAnswers(event.answers && typeof event.answers === "object" ? event.answers : {});
+    setActiveQuestionPosition(0);
+  }, [eventIdentity]);
   const selectableQuestions = questions
     .map((question, index) => ({ question, index }))
     .filter(({ question }) => (question.options ?? []).length > 0 || skillStudioQuestionAllowsCustom(question));
@@ -4264,12 +4440,17 @@ function AssistantClarificationInputCard({
 function SkillStudioDraftCard({
   event,
   onSubmit,
+  onStartRevision,
   onDraftChange,
   onCancel,
   onPreserveScrollAnchor,
 }: {
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>;
   onSubmit?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => Promise<boolean>;
+  onStartRevision?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => Promise<boolean>;
@@ -4284,7 +4465,13 @@ function SkillStudioDraftCard({
   const [draftText, setDraftText] = useState(() => prettyJson(draftObject));
   const [submitted, setSubmitted] = useState(event.submitted === true);
   const [cancelled, setCancelled] = useState(event.cancelled === true);
+  const [revisionPending, setRevisionPending] = useState(event.revision_pending === true);
   const [jsonError, setJsonError] = useState<string | null>(null);
+  useEffect(() => {
+    setSubmitted(event.submitted === true);
+    setCancelled(event.cancelled === true);
+    setRevisionPending(event.revision_pending === true);
+  }, [event.cancelled, event.revision_pending, event.submitted]);
   const skill = getRecord(draftObject.skill);
   const recipes = Array.isArray(draftObject.recipes)
     ? draftObject.recipes.filter((recipe): recipe is Record<string, unknown> => Boolean(recipe && typeof recipe === "object" && !Array.isArray(recipe)))
@@ -4368,17 +4555,37 @@ function SkillStudioDraftCard({
     });
   }, [cancelled, draftText, event, onDraftChange, onSubmit, submitted]);
   const cancelDraft = useCallback(() => {
-    if (submitted || cancelled) return;
+    if (submitted || cancelled || revisionPending) return;
     setCancelled(true);
     onCancel?.(event);
-  }, [cancelled, event, onCancel, submitted]);
+  }, [cancelled, event, onCancel, revisionPending, submitted]);
+  const startRevision = useCallback(() => {
+    if (!onStartRevision || submitted || cancelled || revisionPending) return;
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(draftText);
+    } catch {
+      setJsonError("JSON 格式不正确，请检查后再调整");
+      return;
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      setJsonError("草稿必须是 JSON 对象");
+      return;
+    }
+    setJsonError(null);
+    onDraftChange?.(event, parsed as Record<string, unknown>);
+    setRevisionPending(true);
+    void onStartRevision(event, parsed as Record<string, unknown>).then((ok) => {
+      if (!ok) setRevisionPending(false);
+    });
+  }, [cancelled, draftText, event, onDraftChange, onStartRevision, revisionPending, submitted]);
   const preserveDetailsScroll = useCallback((clickEvent: ReactMouseEvent<HTMLDivElement>) => {
     const target = clickEvent.target instanceof HTMLElement ? clickEvent.target : null;
     const summary = target?.closest("summary");
     if (!summary || !clickEvent.currentTarget.contains(summary)) return;
     onPreserveScrollAnchor?.(summary as HTMLElement);
   }, [onPreserveScrollAnchor]);
-  const readOnly = submitted || cancelled;
+  const readOnly = submitted || cancelled || revisionPending;
   const fieldClass = "h-8 rounded-lg border-white/[0.08] bg-black/20 text-xs shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
   const labelClass = "mb-1 block text-[11px] font-medium text-muted-foreground";
   const textAreaClass = "min-h-16 resize-y rounded-lg border-white/[0.08] bg-black/20 text-xs leading-5 shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
@@ -4820,13 +5027,19 @@ function SkillStudioDraftCard({
       {jsonError && <div className="mt-2 text-xs text-amber-200">{jsonError}</div>}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <div className="text-[11px] text-muted-foreground">
-          {submitted
-            ? "已添加到虾画 Skills / Recipes"
-            : cancelled
-              ? "已取消，本草稿不会保存"
-              : "保存前可展开各项继续微调"}
+          {skillStudioDraftFooterText({ submitted, cancelled, revisionPending })}
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            className="h-8 rounded-lg border-white/[0.12] bg-white/[0.04] px-3 text-xs hover:bg-white/[0.08]"
+            disabled={!onStartRevision || readOnly}
+            onClick={startRevision}
+          >
+            让 AI 调整
+          </Button>
           <Button
             type="button"
             size="sm"
@@ -4866,6 +5079,7 @@ function SkillStudioEventCard({
   event,
   onSubmitQuestionResponse,
   onSubmitDraftResponse,
+  onStartDraftRevision,
   onDraftChange,
   onCancelDraft,
   onPreserveScrollAnchor,
@@ -4876,6 +5090,10 @@ function SkillStudioEventCard({
     selections: SkillStudioQuestionSelections,
   ) => Promise<boolean>;
   onSubmitDraftResponse?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => Promise<boolean>;
+  onStartDraftRevision?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => Promise<boolean>;
@@ -4896,6 +5114,7 @@ function SkillStudioEventCard({
     <SkillStudioDraftCard
       event={event}
       onSubmit={onSubmitDraftResponse}
+      onStartRevision={onStartDraftRevision}
       onDraftChange={onDraftChange}
       onCancel={onCancelDraft}
       onPreserveScrollAnchor={onPreserveScrollAnchor}
@@ -4921,6 +5140,7 @@ const MessageBubble = memo(function MessageBubble({
   onCancelCanvasCommandApproval,
   onSubmitSkillStudioQuestionResponse,
   onSubmitSkillStudioDraftResponse,
+  onStartSkillStudioDraftRevision,
   onSkillStudioDraftChange,
   onCancelSkillStudioDraft,
   onPreserveScrollAnchor,
@@ -4945,6 +5165,10 @@ const MessageBubble = memo(function MessageBubble({
     selections: SkillStudioQuestionSelections,
   ) => Promise<boolean>;
   onSubmitSkillStudioDraftResponse?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => Promise<boolean>;
+  onStartSkillStudioDraftRevision?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => Promise<boolean>;
@@ -4982,7 +5206,7 @@ const MessageBubble = memo(function MessageBubble({
     ? buildAssistantInteractionFlowItems(displayText, skillStudioEvents, clarificationSummaryEvents)
     : [];
   const assistantOrderedParts = !isUser && !isTool && message.parts?.some((part) => part.type !== "text")
-    ? message.parts
+    ? hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? []
     : [];
   const visibleCanvasContextActivities = !isUser && !isTool
     ? visibleCanvasContextActivitiesForMessage(message, canvasContextActivities)
@@ -5287,6 +5511,7 @@ const MessageBubble = memo(function MessageBubble({
                         event={part.event as SkillStudioUiEvent}
                         onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
                         onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                        onStartDraftRevision={onStartSkillStudioDraftRevision}
                         onDraftChange={onSkillStudioDraftChange}
                         onCancelDraft={onCancelSkillStudioDraft}
                         onPreserveScrollAnchor={onPreserveScrollAnchor}
@@ -5335,6 +5560,7 @@ const MessageBubble = memo(function MessageBubble({
                         event={item.event}
                         onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
                         onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                        onStartDraftRevision={onStartSkillStudioDraftRevision}
                         onDraftChange={onSkillStudioDraftChange}
                         onCancelDraft={onCancelSkillStudioDraft}
                         onPreserveScrollAnchor={onPreserveScrollAnchor}
@@ -5371,6 +5597,7 @@ const MessageBubble = memo(function MessageBubble({
                           event={item.event}
                           onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
                           onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                          onStartDraftRevision={onStartSkillStudioDraftRevision}
                           onDraftChange={onSkillStudioDraftChange}
                           onCancelDraft={onCancelSkillStudioDraft}
                           onPreserveScrollAnchor={onPreserveScrollAnchor}
@@ -10017,8 +10244,9 @@ export function SuperChatPanel({
         : answers.__action === "skip"
           ? "skip"
           : "submit";
+      const skillStudioRevision = activeAssistantClarificationIsSkillStudioRevision(visibleMessages, event);
 	      const payload = {
-	        ...buildAssistantClarificationToolResultForTest(event, answers),
+	        ...buildAssistantClarificationToolResultForTest(event, answers, { skillStudioRevision }),
 	        action,
 	        clarification_status: action === "submit" ? "answered" : action,
 	        skipped: action === "skip",
@@ -10071,7 +10299,7 @@ export function SuperChatPanel({
       toast.error("提交补充信息失败，请重试");
       return false;
     }
-	  }, [chat, persistSkillStudioUiEvent, updateChatUiEvent]);
+	  }, [chat, persistSkillStudioUiEvent, updateChatUiEvent, visibleMessages]);
 
   const submitSkillStudioDraftResponse = useCallback(async (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
@@ -10177,6 +10405,58 @@ export function SuperChatPanel({
     );
     persistSkillStudioUiEvent(event.turn_id, persistedEvent, { debounce: true });
   }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, updateChatUiEvent]);
+
+  const startSkillStudioDraftRevision = useCallback(async (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draftPayload: Record<string, unknown>,
+  ): Promise<boolean> => {
+    if (!event.turn_id) return false;
+    if (!event.bridge_key) {
+      toast.error("Skill Studio 桥接信息缺失，请重试");
+      return false;
+    }
+    try {
+      const payload = buildSkillStudioDraftRevisionToolResultForTest(event, draftPayload);
+      if (!chat.submitSkillStudioResult(payload)) {
+        toast.error("Skill Studio 连接未就绪，请重试");
+        return false;
+      }
+      const receivedAt = uiEventFirstReceivedAt(event);
+      const persistedEvent = {
+        type: "skill_studio.draft",
+        bridge_key: event.bridge_key,
+        skill_studio_session_id: event.skill_studio_session_id,
+        project_id: event.project_id ?? params.project,
+        canvas_id: event.canvas_id ?? effectiveFreezoneCanvasId,
+        agent_id: event.agent_id ?? effectiveFreezoneAgentId,
+        anchor_text_prefix: event.anchor_text_prefix ?? null,
+        received_at: receivedAt,
+        mode: event.mode,
+        draft: payload.draft,
+        revision_pending: true,
+        action: payload.action,
+        skill_studio_status: payload.skill_studio_status,
+      };
+      updateChatUiEvent(
+        event.turn_id,
+        (candidate) => skillStudioEventMatches(candidate, event),
+        (candidate) => ({
+          ...(candidate as Record<string, unknown>),
+          received_at: uiEventFirstReceivedAt(candidate, event),
+          draft: payload.draft,
+          revision_pending: true,
+          action: payload.action,
+          skill_studio_status: payload.skill_studio_status,
+        }),
+      );
+      persistSkillStudioUiEvent(event.turn_id, persistedEvent);
+      return true;
+    } catch (error) {
+      console.error("[superchat] skill studio draft revision submit failed", error);
+      toast.error("启动草稿调整失败，请重试");
+      return false;
+    }
+  }, [chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, updateChatUiEvent]);
 
   const handleCancelSkillStudioDraft = useCallback((
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
@@ -10526,6 +10806,7 @@ export function SuperChatPanel({
                       onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
                       onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                       onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                      onStartSkillStudioDraftRevision={startSkillStudioDraftRevision}
                       onSkillStudioDraftChange={handleSkillStudioDraftChange}
                       onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                       onPreserveScrollAnchor={preserveScrollAnchor}
@@ -10550,6 +10831,7 @@ export function SuperChatPanel({
                     streaming={chat.busy}
                     onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                    onStartSkillStudioDraftRevision={startSkillStudioDraftRevision}
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
@@ -10593,6 +10875,7 @@ export function SuperChatPanel({
                     onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
                     onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                    onStartSkillStudioDraftRevision={startSkillStudioDraftRevision}
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
@@ -10617,6 +10900,7 @@ export function SuperChatPanel({
                     canvasContextActivities={[thinkingCanvasContextActivity]}
                     onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
+                    onStartSkillStudioDraftRevision={startSkillStudioDraftRevision}
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
@@ -10696,12 +10980,14 @@ export function SuperChatPanel({
             )}
             {activeSkillStudioQuestionEvent && (
               <SkillStudioQuestionsCard
+                key={skillStudioQuestionEventIdentity(activeSkillStudioQuestionEvent)}
                 event={activeSkillStudioQuestionEvent}
                 onSubmit={submitSkillStudioQuestionResponse}
               />
             )}
             {activeClarificationEvent && (
               <AssistantClarificationInputCard
+                key={assistantClarificationEventIdentity(activeClarificationEvent)}
                 event={activeClarificationEvent}
                 onSubmit={submitAssistantClarificationResponse}
               />
