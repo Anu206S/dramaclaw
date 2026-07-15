@@ -31,7 +31,7 @@ DRAMACLAW_LOCAL_AGENT_TRUST=1 novelvideo api --host 127.0.0.1 --port 8780
 
 - 只建议绑定 `127.0.0.1`。
 - 不建议在监听 `0.0.0.0` 或局域网可访问时开启。
-- 画布写操作仍走前端审批。
+- 画布写操作默认仍交给 Freezone 前端执行，以保持即时同步；外部 Agent 在自己的聊天中完成审批后，前端会自动执行，不再打开虾画内置聊天审批。
 - 覆盖、删除、重摄入等高风险业务操作仍应保留业务确认。
 
 ## MCP Server
@@ -53,6 +53,8 @@ python -m novelvideo.chat.agent_mcp
 
 - `DRAMACLAW_API_URL=http://127.0.0.1:8780`
 - `DRAMACLAW_LOCAL_AGENT_TRUST=1`
+- `DRAMACLAW_EXTERNAL_MCP=1`
+- `DRAMACLAW_MCP_DIRECT_CANVAS_APPLY=0`
 - `DRAMACLAW_USER=local`
 - `DRAMACLAW_CANVAS_COMMAND_BRIDGE_DIR=state/<user>/.hermes-freezone/tmp/supertale_canvas_command_bridge`
 
@@ -72,6 +74,8 @@ python -m novelvideo.chat.agent_mcp
       "env": {
         "DRAMACLAW_API_URL": "http://127.0.0.1:8780",
         "DRAMACLAW_LOCAL_AGENT_TRUST": "1",
+        "DRAMACLAW_EXTERNAL_MCP": "1",
+        "DRAMACLAW_MCP_DIRECT_CANVAS_APPLY": "0",
         "DRAMACLAW_USER": "local"
       }
     }
@@ -113,16 +117,26 @@ Authorization: Bearer xxx
 
 ## 画布操作说明
 
-外部 Agent 不能直接修改浏览器里的画布状态。Freezone 写操作仍使用现有 bridge：
+外部 Agent 默认不直接修改后端画布 payload。Freezone 写操作复用内置 Hermes 的画布 bridge：
 
 ```text
 MCP freezone 工具
+  -> 外部聊天中请求确认
+  -> 用户在 Codex / Claude / OpenClaw 中确认
   -> 写 pending canvas command
-  -> 浏览器前端显示审批
-  -> 用户确认
-  -> 前端执行节点/连线/工作流操作
+  -> 浏览器前端自动执行节点/连线/工作流操作
   -> 回写 result
   -> MCP 工具返回结果
 ```
 
-因此，使用 Codex/Claude 操作虾画时，需要浏览器中打开对应 Freezone 页面。
+因此，使用 Codex/Claude 操作虾画时，需要浏览器中打开对应 Freezone 页面。这样可以让 React Flow 状态、选中状态、节点尺寸、autosave 和进度显示保持即时同步。
+
+`DRAMACLAW_EXTERNAL_MCP=1` 只用于外部 Agent 入口。内置 Hermes 不设置该变量，因此仍使用虾画聊天内的审批卡；外部 Agent 则在 Codex / Claude / OpenClaw 自己的聊天中确认，确认后前端自动执行命令，不弹出虾画聊天审批。
+
+只有在无浏览器的 headless/测试场景，才建议显式开启：
+
+```bash
+DRAMACLAW_MCP_DIRECT_CANVAS_APPLY=1
+```
+
+开启后，MCP 会绕过前端直接写后端画布 payload，前端需要靠 revision 刷新感知变化。

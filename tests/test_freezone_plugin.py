@@ -696,6 +696,102 @@ def test_freezone_plugin_create_node_schema_hides_internal_node_types():
     assert emit_enum_values == enum_values
 
 
+def test_freezone_mcp_default_create_node_uses_frontend_bridge(monkeypatch):
+    plugin = _load_plugin_module()
+    pending_commands = []
+
+    monkeypatch.setenv("DRAMACLAW_CANVAS_COMMAND_BRIDGE_DIR", "/tmp/dramaclaw-test-bridge")
+    monkeypatch.setenv("DRAMACLAW_EXTERNAL_MCP", "1")
+    monkeypatch.delenv("DRAMACLAW_MCP_DIRECT_CANVAS_APPLY", raising=False)
+
+    def fake_bridge_key(*, project_id, canvas_id, commands):
+        assert project_id == "project-a"
+        assert canvas_id == "canvas-a"
+        assert commands[0]["type"] == "create_node"
+        return "bridge-key-1"
+
+    def fake_put_pending_canvas_command(**kwargs):
+        pending_commands.append(kwargs)
+
+    def fake_wait_canvas_command_result(key, **kwargs):
+        assert key == "bridge-key-1"
+        assert "bridge_dir" in kwargs
+        return {
+            "ok": True,
+            "tool_call_status": "completed",
+            "canvas_apply_status": "applied",
+            "applied": True,
+            "cancelled": False,
+            "command_results": [{"type": "create_node", "status": "applied"}],
+        }
+
+    monkeypatch.setattr(plugin, "canvas_command_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_canvas_command", fake_put_pending_canvas_command)
+    monkeypatch.setattr(plugin, "wait_canvas_command_result", fake_wait_canvas_command_result)
+
+    result = plugin._handle_create_node(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "node_type": "videoNode",
+            "data": {"displayName": "视频节点"},
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["canvas_apply_status"] == "applied"
+    assert pending_commands
+    envelope = pending_commands[0]["envelope"]
+    assert envelope["auto_apply_after_mcp_approval"] is True
+    assert envelope["agent_id"] == "main"
+    assert envelope["commands"][0]["type"] == "create_node"
+    assert str(pending_commands[0]["bridge_dir"]).endswith("freezone_main")
+
+
+def test_freezone_hermes_bridge_does_not_auto_apply_mcp_marker(monkeypatch):
+    plugin = _load_plugin_module()
+    pending_commands = []
+
+    monkeypatch.delenv("DRAMACLAW_EXTERNAL_MCP", raising=False)
+    monkeypatch.delenv("DRAMACLAW_MCP_DIRECT_CANVAS_APPLY", raising=False)
+
+    def fake_bridge_key(*, project_id, canvas_id, commands):
+        assert project_id == "project-a"
+        assert canvas_id == "canvas-a"
+        return "bridge-key-2"
+
+    def fake_put_pending_canvas_command(**kwargs):
+        pending_commands.append(kwargs)
+
+    def fake_wait_canvas_command_result(key, **kwargs):
+        assert key == "bridge-key-2"
+        return {
+            "ok": True,
+            "tool_call_status": "completed",
+            "canvas_apply_status": "applied",
+            "applied": True,
+            "cancelled": False,
+            "command_results": [{"type": "create_node", "status": "applied"}],
+        }
+
+    monkeypatch.setattr(plugin, "canvas_command_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_canvas_command", fake_put_pending_canvas_command)
+    monkeypatch.setattr(plugin, "wait_canvas_command_result", fake_wait_canvas_command_result)
+
+    result = plugin._handle_create_node(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "node_type": "videoNode",
+        }
+    )
+
+    assert result["ok"] is True
+    envelope = pending_commands[0]["envelope"]
+    assert "auto_apply_after_mcp_approval" not in envelope
+    assert "agent_id" not in envelope
+
+
 def test_freezone_plugin_uses_frontend_link_type_catalog_values():
     plugin = _load_plugin_module()
 
