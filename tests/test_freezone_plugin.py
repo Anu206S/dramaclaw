@@ -513,6 +513,51 @@ def test_freezone_plugin_patch_draft_recipe_system_prompt_by_recipe_id(monkeypat
     ]
 
 
+def test_freezone_plugin_patch_draft_removes_entire_recipe_by_recipe_id(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    def fake_wait_result(key, timeout_seconds):  # noqa: ARG001
+        return {"ok": True, "bridge_key": key, "skill_studio_status": "answered"}
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+    monkeypatch.setattr(plugin, "wait_skill_studio_result", fake_wait_result)
+
+    base_args = {
+        "project_id": "project-a",
+        "canvas_id": "canvas-a",
+        "skill_studio_session_id": "skill_studio_patch_remove_recipe",
+    }
+    handlers["freezone_begin_agent_catalog_draft"]({**base_args, "mode": "create", "expected_recipe_count": 2})
+    handlers["freezone_put_agent_catalog_skill"]({**base_args, "skill": {"id": "public-service-video"}})
+    handlers["freezone_put_agent_catalog_recipe"]({**base_args, "index": 0, "recipe": {"id": "story-outline"}})
+    handlers["freezone_put_agent_catalog_recipe"]({**base_args, "index": 1, "recipe": {"id": "video-script"}})
+
+    result = handlers["freezone_patch_agent_catalog_draft"](
+        {
+            **base_args,
+            "target": "recipe",
+            "recipe_id": "video-script",
+            "patch": [{"op": "remove", "path": ""}],
+        }
+    )
+    handlers["freezone_finish_agent_catalog_draft"](base_args)
+
+    assert result["ok"] is True
+    assert result["removed"] is True
+    assert pending_events[-2]["event"]["message"] == "已移除 Recipe：video-script"
+    draft_events = [item["event"] for item in pending_events if item["event"]["type"] == "skill_studio.draft"]
+    assert [recipe["id"] for recipe in draft_events[-1]["recipes"]] == ["story-outline"]
+
+
 def test_freezone_plugin_patch_draft_invalid_path_does_not_mutate(monkeypatch):
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}

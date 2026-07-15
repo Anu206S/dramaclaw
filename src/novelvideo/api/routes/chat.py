@@ -604,6 +604,8 @@ def _resolve_skill_studio_tool_result_payload(
                 "replacing an entire Skill or Recipe object. Do not regenerate unchanged Recipes. "
                 "For target=recipe, pass recipe_id and use patch paths relative to that Recipe object, "
                 "for example /system_prompt or /must_have_items; never use /recipes/<recipe_id>/... inside patch.path. "
+                "To remove the entire selected Recipe, use exactly one patch operation: "
+                '{"op":"remove","path":""}. '
                 "Before freezone_begin_agent_catalog_draft, decide the full planned Recipe count for the updated draft "
                 "and pass expected_recipe_count; use the full draft count, not only the changed Recipe count. "
                 "Do not pass the full Skill/Recipe catalog in one tool call. "
