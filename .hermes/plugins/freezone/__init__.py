@@ -95,6 +95,8 @@ try:
 except ValueError:
     DEFAULT_TIMEOUT_SECONDS = 120
 
+_PENDING_SKILL_STUDIO_DRAFTS: dict[str, dict[str, Any]] = {}
+
 
 def _available() -> bool:
     return bool(
@@ -501,6 +503,39 @@ def _emit_skill_studio_event(
     )
 
 
+def _emit_skill_studio_progress_event(
+    project: str | None,
+    canvas: str | None,
+    event: dict[str, Any],
+) -> str:
+    if skill_studio_bridge_key is None or put_pending_skill_studio_event is None:
+        return tool_error(
+            "Skill Studio bridge is unavailable; cannot present the Freezone UI event. "
+            f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
+        )
+    key = skill_studio_bridge_key(project_id=project, canvas_id=canvas, event=event)
+    put_pending_skill_studio_event(
+        key=key,
+        project_id=project,
+        canvas_id=canvas,
+        event=event,
+    )
+    return tool_result(
+        {
+            "ok": True,
+            "status": "skill_studio_progress_event_emitted",
+            "tool_call_status": "completed",
+            "skill_studio_status": "draft_progress",
+            "bridge_key": key,
+            "project_id": project,
+            "canvas_id": canvas,
+            "type": event.get("type"),
+            "skill_studio_session_id": event.get("skill_studio_session_id"),
+            "message": event.get("message") or "Skill Studio draft progress updated.",
+        }
+    )
+
+
 def _emit_clarification_event(
     project: str | None,
     canvas: str | None,
@@ -630,6 +665,218 @@ def _handle_present_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
             "warnings": _safe_list(args.get("warnings")),
         },
     )
+
+
+def _skill_studio_scope_from_args(args: dict[str, Any]) -> tuple[str | None, str | None]:
+    project = (
+        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+    )
+    canvas = (
+        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+    )
+    return project, canvas
+
+
+def _skill_studio_session_id_from_args(args: dict[str, Any]) -> str:
+    return str(args.get("skill_studio_session_id") or args.get("session_id") or "").strip()
+
+
+def _skill_studio_missing_session_result() -> str:
+    return tool_result(
+        {
+            "ok": False,
+            "type": "skill_studio.draft",
+            "status": "skill_studio_session_id_required",
+            "error": "skill_studio_session_id is required",
+        }
+    )
+
+
+def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
+    project, canvas = _skill_studio_scope_from_args(args)
+    session_id = _skill_studio_session_id_from_args(args)
+    if not session_id:
+        return _skill_studio_missing_session_result()
+    mode = str(args.get("mode") or "create").strip() or "create"
+    if mode not in {"create", "edit"}:
+        mode = "create"
+    try:
+        expected_recipe_count = int(args.get("expected_recipe_count") or 0)
+    except (TypeError, ValueError):
+        expected_recipe_count = 0
+    existing = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id) if mode == "edit" else None
+    _PENDING_SKILL_STUDIO_DRAFTS[session_id] = {
+        "project_id": project or (existing or {}).get("project_id"),
+        "canvas_id": canvas or (existing or {}).get("canvas_id"),
+        "mode": mode,
+        "summary": str(args.get("summary") or (existing or {}).get("summary") or "").strip(),
+        "warnings": _safe_list(args.get("warnings")) or list(_safe_list((existing or {}).get("warnings"))),
+        "expected_recipe_count": max(0, expected_recipe_count)
+        or int((existing or {}).get("expected_recipe_count") or 0),
+        "skill": (existing or {}).get("skill"),
+        "recipes": dict((existing or {}).get("recipes") or {}),
+    }
+    return _emit_skill_studio_progress_event(
+        project,
+        canvas,
+        {
+            "type": "skill_studio.status",
+            "skill_studio_session_id": session_id,
+            "status": "draft_begin",
+            "message": "正在创建草稿结构...",
+        },
+    )
+
+
+def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
+    project, canvas = _skill_studio_scope_from_args(args)
+    session_id = _skill_studio_session_id_from_args(args)
+    if not session_id:
+        return _skill_studio_missing_session_result()
+    draft = _PENDING_SKILL_STUDIO_DRAFTS.setdefault(
+        session_id,
+        {
+            "project_id": project,
+            "canvas_id": canvas,
+            "mode": str(args.get("mode") or "create").strip() or "create",
+            "summary": "",
+            "warnings": [],
+            "expected_recipe_count": 0,
+            "skill": None,
+            "recipes": {},
+        },
+    )
+    skill = args.get("skill") if isinstance(args.get("skill"), dict) else {}
+    if not skill:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_required",
+                "error": "skill must be a non-empty object",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    draft["project_id"] = project or draft.get("project_id")
+    draft["canvas_id"] = canvas or draft.get("canvas_id")
+    draft["skill"] = skill
+    return _emit_skill_studio_progress_event(
+        project or draft.get("project_id"),
+        canvas or draft.get("canvas_id"),
+        {
+            "type": "skill_studio.status",
+            "skill_studio_session_id": session_id,
+            "status": "draft_skill_ready",
+            "message": "已生成 Skill 基础配置",
+        },
+    )
+
+
+def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
+    project, canvas = _skill_studio_scope_from_args(args)
+    session_id = _skill_studio_session_id_from_args(args)
+    if not session_id:
+        return _skill_studio_missing_session_result()
+    draft = _PENDING_SKILL_STUDIO_DRAFTS.setdefault(
+        session_id,
+        {
+            "project_id": project,
+            "canvas_id": canvas,
+            "mode": str(args.get("mode") or "create").strip() or "create",
+            "summary": "",
+            "warnings": [],
+            "expected_recipe_count": 0,
+            "skill": None,
+            "recipes": {},
+        },
+    )
+    recipe = args.get("recipe") if isinstance(args.get("recipe"), dict) else {}
+    if not recipe:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "recipe_required",
+                "error": "recipe must be a non-empty object",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    recipes = draft.setdefault("recipes", {})
+    try:
+        index = int(args.get("index"))
+    except (TypeError, ValueError):
+        index = len(recipes)
+    recipes[index] = recipe
+    expected = int(draft.get("expected_recipe_count") or 0)
+    if expected > 0:
+        message = f"已生成 Recipe {index + 1} / {expected}"
+        count_payload = {"recipe_count": expected}
+    else:
+        message = f"已生成第 {index + 1} 个 Recipe"
+        count_payload = {}
+    return _emit_skill_studio_progress_event(
+        project or draft.get("project_id"),
+        canvas or draft.get("canvas_id"),
+        {
+            "type": "skill_studio.status",
+            "skill_studio_session_id": session_id,
+            "status": "draft_recipe_ready",
+            "message": message,
+            "recipe_index": index,
+            **count_payload,
+        },
+    )
+
+
+def _handle_finish_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
+    project, canvas = _skill_studio_scope_from_args(args)
+    session_id = _skill_studio_session_id_from_args(args)
+    if not session_id:
+        return _skill_studio_missing_session_result()
+    draft = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id)
+    if draft is None:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_studio_draft_session_not_found",
+                "error": "No pending Skill Studio draft exists for this skill_studio_session_id",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    skill = draft.get("skill") if isinstance(draft.get("skill"), dict) else {}
+    if not skill:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_required",
+                "error": "Cannot finish Skill Studio draft before put_agent_catalog_skill",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    recipes_by_index = draft.get("recipes") if isinstance(draft.get("recipes"), dict) else {}
+    recipes = [recipes_by_index[index] for index in sorted(recipes_by_index)]
+    try:
+        expected_recipe_count = int(args.get("expected_recipe_count") or draft.get("expected_recipe_count") or 0)
+    except (TypeError, ValueError):
+        expected_recipe_count = 0
+    warnings = list(_safe_list(draft.get("warnings")))
+    if expected_recipe_count and len(recipes) != expected_recipe_count:
+        warnings.append(f"Recipe 数量为 {len(recipes)}，与预期 {expected_recipe_count} 不一致。")
+    result = _emit_skill_studio_event(
+        project or draft.get("project_id"),
+        canvas or draft.get("canvas_id"),
+        {
+            "type": "skill_studio.draft",
+            "skill_studio_session_id": session_id,
+            "mode": str(draft.get("mode") or "create"),
+            "skill": skill,
+            "recipes": recipes,
+            "summary": str(draft.get("summary") or args.get("summary") or "").strip(),
+            "warnings": warnings,
+        },
+    )
+    draft["skill"] = skill
+    draft["recipes"] = {index: recipe for index, recipe in enumerate(recipes)}
+    draft["warnings"] = warnings
+    return result
 
 
 def _handle_get_saved_agent_catalog_item(
@@ -2842,7 +3089,7 @@ _SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA = {
 _SKILL_STUDIO_SKILL_SCHEMA = {
     "type": "object",
     "description": (
-        "Complete Xi画 Skill catalog draft. Do not include Recipe drafts inside skill; "
+        "Complete 虾画 Skill catalog draft. Do not include Recipe drafts inside skill; "
         "put any Recipe drafts in the tool's top-level recipes parameter."
     ),
     "properties": {
@@ -2975,13 +3222,15 @@ _SKILL_STUDIO_RECIPE_SCHEMA = {
         "system_prompt": {
             "type": "string",
             "description": (
-                "Recipe 节点级 system_prompt 执行指令，不是裸的最终图片/视频提示词。"
-                "通常应让当前 LLM 输出一条将被送入下游 textGeneration/imageGeneration/"
-                "videoGeneration/audioGeneration 节点执行的「提示词/指令」。必须明确："
-                "不要自己完成最终正文、脚本、画面成品或创意资产，只输出可执行的下游提示词。"
+                "Recipe 节点级 system_prompt 执行指令，必须按 output_kind 区分；"
+                "不要把所有 Recipe 都写成 prompt compiler。text Recipe 可以直接产出分析、"
+                "文案、大纲、脚本、分镜 brief 或结构化方案。image/video/audio 终端生成型 Recipe "
+                "可以直接描述如何基于输入生成最终图像、视频或音频结果，不要强制再输出下游 prompt。"
+                "只有提示词生成/改写型 Recipe 才应要求当前 LLM 输出一条给下游节点使用的提示词/指令，"
+                "并明确不要自己完成最终资产。"
                 "必须包含【角色设定】、【输入来源】、【任务目标】、【输出结构要求】、"
-                "【质量标准】和【禁止事项/约束】。输出结构要写清下游提示词或 brief 的模块，"
-                "例如主视觉、文化元素、构图、色彩、文字/留白、负面提示词，而不是只写生成一张图。"
+                "【质量标准】和【禁止事项/约束】。终端生成型 Recipe 的输出结构写最终资产要求；"
+                "提示词生成/改写型 Recipe 的输出结构才写下游 prompt 或 brief 的模块。"
             ),
         },
         "must_have_items": {
@@ -3243,7 +3492,7 @@ TOOLS = (
         "freezone_present_agent_catalog_draft",
         _schema(
             "freezone_present_agent_catalog_draft",
-            "Present a complete editable Skill/Recipe catalog draft for Xi画 Skill Studio. Use after questions or when enough context exists. Do not paste final JSON in prose and do not claim it is saved.",
+            "Legacy small-draft path for presenting an editable Skill/Recipe catalog draft for Xi画 Skill Studio. Prefer the chunked draft tools for normal Skill Studio drafts: begin, put skill, put each recipe, then finish. Do not paste final JSON in prose and do not claim it is saved.",
             {
                 "skill_studio_session_id": {
                     "type": "string",
@@ -3269,6 +3518,95 @@ TOOLS = (
             ["skill_studio_session_id", "mode"],
         ),
         _handle_present_agent_catalog_draft,
+    ),
+    (
+        "freezone_begin_agent_catalog_draft",
+        _schema(
+            "freezone_begin_agent_catalog_draft",
+            "Begin a chunked Xi画 Skill Studio draft. Before calling this, decide the target number of Recipe chunks and pass expected_recipe_count, using 0 only when this draft intentionally has no Recipes. This tool only emits progress and does not wait for user confirmation.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id shared by questions, draft chunks, final draft, and later edits.",
+                },
+                "mode": {"type": "string", "enum": ["create", "edit"], "description": "Draft mode."},
+                "summary": {"type": "string", "description": "Short user-facing summary for the final draft."},
+                "warnings": {
+                    "type": "array",
+                    "description": "User-facing draft warnings collected during generation.",
+                    "items": {"type": "string"},
+                },
+                "expected_recipe_count": {
+                    "type": "integer",
+                    "description": "Required planned number of Recipe chunks. Use 0 only when the draft intentionally has no Recipes; otherwise pass the total count before sending Recipe chunks.",
+                },
+                **_SCOPE_PROPS,
+            },
+            ["skill_studio_session_id", "mode", "expected_recipe_count"],
+        ),
+        _handle_begin_agent_catalog_draft,
+    ),
+    (
+        "freezone_put_agent_catalog_skill",
+        _schema(
+            "freezone_put_agent_catalog_skill",
+            "Submit the Skill chunk for the current Xi画 Skill Studio draft. Do not include Recipe drafts inside skill.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id for the current chunked Skill Studio draft.",
+                },
+                "skill": _SKILL_STUDIO_SKILL_SCHEMA,
+                **_SCOPE_PROPS,
+            },
+            ["skill_studio_session_id", "skill"],
+        ),
+        _handle_put_agent_catalog_skill,
+    ),
+    (
+        "freezone_put_agent_catalog_recipe",
+        _schema(
+            "freezone_put_agent_catalog_recipe",
+            "Submit one Recipe chunk for the current Xi画 Skill Studio draft. Call once per Recipe instead of passing all recipes in one tool call.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id for the current chunked Skill Studio draft.",
+                },
+                "index": {
+                    "type": "integer",
+                    "description": "Zero-based Recipe position. The final draft orders recipes by this index.",
+                },
+                "recipe": _SKILL_STUDIO_RECIPE_SCHEMA,
+                **_SCOPE_PROPS,
+            },
+            ["skill_studio_session_id", "recipe"],
+        ),
+        _handle_put_agent_catalog_recipe,
+    ),
+    (
+        "freezone_finish_agent_catalog_draft",
+        _schema(
+            "freezone_finish_agent_catalog_draft",
+            "Finish a chunked Xi画 Skill Studio draft, assemble previously submitted chunks, and present the editable draft card. Do not pass the full Skill/Recipe catalog in this call; this schema intentionally has no skill or recipes parameters.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id for the current chunked Skill Studio draft.",
+                },
+                "expected_recipe_count": {
+                    "type": "integer",
+                    "description": "Optional final validation count. Do not use this to send Recipe data.",
+                },
+                "summary": {
+                    "type": "string",
+                    "description": "Optional final summary override. Do not use this to send catalog JSON.",
+                },
+                **_SCOPE_PROPS,
+            },
+            ["skill_studio_session_id"],
+        ),
+        _handle_finish_agent_catalog_draft,
     ),
     (
         "freezone_get_saved_skill",

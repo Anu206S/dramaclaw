@@ -40,10 +40,21 @@ def _env_float(name: str, default: float) -> float:
         return default
 
 
+def _env_int(name: str, default: int) -> int:
+    try:
+        return int(os.environ.get(name, str(default)))
+    except (TypeError, ValueError):
+        return default
+
+
 # Per-line stdout read timeout while streaming a prompt. Freezone canvas write
 # tools can legitimately block while the browser validates/applies commands, so
 # keep this longer than the canvas bridge wait to avoid premature "(hermes timed out)".
 CANVAS_COMMAND_RESULT_TIMEOUT = _env_float("DRAMACLAW_CANVAS_COMMAND_RESULT_TIMEOUT_SECONDS", 600.0)
+HERMES_STDIO_LINE_LIMIT_BYTES = max(
+    65536,
+    _env_int("DRAMACLAW_HERMES_STDIO_LINE_LIMIT_BYTES", 4 * 1024 * 1024),
+)
 STREAM_READ_TIMEOUT = max(
     180.0,
     CANVAS_COMMAND_RESULT_TIMEOUT + 30.0,
@@ -53,6 +64,10 @@ try:
     TURN_TOOL_CALL_LIMIT = max(1, int(os.environ.get("HERMES_TURN_TOOL_CALL_LIMIT", "20")))
 except ValueError:
     TURN_TOOL_CALL_LIMIT = 20
+FREEZONE_TURN_TOOL_CALL_LIMIT = max(
+    TURN_TOOL_CALL_LIMIT,
+    _env_int("FREEZONE_HERMES_TURN_TOOL_CALL_LIMIT", 80),
+)
 TOOL_DETAIL_LIMIT = 1600
 CONTENT_FILTER_MESSAGE = (
     "本轮回复被模型网关的内容安全过滤拦截了，虾导没有拿到可用输出。"
@@ -178,6 +193,28 @@ def _has_content_filter_signal(value: object) -> bool:
 
 def _is_dramaclaw_write_tool(name: object) -> bool:
     return str(name or "").strip() in _DRAMACLAW_WRITE_TOOLS
+
+
+def _is_freezone_tool(name: object) -> bool:
+    return str(name or "").strip().startswith("freezone_")
+
+
+def _turn_tool_call_limit_for_tool(name: object) -> int:
+    if _is_freezone_tool(name):
+        return FREEZONE_TURN_TOOL_CALL_LIMIT
+    return TURN_TOOL_CALL_LIMIT
+
+
+def _tool_call_limit_stop_message(name: object) -> str:
+    if _is_freezone_tool(name):
+        return (
+            "本轮操作已停止：虾画连续调用工具过多，可能在重复读取或修改 Skill Studio 草稿。"
+            "请缩小修改范围，例如只调整 Skill 元信息，或只调整某一个 Recipe。"
+        )
+    return (
+        "本轮操作已停止：虾导连续调用工具过多，可能在自动推进过大范围。"
+        "请缩小指令范围，例如只检查前置条件，或只启动一个具体 beat 的视频任务。"
+    )
 
 
 def _should_stop_after_write_tool(first_write_tool: str | None, next_tool_name: object) -> bool:
@@ -359,6 +396,7 @@ class HermesSdkThread:
             stdin=asyncio.subprocess.PIPE,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
+            limit=HERMES_STDIO_LINE_LIMIT_BYTES,
         )
 
     async def _read_until_id(
@@ -604,22 +642,20 @@ class HermesSdkThread:
                         if _is_dramaclaw_write_tool(tool_name):
                             first_write_tool = tool_name
                             first_write_failed = False
-                        if tool_call_count > TURN_TOOL_CALL_LIMIT:
+                        tool_call_limit = _turn_tool_call_limit_for_tool(tool_name)
+                        if tool_call_count > tool_call_limit:
                             _log.warning(
                                 "Hermes turn exceeded tool call limit: thread=%s turn=%s limit=%s",
                                 self.id,
                                 turn_id,
-                                TURN_TOOL_CALL_LIMIT,
+                                tool_call_limit,
                             )
                             await self.close()
                             yield ChatBackendEvent(
                                 type="complete",
                                 thread_id=self.id,
                                 turn_id=turn_id,
-                                text=(
-                                    "本轮操作已停止：虾导连续调用工具过多，可能在自动推进过大范围。"
-                                    "请缩小指令范围，例如只检查前置条件，或只启动一个具体 beat 的视频任务。"
-                                ),
+                                text=_tool_call_limit_stop_message(tool_name),
                             )
                             return
                     elif (

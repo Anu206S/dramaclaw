@@ -10,6 +10,7 @@ import {
   dispatchCanvasCommandFrameForTest,
   mergeHistorySnapshot,
   normalizeMessageForScopeForTest,
+  removeSkillStudioStatusForTurnForTest,
   pruneOldMessageCaches,
   resolveUiEventTurnIdForTest,
   sanitizeMessagesForCache,
@@ -354,6 +355,114 @@ describe("assistant message ordered parts", () => {
       "第一段文字",
       "\n\n第二段文字",
       "\n\n第三段文字",
+    ]);
+  });
+
+  it("keeps Skill Studio status in ordered parts after a submitted question card", () => {
+    let messages: ChatMessage[] = [];
+
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
+      type: "skill_studio.questions",
+      bridge_key: "questions-1",
+      skill_studio_session_id: "studio-1",
+      submitted: true,
+      action: "submit",
+      questions: [],
+    });
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
+      type: "skill_studio.status",
+      status: "draft_begin",
+      message: "正在创建草稿结构...",
+    });
+
+    const assistant = messages.find((item) => item.turnId === "turn-skill-status" && item.role === "assistant");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["skill_studio", "skill_studio"]);
+    expect(assistant?.parts?.map((part) => part.type === "text" ? part.text : (part.event as { type?: string }).type)).toEqual([
+      "skill_studio.questions",
+      "skill_studio.status",
+    ]);
+  });
+
+  it("removes transient Skill Studio status from ordered parts when prose arrives", () => {
+    let messages: ChatMessage[] = [];
+
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
+      type: "skill_studio.status",
+      status: "draft_begin",
+      message: "正在创建草稿结构...",
+    });
+    messages = upsertAssistantMessageForTest(messages, "turn-skill-status", "开始整理草稿");
+
+    const assistant = messages.find((item) => item.turnId === "turn-skill-status" && item.role === "assistant");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["text"]);
+    expect(assistant?.parts?.[0]).toMatchObject({ type: "text", text: "开始整理草稿" });
+  });
+
+  it("removes transient Skill Studio status when the final assistant message arrives", () => {
+    let messages: ChatMessage[] = [];
+
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
+      type: "skill_studio.questions",
+      bridge_key: "questions-1",
+      skill_studio_session_id: "studio-1",
+      submitted: true,
+      action: "submit",
+      questions: [],
+    });
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
+      type: "skill_studio.status",
+      status: "draft_recipe_ready",
+      message: "已生成 Recipe 2 / 6",
+    });
+    messages = upsertServerAssistantMessageForTest(
+      messages,
+      {
+        id: 3,
+        role: "assistant",
+        content: "草稿生成未完成，请继续补充调整方向。",
+        turn_id: "turn-skill-status",
+        created_at: "2026-07-15T08:51:44.199417+00:00",
+      },
+      "turn-skill-status",
+    );
+
+    const assistant = messages.find((item) => item.turnId === "turn-skill-status" && item.role === "assistant");
+    expect(assistant?.text).toBe("草稿生成未完成，请继续补充调整方向。");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["skill_studio", "text"]);
+    expect(assistant?.parts?.map((part) => part.type === "text" ? part.text : (part.event as { type?: string }).type)).toEqual([
+      "skill_studio.questions",
+      "草稿生成未完成，请继续补充调整方向。",
+    ]);
+    expect(assistant?.uiEvents?.map((event) => (event as { type?: string }).type)).toEqual([
+      "skill_studio.questions",
+    ]);
+  });
+
+  it("clears transient Skill Studio status when a turn completes without a final assistant payload", () => {
+    let messages: ChatMessage[] = [];
+
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
+      type: "skill_studio.questions",
+      bridge_key: "questions-1",
+      skill_studio_session_id: "studio-1",
+      submitted: true,
+      action: "submit",
+      questions: [],
+    });
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
+      type: "skill_studio.status",
+      status: "draft_recipe_ready",
+      message: "已生成 Recipe 2 / 6",
+    });
+
+    const cleaned = removeSkillStudioStatusForTurnForTest(messages, "turn-skill-status");
+    const assistant = cleaned.find((item) => item.turnId === "turn-skill-status" && item.role === "assistant");
+
+    expect(assistant?.parts?.map((part) => part.type === "text" ? part.text : (part.event as { type?: string }).type)).toEqual([
+      "skill_studio.questions",
+    ]);
+    expect(assistant?.uiEvents?.map((event) => (event as { type?: string }).type)).toEqual([
+      "skill_studio.questions",
     ]);
   });
 
@@ -1550,6 +1659,22 @@ describe("Skill Studio status events", () => {
     ]).map((event) => event.type)).toEqual(["skill_studio.questions"]);
   });
 
+  it("shows real chunked progress after a submitted Skill Studio card", () => {
+    expect(skillStudioEventsFromUiEventsForTest([
+      {
+        type: "skill_studio.questions",
+        skill_studio_session_id: "skill_studio_01",
+        submitted: true,
+        questions: [],
+      },
+      {
+        type: "skill_studio.status",
+        status: "draft_begin",
+        message: "正在创建草稿结构...",
+      },
+    ]).map((event) => event.type)).toEqual(["skill_studio.questions", "skill_studio.status"]);
+  });
+
   it("keeps only the latest Skill Studio status update before the draft arrives", () => {
     const events = skillStudioEventsFromUiEventsForTest([
       {
@@ -1574,6 +1699,28 @@ describe("Skill Studio status events", () => {
       type: "skill_studio.status",
       status: "finalizing",
       message: "草稿较完整，正在补齐 Recipes 和校验项...",
+    });
+  });
+
+  it("keeps real chunked draft progress ahead of later timer status", () => {
+    const events = skillStudioEventsFromUiEventsForTest([
+      {
+        type: "skill_studio.status",
+        status: "draft_recipe_ready",
+        message: "已生成 Recipe 1 / 6",
+      },
+      {
+        type: "skill_studio.status",
+        status: "finalizing",
+        message: "草稿较完整，正在补齐 Recipes 和校验项...",
+      },
+    ]);
+
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      type: "skill_studio.status",
+      status: "draft_recipe_ready",
+      message: "已生成 Recipe 1 / 6",
     });
   });
 
@@ -1952,7 +2099,9 @@ describe("Skill Studio draft response", () => {
     expect(payload.message).toContain("不要询问是否保存当前版本");
     expect(payload.message).toContain("save_now");
     expect(payload.message).toContain("一个问题一个问题");
-    expect(payload.message).toContain("只能调用 freezone_request_user_clarification 或 freezone_present_agent_catalog_draft");
+    expect(payload.message).toContain("freezone_begin_agent_catalog_draft");
+    expect(payload.message).toContain("freezone_finish_agent_catalog_draft");
+    expect(payload.message).toContain("不要在单个 tool_call 里传完整 Skill / Recipe catalog");
     expect(payload.message).toContain("不要用普通文本总结修改结果");
   });
 

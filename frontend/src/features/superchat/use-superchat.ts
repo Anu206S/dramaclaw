@@ -605,6 +605,7 @@ function uiEventMergeKey(event: unknown): string | null {
   const value = event as Record<string, unknown>;
   const type = recordString(value, "type");
   if (!type) return null;
+  if (type === "skill_studio.status") return type;
   const stableId =
     recordString(value, "bridge_key")
     ?? recordString(value, "skill_studio_session_id")
@@ -653,11 +654,12 @@ function assistantPartsWithText(
   nextText: string,
 ): ChatMessagePart[] | undefined {
   if (!nextText) return parts;
+  const baseParts = removeSkillStudioStatusParts(parts);
   if (previousText && nextText.startsWith(previousText)) {
-    return appendTextPart(parts, nextText.slice(previousText.length));
+    return appendTextPart(baseParts, nextText.slice(previousText.length));
   }
   if (nextText === previousText) return parts;
-  const nonTextParts = parts?.filter((part) => part.type !== "text") ?? [];
+  const nonTextParts = baseParts?.filter((part) => part.type !== "text") ?? [];
   if (nonTextParts.length > 0) {
     return appendTextPart(nonTextParts, nextText);
   }
@@ -680,10 +682,34 @@ function eventPartType(event: unknown): AssistantEventPartType | null {
   if (!event || typeof event !== "object" || Array.isArray(event)) return null;
   const type = (event as Record<string, unknown>).type;
   if (typeof type !== "string") return null;
-  if (type === "skill_studio.status") return null;
   if (type.startsWith("skill_studio.")) return "skill_studio";
   if (type.startsWith("assistant.clarification.")) return "clarification";
   return null;
+}
+
+function isSkillStudioStatusEvent(event: unknown): boolean {
+  return Boolean(
+    event
+    && typeof event === "object"
+    && !Array.isArray(event)
+    && (event as Record<string, unknown>).type === "skill_studio.status",
+  );
+}
+
+function removeSkillStudioStatusParts(
+  parts: ChatMessagePart[] | undefined,
+): ChatMessagePart[] | undefined {
+  if (!parts?.length) return parts;
+  const nextParts = parts.filter((part) =>
+    !(part.type === "skill_studio" && isSkillStudioStatusEvent(part.event)),
+  );
+  return nextParts.length === parts.length ? parts : nextParts;
+}
+
+function removeSkillStudioStatusUiEvents(events: unknown[] | undefined): unknown[] | undefined {
+  if (!events?.length) return events;
+  const nextEvents = events.filter((event) => !isSkillStudioStatusEvent(event));
+  return nextEvents.length > 0 ? nextEvents : undefined;
 }
 
 function assistantPartsWithUiEvent(
@@ -693,7 +719,7 @@ function assistantPartsWithUiEvent(
   const type = eventPartType(event);
   if (!type) return parts;
   const key = uiEventMergeKey(event);
-  const nextParts = [...(parts ?? [])];
+  const nextParts = [...(isSkillStudioStatusEvent(event) ? parts ?? [] : removeSkillStudioStatusParts(parts) ?? [])];
   const existingIndex = key
     ? nextParts.findIndex((part) => part.type !== "text" && uiEventMergeKey(part.event) === key)
     : -1;
@@ -735,21 +761,23 @@ function mergeAssistantMessageParts(
   transientParts: ChatMessagePart[],
   finalParts: ChatMessagePart[] | undefined,
 ): ChatMessagePart[] | undefined {
-  if (!finalParts?.length) return transientParts.length > 0 ? transientParts : undefined;
-  if (transientParts.length === 0) return finalParts;
+  const stableTransientParts = removeSkillStudioStatusParts(transientParts) ?? [];
+  const stableFinalParts = removeSkillStudioStatusParts(finalParts);
+  if (!stableFinalParts?.length) return stableTransientParts.length > 0 ? stableTransientParts : undefined;
+  if (stableTransientParts.length === 0) return stableFinalParts;
   const finalKeys = new Set(
-    finalParts
+    stableFinalParts
       .filter((part) => part.type !== "text")
       .map((part) => uiEventMergeKey(part.event) ?? part.id),
   );
-  const missingTransientParts = transientParts.filter((part) => {
+  const missingTransientParts = stableTransientParts.filter((part) => {
     if (part.type === "text") return false;
     const key = uiEventMergeKey(part.event) ?? part.id;
     return !finalKeys.has(key);
   });
   return missingTransientParts.length > 0
-    ? [...missingTransientParts, ...finalParts]
-    : finalParts;
+    ? [...missingTransientParts, ...stableFinalParts]
+    : stableFinalParts;
 }
 
 function isRecoverableUiEventState(event: unknown): boolean {
@@ -972,8 +1000,13 @@ function upsertServerAssistantMessage(
       .filter((message) => message.role === "assistant" && message.turnId === normalizedTurnId)
       .flatMap((message) => message.parts ?? [])
     : [];
-  const dedupedUiEvents = mergeUiEventLists(transientUiEvents, nextMessage.uiEvents);
-  const mergedParts = mergeAssistantMessageParts(transientParts, nextMessage.parts);
+  const dedupedUiEvents = removeSkillStudioStatusUiEvents(
+    mergeUiEventLists(transientUiEvents, nextMessage.uiEvents),
+  );
+  const mergedParts = assistantPartsForPersistence(
+    mergeAssistantMessageParts(transientParts, nextMessage.parts),
+    nextMessage.text,
+  );
   const mergedMessage = {
     ...nextMessage,
     ...(normalizedTurnId ? { turnId: normalizedTurnId } : {}),
@@ -997,6 +1030,33 @@ function upsertServerAssistantMessage(
 }
 
 export const upsertServerAssistantMessageForTest = upsertServerAssistantMessage;
+
+function removeSkillStudioStatusForTurn(
+  messages: ChatMessage[],
+  turnId: string,
+): ChatMessage[] {
+  if (!turnId.trim()) return messages;
+  let changed = false;
+  const nextMessages = messages.flatMap((message): ChatMessage[] => {
+    if (message.role !== "assistant" || message.turnId !== turnId) return [message];
+    const parts = removeSkillStudioStatusParts(message.parts);
+    const uiEvents = removeSkillStudioStatusUiEvents(message.uiEvents);
+    if (parts === message.parts && uiEvents === message.uiEvents) return [message];
+    changed = true;
+    const nextMessage = {
+      ...message,
+      ...(parts ? { parts } : { parts: undefined }),
+      ...(uiEvents ? { uiEvents } : { uiEvents: undefined }),
+    };
+    if (!nextMessage.text.trim() && !nextMessage.parts?.length && !nextMessage.uiEvents?.length) {
+      return [];
+    }
+    return [nextMessage];
+  });
+  return changed ? sortMessages(nextMessages) : messages;
+}
+
+export const removeSkillStudioStatusForTurnForTest = removeSkillStudioStatusForTurn;
 
 function resultText(result: unknown): string {
   if (typeof result === "string") return result;
@@ -1875,7 +1935,23 @@ export function useSuperChat({
           markTurnInactive(frame.turn_id);
           break;
         }
+        const completedTurnId =
+          typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : null;
         finalizeStream();
+        if (completedTurnId) {
+          setMessages((current) => {
+            const next = removeSkillStudioStatusForTurn(current, completedTurnId);
+            const persistedMessage = next.find((message) =>
+              message.role === "assistant" && message.turnId === completedTurnId,
+            );
+            persistAssistantMessageParts(
+              completedTurnId,
+              persistedMessage?.parts,
+              persistedMessage?.text,
+            );
+            return next;
+          });
+        }
         break;
       case "project.created":
         setMessages((current) => [...current, buildToolMessage(frame.type, frame)]);
