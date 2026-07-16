@@ -321,6 +321,55 @@ describe("mergeHistorySnapshot", () => {
 });
 
 describe("assistant message ordered parts", () => {
+  it("hydrates ordered draft parts with merged cancellation state without dropping draft content", () => {
+    const parts = hydrateOrderedPartsWithUiEventsForTest(
+      [
+        {
+          id: "skill_studio.draft:draft-key-1",
+          type: "skill_studio",
+          event: {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key-1",
+            skill_studio_session_id: "studio-1",
+            draft: {
+              skill: { id: "pixar-ip-brand-ad", description: "皮克斯广告" },
+              recipes: [{ id: "character-design" }],
+            },
+          },
+        },
+      ],
+      [
+        {
+          type: "skill_studio.draft",
+          bridge_key: "draft-key-1",
+          skill_studio_session_id: "studio-1",
+          draft: {
+            skill: { id: "pixar-ip-brand-ad", description: "皮克斯广告" },
+            recipes: [{ id: "character-design" }],
+          },
+        },
+        {
+          type: "skill_studio.draft",
+          bridge_key: "draft-key-1",
+          skill_studio_session_id: "studio-1",
+          cancelled: true,
+        },
+      ],
+    );
+
+    expect(parts?.[0]).toMatchObject({
+      type: "skill_studio",
+      event: {
+        type: "skill_studio.draft",
+        cancelled: true,
+        draft: {
+          skill: { id: "pixar-ip-brand-ad", description: "皮克斯广告" },
+          recipes: [{ id: "character-design" }],
+        },
+      },
+    });
+  });
+
   it("keeps text and interaction cards in arrival order within one turn", () => {
     let messages: ChatMessage[] = [];
 
