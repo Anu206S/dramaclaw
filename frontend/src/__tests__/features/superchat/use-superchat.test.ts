@@ -50,7 +50,9 @@ import {
   skillStudioEventMatchesForTest,
   hydrateOrderedPartsWithUiEventsForTest,
   latestPendingAssistantClarificationEventForTest,
+  latestPendingAssistantClarificationEventForActiveTurnForTest,
   latestPendingSkillStudioQuestionEventForTest,
+  latestPendingSkillStudioQuestionEventForActiveTurnForTest,
   skillStudioQuestionEventIdentityForTest,
   messageIsWaitingForUserReplyForTest,
   messageHasSkillStudioUiEventForTest,
@@ -1185,6 +1187,55 @@ describe("Skill Studio question response", () => {
     ];
 
     expect(latestPendingSkillStudioQuestionEventForTest([assistant])?.bridge_key).toBe("skill-question-new");
+  });
+
+  it("does not surface ended-turn pending clarification as the active composer prompt", () => {
+    const endedAssistant = message("assistant-ended-clarification", "assistant", "", 100, "turn-ended");
+    endedAssistant.uiEvents = [
+      {
+        type: "assistant.clarification.request",
+        bridge_key: "clarify-ended",
+        title: "历史问题",
+        questions: [{ id: "history_question", title: "历史问题", options: [{ id: "old", label: "旧" }] }],
+      },
+    ];
+
+    expect(latestPendingAssistantClarificationEventForActiveTurnForTest(
+      [endedAssistant],
+      { busy: false, activeTurnId: null },
+    )).toBeNull();
+    expect(latestPendingAssistantClarificationEventForActiveTurnForTest(
+      [endedAssistant],
+      { busy: true, activeTurnId: "turn-live" },
+    )).toBeNull();
+    expect(latestPendingAssistantClarificationEventForActiveTurnForTest(
+      [endedAssistant],
+      { busy: true, activeTurnId: "turn-ended" },
+    )?.bridge_key).toBe("clarify-ended");
+  });
+
+  it("does not surface ended-turn pending Skill Studio questions as the active composer prompt", () => {
+    const endedAssistant = message("assistant-ended-skill-question", "assistant", "", 100, "turn-ended");
+    endedAssistant.uiEvents = [
+      {
+        type: "skill_studio.questions",
+        bridge_key: "skill-question-ended",
+        questions: [{ id: "history_question", title: "历史问题", options: [{ id: "old", label: "旧" }] }],
+      },
+    ];
+
+    expect(latestPendingSkillStudioQuestionEventForActiveTurnForTest(
+      [endedAssistant],
+      { busy: false, activeTurnId: null },
+    )).toBeNull();
+    expect(latestPendingSkillStudioQuestionEventForActiveTurnForTest(
+      [endedAssistant],
+      { busy: true, activeTurnId: "turn-live" },
+    )).toBeNull();
+    expect(latestPendingSkillStudioQuestionEventForActiveTurnForTest(
+      [endedAssistant],
+      { busy: true, activeTurnId: "turn-ended" },
+    )?.bridge_key).toBe("skill-question-ended");
   });
 
   it("uses bridge scoped identities for active composer question cards", () => {
