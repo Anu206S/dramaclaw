@@ -72,6 +72,8 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 - **并行分支**：角色、道具、场景、分镜、视频片段、音频等是否并行准备。
 - **汇合点**：哪些节点汇入分镜、视频片段、音频或合成节点。
 - **重复约束**：从多个节点 prompt 中抽取反复出现的硬规则，例如角色外观锁定、单视角、禁止分身、无尾巴、Logo 可读、最后定格。
+- **prompt_evidence_analysis**：先从节点 prompt、媒体事实、文件名、引用关系和边中抽取重复证据，再总结拓扑。由这些证据归纳当前场景的 `domain_contract` 或 `creative_contract`，不要从 displayName 或节点类型直接推断。
+- **skill_identity_analysis**：在 prompt evidence 之后决定 Skill 身份。把证据词分成 `case_variables`、`reusable_protocol_terms`、`output_format_terms`、`use_case_terms`、`workflow_method_terms`，用于生成名称、ID、描述和关键词。
 - **比例和时长事实**：按节点实际字段与媒体宽高归纳，不要只看 displayName。
 - **审核闸门**：识别哪些阶段需要用户确认，哪些阶段可并行，哪些阶段必须等待上游完成。
 - **可复用边界**：区分项目专属信息和可抽象方法。品牌名、角色名、具体台词通常是可替换变量；阶段顺序、引用规则、质量闸门通常是可复用能力。
@@ -103,15 +105,51 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 生成出的 Skill 至少要包含：
 
 - **Skill 描述**：说明可复用能力，而不是复述当前案例。
+- **Skill 身份**：名称、ID、description 和 triggers.keywords 必须来自 `skill_identity_analysis`，不能只由工作流方法或节点类型决定。
 - **planning.planning_notes**：从可执行路径开始，写清步骤顺序、任务类型、action_keys、上游依赖、审核/等待行为、比例策略。
 - **planning.conduct_rules**：写硬执行规则，例如先锁角色再做道具，分镜审批后才能生成视频，合成前必须有视频/音频输入。
 - **evaluation.domain_constraints**：写从画布事实提炼出的硬约束，不写空泛评价。
+- **domain_contract / creative_contract**：把当前场景最影响质量的复用协议写入 planning / conduct_rules / evaluation / workflow step 说明和 Recipe 质量标准。不要新增 schema 字段，也不要只塞进某个 Recipe prompt。
 - **workflow_templates**：当用户选择或已经提交“包含工作流模板”，或 Skill 复用的是多节点流程时，必须生成有序工作流模板。
 - **Recipes**：按能力边界拆分，而不是机械按节点类型拆分。
 
 如果用户选择或已经提交了“包含工作流模板”，最终草稿里必须包含 `workflow_templates`。不能只在 planning_notes 里描述步骤。
 
-## 6. Recipe 拆分原则
+## 6. Skill Identity 与抽象边界
+
+抽象不是抹平。用户选择“抽象成通用模板”时，Agent 应删除不可复用的案例变量，但保留最能代表这套能力的可复用协议、产物形态和使用场景。
+
+先把 prompt evidence 中的词分成五类：
+
+- `case_variables`：具体品牌名、具体人物/角色名、具体产品名、一次性剧情、一次性台词、项目专属口号。抽象模板中应删除、参数化或降为示例。
+- `reusable_protocol_terms`：跨项目可复用的创作协议、领域口径、风格语言、规则边界、声音人设、玩法机制、审核标准。抽象模板中应保留。
+- `output_format_terms`：Skill 产物形态，例如短片、海报、分镜表、报告、课件、音频、游戏资产、合成计划。
+- `use_case_terms`：使用场景，例如品牌广告、教学讲解、合规审查、数据复盘、角色设定、产品展示。
+- `workflow_method_terms`：内部方法，例如角色锚定、道具锚定、分镜参考、逐镜生成、音频混合、质量闸门。
+
+Skill 名称、ID、description 和 `triggers.keywords` 必须优先组合：
+
+```text
+reusable_protocol_terms + output_format_terms + use_case_terms
+```
+
+`workflow_method_terms` 可以补充，但不能独占 Skill 身份。不要把一个有明确领域协议的 Skill 命名成只有“角色驱动”“分镜流程”“数据处理”“文档生成”这类内部方法词。
+
+关键词必须覆盖四类：
+
+- **protocol keywords**：可复用协议词。
+- **output format keywords**：产物形态词。
+- **use case keywords**：应用场景词。
+- **workflow method keywords**：工作流方法词。
+
+坏模式：
+
+- 名称只来自节点拓扑或流程方法。
+- 抽象模板时把可复用协议词和案例变量一起删除。
+- keywords 只剩品牌变量，或只剩流程节点词。
+- description 第一屏只描述“先 A 再 B 再 C”，没有说明这套能力适合什么协议、产物和场景。
+
+## 7. Recipe 拆分原则
 
 Recipe 的边界应对应可复用能力模块。
 
@@ -129,7 +167,51 @@ Recipe 的边界应对应可复用能力模块。
 
 不要只生成“图片 Recipe / 视频 Recipe / 音频 Recipe”这种按节点类型命名的泛化模块。它们通常太弱。
 
-## 7. Recipe system_prompt 写法
+## 8. domain_contract / creative_contract 写法
+
+从画布沉淀 Skill 时，不要只总结“有什么节点”。必须先做 `prompt_evidence_analysis`：从节点 prompt、媒体宽高/时长、source filename、引用关系和边中提取重复证据，再归纳当前场景的 `domain_contract` 或 `creative_contract`。
+
+这个 contract 不是新 schema 字段，而是要落进现有字段：
+
+- `planning.planning_notes`：说明协议如何影响执行路径和阶段顺序。
+- `planning.conduct_rules`：写成硬执行规则。
+- `evaluation.domain_constraints`：写成可检查的质量约束。
+- `workflow_templates.steps[]`：在相关步骤说明中写明继承、例外或禁止事项。
+- Recipe `system_prompt` / `must_have_items`：写入该 Recipe 需要保留或转换的证据。
+
+不同领域的 contract 可能不同：
+
+- 视觉广告：视觉语言、表演风格、品牌调性、阶段性风格例外、合成不生成新风格。
+- 数据分析：指标口径、时间范围、单位、过滤条件、图表解释边界。
+- 法律/合规：管辖地、条款依据、风险等级、不可替代律师意见等边界。
+- 教学内容：年级、知识点、讲解节奏、练习难度、禁用超纲概念。
+- 游戏资产：视角、比例、动作规范、碰撞/状态规则、UI 反馈规则。
+- 音频内容：声音人设、语速、情绪、音色、禁用噪声或冲突音乐。
+
+视觉广告类画布的写法示例：
+
+```text
+prompt evidence:
+- "皮克斯3D卡通渲染", "皮克斯经典圆润人物建模"
+- "C4D + Octane渲染器", "暖橙金色调阳光光影"
+- "参考迪士尼角色动画表演方式"
+- "纯铅笔素描线稿", "不上颜色", "只有黑白线条"
+
+creative contract to write into existing fields:
+- 全局视觉语言：Pixar 3D cartoon, C4D + Octane, soft studio lighting, rounded body shapes, no harsh edges.
+- 阶段例外：storyboard uses black-and-white pencil sketch only; no color, no 3D render.
+- 继承规则：character and props inherit the global render language; video segments inherit character/prop anchors and Disney-like exaggerated performance; videoCompose does not generate new creative content.
+```
+
+不要只写：
+
+```text
+保持皮克斯风格一致，光影柔和。
+```
+
+这太弱，无法指导分镜、视频和合成阶段做不同处理。
+
+## 9. Recipe system_prompt 写法
 
 Recipe `system_prompt` 不是角色扮演套话，也不是最终下游 prompt 本身。它是一个转换器：指导当前 Agent / LLM 如何把上游输入转成下游节点可执行提示词或指令。
 
@@ -153,7 +235,7 @@ Recipe `system_prompt` 不是角色扮演套话，也不是最终下游 prompt �
 你将把上游分镜表、角色锚点和道具锚点，转换成单段 videoGeneration 节点可执行的视频提示词。输出必须包含角色一致性、引用来源、镜头动作、音效、时长、比例和负向约束。重要：你的输出是一条提示词/指令，将被送入下游 videoGeneration 节点执行；不要自己生成最终视频内容。
 ```
 
-## 8. 工作流模板要求
+## 10. 工作流模板要求
 
 `workflow_templates` 要描述可执行路径，而不是一句自然语言说明。
 
@@ -188,7 +270,7 @@ Recipe `system_prompt` 不是角色扮演套话，也不是最终下游 prompt �
 brand_brief -> character_anchor + product_prop_anchor -> style_lock_card -> storyboard -> video_segments + music -> final_compose
 ```
 
-## 9. 从提示词抽硬约束
+## 11. 从提示词抽硬约束
 
 画布 prompt 中重复出现的短语通常比节点名更重要。必须提炼成可执行规则。
 
@@ -203,7 +285,7 @@ brand_brief -> character_anchor + product_prop_anchor -> style_lock_card -> stor
 
 不要把这些压缩成“保持风格一致”。那不是可执行规则。
 
-## 10. 比例和媒体事实
+## 12. 比例和媒体事实
 
 比例要从节点字段和媒体宽高一起判断。
 
@@ -212,14 +294,16 @@ brand_brief -> character_anchor + product_prop_anchor -> style_lock_card -> stor
 - 视频节点的字段和实际宽高可能不一致；如果宽高是 720x1280，应识别为竖屏事实，并在 planning 里写清“字段默认”和“实际输出”差异。
 - 如果 workflow 有多种比例，不要把所有 task type 都写成同一个默认比例；主比例写入 `planning.default_aspect_ratios`，变体写入 workflow step。
 
-## 11. 输出时避免低质量模式
+## 13. 输出时避免低质量模式
 
 不要输出这些模式：
 
 - 只按节点类型总结：“先图片，再视频，再音频，再合成”。
+- Skill 名称、ID 或关键词只按 workflow_method_terms 生成，缺少可复用协议、产物形态和使用场景。
 - Recipe system_prompt 只是角色扮演套话：“你是一位专业导演/设计师”。
 - 评价标准只有“风格一致”“质量良好”“广告感强”。
 - `workflow_templates` 缺失，但 planning_notes 里写了工作流。
+- 把皮克斯、赛博朋克、水墨、黏土动画等强风格只写成“光影风格”字段，没有形成可执行的 creative_contract。
 - 把当前品牌和角色硬编码到所有字段，导致无法复用。
 - 把所有 Recipe 都写成同一种 prompt compiler，没有区分输入、输出和质量闸门。
 - 把 tool schema 字段描述当成 Skill 内容。

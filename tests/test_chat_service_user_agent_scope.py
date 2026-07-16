@@ -939,6 +939,22 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
     assert "do not count the videoCompose terminal step in the Recipe count" in prompt
     assert "textGeneration Recipe for a compose/timeline plan" in prompt
     assert "Extract hard constraints from repeated prompt text" in prompt
+    assert "perform prompt_evidence_analysis before topology summarization" in prompt
+    assert "domain_contract or creative_contract" in prompt
+    assert "repeated prompt phrases, media facts, source filenames, references, and edges" in prompt
+    assert "not from displayName or node type alone" in prompt
+    assert "Write the domain_contract or creative_contract into existing fields: planning_notes, conduct_rules, evaluation.domain_constraints, workflow step descriptions, and Recipe quality standards" in prompt
+    assert "perform skill_identity_analysis after prompt_evidence_analysis" in prompt
+    assert "case_variables, reusable_protocol_terms, output_format_terms, use_case_terms, and workflow_method_terms" in prompt
+    assert "Skill name, id, description, and triggers.keywords" in prompt
+    assert "remove case_variables but preserve reusable_protocol_terms" in prompt
+    assert "Do not let workflow_method_terms alone dominate the Skill identity" in prompt
+    assert "keywords must cover protocol, output format, use case, and workflow method" in prompt
+    assert "Visual projects may need global visual language, stage-specific style exceptions, and style inheritance rules" in prompt
+    assert "Pixar 3D cartoon, C4D + Octane, soft studio lighting" in prompt
+    assert "storyboard may require black-and-white pencil sketch instead of inheriting rendered 3D color" in prompt
+    assert "videoCompose does not generate new creative content" in prompt
+    assert "For non-visual domains, the same contract may capture metric definitions, legal jurisdiction, teaching level, voice persona, or gameplay rules" in prompt
     assert "Do not derive Recipes only from node types" in prompt
 
 
