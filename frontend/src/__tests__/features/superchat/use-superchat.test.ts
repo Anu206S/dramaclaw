@@ -34,6 +34,8 @@ import {
   buildPersistedAssistantClarificationEventForTest,
   buildAssistantClarificationToolResultForTest,
   buildAssistantInteractionFlowItemsForTest,
+  collapseRepeatedCanvasStatusFlowItemsForTest,
+  collapseRepeatedCanvasStatusPartsForTest,
   amendCanvasApprovalWithImageParamsForTest,
   amendCanvasApprovalWithVideoParamsForTest,
   buildSkillStudioCatalogSaveItemsForTest,
@@ -2570,6 +2572,81 @@ describe("Skill Studio flow ordering", () => {
     expect(items.map((item) => item.kind)).toEqual(["text", "event", "text"]);
     expect(items[0]).toMatchObject({ kind: "text", text: "已生成 Skill 草稿，正在提交卡片。\n" });
     expect(items[2]).toMatchObject({ kind: "text", text: "已取消保存，我会继续按当前上下文回复。" });
+  });
+});
+
+describe("repeated canvas status collapsing", () => {
+  it("collapses consecutive identical context flow items without crossing text", () => {
+    const items = collapseRepeatedCanvasStatusFlowItemsForTest([
+      {
+        kind: "context",
+        key: "context:1",
+        activity: { key: "1", turnId: null, bridgeKey: null, status: "done", labels: ["节点详情"], errors: [] },
+      },
+      {
+        kind: "context",
+        key: "context:2",
+        activity: { key: "2", turnId: null, bridgeKey: null, status: "done", labels: ["节点详情"], errors: [] },
+      },
+      { kind: "text", key: "text:1", text: "继续分析。" },
+      {
+        kind: "context",
+        key: "context:3",
+        activity: { key: "3", turnId: null, bridgeKey: null, status: "done", labels: ["节点详情"], errors: [] },
+      },
+      {
+        kind: "context",
+        key: "context:4",
+        activity: { key: "4", turnId: null, bridgeKey: null, status: "done", labels: ["画布 Ontology"], errors: [] },
+      },
+    ]);
+
+    expect(items).toHaveLength(4);
+    expect(items[0]).toMatchObject({
+      kind: "context",
+      activity: { labels: ["节点详情"], repeatCount: 2 },
+    });
+    expect(items[1]).toMatchObject({ kind: "text" });
+    expect(items[2]).toMatchObject({
+      kind: "context",
+      activity: { labels: ["节点详情"] },
+    });
+    expect(items[3]).toMatchObject({
+      kind: "context",
+      activity: { labels: ["画布 Ontology"] },
+    });
+  });
+
+  it("collapses consecutive identical canvas context ordered parts for history and streaming", () => {
+    const parts = collapseRepeatedCanvasStatusPartsForTest([
+      {
+        id: "context-1",
+        type: "canvas_context",
+        event: { key: "1", turnId: null, bridgeKey: null, status: "done", labels: ["节点详情"], errors: [] },
+      },
+      {
+        id: "context-2",
+        type: "canvas_context",
+        event: { key: "2", turnId: null, bridgeKey: null, status: "done", labels: ["节点详情"], errors: [] },
+      },
+      { id: "text-1", type: "text", text: "Let me continue." },
+      {
+        id: "context-3",
+        type: "canvas_context",
+        event: { key: "3", turnId: null, bridgeKey: null, status: "done", labels: ["节点详情"], errors: [] },
+      },
+    ]);
+
+    expect(parts).toHaveLength(3);
+    expect(parts[0]).toMatchObject({
+      type: "canvas_context",
+      event: { labels: ["节点详情"], repeatCount: 2 },
+    });
+    expect(parts[1]).toMatchObject({ type: "text" });
+    expect(parts[2]).toMatchObject({
+      type: "canvas_context",
+      event: { labels: ["节点详情"] },
+    });
   });
 });
 
