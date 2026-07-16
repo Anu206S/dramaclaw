@@ -56,6 +56,25 @@ except Exception as exc:
     registered_catalog_workflows = None
     resolve_catalog_workflow = None
 
+_SKILL_RUNTIME_IMPORT_ERROR: Exception | None = None
+try:
+    from skill_runtime import (
+        cancel_skill_session,
+        confirm_skill_session,
+        get_skill_session_status,
+        list_skill_entries,
+        start_skill_session,
+        update_skill_session_config,
+    )
+except Exception as exc:
+    _SKILL_RUNTIME_IMPORT_ERROR = exc
+    cancel_skill_session = None
+    confirm_skill_session = None
+    get_skill_session_status = None
+    list_skill_entries = None
+    start_skill_session = None
+    update_skill_session_config = None
+
 _CANVAS_COMMAND_BRIDGE_IMPORT_ERROR: Exception | None = None
 try:
     from novelvideo.freezone.canvas_command_bridge import (
@@ -2653,6 +2672,60 @@ def _handle_resolve_catalog_workflow(args: dict[str, Any], **_: Any) -> str:
     return tool_result(resolve_catalog_workflow(args))
 
 
+def _handle_skill_list(args: dict[str, Any], **_: Any) -> str:
+    if list_skill_entries is None:
+        return tool_error(
+            "Freezone Skill Runtime is unavailable. "
+            f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
+        )
+    return tool_result(list_skill_entries(args))
+
+
+def _handle_skill_start_session(args: dict[str, Any], **_: Any) -> str:
+    if start_skill_session is None:
+        return tool_error(
+            "Freezone Skill Runtime is unavailable. "
+            f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
+        )
+    return tool_result(start_skill_session(args))
+
+
+def _handle_skill_update_config(args: dict[str, Any], **_: Any) -> str:
+    if update_skill_session_config is None:
+        return tool_error(
+            "Freezone Skill Runtime is unavailable. "
+            f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
+        )
+    return tool_result(update_skill_session_config(args))
+
+
+def _handle_skill_confirm(args: dict[str, Any], **_: Any) -> str:
+    if confirm_skill_session is None:
+        return tool_error(
+            "Freezone Skill Runtime is unavailable. "
+            f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
+        )
+    return tool_result(confirm_skill_session(args))
+
+
+def _handle_skill_status(args: dict[str, Any], **_: Any) -> str:
+    if get_skill_session_status is None:
+        return tool_error(
+            "Freezone Skill Runtime is unavailable. "
+            f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
+        )
+    return tool_result(get_skill_session_status(args))
+
+
+def _handle_skill_cancel(args: dict[str, Any], **_: Any) -> str:
+    if cancel_skill_session is None:
+        return tool_error(
+            "Freezone Skill Runtime is unavailable. "
+            f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
+        )
+    return tool_result(cancel_skill_session(args))
+
+
 def _has_explicit_workflow_type(args: dict[str, Any]) -> bool:
     for key in ("workflow_type", "workflowType", "workflow_types", "workflowTypes", "type", "types"):
         value = args.get(key)
@@ -4123,6 +4196,111 @@ TOOLS = (
             },
         ),
         _handle_resolve_catalog_workflow,
+    ),
+    (
+        "freezone_skill_list",
+        _schema(
+            "freezone_skill_list",
+            "List Freezone Skill Runtime entries without changing the canvas. This is separate from legacy workflow tools. Use it when the user asks to choose from multiple Skills or explicitly asks for interactive Skills.",
+            {
+                "include_workflows": {
+                    "type": "boolean",
+                    "description": "Whether to include ordinary workflow JSON skills alongside interactive_skill entries. Defaults true.",
+                }
+            },
+        ),
+        _handle_skill_list,
+    ),
+    (
+        "freezone_skill_start_session",
+        _schema(
+            "freezone_skill_start_session",
+            "Start an isolated Freezone Skill Session for one chosen Skill. This only collects/merges parameters and creates runtime state; it does not create canvas nodes and does not run legacy workflows.",
+            {
+                **_SCOPE_PROPS,
+                "skill_id": {
+                    "type": "string",
+                    "description": "Explicit Skill id. If omitted, user_goal/message is matched against the Skill catalog and may return skill_selection_required.",
+                },
+                "skillId": {"type": "string", "description": "Alias of skill_id."},
+                "user_goal": {
+                    "type": "string",
+                    "description": "User's goal or brief for this Skill session.",
+                },
+                "message": {"type": "string", "description": "Alias of user_goal."},
+                "execution_mode": {
+                    "type": "string",
+                    "description": "Requested execution mode, e.g. auto or manual.",
+                },
+                "executionMode": {"type": "string", "description": "Alias of execution_mode."},
+                "config": {
+                    "type": "object",
+                    "description": "Optional initial parameter values keyed by Skill parameter id.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum candidates when matching by user_goal. Default 5.",
+                },
+            },
+        ),
+        _handle_skill_start_session,
+    ),
+    (
+        "freezone_skill_update_config",
+        _schema(
+            "freezone_skill_update_config",
+            "Update parameter values for an existing Freezone Skill Session. Does not create nodes or run tasks.",
+            {
+                "session_id": {"type": "string", "description": "Skill Session id."},
+                "sessionId": {"type": "string", "description": "Alias of session_id."},
+                "config": {
+                    "type": "object",
+                    "description": "Parameter values to merge into the session config.",
+                },
+                "updates": {"type": "object", "description": "Alias of config."},
+            },
+            ["session_id"],
+        ),
+        _handle_skill_update_config,
+    ),
+    (
+        "freezone_skill_confirm",
+        _schema(
+            "freezone_skill_confirm",
+            "Confirm a Freezone Skill Session after the user approves the collected parameters. Builds a read-only execution plan but does not execute it.",
+            {
+                "session_id": {"type": "string", "description": "Skill Session id."},
+                "sessionId": {"type": "string", "description": "Alias of session_id."},
+            },
+            ["session_id"],
+        ),
+        _handle_skill_confirm,
+    ),
+    (
+        "freezone_skill_status",
+        _schema(
+            "freezone_skill_status",
+            "Read the current status and execution plan of one Freezone Skill Session.",
+            {
+                "session_id": {"type": "string", "description": "Skill Session id."},
+                "sessionId": {"type": "string", "description": "Alias of session_id."},
+            },
+            ["session_id"],
+        ),
+        _handle_skill_status,
+    ),
+    (
+        "freezone_skill_cancel",
+        _schema(
+            "freezone_skill_cancel",
+            "Cancel one active Freezone Skill Session. Does not delete canvas nodes.",
+            {
+                "session_id": {"type": "string", "description": "Skill Session id."},
+                "sessionId": {"type": "string", "description": "Alias of session_id."},
+            },
+            ["session_id"],
+        ),
+        _handle_skill_cancel,
     ),
     (
         "freezone_create_workflow_graph",
