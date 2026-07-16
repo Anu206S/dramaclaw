@@ -205,7 +205,7 @@ def registered_catalog_workflows() -> list[dict[str, Any]]:
     workflows: list[dict[str, Any]] = []
     for skill in _load_skills():
         skill_id = _text(skill.get("id"))
-        if not skill_id or skill.get("_disabled") is True:
+        if not skill_id or skill.get("_disabled") is True or _is_interactive_skill(skill):
             continue
         templates = _templates(skill)
         label = _catalog_label(skill)
@@ -311,7 +311,7 @@ def resolve_catalog_workflow(args: dict[str, Any]) -> dict[str, Any]:
     skills = _load_skills()
     candidates: list[dict[str, Any]] = []
     for skill in skills:
-        if skill.get("_disabled") is True:
+        if skill.get("_disabled") is True or _is_interactive_skill(skill):
             continue
         skill_id = _text(skill.get("id"))
         if not skill_id:
@@ -442,6 +442,10 @@ def _exact_catalog_workflow_candidate(args: dict[str, Any], user_goal: str) -> d
             "catalog_source_label": workflow.get("catalog_source_label") or "",
         }
     return None
+
+
+def _is_interactive_skill(skill: dict[str, Any]) -> bool:
+    return _text(skill.get("type") or skill.get("skill_type")) == "interactive_skill"
 
 
 def _build_plan(

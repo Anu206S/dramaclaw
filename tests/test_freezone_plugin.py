@@ -40,6 +40,23 @@ def _load_catalog_module():
     return module
 
 
+def _load_skill_runtime_module():
+    freezone_dir = Path(__file__).resolve().parents[1] / ".hermes" / "plugins" / "freezone"
+    sys.path.insert(0, str(freezone_dir))
+    try:
+        spec = importlib.util.spec_from_file_location(
+            "test_freezone_skill_runtime",
+            freezone_dir / "skill_runtime.py",
+        )
+        assert spec is not None
+        module = importlib.util.module_from_spec(spec)
+        assert spec.loader is not None
+        spec.loader.exec_module(module)
+        return module
+    finally:
+        sys.path.remove(str(freezone_dir))
+
+
 def test_freezone_plugin_registers_canvas_command_tools():
     plugin = _load_plugin_module()
 
@@ -54,6 +71,12 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_list_workflows" in names
     assert "freezone_build_workflow_plan" in names
     assert "freezone_resolve_catalog_workflow" in names
+    assert "freezone_skill_list" in names
+    assert "freezone_skill_start_session" in names
+    assert "freezone_skill_update_config" in names
+    assert "freezone_skill_confirm" in names
+    assert "freezone_skill_status" in names
+    assert "freezone_skill_cancel" in names
     assert "freezone_create_workflow_graph" in names
     assert "freezone_present_agent_catalog_draft" in names
     assert "freezone_begin_agent_catalog_draft" in names
@@ -65,6 +88,114 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_get_saved_recipe" in names
 
 
+def test_skill_session_questions_include_selectable_options_and_current_values():
+    runtime = _load_skill_runtime_module()
+
+    skill = {
+        "parameters": [
+            {
+                "id": "duration",
+                "label": "成片时长",
+                "type": "single_select",
+                "default": "30_60",
+                "options": [
+                    {"id": "30_60", "label": "超短片（30-60 秒）"},
+                    {"id": "90", "label": "90 秒"},
+                ],
+            },
+            {
+                "id": "aspect_ratio",
+                "label": "画幅比例",
+                "type": "single_select",
+                "default": "21:9",
+                "options": [
+                    {"id": "21:9", "label": "21:9 宽画幅"},
+                    {"id": "9:16", "label": "9:16 竖屏"},
+                ],
+            },
+            {
+                "id": "voice_mode",
+                "label": "配音模式",
+                "type": "single_select",
+                "default": "voiceover",
+                "options": [
+                    {"id": "voiceover", "label": "旁白"},
+                    {"id": "silent", "label": "无配音"},
+                ],
+            },
+        ]
+    }
+
+    questions = runtime._parameter_questions(
+        skill,
+        [],
+        config={"duration": "90", "aspect_ratio": "21:9", "voice_mode": "silent"},
+        include_all=True,
+    )
+
+    assert [question["id"] for question in questions] == ["duration", "aspect_ratio", "voice_mode"]
+    assert questions[0]["selectable"] is True
+    assert questions[0]["current_value"] == "90"
+    assert questions[0]["default"] == "30_60"
+    assert questions[0]["options"][1]["label"] == "90 秒"
+
+
+def test_freezone_skill_session_runtime_is_isolated_from_workflow_tools(tmp_path, monkeypatch):
+    monkeypatch.setenv("DRAMACLAW_SKILL_SESSION_DIR", str(tmp_path))
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    listed = handlers["freezone_skill_list"]({"include_workflows": True})
+
+    assert listed["ok"] is True
+    assert any(item["id"] == "video-ad" for item in listed["skills"])
+
+    started = handlers["freezone_skill_start_session"](
+        {
+            "skill_id": "video-ad",
+            "user_goal": "创建一个水果电商广告视频",
+            "execution_mode": "auto",
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+        }
+    )
+
+    assert started["ok"] is True
+    session = started["session"]
+    assert session["skill_id"] == "video-ad"
+    assert session["execution_mode"] == "auto"
+    assert session["project_id"] == "project-a"
+    assert session["canvas_id"] == "canvas-a"
+    assert session["status"] == "waiting_config_confirmation"
+
+    confirmed = handlers["freezone_skill_confirm"]({"session_id": session["session_id"]})
+
+    assert confirmed["ok"] is True
+    assert confirmed["status"] == "confirmed"
+    plan = confirmed["execution_plan"]
+    assert plan["schema_version"] == "freezone_skill_execution_plan.v1"
+    assert plan["source"] == "workflow_template"
+    assert plan["workflow_type"].startswith("catalog.video-ad.")
+    assert plan["approval_policy"]["before_start_confirmation"] is True
+    assert plan["approval_policy"]["per_step_confirmation"] is False
+    assert plan["node_count"] > 0
+
+    saved = handlers["freezone_skill_status"]({"session_id": session["session_id"]})
+    assert saved["ok"] is True
+    assert saved["session"]["status"] == "confirmed"
+
+
+def test_interactive_skills_do_not_pollute_legacy_workflow_list():
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    workflows = handlers["freezone_list_workflows"]({})
+
+    workflow_types = {item["workflow_type"] for item in workflows["workflows"]}
+    assert "catalog.a24-cinematic-short" not in workflow_types
+    assert "catalog.cyberpunk-apocalypse-short" not in workflow_types
+    assert "catalog.fruit-ecommerce-ad-skill" not in workflow_types
+    assert "catalog.video_ad" in workflow_types
 def test_freezone_plugin_reads_saved_skill_and_recipe(monkeypatch):
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
