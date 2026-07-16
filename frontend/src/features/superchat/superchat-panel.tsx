@@ -2676,6 +2676,25 @@ function latestPendingSkillStudioQuestionEvent(messages: ChatMessage[]): Extract
 
 export const latestPendingSkillStudioQuestionEventForTest = latestPendingSkillStudioQuestionEvent;
 
+type ActiveComposerPromptScope = {
+  busy: boolean;
+  activeTurnId: string | null;
+};
+
+function activeTurnMessages(messages: ChatMessage[], scope: ActiveComposerPromptScope): ChatMessage[] {
+  if (!scope.busy || !scope.activeTurnId) return [];
+  return messages.filter((message) => message.turnId === scope.activeTurnId);
+}
+
+function latestPendingSkillStudioQuestionEventForActiveTurn(
+  messages: ChatMessage[],
+  scope: ActiveComposerPromptScope,
+): Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }> | null {
+  return latestPendingSkillStudioQuestionEvent(activeTurnMessages(messages, scope));
+}
+
+export const latestPendingSkillStudioQuestionEventForActiveTurnForTest = latestPendingSkillStudioQuestionEventForActiveTurn;
+
 function assistantClarificationEventsFromUiEvents(events: unknown[] | undefined): AssistantClarificationUiEvent[] {
   if (!events || events.length === 0) return [];
   return mergeUiEventsByStableKey(events.filter((event): event is AssistantClarificationUiEvent => {
@@ -2738,6 +2757,15 @@ function latestPendingAssistantClarificationEvent(messages: ChatMessage[]): Assi
 }
 
 export const latestPendingAssistantClarificationEventForTest = latestPendingAssistantClarificationEvent;
+
+function latestPendingAssistantClarificationEventForActiveTurn(
+  messages: ChatMessage[],
+  scope: ActiveComposerPromptScope,
+): AssistantClarificationUiEvent | null {
+  return latestPendingAssistantClarificationEvent(activeTurnMessages(messages, scope));
+}
+
+export const latestPendingAssistantClarificationEventForActiveTurnForTest = latestPendingAssistantClarificationEventForActiveTurn;
 
 function messageIsWaitingForUserReply(message: ChatMessage): boolean {
   if (message.role !== "assistant") return false;
@@ -4035,7 +4063,7 @@ function SkillStudioQuestionsCard({
   };
 
   return (
-	    <div className="bg-transparent px-4 pb-3 pt-3 text-sm">
+	    <div className="flex max-h-[min(70vh,560px)] flex-col bg-transparent px-4 pb-3 pt-3 text-sm">
 	      <div className="mb-2.5 grid grid-cols-[minmax(0,1fr)_auto] items-start gap-3">
 	        <div className="min-w-0">
 	          <div className="line-clamp-2 break-words text-sm font-medium leading-5 text-foreground">
@@ -4071,8 +4099,9 @@ function SkillStudioQuestionsCard({
           </div>
         )}
       </div>
-      {activeQuestion ? (
-        <div className="overflow-hidden rounded-2xl bg-white/[0.035] ring-1 ring-white/[0.07]">
+      <div className="min-h-0 flex-1 overflow-y-auto pr-1">
+        {activeQuestion ? (
+          <div className="overflow-hidden rounded-2xl bg-white/[0.035] ring-1 ring-white/[0.07]">
           <div className="flex items-center justify-between gap-2 px-3 py-2 text-[11px] text-muted-foreground/80">
             <span>{activeSelectionMode === "multiple" ? "可多选，也可以补充" : "选择一个方向，也可以补充"}</span>
             {activeSelectionMode === "multiple" && (
@@ -4123,13 +4152,14 @@ function SkillStudioQuestionsCard({
               </div>
             )}
           </div>
-        </div>
-      ) : (
-        <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] px-3 py-6 text-center text-xs text-muted-foreground">
-          暂无可选择的问题
-        </div>
-      )}
-      <div className="mt-2.5 flex flex-wrap items-center justify-between gap-2">
+          </div>
+        ) : (
+          <div className="rounded-2xl border border-white/[0.08] bg-white/[0.025] px-3 py-6 text-center text-xs text-muted-foreground">
+            暂无可选择的问题
+          </div>
+        )}
+      </div>
+      <div className="mt-2.5 flex shrink-0 flex-wrap items-center justify-between gap-2 border-t border-white/[0.08] pt-2.5">
         <div className="text-xs text-muted-foreground/80">
           已选择 {activeSelectedCount} 项 · {answeredCount} / {selectableQuestions.length}
         </div>
@@ -4747,7 +4777,7 @@ function SkillStudioDraftCard({
                       </span>
                     </div>
                     {textField(template.description) && (
-                      <p className="mt-1 line-clamp-2 text-[11px] leading-4 text-muted-foreground">
+                      <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-4 text-muted-foreground">
                         {textField(template.description)}
                       </p>
                     )}
@@ -4758,7 +4788,7 @@ function SkillStudioDraftCard({
                             <span className="shrink-0 tabular-nums text-foreground/60">
                               {Number(step.step_number) || stepIndex + 1}.
                             </span>
-                            <span className="truncate">
+                            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words leading-4">
                               {textField(step.goal_template) || textField(step.action_key) || textField(step.node_type) || "未命名步骤"}
                             </span>
                           </li>
@@ -9551,12 +9581,18 @@ export function SuperChatPanel({
       : messages;
   }, [activeMessages, searchQuery]);
   const activeClarificationEvent = useMemo(
-    () => latestPendingAssistantClarificationEvent(visibleMessages),
-    [visibleMessages],
+    () => latestPendingAssistantClarificationEventForActiveTurn(visibleMessages, {
+      busy: chat.busy,
+      activeTurnId: chat.activeTurnId,
+    }),
+    [chat.activeTurnId, chat.busy, visibleMessages],
   );
   const activeSkillStudioQuestionEvent = useMemo(
-    () => latestPendingSkillStudioQuestionEvent(visibleMessages),
-    [visibleMessages],
+    () => latestPendingSkillStudioQuestionEventForActiveTurn(visibleMessages, {
+      busy: chat.busy,
+      activeTurnId: chat.activeTurnId,
+    }),
+    [chat.activeTurnId, chat.busy, visibleMessages],
   );
   const hasActiveComposerPrompt = Boolean(activeSkillStudioQuestionEvent || activeClarificationEvent);
   const orphanCanvasCommandSurfaces = useMemo(() => {
@@ -10198,6 +10234,10 @@ export function SuperChatPanel({
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
     selections: SkillStudioQuestionSelections,
   ): Promise<boolean> => {
+    if (!chat.busy || !event.turn_id || event.turn_id !== chat.activeTurnId) {
+      toast.error("这轮对话已结束，不能继续提交这个问题");
+      return false;
+    }
     if (!event.bridge_key) {
       toast.error("Skill Studio 桥接信息缺失，请重试");
       return false;
@@ -10266,6 +10306,10 @@ export function SuperChatPanel({
     event: AssistantClarificationUiEvent,
     answers: AssistantClarificationAnswers,
   ): Promise<boolean> => {
+    if (!chat.busy || !event.turn_id || event.turn_id !== chat.activeTurnId) {
+      toast.error("这轮对话已结束，不能继续提交这个问题");
+      return false;
+    }
     if (!event.bridge_key) {
       toast.error("补充信息桥接缺失，请重试");
       return false;
