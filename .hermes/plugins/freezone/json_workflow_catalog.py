@@ -38,6 +38,7 @@ _NODE_TYPE_BY_STEP = {
     "imageGeneration": "imageGenNode",
     "videoGeneration": "videoNode",
     "audioGeneration": "audioNode",
+    "videoCompose": "videoComposeNode",
 }
 
 _STAGE_BY_NODE_TYPE = {
@@ -498,6 +499,7 @@ def _build_plan(
             template=template,
             step=step,
             recipe=recipe,
+            node_type=node_type,
         )
         executable_prompt = _compose_executable_prompt(
             step=step,
@@ -600,6 +602,7 @@ def _compose_node_placeholder(
     template: dict[str, Any],
     step: dict[str, Any],
     recipe: dict[str, Any] | None,
+    node_type: str,
 ) -> str:
     goal = _text(_get(step, "goalTemplate", "goal_template")) or _text(step.get("id"))
     recipe_name = _text(recipe.get("name") if recipe else "")
@@ -607,6 +610,11 @@ def _compose_node_placeholder(
         _get(step, "operationType", "operation_type", "actionKey", "action_key")
     )
     target = goal or recipe_name or operation_type or "当前节点"
+    if node_type == "videoComposeNode":
+        return (
+            f"待合成：{target}\n"
+            "打开视频合成时间线后，将上游视频片段和音频轨道按顺序组合为最终视频。"
+        ).strip()
     output_kind = (
         _text(_get(recipe, "output_kind", "generationType", "generation_type"))
         if recipe
@@ -804,6 +812,8 @@ def _node_type_for_step(step: dict[str, Any], recipe: dict[str, Any] | None) -> 
 
 
 def _stage_for_step(step: dict[str, Any], node_type: str) -> str:
+    if node_type == "videoComposeNode":
+        return "compose"
     text = " ".join(
         _text(value)
         for value in (

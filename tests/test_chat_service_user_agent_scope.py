@@ -875,6 +875,13 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "prompt/instruction generator" in prompt
     assert "不要直接生成最终内容" in prompt
     assert "送入对应节点" in prompt
+    assert "planning.planning_notes must start with an executable path summary" in prompt
+    assert "planning.conduct_rules must include hard execution rules" in prompt
+    assert "workflow_templates[].condition should be machine-readable" in prompt
+    assert '{"type":"previous_step","step_id":"..."}' in prompt
+    assert "workflow_templates[].steps[] should include aspect_ratio" in prompt
+    assert "Recipe system_prompt must never be the final downstream prompt itself" in prompt
+    assert "重要：你的输出是一条提示词/指令" in prompt
     assert "终端生成型" not in prompt
     assert "不要把所有 Recipe 都写成 prompt compiler" not in prompt
     assert "must not emit Freezone canvas commands" in prompt
@@ -897,8 +904,42 @@ def test_freezone_prompt_requires_summary_confirmation_for_canvas_workflow_skill
     assert "current canvas, current flow, selected nodes, or existing workflow" in prompt
     assert "ask 1-2 high-level confirmation questions first" in prompt
     assert "preserve project-specific details or abstract them into a reusable Skill" in prompt
-    assert "split key steps into Recipes or merge them into fewer Recipes" in prompt
+    assert "split key generator/planner capabilities into Recipes or merge them into fewer Recipes" in prompt
     assert "freezone_request_user_clarification" in prompt
+
+
+def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "帮我把当前画布总结成一个 Skill",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "skill-studio-authoring-guide.md" in prompt
+    assert "canvas_workflow_analysis" in prompt
+    assert "Use canvas ontology or canvas summary first for whole-canvas Skill distillation" in prompt
+    assert "Do not read every node detail one by one" in prompt
+    assert "Do not treat tool schemas as authoring guidance" in prompt
+    assert "capability modeling" in prompt
+    assert "schema fields are final serialization constraints" in prompt
+    assert "Do not ask for Skill name, category, or whether to include workflow templates" in prompt
+    assert "concrete case vs reusable template" in prompt
+    assert "recipe granularity" in prompt
+    assert "If the user selects or already submitted workflow-template inclusion" in prompt
+    assert "workflow_templates" in prompt
+    assert "node_type=videoCompose" in prompt
+    assert "Do not create a Recipe for videoCompose" in prompt
+    assert "Do not present videoCompose, final media composition, or final synthesis as a Recipe granularity option" in prompt
+    assert "do not count the videoCompose terminal step in the Recipe count" in prompt
+    assert "textGeneration Recipe for a compose/timeline plan" in prompt
+    assert "Extract hard constraints from repeated prompt text" in prompt
+    assert "Do not derive Recipes only from node types" in prompt
 
 
 def test_tool_mode_infers_freezone_from_frontend_canvas_injection():

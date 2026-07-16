@@ -867,6 +867,7 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     workflow_step_schema = skill_schema["properties"]["workflow_templates"]["items"]["properties"][
         "steps"
     ]["items"]
+    workflow_template_schema = skill_schema["properties"]["workflow_templates"]["items"]
 
     assert "including Skill Studio setup questions" in clarification_description
     assert "decide the next step from the current context" in clarification_description
@@ -910,11 +911,33 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "imageGeneration",
         "videoGeneration",
         "audioGeneration",
+        "videoCompose",
     ]
+    assert "videoCompose" not in skill_schema["properties"]["triggers"]["properties"]["node_scopes"]["items"]["enum"]
     assert "textAnnotationNode" not in workflow_step_schema["properties"]["node_type"]["enum"]
     assert "imageGenNode" not in workflow_step_schema["properties"]["node_type"]["enum"]
     assert "Do not use internal canvas node types" in workflow_step_schema["properties"][
         "node_type"
+    ]["description"]
+    assert "videoCompose is a workflow terminal composer step" in workflow_step_schema["properties"][
+        "node_type"
+    ]["description"]
+    assert "Do not create a Recipe for videoCompose" in workflow_step_schema["properties"][
+        "node_type"
+    ]["description"]
+    assert "For videoCompose steps, action_key is a workflow label, not a Recipe reference" in workflow_step_schema[
+        "properties"
+    ]["action_key"]["description"]
+    assert "aspect_ratio" in workflow_step_schema["properties"]
+    assert "imageGeneration/videoGeneration" in workflow_step_schema["properties"]["aspect_ratio"][
+        "description"
+    ]
+    assert "previous_step" in workflow_step_schema["properties"]["input_strategy"]["description"]
+    assert "step_id" in workflow_step_schema["properties"]["input_strategy"]["description"]
+    assert "source/steps" in workflow_step_schema["properties"]["input_strategy"]["description"]
+    assert "message_keywords" in workflow_template_schema["properties"]["condition"]["description"]
+    assert "Avoid description-only conditions" in workflow_template_schema["properties"][
+        "condition"
     ]["description"]
     assert skill_schema["properties"]["planning"]["required"] == [
         "planning_notes",
@@ -922,6 +945,12 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "conduct_rules",
         "default_aspect_ratios",
     ]
+    assert "executable path summary" in skill_schema["properties"]["planning"]["properties"][
+        "planning_notes"
+    ]["description"]
+    assert "hard execution rules" in skill_schema["properties"]["planning"]["properties"][
+        "conduct_rules"
+    ]["description"]
     assert "model_preferences" not in skill_schema["properties"]["planning"]["properties"]
     aspect_schema_description = skill_schema["properties"]["planning"]["properties"][
         "default_aspect_ratios"
@@ -954,6 +983,9 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "result_summary",
         "requires_source_media",
     ]
+    recipe_system_prompt_description = recipe_item["properties"]["system_prompt"]["description"]
+    assert "must never be the final downstream prompt itself" in recipe_system_prompt_description
+    assert "重要：你的输出是一条提示词/指令" in recipe_system_prompt_description
     assert recipe_item["properties"]["output_kind"]["enum"] == ["text", "image", "video", "audio"]
     legacy_system_prompt_key = "system" + "Prompt"
     assert legacy_system_prompt_key not in json.dumps(recipe_item, ensure_ascii=False)
@@ -1045,6 +1077,76 @@ def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
     assert plan["nodes"][1]["data"]["workflowCatalog"]["promptBuilder"]["recipeRef"] == (
         "output/{user}/_account/freezone/agent_config/recipes/custom-fruit-outline.json"
     )
+
+
+def test_freezone_catalog_workflow_maps_video_compose_step_to_compose_node(monkeypatch):
+    catalog = _load_catalog_module()
+
+    def fake_list_user_agent_config_items(_username, kind):
+        if kind == "skills":
+            return [
+                {
+                    "id": "brand-video",
+                    "name": "品牌视频",
+                    "_catalog_source": "user",
+                    "triggers": {"keywords": ["品牌视频"]},
+                    "workflow_templates": [
+                        {
+                            "id": "full",
+                            "name": "完整流程",
+                            "condition": {"message_keywords": ["品牌视频"]},
+                            "steps": [
+                                {
+                                    "id": "clip",
+                                    "step_number": 1,
+                                    "action_key": "video-clip",
+                                    "goal_template": "生成视频片段",
+                                    "node_type": "videoGeneration",
+                                    "input_strategy": {"type": "user_message"},
+                                },
+                                {
+                                    "id": "compose",
+                                    "step_number": 2,
+                                    "action_key": "final-compose",
+                                    "goal_template": "合成最终短片",
+                                    "node_type": "videoCompose",
+                                    "input_strategy": {
+                                        "type": "previous_step",
+                                        "step_id": "clip",
+                                    },
+                                },
+                            ],
+                        }
+                    ],
+                }
+            ]
+        if kind == "recipes":
+            return [
+                {
+                    "id": "video-clip",
+                    "name": "视频片段",
+                    "_catalog_source": "user",
+                    "generationType": "video",
+                    "system_prompt": "输出一条提示词/指令。",
+                }
+            ]
+        raise AssertionError(kind)
+
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
+
+    plan = catalog.build_catalog_workflow_plan(
+        {
+            "workflow_type": "catalog.brand_video.full",
+            "user_goal": "创建品牌视频",
+        }
+    )
+
+    assert plan["ok"] is True
+    compose_node = next(node for node in plan["nodes"] if node["id"] == "compose")
+    assert compose_node["node_type"] == "videoComposeNode"
+    assert compose_node["stage"] == "compose"
+    assert "打开视频合成时间线" in compose_node["data"]["content"]
+    assert "生成最终提示词" not in compose_node["data"]["content"]
 
 
 def test_freezone_list_workflows_exposes_catalog_source_type(monkeypatch):

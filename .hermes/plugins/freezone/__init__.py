@@ -27,6 +27,11 @@ _SKILL_STUDIO_NODE_SCOPE_VALUES = [
     "audioGeneration",
 ]
 
+_SKILL_STUDIO_WORKFLOW_NODE_TYPE_VALUES = [
+    *_SKILL_STUDIO_NODE_SCOPE_VALUES,
+    "videoCompose",
+]
+
 _PLUGIN_DIR = Path(__file__).resolve().parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
@@ -3331,17 +3336,25 @@ _SKILL_STUDIO_WORKFLOW_STEP_SCHEMA = {
         },
         "node_type": {
             "type": "string",
-            "enum": _SKILL_STUDIO_NODE_SCOPE_VALUES,
+            "enum": _SKILL_STUDIO_WORKFLOW_NODE_TYPE_VALUES,
             "description": (
                 "Catalog task type this step creates or updates. Must choose from "
-                "textGeneration, imageGeneration, videoGeneration, audioGeneration. "
+                "textGeneration, imageGeneration, videoGeneration, audioGeneration, or "
+                "videoCompose. videoCompose is a workflow terminal composer step for "
+                "already-generated video/audio assets and manual timeline composition. "
+                "Do not create a Recipe for videoCompose; use it only as the final "
+                "workflow step that opens/configures the compose surface. "
                 "Do not use internal canvas node types such as textAnnotationNode, "
-                "imageGenNode, videoNode, or audioNode."
+                "imageGenNode, videoNode, audioNode, or videoComposeNode."
             ),
         },
         "action_key": {
             "type": "string",
-            "description": "Recipe/action key used by this step.",
+            "description": (
+                "Recipe/action key used by this step. For videoCompose steps, action_key is a "
+                "workflow label, not a Recipe reference; do not create or require a matching "
+                "videoCompose Recipe."
+            ),
         },
         "model": {
             "type": "string",
@@ -3353,7 +3366,20 @@ _SKILL_STUDIO_WORKFLOW_STEP_SCHEMA = {
         },
         "input_strategy": {
             "type": "object",
-            "description": "Where this step gets inputs from, such as none, user_assets, or previous steps.",
+            "description": (
+                "Use explicit structured input routing. Prefer {\"type\":\"none\"}, "
+                "{\"type\":\"user_message\"}, {\"type\":\"user_assets\",\"filter\":\"image\"}, "
+                "or {\"type\":\"previous_step\",\"step_id\":\"<step id>\"}. Do not use vague "
+                "source/steps fields when a single upstream step is known."
+            ),
+        },
+        "aspect_ratio": {
+            "type": "string",
+            "description": (
+                "Optional explicit aspect ratio for imageGeneration/videoGeneration steps, "
+                "such as 9:16, 1:1, 16:9, 3:4, or 4:3. Use this on ratio-specific "
+                "variant steps even when planning.default_aspect_ratios defines a primary default."
+            ),
         },
         "need_review": {
             "type": "boolean",
@@ -3385,7 +3411,10 @@ _SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA = {
         },
         "condition": {
             "type": "object",
-            "description": "When this workflow template should be selected.",
+            "description": (
+                "Machine-readable routing condition for selecting this workflow template, such as "
+                "text_only, hasInputTypes, or message_keywords. Avoid description-only conditions."
+            ),
         },
         "steps": {
             "type": "array",
@@ -3441,7 +3470,11 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
             "properties": {
                 "planning_notes": {
                     "type": "string",
-                    "description": "Planner-facing context hints for this skill.",
+                    "description": (
+                        "Planner-facing executable path summary for this skill. Start with ordered "
+                        "steps, task types, action_keys, upstream dependencies, review/wait behavior, "
+                        "and aspect ratio policy; put visual or style guidance after the execution path."
+                    ),
                 },
                 "prompt_guide": {
                     "type": "string",
@@ -3449,7 +3482,11 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                 },
                 "conduct_rules": {
                     "type": "array",
-                    "description": "Behavior rules the agent should follow in this domain.",
+                    "description": (
+                        "hard execution rules the agent should follow in this domain, not only style "
+                        "principles. Include step order, one-node-per-step constraints, input source "
+                        "rules, review gates, aspect ratios, and forbidden premature downstream execution."
+                    ),
                     "items": {"type": "string"},
                 },
                 "default_aspect_ratios": _SKILL_STUDIO_ASPECT_RATIO_SCHEMA,
@@ -3537,6 +3574,10 @@ _SKILL_STUDIO_RECIPE_SCHEMA = {
                 "不要直接生成最终内容：text Recipe 不直接写正文成品，image/video/audio Recipe "
                 "不直接写最终图片、视频或音频描述成品，而是要求当前 LLM 输出给对应 "
                 "textGeneration/imageGeneration/videoGeneration/audioGeneration 节点使用的一条完整提示词/指令。"
+                "A Recipe system_prompt must never be the final downstream prompt itself. It must "
+                "instruct the current LLM how to transform upstream input into the downstream node "
+                "prompt/instruction, and should explicitly include: “重要：你的输出是一条提示词/指令，"
+                "将被送入下游 <node_type> 节点执行；不要自己生成最终内容。” "
                 "必须包含【角色设定】、【输入来源】、【任务目标】、【输出结构要求】、"
                 "【质量标准】和【禁止事项/约束】。输出结构要求应描述下游 prompt/brief 必须包含的模块，"
                 "例如主体、场景、镜头、构图、风格、色彩、文本排版、连续性和负面约束。"
