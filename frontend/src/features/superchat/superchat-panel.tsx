@@ -1451,6 +1451,7 @@ function CanvasContextActivityCard({ activity }: { activity: CanvasContextActivi
         : failed
           ? `读取${label}失败`
           : `已读取${label}`;
+  const repeatText = activity.repeatCount && activity.repeatCount > 1 ? ` × ${activity.repeatCount}` : "";
   return (
     <div className={cn("mt-2 w-fit max-w-full rounded-md px-0 py-1 text-xs", visualTone === "warning" ? "text-amber-300/90" : "text-muted-foreground")}>
       <button
@@ -1459,7 +1460,7 @@ function CanvasContextActivityCard({ activity }: { activity: CanvasContextActivi
         onClick={() => hasErrors && setExpanded((value) => !value)}
       >
         {running ? <DotsIndicator /> : failed ? <AlertCircle className="size-3.5 shrink-0" /> : <CheckCircle2 className="size-3.5 shrink-0" />}
-        <span className="font-medium">{statusText}</span>
+        <span className="font-medium">{statusText}{repeatText}</span>
         {hasErrors && <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />}
       </button>
       {failed && hasErrors && expanded && (
@@ -2926,6 +2927,83 @@ function buildAssistantInteractionFlowItems(
 }
 
 export const buildAssistantInteractionFlowItemsForTest = buildAssistantInteractionFlowItems;
+
+function canvasContextActivityCollapseKey(activity: CanvasContextActivity): string | null {
+  if (activity.errors.length > 0) return null;
+  return JSON.stringify({
+    status: activity.status,
+    labels: activity.labels,
+  });
+}
+
+function mergeRepeatedCanvasContextActivity(
+  existing: CanvasContextActivity,
+  next: CanvasContextActivity,
+): CanvasContextActivity {
+  return {
+    ...existing,
+    repeatCount: (existing.repeatCount ?? 1) + (next.repeatCount ?? 1),
+  };
+}
+
+function collapseRepeatedCanvasStatusFlowItems(items: CanvasCommandFlowItem[]): CanvasCommandFlowItem[] {
+  if (items.length < 2) return items;
+  const collapsed: CanvasCommandFlowItem[] = [];
+  for (const item of items) {
+    const previous = collapsed[collapsed.length - 1];
+    if (item.kind === "context" && previous?.kind === "context") {
+      const currentKey = canvasContextActivityCollapseKey(item.activity);
+      const previousKey = canvasContextActivityCollapseKey(previous.activity);
+      if (currentKey && currentKey === previousKey) {
+        collapsed[collapsed.length - 1] = {
+          ...previous,
+          key: `${previous.key}+${item.key}`,
+          activity: mergeRepeatedCanvasContextActivity(previous.activity, item.activity),
+        };
+        continue;
+      }
+    }
+    collapsed.push(item);
+  }
+  return collapsed;
+}
+
+export const collapseRepeatedCanvasStatusFlowItemsForTest = collapseRepeatedCanvasStatusFlowItems;
+
+function collapseRepeatedCanvasStatusParts(parts: ChatMessagePart[]): ChatMessagePart[] {
+  if (parts.length < 2) return parts;
+  const collapsed: ChatMessagePart[] = [];
+  for (const part of parts) {
+    const previous = collapsed[collapsed.length - 1];
+    if (
+      part.type === "canvas_context"
+      && previous?.type === "canvas_context"
+      && part.event
+      && previous.event
+      && typeof part.event === "object"
+      && !Array.isArray(part.event)
+      && typeof previous.event === "object"
+      && !Array.isArray(previous.event)
+    ) {
+      const currentActivity = part.event as CanvasContextActivity;
+      const previousActivity = previous.event as CanvasContextActivity;
+      const currentKey = canvasContextActivityCollapseKey(currentActivity);
+      const previousKey = canvasContextActivityCollapseKey(previousActivity);
+      if (currentKey && currentKey === previousKey) {
+        collapsed[collapsed.length - 1] = {
+          ...previous,
+          id: `${previous.id}+${part.id}`,
+          event: mergeRepeatedCanvasContextActivity(previousActivity, currentActivity),
+        };
+        continue;
+      }
+    }
+    collapsed.push(part);
+  }
+  return collapsed;
+}
+
+export const collapseRepeatedCanvasStatusPartsForTest = collapseRepeatedCanvasStatusParts;
 
 function messageHasSkillStudioUiEvent(message: ChatMessage): boolean {
   return skillStudioEventsFromUiEvents(messageUiEvents(message)).length > 0;
@@ -5267,9 +5345,10 @@ const MessageBubble = memo(function MessageBubble({
   const assistantInteractionFlowItems = !isUser && !isTool
     ? buildAssistantInteractionFlowItems(displayText, skillStudioEvents, clarificationSummaryEvents)
     : [];
-  const assistantOrderedParts = !isUser && !isTool && message.parts?.some((part) => part.type !== "text")
+  const assistantOrderedPartsRaw = !isUser && !isTool && message.parts?.some((part) => part.type !== "text")
     ? hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? []
     : [];
+  const assistantOrderedParts = collapseRepeatedCanvasStatusParts(assistantOrderedPartsRaw);
   const visibleCanvasContextActivities = !isUser && !isTool
     ? visibleCanvasContextActivitiesForMessage(message, canvasContextActivities)
     : canvasContextActivities;
@@ -5289,14 +5368,14 @@ const MessageBubble = memo(function MessageBubble({
   const canvasCommandFlowItems = useMemo(
     () => isUser || !hasCanvasCommandSurface
       ? []
-      : buildCanvasCommandFlowItems(
+      : collapseRepeatedCanvasStatusFlowItems(buildCanvasCommandFlowItems(
         suppressCanvasExecutionNarration ? "" : displayText,
         canvasCommandApprovals,
         visibleCanvasCommandFeedbacks,
         visibleCanvasContextActivities,
         skillStudioEvents,
         clarificationSummaryEvents,
-      ),
+      )),
     [
       canvasCommandApprovals,
       displayText,
@@ -7322,6 +7401,7 @@ type CanvasContextActivity = {
   status: "running" | "done" | "failed";
   labels: string[];
   errors: string[];
+  repeatCount?: number;
   anchorTextPrefix?: string | null;
   surfaceOrder?: number;
 };
