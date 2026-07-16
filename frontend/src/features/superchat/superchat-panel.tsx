@@ -2552,7 +2552,7 @@ function hydrateOrderedPartsWithUiEvents(
 ): ChatMessagePart[] | undefined {
   if (!parts?.length || !uiEvents?.length) return parts;
   const eventByKey = new Map<string, unknown>();
-  for (const event of uiEvents) {
+  for (const event of mergeUiEventsByStableKey(uiEvents)) {
     const key = uiEventStableKey(event);
     if (key) eventByKey.set(key, event);
   }
@@ -3865,6 +3865,7 @@ export function buildSkillStudioDraftToolResultForTest(
 
 export function buildSkillStudioDraftCancelToolResultForTest(
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+  draft: Record<string, unknown> = draftPayloadFromEvent(event),
 ) {
   return {
     turn_id: event.turn_id ?? undefined,
@@ -3877,6 +3878,7 @@ export function buildSkillStudioDraftCancelToolResultForTest(
     ok: true,
     action: "cancel",
     cancelled: true,
+    draft,
     saved_to_catalog: false,
     saved_skill_ids: [],
     saved_recipe_ids: [],
@@ -4598,7 +4600,10 @@ function SkillStudioDraftCard({
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => void;
-  onCancel?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
+  onCancel?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => void;
   onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
 }) {
   const [draftObject, setDraftObject] = useState<Record<string, unknown>>(() => draftPayloadFromEvent(event));
@@ -4697,8 +4702,8 @@ function SkillStudioDraftCard({
   const cancelDraft = useCallback(() => {
     if (submitted || cancelled || revisionPending) return;
     setCancelled(true);
-    onCancel?.(event);
-  }, [cancelled, event, onCancel, revisionPending, submitted]);
+    onCancel?.(event, draftObject);
+  }, [cancelled, draftObject, event, onCancel, revisionPending, submitted]);
   const startRevision = useCallback(() => {
     if (!onStartRevision || submitted || cancelled || revisionPending) return;
     let parsed: unknown;
@@ -5241,7 +5246,10 @@ function SkillStudioEventCard({
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => void;
-  onCancelDraft?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
+  onCancelDraft?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => void;
   onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
 }) {
   if (event.type === "skill_studio.status") {
@@ -5316,7 +5324,10 @@ const MessageBubble = memo(function MessageBubble({
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
   ) => void;
-  onCancelSkillStudioDraft?: (event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) => void;
+  onCancelSkillStudioDraft?: (
+    event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draft: Record<string, unknown>,
+  ) => void;
   onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
 }) {
   const isUser = message.role === "user";
@@ -10616,13 +10627,14 @@ export function SuperChatPanel({
 
   const handleCancelSkillStudioDraft = useCallback((
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
+    draftPayload: Record<string, unknown>,
   ) => {
     if (!event.turn_id) return;
     if (!event.bridge_key) {
       toast.error("Skill Studio 桥接信息缺失，请重试");
       return;
     }
-    const payload = buildSkillStudioDraftCancelToolResultForTest(event);
+    const payload = buildSkillStudioDraftCancelToolResultForTest(event, draftPayload);
     if (!chat.submitSkillStudioResult(payload)) {
       toast.error("Skill Studio 连接未就绪，请重试");
       return;
@@ -10637,6 +10649,7 @@ export function SuperChatPanel({
       agent_id: event.agent_id ?? effectiveFreezoneAgentId,
       anchor_text_prefix: event.anchor_text_prefix ?? null,
       received_at: receivedAt,
+      draft: payload.draft,
       cancelled: true,
     };
     updateChatUiEvent(
@@ -10645,6 +10658,7 @@ export function SuperChatPanel({
       (candidate) => ({
         ...(candidate as Record<string, unknown>),
         received_at: uiEventFirstReceivedAt(candidate, event),
+        draft: payload.draft,
         cancelled: true,
       }),
     );
