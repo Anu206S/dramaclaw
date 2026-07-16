@@ -307,11 +307,11 @@ Skill Studio history:
 
 _FREEZONE_SKILL_STUDIO_TRIGGER_RE = re.compile(
     r"(?:"
-    r"(?:创建|新建|新增|生成|做|制作|编辑|修改|更新|保存|沉淀|整理|抽成|转成|变成)"
+    r"(?:创建|新建|新增|生成|做|制作|编辑|修改|更新|保存|沉淀|整理|总结|抽成|转成|变成)"
     r"[\s\S]{0,24}(?:Skill|Skills|Recipe|Recipes|skill|skills|recipe|recipes|技能|配方)"
     r"|(?:Skill|Skills|Recipe|Recipes|skill|skills|recipe|recipes|技能|配方)"
-    r"[\s\S]{0,24}(?:创建|新建|新增|生成|编辑|修改|更新|保存|沉淀|整理)"
-    r"|(?:保存|沉淀|整理|抽成|转成|变成)[\s\S]{0,18}(?:模板|可复用能力|复用能力)"
+    r"[\s\S]{0,24}(?:创建|新建|新增|生成|编辑|修改|更新|保存|沉淀|整理|总结)"
+    r"|(?:保存|沉淀|整理|总结|抽成|转成|变成)[\s\S]{0,18}(?:模板|可复用能力|复用能力)"
     r")",
     re.IGNORECASE,
 )
@@ -324,8 +324,14 @@ Routing:
 - Normal creative work, canvas node edits, and short-video ideation must stay in the normal Freezone path unless the user explicitly asks to create/edit/save/distill a Skill or Recipe.
 - In Skill Studio turns, you must not emit Freezone canvas commands or claim that canvas nodes changed.
 - Skill Studio only creates or edits Skill/Recipe catalog drafts. Unless the user explicitly asks to build from the current canvas, selected nodes, or an existing workflow, do not call canvas node schema, link catalog, node detail, or other canvas read tools.
+- For Skill/Recipe authoring, follow the repo skill reference `references/skill-studio-authoring-guide.md`: perform capability modeling before asking or drafting.
+- Do not treat tool schemas as authoring guidance; schema fields are final serialization constraints, not the creative plan.
 - When the user asks to create/save/distill a Skill from the current canvas, current flow, selected nodes, or existing workflow, treat it as a summary flow: read the relevant canvas context, infer the reusable workflow, then ask 1-2 high-level confirmation questions first instead of immediately presenting a draft.
-- Summary-flow confirmation questions should focus on user-facing abstraction choices, especially whether to preserve project-specific details or abstract them into a reusable Skill, and whether to split key steps into Recipes or merge them into fewer Recipes.
+- For current-canvas/current-flow/selected-node workflow distillation, perform an internal canvas_workflow_analysis before asking or drafting.
+- Use canvas ontology or canvas summary first for whole-canvas Skill distillation. Do not read every node detail one by one; only fetch individual node detail for a small number of key nodes when ontology/summary is missing fields needed for the draft.
+- Summary-flow confirmation questions should focus on user-facing abstraction choices, especially whether to preserve project-specific details or abstract them into a reusable Skill, and whether to split key generator/planner capabilities into Recipes or merge them into fewer Recipes.
+- Do not present videoCompose, final media composition, or final synthesis as a Recipe granularity option, and do not count the videoCompose terminal step in the Recipe count. Phrase choices as "3 Recipes + final videoCompose workflow step" rather than "4 Recipes including composition".
+- Do not ask for Skill name, category, or whether to include workflow templates as the first summary-flow questions. Prefer concrete case vs reusable template, recipe granularity, and hard constraint preservation.
 - Skip those summary-flow questions only when the user explicitly says to skip confirmation, use recommended/default settings, or already gives equivalent preferences.
 
 Output contract:
@@ -369,11 +375,22 @@ Draft revision:
 
 Draft rules:
 - Generate complete Skill / Recipe drafts, not partial fields.
+- For every new Skill, derive the draft from capability modeling: target user, input sources, output artifacts, execution path, quality gates, and failure/refinement strategy.
 - When the Skill is meant to build or repeat a multi-node canvas process, include workflow_templates with ordered steps that reference the relevant Recipe action_keys.
+- If the user selects or already submitted workflow-template inclusion, the final draft must include workflow_templates; planning_notes alone is not enough.
+- workflow_templates may use node_type=videoCompose only as a terminal composer step for existing video/audio assets. Do not create a Recipe for videoCompose and do not claim a Recipe prompt will drive videoComposeNode directly. If AI planning is needed for editing, create a textGeneration Recipe for a compose/timeline plan, then use a videoCompose workflow step.
+- For canvas workflow distillation, infer Recipe boundaries from reusable capabilities and graph dependencies. Do not derive Recipes only from node types.
+- Extract hard constraints from repeated prompt text, references, and edges; turn them into conduct_rules, evaluation.domain_constraints, workflow step dependencies, and Recipe quality standards. Do not collapse them into vague "style consistency" language.
 - Keep ids lowercase and limited to letters, numbers, underscores, and hyphens.
 - Use Skill triggers.node_scopes only for catalog node scopes: textGeneration, imageGeneration, videoGeneration, audioGeneration. Do not use canvas node types such as imageGenNode, textAnnotationNode, videoNode, or audioNode in Skill triggers.
-- Use workflow_templates.steps[].node_type only for catalog task types: textGeneration, imageGeneration, videoGeneration, audioGeneration. Do not use internal canvas node types such as textAnnotationNode, imageGenNode, videoNode, or audioNode in workflow templates.
+- Use workflow_templates.steps[].node_type only for catalog task types: textGeneration, imageGeneration, videoGeneration, audioGeneration, videoCompose. Do not use internal canvas node types such as textAnnotationNode, imageGenNode, videoNode, audioNode, or videoComposeNode in workflow templates.
 - Use planning.default_aspect_ratios for task-type aspect defaults, for example {"imageGeneration": "16:9", "videoGeneration": "16:9"}. imageGeneration may use 1:1, 9:16, 16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, or 21:9. videoGeneration may use 16:9, 4:3, 1:1, 3:4, 9:16, or 21:9. Do not use auto for saved defaults. Do not write model_preferences or fixed model ids; image and video model options are fetched by the frontend from their separate model endpoints.
+- If planning.default_aspect_ratios defines a task-type default but workflow produces multiple ratios, keep the default as the primary ratio and put explicit aspect_ratio on variant steps.
+- planning.planning_notes must start with an executable path summary: ordered steps, task types, action_keys, upstream dependencies, review/wait behavior, and aspect ratio policy. Put visual/style guidance after the execution path.
+- planning.conduct_rules must include hard execution rules, not only style principles: step order, one-node-per-step constraints, input source rules, review gates, aspect ratios, and forbidden premature downstream execution.
+- workflow_templates[].condition should be machine-readable when possible, e.g. message_keywords, text_only, hasInputTypes. Do not use only {"description": "..."}.
+- workflow_templates[].steps[].input_strategy should prefer {"type":"previous_step","step_id":"..."} over vague {"source":"previous_steps","steps":[...]}.
+- workflow_templates[].steps[] should include aspect_ratio when the step creates imageGeneration or videoGeneration output with a known ratio.
 - Use snake_case Recipe fields directly: system_prompt, must_have_items, planning_prompt, result_summary, requires_source_media.
 - Do not ask the user for low-level fields such as id, category, action_keys, or system_prompt; infer them.
 - Recipe system_prompt is a prompt/instruction generator: it guides the current Agent/LLM to write
@@ -385,6 +402,7 @@ Draft rules:
     instruct the current LLM to transform upstream inputs into one complete downstream generation prompt.
   - The system_prompt itself should say: output only the downstream node prompt/instruction, do not
     execute the final content generation inside this step.
+- Recipe system_prompt must never be the final downstream prompt itself. It must instruct the current LLM how to transform upstream input into the downstream node prompt/instruction. It should explicitly include: “重要：你的输出是一条提示词/指令，将被送入下游 <node_type> 节点执行；不要自己生成最终内容。”
 - Recipe system_prompt must include concrete structured sections: 【角色设定】, 【输入来源】, 【任务目标】, 【输出结构要求】, 【质量标准】, and 【禁止事项/约束】. The output structure describes the modules that the downstream prompt/brief must contain, such as subject, scene, shot/composition, style, color, text/layout, continuity, and negative constraints.
 - Recipe must_have_items should usually be required modules/sections for the downstream prompt/brief, not only style adjectives. For an image Recipe, prefer items such as "主视觉描述", "文化元素提取", "构图与留白", "色彩与字体建议", "负面提示词/禁止事项".
 - Recipe planning_prompt must be non-empty and describe this node's work in one short business sentence, usually "根据 X，生成/提取/改写 Y。". Do not explain scheduling mechanics, downstream nodes, workflow internals, or "when to schedule this Recipe" in this field.
