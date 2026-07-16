@@ -1991,6 +1991,7 @@ interface ManagedCatalogItem {
   builtin: boolean;
   customized: boolean;
   enabled: boolean;
+  generationType?: RecipeGenerationType;
   id: string;
   payload: FreezoneAgentConfigPayload;
   title: string;
@@ -2155,14 +2156,19 @@ function CatalogList({
               <h4 className="truncate font-mono text-[13px] font-semibold text-foreground">
                 {item.id}
               </h4>
+              {item.generationType ? (
+                <span className={catalogGenerationTypeBadgeClass(item.generationType)}>
+                  {t(`settings.freezoneCatalog.newRecipe.outputKinds.${item.generationType}`)}
+                </span>
+              ) : null}
               {item.builtin ? (
-                <span className="shrink-0 rounded border border-border/70 px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground">
+                <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/70">
                   {t("settings.freezoneCatalog.builtIn")}
                 </span>
               ) : null}
               {item.customized ? (
-                <span className="shrink-0 rounded border border-cyan-500/40 bg-cyan-500/10 px-1.5 py-0.5 text-[10px] leading-none text-cyan-200">
-                  {t("settings.freezoneCatalog.customized")}
+                <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/70">
+                  {t("settings.freezoneCatalog.customizedShort", { defaultValue: "定制" })}
                 </span>
               ) : null}
             </div>
@@ -2218,10 +2224,12 @@ function toManagedCatalogItem(
 ): ManagedCatalogItem {
   const id = typeof item.id === "string" ? item.id : "";
   if (kind === "recipes") {
+    const generationType = isRecipeGenerationType(item.output_kind) ? item.output_kind : undefined;
     return {
       builtin: item._catalog_source === "builtin",
       customized: item._catalog_source === "user" && item._catalog_base_source === "builtin",
       enabled: item.enabled !== false,
+      generationType,
       id,
       payload: item,
       title: typeof item.name === "string" ? item.name : id,
@@ -2246,6 +2254,16 @@ function toManagedCatalogItem(
       ...getStringArray((triggers as Record<string, unknown>).keywords),
     ].filter(Boolean),
   };
+}
+
+function catalogGenerationTypeBadgeClass(type: RecipeGenerationType) {
+  return cn(
+    "shrink-0 rounded border px-1.5 py-0.5 text-[10px] leading-none",
+    type === "text" && "border-sky-400/35 bg-sky-400/10 text-sky-100/90",
+    type === "image" && "border-emerald-400/35 bg-emerald-400/10 text-emerald-100/90",
+    type === "video" && "border-violet-400/35 bg-violet-400/10 text-violet-100/90",
+    type === "audio" && "border-amber-400/35 bg-amber-400/10 text-amber-100/90",
+  );
 }
 
 function stripCatalogMetadata(payload: FreezoneAgentConfigPayload): FreezoneAgentConfigPayload {

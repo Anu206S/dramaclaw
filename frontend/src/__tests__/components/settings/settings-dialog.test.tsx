@@ -107,6 +107,7 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.readOnly": "只读",
         "settings.freezoneCatalog.builtIn": "内置",
         "settings.freezoneCatalog.customized": "已定制",
+        "settings.freezoneCatalog.customizedShort": "定制",
         "settings.freezoneCatalog.skillsCount": `共 ${options?.count ?? 0} 项`,
         "settings.freezoneCatalog.recipesCount": `共 ${options?.count ?? 0} 项`,
         "settings.freezoneCatalog.selectionCount": `已选 ${options?.selectedCount ?? 0} / 共 ${options?.count ?? 0} 项`,
@@ -732,6 +733,39 @@ describe("SettingsDialog tabs", () => {
     expect(screen.getByText("social-media")).toBeInTheDocument();
   });
 
+  it("renders Freezone Recipe generation type labels in the list", async () => {
+    freezoneAgentConfigMocks.items = [
+      {
+        id: "public-welfare-poster-9-16",
+        name: "公益宣传海报生成",
+        enabled: true,
+        output_kind: "image",
+        action_keys: ["public-welfare-poster-9-16"],
+        result_summary: "9:16 竖版公益宣传海报",
+      },
+      {
+        id: "public-welfare-copy",
+        name: "公益宣传文案",
+        _catalog_source: "user",
+        _catalog_base_source: "builtin",
+        enabled: true,
+        output_kind: "text",
+        action_keys: ["public-welfare-copy"],
+        result_summary: "温暖感人的公益宣传文案",
+      },
+    ];
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("tab", { name: "虾画 Recipes" }));
+
+    expect(screen.getByText("public-welfare-poster-9-16").closest("article")).toHaveTextContent("图片");
+    expect(screen.getByText("public-welfare-copy").closest("article")).toHaveTextContent("文本");
+    expect(screen.getByText("public-welfare-copy").closest("article")).toHaveTextContent("定制");
+    expect(screen.queryByText("已定制")).not.toBeInTheDocument();
+    expect(screen.queryByText("image")).not.toBeInTheDocument();
+    expect(screen.queryByText("text")).not.toBeInTheDocument();
+  });
+
   it("marks built-in Freezone catalog items in the list", async () => {
     freezoneAgentConfigMocks.items = [
       {
@@ -787,7 +821,8 @@ describe("SettingsDialog tabs", () => {
     fireEvent.click(screen.getByRole("tab", { name: "虾画 Skills" }));
 
     expect(screen.getByText("builtin-skill").closest("article")).toHaveTextContent("内置");
-    expect(screen.getByText("customized-skill").closest("article")).toHaveTextContent("已定制");
+    expect(screen.getByText("customized-skill").closest("article")).toHaveTextContent("定制");
+    expect(screen.queryByText("已定制")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "切换 builtin-skill 启用状态" }));
 
