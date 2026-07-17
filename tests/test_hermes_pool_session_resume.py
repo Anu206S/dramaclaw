@@ -1,3 +1,4 @@
+import os
 import time
 from pathlib import Path
 
@@ -58,6 +59,7 @@ def _patch_fake_hermes_pool(
     calls: list[tuple[str, str | None]] = []
     started_count = 0
     fake_auth = _FakeAuthService()
+    gateway = {"fingerprint": "gateway-1"}
     fake_cli = tmp_path / "hermes"
     fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
     fake_cli.chmod(0o755)
@@ -84,6 +86,11 @@ def _patch_fake_hermes_pool(
         "ensure_user_hermes_workspace",
         lambda _user, profile="director": tmp_path,
     )
+    monkeypatch.setattr(
+        hermes_pool,
+        "effective_gateway_fingerprint",
+        lambda: gateway["fingerprint"],
+    )
     monkeypatch.setattr(hermes_pool, "HermesSdkClient", FakeHermesSdkClient)
 
     pool = hermes_pool.HermesPool(max_workers=5)
@@ -92,7 +99,41 @@ def _patch_fake_hermes_pool(
         return {}
 
     monkeypatch.setattr(pool, "_project_env", fake_project_env)
-    return pool, calls, fake_auth
+    return pool, calls, fake_auth, gateway
+
+
+def test_hermes_worker_receives_effective_newapi_key_without_mutating_host_env(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+
+    monkeypatch.delenv("NEWAPI_API_KEY", raising=False)
+    monkeypatch.setattr(
+        hermes_pool,
+        "effective_gateway_credentials",
+        lambda: ("worker-only-key", "https://newapi.example/v1"),
+    )
+    token = AgentSessionToken(
+        value="agent-token",
+        session_id="agent-session",
+        user="alice",
+        scopes=("projects:read",),
+        exp=int(time.time()) + 3600,
+        worker_id="worker-1",
+        agent_kind="hermes",
+    )
+
+    pool = hermes_pool.HermesPool(max_workers=1)
+    env = pool._build_env(
+        tmp_path,
+        "alice",
+        token,
+        project_id=None,
+    )
+
+    assert env["NEWAPI_API_KEY"] == "worker-only-key"
+    assert "NEWAPI_API_KEY" not in os.environ
 
 
 @pytest.mark.asyncio
@@ -100,7 +141,7 @@ async def test_hermes_pool_uses_separate_sessions_per_project(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool, calls, fake_auth = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+    pool, calls, fake_auth, _gateway = _patch_fake_hermes_pool(tmp_path, monkeypatch)
 
     try:
         first = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
@@ -233,7 +274,7 @@ async def test_hermes_pool_resumes_current_project_session_when_renewing_token(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool, calls, fake_auth = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+    pool, calls, fake_auth, _gateway = _patch_fake_hermes_pool(tmp_path, monkeypatch)
 
     try:
         first = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
@@ -262,7 +303,7 @@ async def test_hermes_pool_rotates_closed_thread(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    pool, calls, fake_auth = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+    pool, calls, fake_auth, _gateway = _patch_fake_hermes_pool(tmp_path, monkeypatch)
 
     try:
         first = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
@@ -274,6 +315,31 @@ async def test_hermes_pool_rotates_closed_thread(
     assert first.closed is True
     assert second is not first
     assert second.id == "session-1"
+    assert calls == [("start", None), ("resume", "session-1")]
+    assert fake_auth.created == 2
+    assert fake_auth.revoked == ["token-1", "token-2"]
+
+
+@pytest.mark.asyncio
+async def test_hermes_pool_rotates_and_resumes_when_gateway_changes(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool, calls, fake_auth, gateway = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+
+    try:
+        first = await pool.get_for_user(
+            "alice", scope_kind="project", project_id="project_a"
+        )
+        gateway["fingerprint"] = "gateway-2"
+        second = await pool.get_for_user(
+            "alice", scope_kind="project", project_id="project_a"
+        )
+    finally:
+        await pool.close_all()
+
+    assert second is not first
+    assert second.id == first.id == "session-1"
     assert calls == [("start", None), ("resume", "session-1")]
     assert fake_auth.created == 2
     assert fake_auth.revoked == ["token-1", "token-2"]
