@@ -28,6 +28,7 @@ import {
   Film,
   Languages,
   Layers,
+  Library,
   Loader2,
   Music,
   Pause,
@@ -36,7 +37,6 @@ import {
   Sparkles,
   Square,
   Upload as UploadIcon,
-  Users,
   Video as VideoIcon,
   Volume2,
   VolumeX,
@@ -161,7 +161,10 @@ import {
 } from "@/features/canvas/domain/cameraMovementPresets";
 import { useFreezoneVideoCameraTemplates } from "@/features/canvas/hooks/useFreezoneVideoCameraTemplates";
 import { useFreezoneVideoModels } from "@/features/canvas/hooks/useFreezoneVideoModels";
-import { CharacterLibraryModal } from "@/features/canvas/ui/CharacterLibraryModal";
+import {
+  AssetLibraryModal,
+  type AssetLibrarySelection,
+} from "@/features/canvas/ui/AssetLibraryModal";
 import { useCanvasStore, useIsBoxSelecting } from "@/stores/canvasStore";
 import {
   fetchFreezoneJobResult,
@@ -221,6 +224,13 @@ const MIN_HEIGHT = 280;
 const MAX_WIDTH = 1100;
 const MAX_HEIGHT = 1000;
 
+// 图片节点的默认落位尺寸（与 ImageGenNode 的 DEFAULT_WIDTH/HEIGHT 对齐）。
+// 「首帧生成视频」会在视频节点左侧新建一个图片节点，排版要按它的真实尺寸算。
+const IMAGE_GEN_NODE_WIDTH = 580;
+const IMAGE_GEN_NODE_HEIGHT = 360;
+/** 「首帧生成视频」预填的提示词，用户可以直接改。 */
+const FIRST_FRAME_PROMPT = "以当前图为首帧生成视频";
+
 const OPERATIONS_PANEL_HEIGHT = 280;
 const OPERATIONS_PANEL_GAP = 12;
 // Extend the ops panel beyond the node's left/right edges so the textarea +
@@ -273,7 +283,7 @@ const VIDEO_PARAM_POPOVER_CLASS =
 const VIDEO_PARAM_LABEL_CLASS =
   "mb-2 text-[11px] font-semibold uppercase tracking-wide text-text-dark/72";
 const VIDEO_PARAM_BUTTON_BASE_CLASS =
-  "inline-flex items-center justify-center rounded-md px-2 py-2 text-xs transition-colors";
+  "inline-flex items-center justify-center rounded px-2 py-2 text-xs transition-colors";
 const VIDEO_PARAM_ACTIVE_BUTTON_CLASS =
   "bg-white/[0.13] text-text-dark ring-1 ring-white/24";
 const VIDEO_PARAM_IDLE_BUTTON_CLASS =
@@ -1368,26 +1378,30 @@ export const VideoNode = memo(
       inputRef.current?.click();
     }, []);
 
-    // Spawn one or two empty upload nodes to the left of this video node and
-    // wire them as inputs. Used by the empty-state "首帧/首尾帧 生成视频" CTAs.
+    // Spawn the frame source node(s) to the left of this video node and wire
+    // them as inputs. Used by the empty-state "首帧/首尾帧 生成视频" CTAs.
+    // 首帧走图片节点（可上传也可直接生图）+ 全能参考；首尾帧仍走上传节点 + 关键帧。
     const spawnFrameUploads = useCallback(
       (mode: "firstFrame" | "firstLastFrame") => {
         const state = useCanvasStore.getState();
         const self = state.nodes.find((n) => n.id === id);
         if (!self) return;
-        const UPLOAD_WIDTH = 320;
-        const UPLOAD_HEIGHT = 350;
+        const isFirstFrame = mode === "firstFrame";
+        // 两种源节点的默认尺寸不同（图片节点 580×360 / 上传节点 320×350），
+        // 左列的定位与避让都得按实际尺寸算，否则图片节点会压到视频节点身上。
+        const FRAME_WIDTH = isFirstFrame ? IMAGE_GEN_NODE_WIDTH : 320;
+        const FRAME_HEIGHT = isFirstFrame ? IMAGE_GEN_NODE_HEIGHT : 350;
         const GAP_X = 40;
         const GAP_Y = 24;
-        const baseX = self.position.x - UPLOAD_WIDTH - GAP_X;
-        const stepY = UPLOAD_HEIGHT + GAP_Y;
+        const baseX = self.position.x - FRAME_WIDTH - GAP_X;
+        const stepY = FRAME_HEIGHT + GAP_Y;
         const nodeSize = (node: CanvasNode) => ({
           width:
             node.measured?.width ??
-            (typeof node.width === "number" ? node.width : UPLOAD_WIDTH),
+            (typeof node.width === "number" ? node.width : FRAME_WIDTH),
           height:
             node.measured?.height ??
-            (typeof node.height === "number" ? node.height : UPLOAD_HEIGHT),
+            (typeof node.height === "number" ? node.height : FRAME_HEIGHT),
         });
         const overlaps = (
           a: { x: number; y: number; width: number; height: number },
@@ -1417,7 +1431,12 @@ export const VideoNode = memo(
         );
         const frameColumnNodes = state.nodes.filter((node) => {
           if (!upstreamIds.has(node.id)) return false;
-          if (node.type !== CANVAS_NODE_TYPES.upload) return false;
+          if (
+            node.type !== CANVAS_NODE_TYPES.upload &&
+            node.type !== CANVAS_NODE_TYPES.imageGen
+          ) {
+            return false;
+          }
           return Math.abs(node.position.x - baseX) < 8;
         });
         const lastFrameColumnY = frameColumnNodes.reduce<number | null>(
@@ -1430,20 +1449,22 @@ export const VideoNode = memo(
               ? preferredY
               : Math.max(preferredY, lastFrameColumnY + stepY);
           for (let attempt = 0; attempt < 40; attempt += 1) {
-            const candidate = { x: baseX, y, width: UPLOAD_WIDTH, height: UPLOAD_HEIGHT };
+            const candidate = { x: baseX, y, width: FRAME_WIDTH, height: FRAME_HEIGHT };
             if (!occupiedRects.some((rect) => overlaps(candidate, rect))) {
               occupiedRects.push(candidate);
               return y;
             }
             y += stepY;
           }
-          occupiedRects.push({ x: baseX, y, width: UPLOAD_WIDTH, height: UPLOAD_HEIGHT });
+          occupiedRects.push({ x: baseX, y, width: FRAME_WIDTH, height: FRAME_HEIGHT });
           return y;
         };
-        if (mode === "firstFrame") {
-          const baseY = resolveAvailableY(self.position.y);
+        if (isFirstFrame) {
+          const baseY = resolveAvailableY(
+            self.position.y + ((self.height ?? DEFAULT_HEIGHT) - FRAME_HEIGHT) / 2,
+          );
           const newId = addNode(
-            CANVAS_NODE_TYPES.upload,
+            CANVAS_NODE_TYPES.imageGen,
             { x: baseX, y: baseY },
             {
               displayName: "首帧",
@@ -1451,39 +1472,44 @@ export const VideoNode = memo(
           );
           addEdge(newId, id);
           state.autoGroupSpawn(id, [newId], { label: '首帧生成视频组' });
-        } else {
-          const totalH = UPLOAD_HEIGHT * 2 + GAP_Y;
-          const startY =
-            self.position.y + ((self.height ?? DEFAULT_HEIGHT) - totalH) / 2;
-          const firstY = resolveAvailableY(startY);
-          const lastY = resolveAvailableY(firstY + stepY);
-          const firstId = addNode(
-            CANVAS_NODE_TYPES.upload,
-            { x: baseX, y: firstY },
-            { displayName: "首帧" },
-          );
-          addEdge(firstId, id);
-          const lastId = addNode(
-            CANVAS_NODE_TYPES.upload,
-            { x: baseX, y: lastY },
-            { displayName: "尾帧" },
-          );
-          addEdge(lastId, id);
-          state.autoGroupSpawn(id, [firstId, lastId], { label: '首尾帧生成视频组' });
+          // 首帧走全能参考（把上游图当参考图喂给全能生成端点），并把提示词直接
+          // 写好；用户已经写过提示词就别覆盖他的内容。
+          updateNodeData(id, {
+            genMode: "allReference",
+            ...(prompt.trim() ? {} : { prompt: FIRST_FRAME_PROMPT }),
+          });
+          return;
         }
-        // Both CTAs now route through the firstLastFrame mode — the backend
-        // keyframes endpoint accepts just the first frame too. allReference
-        // would have meant the omni-gen endpoint, which is a separate path.
+        const totalH = FRAME_HEIGHT * 2 + GAP_Y;
+        const startY =
+          self.position.y + ((self.height ?? DEFAULT_HEIGHT) - totalH) / 2;
+        const firstY = resolveAvailableY(startY);
+        const lastY = resolveAvailableY(firstY + stepY);
+        const firstId = addNode(
+          CANVAS_NODE_TYPES.upload,
+          { x: baseX, y: firstY },
+          { displayName: "首帧" },
+        );
+        addEdge(firstId, id);
+        const lastId = addNode(
+          CANVAS_NODE_TYPES.upload,
+          { x: baseX, y: lastY },
+          { displayName: "尾帧" },
+        );
+        addEdge(lastId, id);
+        state.autoGroupSpawn(id, [firstId, lastId], { label: '首尾帧生成视频组' });
         updateNodeData(id, { genMode: "firstLastFrame" });
       },
-      [addEdge, addNode, id, updateNodeData],
+      [addEdge, addNode, id, prompt, updateNodeData],
     );
 
-    // Spawn upload nodes from selected character-library entries — one per
+    // Spawn reference nodes from selected asset-library entries — one per
     // selection, stacked vertically to the left of this video node, then wired
-    // as upstream references so they show up in the operations panel.
+    // as upstream references so they show up in the operations panel. The node
+    // type depends on the media: images/videos become upload nodes carrying
+    // imageUrl/videoUrl, audio becomes an audio node carrying audioUrl.
     const spawnCharacterLibraryReferences = useCallback(
-      (selections: ReadonlyArray<{ imageUrl: string; name: string }>) => {
+      (selections: ReadonlyArray<AssetLibrarySelection>) => {
         if (selections.length === 0) return;
         const state = useCanvasStore.getState();
         const self = state.nodes.find((n) => n.id === id);
@@ -1500,19 +1526,35 @@ export const VideoNode = memo(
         const newIds: string[] = [];
         selections.forEach((sel, idx) => {
           const y = startY + idx * (UPLOAD_HEIGHT + GAP_Y);
-          const newId = addNode(
-            CANVAS_NODE_TYPES.upload,
-            { x: baseX, y },
-            {
-              imageUrl: sel.imageUrl,
-              previewImageUrl: sel.imageUrl,
-              displayName: sel.name || undefined,
-            },
-          );
+          const displayName = sel.name || undefined;
+          let newId: string;
+          if (sel.media === "audio") {
+            newId = addNode(
+              CANVAS_NODE_TYPES.audio,
+              { x: baseX, y },
+              { audioUrl: sel.url, displayName },
+            );
+          } else if (sel.media === "video") {
+            newId = addNode(
+              CANVAS_NODE_TYPES.upload,
+              { x: baseX, y },
+              { videoUrl: sel.url, displayName },
+            );
+          } else {
+            newId = addNode(
+              CANVAS_NODE_TYPES.upload,
+              { x: baseX, y },
+              {
+                imageUrl: sel.url,
+                previewImageUrl: sel.url,
+                displayName,
+              },
+            );
+          }
           addEdge(newId, id);
           newIds.push(newId);
         });
-        state.autoGroupSpawn(id, newIds, { label: '角色参考组' });
+        state.autoGroupSpawn(id, newIds, { label: '资产参考组' });
       },
       [addEdge, addNode, id],
     );
@@ -3188,7 +3230,7 @@ export const VideoNode = memo(
           onChange={handleFileChange}
         />
 
-        <CharacterLibraryModal
+        <AssetLibraryModal
           open={isCharacterLibraryOpen}
           project={readUrl().project ?? null}
           onClose={() => setIsCharacterLibraryOpen(false)}
@@ -3367,6 +3409,40 @@ function VideoConfigChip({
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
+  // Local draft for the direct-entry duration box. The field stays free text
+  // while editing so a half-typed value isn't fought by clamping, but we still
+  // want the slider and bottom chip to track the box live — so on each keystroke
+  // we commit as soon as the draft is a *complete integer already inside* the
+  // model's bounds. An out-of-range interim (the "1" of "12" when min is 5) is
+  // held as draft only and NOT committed, so the user is never stranded at the
+  // min mid-typing; blur/Enter clamps anything still out of range on the way out.
+  const [durationDraft, setDurationDraft] = useState<string>(String(durationSec));
+  useEffect(() => {
+    setDurationDraft(String(durationSec));
+  }, [durationSec]);
+  const handleDurationInput = (raw: string) => {
+    setDurationDraft(raw);
+    const parsed = Number(raw);
+    if (
+      raw.trim() !== "" &&
+      Number.isInteger(parsed) &&
+      parsed >= durationBounds.min &&
+      parsed <= durationBounds.max &&
+      parsed !== durationSec
+    ) {
+      onChange({ durationSec: parsed });
+    }
+  };
+  const commitDuration = () => {
+    const parsed = Number(durationDraft);
+    if (durationDraft.trim() === "" || !Number.isFinite(parsed)) {
+      setDurationDraft(String(durationSec)); // revert empty/garbage to current
+      return;
+    }
+    const clamped = clampVideoDuration(parsed, durationBounds);
+    setDurationDraft(String(clamped));
+    if (clamped !== durationSec) onChange({ durationSec: clamped });
+  };
 
   useEffect(() => {
     if (!isOpen) return;
@@ -3463,23 +3539,46 @@ function VideoConfigChip({
             })}
           </div>
 
-          <div className="mb-2 flex items-center justify-between text-[11px] font-semibold uppercase tracking-wide text-text-dark/72">
-            <span>{t("node.videoNode.duration.title")}</span>
-            <span className="normal-case text-text-dark">{durationSec}s</span>
+          <div className={VIDEO_PARAM_LABEL_CLASS}>
+            {t("node.videoNode.duration.title")}
           </div>
-          <input
-            type="range"
-            min={durationBounds.min}
-            max={durationBounds.max}
-            step={1}
-            value={durationSec}
-            onChange={(event) =>
-              onChange({
-                durationSec: clampVideoDuration(Number(event.target.value), durationBounds),
-              })
-            }
-            className="video-duration-slider mb-4 w-full"
-          />
+          <div className="mb-4 flex items-center gap-3">
+            <input
+              type="range"
+              min={durationBounds.min}
+              max={durationBounds.max}
+              step={1}
+              value={durationSec}
+              onChange={(event) =>
+                onChange({
+                  durationSec: clampVideoDuration(Number(event.target.value), durationBounds),
+                })
+              }
+              className="video-duration-slider min-w-0 flex-1"
+            />
+            <div className="flex shrink-0 items-center gap-1">
+              <input
+                type="number"
+                inputMode="numeric"
+                min={durationBounds.min}
+                max={durationBounds.max}
+                step={1}
+                value={durationDraft}
+                onChange={(event) => handleDurationInput(event.target.value)}
+                onBlur={commitDuration}
+                onKeyDown={(event) => {
+                  if (event.key === "Enter") {
+                    event.preventDefault();
+                    commitDuration();
+                    event.currentTarget.blur();
+                  }
+                }}
+                aria-label={t("node.videoNode.duration.title")}
+                className="h-7 w-12 rounded border border-white/12 bg-white/[0.07] px-1.5 text-center text-xs tabular-nums text-text-dark outline-none transition-colors focus:border-white/28 focus:bg-white/[0.11] [appearance:textfield] [&::-webkit-inner-spin-button]:appearance-none [&::-webkit-outer-spin-button]:appearance-none"
+              />
+              <span className="text-[11px] text-text-muted/80">s</span>
+            </div>
+          </div>
 
           {sceneOptimizeOptions.length > 0 && (
             <>
@@ -3511,7 +3610,7 @@ function VideoConfigChip({
           <div className={VIDEO_PARAM_LABEL_CLASS}>
             {t("node.videoNode.audio.title")}
           </div>
-          <div className="flex items-center justify-between rounded-[8px] bg-white/[0.045] px-2.5 py-1.5">
+          <div className="flex items-center justify-between rounded-md bg-white/[0.045] px-2.5 py-1.5">
             <span className="text-xs font-medium text-text-dark/88">
               {generateAudio
                 ? t("node.videoNode.audio.on")
@@ -3675,10 +3774,10 @@ function CharacterLibraryChip({ onOpen }: CharacterLibraryChipProps) {
         event.stopPropagation();
         onOpen();
       }}
-      className={`${NODE_TEXT_CONTROL_TRIGGER_CLASS} group/character px-1.5`}
+      className={`${NODE_TEXT_CONTROL_TRIGGER_CLASS} group/asset px-1.5`}
     >
-      <Users className={`${NODE_TEXT_CONTROL_ICON_CLASS} group-hover/character:text-text-dark`} />
-      <span>角色库</span>
+      <Library className={`${NODE_TEXT_CONTROL_ICON_CLASS} group-hover/asset:text-text-dark`} />
+      <span>资产库</span>
     </button>
   );
 }
