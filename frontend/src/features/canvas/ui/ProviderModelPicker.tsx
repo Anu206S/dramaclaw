@@ -70,7 +70,7 @@ export const SHARED_MODELS: ModelOption[] = [
     id: 'huimeng/gpt-image-2',
     providerId: 'huimeng',
     apiModel: 'huimeng_gpt_image2',
-    label: 'HuiMeng GPT Image 2',
+    label: 'LingShan-G2',
   },
   {
     id: 'openrouter/gemini-2.5-flash-image',
@@ -152,15 +152,6 @@ export const VIDEO_MODELS: ModelOption[] = [
     label: 'Seedance1.0 Pro Fast',
     minDuration: 2,
     maxDuration: 12,
-  },
-  {
-    id: 'newapi_grok-video-channel',
-    providerId: 'huimeng',
-    apiModel: 'newapi_grok-video-channel',
-    label: 'Grok Video Channel',
-    resolutionOptions: ['720p', '480p'],
-    minDuration: 6,
-    maxDuration: 30,
   },
 ];
 

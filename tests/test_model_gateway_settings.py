@@ -818,7 +818,7 @@ def test_provisioner_enabled_by_default_and_can_be_disabled(monkeypatch):
     require_provisioner_enabled()
 
 
-def test_newapi_db_requires_explicit_dsn_and_does_not_create_empty_sqlite(
+def test_newapi_db_defaults_to_managed_ce_sqlite_and_does_not_create_empty_file(
     monkeypatch,
     tmp_path,
 ):
@@ -827,10 +827,15 @@ def test_newapi_db_requires_explicit_dsn_and_does_not_create_empty_sqlite(
     monkeypatch.delenv("NEWAPI_SQL_DSN", raising=False)
     monkeypatch.delenv("NEWAPI_SQLITE_PATH", raising=False)
 
-    with pytest.raises(RuntimeError, match="NEWAPI_SQL_DSN is required"):
-        open_newapi_db(model_gateway.get_provisioner_config())
+    cfg = model_gateway.get_provisioner_config()
 
-    assert not (tmp_path / "one-api.db").exists()
+    assert cfg.admin_base_url == "http://127.0.0.1:3000"
+    assert cfg.sql_dsn == "local"
+    assert cfg.sqlite_path == str(tmp_path / "state" / "newapi" / "one-api.db")
+    with pytest.raises(RuntimeError, match="does not exist"):
+        open_newapi_db(cfg)
+
+    assert not (tmp_path / "state" / "newapi" / "one-api.db").exists()
 
 
 def test_newapi_db_rejects_missing_sqlite_file(monkeypatch, tmp_path):
@@ -896,7 +901,7 @@ def test_provisioner_config_request_database_overrides_saved_settings(
     assert cfg.admin_username == "request-root"
 
 
-def test_database_status_masks_dsn_password(monkeypatch, tmp_path):
+def test_database_status_does_not_expose_database_credentials(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     save_newapi_database_config(
         sql_dsn="postgresql://root:secret@127.0.0.1:5432/newapi",
@@ -907,7 +912,10 @@ def test_database_status_masks_dsn_password(monkeypatch, tmp_path):
 
     assert status["configured"] is True
     assert status["source"] == "database"
-    assert status["sqlDsnPreview"] == "postgresql://root:***@127.0.0.1:5432/newapi"
+    assert status["databaseType"] == "external"
+    assert "sqlDsnPreview" not in status
+    assert "sqlitePath" not in status
+    assert "adminUsername" not in status
     assert "secret" not in str(status)
 
 
@@ -1214,7 +1222,8 @@ def test_custom_newapi_init_route_persists_request_database_config(
     data = response.json()["data"]
     assert data["database"]["configured"] is True
     assert data["database"]["source"] == "database"
-    assert data["database"]["sqlitePath"] == "/Users/hg/data/new-api/one-api.db"
+    assert data["database"]["databaseType"] == "sqlite"
+    assert "sqlitePath" not in data["database"]
     cfg = get_provisioner_config()
     assert cfg.sql_dsn == "local"
     assert cfg.sqlite_path == "/Users/hg/data/new-api/one-api.db"
@@ -1747,7 +1756,7 @@ def test_custom_newapi_media_models_groups_by_provider_and_persists_mapping(
         json={
             "newApiBaseUrl": "http://new-api:3000",
             "models": {
-                "gpt-image-2": {
+                "LingShan-G2": {
                     "provider": "openai",
                     "upstreamModel": "gpt-image-upstream",
                 },
@@ -1763,9 +1772,9 @@ def test_custom_newapi_media_models_groups_by_provider_and_persists_mapping(
                     "provider": "volcengine",
                     "upstreamModel": "index-tts-2-upstream",
                 },
-                "eleven-music": {
+                "LingShan-MU-11": {
                     "provider": "volcengine",
-                    "upstreamModel": "eleven-music-upstream",
+                    "upstreamModel": "lingshan-mu-upstream",
                 },
             },
         },
@@ -1778,13 +1787,13 @@ def test_custom_newapi_media_models_groups_by_provider_and_persists_mapping(
     assert len(payloads) == 2
     by_name = {payload["channel"]["name"]: payload["channel"] for payload in payloads}
     assert json.loads(by_name["DC-openai"]["model_mapping"]) == {
-        "gpt-image-2": "gpt-image-upstream",
+        "LingShan-G2": "gpt-image-upstream",
     }
     assert json.loads(by_name["DC-volcengine"]["model_mapping"]) == {
         "seedance-1.5-pro": "doubao-seedance-1-5",
         "seedance-2.0-fast": "seedance-2.0-fast",
         "index-tts-2": "index-tts-2-upstream",
-        "eleven-music": "eleven-music-upstream",
+        "LingShan-MU-11": "lingshan-mu-upstream",
     }
     assert by_name["DC-openai"]["key"] == "sk-openai-upstream-secret"
     assert by_name["DC-volcengine"]["base_url"] == "https://ark.example.com"
@@ -1794,7 +1803,7 @@ def test_custom_newapi_media_models_groups_by_provider_and_persists_mapping(
     config_response = client.get("/model-gateway/config")
     media_models = config_response.json()["data"]["provisioner"]["mediaModels"]
     assert media_models == {
-        "gpt-image-2": {
+        "LingShan-G2": {
             "provider": "openai",
             "upstreamModel": "gpt-image-upstream",
         },
@@ -1810,9 +1819,9 @@ def test_custom_newapi_media_models_groups_by_provider_and_persists_mapping(
             "provider": "volcengine",
             "upstreamModel": "index-tts-2-upstream",
         },
-        "eleven-music": {
+        "LingShan-MU-11": {
             "provider": "volcengine",
-            "upstreamModel": "eleven-music-upstream",
+            "upstreamModel": "lingshan-mu-upstream",
         },
     }
 
