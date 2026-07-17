@@ -3295,8 +3295,10 @@
         "textToVideo": "Text to Video",
         "allReference": "All Reference",
         "imageToVideo": "Image to Video",
+        "firstFrame": "First Frame",
         "firstLastFrame": "First/Last Frame",
-        "imageReference": "Image Reference"
+        "imageReference": "Image Reference",
+        "videoEdit": "Video Edit"
       },
       "placeholder": "Describe the video to generate.",
       "submit": "Submit",
@@ -3983,6 +3985,7 @@
           "SCENE_BUILD": "Analyze and enrich scene descriptions",
           "FREEZONE_TRANSLATION": "Prompt zh/en translation",
           "FREEZONE_STORY_SCRIPT": "Story script generation",
+          "FREEZONE_VISION": "Image and video content analysis",
           "STYLE_ANALYZER": "Analyze a custom style from reference images",
           "CONTENT_REWRITER": "Rewrite source text as short-video voiceover",
           "SCREENPLAY_NORMALIZER": "Parse scene structure during screenplay import",
