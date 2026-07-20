@@ -136,6 +136,59 @@ def test_hermes_worker_receives_effective_newapi_key_without_mutating_host_env(
     assert "NEWAPI_API_KEY" not in os.environ
 
 
+def test_hermes_worker_defaults_to_ce_edition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from novelvideo.chat import hermes_pool
+
+    monkeypatch.delenv("ST_EDITION", raising=False)
+    monkeypatch.setattr(hermes_pool, "effective_gateway_credentials", lambda: ("", ""))
+    token = AgentSessionToken(
+        value="agent-token",
+        session_id="agent-session",
+        user="alice",
+        scopes=("projects:read",),
+        exp=int(time.time()) + 3600,
+        worker_id="worker-1",
+        agent_kind="hermes",
+    )
+
+    pool = hermes_pool.HermesPool(max_workers=1)
+    env = pool._build_env(
+        tmp_path,
+        "alice",
+        token,
+        project_id=None,
+    )
+
+    assert env["ST_EDITION"] == "ce"
+
+
+def test_hermes_worker_receives_novelvideo_data_roots(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    from novelvideo.chat import hermes_pool
+
+    monkeypatch.setattr(hermes_pool, "effective_gateway_credentials", lambda: ("", ""))
+    token = AgentSessionToken(
+        value="agent-token",
+        session_id="agent-session",
+        user="alice",
+        scopes=("projects:read",),
+        exp=int(time.time()) + 3600,
+        worker_id="worker-1",
+        agent_kind="hermes",
+    )
+
+    pool = hermes_pool.HermesPool(max_workers=1)
+    env = pool._build_env(
+        tmp_path,
+        "alice",
+        token,
+        project_id=None,
+    )
+
+    assert env["NOVELVIDEO_OUTPUT_DIR"] == str(hermes_pool.config.OUTPUT_DIR)
+    assert env["NOVELVIDEO_STATE_DIR"] == str(hermes_pool.config.STATE_DIR)
+    assert env["NOVELVIDEO_RUNTIME_DIR"] == str(hermes_pool.config.RUNTIME_DIR)
+
+
 @pytest.mark.asyncio
 async def test_hermes_pool_uses_separate_sessions_per_project(
     tmp_path: Path,

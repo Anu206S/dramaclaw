@@ -28,6 +28,7 @@ import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from novelvideo import config
 from novelvideo.chat.hermes_sdk import HermesSdkClient, HermesSdkThread
 from novelvideo.chat.hermes_workspace import (
     effective_gateway_credentials,
@@ -554,7 +555,11 @@ class HermesPool:
             "HOME": str(home),
             "HERMES_HOME": str(home),
             "TMPDIR": str(home / "tmp"),
-            "ST_EDITION": os.environ.get("ST_EDITION", ""),
+            "NOVELVIDEO_OUTPUT_DIR": str(config.OUTPUT_DIR),
+            "NOVELVIDEO_STATE_DIR": str(config.STATE_DIR),
+            "NOVELVIDEO_RUNTIME_DIR": str(config.RUNTIME_DIR),
+            "ST_EDITION": os.environ.get("ST_EDITION", "ce"),
+            "DRAMACLAW_FREEZONE_TOOL_RESULT_DIR": str(home / "tmp" / "freezone-tool-results"),
             "ST_CONTROL_PLANE_DSN": os.environ.get("ST_CONTROL_PLANE_DSN", ""),
             "DRAMACLAW_USER": username,
             "DRAMACLAW_AGENT_TOKEN": token.value,

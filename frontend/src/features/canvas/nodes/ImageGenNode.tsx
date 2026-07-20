@@ -386,14 +386,8 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // displayed id and the submit apiModel from this one object, so they can
   // never diverge.
   //
-  // The node's default `data.model` is seeded to the static
-  // `DEFAULT_SHARED_MODEL_ID` (`huimeng/gpt-image-2`), which is normally NOT in
-  // the live `/freezone/image/models` list. Trusting it blindly is the bug:
-  // ProviderModelPicker silently falls back to showing `availableModels[0]`
-  // (e.g. LingShan-G2) when the id isn't found, while submit resolves the stale
-  // id through SHARED_MODELS to `huimeng_gpt_image2` — display ≠ value sent.
-  // Reconciling here keeps them in lockstep: an unknown persisted id falls back
-  // to the first live model (exactly what the picker shows).
+  // Resolve unknown persisted ids to the first live model, exactly like the
+  // picker does, so the displayed model and submitted apiModel stay aligned.
   const selectedModel = useMemo(() => {
     const persisted =
       typeof data.model === 'string' && data.model.length > 0 ? data.model : null;

@@ -823,7 +823,7 @@ export async function fetchFreezoneCameraOptions(
 // /freezone/image/models -------------------------------------------------- //
 
 export interface FreezoneImageModelInfo {
-  /** Stable picker id, e.g. `"huimeng/gpt-image-2"`. */
+  /** Stable picker id, e.g. `"newapi_gpt_image2"`. */
   id: string;
   /** Provider tab id (`huimeng` / `openrouter` / `openai`). */
   providerId: FreezoneProvider;

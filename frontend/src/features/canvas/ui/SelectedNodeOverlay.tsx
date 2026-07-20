@@ -429,7 +429,7 @@ export const SelectedNodeOverlay = memo(() => {
           isGenerating: false,
           // Persist enough to (re-)run the upscale and to drive the always-attached panel.
           upscaleSourceUrl: sourceImageUrl,
-          upscaleModelId: 'huimeng/gpt-image-2',
+          upscaleModelId: 'newapi_gpt_image2',
           upscaleImageSize: '2K',
           upscaleScaleFactor: 2,
         },

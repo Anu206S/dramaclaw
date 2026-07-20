@@ -8,6 +8,7 @@ import pytest
 
 from novelvideo.api.routes import chat as chat_routes
 from novelvideo.chat import backend_sdk
+from novelvideo.chat import hermes_sdk
 from novelvideo.chat import service as chat_service
 from novelvideo.chat.store import ChatScope, chat_store
 
@@ -52,6 +53,199 @@ def test_canvas_context_tool_result_infers_missing_status():
     )
 
     assert payload.canvas_context_status is None
+
+
+def test_hermes_tool_call_update_keeps_tool_call_id_attribution(tmp_path):
+    thread = hermes_sdk.HermesSdkThread(
+        cli_path=tmp_path / "hermes",
+        cwd=tmp_path,
+        env={},
+        model=None,
+        username="local",
+        session_id="session-1",
+    )
+    tool_names: dict[str, str] = {}
+
+    started = thread._translate_notification(
+        {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call",
+                    "toolCallId": "tc-list",
+                    "title": "freezone_skill_list",
+                }
+            },
+        },
+        "turn-1",
+        tool_name_by_call_id=tool_names,
+    )
+    unrelated_failed = thread._translate_notification(
+        {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc-skill-view",
+                    "status": "failed",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": "Skill view failed: Skill 'freezone:freezone' not found.",
+                            },
+                        }
+                    ],
+                }
+            },
+        },
+        "turn-1",
+        tool_name_by_call_id=tool_names,
+    )
+    completed = thread._translate_notification(
+        {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc-list",
+                    "status": "completed",
+                }
+            },
+        },
+        "turn-1",
+        tool_name_by_call_id=tool_names,
+    )
+
+    assert started is not None
+    assert started.name == "freezone_skill_list"
+    assert unrelated_failed is not None
+    assert unrelated_failed.name is None
+    assert completed is not None
+    assert completed.name == "freezone_skill_list"
+
+
+def test_hermes_tool_call_update_preserves_content_as_output(tmp_path):
+    thread = hermes_sdk.HermesSdkThread(
+        cli_path=tmp_path / "hermes",
+        cwd=tmp_path,
+        env={},
+        model=None,
+        username="local",
+        session_id="session-1",
+    )
+    tool_names = {"tc-list": "freezone_skill_list"}
+
+    result = thread._translate_notification(
+        {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc-list",
+                    "status": "completed",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": '{"skills":[{"id":"pixar-ip-brand-ad"}]}',
+                            },
+                        }
+                    ],
+                }
+            },
+        },
+        "turn-1",
+        tool_name_by_call_id=tool_names,
+    )
+
+    assert result is not None
+    assert result.type == "tool_updated"
+    assert result.name == "freezone_skill_list"
+    assert result.status == "completed"
+    assert result.output == [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": '{"skills":[{"id":"pixar-ip-brand-ad"}]}',
+            },
+        }
+    ]
+
+
+def test_hermes_tool_call_update_attaches_recent_freezone_structured_result(tmp_path):
+    result_dir = tmp_path / "freezone-tool-results"
+    result_dir.mkdir()
+    payload = {
+        "tool_name": "freezone_skill_list",
+        "created_at": datetime.now(tz=timezone.utc).timestamp(),
+        "result": {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]},
+    }
+    (result_dir / "freezone_skill_list-1-2.json").write_text(
+        json.dumps(payload, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    thread = hermes_sdk.HermesSdkThread(
+        cli_path=tmp_path / "hermes",
+        cwd=tmp_path,
+        env={"DRAMACLAW_FREEZONE_TOOL_RESULT_DIR": str(result_dir)},
+        model=None,
+        username="local",
+        session_id="session-1",
+    )
+    tool_names = {"tc-list": "freezone_skill_list"}
+
+    result = thread._translate_notification(
+        {
+            "method": "session/update",
+            "params": {
+                "update": {
+                    "sessionUpdate": "tool_call_update",
+                    "toolCallId": "tc-list",
+                    "status": "completed",
+                    "content": {"text": "freezone_skill_list result\n- **count:** 1"},
+                }
+            },
+        },
+        "turn-1",
+        tool_name_by_call_id=tool_names,
+    )
+
+    assert result is not None
+    assert result.type == "tool_updated"
+    assert result.name == "freezone_skill_list"
+    assert result.status == "completed"
+    assert result.output == {"text": "freezone_skill_list result\n- **count:** 1"}
+    assert result.structured == {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]}
+
+
+def test_anonymous_hermes_tool_call_update_is_not_user_visible():
+    event = SimpleNamespace(
+        name=None,
+        raw={
+            "sessionUpdate": "tool_call_update",
+            "toolCallId": "tc-skill-view",
+            "status": "failed",
+        },
+    )
+
+    assert chat_service._is_anonymous_hermes_tool_call_update(event)
+
+
+def test_hermes_lifecycle_tool_updates_are_not_user_visible():
+    events = [
+        SimpleNamespace(name="freezone_skill_list", text="", raw={"sessionUpdate": "tool_call"}),
+        SimpleNamespace(
+            name="freezone_skill_list",
+            text="completed",
+            raw={"sessionUpdate": "tool_call_update", "status": "completed"},
+        ),
+    ]
+
+    assert all(chat_service._is_hermes_lifecycle_tool_update(event) for event in events)
 
 
 def test_infer_display_tool_call_recovers_sketch_display_promise():
