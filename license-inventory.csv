@@ -1720,6 +1720,7 @@ tests/test_backup_wal_migrator.py,Elastic-2.0,2026 SuperTale contributors,REUSE.
 tests/test_batch_render_removed.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_batch_render_video_actions_removed.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_block_world_node_unavailable.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_canvas_command_bridge.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_canvas_scene_refs_override.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_ce_allowlist.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_ce_imports_lint.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
