@@ -1567,7 +1567,7 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
             )}
           </div>
           <div className="flex items-center gap-1">
-            {stationView === "game" && (activeGameId === "inspiration-station" || activeGameId === "flying") ? (
+            {stationView === "game" && (activeGameId === "inspiration-station" || activeGameId === "breakout" || activeGameId === "rolling-ball" || activeGameId === "flying") ? (
               <button
                 type="button"
                 className="inline-flex size-9 items-center justify-center rounded-full text-white/68 transition-colors hover:bg-white/[0.08] hover:text-white"
@@ -1612,9 +1612,9 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
           ) : activeGameId === "memory-match" ? (
             <PikoMemoryMatchGame onClose={onClose} />
           ) : activeGameId === "breakout" ? (
-            <PikoBreakoutGame onClose={onClose} />
+            <PikoBreakoutGame onClose={onClose} muted={isAudioMuted} />
           ) : activeGameId === "rolling-ball" ? (
-            <PikoRollingBallGame onClose={onClose} />
+            <PikoRollingBallGame onClose={onClose} muted={isAudioMuted} />
           ) : activeGameId === "flying" ? (
             <PikoFlyingGame onClose={onClose} muted={isAudioMuted} />
           ) : (

@@ -52,9 +52,11 @@ function initialBall(): Ball {
   return { x: BOARD_WIDTH / 2, y: 388, vx: 0, vy: 0 };
 }
 
-export function PikoRollingBallGame({ onClose }: { onClose: () => void }) {
+export function PikoRollingBallGame({ onClose, muted }: { onClose: () => void; muted: boolean }) {
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mutedRef = useRef(muted);
   const frameRef = useRef<number | null>(null);
   const previousTimeRef = useRef<number | null>(null);
   const statusRef = useRef<RollingBallStatus>("ready");
@@ -66,6 +68,85 @@ export function PikoRollingBallGame({ onClose }: { onClose: () => void }) {
   const pointerTargetXRef = useRef<number | null>(null);
   const [status, setStatus] = useState<RollingBallStatus>("ready");
   const [score, setScore] = useState(0);
+
+  const getAudioContext = useCallback(() => {
+    if (mutedRef.current) return null;
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return null;
+    audioContextRef.current ??= new AudioContextClass();
+    if (audioContextRef.current.state === "suspended") void audioContextRef.current.resume();
+    return audioContextRef.current;
+  }, []);
+
+  const playTone = useCallback((
+    frequency: number,
+    duration: number,
+    volume: number,
+    type: OscillatorType = "sine",
+    delay = 0,
+    endFrequency?: number,
+  ) => {
+    const context = getAudioContext();
+    if (!context) return;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const startsAt = context.currentTime + delay;
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, startsAt);
+    if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, startsAt + duration);
+    gain.gain.setValueAtTime(0.0001, startsAt);
+    gain.gain.exponentialRampToValueAtTime(volume, startsAt + 0.008);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startsAt + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startsAt);
+    oscillator.stop(startsAt + duration + 0.02);
+  }, [getAudioContext]);
+
+  const playStartSound = useCallback(() => {
+    playTone(330, 0.08, 0.065, "triangle");
+    playTone(440, 0.09, 0.07, "triangle", 0.08);
+    playTone(659.25, 0.12, 0.075, "triangle", 0.17);
+  }, [playTone]);
+
+  const playLandingSound = useCallback(() => {
+    playTone(190, 0.075, 0.065, "sine", 0, 120);
+    playTone(430, 0.055, 0.035, "triangle", 0.025, 560);
+  }, [playTone]);
+
+  const playScoreSound = useCallback((nextScore: number) => {
+    const lift = Math.min(nextScore, 12) * 10;
+    playTone(520 + lift, 0.08, 0.075, "triangle", 0, 720 + lift);
+    playTone(860 + lift, 0.1, 0.05, "sine", 0.055);
+    if (nextScore % 5 === 0) {
+      playTone(523.25, 0.2, 0.055, "triangle", 0.12);
+      playTone(659.25, 0.2, 0.05, "triangle", 0.17);
+      playTone(783.99, 0.24, 0.045, "triangle", 0.22);
+    }
+  }, [playTone]);
+
+  const playFallSound = useCallback(() => {
+    playTone(260, 0.34, 0.1, "sawtooth", 0, 62);
+    playTone(150, 0.3, 0.06, "square", 0.06, 48);
+  }, [playTone]);
+
+  useEffect(() => {
+    mutedRef.current = muted;
+    const context = audioContextRef.current;
+    if (!context) return;
+    if (muted && context.state === "running") void context.suspend();
+    if (!muted && context.state === "suspended") void context.resume();
+  }, [muted]);
+
+  useEffect(() => {
+    return () => {
+      const context = audioContextRef.current;
+      audioContextRef.current = null;
+      if (context && context.state !== "closed") void context.close();
+    };
+  }, []);
 
   const setGameStatus = useCallback((next: RollingBallStatus) => {
     statusRef.current = next;
@@ -88,8 +169,9 @@ export function PikoRollingBallGame({ onClose }: { onClose: () => void }) {
     previousTimeRef.current = null;
     ballRef.current.vy = 70;
     setGameStatus("playing");
+    playStartSound();
     canvasRef.current?.focus();
-  }, [resetGame, setGameStatus]);
+  }, [playStartSound, resetGame, setGameStatus]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -199,6 +281,9 @@ export function PikoRollingBallGame({ onClose }: { onClose: () => void }) {
                 platform.scored = true;
                 scoreRef.current += 1;
                 setScore(scoreRef.current);
+                playScoreSound(scoreRef.current);
+              } else {
+                playLandingSound();
               }
               break;
             }
@@ -212,7 +297,10 @@ export function PikoRollingBallGame({ onClose }: { onClose: () => void }) {
           platformsRef.current.push(makePlatform(nextPlatformIdRef.current++, lowestY));
         }
 
-        if (ball.y - BALL_RADIUS > BOARD_HEIGHT) setGameStatus("lost");
+        if (ball.y - BALL_RADIUS > BOARD_HEIGHT) {
+          setGameStatus("lost");
+          playFallSound();
+        }
       }
 
       draw();
@@ -222,7 +310,7 @@ export function PikoRollingBallGame({ onClose }: { onClose: () => void }) {
     return () => {
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
     };
-  }, [draw, setGameStatus]);
+  }, [draw, playFallSound, playLandingSound, playScoreSound, setGameStatus]);
 
   useEffect(() => {
     const setKeyState = (event: KeyboardEvent, pressed: boolean) => {

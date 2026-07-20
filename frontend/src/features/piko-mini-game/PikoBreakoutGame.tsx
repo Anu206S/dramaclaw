@@ -46,9 +46,11 @@ function initialBall(): Ball {
   return { x: BOARD_WIDTH / 2, y: PADDLE_Y - 18, vx: 250, vy: -310 };
 }
 
-export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
+export function PikoBreakoutGame({ onClose, muted }: { onClose: () => void; muted: boolean }) {
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+  const audioContextRef = useRef<AudioContext | null>(null);
+  const mutedRef = useRef(muted);
   const frameRef = useRef<number | null>(null);
   const previousTimeRef = useRef<number | null>(null);
   const statusRef = useRef<BreakoutStatus>("ready");
@@ -60,6 +62,95 @@ export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
   const [status, setStatus] = useState<BreakoutStatus>("ready");
   const [score, setScore] = useState(0);
   const [lives, setLives] = useState(STARTING_LIVES);
+
+  const getAudioContext = useCallback(() => {
+    if (mutedRef.current) return null;
+    const AudioContextClass =
+      window.AudioContext ||
+      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
+    if (!AudioContextClass) return null;
+    audioContextRef.current ??= new AudioContextClass();
+    if (audioContextRef.current.state === "suspended") void audioContextRef.current.resume();
+    return audioContextRef.current;
+  }, []);
+
+  const playTone = useCallback((
+    frequency: number,
+    duration: number,
+    volume: number,
+    type: OscillatorType = "sine",
+    delay = 0,
+    endFrequency?: number,
+  ) => {
+    const context = getAudioContext();
+    if (!context) return;
+    const oscillator = context.createOscillator();
+    const gain = context.createGain();
+    const startsAt = context.currentTime + delay;
+    oscillator.type = type;
+    oscillator.frequency.setValueAtTime(frequency, startsAt);
+    if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, startsAt + duration);
+    gain.gain.setValueAtTime(0.0001, startsAt);
+    gain.gain.exponentialRampToValueAtTime(volume, startsAt + 0.006);
+    gain.gain.exponentialRampToValueAtTime(0.0001, startsAt + duration);
+    oscillator.connect(gain);
+    gain.connect(context.destination);
+    oscillator.start(startsAt);
+    oscillator.stop(startsAt + duration + 0.02);
+  }, [getAudioContext]);
+
+  const playStartSound = useCallback(() => {
+    playTone(392, 0.07, 0.06, "triangle");
+    playTone(523.25, 0.08, 0.065, "triangle", 0.075);
+    playTone(783.99, 0.11, 0.07, "triangle", 0.155);
+  }, [playTone]);
+
+  const playWallSound = useCallback(() => {
+    playTone(310, 0.035, 0.025, "square", 0, 360);
+  }, [playTone]);
+
+  const playPaddleSound = useCallback(() => {
+    playTone(250, 0.065, 0.06, "triangle", 0, 520);
+    playTone(720, 0.05, 0.035, "sine", 0.035);
+  }, [playTone]);
+
+  const playBrickSound = useCallback((row: number) => {
+    const frequency = 540 + (BRICK_ROWS - row) * 74;
+    playTone(frequency, 0.055, 0.07, "square");
+    playTone(frequency * 1.5, 0.075, 0.038, "triangle", 0.028);
+  }, [playTone]);
+
+  const playLifeLostSound = useCallback(() => {
+    playTone(240, 0.24, 0.085, "sawtooth", 0, 85);
+  }, [playTone]);
+
+  const playWinSound = useCallback(() => {
+    playTone(523.25, 0.18, 0.07, "triangle");
+    playTone(659.25, 0.2, 0.065, "triangle", 0.1);
+    playTone(783.99, 0.22, 0.06, "triangle", 0.2);
+    playTone(1_046.5, 0.3, 0.055, "sine", 0.3);
+  }, [playTone]);
+
+  const playGameOverSound = useCallback(() => {
+    playTone(220, 0.3, 0.1, "sawtooth", 0, 62);
+    playTone(110, 0.34, 0.06, "square", 0.08, 44);
+  }, [playTone]);
+
+  useEffect(() => {
+    mutedRef.current = muted;
+    const context = audioContextRef.current;
+    if (!context) return;
+    if (muted && context.state === "running") void context.suspend();
+    if (!muted && context.state === "suspended") void context.resume();
+  }, [muted]);
+
+  useEffect(() => {
+    return () => {
+      const context = audioContextRef.current;
+      audioContextRef.current = null;
+      if (context && context.state !== "closed") void context.close();
+    };
+  }, []);
 
   const setGameStatus = useCallback((next: BreakoutStatus) => {
     statusRef.current = next;
@@ -87,8 +178,9 @@ export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
     }
     previousTimeRef.current = null;
     setGameStatus("playing");
+    playStartSound();
     canvasRef.current?.focus();
-  }, [resetGame, setGameStatus]);
+  }, [playStartSound, resetGame, setGameStatus]);
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -173,9 +265,18 @@ export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
         ball.x += ball.vx * delta;
         ball.y += ball.vy * delta;
 
-        if (ball.x - BALL_RADIUS <= 0 && ball.vx < 0) ball.vx *= -1;
-        if (ball.x + BALL_RADIUS >= BOARD_WIDTH && ball.vx > 0) ball.vx *= -1;
-        if (ball.y - BALL_RADIUS <= 0 && ball.vy < 0) ball.vy *= -1;
+        if (ball.x - BALL_RADIUS <= 0 && ball.vx < 0) {
+          ball.vx *= -1;
+          playWallSound();
+        }
+        if (ball.x + BALL_RADIUS >= BOARD_WIDTH && ball.vx > 0) {
+          ball.vx *= -1;
+          playWallSound();
+        }
+        if (ball.y - BALL_RADIUS <= 0 && ball.vy < 0) {
+          ball.vy *= -1;
+          playWallSound();
+        }
 
         const paddleX = paddleXRef.current;
         if (
@@ -190,6 +291,7 @@ export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
           ball.vx = speed * Math.sin(hitOffset * 1.05);
           ball.vy = -Math.max(220, speed * Math.cos(hitOffset * 1.05));
           ball.y = PADDLE_Y - BALL_RADIUS - 1;
+          playPaddleSound();
         }
 
         const brickWidth = (BOARD_WIDTH - BRICK_SIDE * 2 - BRICK_GAP * (BRICK_COLUMNS - 1)) / BRICK_COLUMNS;
@@ -207,6 +309,7 @@ export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
           brick.alive = false;
           scoreRef.current += (BRICK_ROWS - brick.row) * 10;
           setScore(scoreRef.current);
+          playBrickSound(brick.row);
           const overlapLeft = ball.x + BALL_RADIUS - x;
           const overlapRight = x + brickWidth - (ball.x - BALL_RADIUS);
           const overlapTop = ball.y + BALL_RADIUS - y;
@@ -218,14 +321,17 @@ export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
 
         if (bricksRef.current.every((brick) => !brick.alive)) {
           setGameStatus("won");
+          playWinSound();
         } else if (ball.y - BALL_RADIUS > BOARD_HEIGHT) {
           livesRef.current -= 1;
           setLives(livesRef.current);
           if (livesRef.current <= 0) {
             setGameStatus("lost");
+            playGameOverSound();
           } else {
             resetBall();
             setGameStatus("paused");
+            playLifeLostSound();
           }
         }
       }
@@ -237,7 +343,17 @@ export function PikoBreakoutGame({ onClose }: { onClose: () => void }) {
     return () => {
       if (frameRef.current !== null) window.cancelAnimationFrame(frameRef.current);
     };
-  }, [draw, resetBall, setGameStatus]);
+  }, [
+    draw,
+    playBrickSound,
+    playGameOverSound,
+    playLifeLostSound,
+    playPaddleSound,
+    playWallSound,
+    playWinSound,
+    resetBall,
+    setGameStatus,
+  ]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
