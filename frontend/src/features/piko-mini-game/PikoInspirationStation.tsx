@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowLeft, Gamepad2, Volume2, VolumeX, X } from "lucide-react";
 import { PikoActionFigure } from "@/features/companion/PikoActionFigure";
 import { PikoBreakoutGame } from "@/features/piko-mini-game/PikoBreakoutGame";
+import { PikoRollingBallGame } from "@/features/piko-mini-game/PikoRollingBallGame";
 import { cn } from "@/lib/utils";
 
 const GAME_DURATION_MS = 60_000;
@@ -91,7 +92,7 @@ type HitSpark = {
 
 type GameStatus = "idle" | "countdown" | "playing" | "finished";
 type StationView = "library" | "game";
-type PikoGameId = "inspiration-station" | "memory-match" | "breakout";
+type PikoGameId = "inspiration-station" | "memory-match" | "breakout" | "rolling-ball";
 
 type PikoInspirationStationProps = {
   open: boolean;
@@ -110,6 +111,10 @@ const PIKO_GAME_LIBRARY = [
   {
     id: "breakout",
     titleKey: "pikoMiniGame.breakout.title",
+  },
+  {
+    id: "rolling-ball",
+    titleKey: "pikoMiniGame.rollingBall.title",
   },
 ] as const;
 
@@ -831,6 +836,8 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
       ? "pikoMiniGame.memory.title"
       : activeGameId === "breakout"
         ? "pikoMiniGame.breakout.title"
+        : activeGameId === "rolling-ball"
+          ? "pikoMiniGame.rollingBall.title"
         : "pikoMiniGame.title";
 
   useEffect(() => {
@@ -1599,6 +1606,8 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
             <PikoMemoryMatchGame onClose={onClose} />
           ) : activeGameId === "breakout" ? (
             <PikoBreakoutGame onClose={onClose} />
+          ) : activeGameId === "rolling-ball" ? (
+            <PikoRollingBallGame onClose={onClose} />
           ) : (
             <div
               ref={boardRef}

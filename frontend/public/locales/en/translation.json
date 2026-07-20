@@ -1652,6 +1652,15 @@
       "lost": "Game over",
       "score": "Score {{score}}",
       "lives": "Lives {{lives}}"
+    },
+    "rollingBall": {
+      "title": "Rolling Ball",
+      "canvasLabel": "Rolling Ball game board",
+      "hint": "Move left and right to land on the scrolling platforms",
+      "start": "Start game",
+      "ready": "Keep rolling down",
+      "lost": "The ball slipped away",
+      "score": "Landings {{score}}"
     }
   },
   "literalScript": {

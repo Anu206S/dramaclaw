@@ -1652,6 +1652,15 @@
       "lost": "本局结束",
       "score": "得分 {{score}}",
       "lives": "生命 {{lives}}"
+    },
+    "rollingBall": {
+      "title": "滚动小球",
+      "canvasLabel": "滚动小球游戏区域",
+      "hint": "控制小球左右移动，落到不断滚动的平台上",
+      "start": "开始游戏",
+      "ready": "一路向下",
+      "lost": "小球掉下去了",
+      "score": "落台 {{score}}"
     }
   },
   "literalScript": {
