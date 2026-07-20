@@ -370,6 +370,24 @@ const FREEZONE_TOOL_DISPLAY: Record<string, { title: string; description: string
   },
 };
 
+const AGENT_TOOL_TITLE_OVERRIDES: Record<string, string> = {
+  freezone_list_workflows: "读取可用工作流",
+  list_workflows: "读取可用工作流",
+  "list workflows": "读取可用工作流",
+  freezone_skill_list: "读取可用 Skill",
+  skill_list: "读取可用 Skill",
+  "skill list": "读取可用 Skill",
+  freezone_skill_start_session: "启动 Skill 会话",
+  skill_start_session: "启动 Skill 会话",
+  "skill start session": "启动 Skill 会话",
+  freezone_skill_status: "读取 Skill 状态",
+  skill_status: "读取 Skill 状态",
+  "skill status": "读取 Skill 状态",
+  freezone_skill_confirm: "确认执行方案",
+  skill_confirm: "确认执行方案",
+  "skill confirm": "确认执行方案",
+};
+
 function toolRawRecord(message: ChatMessage): Record<string, unknown> | null {
   return message.raw && typeof message.raw === "object"
     ? (message.raw as Record<string, unknown>)
@@ -1527,6 +1545,8 @@ function FreezoneToolActivityCard({ message }: { message: ChatMessage }) {
 function genericToolTitle(message: ChatMessage): string {
   const raw = toolRawRecord(message);
   const name = typeof raw?.name === "string" ? raw.name.trim() : "";
+  const override = AGENT_TOOL_TITLE_OVERRIDES[name.toLowerCase()];
+  if (override) return override;
   if (!name) return "执行工具";
   return name
     .replace(/^freezone_/u, "")
@@ -1569,74 +1589,206 @@ function AgentToolActivityCard({ message }: { message: ChatMessage }) {
   );
 }
 
-function AgentPlanCard({ event }: { event: unknown }) {
-  const record = event && typeof event === "object" && !Array.isArray(event)
-    ? event as Record<string, unknown>
+function isAgentRuntimePart(part: ChatMessagePart): boolean {
+  return part.type === "tool_status"
+    || part.type === "agent_plan"
+    || part.type === "agent_thought"
+    || part.type === "agent_usage";
+}
+
+function compareRuntimeParts(left: ChatMessagePart, right: ChatMessagePart): number {
+  const leftSeq = typeof left.seq === "number" ? left.seq : Number.MAX_SAFE_INTEGER;
+  const rightSeq = typeof right.seq === "number" ? right.seq : Number.MAX_SAFE_INTEGER;
+  if (leftSeq !== rightSeq) return leftSeq - rightSeq;
+  return left.id.localeCompare(right.id);
+}
+
+type AssistantPartGroup =
+  | { kind: "runtime"; key: string; parts: ChatMessagePart[] }
+  | { kind: "content"; key: string; parts: ChatMessagePart[] };
+
+function groupAssistantOrderedParts(parts: ChatMessagePart[]): AssistantPartGroup[] {
+  const groups: AssistantPartGroup[] = [];
+  for (const part of parts) {
+    const kind = isAgentRuntimePart(part) ? "runtime" : "content";
+    const last = groups.length > 0 ? groups[groups.length - 1] : undefined;
+    if (last?.kind === kind) {
+      last.parts.push(part);
+      continue;
+    }
+    groups.push({
+      kind,
+      key: `${kind}:${part.id}`,
+      parts: [part],
+    });
+  }
+  return groups;
+}
+
+function compactToolStatusLabel(status: ReturnType<typeof freezoneToolStatus>): string {
+  if (status === "running") return "进行中";
+  if (status === "failed") return "失败";
+  return "";
+}
+
+type AgentThoughtRuntimePart = ChatMessagePart & {
+  type: "agent_thought";
+  event: unknown;
+};
+
+function AgentThoughtRuntimeItem({ part }: { part: AgentThoughtRuntimePart }) {
+  const event = part.event && typeof part.event === "object" && !Array.isArray(part.event)
+    ? part.event as Record<string, unknown>
     : {};
-  const entries = Array.isArray(record.entries)
-    ? record.entries.filter((entry): entry is Record<string, unknown> => Boolean(entry && typeof entry === "object" && !Array.isArray(entry)))
-    : [];
-  if (entries.length === 0) return null;
-  const completed = entries.filter((entry) => entry.status === "completed").length;
+  const text = typeof event.text === "string"
+    ? String(event.text).trim()
+    : "";
+  const running = event.status === "running";
+  const [expanded, setExpanded] = useState(running);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    setExpanded(running);
+  }, [part.id, running]);
+
+  useEffect(() => {
+    if (!expanded || !running) return;
+    const content = contentRef.current;
+    if (!content) return;
+    content.scrollTop = content.scrollHeight;
+  }, [expanded, running, text]);
+
+  if (!text) return null;
   return (
-    <div className="w-full max-w-[86%] rounded-xl border border-white/[0.08] bg-white/[0.025] px-3 py-2.5 text-sm">
-      <div className="mb-2 flex items-center gap-2">
-        <ListTree className="size-3.5 text-primary" />
-        <span className="font-medium">执行计划</span>
-        <span className="ml-auto text-xs text-muted-foreground">{completed}/{entries.length}</span>
-      </div>
-      <div className="space-y-1.5">
-        {entries.map((entry, index) => {
-          const status = typeof entry.status === "string" ? entry.status : "pending";
-          const content = typeof entry.content === "string" ? entry.content : `步骤 ${index + 1}`;
-          return (
-            <div key={`${index}-${content}`} className="flex items-start gap-2 text-xs leading-5">
-              {status === "completed" ? (
-                <CheckCircle2 className="mt-1 size-3 shrink-0 text-emerald-400" />
-              ) : status === "in_progress" ? (
-                <span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-primary" />
-              ) : (
-                <span className="mt-1.5 size-2 shrink-0 rounded-full border border-muted-foreground/50" />
-              )}
-              <span className={status === "completed" ? "text-muted-foreground" : "text-foreground/90"}>{content}</span>
-            </div>
-          );
-        })}
-      </div>
+    <div className="py-0.5">
+      <button
+        type="button"
+        className="flex min-h-5 max-w-full items-center gap-2 text-left font-medium text-foreground/85"
+        onClick={() => setExpanded((value) => !value)}
+      >
+        <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
+        <span className="min-w-0 flex-1 truncate">{running ? "思考中" : "思考过程"}</span>
+      </button>
+      {expanded && (
+        <div
+          ref={contentRef}
+          className="mt-1 ml-1.5 max-h-[4.75rem] overflow-y-auto overscroll-contain whitespace-pre-wrap break-words border-l border-white/10 pl-4 pr-2 leading-5 text-muted-foreground/85 [scrollbar-width:thin]"
+        >
+          {text}
+        </div>
+      )}
     </div>
   );
 }
 
-function AgentThoughtCard({ event }: { event: unknown }) {
-  const text = event && typeof event === "object" && !Array.isArray(event)
-    && typeof (event as Record<string, unknown>).text === "string"
-    ? String((event as Record<string, unknown>).text).trim()
-    : "";
-  if (!text) return null;
+function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
+  const runtimeParts = [...parts].sort(compareRuntimeParts);
+  if (runtimeParts.length === 0) return null;
   return (
-    <details className="w-full max-w-[86%] rounded-lg border border-white/[0.06] bg-white/[0.02] px-3 py-2 text-xs text-muted-foreground">
-      <summary className="cursor-pointer select-none font-medium">思考过程</summary>
-      <div className="mt-2 whitespace-pre-wrap break-words leading-5">{text}</div>
-    </details>
-  );
-}
-
-function AgentUsageCard({ event }: { event: unknown }) {
-  const usage = event && typeof event === "object" && !Array.isArray(event)
-    ? (event as Record<string, unknown>).usage
-    : null;
-  if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
-  const values = Object.entries(usage as Record<string, unknown>)
-    .filter(([, value]) => typeof value === "string" || typeof value === "number")
-    .slice(0, 6);
-  if (values.length === 0) return null;
-  return (
-    <details className="w-full max-w-[86%] text-[11px] text-muted-foreground/75">
-      <summary className="cursor-pointer select-none">上下文用量</summary>
-      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1">
-        {values.map(([key, value]) => <span key={key}>{key}: {String(value)}</span>)}
-      </div>
-    </details>
+    <div className="w-full max-w-[min(440px,100%)] space-y-1 text-xs text-muted-foreground">
+      {runtimeParts.map((part) => {
+        if (part.type === "tool_status") {
+          const toolMessage = part.event as ChatMessage;
+          const display = freezoneToolDisplay(toolMessage);
+          const status = freezoneToolStatus(toolMessage);
+          const raw = toolRawRecord(toolMessage);
+          const error = typeof raw?.error === "string"
+            ? raw.error.trim()
+            : raw?.error ? JSON.stringify(raw.error) : "";
+          const detail = status === "failed" && error ? error : "";
+          const statusLabel = compactToolStatusLabel(status);
+          return (
+            <div
+              key={part.id}
+              className={cn(
+                "flex min-h-6 max-w-full items-center gap-2 py-0.5",
+                status === "failed" ? "text-red-100" : "text-muted-foreground",
+              )}
+            >
+              {status === "running" ? (
+                <span className="shrink-0 text-muted-foreground"><DotsIndicator dotClassName="size-1" /></span>
+              ) : status === "failed" ? (
+                <AlertCircle className="size-3.5 shrink-0 text-red-400" />
+              ) : (
+                <Check className="size-3.5 shrink-0 text-emerald-400" />
+              )}
+              <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
+                {display?.title ?? genericToolTitle(toolMessage)}
+              </span>
+              {statusLabel && (
+                <span className="shrink-0 text-[11px] text-muted-foreground/80">
+                  {statusLabel}
+                </span>
+              )}
+              {detail && <span className="min-w-0 flex-1 truncate text-[11px] text-red-200/80">{detail}</span>}
+            </div>
+          );
+        }
+        if (part.type === "agent_plan") {
+          const record = part.event && typeof part.event === "object" && !Array.isArray(part.event)
+            ? part.event as Record<string, unknown>
+            : {};
+          const entries = Array.isArray(record.entries)
+            ? record.entries.filter((entry): entry is Record<string, unknown> =>
+              Boolean(entry && typeof entry === "object" && !Array.isArray(entry)))
+            : [];
+          if (entries.length === 0) return null;
+          const completed = entries.filter((entry) => entry.status === "completed").length;
+          return (
+            <details key={part.id} className="group py-0.5">
+              <summary className="flex min-h-5 cursor-pointer list-none items-center gap-2 text-left [&::-webkit-details-marker]:hidden">
+                <ListTree className="size-3.5 shrink-0 text-primary" />
+                <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">执行计划</span>
+                <span className="shrink-0 text-[11px] text-muted-foreground/80">{completed}/{entries.length}</span>
+                <ChevronRight className="size-3 shrink-0 transition-transform group-open:rotate-90" />
+              </summary>
+              <div className="mt-1 space-y-1 border-l border-white/10 pl-4 ml-1.5">
+                {entries.map((entry, index) => {
+                  const status = typeof entry.status === "string" ? entry.status : "pending";
+                  const content = typeof entry.content === "string" ? entry.content : `步骤 ${index + 1}`;
+                  return (
+                    <div key={`${index}-${content}`} className="flex items-start gap-2 leading-5">
+                      {status === "completed" ? (
+                        <Check className="mt-1 size-3 shrink-0 text-emerald-400" />
+                      ) : status === "in_progress" ? (
+                        <span className="mt-1.5 size-2 shrink-0 animate-pulse rounded-full bg-primary" />
+                      ) : (
+                        <span className="mt-1.5 size-2 shrink-0 rounded-full border border-muted-foreground/50" />
+                      )}
+                      <span className={cn("min-w-0 break-words", status === "completed" ? "text-muted-foreground" : "text-foreground/90")}>
+                        {content}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+            </details>
+          );
+        }
+        if (part.type === "agent_thought") {
+          return <AgentThoughtRuntimeItem key={part.id} part={part as AgentThoughtRuntimePart} />;
+        }
+        if (part.type === "agent_usage") {
+          const usage = part.event && typeof part.event === "object" && !Array.isArray(part.event)
+            ? (part.event as Record<string, unknown>).usage
+            : null;
+          if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
+          const values = Object.entries(usage as Record<string, unknown>)
+            .filter(([, value]) => typeof value === "string" || typeof value === "number")
+            .slice(0, 4);
+          if (values.length === 0) return null;
+          return (
+            <details key={part.id} className="py-0.5 text-[11px] text-muted-foreground/70">
+              <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">上下文用量</summary>
+              <div className="mt-1 ml-1.5 flex flex-wrap gap-x-3 gap-y-1 border-l border-white/10 pl-4">
+                {values.map(([key, value]) => <span key={key}>{key}: {String(value)}</span>)}
+              </div>
+            </details>
+          );
+        }
+        return null;
+      })}
+    </div>
   );
 }
 
@@ -5507,6 +5659,8 @@ const MessageBubble = memo(function MessageBubble({
     ? hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? []
     : [];
   const assistantOrderedParts = collapseRepeatedCanvasStatusParts(assistantOrderedPartsRaw);
+  const assistantPartGroups = groupAssistantOrderedParts(assistantOrderedParts);
+  const hasAgentRuntimeParts = assistantOrderedParts.some(isAgentRuntimePart);
   const visibleCanvasContextActivities = !isUser && !isTool
     ? visibleCanvasContextActivitiesForMessage(message, canvasContextActivities)
     : canvasContextActivities;
@@ -5680,7 +5834,7 @@ const MessageBubble = memo(function MessageBubble({
         <article
           className={cn(
             "group relative text-sm leading-6 shadow-none",
-            visibleBlocks.length > 0 && !isUser && !isTool
+            (visibleBlocks.length > 0 || hasAgentRuntimeParts) && !isUser && !isTool
               ? "w-full min-w-0 overflow-visible"
               : isUser
                 ? "w-fit overflow-visible"
@@ -5767,78 +5921,70 @@ const MessageBubble = memo(function MessageBubble({
           <>
             {assistantOrderedParts.length > 0 ? (
               <div className="space-y-1.5">
-                {assistantOrderedParts.map((part) => {
-                  if (part.type === "text") {
-                    if (suppressCanvasExecutionNarration || !part.text) return null;
-                    return isErrorReply && !isUser && !isTool
-                      ? <HighlightedErrorText key={part.id} text={part.text} />
-                      : isCompletionNotice && !isUser && !isTool
-                        ? <HighlightedCompletionText key={part.id} text={part.text} />
-                        : <MessageText key={part.id} text={part.text} markdown={!isUser && !isTool} />;
+                {assistantPartGroups.map((group) => {
+                  if (group.kind === "runtime") {
+                    return <AgentRuntimeTimeline key={group.key} parts={group.parts} />;
                   }
-                  if (part.type === "canvas_approval") {
-                    const approval = part.event as PendingCanvasCommandApproval;
-                    const stillPending = canvasCommandApprovals.some((item) =>
-                      pendingCanvasCommandApprovalMatches(item, approval),
-                    );
-                    if (!stillPending) {
-                      const expiredFeedback = expiredCanvasApprovalFeedback(approval);
-                      return expiredFeedback
-                        ? <CanvasCommandFeedbackCard key={part.id} feedback={expiredFeedback} />
-                        : null;
+                  return group.parts.map((part) => {
+                    if (part.type === "text") {
+                      if (suppressCanvasExecutionNarration || !part.text) return null;
+                      return isErrorReply && !isUser && !isTool
+                        ? <HighlightedErrorText key={part.id} text={part.text} />
+                        : isCompletionNotice && !isUser && !isTool
+                          ? <HighlightedCompletionText key={part.id} text={part.text} />
+                          : <MessageText key={part.id} text={part.text} markdown={!isUser && !isTool} />;
                     }
-                    return (
-                      <CanvasCommandApprovalCard
-                        key={part.id}
-                        approval={approval}
-                        isExecuting={executingCanvasCommandApprovalIds.has(approval.id)}
-                        onApply={onApplyCanvasCommandApproval ?? (() => undefined)}
-                        onCancel={onCancelCanvasCommandApproval ?? (() => undefined)}
-                      />
-                    );
-                  }
-                  if (part.type === "canvas_feedback") {
-                    return <CanvasCommandFeedbackCard key={part.id} feedback={part.event as CanvasCommandFeedback} />;
-                  }
-                  if (part.type === "canvas_context") {
-                    return <CanvasContextActivityCard key={part.id} activity={part.event as CanvasContextActivity} />;
-                  }
-                  if (part.type === "skill_studio") {
-                    return (
-                      <SkillStudioEventCard
-                        key={part.id}
-                        event={part.event as SkillStudioUiEvent}
-                        onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
-                        onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
-                        onStartDraftRevision={onStartSkillStudioDraftRevision}
-                        onDraftChange={onSkillStudioDraftChange}
-                        onCancelDraft={onCancelSkillStudioDraft}
-                        onPreserveScrollAnchor={onPreserveScrollAnchor}
-                      />
-                    );
-                  }
-                  if (part.type === "clarification") {
-                    return (
-                      <AssistantClarificationSummaryCard
-                        key={part.id}
-                        event={part.event as AssistantClarificationUiEvent}
-                      />
-                    );
-                  }
-                  if (part.type === "tool_status") {
-                    const toolMessage = part.event as ChatMessage;
-                    return <AgentToolActivityCard key={part.id} message={toolMessage} />;
-                  }
-                  if (part.type === "agent_plan") {
-                    return <AgentPlanCard key={part.id} event={part.event} />;
-                  }
-                  if (part.type === "agent_thought") {
-                    return <AgentThoughtCard key={part.id} event={part.event} />;
-                  }
-                  if (part.type === "agent_usage") {
-                    return <AgentUsageCard key={part.id} event={part.event} />;
-                  }
-                  return null;
+                    if (part.type === "canvas_approval") {
+                      const approval = part.event as PendingCanvasCommandApproval;
+                      const stillPending = canvasCommandApprovals.some((item) =>
+                        pendingCanvasCommandApprovalMatches(item, approval),
+                      );
+                      if (!stillPending) {
+                        const expiredFeedback = expiredCanvasApprovalFeedback(approval);
+                        return expiredFeedback
+                          ? <CanvasCommandFeedbackCard key={part.id} feedback={expiredFeedback} />
+                          : null;
+                      }
+                      return (
+                        <CanvasCommandApprovalCard
+                          key={part.id}
+                          approval={approval}
+                          isExecuting={executingCanvasCommandApprovalIds.has(approval.id)}
+                          onApply={onApplyCanvasCommandApproval ?? (() => undefined)}
+                          onCancel={onCancelCanvasCommandApproval ?? (() => undefined)}
+                        />
+                      );
+                    }
+                    if (part.type === "canvas_feedback") {
+                      return <CanvasCommandFeedbackCard key={part.id} feedback={part.event as CanvasCommandFeedback} />;
+                    }
+                    if (part.type === "canvas_context") {
+                      return <CanvasContextActivityCard key={part.id} activity={part.event as CanvasContextActivity} />;
+                    }
+                    if (part.type === "skill_studio") {
+                      return (
+                        <SkillStudioEventCard
+                          key={part.id}
+                          event={part.event as SkillStudioUiEvent}
+                          onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
+                          onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
+                          onStartDraftRevision={onStartSkillStudioDraftRevision}
+                          onDraftChange={onSkillStudioDraftChange}
+                          onCancelDraft={onCancelSkillStudioDraft}
+                          onPreserveScrollAnchor={onPreserveScrollAnchor}
+                        />
+                      );
+                    }
+                    if (part.type === "clarification") {
+                      return (
+                        <AssistantClarificationSummaryCard
+                          key={part.id}
+                          event={part.event as AssistantClarificationUiEvent}
+                        />
+                      );
+                    }
+                    return null;
+                  });
                 })}
               </div>
             ) : canvasCommandFlowItems.length > 0 ? (
