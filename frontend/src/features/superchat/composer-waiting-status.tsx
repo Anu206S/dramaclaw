@@ -39,7 +39,7 @@ export function ComposerWaitingStatus({
     }
 
     const options = waitingLabels.length > 0 ? waitingLabels : [label];
-    const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+    const reduceMotion = window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
     const timers = new Set<number>();
     const schedule = (callback: () => void, delay: number) => {
       const timer = window.setTimeout(() => {
