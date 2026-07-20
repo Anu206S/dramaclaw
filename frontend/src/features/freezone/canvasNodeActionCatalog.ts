@@ -1069,6 +1069,10 @@ function addFrontendNodeActions(
 ): void {
   if (node.type === CANVAS_NODE_TYPES.textAnnotation) {
     const mode = (node.data as { mode?: unknown }).mode;
+    const workflowCatalog = (node.data as { workflowCatalog?: unknown }).workflowCatalog;
+    const recipeId = workflowCatalog && typeof workflowCatalog === "object"
+      ? (workflowCatalog as { recipeId?: unknown }).recipeId
+      : null;
     actions.push({
       action: "translate_text",
       execution: "frontend_node",
@@ -1076,6 +1080,15 @@ function addFrontendNodeActions(
       description: "Translate this text node content using the same frontend flow as the node translate button.",
       parameters: { node_id: node.id },
     });
+    if (typeof recipeId === "string" && recipeId.trim()) {
+      actions.push({
+        action: "generate_text",
+        execution: "frontend_node",
+        command_type: "run_node_action",
+        description: "Generate this workflow text node through its catalog Recipe.",
+        parameters: { node_id: node.id },
+      });
+    }
     if (mode === "textToVideo") {
       actions.push({
         action: "generate_text_video",

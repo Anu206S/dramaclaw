@@ -144,6 +144,7 @@ import {
 } from '@/features/canvas/nodes/StylePickerPopover';
 import { useFreezoneStyleTemplates } from '@/features/canvas/hooks/useFreezoneStyleTemplates';
 import { joinUpstreamText } from '@/features/canvas/application/graphContentResolver';
+import { compileWorkflowNodePrompt } from '@/features/canvas/application/workflowRecipeRuntime';
 import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import {
@@ -876,11 +877,22 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
         || cameraSelection.aperture),
     );
     const ownPrompt = prompt.trim();
-    const effectivePrompt = shouldInlineUpstreamTextAsPrompt
+    const fallbackPrompt = shouldInlineUpstreamTextAsPrompt
       ? (ownPrompt || (hasUserEditedPromptRef.current ? "" : upstreamTextJoined.trim()))
       : [upstreamTextJoined, ownPrompt]
         .filter((s) => s.length > 0)
         .join('\n\n');
+    const effectivePrompt = await compileWorkflowNodePrompt({
+      nodeData: data,
+      nodeKind: 'image',
+      nodePrompt: ownPrompt,
+      upstreamText: upstreamTextJoined,
+      fallbackPrompt,
+      referenceMedia: referenceUrls.map((_, index) => ({
+        kind: 'image',
+        label: `reference-${index + 1}`,
+      })),
+    });
     const genPayload = {
       prompt: effectivePrompt,
       // 后端只接受固定的几个比例；节点上的 aspectRatio 可能是图片自然尺寸约分出的
@@ -1088,6 +1100,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     selectedModel,
     cameraSelection,
     count,
+    data,
     effectiveCount,
     id,
     isImage2,

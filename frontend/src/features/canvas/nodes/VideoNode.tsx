@@ -80,6 +80,7 @@ import {
   extractUpstreamContent,
   joinUpstreamText,
 } from "@/features/canvas/application/graphContentResolver";
+import { compileWorkflowNodePrompt } from "@/features/canvas/application/workflowRecipeRuntime";
 import { useUpstreamNodes } from "@/features/canvas/application/useUpstreamGraph";
 import {
   sortUpstreamByReferenceOrder,
@@ -2024,12 +2025,23 @@ export const VideoNode = memo(
       const userPrompt = [upstreamTextJoined, trimmedPrompt]
         .filter((s) => s.length > 0)
         .join("\n\n");
-      const composedPrompt = fragment
+      const fallbackPrompt = fragment
         ? userPrompt
           ? `${fragment}，${userPrompt}`
           : fragment
         : userPrompt;
       try {
+        const composedPrompt = await compileWorkflowNodePrompt({
+          nodeData: data,
+          nodeKind: "video",
+          nodePrompt: trimmedPrompt,
+          upstreamText: upstreamTextJoined,
+          fallbackPrompt,
+          referenceMedia: referenceMediaCapInfo.map(({ item }) => ({
+            kind: item.kind,
+            label: item.nodeId,
+          })),
+        });
         // Walk the current edges/nodes once — used by every non-textToVideo
         // branch to collect upstream resources. 必须与 UI 编号侧（useUpstreamNodes）
         // 同源：按连线顺序收集。曾按 state.nodes 顺序（节点创建顺序）收集，先创建
@@ -2455,6 +2467,7 @@ export const VideoNode = memo(
       cameraMovementId,
       cameraMovementPreset,
       count,
+      data,
       durationBounds,
       durationSec,
       generateAudio,
@@ -2465,6 +2478,7 @@ export const VideoNode = memo(
       modelId,
       prompt,
       quality,
+      referenceMediaCapInfo,
       refreshHistory,
       sceneOptimize,
       submitDisabled,

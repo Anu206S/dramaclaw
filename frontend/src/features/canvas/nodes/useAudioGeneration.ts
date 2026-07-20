@@ -16,6 +16,7 @@ import { joinUpstreamText } from '@/features/canvas/application/graphContentReso
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
+import { compileWorkflowNodePrompt } from '@/features/canvas/application/workflowRecipeRuntime';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 
@@ -57,8 +58,8 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
 
   const generate = useCallback(async (): Promise<{ audioUrl?: string }> => {
     if (isGenerating) return {};
-    const trimmed = effectivePrompt;
-    if (trimmed.length === 0) return {};
+    const fallbackPrompt = effectivePrompt;
+    if (fallbackPrompt.length === 0) return {};
     const project = readUrl().project;
     if (!project) {
       updateNodeData(nodeId, { generationError: '当前 URL 缺少 project 参数' });
@@ -70,6 +71,13 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
       generationError: null,
     });
     try {
+      const trimmed = await compileWorkflowNodePrompt({
+        nodeData: data,
+        nodeKind: 'audio',
+        nodePrompt: ownText,
+        upstreamText: upstreamTextJoined,
+        fallbackPrompt,
+      });
       const ref = isMusic
         ? await submitFreezoneAudioMusic(project, {
             prompt: trimmed,
@@ -112,6 +120,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
   }, [
     isGenerating,
     isMusic,
+    data,
     data.musicLengthMs,
     data.forceInstrumental,
     data.respectSectionsDurations,
@@ -119,7 +128,9 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     effectivePrompt,
     emotionPrompt,
     nodeId,
+    ownText,
     updateNodeData,
+    upstreamTextJoined,
   ]);
 
   return { generate, isGenerating, effectivePrompt, isMusic };
