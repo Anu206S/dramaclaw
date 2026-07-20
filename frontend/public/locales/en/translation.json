@@ -1574,12 +1574,15 @@
   "pikoMiniGame": {
     "statusEntry": "Piko Break",
     "statusTooltip": "Play a one-minute Piko game",
+    "libraryTitle": "Piko Break",
+    "librarySubtitle": "Choose a game",
     "title": "Piko a bit, find your spark",
     "idleHint": "Press Space to fire",
     "countdownHint": "Ready to go~",
     "start": "Start",
     "playAgain": "Play again",
     "backToWork": "Back to work",
+    "backToLibrary": "Back to game list",
     "audioOn": "Turn Piko game sound on",
     "audioOff": "Turn Piko game sound off",
     "score": "Idea power {{score}}",
@@ -1628,6 +1631,27 @@
         "jelly": "Time Jelly slowed the field"
       },
       "ultimate": "Idea burst"
+    },
+    "memory": {
+      "title": "Memory Match",
+      "hint": "Match cards with the same symbol",
+      "moves": "Moves",
+      "cardHidden": "Face-down card",
+      "cardVisible": "Card {{value}}",
+      "completed": "All pairs matched",
+      "resultMeta": "{{moves}} moves"
+    },
+    "breakout": {
+      "title": "Breakout",
+      "canvasLabel": "Breakout game board",
+      "hint": "Move the paddle with your mouse or touch, or use Arrow keys or A and D",
+      "start": "Start game",
+      "ready": "Clear every brick",
+      "lifeLost": "Keep going!",
+      "won": "Board cleared!",
+      "lost": "Game over",
+      "score": "Score {{score}}",
+      "lives": "Lives {{lives}}"
     }
   },
   "literalScript": {

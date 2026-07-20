@@ -1574,12 +1574,15 @@
   "pikoMiniGame": {
     "statusEntry": "Piko一下",
     "statusTooltip": "陪 Piko 玩 1 分钟小游戏",
+    "libraryTitle": "Piko一下",
+    "librarySubtitle": "选择一个小游戏",
     "title": "Piko一下，找回灵感",
     "idleHint": "按空格键发射子弹",
     "countdownHint": "准备开始咯～",
     "start": "开始补给",
     "playAgain": "再来一局",
     "backToWork": "回到创作",
+    "backToLibrary": "返回游戏列表",
     "audioOn": "开启 Piko 小游戏音效",
     "audioOff": "关闭 Piko 小游戏音效",
     "score": "灵感值 {{score}}",
@@ -1628,6 +1631,27 @@
         "jelly": "时间果冻放慢节奏"
       },
       "ultimate": "灵感爆发"
+    },
+    "memory": {
+      "title": "记忆翻牌",
+      "hint": "翻开相同图案完成配对",
+      "moves": "步数",
+      "cardHidden": "未翻开的卡片",
+      "cardVisible": "卡片 {{value}}",
+      "completed": "全部配对完成",
+      "resultMeta": "共用了 {{moves}} 步"
+    },
+    "breakout": {
+      "title": "打砖块",
+      "canvasLabel": "打砖块游戏区域",
+      "hint": "移动鼠标或触摸控制挡板，也可使用方向键或 A、D 键",
+      "start": "开始游戏",
+      "ready": "击碎所有砖块",
+      "lifeLost": "还有机会，继续！",
+      "won": "全部清除！",
+      "lost": "本局结束",
+      "score": "得分 {{score}}",
+      "lives": "生命 {{lives}}"
     }
   },
   "literalScript": {
