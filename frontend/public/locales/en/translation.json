@@ -1670,6 +1670,18 @@
       "ready": "Ready for takeoff",
       "lost": "Piko hit an energy gate",
       "score": "Gates {{score}}"
+    },
+    "catch": {
+      "title": "Piko Catch",
+      "canvasLabel": "Piko Catch game board",
+      "hint": "Move Piko left and right, catch idea stars and crystals, and avoid red glitches",
+      "start": "Start catching",
+      "ready": "Catch the falling ideas",
+      "finished": "Idea collection complete",
+      "lost": "Piko needs a quick rest",
+      "score": "Ideas {{score}}",
+      "status": "Lives {{lives}} · {{seconds}}s",
+      "result": "You collected {{score}} idea points"
     }
   },
   "literalScript": {

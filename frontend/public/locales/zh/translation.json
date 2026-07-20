@@ -1670,6 +1670,18 @@
       "ready": "准备起飞",
       "lost": "Piko 撞到能量门了",
       "score": "穿越 {{score}}"
+    },
+    "catch": {
+      "title": "Piko 接接乐",
+      "canvasLabel": "Piko 接物游戏区域",
+      "hint": "左右移动 Piko，接住灵感星和晶体，避开红色故障块",
+      "start": "开始接取",
+      "ready": "接住掉落的灵感",
+      "finished": "灵感收集完成",
+      "lost": "Piko 需要休息一下",
+      "score": "灵感 {{score}}",
+      "status": "生命 {{lives}} · {{seconds}} 秒",
+      "result": "本局收集了 {{score}} 点灵感"
     }
   },
   "literalScript": {
