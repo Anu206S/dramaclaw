@@ -149,7 +149,10 @@ function normalizeMessageParts(value: Record<string, unknown>): ChatMessagePart[
       type === "canvas_approval" ||
       type === "canvas_feedback" ||
       type === "canvas_context" ||
-      type === "tool_status"
+      type === "tool_status" ||
+      type === "agent_plan" ||
+      type === "agent_thought" ||
+      type === "agent_usage"
     ) {
       return [{ id, type, event: raw.event, ...(seq == null ? {} : { seq }) }];
     }

@@ -684,6 +684,37 @@ This Freezone chat can change the current canvas by returning a JSON block.
     expect(normalized?.parts?.map((part) => part.type)).toEqual(["canvas_feedback", "tool_status"]);
   });
 
+  it("keeps ordered agent runtime parts from cache or server history", () => {
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      text: "",
+      parts: [
+        {
+          id: "thought-a",
+          type: "agent_thought",
+          event: { text: "I am planning the next step.", status: "completed" },
+        },
+        {
+          id: "plan-a",
+          type: "agent_plan",
+          event: { entries: [] },
+        },
+        {
+          id: "usage-a",
+          type: "agent_usage",
+          event: { usage: { used: 10 } },
+        },
+      ],
+    });
+
+    expect(normalized?.parts?.map((part) => part.type)).toEqual([
+      "agent_thought",
+      "agent_plan",
+      "agent_usage",
+    ]);
+  });
+
   it("restores trailing assistant text when ordered history parts stop at an interaction card", () => {
     const normalized = normalizeMessage({
       id: "assistant-1",
@@ -3035,6 +3066,130 @@ describe("useSuperChat websocket lifecycle", () => {
     );
   });
 
+  it("closes an active thought part before a canvas command card arrives", async () => {
+    apiPostMock.mockClear();
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send() {}
+      close() {}
+    }
+    const sockets: TestWebSocket[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    const hook = renderHook(() =>
+      useSuperChat({
+        project: "project-a",
+        displayName: "Tester",
+        surface: "freezone",
+        freezoneCanvasId: "canvas-a",
+        freezoneAgentId: "agent-2",
+      }),
+    );
+
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    await waitFor(() => expect(socket.onmessage).toBeTypeOf("function"));
+    await act(async () => {
+      socket.onopen?.();
+    });
+    const scope = {
+      kind: "project",
+      id: "project-a",
+      surface: "freezone",
+      canvasId: "canvas-a",
+      agentId: "agent-2",
+    };
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "agent.thought.delta",
+          scope,
+          turn_id: "turn-1",
+          text: "I should inspect the canvas first.",
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      const assistant = hook.result.current.messages.find((item) => item.turnId === "turn-1");
+      const thoughtPart = assistant?.parts?.find((part) => part.type === "agent_thought") as
+        | { event: unknown }
+        | undefined;
+      expect(thoughtPart?.event)
+        .toMatchObject({ status: "running" });
+    });
+    await waitFor(() =>
+      expect(apiPostMock).toHaveBeenCalledWith("api/v1/chat/ui-events", expect.objectContaining({
+        json: expect.objectContaining({
+          turn_id: "turn-1",
+          event: expect.objectContaining({
+            type: "assistant.message_parts",
+            parts: expect.arrayContaining([
+              expect.objectContaining({
+                type: "agent_thought",
+                event: expect.objectContaining({ status: "running" }),
+              }),
+            ]),
+          }),
+        }),
+      })),
+    );
+    apiPostMock.mockClear();
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "canvas.command",
+          scope,
+          turn_id: "turn-1",
+          bridge_key: "bridge-1",
+          canvas_id: "canvas-a",
+          envelope: { schema_version: "canvas_chat_commands.v1", commands: [] },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      const assistant = hook.result.current.messages.find((item) => item.turnId === "turn-1");
+      const thoughtPart = assistant?.parts?.find((part) => part.type === "agent_thought") as
+        | { event: unknown }
+        | undefined;
+      expect(thoughtPart?.event)
+        .toMatchObject({ status: "completed" });
+    });
+    await waitFor(() =>
+      expect(apiPostMock).toHaveBeenCalledWith("api/v1/chat/ui-events", expect.objectContaining({
+        json: expect.objectContaining({
+          turn_id: "turn-1",
+          event: expect.objectContaining({
+            type: "assistant.message_parts",
+            parts: expect.arrayContaining([
+              expect.objectContaining({
+                type: "agent_thought",
+                event: expect.objectContaining({ status: "completed" }),
+              }),
+            ]),
+          }),
+        }),
+      })),
+    );
+  });
+
   it("persists updated draft part state after confirming a Skill Studio draft", async () => {
     apiPostMock.mockClear();
     class TestWebSocket {
@@ -3249,6 +3404,34 @@ describe("tool status parts", () => {
     expect(updated[0]?.parts?.[0]).toEqual(completed);
   });
 
+  it("preserves runtime part ordering when a tool lifecycle card updates", () => {
+    const started = {
+      ...toolStatusPartForTest("agent.tool.started", {
+        type: "agent.tool.started",
+        turn_id: "turn-a",
+        call_id: "call-1",
+        name: "read_file",
+        status: "pending",
+      }, "turn-a"),
+      seq: 7,
+    };
+    const completed = toolStatusPartForTest("agent.tool.updated", {
+      type: "agent.tool.updated",
+      turn_id: "turn-a",
+      call_id: "call-1",
+      name: "read_file",
+      status: "completed",
+    }, "turn-a");
+
+    const messages = upsertRuntimePartInMessagesForTest([], "turn-a", started);
+    const updated = upsertRuntimePartInMessagesForTest(messages, "turn-a", completed);
+
+    expect(updated[0]?.parts?.[0]).toMatchObject({
+      id: started.id,
+      seq: 7,
+    });
+  });
+
   it("keeps repeated calls to the same tool separate", () => {
     const first = toolStatusPartForTest("agent.tool.started", {
       type: "agent.tool.started",
@@ -3382,7 +3565,7 @@ describe("sanitizeMessagesForCache", () => {
     expect(sanitizeMessagesForCache([original])[0]).toBe(original);
   });
 
-  it("does not persist transient agent runtime details in the recovery cache", () => {
+  it("keeps agent runtime details in the recovery cache for history replay", () => {
     const original: ChatMessage = {
       id: "assistant-turn-a",
       role: "assistant",
@@ -3402,7 +3585,12 @@ describe("sanitizeMessagesForCache", () => {
 
     const [sanitized] = sanitizeMessagesForCache([original]);
 
-    expect(sanitized.parts?.map((part) => part.type)).toEqual(["agent_plan"]);
+    expect(sanitized.parts?.map((part) => part.type)).toEqual([
+      "agent_plan",
+      "agent_thought",
+      "agent_usage",
+      "tool_status",
+    ]);
   });
 
   it("drops raw ACP tool payloads from the recovery cache", () => {
