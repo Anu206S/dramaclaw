@@ -293,6 +293,78 @@ def _format_tool_call_text(update: dict, title: object) -> str:
     return "\n".join(lines)
 
 
+def _extract_tool_update_content_text(update: dict) -> str:
+    parts: list[str] = []
+
+    def visit(value: object) -> None:
+        if value in (None, "", [], {}):
+            return
+        if isinstance(value, dict):
+            if value.get("type") == "text" and isinstance(value.get("text"), str):
+                parts.append(value["text"].strip())
+                return
+            if isinstance(value.get("text"), str):
+                parts.append(value["text"].strip())
+                return
+            for key in ("content", "result", "data", "output", "message", "error"):
+                if key in value:
+                    visit(value.get(key))
+            return
+        if isinstance(value, list):
+            for item in value:
+                visit(item)
+            return
+        if isinstance(value, str):
+            parts.append(value.strip())
+            return
+        try:
+            parts.append(json.dumps(value, ensure_ascii=False))
+        except TypeError:
+            parts.append(str(value))
+
+    for key in ("content", "result", "data", "output"):
+        if key in update:
+            visit(update.get(key))
+    return "\n".join(part for part in (_redact_tool_detail(part) for part in parts) if part)
+
+
+def _load_recent_freezone_tool_result(
+    result_dir: str | None,
+    tool_name: str | None,
+    *,
+    max_age_seconds: float = 300.0,
+) -> Any | None:
+    name = str(tool_name or "").strip()
+    root_text = str(result_dir or "").strip()
+    if not name.startswith("freezone_") or not root_text:
+        return None
+    root = Path(root_text)
+    if not root.exists():
+        return None
+    safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in name)
+    try:
+        candidates = sorted(
+            root.glob(f"{safe_name}-*.json"),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return None
+    now = time.time()
+    for path in candidates[:5]:
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        if not isinstance(raw, dict) or raw.get("tool_name") != name:
+            continue
+        created_at = raw.get("created_at")
+        if isinstance(created_at, (int, float)) and now - float(created_at) > max_age_seconds:
+            continue
+        return raw.get("result")
+    return None
+
+
 class HermesSdkClient:
     """Holds spawn configuration for a hermes worker subprocess.
 
@@ -594,6 +666,7 @@ class HermesSdkThread:
             tool_call_count = 0
             first_write_tool: str | None = None
             active_tool_name: str | None = None
+            tool_name_by_call_id: dict[str, str] = {}
             first_write_failed = False
             failed_write_retry_count = 0
             while True:
@@ -644,7 +717,11 @@ class HermesSdkThread:
 
                 # Server-initiated notifications (session/update etc.)
                 # ACP notifications carry assistant chunks, tool calls, etc.
-                ev = self._translate_notification(msg, turn_id)
+                ev = self._translate_notification(
+                    msg,
+                    turn_id,
+                    tool_name_by_call_id=tool_name_by_call_id,
+                )
                 if ev is not None:
                     if ev.type == "tool_started":
                         tool_call_count += 1
@@ -729,7 +806,13 @@ class HermesSdkThread:
             self._tool_names_by_call_id.clear()
             self._tool_inputs_by_call_id.clear()
 
-    def _translate_notification(self, msg: dict, turn_id: str) -> ChatBackendEvent | None:
+    def _translate_notification(
+        self,
+        msg: dict,
+        turn_id: str,
+        *,
+        tool_name_by_call_id: dict[str, str] | None = None,
+    ) -> ChatBackendEvent | None:
         """Map ACP session/update notifications to ChatBackendEvent.
 
         ACP session/update payload shape (per acp.schema):
@@ -831,6 +914,8 @@ class HermesSdkThread:
             ).strip() or None
             update_title = update.get("title") or update.get("kind")
             tool_name = self._tool_names_by_call_id.get(call_id or "")
+            if not tool_name and call_id and tool_name_by_call_id is not None:
+                tool_name = tool_name_by_call_id.get(call_id)
             if not tool_name and update_title:
                 tool_name, _body = _split_tool_title(update_title)
             tool_input = self._tool_inputs_by_call_id.get(call_id or "")
@@ -846,6 +931,10 @@ class HermesSdkThread:
             }:
                 self._tool_names_by_call_id.pop(call_id, None)
                 self._tool_inputs_by_call_id.pop(call_id, None)
+            structured_result = _load_recent_freezone_tool_result(
+                self._env.get("DRAMACLAW_FREEZONE_TOOL_RESULT_DIR"),
+                tool_name,
+            )
             return ChatBackendEvent(
                 type="tool_updated", thread_id=self.id, turn_id=turn_id,
                 text=f"  {status}",
@@ -855,6 +944,7 @@ class HermesSdkThread:
                 input=update_input if update_input is not None else tool_input,
                 output=tool_output,
                 error=tool_error,
+                structured=structured_result,
                 raw=update,
             )
         if kind == "usage_update":

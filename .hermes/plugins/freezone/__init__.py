@@ -20,6 +20,34 @@ from urllib.request import Request, urlopen
 
 from tools.registry import tool_error, tool_result
 
+
+def _record_structured_tool_result(tool_name: str, value: Any) -> None:
+    result_dir = os.environ.get("DRAMACLAW_FREEZONE_TOOL_RESULT_DIR", "").strip()
+    if not result_dir or not tool_name:
+        return
+    try:
+        base = Path(result_dir)
+        base.mkdir(parents=True, exist_ok=True)
+        safe_name = "".join(ch if ch.isalnum() or ch in ("-", "_") else "_" for ch in tool_name)
+        payload = {
+            "tool_name": tool_name,
+            "created_at": time.time(),
+            "result": value,
+        }
+        target = base / f"{safe_name}-{time.time_ns()}-{os.getpid()}.json"
+        target.write_text(json.dumps(payload, ensure_ascii=False), encoding="utf-8")
+    except Exception:
+        return
+
+
+def _structured_tool_result(value: Any, *, tool_name: str = "") -> Any:
+    _record_structured_tool_result(tool_name, value)
+    rendered = tool_result(value)
+    if rendered is value:
+        return rendered
+    return json.dumps(value, ensure_ascii=False)
+
+
 _SKILL_STUDIO_NODE_SCOPE_VALUES = [
     "textGeneration",
     "imageGeneration",
@@ -1145,6 +1173,7 @@ def _handle_get_saved_agent_catalog_item(
     *,
     kind: str,
     id_keys: tuple[str, ...],
+    tool_name: str,
 ) -> str:
     item_id = ""
     for key in id_keys:
@@ -1152,17 +1181,18 @@ def _handle_get_saved_agent_catalog_item(
         if item_id:
             break
     if not item_id:
-        return tool_result(
+        return _structured_tool_result(
             {
                 "ok": False,
                 "kind": kind,
                 "status": "id_required",
                 "error": f"{id_keys[0]} is required",
-            }
+            },
+            tool_name=tool_name,
         )
     response = _request("GET", f"/api/v1/freezone/agent-config/{kind}")
     if not response.get("ok", False):
-        return tool_result(
+        return _structured_tool_result(
             {
                 "ok": False,
                 "kind": kind,
@@ -1170,11 +1200,12 @@ def _handle_get_saved_agent_catalog_item(
                 "status": "catalog_read_failed",
                 "error": response.get("error") or response.get("message") or "Failed to read saved catalog.",
                 "response": response,
-            }
+            },
+            tool_name=tool_name,
         )
     items = response.get("data")
     if not isinstance(items, list):
-        return tool_result(
+        return _structured_tool_result(
             {
                 "ok": False,
                 "kind": kind,
@@ -1182,19 +1213,21 @@ def _handle_get_saved_agent_catalog_item(
                 "status": "catalog_shape_invalid",
                 "error": "Saved catalog response data must be a list.",
                 "response": response,
-            }
+            },
+            tool_name=tool_name,
         )
     for item in items:
         if isinstance(item, dict) and str(item.get("id") or "").strip() == item_id:
-            return tool_result(
+            return _structured_tool_result(
                 {
                     "ok": True,
                     "kind": kind,
                     "id": item_id,
                     "item": item,
-                }
+                },
+                tool_name=tool_name,
             )
-    return tool_result(
+    return _structured_tool_result(
         {
             "ok": False,
             "kind": kind,
@@ -1206,7 +1239,8 @@ def _handle_get_saved_agent_catalog_item(
                 for item in items
                 if isinstance(item, dict) and str(item.get("id") or "").strip()
             ],
-        }
+        },
+        tool_name=tool_name,
     )
 
 
@@ -1215,6 +1249,7 @@ def _handle_get_saved_skill(args: dict[str, Any], **_: Any) -> str:
         args,
         kind="skills",
         id_keys=("skill_id", "id"),
+        tool_name="freezone_get_saved_skill",
     )
 
 
@@ -1223,6 +1258,7 @@ def _handle_get_saved_recipe(args: dict[str, Any], **_: Any) -> str:
         args,
         kind="recipes",
         id_keys=("recipe_id", "id"),
+        tool_name="freezone_get_saved_recipe",
     )
 
 
@@ -2665,7 +2701,10 @@ def _handle_list_workflows(args: dict[str, Any], **_: Any) -> str:
         if item.get("workflow_type")
     ]
     workflows.sort(key=lambda item: item["workflow_type"])
-    return tool_result({"ok": True, "count": len(workflows), "workflows": workflows})
+    return _structured_tool_result(
+        {"ok": True, "count": len(workflows), "workflows": workflows},
+        tool_name="freezone_list_workflows",
+    )
 
 
 def _handle_resolve_catalog_workflow(args: dict[str, Any], **_: Any) -> str:
@@ -2674,7 +2713,10 @@ def _handle_resolve_catalog_workflow(args: dict[str, Any], **_: Any) -> str:
             "Freezone JSON workflow resolver is unavailable. "
             f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
         )
-    return tool_result(resolve_catalog_workflow(args))
+    return _structured_tool_result(
+        resolve_catalog_workflow(args),
+        tool_name="freezone_resolve_catalog_workflow",
+    )
 
 
 def _handle_skill_list(args: dict[str, Any], **_: Any) -> str:
@@ -2683,7 +2725,7 @@ def _handle_skill_list(args: dict[str, Any], **_: Any) -> str:
             "Freezone Skill Runtime is unavailable. "
             f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
         )
-    return tool_result(list_skill_entries(args))
+    return _structured_tool_result(list_skill_entries(args), tool_name="freezone_skill_list")
 
 
 def _handle_skill_start_session(args: dict[str, Any], **_: Any) -> str:
@@ -2692,7 +2734,10 @@ def _handle_skill_start_session(args: dict[str, Any], **_: Any) -> str:
             "Freezone Skill Runtime is unavailable. "
             f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
         )
-    return tool_result(start_skill_session(args))
+    return _structured_tool_result(
+        start_skill_session(args),
+        tool_name="freezone_skill_start_session",
+    )
 
 
 def _handle_skill_update_config(args: dict[str, Any], **_: Any) -> str:
@@ -2701,7 +2746,10 @@ def _handle_skill_update_config(args: dict[str, Any], **_: Any) -> str:
             "Freezone Skill Runtime is unavailable. "
             f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
         )
-    return tool_result(update_skill_session_config(args))
+    return _structured_tool_result(
+        update_skill_session_config(args),
+        tool_name="freezone_skill_update_config",
+    )
 
 
 def _handle_skill_confirm(args: dict[str, Any], **_: Any) -> str:
@@ -2710,7 +2758,10 @@ def _handle_skill_confirm(args: dict[str, Any], **_: Any) -> str:
             "Freezone Skill Runtime is unavailable. "
             f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
         )
-    return tool_result(confirm_skill_session(args))
+    return _structured_tool_result(
+        confirm_skill_session(args),
+        tool_name="freezone_skill_confirm",
+    )
 
 
 def _handle_skill_status(args: dict[str, Any], **_: Any) -> str:
@@ -2719,7 +2770,10 @@ def _handle_skill_status(args: dict[str, Any], **_: Any) -> str:
             "Freezone Skill Runtime is unavailable. "
             f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
         )
-    return tool_result(get_skill_session_status(args))
+    return _structured_tool_result(
+        get_skill_session_status(args),
+        tool_name="freezone_skill_status",
+    )
 
 
 def _handle_skill_cancel(args: dict[str, Any], **_: Any) -> str:
@@ -2728,7 +2782,10 @@ def _handle_skill_cancel(args: dict[str, Any], **_: Any) -> str:
             "Freezone Skill Runtime is unavailable. "
             f"Import error: {_SKILL_RUNTIME_IMPORT_ERROR}"
         )
-    return tool_result(cancel_skill_session(args))
+    return _structured_tool_result(
+        cancel_skill_session(args),
+        tool_name="freezone_skill_cancel",
+    )
 
 
 def _has_explicit_workflow_type(args: dict[str, Any]) -> bool:

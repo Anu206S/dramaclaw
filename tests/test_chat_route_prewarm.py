@@ -427,6 +427,25 @@ def test_resolve_cancelled_skill_studio_tool_result_stops_flow(monkeypatch, tmp_
     assert wait_skill_studio_result("skill-key-3", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
 
 
+def test_tool_result_payload_includes_structured_json() -> None:
+    text = '{"ok":true,"skills":[{"id":"pixar-ip-brand-ad"}]}'
+
+    payload = chat_route._tool_result_payload(text)
+
+    assert payload["text"] == text
+    assert payload["json"] == {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]}
+
+
+def test_tool_result_payload_prefers_explicit_structured_json() -> None:
+    payload = chat_route._tool_result_payload(
+        "freezone_skill_list result\n- **count:** 1",
+        {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]},
+    )
+
+    assert payload["text"].startswith("freezone_skill_list result")
+    assert payload["json"] == {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]}
+
+
 def test_resolve_revision_skill_studio_tool_result_starts_question_flow(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path)
     payload = chat_route.SkillStudioToolResultIn(

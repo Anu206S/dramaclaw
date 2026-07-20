@@ -12,11 +12,28 @@ def _load_plugin_module():
     registry_module = types.ModuleType("tools.registry")
     registry_module.tool_error = lambda value: value
     registry_module.tool_result = lambda value: value
-    sys.modules.setdefault("tools", tools_module)
-    sys.modules.setdefault("tools.registry", registry_module)
+    sys.modules["tools"] = tools_module
+    sys.modules["tools.registry"] = registry_module
 
     path = Path(__file__).resolve().parents[1] / ".hermes" / "plugins" / "freezone" / "__init__.py"
     spec = importlib.util.spec_from_file_location("test_freezone_plugin", path)
+    assert spec is not None
+    module = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(module)
+    return module
+
+
+def _load_plugin_module_with_registry_result(registry_result):
+    tools_module = types.ModuleType("tools")
+    registry_module = types.ModuleType("tools.registry")
+    registry_module.tool_error = lambda value: json.dumps({"ok": False, "error": str(value)}, ensure_ascii=False)
+    registry_module.tool_result = registry_result
+    sys.modules["tools"] = tools_module
+    sys.modules["tools.registry"] = registry_module
+
+    path = Path(__file__).resolve().parents[1] / ".hermes" / "plugins" / "freezone" / "__init__.py"
+    spec = importlib.util.spec_from_file_location("test_freezone_plugin_structured", path)
     assert spec is not None
     module = importlib.util.module_from_spec(spec)
     assert spec.loader is not None
@@ -183,6 +200,33 @@ def test_freezone_skill_session_runtime_is_isolated_from_workflow_tools(tmp_path
     saved = handlers["freezone_skill_status"]({"session_id": session["session_id"]})
     assert saved["ok"] is True
     assert saved["session"]["status"] == "confirmed"
+
+
+def test_freezone_skill_list_returns_json_when_registry_summarizes(monkeypatch):
+    plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    listed = handlers["freezone_skill_list"]({"include_workflows": True})
+
+    decoded = json.loads(listed)
+    assert decoded["ok"] is True
+    assert isinstance(decoded["skills"], list)
+
+
+def test_freezone_skill_list_records_structured_result_side_channel(monkeypatch, tmp_path):
+    result_dir = tmp_path / "freezone-tool-results"
+    monkeypatch.setenv("DRAMACLAW_FREEZONE_TOOL_RESULT_DIR", str(result_dir))
+    plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    handlers["freezone_skill_list"]({"include_workflows": True})
+
+    files = list(result_dir.glob("freezone_skill_list-*.json"))
+    assert len(files) == 1
+    payload = json.loads(files[0].read_text(encoding="utf-8"))
+    assert payload["tool_name"] == "freezone_skill_list"
+    assert payload["result"]["ok"] is True
+    assert isinstance(payload["result"]["skills"], list)
 
 
 def test_interactive_skills_do_not_pollute_legacy_workflow_list():

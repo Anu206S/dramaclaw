@@ -1058,6 +1058,21 @@ def _tool_display_payload(text: object, name: object = None) -> tuple[str, str]:
     return tool_name or "agent.tool", body
 
 
+def _tool_result_payload(text: object, structured: object | None = None) -> dict[str, Any]:
+    body = str(text or "")
+    payload: dict[str, Any] = {"text": body}
+    if structured is not None:
+        payload["json"] = structured
+        return payload
+    stripped = body.strip()
+    if stripped.startswith(("{", "[")):
+        try:
+            payload["json"] = json.loads(stripped)
+        except json.JSONDecodeError:
+            pass
+    return payload
+
+
 async def _project_context_for_scope(
     user: dict[str, Any], scope: ChatScope
 ) -> ProjectContext | None:
@@ -1988,6 +2003,7 @@ async def _stream_project_turn(
                     "input": event.get("input"),
                     "output": event.get("output"),
                     "error": event.get("error"),
+                    "result_json": event.get("result_json"),
                 },
                 send_lock,
             )
@@ -2272,6 +2288,7 @@ async def _stream_home_turn(
                         "input": event.input,
                         "output": event.output,
                         "error": event.error,
+                        "result_json": event.structured,
                     },
                     send_lock,
                 )
