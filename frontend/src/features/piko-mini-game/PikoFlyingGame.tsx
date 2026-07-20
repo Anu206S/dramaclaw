@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 import { PikoActionFigure } from "@/features/companion/PikoActionFigure";
+import { usePikoGameAudio } from "@/features/piko-mini-game/usePikoGameAudio";
 
 const BOARD_WIDTH = 800;
 const BOARD_HEIGHT = 520;
@@ -39,8 +40,6 @@ function makeGates(): Gate[] {
 export function PikoFlyingGame({ onClose, muted }: { onClose: () => void; muted: boolean }) {
   const { t } = useTranslation();
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const audioContextRef = useRef<AudioContext | null>(null);
-  const mutedRef = useRef(muted);
   const frameRef = useRef<number | null>(null);
   const previousTimeRef = useRef<number | null>(null);
   const statusRef = useRef<FlyingStatus>("ready");
@@ -53,42 +52,7 @@ export function PikoFlyingGame({ onClose, muted }: { onClose: () => void; muted:
   const [pikoY, setPikoY] = useState(BOARD_HEIGHT / 2);
   const [velocity, setVelocity] = useState(0);
   const [score, setScore] = useState(0);
-
-  const getAudioContext = useCallback(() => {
-    if (mutedRef.current) return null;
-    const AudioContextClass =
-      window.AudioContext ||
-      (window as typeof window & { webkitAudioContext?: typeof AudioContext }).webkitAudioContext;
-    if (!AudioContextClass) return null;
-    audioContextRef.current ??= new AudioContextClass();
-    if (audioContextRef.current.state === "suspended") void audioContextRef.current.resume();
-    return audioContextRef.current;
-  }, []);
-
-  const playTone = useCallback((
-    frequency: number,
-    duration: number,
-    volume: number,
-    type: OscillatorType = "sine",
-    delay = 0,
-    endFrequency?: number,
-  ) => {
-    const context = getAudioContext();
-    if (!context) return;
-    const oscillator = context.createOscillator();
-    const gain = context.createGain();
-    const startsAt = context.currentTime + delay;
-    oscillator.type = type;
-    oscillator.frequency.setValueAtTime(frequency, startsAt);
-    if (endFrequency) oscillator.frequency.exponentialRampToValueAtTime(endFrequency, startsAt + duration);
-    gain.gain.setValueAtTime(0.0001, startsAt);
-    gain.gain.exponentialRampToValueAtTime(volume, startsAt + 0.008);
-    gain.gain.exponentialRampToValueAtTime(0.0001, startsAt + duration);
-    oscillator.connect(gain);
-    gain.connect(context.destination);
-    oscillator.start(startsAt);
-    oscillator.stop(startsAt + duration + 0.02);
-  }, [getAudioContext]);
+  const playTone = usePikoGameAudio(muted);
 
   const playFlapSound = useCallback(() => {
     playTone(420, 0.075, 0.075, "triangle", 0, 760);
@@ -116,22 +80,6 @@ export function PikoFlyingGame({ onClose, muted }: { onClose: () => void; muted:
     playTone(220, 0.24, 0.11, "sawtooth", 0, 72);
     playTone(130, 0.28, 0.07, "square", 0.04, 55);
   }, [playTone]);
-
-  useEffect(() => {
-    mutedRef.current = muted;
-    const context = audioContextRef.current;
-    if (!context) return;
-    if (muted && context.state === "running") void context.suspend();
-    if (!muted && context.state === "suspended") void context.resume();
-  }, [muted]);
-
-  useEffect(() => {
-    return () => {
-      const context = audioContextRef.current;
-      audioContextRef.current = null;
-      if (context && context.state !== "closed") void context.close();
-    };
-  }, []);
 
   const setGameStatus = useCallback((next: FlyingStatus) => {
     statusRef.current = next;

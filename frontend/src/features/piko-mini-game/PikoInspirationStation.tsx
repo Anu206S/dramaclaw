@@ -7,6 +7,7 @@ import { PikoActionFigure } from "@/features/companion/PikoActionFigure";
 import { PikoBreakoutGame } from "@/features/piko-mini-game/PikoBreakoutGame";
 import { PikoCatchGame } from "@/features/piko-mini-game/PikoCatchGame";
 import { PikoFlyingGame } from "@/features/piko-mini-game/PikoFlyingGame";
+import { PikoLeapGame } from "@/features/piko-mini-game/PikoLeapGame";
 import { PikoRollingBallGame } from "@/features/piko-mini-game/PikoRollingBallGame";
 import { cn } from "@/lib/utils";
 
@@ -94,7 +95,7 @@ type HitSpark = {
 
 type GameStatus = "idle" | "countdown" | "playing" | "finished";
 type StationView = "library" | "game";
-type PikoGameId = "inspiration-station" | "memory-match" | "breakout" | "rolling-ball" | "flying" | "catch";
+type PikoGameId = "inspiration-station" | "memory-match" | "breakout" | "rolling-ball" | "flying" | "catch" | "leap";
 
 type PikoInspirationStationProps = {
   open: boolean;
@@ -125,6 +126,10 @@ const PIKO_GAME_LIBRARY = [
   {
     id: "catch",
     titleKey: "pikoMiniGame.catch.title",
+  },
+  {
+    id: "leap",
+    titleKey: "pikoMiniGame.leap.title",
   },
 ] as const;
 
@@ -852,6 +857,8 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
             ? "pikoMiniGame.flying.title"
             : activeGameId === "catch"
               ? "pikoMiniGame.catch.title"
+              : activeGameId === "leap"
+                ? "pikoMiniGame.leap.title"
             : "pikoMiniGame.title";
 
   useEffect(() => {
@@ -1574,7 +1581,7 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
             )}
           </div>
           <div className="flex items-center gap-1">
-            {stationView === "game" && (activeGameId === "inspiration-station" || activeGameId === "breakout" || activeGameId === "rolling-ball" || activeGameId === "flying" || activeGameId === "catch") ? (
+            {stationView === "game" && (activeGameId === "inspiration-station" || activeGameId === "breakout" || activeGameId === "rolling-ball" || activeGameId === "flying" || activeGameId === "catch" || activeGameId === "leap") ? (
               <button
                 type="button"
                 className="inline-flex size-9 items-center justify-center rounded-full text-white/68 transition-colors hover:bg-white/[0.08] hover:text-white"
@@ -1626,6 +1633,8 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
             <PikoFlyingGame onClose={onClose} muted={isAudioMuted} />
           ) : activeGameId === "catch" ? (
             <PikoCatchGame onClose={onClose} muted={isAudioMuted} />
+          ) : activeGameId === "leap" ? (
+            <PikoLeapGame onClose={onClose} muted={isAudioMuted} />
           ) : (
             <div
               ref={boardRef}

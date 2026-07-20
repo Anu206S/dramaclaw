@@ -1682,6 +1682,19 @@
       "score": "灵感 {{score}}",
       "status": "生命 {{lives}} · {{seconds}} 秒",
       "result": "本局收集了 {{score}} 点灵感"
+    },
+    "leap": {
+      "title": "Piko 跃迁",
+      "canvasLabel": "Piko 跃迁游戏区域",
+      "hint": "长按空格、鼠标或屏幕蓄力，松开后跳向下一块灵感芯片",
+      "start": "开始跃迁",
+      "ready": "准备好下一跳",
+      "lost": "Piko 没有落稳",
+      "score": "跃迁 {{score}}",
+      "combo": "中心连击 ×{{combo}}",
+      "centerHint": "落在中心可获额外分数",
+      "chargeHint": "长按蓄力 · 松开跳跃",
+      "result": "本局获得 {{score}} 分"
     }
   },
   "literalScript": {

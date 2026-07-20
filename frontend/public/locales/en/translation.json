@@ -1682,6 +1682,19 @@
       "score": "Ideas {{score}}",
       "status": "Lives {{lives}} · {{seconds}}s",
       "result": "You collected {{score}} idea points"
+    },
+    "leap": {
+      "title": "Piko Leap",
+      "canvasLabel": "Piko Leap game board",
+      "hint": "Hold Space, mouse, or touch to charge, then release to jump to the next idea chip",
+      "start": "Start leaping",
+      "ready": "Ready for the next leap",
+      "lost": "Piko missed the landing",
+      "score": "Leap score {{score}}",
+      "combo": "Center combo ×{{combo}}",
+      "centerHint": "Land in the center for bonus points",
+      "chargeHint": "Hold to charge · release to jump",
+      "result": "You scored {{score}} points"
     }
   },
   "literalScript": {
