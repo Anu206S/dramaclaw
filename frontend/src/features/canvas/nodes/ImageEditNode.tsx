@@ -37,6 +37,7 @@ import { readUrl } from '@/lib/url-params';
 import { useDetachUpstream } from '@/features/canvas/hooks/useDetachUpstream';
 import { useReferenceMentionSync } from '@/features/canvas/nodes/useReferenceMentionSync';
 import { canvasAiGateway } from '@/features/canvas/application/canvasServices';
+import { compileWorkflowNodePrompt } from '@/features/canvas/application/workflowRecipeRuntime';
 import {
   collectUpstreamReferenceUrls,
   joinUpstreamText,
@@ -621,16 +622,27 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
     const ownPrompt = promptDraft.replace(/@(?=图\d+)/g, '').trim();
     // 「实时读取上游」：上游 text 节点（文本/脚本/图生 prompt 等）的内容
     // 在每次 submit 时自动前置到 prompt，用户不必手动复制。
-    const prompt = [upstreamTextJoined, ownPrompt]
+    const fallbackPrompt = [upstreamTextJoined, ownPrompt]
       .filter((s) => s.length > 0)
       .join('\n\n');
-    if (!prompt && !capability) {
+    if (!fallbackPrompt && !capability) {
       const errorMessage = t('node.imageEdit.promptRequired');
       setError(errorMessage);
       void showErrorDialog(errorMessage, t('common.error'));
       return;
     }
 
+    const prompt = await compileWorkflowNodePrompt({
+      nodeData: data,
+      nodeKind: 'image',
+      nodePrompt: ownPrompt,
+      upstreamText: upstreamTextJoined,
+      fallbackPrompt,
+      referenceMedia: [...incomingImages, ...upstreamReferenceUrls].map((_, index) => ({
+        kind: 'image',
+        label: `reference-${index + 1}`,
+      })),
+    });
     const generationDurationMs = selectedModel.expectedDurationMs ?? 60000;
     const generationStartedAt = Date.now();
     const resultNodeTitle = capability
@@ -794,6 +806,7 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
     id,
     incomingImages,
     requestResolution.requestModel,
+    data,
     data.capabilityDefaultPushTarget,
     data.capabilityId,
     data.capabilityInputs,

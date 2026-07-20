@@ -358,15 +358,42 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
             "focus": True,
         }
     )
+    run_after_create = _bool_value(
+        args.get("run_after_create") or args.get("runAfterCreate"),
+        False,
+    )
+    if run_after_create:
+        commands.append(
+            {
+                "type": "run_workflow",
+                "node_ids": [node["client_id"] for node in normalized_nodes],
+                "scope": "selection",
+            }
+        )
 
     return {
         "ok": True,
         "status": "workflow_graph_commands_created",
         "schema_version": CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        "run_after_create": run_after_create,
         "commands": commands,
         "skipped_edges": skipped_edges,
         "warnings": warnings,
     }
+
+
+def _bool_value(value: Any, default: bool = False) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+    if isinstance(value, (int, float)):
+        return bool(value)
+    return default
 
 
 def _workflow_payload(args: dict[str, Any]) -> dict[str, Any]:

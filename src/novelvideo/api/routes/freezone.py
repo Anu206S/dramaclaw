@@ -53,6 +53,9 @@ from novelvideo.api.schemas import (
     FreezoneMarkDetectRequest,
     FreezoneMarkDetectResponse,
     FreezoneOutpaintRequest,
+    FreezoneRecipeCompileRequest,
+    FreezoneRecipeCompileResponse,
+    FreezoneRecipeTextGenerateResponse,
     FreezoneRedrawRequest,
     FreezoneRelightRequest,
     FreezoneScene360Request,
@@ -129,6 +132,11 @@ from novelvideo.freezone.presets import (
 )
 from novelvideo.freezone.route_helpers import (
     FREEZONE_DEFAULT_IMAGE_MODEL,
+)
+from novelvideo.freezone.recipe_runtime import (
+    RecipeRuntimeError,
+    compile_recipe_prompt,
+    generate_recipe_text,
 )
 from novelvideo.freezone.route_helpers import (
     accepted_job_response as _accepted_job_response,
@@ -3951,6 +3959,66 @@ async def delete_freezone_agent_config_item(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": {"deleted": deleted}}
+
+
+@router.post(
+    "/freezone/recipes/compile",
+    response_model=FreezoneRecipeCompileResponse,
+    tags=[TAG_FREEZONE_AGENT_CONFIG],
+)
+async def compile_freezone_recipe(
+    body: FreezoneRecipeCompileRequest,
+    user: dict = Depends(get_api_user),
+):
+    """Compile an effective user Recipe without returning its internal definition."""
+    username = str(user.get("username") or "")
+    try:
+        prompt = await compile_recipe_prompt(
+            username=username,
+            recipe_id=body.recipe_id,
+            recipe_version=body.recipe_version,
+            node_kind=body.node_kind,
+            node_prompt=body.node_prompt,
+            user_goal=body.user_goal,
+            upstream_text=body.upstream_text,
+            reference_media=[item.model_dump() for item in body.reference_media],
+        )
+    except RecipeRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("freezone Recipe compilation failed")
+        raise HTTPException(status_code=503, detail="Recipe compilation failed") from exc
+    return {"ok": True, "data": {"prompt": prompt}}
+
+
+@router.post(
+    "/freezone/recipes/generate-text",
+    response_model=FreezoneRecipeTextGenerateResponse,
+    tags=[TAG_FREEZONE_AGENT_CONFIG],
+)
+async def generate_freezone_recipe_text(
+    body: FreezoneRecipeCompileRequest,
+    user: dict = Depends(get_api_user),
+):
+    """Compile and execute one catalog-backed text node."""
+    username = str(user.get("username") or "")
+    try:
+        content = await generate_recipe_text(
+            username=username,
+            recipe_id=body.recipe_id,
+            recipe_version=body.recipe_version,
+            node_kind=body.node_kind,
+            node_prompt=body.node_prompt,
+            user_goal=body.user_goal,
+            upstream_text=body.upstream_text,
+            reference_media=[item.model_dump() for item in body.reference_media],
+        )
+    except RecipeRuntimeError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    except Exception as exc:
+        logger.exception("freezone Recipe text generation failed")
+        raise HTTPException(status_code=503, detail="Recipe text generation failed") from exc
+    return {"ok": True, "data": {"content": content}}
 
 
 # ============================================================

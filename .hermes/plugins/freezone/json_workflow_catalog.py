@@ -18,6 +18,17 @@ try:
 except Exception:  # pragma: no cover - Hermes can run before app imports are available.
     list_user_agent_config_items = None
 
+try:
+    from novelvideo.freezone.workflow_plan import (
+        ALLOWED_LINK_TYPES,
+        ALLOWED_NODE_TYPES,
+        validate_workflow_plan,
+    )
+except Exception:  # pragma: no cover - Hermes can run before app imports are available.
+    validate_workflow_plan = None
+    ALLOWED_LINK_TYPES = set()
+    ALLOWED_NODE_TYPES = set()
+
 CATALOG_PREFIX = "catalog."
 PLAN_SCHEMA_VERSION = "freezone_workflow_plan.v1"
 
@@ -47,6 +58,23 @@ _STAGE_BY_NODE_TYPE = {
     "videoNode": "video",
     "audioNode": "audio",
     "videoComposeNode": "compose",
+}
+
+_CAPABILITY_BY_NODE_TYPE = {
+    "textAnnotationNode": "textGeneration",
+    "scriptNode": "textGeneration",
+    "beatContextNode": "textGeneration",
+    "imageGenNode": "imageGeneration",
+    "videoNode": "videoGeneration",
+    "audioNode": "audioGeneration",
+    "videoComposeNode": "videoCompose",
+}
+
+_OUTPUT_KIND_BY_CAPABILITY = {
+    "textGeneration": "text",
+    "imageGeneration": "image",
+    "videoGeneration": "video",
+    "audioGeneration": "audio",
 }
 
 _FALLBACK_WORKFLOW_SPECS: tuple[dict[str, Any], ...] = (
@@ -254,6 +282,176 @@ def catalog_workflow_aliases() -> dict[str, str]:
             if isinstance(alias, str) and alias.strip():
                 aliases[_alias_key(alias)] = workflow_type
     return aliases
+
+
+def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
+    """Return one complete planning package for an explicitly selected Skill."""
+    skill_id = _text(args.get("skill_id") or args.get("skillId") or args.get("id"))
+    if not skill_id:
+        return {
+            "ok": False,
+            "status": "skill_id_required",
+            "error": "skill_id is required",
+        }
+    skill = _load_skill(skill_id)
+    if skill is None or skill.get("_disabled") is True:
+        return {
+            "ok": False,
+            "status": "workflow_skill_not_found",
+            "error": f"workflow skill not found: {skill_id}",
+            "available_skill_ids": sorted(
+                _text(item.get("id"))
+                for item in _load_skills()
+                if _text(item.get("id")) and item.get("_disabled") is not True
+            ),
+        }
+
+    recipes = [
+        recipe
+        for recipe in _load_agent_config_items("recipes", _RECIPES_DIR)
+        if recipe.get("enabled") is not False and _text(recipe.get("id"))
+    ]
+    allowed_capabilities = _skill_capabilities(skill)
+    candidate_recipes = _workflow_skill_recipe_candidates(
+        skill,
+        recipes,
+        allowed_capabilities=allowed_capabilities,
+    )
+    referenced_recipe_ids = _skill_referenced_recipe_ids(skill)
+    full_recipes = [
+        _without_private_fields(recipe)
+        for recipe in candidate_recipes
+        if _recipe_matches_references(recipe, referenced_recipe_ids)
+    ]
+    recipe_summaries = [_recipe_planning_summary(recipe) for recipe in candidate_recipes]
+    return {
+        "ok": True,
+        "schema_version": "freezone_workflow_skill_package.v1",
+        "skill_id": _text(skill.get("id")),
+        "user_goal": _workflow_goal_text(args),
+        "source": _catalog_source(skill),
+        "skill": _without_private_fields(skill),
+        "recipes": full_recipes,
+        "available_recipes": recipe_summaries,
+        "capabilities": [
+            {
+                "id": capability,
+                "output_kind": _OUTPUT_KIND_BY_CAPABILITY.get(capability, "composition"),
+                "node_type": next(
+                    (
+                        node_type
+                        for node_type, mapped_capability in _CAPABILITY_BY_NODE_TYPE.items()
+                        if mapped_capability == capability
+                    ),
+                    "",
+                ),
+            }
+            for capability in allowed_capabilities
+        ],
+        "allowed_node_types": sorted(
+            node_type
+            for node_type, capability in _CAPABILITY_BY_NODE_TYPE.items()
+            if capability in allowed_capabilities
+        ),
+        "allowed_link_types": sorted(ALLOWED_LINK_TYPES),
+        "planning_contract": {
+            "schema_version": PLAN_SCHEMA_VERSION,
+            "workflow_type_prefix": "dynamic.",
+            "requires_explicit_skill_id": True,
+            "requires_explicit_recipe_id": True,
+            "strict_validation": True,
+            "max_nodes": 200,
+            "max_edges": 400,
+            "missing_source_media": {
+                "strategy": "generate_anchor_then_continue",
+                "anchor_recipe_requires_source_media": False,
+                "dependency_link_type": "media_input_for",
+            },
+        },
+        "message": "已加载完整 Workflow Skill 包，可直接规划 freezone_workflow_plan.v1。",
+    }
+
+
+def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
+    """Strictly validate an agent-authored plan against the live catalog."""
+    if validate_workflow_plan is None:
+        return {
+            "ok": False,
+            "status": "workflow_plan_validation_unavailable",
+            "error": "workflow plan validation is unavailable",
+        }
+    skills = {
+        _text(skill.get("id")): skill
+        for skill in _load_skills()
+        if _text(skill.get("id")) and skill.get("_disabled") is not True
+    }
+    recipes = {
+        _text(recipe.get("id")): recipe
+        for recipe in _load_agent_config_items("recipes", _RECIPES_DIR)
+        if _text(recipe.get("id")) and recipe.get("enabled") is not False
+    }
+    validated = validate_workflow_plan(
+        plan,
+        skills_by_id=skills,
+        recipes_by_id=recipes,
+    )
+    if not validated.get("ok"):
+        return validated
+    skill_id = _text(validated.get("skill_id"))
+    allowed_capabilities = _skill_capabilities(skills[skill_id])
+    allowed_node_types = {
+        node_type
+        for node_type, capability in _CAPABILITY_BY_NODE_TYPE.items()
+        if capability in allowed_capabilities
+    }
+    allowed_node_types.add("textAnnotationNode")
+    allowed_recipe_ids = {
+        _text(recipe.get("id"))
+        for recipe in _workflow_skill_recipe_candidates(skills[skill_id], list(recipes.values()))
+    }
+    errors: list[dict[str, str]] = []
+    for index, node in enumerate(plan.get("nodes") or []):
+        node_type = _text(node.get("node_type")) if isinstance(node, dict) else ""
+        if node_type not in allowed_node_types:
+            errors.append(
+                {
+                    "path": f"nodes[{index}].node_type",
+                    "message": f"node type {node_type} is not allowed by skill {skill_id}",
+                }
+            )
+        data = node.get("data") if isinstance(node, dict) else None
+        catalog = data.get("workflowCatalog") if isinstance(data, dict) else None
+        recipe_id = _text(catalog.get("recipeId")) if isinstance(catalog, dict) else ""
+        stage = _text(node.get("stage")) if isinstance(node, dict) else ""
+        requires_recipe = node_type in {
+            "imageGenNode",
+            "videoNode",
+            "audioNode",
+            "scriptNode",
+            "beatContextNode",
+        } or (node_type == "textAnnotationNode" and stage not in {"input", "resource", "asset"})
+        if requires_recipe and not recipe_id:
+            errors.append(
+                {
+                    "path": f"nodes[{index}].data.workflowCatalog.recipeId",
+                    "message": f"executable node {node.get('id')} requires an explicit recipeId",
+                }
+            )
+        if recipe_id and recipe_id not in allowed_recipe_ids:
+            errors.append(
+                {
+                    "path": f"nodes[{index}].data.workflowCatalog.recipeId",
+                    "message": f"recipe {recipe_id} is not allowed by skill {skill_id}",
+                }
+            )
+    if errors:
+        return {
+            "ok": False,
+            "status": "invalid_dynamic_workflow_plan",
+            "error": errors[0]["message"],
+            "errors": errors,
+        }
+    return validated
 
 
 def build_catalog_workflow_plan(args: dict[str, Any]) -> dict[str, Any] | None:
@@ -490,7 +688,8 @@ def _build_plan(
         step_id = _safe_id(_text(step.get("id")) or f"step_{len(step_ids) + 1}")
         step_ids.append(step_id)
         operation_type = _text(
-            _get(step, "operationType", "operation_type", "actionKey", "action_key")
+            _get(step, "recipeId", "recipe_id")
+            or _get(step, "operationType", "operation_type", "actionKey", "action_key")
         )
         recipe = recipes.get(operation_type) if operation_type else None
         node_type = _node_type_for_step(step, recipe)
@@ -531,6 +730,7 @@ def _build_plan(
                 "stepId": step_id,
                 "operationType": operation_type,
                 "recipeId": _text(recipe.get("id") if recipe else ""),
+                "recipeVersion": _text(recipe.get("version") if recipe else ""),
                 "promptStrategy": _text(_get(step, "promptStrategy", "prompt_strategy")),
                 "inputStrategy": _get(step, "inputStrategy", "input_strategy") or {},
                 "model": _text(step.get("model")),
@@ -1058,6 +1258,142 @@ def _recipe_index() -> dict[str, dict[str, Any]]:
             if key:
                 index.setdefault(key, recipe)
     return index
+
+
+def _skill_capabilities(skill: dict[str, Any]) -> list[str]:
+    capabilities: list[str] = []
+    triggers = skill.get("triggers") if isinstance(skill.get("triggers"), dict) else {}
+    raw_scopes = triggers.get("node_scopes") or triggers.get("nodeScopes") or []
+    for scope in raw_scopes if isinstance(raw_scopes, list) else []:
+        normalized = _text(scope)
+        aliases = {
+            "text": "textGeneration",
+            "image": "imageGeneration",
+            "video": "videoGeneration",
+            "audio": "audioGeneration",
+            "compose": "videoCompose",
+        }
+        capability = aliases.get(normalized, normalized)
+        if capability in _OUTPUT_KIND_BY_CAPABILITY or capability == "videoCompose":
+            if capability not in capabilities:
+                capabilities.append(capability)
+    for template in _templates(skill):
+        for step in template.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            capability = _text(_get(step, "nodeType", "node_type"))
+            if capability in _NODE_TYPE_BY_STEP and capability not in capabilities:
+                capabilities.append(capability)
+    if not capabilities:
+        capabilities = list(_OUTPUT_KIND_BY_CAPABILITY)
+    return capabilities
+
+
+def _skill_referenced_recipe_ids(skill: dict[str, Any]) -> set[str]:
+    references = {
+        _text(item)
+        for field in ("recipe_ids", "recipeIds", "allowed_recipe_ids", "allowedRecipeIds")
+        for item in (skill.get(field) if isinstance(skill.get(field), list) else [])
+        if _text(item)
+    }
+    for template in _templates(skill):
+        for step in template.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            reference = _text(
+                _get(
+                    step,
+                    "recipeId",
+                    "recipe_id",
+                    "operationType",
+                    "operation_type",
+                    "actionKey",
+                    "action_key",
+                )
+            )
+            if reference:
+                references.add(reference)
+    return references
+
+
+def _workflow_skill_recipe_candidates(
+    skill: dict[str, Any],
+    recipes: list[dict[str, Any]],
+    *,
+    allowed_capabilities: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    capabilities = allowed_capabilities or _skill_capabilities(skill)
+    output_kinds = {
+        _OUTPUT_KIND_BY_CAPABILITY[capability]
+        for capability in capabilities
+        if capability in _OUTPUT_KIND_BY_CAPABILITY
+    }
+    references = _skill_referenced_recipe_ids(skill)
+    candidates: list[dict[str, Any]] = []
+    for recipe in recipes:
+        recipe_id = _text(recipe.get("id"))
+        action_keys = {
+            _text(item)
+            for field in ("actionKeys", "action_keys", "operationTypes", "operation_types")
+            for item in (recipe.get(field) if isinstance(recipe.get(field), list) else [])
+            if _text(item)
+        }
+        output_kind = _text(
+            recipe.get("output_kind")
+            or recipe.get("generationType")
+            or recipe.get("generation_type")
+        )
+        explicitly_referenced = recipe_id in references or bool(action_keys & references)
+        if explicitly_referenced or not output_kinds or output_kind in output_kinds:
+            candidates.append(recipe)
+    candidates.sort(key=lambda item: _text(item.get("id")))
+    return candidates
+
+
+def _recipe_matches_references(recipe: dict[str, Any], references: set[str]) -> bool:
+    if _text(recipe.get("id")) in references:
+        return True
+    return any(
+        _text(item) in references
+        for field in ("actionKeys", "action_keys", "operationTypes", "operation_types")
+        for item in (recipe.get(field) if isinstance(recipe.get(field), list) else [])
+    )
+
+
+def _recipe_planning_summary(recipe: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "id": _text(recipe.get("id")),
+        "name": _text(recipe.get("name") or recipe.get("label")),
+        "version": recipe.get("version"),
+        "output_kind": _text(
+            recipe.get("output_kind")
+            or recipe.get("generationType")
+            or recipe.get("generation_type")
+        ),
+        "action_keys": [
+            _text(item)
+            for field in ("actionKeys", "action_keys", "operationTypes", "operation_types")
+            for item in (recipe.get(field) if isinstance(recipe.get(field), list) else [])
+            if _text(item)
+        ],
+        "planning_prompt": _text(recipe.get("planning_prompt") or recipe.get("planningPrompt")),
+        "result_summary": _text(recipe.get("result_summary") or recipe.get("resultSummary")),
+        "requires_source_media": bool(
+            recipe.get("requires_source_media") or recipe.get("requiresSourceMedia")
+        ),
+    }
+
+
+def _without_private_fields(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {
+            key: _without_private_fields(item)
+            for key, item in value.items()
+            if not str(key).startswith("_")
+        }
+    if isinstance(value, list):
+        return [_without_private_fields(item) for item in value]
+    return value
 
 
 def _load_agent_config_items(kind: str, fallback_dir: Path) -> list[dict[str, Any]]:
