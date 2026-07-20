@@ -58,13 +58,13 @@ export const SHARED_MODELS: ModelOption[] = [
     id: 'newapi_gpt_image2',
     providerId: 'newapi',
     apiModel: 'newapi_gpt_image2',
-    label: 'DC-Image-2',
+    label: 'LingShan-G2',
   },
   {
     id: 'newapi_nanobanana2',
     providerId: 'newapi',
     apiModel: 'newapi_nanobanana2',
-    label: 'DC-Banana-2',
+    label: 'LingShan-NB-2',
   },
   {
     id: 'huimeng/gpt-image-2',
@@ -86,7 +86,7 @@ export const SHARED_MODELS: ModelOption[] = [
   },
 ];
 
-export const DEFAULT_SHARED_MODEL_ID = 'huimeng/gpt-image-2';
+export const DEFAULT_SHARED_MODEL_ID = 'newapi_gpt_image2';
 export const DEFAULT_UPSCALE_MODEL_ID = 'newapi_gpt_image2';
 
 // Video generation models. `id` is the raw backend model id sent to

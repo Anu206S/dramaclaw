@@ -1190,6 +1190,33 @@ def _is_hidden_chat_tool_event(name: object, text: object) -> bool:
     return any(marker in haystack for marker in _HIDDEN_TOOL_MARKERS)
 
 
+def _is_anonymous_hermes_tool_call_update(event: Any) -> bool:
+    raw = getattr(event, "raw", None)
+    if getattr(event, "name", None) is not None or not isinstance(raw, dict):
+        return False
+    return raw.get("sessionUpdate") == "tool_call_update" and bool(str(raw.get("toolCallId") or "").strip())
+
+
+def _is_hermes_lifecycle_tool_update(event: Any) -> bool:
+    raw = getattr(event, "raw", None)
+    if not isinstance(raw, dict):
+        return False
+    kind = raw.get("sessionUpdate")
+    if kind == "tool_call":
+        return True
+    if kind != "tool_call_update":
+        return False
+    has_result_payload = any(
+        raw.get(key) not in (None, "", [], {})
+        for key in ("content", "result", "data", "output", "message", "error")
+    )
+    if has_result_payload:
+        return False
+    text = str(getattr(event, "text", "") or "").strip().lower()
+    status = str(raw.get("status") or "").strip().lower()
+    return bool(status) and text in {status, f"{status}."}
+
+
 def _completion_text_or_existing(event_text: object, existing: str) -> str:
     """ACP may finish with metadata like ``stop=end_turn`` after text deltas."""
     final_text = str(event_text or "").strip()
@@ -4084,10 +4111,15 @@ async def _stream_assistant_reply_hermes(
                 if event.name:
                     current_tool_name = event.name
                     current_tool_hidden = _is_hidden_chat_tool_event(event.name, event.text)
+                elif _is_anonymous_hermes_tool_call_update(event):
+                    continue
+                if _is_hermes_lifecycle_tool_update(event):
+                    continue
                 if current_tool_hidden or _is_hidden_chat_tool_event(current_tool_name, event.text):
                     continue
-                tool_text += str(event.text or "") + "\n"
-                display_tool_text = _strip_replayed_assistant_prefix(tool_text, previous_trace)
+                event_tool_text = str(event.text or "")
+                tool_text += event_tool_text + "\n"
+                display_tool_text = _strip_replayed_assistant_prefix(event_tool_text, previous_trace)
                 if display_tool_text.strip():
                     await _emit_chat_event_best_effort(
                         on_event,
@@ -4106,6 +4138,7 @@ async def _stream_assistant_reply_hermes(
                             "input": event.input,
                             "output": event.output,
                             "error": event.error,
+                            "result_json": event.structured,
                         },
                     )
                 continue
@@ -4223,7 +4256,14 @@ async def _stream_assistant_reply_claude(
                 continue
             if event.type == "tool_update":
                 tool_text = str(event.text or "")
-                await on_event({"type": "tool_update", "text": tool_text})
+                await on_event(
+                    {
+                        "type": "tool_update",
+                        "text": tool_text,
+                        "name": event.name,
+                        "result_json": event.structured,
+                    }
+                )
                 continue
             if event.type == "complete":
                 thread_id = str(event.thread_id or "").strip() or None

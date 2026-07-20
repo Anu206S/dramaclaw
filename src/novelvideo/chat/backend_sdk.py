@@ -35,6 +35,7 @@ class ChatBackendEvent:
     options: list[dict[str, Any]] | None = None
     entries: list[dict[str, Any]] | None = None
     usage: dict[str, Any] | None = None
+    structured: Any | None = None
     raw: Any | None = None
 
 
