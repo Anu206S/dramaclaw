@@ -1589,6 +1589,46 @@ class FreezoneTextTranslateRequest(BaseModel):
     node_id: str = Field(default="", description="可选：来源节点 id，用于记录节点生成历史")
 
 
+class FreezoneRecipeCompileReference(BaseModel):
+    """Recipe 编译时可用的媒体引用摘要，不包含内部文件路径。"""
+
+    kind: Literal["image", "video", "audio"]
+    label: str = Field(default="", max_length=200)
+
+
+class FreezoneRecipeCompileRequest(BaseModel):
+    """将节点意图与可信 Recipe 编译为最终执行提示词。"""
+
+    recipe_id: str = Field(min_length=1, max_length=128)
+    recipe_version: str = Field(default="", max_length=64)
+    node_kind: Literal["image", "video", "audio", "text"]
+    node_prompt: str = Field(default="", max_length=20000)
+    user_goal: str = Field(default="", max_length=20000)
+    upstream_text: str = Field(default="", max_length=40000)
+    reference_media: list[FreezoneRecipeCompileReference] = Field(
+        default_factory=list,
+        max_length=20,
+    )
+
+
+class FreezoneRecipeCompileData(BaseModel):
+    prompt: str
+
+
+class FreezoneRecipeCompileResponse(BaseModel):
+    ok: Literal[True] = True
+    data: FreezoneRecipeCompileData
+
+
+class FreezoneRecipeTextGenerateData(BaseModel):
+    content: str
+
+
+class FreezoneRecipeTextGenerateResponse(BaseModel):
+    ok: Literal[True] = True
+    data: FreezoneRecipeTextGenerateData
+
+
 class FreezoneTextTranslateData(BaseModel):
     translated_text: str
     source_language: Literal["zh", "en"]

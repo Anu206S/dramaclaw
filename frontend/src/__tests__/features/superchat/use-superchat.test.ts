@@ -8,6 +8,7 @@ import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
   approvalOptionIdForTest,
   canvasContextToolResultFrameForTest,
+  dedupeMessagesByIdForTest,
   dispatchCanvasCommandFrameForTest,
   mergeHistorySnapshot,
   normalizeMessageForScopeForTest,
@@ -91,6 +92,31 @@ function message(
 }
 
 describe("mergeHistorySnapshot", () => {
+  it("keeps only the latest message content for a duplicated id", () => {
+    const messages = [
+      message("72", "assistant", "partial", 10),
+      message("73", "user", "next", 20),
+      message("72", "assistant", "complete", 30),
+    ];
+
+    const deduped = dedupeMessagesByIdForTest(messages);
+
+    expect(deduped.map((item) => item.id)).toEqual(["72", "73"]);
+    expect(deduped[0]).toMatchObject({ text: "complete", timestamp: 30 });
+  });
+
+  it("removes duplicate ids from backend history snapshots", () => {
+    const history = [
+      message("72", "assistant", "partial", 10),
+      message("72", "assistant", "complete", 20),
+    ];
+
+    const merged = mergeHistorySnapshot([], history);
+
+    expect(merged).toHaveLength(1);
+    expect(merged[0]).toMatchObject({ id: "72", text: "complete", timestamp: 20 });
+  });
+
   it("replaces local turn messages with matching backend history", () => {
     const current = [
       message("user-turn-1", "user", "你好", 10, "turn-1"),

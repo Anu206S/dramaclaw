@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -61,6 +61,9 @@ import {
   subscribeNodeAction,
 } from '@/features/canvas/application/nodeActionResult';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
+import { joinUpstreamText } from '@/features/canvas/application/graphContentResolver';
+import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
+import { generateWorkflowText } from '@/features/canvas/application/workflowRecipeRuntime';
 import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
@@ -195,6 +198,11 @@ export const TextAnnotationNode = memo(({
     { surface: 'canvas' },
   );
   const { isGenerating } = useNodeGenerationTaskState(data);
+  const upstreamContents = useUpstreamContents(id);
+  const upstreamTextJoined = useMemo(
+    () => joinUpstreamText(upstreamContents),
+    [upstreamContents],
+  );
   // referenceOnly: 节点被作为上游引用素材使用（脚本节点 spawn 出来的）。
   // 复用 compact 视图（只渲染编辑卡片），同时 selected ops panel 也不显示。
   const isReferenceOnly = Boolean(data.referenceOnly);
@@ -470,8 +478,44 @@ export const TextAnnotationNode = memo(({
     return completedUrls[0] ? { videoUrl: completedUrls[0] } : {};
   }, [content, duplicateNodeAsSibling, id, videoModels, updateNodeData]);
 
+  const runRecipeText = useCallback(async (): Promise<{ content?: string }> => {
+    updateNodeData(id, {
+      isGenerating: true,
+      generationStartedAt: Date.now(),
+      generationError: null,
+    });
+    try {
+      const generated = await generateWorkflowText({
+        nodeData: data,
+        nodePrompt: content,
+        upstreamText: upstreamTextJoined,
+      });
+      updateNodeData(id, {
+        content: generated,
+        workflowTextGenerated: true,
+        isGenerating: false,
+        generationStartedAt: null,
+      });
+      return { content: generated };
+    } catch (error) {
+      updateNodeData(id, {
+        isGenerating: false,
+        generationStartedAt: null,
+        generationError: error instanceof Error ? error.message : '文本生成失败',
+      });
+      throw error;
+    }
+  }, [content, data, id, updateNodeData, upstreamTextJoined]);
+
   useEffect(() => {
     return subscribeNodeAction(({ nodeId, action, requestId }) => {
+      if (nodeId === id && action === 'generate_text') {
+        publishNodeActionAccepted(requestId, id, action);
+        void runRecipeText()
+          .then((output) => publishNodeActionSuccess(requestId, id, action, output))
+          .catch((error) => publishNodeActionError(requestId, id, action, error));
+        return;
+      }
       if (nodeId !== id || action !== 'generate_text_video') return;
       publishNodeActionAccepted(requestId, id, action);
       void runTextToVideo()
@@ -492,7 +536,7 @@ export const TextAnnotationNode = memo(({
         })
         .catch((error) => publishNodeActionError(requestId, id, action, error));
     });
-  }, [id, runTextToVideo]);
+  }, [id, runRecipeText, runTextToVideo]);
 
   const textPlaceholder = t('node.textNode.placeholder');
   const hasUserContent = content.trim().length > 0 && content.trim() !== textPlaceholder.trim();
@@ -579,7 +623,10 @@ export const TextAnnotationNode = memo(({
               <textarea
                 ref={editTextareaRef}
                 value={content}
-                onChange={(event) => updateNodeData(id, { content: event.target.value })}
+                onChange={(event) => updateNodeData(id, {
+                  content: event.target.value,
+                  workflowTextGenerated: false,
+                })}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
                 onKeyDown={(event) => {
@@ -738,7 +785,10 @@ export const TextAnnotationNode = memo(({
             <textarea
               ref={editTextareaRef}
               value={content}
-              onChange={(event) => updateNodeData(id, { content: event.target.value })}
+              onChange={(event) => updateNodeData(id, {
+                content: event.target.value,
+                workflowTextGenerated: false,
+              })}
               onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {

@@ -265,6 +265,7 @@ const RESERVED_DATA_KEYS = new Set([
 const RUN_NODE_ACTIONS = new Set([
   "translate_text",
   "reverse_prompt",
+  "generate_text",
   "generate_text_video",
   "generate_story_script",
   "open_upload_picker",
@@ -328,6 +329,7 @@ const RUN_NODE_ACTIONS = new Set([
 ]);
 
 const GENERATION_NODE_ACTIONS = new Set([
+  "generate_text",
   "generate_text_video",
   "generate_story_script",
   "generate_image",
@@ -372,7 +374,7 @@ const WORKFLOW_GENERATE_ACTION_BY_NODE_TYPE: Partial<Record<CanvasNodeType, stri
   [CANVAS_NODE_TYPES.audio]: ["generate_audio"],
   [CANVAS_NODE_TYPES.video]: ["generate_video"],
   [CANVAS_NODE_TYPES.threeDWorld]: ["generate_3gs_world"],
-  [CANVAS_NODE_TYPES.textAnnotation]: ["generate_text_video"],
+  [CANVAS_NODE_TYPES.textAnnotation]: ["generate_text", "generate_text_video"],
 };
 const WORKFLOW_LIKE_CREATE_NODE_TYPES = new Set<CanvasNodeType>([
   CANVAS_NODE_TYPES.imageGen,
@@ -1392,6 +1394,9 @@ function waitForNodeActionAccepted(
 function hasGeneratedResult(nodeId: string, action: string): boolean {
   const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
   if (!data) return false;
+  if (action === "generate_text") {
+    return data.workflowTextGenerated === true && Boolean(nonEmptyString(data.content));
+  }
   if (action === "generate_story_script") {
     const scriptResult = data.scriptResult as { rows?: unknown } | undefined;
     return Array.isArray(scriptResult?.rows) && scriptResult.rows.length > 0;
@@ -1453,6 +1458,9 @@ function hasGeneratedResultOutput(action: string, output: unknown): boolean {
   if (!GENERATION_NODE_ACTIONS.has(action)) return true;
   if (!isRecord(output)) return false;
   if (isSubmittedGenerationOutput(output)) return true;
+  if (action === "generate_text") {
+    return Boolean(nonEmptyString(output.content));
+  }
   if (action === "generate_story_script") {
     const scriptResult = output.scriptResult;
     return isRecord(scriptResult) && Array.isArray(scriptResult.rows) && scriptResult.rows.length > 0;
@@ -1539,6 +1547,7 @@ function clearNodeActionRunning(nodeId: string, action: string): void {
 }
 
 function mediaRequirementLabel(action: string): string {
+  if (action === "generate_text") return "content";
   if (action === "generate_image") return "imageUrl";
   if (action === "generate_video" || action === "generate_text_video") return "videoUrl";
   if (action === "generate_audio") return "audioUrl";

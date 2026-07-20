@@ -153,6 +153,23 @@ function updateCachedMessagesForScope(
   saveCachedMessages(scopeKey, updater(loadCachedMessages(scopeKey)));
 }
 
+function dedupeMessagesById(messages: ChatMessage[]): ChatMessage[] {
+  const unique: ChatMessage[] = [];
+  const indexById = new Map<string, number>();
+  for (const message of messages) {
+    const existingIndex = indexById.get(message.id);
+    if (existingIndex === undefined) {
+      indexById.set(message.id, unique.length);
+      unique.push(message);
+    } else {
+      unique[existingIndex] = message;
+    }
+  }
+  return unique;
+}
+
+export const dedupeMessagesByIdForTest = dedupeMessagesById;
+
 function isFreezoneScope(scope?: ChatScope | null): boolean {
   if (!scope) return false;
   return scope.kind === "freezone" || (scope.kind === "project" && scope.surface === "freezone");
@@ -348,15 +365,17 @@ function loadCachedMessages(scopeKey: string): ChatMessage[] {
       : Array.isArray((parsed as { messages?: unknown })?.messages)
         ? (parsed as { messages: unknown[] }).messages
         : [];
-    return raw
-      .map((message) =>
-        normalizeMessageForScope(
-          message,
-          "assistant",
-          isFreezoneScopeKey(scopeKey) ? { kind: "freezone", id: scopeKey } : null,
-        ),
-      )
-      .filter((message): message is ChatMessage => Boolean(message));
+    return dedupeMessagesById(
+      raw
+        .map((message) =>
+          normalizeMessageForScope(
+            message,
+            "assistant",
+            isFreezoneScopeKey(scopeKey) ? { kind: "freezone", id: scopeKey } : null,
+          ),
+        )
+        .filter((message): message is ChatMessage => Boolean(message)),
+    );
   } catch {
     return [];
   }
@@ -369,7 +388,7 @@ function saveCachedMessages(
 ) {
   const payload = {
     updatedAt: now,
-    messages: sanitizeMessagesForCache(messages.slice(-MESSAGE_CACHE_LIMIT), {
+    messages: sanitizeMessagesForCache(dedupeMessagesById(messages).slice(-MESSAGE_CACHE_LIMIT), {
       preserveFreezoneCanvasReferences: isFreezoneScopeKey(scopeKey),
     }),
   };
@@ -498,9 +517,11 @@ function isChatScope(value: unknown): value is ChatScope {
 }
 
 function mergeHistory(messages: unknown[], scope?: ChatScope | null): ChatMessage[] {
-  return messages
-    .map((message) => normalizeMessageForScope(message, "assistant", scope))
-    .filter((message): message is ChatMessage => Boolean(message));
+  return dedupeMessagesById(
+    messages
+      .map((message) => normalizeMessageForScope(message, "assistant", scope))
+      .filter((message): message is ChatMessage => Boolean(message)),
+  );
 }
 
 function normalizedText(text: string): string {
@@ -827,26 +848,33 @@ export function mergeHistorySnapshot(
   protectedTurnId: string | null = null,
   preserveTransient = false,
 ): ChatMessage[] {
-  const historyWithRecoverableUiEvents = mergeRecoverableUiEventsFromCurrent(history, current);
-  if (current.length === 0) return historyWithRecoverableUiEvents;
-  if (history.length === 0) return current;
+  const uniqueCurrent = dedupeMessagesById(current);
+  const uniqueHistory = dedupeMessagesById(history);
+  const historyWithRecoverableUiEvents = mergeRecoverableUiEventsFromCurrent(
+    uniqueHistory,
+    uniqueCurrent,
+  );
+  if (uniqueCurrent.length === 0) return historyWithRecoverableUiEvents;
+  if (uniqueHistory.length === 0) return uniqueCurrent;
   if (!protectedTurnId && !preserveTransient) {
     return historyWithRecoverableUiEvents;
   }
 
-  const preserved = current.filter((message) => {
+  const preserved = uniqueCurrent.filter((message) => {
     const isProtectedTurn = Boolean(protectedTurnId && message.turnId === protectedTurnId);
     if (protectedTurnId && !isProtectedTurn) return false;
     if (message.role === "tool") {
       if (!preserveTransient && !isProtectedTurn) return false;
       return !hasEquivalentHistoryMessage(message, historyWithRecoverableUiEvents);
     }
-    if (hasCompletedTurnInHistory(message, historyWithRecoverableUiEvents, current)) return false;
+    if (hasCompletedTurnInHistory(message, historyWithRecoverableUiEvents, uniqueCurrent)) {
+      return false;
+    }
     return !hasEquivalentHistoryMessage(message, historyWithRecoverableUiEvents);
   });
 
   const protectedLocalUser = protectedTurnId
-    ? current.find((entry) => entry.turnId === protectedTurnId && entry.role === "user")
+    ? uniqueCurrent.find((entry) => entry.turnId === protectedTurnId && entry.role === "user")
     : null;
   const protectedBackendUser = protectedLocalUser
     ? historyWithRecoverableUiEvents.find(
@@ -876,7 +904,9 @@ export function mergeHistorySnapshot(
     };
   });
 
-  return sortMessages([...historyWithRecoverableUiEvents, ...stablePreserved]);
+  return dedupeMessagesById(
+    sortMessages([...historyWithRecoverableUiEvents, ...stablePreserved]),
+  );
 }
 
 function upsertAssistantMessage(

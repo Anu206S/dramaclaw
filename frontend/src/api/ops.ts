@@ -17,6 +17,57 @@ export interface FreezoneNodeContext {
   nodeId?: string | null;
 }
 
+export type FreezoneRecipeNodeKind = "image" | "video" | "audio" | "text";
+
+export interface FreezoneRecipeCompilePayload {
+  recipeId: string;
+  recipeVersion?: string;
+  nodeKind: FreezoneRecipeNodeKind;
+  nodePrompt?: string;
+  userGoal?: string;
+  upstreamText?: string;
+  referenceMedia?: Array<{
+    kind: "image" | "video" | "audio";
+    label?: string;
+  }>;
+}
+
+export async function compileFreezoneRecipePrompt(
+  payload: FreezoneRecipeCompilePayload,
+): Promise<string> {
+  const data = await apiCall<{ prompt: string }>("freezone/recipes/compile", {
+    method: "POST",
+    json: {
+      recipe_id: payload.recipeId,
+      recipe_version: payload.recipeVersion ?? "",
+      node_kind: payload.nodeKind,
+      node_prompt: payload.nodePrompt ?? "",
+      user_goal: payload.userGoal ?? "",
+      upstream_text: payload.upstreamText ?? "",
+      reference_media: payload.referenceMedia ?? [],
+    },
+  });
+  return data.prompt;
+}
+
+export async function generateFreezoneRecipeText(
+  payload: Omit<FreezoneRecipeCompilePayload, "nodeKind">,
+): Promise<string> {
+  const data = await apiCall<{ content: string }>("freezone/recipes/generate-text", {
+    method: "POST",
+    json: {
+      recipe_id: payload.recipeId,
+      recipe_version: payload.recipeVersion ?? "",
+      node_kind: "text",
+      node_prompt: payload.nodePrompt ?? "",
+      user_goal: payload.userGoal ?? "",
+      upstream_text: payload.upstreamText ?? "",
+      reference_media: payload.referenceMedia ?? [],
+    },
+  });
+  return data.content;
+}
+
 /**
  * Map the camelCase node context to the backend's snake_case body fields,
  * emitting keys only when present so legacy callers stay byte-identical.

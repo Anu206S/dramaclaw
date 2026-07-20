@@ -36,9 +36,11 @@ def canvas_command_bridge_key(
     commands: list[Any],
 ) -> str:
     payload = {
+        "kind": "canvas_command",
         "project_id": project_id or "",
         "canvas_id": canvas_id or "",
         "commands": commands,
+        "nonce": time.time_ns(),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:32]
 
@@ -54,6 +56,7 @@ def canvas_context_bridge_key(
         "project_id": project_id or "",
         "canvas_id": canvas_id or "",
         "requests": requests,
+        "nonce": time.time_ns(),
     }
     return hashlib.sha256(_canonical_json(payload).encode("utf-8")).hexdigest()[:32]
 
@@ -128,9 +131,7 @@ def put_pending_canvas_command(
     envelope: dict[str, Any],
     bridge_dir: str | Path | None = None,
 ) -> None:
-    # bridge key 按命令内容确定性生成，用户重复触发同一条画布命令时会得到同一个 key。
-    # 因此写入新的 pending 前必须清掉旧 result，避免 Hermes 在用户确认本次操作前
-    # 直接读到上一次前端执行结果。
+    # Defensive cleanup keeps explicitly reused keys from consuming an older result.
     _unlink_if_exists(_path("result", key, bridge_dir))
     _write_json(
         _path("pending", key, bridge_dir),
