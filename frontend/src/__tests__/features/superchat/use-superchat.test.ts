@@ -16,6 +16,7 @@ import {
   pruneOldMessageCaches,
   resolveUiEventTurnIdForTest,
   sanitizeMessagesForCache,
+  shouldRenderAgentToolStatusPart,
   shouldRenderToolStatusPart,
   scopeForProjectForTest,
   scopeSessionKeyForTest,
@@ -3216,6 +3217,85 @@ describe("useSuperChat websocket lifecycle", () => {
     );
   });
 
+  it("keeps an active thought running across hidden catalog draft tools", async () => {
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send() {}
+      close() {}
+    }
+    const sockets: TestWebSocket[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    const hook = renderHook(() =>
+      useSuperChat({
+        project: "project-a",
+        displayName: "Tester",
+        surface: "freezone",
+        freezoneCanvasId: "canvas-a",
+        freezoneAgentId: "agent-2",
+      }),
+    );
+
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    await waitFor(() => expect(socket.onmessage).toBeTypeOf("function"));
+    await act(async () => {
+      socket.onopen?.();
+    });
+    const scope = {
+      kind: "project",
+      id: "project-a",
+      surface: "freezone",
+      canvasId: "canvas-a",
+      agentId: "agent-2",
+    };
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "agent.thought.delta",
+          scope,
+          turn_id: "turn-1",
+          text: "I should submit the draft chunks.",
+        }),
+      } as MessageEvent);
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "agent.tool.started",
+          scope,
+          turn_id: "turn-1",
+          call_id: "call-1",
+          name: "freezone_put_agent_catalog_recipe",
+          status: "running",
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      const assistant = hook.result.current.messages.find((item) => item.turnId === "turn-1");
+      const parts = assistant?.parts ?? [];
+      expect(parts.some((part) => part.type === "tool_status")).toBe(false);
+      const thoughtPart = parts.find((part) => part.type === "agent_thought") as
+        | { event: unknown }
+        | undefined;
+      expect(thoughtPart?.event).toMatchObject({ status: "running" });
+    });
+  });
+
   it("persists updated draft part state after confirming a Skill Studio draft", async () => {
     apiPostMock.mockClear();
     class TestWebSocket {
@@ -3498,6 +3578,38 @@ describe("tool status parts", () => {
       turn_id: "turn-a",
       name: "freezone_create_node",
       result: "已创建节点",
+    })).toBe(false);
+  });
+
+  it("does not render clarification request tools as assistant status parts", () => {
+    expect(shouldRenderAgentToolStatusPart({
+      type: "agent.tool.started",
+      turn_id: "turn-a",
+      name: "freezone_request_user_clarification",
+      status: "running",
+    })).toBe(false);
+  });
+
+  it("does not render node detail reads as assistant status parts", () => {
+    expect(shouldRenderAgentToolStatusPart({
+      type: "agent.tool.started",
+      turn_id: "turn-a",
+      name: "freezone_get_node_detail",
+      status: "running",
+    })).toBe(false);
+  });
+
+  it.each([
+    "freezone_begin_agent_catalog_draft",
+    "freezone_put_agent_catalog_skill",
+    "freezone_put_agent_catalog_recipe",
+    "freezone_finish_agent_catalog_draft",
+  ])("does not render %s as assistant status parts", (name) => {
+    expect(shouldRenderAgentToolStatusPart({
+      type: "agent.tool.started",
+      turn_id: "turn-a",
+      name,
+      status: "running",
     })).toBe(false);
   });
 

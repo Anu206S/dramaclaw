@@ -41,6 +41,14 @@ import {
 
 const SETTINGS_KEY = "superchat:settings";
 const EXECUTABLE_HIDDEN_TOOL_NAMES = FREEZONE_CANVAS_WRITE_TOOL_NAME_SET;
+const INTERNAL_HIDDEN_TOOL_STATUS_NAMES = new Set<string>([
+  "freezone_begin_agent_catalog_draft",
+  "freezone_finish_agent_catalog_draft",
+  "freezone_get_node_detail",
+  "freezone_put_agent_catalog_recipe",
+  "freezone_put_agent_catalog_skill",
+  "freezone_request_user_clarification",
+]);
 export const SUPERCHAT_CANVAS_COMMAND_EVENT = "superchat/canvas-command";
 export const SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT = "superchat/canvas-context-request";
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
@@ -1184,6 +1192,13 @@ export function shouldRenderToolStatusPart(payload: ServerFrame): boolean {
   );
 }
 
+export function shouldRenderAgentToolStatusPart(payload: ServerFrame): boolean {
+  if (!("name" in payload) || typeof payload.name !== "string") return true;
+  if (EXECUTABLE_HIDDEN_TOOL_NAMES.has(payload.name)) return false;
+  if (INTERNAL_HIDDEN_TOOL_STATUS_NAMES.has(payload.name)) return false;
+  return true;
+}
+
 function upsertToolMessage(messages: ChatMessage[], kind: string, payload: unknown): ChatMessage[] {
   const nextMessage = buildToolMessage(kind, payload);
   if (!nextMessage.turnId) return sortMessages([...messages, nextMessage]);
@@ -2094,7 +2109,7 @@ export function useSuperChat({
             }
           }
         }
-        if (!(typeof frame.name === "string" && EXECUTABLE_HIDDEN_TOOL_NAMES.has(frame.name))) {
+        if (shouldRenderAgentToolStatusPart(frame)) {
           closeActiveThoughtPart(turnId);
           placeRuntimePart(turnId, toolStatusPart(frame.type, frame, turnId));
         }
