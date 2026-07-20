@@ -5,6 +5,7 @@ import { useTranslation } from "react-i18next";
 import { ArrowLeft, Gamepad2, Volume2, VolumeX, X } from "lucide-react";
 import { PikoActionFigure } from "@/features/companion/PikoActionFigure";
 import { PikoBreakoutGame } from "@/features/piko-mini-game/PikoBreakoutGame";
+import { PikoFlyingGame } from "@/features/piko-mini-game/PikoFlyingGame";
 import { PikoRollingBallGame } from "@/features/piko-mini-game/PikoRollingBallGame";
 import { cn } from "@/lib/utils";
 
@@ -92,7 +93,7 @@ type HitSpark = {
 
 type GameStatus = "idle" | "countdown" | "playing" | "finished";
 type StationView = "library" | "game";
-type PikoGameId = "inspiration-station" | "memory-match" | "breakout" | "rolling-ball";
+type PikoGameId = "inspiration-station" | "memory-match" | "breakout" | "rolling-ball" | "flying";
 
 type PikoInspirationStationProps = {
   open: boolean;
@@ -115,6 +116,10 @@ const PIKO_GAME_LIBRARY = [
   {
     id: "rolling-ball",
     titleKey: "pikoMiniGame.rollingBall.title",
+  },
+  {
+    id: "flying",
+    titleKey: "pikoMiniGame.flying.title",
   },
 ] as const;
 
@@ -838,7 +843,9 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
         ? "pikoMiniGame.breakout.title"
         : activeGameId === "rolling-ball"
           ? "pikoMiniGame.rollingBall.title"
-        : "pikoMiniGame.title";
+          : activeGameId === "flying"
+            ? "pikoMiniGame.flying.title"
+            : "pikoMiniGame.title";
 
   useEffect(() => {
     setPikoAudioMuted(isAudioMuted);
@@ -1560,7 +1567,7 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
             )}
           </div>
           <div className="flex items-center gap-1">
-            {stationView === "game" && activeGameId === "inspiration-station" ? (
+            {stationView === "game" && (activeGameId === "inspiration-station" || activeGameId === "flying") ? (
               <button
                 type="button"
                 className="inline-flex size-9 items-center justify-center rounded-full text-white/68 transition-colors hover:bg-white/[0.08] hover:text-white"
@@ -1608,6 +1615,8 @@ export function PikoInspirationStation({ open, onClose }: PikoInspirationStation
             <PikoBreakoutGame onClose={onClose} />
           ) : activeGameId === "rolling-ball" ? (
             <PikoRollingBallGame onClose={onClose} />
+          ) : activeGameId === "flying" ? (
+            <PikoFlyingGame onClose={onClose} muted={isAudioMuted} />
           ) : (
             <div
               ref={boardRef}

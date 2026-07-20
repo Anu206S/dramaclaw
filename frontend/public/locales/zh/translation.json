@@ -1661,6 +1661,15 @@
       "ready": "一路向下",
       "lost": "小球掉下去了",
       "score": "落台 {{score}}"
+    },
+    "flying": {
+      "title": "飞行的 Piko",
+      "canvasLabel": "飞行的 Piko 游戏区域",
+      "hint": "按空格、向上键或点击，让 Piko 向上飞并穿过能量门",
+      "start": "开始飞行",
+      "ready": "准备起飞",
+      "lost": "Piko 撞到能量门了",
+      "score": "穿越 {{score}}"
     }
   },
   "literalScript": {

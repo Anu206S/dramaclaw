@@ -1661,6 +1661,15 @@
       "ready": "Keep rolling down",
       "lost": "The ball slipped away",
       "score": "Landings {{score}}"
+    },
+    "flying": {
+      "title": "Flying Piko",
+      "canvasLabel": "Flying Piko game board",
+      "hint": "Press Space, Arrow Up, or tap to fly Piko through the energy gates",
+      "start": "Start flying",
+      "ready": "Ready for takeoff",
+      "lost": "Piko hit an energy gate",
+      "score": "Gates {{score}}"
     }
   },
   "literalScript": {
