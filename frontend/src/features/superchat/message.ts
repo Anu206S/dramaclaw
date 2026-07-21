@@ -10,6 +10,36 @@ const EMPTY_AGENT_REPLY_PLACEHOLDERS = new Set([
   "(hermes returned no content)",
   "(agent returned no content)",
 ]);
+const HIDDEN_TOOL_STATUS_NAMES = new Set<string>([
+  "freezone_add_next_node",
+  "freezone_create_edge",
+  "freezone_create_node",
+  "freezone_create_workflow_graph",
+  "freezone_delete_edges",
+  "freezone_delete_nodes",
+  "freezone_emit_canvas_command",
+  "freezone_get_audio_voice_options",
+  "freezone_get_canvas_action_catalog",
+  "freezone_get_canvas_command_catalog",
+  "freezone_get_canvas_ontology",
+  "freezone_get_link_type_catalog",
+  "freezone_get_mainline_projection_assets",
+  "freezone_get_neighbor_graph",
+  "freezone_get_node_action_catalog",
+  "freezone_get_node_create_schema",
+  "freezone_get_node_detail",
+  "freezone_get_selection",
+  "freezone_get_slot_candidates",
+  "freezone_group_nodes",
+  "freezone_layout_nodes",
+  "freezone_move_nodes",
+  "freezone_open_mainline_projection",
+  "freezone_run_node_action",
+  "freezone_select_nodes",
+  "freezone_summarize_canvas",
+  "freezone_update_node_data",
+  "freezone_validate_canvas_commands",
+]);
 
 function stripInternalContextBlocks(text: string): string {
   return text.replace(INTERNAL_CONTEXT_BLOCK_RE, "\n").trim();
@@ -208,22 +238,7 @@ function isHiddenCanvasWriteToolStatusPart(event: unknown): boolean {
   const raw = (event as Record<string, unknown>).raw;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const name = (raw as Record<string, unknown>).name;
-  return typeof name === "string" && (
-    name === "freezone_emit_canvas_command" ||
-    name === "freezone_create_workflow_graph" ||
-    name === "freezone_create_node" ||
-    name === "freezone_add_next_node" ||
-    name === "freezone_update_node_data" ||
-    name === "freezone_create_edge" ||
-    name === "freezone_delete_nodes" ||
-    name === "freezone_delete_edges" ||
-    name === "freezone_move_nodes" ||
-    name === "freezone_layout_nodes" ||
-    name === "freezone_group_nodes" ||
-    name === "freezone_select_nodes" ||
-    name === "freezone_run_node_action" ||
-    name === "freezone_open_mainline_projection"
-  );
+  return typeof name === "string" && HIDDEN_TOOL_STATUS_NAMES.has(name);
 }
 
 function mediaKindToType(kind: unknown): string | undefined {
