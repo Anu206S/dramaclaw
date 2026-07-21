@@ -53,6 +53,7 @@ import {
   buildSkillStudioQuestionResponseForTest,
   buildSkillStudioQuestionToolResultForTest,
   assistantClarificationEventIdentityForTest,
+  assistantPartsPreferWideLayoutForTest,
   skillStudioDraftFooterTextForTest,
   skillStudioEventMatchesForTest,
   hydrateOrderedPartsWithUiEventsForTest,
@@ -709,6 +710,28 @@ This Freezone chat can change the current canvas by returning a JSON block.
     });
 
     expect(normalized?.parts?.map((part) => part.type)).toEqual(["canvas_feedback", "tool_status"]);
+  });
+
+  it("removes bridged canvas context tool status parts from history", () => {
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      text: "我来分析当前画布内容。",
+      parts: [
+        {
+          id: "tool-a",
+          type: "tool_status",
+          event: {
+            role: "tool",
+            text: "读取画布 Ontology",
+            raw: { type: "agent.tool.updated", name: "freezone_get_canvas_ontology" },
+          },
+        },
+        { id: "text-a", type: "text", text: "我来分析当前画布内容。" },
+      ],
+    });
+
+    expect(normalized?.parts?.map((part) => part.type)).toEqual(["text"]);
   });
 
   it("keeps ordered agent runtime parts from cache or server history", () => {
@@ -3481,9 +3504,120 @@ describe("canvas command bridge events", () => {
       },
     });
   });
+
+  it("keeps one thought segment across skill studio status updates", async () => {
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send() {}
+      close() {}
+    }
+    const sockets: TestWebSocket[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    const hook = renderHook(() =>
+      useSuperChat({
+        project: "project-a",
+        displayName: "Tester",
+        surface: "freezone",
+        freezoneCanvasId: "canvas-a",
+        freezoneAgentId: "agent-2",
+      }),
+    );
+
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    await waitFor(() => expect(socket.onmessage).toBeTypeOf("function"));
+    await act(async () => {
+      socket.onopen?.();
+    });
+    const scope = {
+      kind: "project",
+      id: "project-a",
+      surface: "freezone",
+      canvasId: "canvas-a",
+      agentId: "agent-2",
+    };
+
+    await act(async () => {
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "agent.thought.delta",
+          scope,
+          turn_id: "turn-1",
+          text: "Let me submit recipe 1.",
+        }),
+      } as MessageEvent);
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "skill_studio.event",
+          scope,
+          turn_id: "turn-1",
+          bridge_key: "bridge-recipe-1",
+          event: {
+            type: "skill_studio.status",
+            status: "draft_recipe_ready",
+            message: "已生成 Recipe 1 / 5",
+          },
+        }),
+      } as MessageEvent);
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "agent.thought.delta",
+          scope,
+          turn_id: "turn-1",
+          text: " Let me submit recipe 2 now.",
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      const assistant = hook.result.current.messages.find((item) => item.turnId === "turn-1");
+      const thoughtParts = (assistant?.parts ?? []).filter((part) => part.type === "agent_thought");
+      expect(thoughtParts).toHaveLength(1);
+      expect(thoughtParts[0]?.event).toMatchObject({
+        status: "running",
+        text: "Let me submit recipe 1. Let me submit recipe 2 now.",
+      });
+    });
+  });
 });
 
 describe("tool status parts", () => {
+  it("does not force assistant messages wide for runtime-only status parts", () => {
+    expect(assistantPartsPreferWideLayoutForTest([
+      { id: "usage", type: "agent_usage", event: { usage: { used: 10 } } },
+      toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-1",
+        name: "freezone_skill_list",
+        status: "completed",
+      }, "turn-a"),
+      { id: "text", type: "text", text: "你好，这是一段普通回复。" },
+    ])).toBe(false);
+  });
+
+  it("keeps assistant messages wide for structured cards", () => {
+    expect(assistantPartsPreferWideLayoutForTest([
+      { id: "text", type: "text", text: "请确认下面的操作。" },
+      { id: "approval", type: "canvas_approval", event: { id: "approval-a" } },
+    ])).toBe(true);
+  });
+
   it("uses the ACP call id to update one tool lifecycle card", () => {
     const started = toolStatusPartForTest("agent.tool.started", {
       type: "agent.tool.started",
@@ -3595,6 +3729,15 @@ describe("tool status parts", () => {
       type: "agent.tool.started",
       turn_id: "turn-a",
       name: "freezone_get_node_detail",
+      status: "running",
+    })).toBe(false);
+  });
+
+  it("does not render bridged canvas ontology reads as assistant status parts", () => {
+    expect(shouldRenderAgentToolStatusPart({
+      type: "agent.tool.started",
+      turn_id: "turn-a",
+      name: "freezone_get_canvas_ontology",
       status: "running",
     })).toBe(false);
   });

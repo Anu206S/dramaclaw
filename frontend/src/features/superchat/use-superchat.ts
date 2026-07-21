@@ -42,12 +42,25 @@ import {
 const SETTINGS_KEY = "superchat:settings";
 const EXECUTABLE_HIDDEN_TOOL_NAMES = FREEZONE_CANVAS_WRITE_TOOL_NAME_SET;
 const INTERNAL_HIDDEN_TOOL_STATUS_NAMES = new Set<string>([
+  "freezone_get_audio_voice_options",
+  "freezone_get_canvas_action_catalog",
+  "freezone_get_canvas_command_catalog",
+  "freezone_get_canvas_ontology",
+  "freezone_get_link_type_catalog",
+  "freezone_get_mainline_projection_assets",
   "freezone_begin_agent_catalog_draft",
   "freezone_finish_agent_catalog_draft",
+  "freezone_get_neighbor_graph",
+  "freezone_get_node_action_catalog",
+  "freezone_get_node_create_schema",
   "freezone_get_node_detail",
+  "freezone_get_selection",
+  "freezone_get_slot_candidates",
   "freezone_put_agent_catalog_recipe",
   "freezone_put_agent_catalog_skill",
   "freezone_request_user_clarification",
+  "freezone_summarize_canvas",
+  "freezone_validate_canvas_commands",
 ]);
 export const SUPERCHAT_CANVAS_COMMAND_EVENT = "superchat/canvas-command";
 export const SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT = "superchat/canvas-context-request";
@@ -1363,6 +1376,11 @@ function canvasContextToolResultFrame(detail: CanvasContextToolResultPayload): C
 
 export const canvasContextToolResultFrameForTest = canvasContextToolResultFrame;
 
+function shouldCloseThoughtForSkillStudioEvent(event: unknown): boolean {
+  if (!event || typeof event !== "object" || Array.isArray(event)) return true;
+  return (event as Record<string, unknown>).type !== "skill_studio.status";
+}
+
 const FREEZONE_CANVAS_CONTEXT_TOOL_REQUEST_TYPES: Record<string, string> = {
   freezone_get_canvas_ontology: "canvas_ontology",
   freezone_summarize_canvas: "canvas_summary",
@@ -2183,7 +2201,9 @@ export function useSuperChat({
           activeTurnIdRef.current,
         );
         if (!turnId || frame.event == null) break;
-        closeActiveThoughtPart(turnId);
+        if (shouldCloseThoughtForSkillStudioEvent(frame.event)) {
+          closeActiveThoughtPart(turnId);
+        }
         markTurnActive(turnId);
         const event = frame.event && typeof frame.event === "object" && !Array.isArray(frame.event)
           ? {

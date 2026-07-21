@@ -1625,6 +1625,17 @@ function groupAssistantOrderedParts(parts: ChatMessagePart[]): AssistantPartGrou
   return groups;
 }
 
+function assistantPartsPreferWideLayout(parts: ChatMessagePart[]): boolean {
+  return parts.some((part) =>
+    part.type === "canvas_approval"
+    || part.type === "canvas_feedback"
+    || part.type === "skill_studio"
+    || part.type === "clarification",
+  );
+}
+
+export const assistantPartsPreferWideLayoutForTest = assistantPartsPreferWideLayout;
+
 function compactToolStatusLabel(status: ReturnType<typeof freezoneToolStatus>): string {
   if (status === "running") return "进行中";
   if (status === "failed") return "失败";
@@ -1685,7 +1696,7 @@ function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
   const runtimeParts = [...parts].sort(compareRuntimeParts);
   if (runtimeParts.length === 0) return null;
   return (
-    <div className="w-full max-w-[min(440px,100%)] space-y-1 text-xs text-muted-foreground">
+    <div className="w-fit max-w-full space-y-1 text-xs text-muted-foreground">
       {runtimeParts.map((part) => {
         if (part.type === "tool_status") {
           const toolMessage = part.event as ChatMessage;
@@ -1712,7 +1723,7 @@ function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
               ) : (
                 <Check className="size-3.5 shrink-0 text-emerald-400" />
               )}
-              <span className="min-w-0 flex-1 truncate font-medium text-foreground/90">
+              <span className="min-w-0 flex-1 break-words font-medium text-foreground/90">
                 {display?.title ?? genericToolTitle(toolMessage)}
               </span>
               {statusLabel && (
@@ -1720,7 +1731,7 @@ function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
                   {statusLabel}
                 </span>
               )}
-              {detail && <span className="min-w-0 flex-1 truncate text-[11px] text-red-200/80">{detail}</span>}
+              {detail && <span className="min-w-0 flex-1 break-words text-[11px] text-red-200/80">{detail}</span>}
             </div>
           );
         }
@@ -5660,7 +5671,7 @@ const MessageBubble = memo(function MessageBubble({
     : [];
   const assistantOrderedParts = collapseRepeatedCanvasStatusParts(assistantOrderedPartsRaw);
   const assistantPartGroups = groupAssistantOrderedParts(assistantOrderedParts);
-  const hasAgentRuntimeParts = assistantOrderedParts.some(isAgentRuntimePart);
+  const assistantPrefersWideLayout = assistantPartsPreferWideLayout(assistantOrderedParts);
   const visibleCanvasContextActivities = !isUser && !isTool
     ? visibleCanvasContextActivitiesForMessage(message, canvasContextActivities)
     : canvasContextActivities;
@@ -5834,7 +5845,7 @@ const MessageBubble = memo(function MessageBubble({
         <article
           className={cn(
             "group relative text-sm leading-6 shadow-none",
-            (visibleBlocks.length > 0 || hasAgentRuntimeParts) && !isUser && !isTool
+            (visibleBlocks.length > 0 || assistantPrefersWideLayout) && !isUser && !isTool
               ? "w-full min-w-0 overflow-visible"
               : isUser
                 ? "w-fit overflow-visible"
