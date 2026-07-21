@@ -106,6 +106,39 @@ def test_workflow_skill_package_supports_skill_without_template(monkeypatch):
     assert package["planning_contract"]["strict_validation"] is True
 
 
+def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
+    catalog = _load_catalog_module()
+
+    def fake_list_user_agent_config_items(_username, kind):
+        if kind == "skills":
+            return [
+                {
+                    "id": "director-method",
+                    "description": "用户自定义导演方法",
+                    "triggers": {"node_scopes": ["imageGeneration"]},
+                }
+            ]
+        if kind == "recipes":
+            return [
+                {
+                    "id": "director-frame",
+                    "name": "导演关键帧",
+                    "version": 1,
+                    "output_kind": "image",
+                }
+            ]
+        raise AssertionError(kind)
+
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
+    monkeypatch.setattr(catalog, "_catalog_username", lambda: "local")
+
+    custom_package = catalog.get_workflow_skill({"skill_id": "director-method"})
+    builtin_package = catalog.get_workflow_skill({"skill_id": "ecommerce-product"})
+
+    assert custom_package["ok"] is True
+    assert builtin_package["ok"] is True
+
+
 def test_dynamic_workflow_plan_accepts_different_node_counts():
     catalog = _load_catalog_module()
 
