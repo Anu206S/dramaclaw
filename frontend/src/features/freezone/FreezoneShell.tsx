@@ -131,6 +131,7 @@ import {
   type CanvasOntologyContext,
 } from "@/features/canvas/ontology/canvasOntology";
 import type { ServerFrame } from "@/features/superchat/types";
+import { initializeEmptyFreezoneAgentChat } from "@/features/superchat/freezoneChatScopeCache";
 
 export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 
@@ -2036,12 +2037,16 @@ function FreezoneChatDock({
 
   const handleAddAgent = useCallback(() => {
     localAgentSelectionRef.current = true;
-    setAgentState(addFreezoneCanvasAgent(projectId, canvasId).state);
+    const result = addFreezoneCanvasAgent(projectId, canvasId);
+    initializeEmptyFreezoneAgentChat(projectId, canvasId, result.agent.id, result.agent.createdAt);
+    setAgentState(result.state);
   }, [canvasId, projectId]);
 
   const handleHeaderAddAgent = useCallback(() => {
     localAgentSelectionRef.current = true;
-    setAgentState(addFreezoneCanvasAgent(projectId, canvasId).state);
+    const result = addFreezoneCanvasAgent(projectId, canvasId);
+    initializeEmptyFreezoneAgentChat(projectId, canvasId, result.agent.id, result.agent.createdAt);
+    setAgentState(result.state);
   }, [canvasId, projectId]);
 
   const handleAgentUserMessage = useCallback((agentId: string, message: string, timestamp: number) => {

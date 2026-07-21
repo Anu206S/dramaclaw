@@ -20,6 +20,14 @@ import {
   buildLocalUserMessage,
   normalizeMessage,
 } from "@/features/superchat/message";
+import {
+  buildProjectChatScope,
+  SUPERCHAT_MESSAGE_CACHE_PREFIX,
+  superChatActiveTurnKey,
+  superChatMessageCacheKey,
+  superChatScopeSessionKey,
+  type ProjectChatSurface,
+} from "@/features/superchat/freezoneChatScopeCache";
 import { hasStructuredContent } from "@/features/superchat/spec-extract";
 import {
   FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT,
@@ -64,12 +72,11 @@ const INTERNAL_HIDDEN_TOOL_STATUS_NAMES = new Set<string>([
 ]);
 export const SUPERCHAT_CANVAS_COMMAND_EVENT = "superchat/canvas-command";
 export const SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT = "superchat/canvas-context-request";
-const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
+const MESSAGE_CACHE_PREFIX = SUPERCHAT_MESSAGE_CACHE_PREFIX;
 const MESSAGE_CACHE_LIMIT = 50;
 // Refresh-recovery caches are best-effort; expire abandoned scopes so their
 // blobs (one per conversation) can't accumulate forever and exhaust the quota.
 const MESSAGE_CACHE_TTL_MS = 7 * 24 * 60 * 60 * 1000;
-const ACTIVE_TURN_PREFIX = "superchat:active-turn:";
 const ACTIVE_TURN_TTL_MS = 60 * 60 * 1000;
 
 type ActiveTurnSnapshot = {
@@ -108,48 +115,24 @@ function resolveChatWsUrl(): string {
   return url.toString();
 }
 
-type ProjectChatSurface = "director" | "freezone";
-
 function scopeForProject(
   project?: string,
   surface: ProjectChatSurface = "director",
   canvasId?: string | null,
   agentId?: string | null,
 ): ChatScope {
-  const name = project?.trim();
-  if (name) {
-    const normalizedCanvasId = canvasId?.trim() || null;
-    const normalizedAgentId = surface === "freezone" ? (agentId?.trim() || "main") : null;
-    return {
-      kind: "project",
-      id: name,
-      surface,
-      canvasId: surface === "freezone" ? normalizedCanvasId : null,
-      ...(surface === "freezone" ? { agentId: normalizedAgentId } : {}),
-    };
-  }
-  return { kind: "home", id: null };
+  return buildProjectChatScope(project, surface, canvasId, agentId);
 }
 
 function scopeSessionKey(scope: ChatScope): string {
-  if (scope.kind === "project" && scope.id) {
-    const surface = scope.surface || "director";
-    const canvasSuffix = surface === "freezone" && scope.canvasId ? `:${scope.canvasId}` : "";
-    const agentSuffix =
-      surface === "freezone"
-        ? `:agent:${scope.agentId?.trim() || "main"}`
-        : "";
-    return `supertale:project:${scope.id}:${surface}${canvasSuffix}${agentSuffix}`;
-  }
-  if (scope.kind === "freezone" && scope.id) return `supertale:freezone:${scope.id}:main`;
-  return "supertale:home:main";
+  return superChatScopeSessionKey(scope);
 }
 
 export const scopeForProjectForTest = scopeForProject;
 export const scopeSessionKeyForTest = scopeSessionKey;
 
 function messageCacheKey(scopeKey: string): string {
-  return `${MESSAGE_CACHE_PREFIX}${scopeKey}`;
+  return superChatMessageCacheKey(scopeKey);
 }
 
 function frameScope(frame: ServerFrame): ChatScope | null {
@@ -441,7 +424,7 @@ registerStorageReclaimer(() => {
 });
 
 function activeTurnKey(scopeKey: string): string {
-  return `${ACTIVE_TURN_PREFIX}${scopeKey}`;
+  return superChatActiveTurnKey(scopeKey);
 }
 
 function loadActiveTurn(scopeKey: string): ActiveTurnSnapshot | null {

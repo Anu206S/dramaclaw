@@ -1410,6 +1410,44 @@ def test_freezone_agent_history_uses_separate_chat_db(monkeypatch, tmp_path):
     ).exists()
 
 
+@pytest.mark.anyio
+async def test_freezone_history_reads_project_name_storage_scope(monkeypatch, tmp_path):
+    state_root = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
+    project_ctx = SimpleNamespace(project_name="readable-project")
+    request_scope = ChatScope(
+        kind="project",
+        id="01PROJECTID",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+    storage_scope = ChatScope(
+        kind="project",
+        id="readable-project",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+
+    chat_store.append_message("admin", storage_scope, "user", "stored under project name")
+
+    messages = await chat_routes._history("admin", request_scope, project_ctx=project_ctx)
+
+    assert [message["content"] for message in messages] == ["stored under project name"]
+    assert not (
+        state_root
+        / "admin"
+        / "01PROJECTID"
+        / "_chat"
+        / "freezone"
+        / "canvas-a"
+        / "agents"
+        / "agent-2"
+        / "chat.db"
+    ).exists()
+
+
 def test_freezone_canvas_agent_summaries_pick_recent_server_agent(monkeypatch, tmp_path):
     state_root = tmp_path / "state"
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))

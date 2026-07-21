@@ -42,15 +42,28 @@ describe("Freezone canvas agents", () => {
     const second = addFreezoneCanvasAgent("project-a", "canvas-a", 3000);
     const otherCanvas = loadFreezoneCanvasAgents("project-a", "canvas-b", 4000);
 
-    expect(first.agent).toMatchObject({ id: "agent-2", name: "新对话" });
-    expect(second.agent).toMatchObject({ id: "agent-3", name: "新对话" });
-    expect(second.state.activeAgentId).toBe("agent-3");
+    expect(first.agent).toMatchObject({ id: "agent-2000", name: "新对话" });
+    expect(second.agent).toMatchObject({ id: "agent-3000", name: "新对话" });
+    expect(second.state.activeAgentId).toBe("agent-3000");
     expect(second.state.agents.map((agent) => agent.id)).toEqual([
       "main",
-      "agent-2",
-      "agent-3",
+      "agent-2000",
+      "agent-3000",
     ]);
     expect(otherCanvas.agents.map((agent) => agent.id)).toEqual(["main"]);
+  });
+
+  it("keeps new conversation ids unique when two are created in the same millisecond", () => {
+    const first = addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
+    const second = addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
+
+    expect(first.agent.id).toBe("agent-2000");
+    expect(second.agent.id).toBe("agent-2000-2");
+    expect(second.state.agents.map((agent) => agent.id)).toEqual([
+      "main",
+      "agent-2000",
+      "agent-2000-2",
+    ]);
   });
 
   it("keeps adding a conversation when local storage is full", () => {
@@ -62,9 +75,9 @@ describe("Freezone canvas agents", () => {
 
     const result = addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
 
-    expect(result.agent).toMatchObject({ id: "agent-2", name: "新对话" });
-    expect(result.state.activeAgentId).toBe("agent-2");
-    expect(result.state.agents.map((agent) => agent.id)).toEqual(["main", "agent-2"]);
+    expect(result.agent).toMatchObject({ id: "agent-2000", name: "新对话" });
+    expect(result.state.activeAgentId).toBe("agent-2000");
+    expect(result.state.agents.map((agent) => agent.id)).toEqual(["main", "agent-2000"]);
     expect(setItemSpy).toHaveBeenCalled();
   });
 
@@ -121,8 +134,8 @@ describe("Freezone canvas agents", () => {
 
     expect(afterOldConversationMessage.agents.map((agent) => [agent.id, agent.createdAt])).toEqual([
       ["main", 1000],
-      ["agent-2", 2000],
-      ["agent-3", 3000],
+      ["agent-2000", 2000],
+      ["agent-3000", 3000],
     ]);
     expect(afterOldConversationMessage.agents.find((agent) => agent.id === "main")?.lastActiveAt).toBe(4000);
   });

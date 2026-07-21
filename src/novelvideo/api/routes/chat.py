@@ -13,6 +13,7 @@ import json
 import logging
 import time
 import uuid
+from dataclasses import replace
 from typing import Any
 
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
@@ -230,7 +231,15 @@ async def append_chat_notification(
     if len(text) > 4000:
         raise HTTPException(status_code=400, detail="text is too long")
 
-    if scope.kind == "project":
+    if _is_freezone_scope(scope):
+        project_ctx = await _project_context_for_scope(user, scope)
+        message = chat_store.append_message(
+            username,
+            _chat_store_scope_for_project_context(scope, project_ctx),
+            "assistant",
+            text,
+        )
+    elif scope.kind == "project":
         project_ctx = await _project_context_for_scope(user, scope)
         if not scope.id:
             raise HTTPException(status_code=400, detail="project scope id is required")
@@ -253,13 +262,19 @@ async def append_chat_ui_event(
 ) -> dict[str, Any]:
     username = str(user["username"])
     scope = _scope_from_model(payload.scope)
+    project_ctx = None
     if scope.kind == "project":
-        await _project_context_for_scope(user, scope)
+        project_ctx = await _project_context_for_scope(user, scope)
     turn_id = payload.turn_id.strip()
     if not turn_id:
         raise HTTPException(status_code=400, detail="turn_id is required")
     try:
-        event = chat_store.append_ui_event(username, scope, turn_id, payload.event)
+        event = chat_store.append_ui_event(
+            username,
+            _chat_store_scope_for_project_context(scope, project_ctx),
+            turn_id,
+            payload.event,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": event}
@@ -308,10 +323,10 @@ async def list_freezone_canvas_agents(
         canvas_id=canvas_id,
         agent_id="main",
     )
-    await _project_context_for_scope(user, scope)
+    project_ctx = await _project_context_for_scope(user, scope)
     agents = chat_store.list_freezone_canvas_agent_summaries(
         str(user["username"]),
-        project_id=project_id,
+        project_id=project_ctx.project_name if project_ctx is not None else project_id,
         canvas_id=canvas_id,
     )
     return {"ok": True, "data": {"agents": agents}}
@@ -325,6 +340,15 @@ def _canvas_bridge_dir(username: str, *, profile: str = "director") -> Any:
 
 def _is_freezone_scope(scope: ChatScope) -> bool:
     return scope.kind == "freezone" or (scope.kind == "project" and scope.surface == "freezone")
+
+
+def _chat_store_scope_for_project_context(
+    scope: ChatScope,
+    project_ctx: ProjectContext | None,
+) -> ChatScope:
+    if not _is_freezone_scope(scope) or project_ctx is None:
+        return scope
+    return replace(scope, id=project_ctx.project_name)
 
 
 def _canvas_bridge_profile_for_scope(scope: ChatScope) -> str:
@@ -736,8 +760,9 @@ def _scope_from_interaction_payload(payload: SkillStudioToolResultIn | Clarifica
     )
 
 
-def _persist_skill_studio_result_ui_event(
+async def _persist_skill_studio_result_ui_event(
     *,
+    user: dict[str, Any],
     username: str,
     payload: SkillStudioToolResultIn,
 ) -> None:
@@ -745,6 +770,7 @@ def _persist_skill_studio_result_ui_event(
     scope = _scope_from_interaction_payload(payload)
     if not turn_id or scope is None:
         return
+    project_ctx = await _project_context_for_scope(user, scope)
     event: dict[str, Any] = {
         "type": "skill_studio.questions" if payload.draft is None else "skill_studio.draft",
         "bridge_key": payload.bridge_key,
@@ -766,11 +792,17 @@ def _persist_skill_studio_result_ui_event(
         draft_skill_ids, draft_recipe_ids = _skill_studio_draft_catalog_ids(payload.draft)
         event["saved_skill_ids"] = payload.saved_skill_ids or draft_skill_ids
         event["saved_recipe_ids"] = payload.saved_recipe_ids or draft_recipe_ids
-    chat_store.append_ui_event(username, scope, turn_id, event)
+    chat_store.append_ui_event(
+        username,
+        _chat_store_scope_for_project_context(scope, project_ctx),
+        turn_id,
+        event,
+    )
 
 
-def _persist_clarification_result_ui_event(
+async def _persist_clarification_result_ui_event(
     *,
+    user: dict[str, Any],
     username: str,
     payload: ClarificationToolResultIn,
 ) -> None:
@@ -778,9 +810,10 @@ def _persist_clarification_result_ui_event(
     scope = _scope_from_interaction_payload(payload)
     if not turn_id or scope is None:
         return
+    project_ctx = await _project_context_for_scope(user, scope)
     chat_store.append_ui_event(
         username,
-        scope,
+        _chat_store_scope_for_project_context(scope, project_ctx),
         turn_id,
         {
             "type": "assistant.clarification.request",
@@ -854,14 +887,10 @@ async def resolve_canvas_context_tool_result(
             project_ctx = await _project_context_for_scope(user, scope)
             chat_store.append_ui_event(
                 username,
-                scope,
+                _chat_store_scope_for_project_context(scope, project_ctx),
                 context_turn_id,
                 _canvas_context_ui_event(payload, resolved),
             )
-            if project_ctx is not None:
-                # Keep the route symmetric with project-scoped validation even
-                # though Freezone chat history is stored through chat_store.
-                _ = project_ctx
         except Exception:
             logger.exception("failed to persist canvas.context.result ui event")
     return {"ok": True, "data": resolved}
@@ -875,7 +904,7 @@ async def resolve_skill_studio_tool_result(
     username = str(user["username"])
     resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
     try:
-        _persist_skill_studio_result_ui_event(username=username, payload=payload)
+        await _persist_skill_studio_result_ui_event(user=user, username=username, payload=payload)
     except Exception:
         logger.exception("failed to persist skill studio result ui event")
     return {"ok": True, "data": resolved}
@@ -889,7 +918,7 @@ async def resolve_clarification_tool_result(
     username = str(user["username"])
     resolved = _resolve_clarification_tool_result_payload(payload, username=username)
     try:
-        _persist_clarification_result_ui_event(username=username, payload=payload)
+        await _persist_clarification_result_ui_event(user=user, username=username, payload=payload)
     except Exception:
         logger.exception("failed to persist clarification result ui event")
     return {"ok": True, "data": resolved}
@@ -929,7 +958,7 @@ async def _receive_bridge_results_during_turn(
             payload = SkillStudioToolResultIn.model_validate(raw)
             _resolve_skill_studio_tool_result_payload(payload, username=username)
             try:
-                _persist_skill_studio_result_ui_event(username=username, payload=payload)
+                await _persist_skill_studio_result_ui_event(user=user, username=username, payload=payload)
             except Exception:
                 logger.exception("failed to persist skill studio result ui event")
             continue
@@ -938,7 +967,7 @@ async def _receive_bridge_results_during_turn(
             payload = ClarificationToolResultIn.model_validate(raw)
             _resolve_clarification_tool_result_payload(payload, username=username)
             try:
-                _persist_clarification_result_ui_event(username=username, payload=payload)
+                await _persist_clarification_result_ui_event(user=user, username=username, payload=payload)
             except Exception:
                 logger.exception("failed to persist clarification result ui event")
             continue
@@ -1124,8 +1153,11 @@ async def _history(
             project_dir=project_ctx.output_dir if project_ctx is not None else None,
             project_state_dir=project_ctx.state_dir if project_ctx is not None else None,
         )
-    if scope.kind == "freezone":
-        return chat_store.list_messages(username, scope)
+    if _is_freezone_scope(scope):
+        return chat_store.list_messages(
+            username,
+            _chat_store_scope_for_project_context(scope, project_ctx),
+        )
     return chat_store.list_messages(username, scope)
 
 
@@ -1557,6 +1589,7 @@ async def _watch_pending_skill_studio_events(
     websocket: WebSocket,
     username: str,
     scope: ChatScope,
+    store_scope: ChatScope | None = None,
     turn_id: str,
     send_lock: asyncio.Lock | None,
     emitted_bridge_keys: set[str],
@@ -1604,7 +1637,7 @@ async def _watch_pending_skill_studio_events(
                 "turn_id": turn_id,
             }
             try:
-                chat_store.append_ui_event(username, scope, turn_id, ui_event)
+                chat_store.append_ui_event(username, store_scope or scope, turn_id, ui_event)
             except Exception:
                 logger.exception("failed to persist skill_studio.event ui event")
             logger.info(
@@ -1635,6 +1668,7 @@ async def _watch_pending_clarification_events(
     websocket: WebSocket,
     username: str,
     scope: ChatScope,
+    store_scope: ChatScope | None = None,
     turn_id: str,
     send_lock: asyncio.Lock | None,
     emitted_bridge_keys: set[str],
@@ -1682,7 +1716,7 @@ async def _watch_pending_clarification_events(
                 "turn_id": turn_id,
             }
             try:
-                chat_store.append_ui_event(username, scope, turn_id, ui_event)
+                chat_store.append_ui_event(username, store_scope or scope, turn_id, ui_event)
             except Exception:
                 logger.exception("failed to persist assistant.clarification ui event")
             logger.info(
@@ -1825,12 +1859,17 @@ async def _stream_project_turn(
     project_ctx = await _project_context_for_scope(user, scope)
     project_dir = project_ctx.output_dir if project_ctx is not None else None
     project_state_dir = project_ctx.state_dir if project_ctx is not None else None
+    storage_scope = (
+        _chat_store_scope_for_project_context(store_scope, project_ctx)
+        if store_scope is not None
+        else None
+    )
     agent_text = _text_with_attachment_context(text, attachments)
     display_text = str(user_text or text).strip()
-    if store_scope is not None:
+    if storage_scope is not None:
         chat_store.append_message(
             username,
-            store_scope,
+            storage_scope,
             "user",
             display_text,
             media=_attachment_payloads(attachments),
@@ -1879,6 +1918,7 @@ async def _stream_project_turn(
             websocket=websocket,
             username=username,
             scope=scope,
+            store_scope=storage_scope,
             turn_id=turn_id,
             send_lock=send_lock,
             emitted_bridge_keys=emitted_bridge_keys,
@@ -1890,6 +1930,7 @@ async def _stream_project_turn(
             websocket=websocket,
             username=username,
             scope=scope,
+            store_scope=storage_scope,
             turn_id=turn_id,
             send_lock=send_lock,
             emitted_bridge_keys=emitted_bridge_keys,
@@ -2074,7 +2115,7 @@ async def _stream_project_turn(
             project_state_dir=project_state_dir,
             surface=surface,
             surface_context=surface_context,
-            store_scope=store_scope,
+            store_scope=storage_scope,
             turn_id=turn_id,
             route_prompt=display_text,
         )
@@ -2486,7 +2527,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 payload = SkillStudioToolResultIn.model_validate(raw)
                 _resolve_skill_studio_tool_result_payload(payload, username=username)
                 try:
-                    _persist_skill_studio_result_ui_event(username=username, payload=payload)
+                    await _persist_skill_studio_result_ui_event(user=user, username=username, payload=payload)
                 except Exception:
                     logger.exception("failed to persist skill studio result ui event")
                 continue
@@ -2495,7 +2536,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 payload = ClarificationToolResultIn.model_validate(raw)
                 _resolve_clarification_tool_result_payload(payload, username=username)
                 try:
-                    _persist_clarification_result_ui_event(username=username, payload=payload)
+                    await _persist_clarification_result_ui_event(user=user, username=username, payload=payload)
                 except Exception:
                     logger.exception("failed to persist clarification result ui event")
                 continue
