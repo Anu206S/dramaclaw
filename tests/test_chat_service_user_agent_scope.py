@@ -1558,6 +1558,90 @@ async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_
     assert assistant["turn_id"] == "turn-a"
 
 
+@pytest.mark.anyio
+async def test_freezone_hermes_drops_mainline_media_ui_specs(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
+    monkeypatch.setenv("DRAMACLAW_CHAT_BACKEND", "hermes")
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+    sketch_spec = {
+        "type": "sketch_gallery",
+        "root": "root",
+        "elements": {
+            "root": {"type": "Stack", "props": {}, "children": ["sketch"]},
+            "sketch": {
+                "type": "Image",
+                "props": {
+                    "src": "/static/projects/project-a/sketches/ep001/beat_01.png",
+                    "alt": "Beat 1 草图",
+                },
+                "children": [],
+            },
+        },
+    }
+
+    class FakeThread:
+        async def stream(self, _prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(type="thread_started", thread_id="thread-a", turn_id="turn-a")
+            yield backend_sdk.ChatBackendEvent(
+                type="assistant_delta",
+                text=(
+                    "已为你触发了这张图片的生成。\n\n"
+                    f"{chat_service._ui_spec_block(sketch_spec)}"
+                ),
+            )
+            yield backend_sdk.ChatBackendEvent(
+                type="tool_updated",
+                text="completed",
+                raw={
+                    "sessionUpdate": "tool_call",
+                    "name": "dramaclaw_get_sketches",
+                    "arguments": {"episode": 1},
+                },
+            )
+            yield backend_sdk.ChatBackendEvent(type="complete", text="")
+
+    class FakePool:
+        async def get_for_user(self, *_args, **_kwargs):
+            return FakeThread()
+
+    async def unexpected_fallback(*_args, **_kwargs):
+        raise AssertionError("Freezone canvas must not request mainline media fallback")
+
+    async def on_event(_event):
+        return None
+
+    monkeypatch.setattr(chat_service, "is_hermes_backend_available", lambda: True)
+    monkeypatch.setattr(chat_service, "_write_hermes_tool_mode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(chat_service, "_fallback_display_tool_ui_specs", unexpected_fallback)
+    monkeypatch.setattr("novelvideo.chat.hermes_pool.pool", FakePool())
+
+    result = await chat_service.stream_assistant_reply(
+        "admin",
+        "project-a",
+        "生成下这个",
+        on_event,
+        surface="freezone",
+        surface_context={"canvasId": "canvas-a"},
+        store_scope=scope,
+        turn_id="turn-a",
+    )
+
+    assert result["role"] == "assistant"
+    assert "已为你触发了这张图片的生成" in result["content"]
+    assert "<ui-spec" not in result["content"]
+    assert "sketch_gallery" not in result["content"]
+    assert "Beat 1 草图" not in result["content"]
+    assert result["media"] == []
+
+
 def test_freezone_main_agent_reads_legacy_canvas_chat_db(monkeypatch, tmp_path):
     state_root = tmp_path / "state"
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_root))
