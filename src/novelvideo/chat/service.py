@@ -2055,6 +2055,11 @@ def _append_tool_ui_specs(content: str, specs: list[dict[str, Any]]) -> str:
     return f"{prefix}\n\n" + "\n\n".join(blocks)
 
 
+def _allows_mainline_media_ui_specs(tool_mode: str) -> bool:
+    """Mainline media galleries are for DramaClaw chat, not Freezone canvas replies."""
+    return str(tool_mode or "").strip() != "freezone_canvas"
+
+
 def _split_ui_specs_from_text(content: str) -> tuple[str, list[dict[str, Any]]]:
     text = str(content or "")
     if "<ui-spec" not in text.lower():
@@ -3936,9 +3941,14 @@ async def _stream_assistant_reply_hermes(
         final_text = _strip_replayed_chat_response(
             assistant_text, previous_assistant, prompt
         ).strip()
-        all_tool_ui_specs = _dedupe_tool_ui_specs([*tool_ui_specs, *fallback_tool_ui_specs])
-        all_tool_ui_specs = _filter_tool_ui_specs_for_prompt(prompt, all_tool_ui_specs)
-        final_text = _append_tool_ui_specs(final_text, all_tool_ui_specs)
+        if _allows_mainline_media_ui_specs(tool_mode):
+            all_tool_ui_specs = _dedupe_tool_ui_specs([*tool_ui_specs, *fallback_tool_ui_specs])
+            all_tool_ui_specs = _filter_tool_ui_specs_for_prompt(prompt, all_tool_ui_specs)
+            final_text = _append_tool_ui_specs(final_text, all_tool_ui_specs)
+        else:
+            final_text, _discarded_ui_specs = _split_ui_specs_from_text(final_text)
+            final_text = _strip_embedded_ui_spec_json_text(final_text)
+            final_text = _strip_media_rendering_leaks(final_text)
         if not final_text:
             return None
         final_text = _normalize_json_render_reply(final_text)
@@ -4070,8 +4080,13 @@ async def _stream_assistant_reply_hermes(
                                 "text": _redact_local_filesystem_paths(tool_chat_error),
                             },
                         )
-                    tool_ui_specs.extend(_extract_tool_ui_specs(event.raw))
-                    display_call = _extract_display_tool_call(event.raw)
+                    if _allows_mainline_media_ui_specs(tool_mode):
+                        tool_ui_specs.extend(_extract_tool_ui_specs(event.raw))
+                    display_call = (
+                        _extract_display_tool_call(event.raw)
+                        if _allows_mainline_media_ui_specs(tool_mode)
+                        else None
+                    )
                     if display_call is not None:
                         tool_name, tool_args = display_call
                         display_call_key = _display_tool_call_key(tool_name, tool_args)
@@ -4153,7 +4168,11 @@ async def _stream_assistant_reply_hermes(
         )
         if not assistant_text.strip():
             assistant_text = "这轮操作没有收到虾导的有效回复，请稍后重试。"
-        if not tool_ui_specs and not fallback_tool_ui_specs:
+        if (
+            _allows_mainline_media_ui_specs(tool_mode)
+            and not tool_ui_specs
+            and not fallback_tool_ui_specs
+        ):
             inferred_display_call = _infer_display_tool_call_from_text(
                 prompt,
                 assistant_text,
