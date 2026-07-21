@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
   addFreezoneCanvasAgent,
@@ -16,6 +16,7 @@ import {
 
 describe("Freezone canvas agents", () => {
   beforeEach(() => {
+    vi.restoreAllMocks();
     window.localStorage.clear();
   });
 
@@ -50,6 +51,21 @@ describe("Freezone canvas agents", () => {
       "agent-3",
     ]);
     expect(otherCanvas.agents.map((agent) => agent.id)).toEqual(["main"]);
+  });
+
+  it("keeps adding a conversation when local storage is full", () => {
+    const setItemSpy = vi
+      .spyOn(window.localStorage, "setItem")
+      .mockImplementation(() => {
+        throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+      });
+
+    const result = addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
+
+    expect(result.agent).toMatchObject({ id: "agent-2", name: "新对话" });
+    expect(result.state.activeAgentId).toBe("agent-2");
+    expect(result.state.agents.map((agent) => agent.id)).toEqual(["main", "agent-2"]);
+    expect(setItemSpy).toHaveBeenCalled();
   });
 
   it("persists the active agent per canvas without reordering recency", () => {

@@ -17,6 +17,7 @@ const superChatMocks = vi.hoisted(() => ({
   appendNotification: vi.fn(async () => undefined),
   messages: [] as ChatMessage[],
   busy: false,
+  activeTurnId: null as string | null,
   showToolEvents: false,
 }));
 
@@ -96,7 +97,7 @@ vi.mock("@/features/superchat/use-superchat", () => ({
   useSuperChat: () => ({
     abort: vi.fn(),
     approvals: [],
-    activeTurnId: null,
+    activeTurnId: superChatMocks.activeTurnId,
     busy: superChatMocks.busy,
     connected: true,
     connecting: false,
@@ -159,6 +160,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     superChatMocks.appendNotification.mockClear();
     superChatMocks.messages = [];
     superChatMocks.busy = false;
+    superChatMocks.activeTurnId = null;
     superChatMocks.showToolEvents = false;
     eventBusMocks.on.mockClear();
     apiMocks.post.mockClear();
@@ -566,6 +568,219 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     fireEvent.click(copyButton);
 
     expect(document.execCommand).toHaveBeenCalledWith("copy");
+  });
+
+  it("reveals assistant message actions below the bubble on the left side", () => {
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "你好！有什么可以帮你的吗",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        parts: [
+          { id: "usage", type: "agent_usage", event: { usage: { used: 10 } } },
+        ],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    const copyButton = screen.getByLabelText("Copy");
+    expect(copyButton.parentElement).toHaveClass("absolute");
+    expect(copyButton.parentElement).toHaveClass("bottom-2");
+    expect(copyButton.parentElement).toHaveClass("left-0");
+    expect(copyButton.parentElement).not.toHaveClass("right-0");
+    expect(copyButton.parentElement).not.toHaveClass("top-1.5");
+    expect(copyButton.parentElement?.parentElement).toHaveClass("hover:pb-10");
+  });
+
+  it("shows context usage as an assistant action badge instead of body text", () => {
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "你好！有什么可以帮你的吗",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        parts: [
+          {
+            id: "usage",
+            type: "agent_usage",
+            event: { usage: { size: 131072, used: 34320 } },
+          },
+        ],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    const usageButton = screen.getByLabelText("上下文用量");
+    expect(usageButton).toHaveTextContent("");
+    expect(usageButton).toHaveAttribute(
+      "title",
+      expect.stringContaining("used: 34320"),
+    );
+    expect(usageButton).not.toHaveAttribute(
+      "title",
+      expect.stringContaining("使用比例"),
+    );
+    expect(screen.queryByText("used: 34320")).not.toBeInTheDocument();
+  });
+
+  it("does not render an assistant shell for usage-only runtime metadata", () => {
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        parts: [
+          {
+            id: "usage",
+            type: "agent_usage",
+            event: { usage: { size: 131072, used: 34320 } },
+          },
+        ],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(screen.queryByLabelText("上下文用量")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Copy")).not.toBeInTheDocument();
+  });
+
+  it("keeps the thinking placeholder visible when only usage metadata has arrived", () => {
+    superChatMocks.busy = true;
+    superChatMocks.activeTurnId = "turn-a";
+    superChatMocks.messages = [
+      {
+        id: "user-a",
+        role: "user",
+        text: "你好",
+        displayName: "User",
+        timestamp: 100,
+        turnId: "turn-a",
+      },
+      {
+        id: "assistant-turn-a",
+        role: "assistant",
+        text: "",
+        displayName: "Agent",
+        timestamp: 110,
+        turnId: "turn-a",
+        parts: [
+          {
+            id: "usage",
+            type: "agent_usage",
+            event: { usage: { size: 131072, used: 85913 } },
+          },
+        ],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(screen.getByText("正在思考中")).toBeInTheDocument();
+    expect(screen.queryByLabelText("上下文用量")).not.toBeInTheDocument();
+  });
+
+  it("hides orphan recovered ui-event assistant messages without a matching user turn", () => {
+    superChatMocks.messages = [
+      {
+        id: "54",
+        role: "user",
+        text: "最新用户消息",
+        displayName: "User",
+        timestamp: 100,
+        turnId: "turn-current",
+      },
+      {
+        id: "55",
+        role: "assistant",
+        text: "最新正常回复",
+        displayName: "Agent",
+        timestamp: 110,
+        turnId: "turn-current",
+      },
+      {
+        id: "ui-events:turn-orphan",
+        role: "assistant",
+        text: "孤儿恢复回复不该显示",
+        displayName: "Agent",
+        timestamp: 120,
+        turnId: "turn-orphan",
+        parts: [
+          { id: "text-orphan", type: "text", text: "孤儿恢复回复不该显示" },
+        ],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(screen.getByText("最新用户消息")).toBeInTheDocument();
+    expect(screen.getByText("最新正常回复")).toBeInTheDocument();
+    expect(screen.queryByText("孤儿恢复回复不该显示")).not.toBeInTheDocument();
   });
 
   it("resolves frontend canvas context requests and shows activity status", async () => {

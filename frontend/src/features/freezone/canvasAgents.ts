@@ -115,8 +115,35 @@ function readState(projectId: string, canvasId: string, now = Date.now()): Freez
   }
 }
 
+function isStorageQuotaError(error: unknown): boolean {
+  if (!(error instanceof DOMException)) return false;
+  return error.name === "QuotaExceededError" || error.name === "NS_ERROR_DOM_QUOTA_REACHED";
+}
+
+function removeOtherCanvasAgentStates(currentKey: string): void {
+  try {
+    Object.keys(window.localStorage)
+      .filter((key) => key.startsWith(STORAGE_PREFIX) && key !== currentKey)
+      .forEach((key) => window.localStorage.removeItem(key));
+  } catch {
+    // Storage can be unavailable in restricted browser contexts.
+  }
+}
+
 function writeState(projectId: string, canvasId: string, state: FreezoneCanvasAgentState): void {
-  window.localStorage.setItem(storageKey(projectId, canvasId), JSON.stringify(state));
+  const key = storageKey(projectId, canvasId);
+  const value = JSON.stringify(state);
+  try {
+    window.localStorage.setItem(key, value);
+  } catch (error) {
+    if (!isStorageQuotaError(error)) return;
+    removeOtherCanvasAgentStates(key);
+    try {
+      window.localStorage.setItem(key, value);
+    } catch {
+      // Keep the in-memory state update even if persistence is still full.
+    }
+  }
 }
 
 export function loadFreezoneCanvasAgents(

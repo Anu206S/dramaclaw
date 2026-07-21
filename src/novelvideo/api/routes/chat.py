@@ -2180,8 +2180,63 @@ async def _stream_home_turn(
         },
         send_lock,
     )
+    async def hermes_events_with_session_retry():
+        nonlocal thread
+        from novelvideo.chat.hermes_sdk import (
+            HermesSessionUnavailableError,
+            _is_session_unavailable_error,
+        )
+
+        retried = False
+        while True:
+            try:
+                async for stream_event in thread.stream(agent_text, current_project=None):
+                    if (
+                        not retried
+                        and stream_event.type == "complete"
+                        and not assistant_text.strip()
+                        and not tool_text.strip()
+                        and _is_session_unavailable_error(stream_event.text)
+                    ):
+                        logger.warning(
+                            "hermes websocket prompt completed with unavailable cached session; "
+                            "resetting and retrying once user=%s scope=%s: %s",
+                            username,
+                            scope.to_dict(),
+                            stream_event.text,
+                        )
+                        thread = await hermes_pool.reset_for_user(
+                            username,
+                            scope_kind="home",
+                            project_id=None,
+                        )
+                        retried = True
+                        break
+                    yield stream_event
+                else:
+                    return
+                continue
+            except HermesSessionUnavailableError as exc:
+                if retried or assistant_text.strip() or tool_text.strip():
+                    raise
+                logger.warning(
+                    "hermes cached websocket session unavailable; resetting and retrying once "
+                    "user=%s scope=%s: %s",
+                    username,
+                    scope.to_dict(),
+                    exc,
+                )
+                thread = await hermes_pool.reset_for_user(
+                    username,
+                    scope_kind="home",
+                    project_id=None,
+                )
+                retried = True
+                continue
+            return
+
     try:
-        async for event in thread.stream(agent_text, current_project=None):
+        async for event in hermes_events_with_session_retry():
             if event.type == "thread_started":
                 await _send_json_best_effort(
                     websocket,
