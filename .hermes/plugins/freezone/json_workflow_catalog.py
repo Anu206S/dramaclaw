@@ -1406,7 +1406,7 @@ def _load_agent_config_items(kind: str, fallback_dir: Path) -> list[dict[str, An
             try:
                 loaded_items = list_user_agent_config_items(username, kind)
                 if loaded_items:
-                    return loaded_items
+                    return _merge_agent_config_items(fallback_items, loaded_items)
             except Exception:
                 pass
     return fallback_items
