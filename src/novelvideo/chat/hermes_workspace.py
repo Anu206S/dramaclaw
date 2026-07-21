@@ -48,7 +48,9 @@ _CONFIG_YAML_TEMPLATE = """# DramaClaw-managed hermes config.
 #
 # Model routes through the selected NewAPI gateway (OpenAI-compatible), unified
 # with the video/image generators. The endpoint is non-secret workspace config;
-# DramaClaw injects the key into the worker process as NEWAPI_API_KEY.
+# DramaClaw injects the key into the worker process as NEWAPI_API_KEY and the
+# OPENAI_API_KEY compatibility alias used by Hermes when restoring older
+# custom-provider sessions.
 
 custom_providers:
   - name: dramaclaw
@@ -92,7 +94,8 @@ _FREEZONE_CONFIG_YAML_TEMPLATE = """# Freezone/虾画 hermes config.
 # This profile intentionally enables only canvas-oriented tools.
 # Model routes through the selected NewAPI gateway (OpenAI-compatible), unified
 # with the video/image generators. DramaClaw injects the key into the worker
-# process as NEWAPI_API_KEY.
+# process as NEWAPI_API_KEY and OPENAI_API_KEY for older restored custom
+# sessions.
 
 custom_providers:
   - name: dramaclaw
@@ -136,8 +139,8 @@ disabled_toolsets:
 
 
 _DEFAULT_ENV_TEMPLATE = """# DramaClaw-managed Hermes workspace.
-# Model credentials are injected into the worker process and are never written
-# here. Do not duplicate model keys in this file.
+# Model credentials are synchronized from DramaClaw settings so Hermes profile
+# secret scoping resolves the same gateway key as the API process.
 """
 
 
@@ -373,8 +376,8 @@ def ensure_user_hermes_workspace(username: str, *, profile: str = "director") ->
     _ensure_model_gateway_config(config_yaml)
     _ensure_identity_context(home, profile=normalized_profile)
 
-    # Keep an empty compatibility file for Hermes. Model credentials are
-    # injected only into each worker process.
+    # Hermes profile secret scoping reads this file, so keep the managed
+    # NewAPI key synchronized with the UI-selected gateway.
     env_file = home / ".env"
     if not env_file.exists():
         env_file.write_text(_DEFAULT_ENV_TEMPLATE, encoding="utf-8")
@@ -382,6 +385,7 @@ def ensure_user_hermes_workspace(username: str, *, profile: str = "director") ->
             env_file.chmod(0o600)
         except OSError:
             pass
+    _ensure_gateway_env_file(env_file)
 
     return home
 
@@ -399,6 +403,63 @@ def _parse_env_assignments(text: str) -> dict[str, str]:
         if key:
             values[key] = value.strip().strip('"').strip("'")
     return values
+
+
+def _ensure_gateway_env_file(env_file: Path) -> None:
+    """Keep Hermes profile secrets aligned with DramaClaw gateway settings.
+
+    Hermes profile-scoped secret reads are backed by ``HERMES_HOME/.env``. The
+    worker process also receives ``NEWAPI_API_KEY`` and ``OPENAI_API_KEY`` in
+    its environment, but restored Hermes custom-provider sessions may consult
+    profile-scoped secrets. Keep both aliases synchronized so old
+    ``OPENAI_API_KEY`` values cannot shadow the current NewAPI gateway key.
+    """
+    api_key, _base_url = effective_gateway_credentials()
+    if not api_key:
+        return
+    try:
+        text = env_file.read_text(encoding="utf-8")
+    except OSError:
+        text = _DEFAULT_ENV_TEMPLATE
+
+    out: list[str] = []
+    wrote_newapi = False
+    wrote_openai = False
+    changed = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if line and not line.startswith("#") and "=" in line:
+            key = line.split("=", 1)[0].strip()
+            if key == _DRAMACLAW_HERMES_KEY_ENV:
+                replacement = f"{_DRAMACLAW_HERMES_KEY_ENV}={api_key}"
+                if raw_line != replacement:
+                    changed = True
+                out.append(replacement)
+                wrote_newapi = True
+                continue
+            if key == "OPENAI_API_KEY":
+                replacement = f"OPENAI_API_KEY={api_key}"
+                if raw_line != replacement:
+                    changed = True
+                out.append(replacement)
+                wrote_openai = True
+                continue
+        out.append(raw_line)
+    if not wrote_newapi:
+        if out and out[-1].strip():
+            out.append("")
+        out.append(f"{_DRAMACLAW_HERMES_KEY_ENV}={api_key}")
+        changed = True
+    if not wrote_openai:
+        out.append(f"OPENAI_API_KEY={api_key}")
+        changed = True
+    new_text = "\n".join(out).rstrip() + "\n"
+    if changed or new_text != text:
+        env_file.write_text(new_text, encoding="utf-8")
+        try:
+            env_file.chmod(0o600)
+        except OSError:
+            pass
 
 
 def _ensure_identity_context(home: Path, *, profile: str = "director") -> None:

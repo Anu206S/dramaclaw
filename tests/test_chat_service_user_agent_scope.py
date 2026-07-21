@@ -1559,6 +1559,213 @@ async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_
 
 
 @pytest.mark.anyio
+async def test_freezone_hermes_retries_once_when_cached_session_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+    events = []
+
+    class StaleThread:
+        async def stream(self, _prompt, *, current_project=None):
+            raise hermes_sdk.HermesSessionUnavailableError("session stale not found")
+            yield  # pragma: no cover
+
+    class FreshThread:
+        async def stream(self, _prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(
+                type="thread_started",
+                thread_id="fresh-thread",
+                turn_id="fresh-turn",
+            )
+            yield backend_sdk.ChatBackendEvent(type="assistant_delta", text="恢复好了")
+            yield backend_sdk.ChatBackendEvent(type="complete", text="")
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.get_calls = 0
+            self.reset_calls = 0
+
+        async def get_for_user(self, *_args, **_kwargs):
+            self.get_calls += 1
+            return StaleThread()
+
+        async def reset_for_user(self, *_args, **_kwargs):
+            self.reset_calls += 1
+            return FreshThread()
+
+    fake_pool = FakePool()
+
+    async def on_event(event):
+        events.append(event)
+
+    monkeypatch.setattr(chat_service, "is_hermes_backend_available", lambda: True)
+    monkeypatch.setattr(chat_service, "_write_hermes_tool_mode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("novelvideo.chat.hermes_pool.pool", fake_pool)
+
+    result = await chat_service.stream_assistant_reply(
+        "admin",
+        "project-a",
+        "你好",
+        on_event,
+        surface="freezone",
+        surface_context={"canvasId": "canvas-a"},
+        store_scope=scope,
+        turn_id="turn-a",
+    )
+
+    assert fake_pool.get_calls == 1
+    assert fake_pool.reset_calls == 1
+    assert result["content"] == "恢复好了"
+    assert any(event.get("thread_id") == "fresh-thread" for event in events)
+
+
+@pytest.mark.anyio
+async def test_freezone_hermes_retries_once_when_prompt_completion_reports_stale_session(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+
+    class StaleThread:
+        async def stream(self, _prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(
+                type="thread_started",
+                thread_id="stale-thread",
+                turn_id="stale-turn",
+            )
+            yield backend_sdk.ChatBackendEvent(
+                type="complete",
+                text="error: prompt: session stale-thread not found",
+            )
+
+    class FreshThread:
+        async def stream(self, _prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(
+                type="thread_started",
+                thread_id="fresh-thread",
+                turn_id="fresh-turn",
+            )
+            yield backend_sdk.ChatBackendEvent(type="assistant_delta", text="恢复好了")
+            yield backend_sdk.ChatBackendEvent(type="complete", text="")
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.reset_calls = 0
+
+        async def get_for_user(self, *_args, **_kwargs):
+            return StaleThread()
+
+        async def reset_for_user(self, *_args, **_kwargs):
+            self.reset_calls += 1
+            return FreshThread()
+
+    fake_pool = FakePool()
+
+    monkeypatch.setattr(chat_service, "is_hermes_backend_available", lambda: True)
+    monkeypatch.setattr(chat_service, "_write_hermes_tool_mode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("novelvideo.chat.hermes_pool.pool", fake_pool)
+
+    result = await chat_service.stream_assistant_reply(
+        "admin",
+        "project-a",
+        "你好",
+        lambda _event: None,
+        surface="freezone",
+        surface_context={"canvasId": "canvas-a"},
+        store_scope=scope,
+        turn_id="turn-a",
+    )
+
+    assert fake_pool.reset_calls == 1
+    assert result["content"] == "恢复好了"
+
+
+@pytest.mark.anyio
+async def test_freezone_hermes_retries_once_when_stream_ends_before_completion(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+
+    class BrokenThread:
+        async def stream(self, _prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(
+                type="thread_started",
+                thread_id="broken-thread",
+                turn_id="broken-turn",
+            )
+
+    class FreshThread:
+        async def stream(self, _prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(
+                type="thread_started",
+                thread_id="fresh-thread",
+                turn_id="fresh-turn",
+            )
+            yield backend_sdk.ChatBackendEvent(type="assistant_delta", text="恢复好了")
+            yield backend_sdk.ChatBackendEvent(type="complete", text="")
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.reset_calls = 0
+
+        async def get_for_user(self, *_args, **_kwargs):
+            return BrokenThread()
+
+        async def reset_for_user(self, *_args, **_kwargs):
+            self.reset_calls += 1
+            return FreshThread()
+
+    fake_pool = FakePool()
+
+    monkeypatch.setattr(chat_service, "is_hermes_backend_available", lambda: True)
+    monkeypatch.setattr(chat_service, "_write_hermes_tool_mode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("novelvideo.chat.hermes_pool.pool", fake_pool)
+
+    result = await chat_service.stream_assistant_reply(
+        "admin",
+        "project-a",
+        "你好",
+        lambda _event: None,
+        surface="freezone",
+        surface_context={"canvasId": "canvas-a"},
+        store_scope=scope,
+        turn_id="turn-a",
+    )
+
+    assert fake_pool.reset_calls == 1
+    assert result["content"] == "恢复好了"
+
+
+@pytest.mark.anyio
 async def test_freezone_hermes_drops_mainline_media_ui_specs(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))

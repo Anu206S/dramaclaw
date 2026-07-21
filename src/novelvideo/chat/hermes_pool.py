@@ -320,6 +320,54 @@ class HermesPool:
                 self._cleanup_task = asyncio.create_task(self._reaper_loop())
             return slot.thread
 
+    async def reset_for_user(
+        self,
+        username: str,
+        *,
+        model: str | None = None,
+        agent_profile: str = "main",
+        tool_mode: str = "default",
+        scope_kind: str = "home",
+        project_id: str | None = None,
+        surface: str | None = None,
+        canvas_id: str | None = None,
+    ) -> HermesSdkThread:
+        """Discard a cached Hermes session and start a fresh one for this scope."""
+        slot_key = self._slot_key(username, agent_profile)
+        normalized_surface = (
+            str(surface or "").strip()
+            or ("freezone" if _workspace_profile_for_agent(agent_profile, tool_mode, surface) == "freezone" else "")
+            or None
+        )
+        normalized_canvas_id = str(canvas_id or "").strip() or None
+        async with self._lock:
+            old_slot = self._slots.pop(slot_key, None)
+            self._forget_session(
+                username,
+                scope_kind,
+                project_id,
+                agent_profile,
+                normalized_canvas_id,
+            )
+            await self._evict_lru_if_full()
+            new_slot = await self._spawn_locked(
+                username,
+                model=model if model is not None else getattr(old_slot, "model", None),
+                agent_profile=agent_profile,
+                tool_mode=tool_mode,
+                scope_kind=scope_kind,
+                project_id=project_id,
+                surface=normalized_surface,
+                canvas_id=normalized_canvas_id,
+                resume_session_id="",
+            )
+            self._slots[slot_key] = new_slot
+            if self._cleanup_task is None or self._cleanup_task.done():
+                self._cleanup_task = asyncio.create_task(self._reaper_loop())
+        if old_slot is not None:
+            await asyncio.shield(self._close_slot(old_slot, remember_session=False))
+        return new_slot.thread
+
     async def _spawn_locked(
         self,
         username: str,
@@ -377,13 +425,33 @@ class HermesPool:
             or self._session_id_for(username, scope_kind, project_id, agent_profile, canvas_id)
             or ""
         ).strip()
-        thread = client.thread_resume(session_id) if session_id else client.thread_start()
+        resumed_session = bool(session_id)
+        if session_id:
+            try:
+                thread = client.thread_resume(session_id)
+            except Exception as exc:  # noqa: BLE001 - stale Hermes sessions should not break a new turn
+                _log.warning(
+                    "failed to resume hermes session %s for user=%s profile=%s scope=%s project=%s canvas=%s; "
+                    "starting a fresh session: %s",
+                    session_id,
+                    username,
+                    agent_profile,
+                    scope_kind,
+                    project_id,
+                    canvas_id,
+                    exc,
+                )
+                self._forget_session(username, scope_kind, project_id, agent_profile, canvas_id)
+                thread = client.thread_start()
+                resumed_session = False
+        else:
+            thread = client.thread_start()
         _log.info(
             "spawned hermes worker for user=%s home=%s agent_session=%s resumed_session=%s",
             username,
             home,
             token.session_id,
-            bool(session_id),
+            resumed_session,
         )
         return _WorkerSlot(
             username=username,
@@ -434,6 +502,21 @@ class HermesPool:
         return self._session_ids.get(username, {}).get(
             self._scope_key(scope_kind, project_id, agent_profile, canvas_id)
         )
+
+    def _forget_session(
+        self,
+        username: str,
+        scope_kind: str,
+        project_id: str | None,
+        agent_profile: str = "main",
+        canvas_id: str | None = None,
+    ) -> None:
+        sessions = self._session_ids.get(username)
+        if not sessions:
+            return
+        sessions.pop(self._scope_key(scope_kind, project_id, agent_profile, canvas_id), None)
+        if not sessions:
+            self._session_ids.pop(username, None)
 
     def _remember_session(self, slot: _WorkerSlot) -> None:
         session_id = str(getattr(slot.thread, "id", "") or "").strip()
@@ -491,7 +574,7 @@ class HermesPool:
             reason,
         )
         self._slots[self._slot_key(slot.username, agent_profile)] = replacement
-        await asyncio.shield(self._close_slot(slot))
+        await asyncio.shield(self._close_slot(slot, remember_session=False))
         return replacement
 
     async def _update_scope_locked(
@@ -593,6 +676,10 @@ class HermesPool:
         api_key, _base_url = effective_gateway_credentials()
         if api_key:
             env["NEWAPI_API_KEY"] = api_key
+            # Hermes 0.18 can restore older custom-provider sessions through
+            # its generic OpenAI-compatible path, which still looks for this
+            # alias even though new DramaClaw configs use NEWAPI_API_KEY.
+            env["OPENAI_API_KEY"] = api_key
         return env
 
     async def _evict_lru_if_full(self) -> None:
@@ -604,8 +691,9 @@ class HermesPool:
         await self._close_slot(victim)
         self._slots.pop(self._slot_key(victim.username, victim.agent_profile), None)
 
-    async def _close_slot(self, slot: _WorkerSlot) -> None:
-        self._remember_session(slot)
+    async def _close_slot(self, slot: _WorkerSlot, *, remember_session: bool = True) -> None:
+        if remember_session:
+            self._remember_session(slot)
         try:
             await slot.thread.close()
         except Exception as e:

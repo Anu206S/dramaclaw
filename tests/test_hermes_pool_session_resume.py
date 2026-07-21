@@ -133,7 +133,9 @@ def test_hermes_worker_receives_effective_newapi_key_without_mutating_host_env(
     )
 
     assert env["NEWAPI_API_KEY"] == "worker-only-key"
+    assert env["OPENAI_API_KEY"] == "worker-only-key"
     assert "NEWAPI_API_KEY" not in os.environ
+    assert "OPENAI_API_KEY" not in os.environ
 
 
 def test_hermes_worker_defaults_to_ce_edition(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -349,6 +351,228 @@ async def test_hermes_pool_resumes_current_project_session_when_renewing_token(
     assert calls == [("start", None), ("resume", "session-1")]
     assert fake_auth.created == 2
     assert fake_auth.revoked == ["expired-token", "token-2"]
+
+
+@pytest.mark.asyncio
+async def test_hermes_pool_starts_fresh_session_when_resume_fails(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+    from novelvideo.ports import registry
+
+    calls: list[tuple[str, str | None]] = []
+    fake_auth = _FakeAuthService()
+    fake_cli = tmp_path / "hermes"
+    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
+    fake_cli.chmod(0o755)
+
+    class FakeHermesSdkClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def thread_start(self) -> _FakeThread:
+            calls.append(("start", None))
+            return _FakeThread("fresh-session")
+
+        def thread_resume(self, session_id: str) -> _FakeThread:
+            calls.append(("resume", session_id))
+            raise RuntimeError("session stale-session not found")
+
+    monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
+    registry.register_port("auth_session", fake_auth)
+    monkeypatch.setattr(hermes_pool, "_hermes_cli_path", lambda: fake_cli)
+    monkeypatch.setattr(
+        hermes_pool,
+        "ensure_user_hermes_workspace",
+        lambda _user, profile="director": tmp_path,
+    )
+    monkeypatch.setattr(
+        hermes_pool,
+        "effective_gateway_fingerprint",
+        lambda: "gateway-1",
+    )
+    monkeypatch.setattr(hermes_pool, "HermesSdkClient", FakeHermesSdkClient)
+
+    pool = hermes_pool.HermesPool(max_workers=5)
+    pool._session_ids = {
+        "alice": {
+            ("main", "project", "project_a", None): "stale-session",
+        },
+    }
+
+    async def fake_project_env(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(pool, "_project_env", fake_project_env)
+
+    try:
+        thread = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
+    finally:
+        await pool.close_all()
+
+    assert thread.id == "fresh-session"
+    assert calls == [("resume", "stale-session"), ("start", None)]
+    assert pool._session_ids["alice"][("main", "project", "project_a", None)] == "fresh-session"
+    assert fake_auth.created == 1
+
+
+@pytest.mark.asyncio
+async def test_hermes_pool_surfaces_error_when_resume_and_fresh_start_fail(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+    from novelvideo.ports import registry
+
+    calls: list[tuple[str, str | None]] = []
+    fake_auth = _FakeAuthService()
+    fake_cli = tmp_path / "hermes"
+    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
+    fake_cli.chmod(0o755)
+
+    class FakeHermesSdkClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def thread_start(self) -> _FakeThread:
+            calls.append(("start", None))
+            raise RuntimeError("No LLM provider configured")
+
+        def thread_resume(self, session_id: str) -> _FakeThread:
+            calls.append(("resume", session_id))
+            raise RuntimeError("session stale-session not found")
+
+    monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
+    registry.register_port("auth_session", fake_auth)
+    monkeypatch.setattr(hermes_pool, "_hermes_cli_path", lambda: fake_cli)
+    monkeypatch.setattr(
+        hermes_pool,
+        "ensure_user_hermes_workspace",
+        lambda _user, profile="director": tmp_path,
+    )
+    monkeypatch.setattr(
+        hermes_pool,
+        "effective_gateway_fingerprint",
+        lambda: "gateway-1",
+    )
+    monkeypatch.setattr(hermes_pool, "HermesSdkClient", FakeHermesSdkClient)
+
+    pool = hermes_pool.HermesPool(max_workers=5)
+    pool._session_ids = {
+        "alice": {
+            ("main", "project", "project_a", None): "stale-session",
+        },
+    }
+
+    async def fake_project_env(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(pool, "_project_env", fake_project_env)
+
+    with pytest.raises(RuntimeError, match="No LLM provider configured"):
+        await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
+
+    assert calls == [("resume", "stale-session"), ("start", None)]
+    assert "alice" not in pool._session_ids
+
+
+@pytest.mark.asyncio
+async def test_hermes_pool_does_not_restore_stale_session_after_rotation_fallback(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+    from novelvideo.ports import registry
+
+    calls: list[tuple[str, str | None]] = []
+    fake_auth = _FakeAuthService()
+    fake_cli = tmp_path / "hermes"
+    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
+    fake_cli.chmod(0o755)
+    starts = 0
+
+    class FakeHermesSdkClient:
+        def __init__(self, **_kwargs) -> None:
+            pass
+
+        def thread_start(self) -> _FakeThread:
+            nonlocal starts
+            starts += 1
+            session_id = "stale-session" if starts == 1 else "fresh-session"
+            calls.append(("start", None))
+            return _FakeThread(session_id)
+
+        def thread_resume(self, session_id: str) -> _FakeThread:
+            calls.append(("resume", session_id))
+            raise RuntimeError(f"session {session_id} not found")
+
+    monkeypatch.setattr(registry, "_PORTS", dict(registry._PORTS))
+    registry.register_port("auth_session", fake_auth)
+    monkeypatch.setattr(hermes_pool, "_hermes_cli_path", lambda: fake_cli)
+    monkeypatch.setattr(
+        hermes_pool,
+        "ensure_user_hermes_workspace",
+        lambda _user, profile="director": tmp_path,
+    )
+    monkeypatch.setattr(
+        hermes_pool,
+        "effective_gateway_fingerprint",
+        lambda: "gateway-1",
+    )
+    monkeypatch.setattr(hermes_pool, "HermesSdkClient", FakeHermesSdkClient)
+
+    pool = hermes_pool.HermesPool(max_workers=5)
+
+    async def fake_project_env(*_args, **_kwargs):
+        return {}
+
+    monkeypatch.setattr(pool, "_project_env", fake_project_env)
+
+    try:
+        first = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
+        pool._slots["alice"].token = AgentSessionToken(
+            value="expired-token",
+            session_id="expired-agent-session",
+            user="alice",
+            scopes=("projects:read",),
+            exp=0,
+            worker_id="expired-worker",
+            agent_kind="hermes",
+        )
+        second = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
+    finally:
+        await pool.close_all()
+
+    assert first.id == "stale-session"
+    assert second.id == "fresh-session"
+    assert calls == [("start", None), ("resume", "stale-session"), ("start", None)]
+    assert pool._session_ids["alice"][("main", "project", "project_a", None)] == "fresh-session"
+
+
+@pytest.mark.asyncio
+async def test_hermes_pool_reset_for_user_forgets_cached_session_and_starts_fresh(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool, calls, fake_auth, _gateway = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+
+    try:
+        first = await pool.get_for_user("alice", scope_kind="project", project_id="project_a")
+        pool._remember_session(pool._slots["alice"])
+        second = await pool.reset_for_user(
+            "alice",
+            scope_kind="project",
+            project_id="project_a",
+        )
+    finally:
+        await pool.close_all()
+
+    assert first.id == "session-1"
+    assert second.id == "session-2"
+    assert calls == [("start", None), ("start", None)]
+    assert fake_auth.created == 2
+    assert fake_auth.revoked == ["token-1", "token-2"]
 
 
 @pytest.mark.asyncio

@@ -13,6 +13,7 @@ import {
   Copy,
   Download,
   File,
+  Gauge,
   Image,
   ListTree,
   Maximize2,
@@ -58,6 +59,7 @@ import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { apiCall } from "@/api/client";
 import {
   Dialog,
@@ -1596,6 +1598,93 @@ function isAgentRuntimePart(part: ChatMessagePart): boolean {
     || part.type === "agent_usage";
 }
 
+function messageHasAgentRuntimeActivity(message: ChatMessage): boolean {
+  return Boolean(message.parts?.some(isAgentRuntimePart));
+}
+
+function isVisibleAgentProgressPart(part: ChatMessagePart): boolean {
+  return part.type === "tool_status"
+    || part.type === "agent_plan"
+    || part.type === "agent_thought";
+}
+
+function messageHasVisibleAgentProgressActivity(message: ChatMessage): boolean {
+  return Boolean(message.parts?.some(isVisibleAgentProgressPart));
+}
+
+function assistantOrderedPartHasVisibleContent(part: ChatMessagePart): boolean {
+  if (part.type === "agent_usage") return false;
+  if (part.type === "text") return Boolean(part.text.trim());
+  return true;
+}
+
+function assistantInteractionFlowItemHasVisibleContent(item: AssistantInteractionFlowItem): boolean {
+  if (item.kind === "text") return Boolean(item.text.trim());
+  return true;
+}
+
+type AgentUsageSummary = {
+  entries: Array<[string, string]>;
+  label: string;
+  title: string;
+};
+
+function usageRecordFromPart(part: ChatMessagePart): Record<string, unknown> | null {
+  if (part.type !== "agent_usage") return null;
+  const event = part.event && typeof part.event === "object" && !Array.isArray(part.event)
+    ? part.event as Record<string, unknown>
+    : null;
+  const usage = event?.usage;
+  return usage && typeof usage === "object" && !Array.isArray(usage)
+    ? usage as Record<string, unknown>
+    : null;
+}
+
+function agentUsageSummaryFromMessage(message: ChatMessage): AgentUsageSummary | null {
+  const usage = [...(message.parts ?? [])]
+    .reverse()
+    .map(usageRecordFromPart)
+    .find((record): record is Record<string, unknown> => Boolean(record));
+  if (!usage) return null;
+
+  const entries = Object.entries(usage)
+    .filter(([, value]) => typeof value === "string" || typeof value === "number")
+    .slice(0, 8)
+    .map(([key, value]) => [key, String(value)] as [string, string]);
+  if (entries.length === 0) return null;
+
+  const label = "上下文用量";
+  const titleLines = [
+    "上下文用量",
+    ...entries.map(([key, value]) => `${key}: ${value}`),
+  ];
+
+  return {
+    entries,
+    label,
+    title: titleLines.join("\n"),
+  };
+}
+
+function messageIdForThinkingCanvasContextActivity(
+  messages: ChatMessage[],
+  turnId: string | null | undefined,
+): string | null {
+  if (!turnId) return null;
+  for (const message of [...messages].reverse()) {
+    if (message.role !== "assistant") continue;
+    if (message.turnId !== turnId) continue;
+    if (message.text.trim()) continue;
+    if (!messageHasAgentRuntimeActivity(message)) continue;
+    return message.id;
+  }
+  return null;
+}
+
+export const messageHasAgentRuntimeActivityForTest = messageHasAgentRuntimeActivity;
+export const messageHasVisibleAgentProgressActivityForTest = messageHasVisibleAgentProgressActivity;
+export const messageIdForThinkingCanvasContextActivityForTest = messageIdForThinkingCanvasContextActivity;
+
 function compareRuntimeParts(left: ChatMessagePart, right: ChatMessagePart): number {
   const leftSeq = typeof left.seq === "number" ? left.seq : Number.MAX_SAFE_INTEGER;
   const rightSeq = typeof right.seq === "number" ? right.seq : Number.MAX_SAFE_INTEGER;
@@ -1693,7 +1782,9 @@ function AgentThoughtRuntimeItem({ part }: { part: AgentThoughtRuntimePart }) {
 }
 
 function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
-  const runtimeParts = [...parts].sort(compareRuntimeParts);
+  const runtimeParts = [...parts]
+    .filter((part) => part.type !== "agent_usage")
+    .sort(compareRuntimeParts);
   if (runtimeParts.length === 0) return null;
   return (
     <div className="w-fit max-w-full space-y-1 text-xs text-muted-foreground">
@@ -1778,24 +1869,6 @@ function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
         }
         if (part.type === "agent_thought") {
           return <AgentThoughtRuntimeItem key={part.id} part={part as AgentThoughtRuntimePart} />;
-        }
-        if (part.type === "agent_usage") {
-          const usage = part.event && typeof part.event === "object" && !Array.isArray(part.event)
-            ? (part.event as Record<string, unknown>).usage
-            : null;
-          if (!usage || typeof usage !== "object" || Array.isArray(usage)) return null;
-          const values = Object.entries(usage as Record<string, unknown>)
-            .filter(([, value]) => typeof value === "string" || typeof value === "number")
-            .slice(0, 4);
-          if (values.length === 0) return null;
-          return (
-            <details key={part.id} className="py-0.5 text-[11px] text-muted-foreground/70">
-              <summary className="cursor-pointer list-none [&::-webkit-details-marker]:hidden">上下文用量</summary>
-              <div className="mt-1 ml-1.5 flex flex-wrap gap-x-3 gap-y-1 border-l border-white/10 pl-4">
-                {values.map(([key, value]) => <span key={key}>{key}: {String(value)}</span>)}
-              </div>
-            </details>
-          );
         }
         return null;
       })}
@@ -2964,6 +3037,25 @@ function shouldHideSkillStudioStatusOnlyMessage(message: ChatMessage, submittedT
 }
 
 export const shouldHideSkillStudioStatusOnlyMessageForTest = shouldHideSkillStudioStatusOnlyMessage;
+
+function isRecoveredUiEventsAssistantMessage(message: ChatMessage): boolean {
+  return message.role === "assistant" && message.id.startsWith("ui-events:");
+}
+
+function shouldHideOrphanRecoveredUiEventsMessage(message: ChatMessage, userTurnIds: Set<string>): boolean {
+  if (!isRecoveredUiEventsAssistantMessage(message)) return false;
+  return !message.turnId || !userTurnIds.has(message.turnId);
+}
+
+function isUsageOnlyRuntimeMetadataMessage(message: ChatMessage): boolean {
+  if (message.role !== "assistant" || message.text.trim()) return false;
+  if (message.attachments?.some(shouldRenderAttachmentChip)) return false;
+  if (message.uiEvents && message.uiEvents.length > 0) return false;
+  const parts = message.parts ?? [];
+  return parts.length > 0 && parts.every((part) =>
+    part.type === "agent_usage" || (part.type === "text" && !part.text.trim()),
+  );
+}
 
 function visibleCanvasContextActivitiesForMessage(
   message: ChatMessage,
@@ -5672,6 +5764,9 @@ const MessageBubble = memo(function MessageBubble({
   const assistantOrderedParts = collapseRepeatedCanvasStatusParts(assistantOrderedPartsRaw);
   const assistantPartGroups = groupAssistantOrderedParts(assistantOrderedParts);
   const assistantPrefersWideLayout = assistantPartsPreferWideLayout(assistantOrderedParts);
+  const assistantUsageSummary = !isUser && !isTool
+    ? agentUsageSummaryFromMessage(message)
+    : null;
   const visibleCanvasContextActivities = !isUser && !isTool
     ? visibleCanvasContextActivitiesForMessage(message, canvasContextActivities)
     : canvasContextActivities;
@@ -5711,6 +5806,27 @@ const MessageBubble = memo(function MessageBubble({
       visibleCanvasCommandFeedbacks,
     ],
   );
+  const hasVisibleAssistantAttachments = !isUser
+    && !isTool
+    && (message.attachments?.some(shouldRenderAttachmentChip) ?? false);
+  const hasRenderableAssistantContent = !isUser && !isTool && (
+    shouldWaitForStructuredRender
+    || Boolean(displayText.trim())
+    || visibleBlocks.length > 0
+    || hasVisibleAssistantAttachments
+    || assistantOrderedParts.some(assistantOrderedPartHasVisibleContent)
+    || canvasCommandFlowItems.length > 0
+    || assistantInteractionFlowItems.some(assistantInteractionFlowItemHasVisibleContent)
+    || visibleCanvasContextActivities.length > 0
+    || visibleCanvasCommandFeedbacks.length > 0
+    || canvasCommandApprovals.length > 0
+    || waitingForUserReply
+  );
+
+  if (!isUser && !isTool && !hasRenderableAssistantContent) {
+    return null;
+  }
+
   const copyText = async () => {
     const ok = await writeClipboardText(message.text);
     if (ok) toast.success("已复制");
@@ -5724,11 +5840,43 @@ const MessageBubble = memo(function MessageBubble({
   const actions = (
     <div
       className={cn(
-        isUser
-          ? "pointer-events-none absolute bottom-2 right-0 z-10 flex items-center gap-0.5 whitespace-nowrap rounded-full border border-border/70 bg-background/85 px-1 py-0.5 text-foreground/75 opacity-0 shadow-sm backdrop-blur transition-opacity after:absolute after:-top-2 after:left-0 after:h-2 after:w-full after:content-[''] group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100"
-          : "mt-2 flex items-center gap-1 text-muted-foreground/70",
+        "pointer-events-none absolute bottom-2 z-10 flex items-center gap-0.5 whitespace-nowrap rounded-full border border-border/70 bg-background/85 px-1 py-0.5 text-foreground/75 opacity-0 shadow-sm backdrop-blur transition-opacity after:absolute after:-top-2 after:left-0 after:h-2 after:w-full after:content-[''] group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100",
+        isUser ? "right-0" : "left-0",
       )}
     >
+      {assistantUsageSummary && (
+        <TooltipProvider delay={80}>
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <button
+                  type="button"
+                  className="flex size-6 items-center justify-center rounded-full text-muted-foreground/80 hover:bg-white/[0.06] hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/45"
+                  aria-label="上下文用量"
+                  title={assistantUsageSummary.title}
+                />
+              }
+            >
+              <Gauge className="size-3.5" />
+            </TooltipTrigger>
+            <TooltipContent
+              side="top"
+              align="start"
+              showArrow={false}
+              className="max-w-[18rem] flex-col items-start gap-1 border border-white/10 bg-background/95 text-foreground shadow-none"
+            >
+              <div className="text-xs font-medium">上下文用量</div>
+              <div className="space-y-0.5 text-[11px] leading-4 text-muted-foreground">
+                {assistantUsageSummary.entries.map(([key, value]) => (
+                  <div key={key}>
+                    <span>{key}</span>: <span>{value}</span>
+                  </div>
+                ))}
+              </div>
+            </TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
+      )}
       <Button
         variant="ghost"
         size="icon-xs"
@@ -5842,89 +5990,41 @@ const MessageBubble = memo(function MessageBubble({
         />
       )}
       <div className={cn("flex min-w-0 flex-1", isUser ? "justify-end" : "justify-start")}>
-        <article
-          className={cn(
-            "group relative text-sm leading-6 shadow-none",
-            (visibleBlocks.length > 0 || assistantPrefersWideLayout) && !isUser && !isTool
-              ? "w-full min-w-0 overflow-visible"
-              : isUser
-                ? "w-fit overflow-visible"
-                : "w-fit overflow-hidden",
-            isTool
-              ? "max-w-[86%] rounded-[14px] border border-amber-500/20 bg-amber-500/8 px-4 pb-3 pt-2 text-card-foreground"
-              : isUser
-                ? "max-w-[86%] rounded-[14px] bg-muted px-4 pb-3 pt-2 text-foreground"
-                : "max-w-full rounded-[14px] border border-white/[0.08] bg-transparent px-4 pb-3 pt-2 text-foreground",
-          )}
-        >
         <div
           className={cn(
-            "pointer-events-none absolute right-1.5 z-10 flex items-center gap-0.5 rounded-full border border-border/70 bg-background/90 px-1 py-0.5 opacity-0 shadow-sm backdrop-blur transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100",
-            isUser ? "top-full mt-1" : "top-1.5 translate-y-0.5",
+            "group/message-actions relative z-0 transition-[padding] duration-150 hover:z-30 hover:pb-10 focus-within:z-30 focus-within:pb-10",
+            (visibleBlocks.length > 0 || assistantPrefersWideLayout) && !isTool
+              ? "w-full min-w-0"
+              : "w-fit max-w-full",
           )}
         >
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="opacity-70 hover:opacity-100"
-            onClick={copyText}
-            aria-label="Copy"
+          <article
+            className={cn(
+              "group relative text-sm leading-6 shadow-none",
+              (visibleBlocks.length > 0 || assistantPrefersWideLayout) && !isTool
+                ? "w-full min-w-0 overflow-visible"
+                : "w-fit overflow-hidden",
+              isTool
+                ? "max-w-[86%] rounded-[14px] border border-amber-500/20 bg-amber-500/8 px-4 pb-3 pt-2 text-card-foreground"
+                : "max-w-full rounded-[14px] border border-white/[0.08] bg-transparent px-4 pb-3 pt-2 text-foreground",
+            )}
           >
-            <Copy className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="opacity-70 hover:opacity-100"
-            onClick={speak}
-            aria-label="Speak"
-          >
-            <Volume2 className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="opacity-70 hover:opacity-100"
-            onClick={() => onOpenDetail(message)}
-            aria-label="Details"
-          >
-            <Maximize2 className="size-3" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="opacity-70 hover:opacity-100"
-            onClick={() => onTogglePin(message.id)}
-            aria-label={pinned ? "Unpin" : "Pin"}
-          >
-            {pinned ? <PinOff className="size-3" /> : <Pin className="size-3" />}
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon-xs"
-            className="opacity-70 hover:opacity-100"
-            onClick={() => onDelete(message.id)}
-            aria-label="Delete"
-          >
-            <X className="size-3" />
-          </Button>
-        </div>
-        {(isTool || (message.displayName && !isUser)) && (
-          <div className="mb-1 flex items-center gap-2 pr-28">
-            {isTool ? (
-              <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[10px] uppercase">
-                {isHistoricalTool ? t("aiAssistant.historyTool") : t("aiAssistant.tool")}
-              </Badge>
-            ) : message.displayName && !isUser ? (
-              <div className="text-[11px] font-medium text-muted-foreground">
-                {message.displayName}
-              </div>
-            ) : null}
-          </div>
-        )}
-        <AttachmentList attachments={message.attachments} />
-        {shouldWaitForStructuredRender ? (
-          <div className="flex items-center gap-2 py-1 text-sm text-muted-foreground" aria-live="polite">
+          {(isTool || message.displayName) && (
+            <div className="mb-1 flex items-center gap-2">
+              {isTool ? (
+                <Badge variant="outline" className="h-5 rounded-md px-1.5 text-[10px] uppercase">
+                  {isHistoricalTool ? t("aiAssistant.historyTool") : t("aiAssistant.tool")}
+                </Badge>
+              ) : message.displayName ? (
+                <div className="text-[11px] font-medium text-muted-foreground">
+                  {message.displayName}
+                </div>
+              ) : null}
+            </div>
+          )}
+          <AttachmentList attachments={message.attachments} />
+          {shouldWaitForStructuredRender ? (
+            <div className="flex items-center gap-2 py-1 text-sm text-muted-foreground" aria-live="polite">
             <span>{t("aiAssistant.waitingStructuredRender")}</span>
             <DotsIndicator />
           </div>
@@ -6093,7 +6193,9 @@ const MessageBubble = memo(function MessageBubble({
             <StructuredRenderer blocks={visibleBlocks} onOpenMedia={onOpenMedia} />
           </>
         )}
-        </article>
+          </article>
+          {actions}
+        </div>
       </div>
       {isUser && (
         <ChatAvatarFrame
@@ -10044,8 +10146,16 @@ export function SuperChatPanel({
         .map((message) => message.turnId)
         .filter((turnId): turnId is string => Boolean(turnId)),
     );
+    const userTurnIds = new Set(
+      activeMessages
+        .filter((message) => message.role === "user")
+        .map((message) => message.turnId)
+        .filter((turnId): turnId is string => Boolean(turnId)),
+    );
     const messages = activeMessages.filter((message) =>
-      !shouldHideSkillStudioStatusOnlyMessage(message, submittedSkillStudioTurnIds),
+      !shouldHideSkillStudioStatusOnlyMessage(message, submittedSkillStudioTurnIds)
+      && !shouldHideOrphanRecoveredUiEventsMessage(message, userTurnIds)
+      && !isUsageOnlyRuntimeMetadataMessage(message),
     );
     return searchQuery
       ? messages.filter((message) => message.text.toLowerCase().includes(searchQuery))
@@ -10199,17 +10309,13 @@ export function SuperChatPanel({
         messageHasSkillStudioUiEvent(message),
     );
     if (hasSkillStudioStatus) return null;
-    const hasAgentRuntimeActivity = activeMessages.some(
+    const hasVisibleAgentProgressActivity = activeMessages.some(
       (message) =>
         message.role === "assistant"
         && message.turnId === turnId
-        && message.parts?.some((part) =>
-          part.type === "agent_plan"
-          || part.type === "agent_thought"
-          || part.type === "tool_status"
-        ),
+        && messageHasVisibleAgentProgressActivity(message),
     );
-    if (hasAgentRuntimeActivity) return null;
+    if (hasVisibleAgentProgressActivity) return null;
     const hasContextActivity = (canvasContextActivitiesByMessageId[turnId]?.length ?? 0) > 0;
     const hasFeedback =
       (canvasCommandFeedbackByMessageId[turnId]?.length ?? 0) > 0 ||
@@ -10229,6 +10335,13 @@ export function SuperChatPanel({
     persistedCanvasCommandFeedbackByMessageId,
     variant,
   ]);
+  const thinkingCanvasContextMessageId = useMemo(
+    () => messageIdForThinkingCanvasContextActivity(
+      visibleMessages,
+      thinkingCanvasContextActivity?.turnId,
+    ),
+    [thinkingCanvasContextActivity, visibleMessages],
+  );
   const showWaitingIndicator =
     chat.busy
     && !chat.streamText.trim()
@@ -11372,6 +11485,9 @@ export function SuperChatPanel({
                         canvasContextActivitiesByMessageId[message.id],
                         message.turnId ? canvasContextActivitiesByMessageId[message.turnId] : undefined,
                         message.turnId ? canvasContextActivitiesByMessageId[`assistant-${message.turnId}`] : undefined,
+                        thinkingCanvasContextMessageId === message.id && thinkingCanvasContextActivity
+                          ? [thinkingCanvasContextActivity]
+                          : undefined,
                       )}
                       executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
                       onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
@@ -11453,7 +11569,7 @@ export function SuperChatPanel({
                     onPreserveScrollAnchor={preserveScrollAnchor}
                   />
                 ))}
-                {thinkingCanvasContextActivity && (
+                {thinkingCanvasContextActivity && !thinkingCanvasContextMessageId && (
                   <MessageBubble
                     message={{
                       id: thinkingCanvasContextActivity.key,

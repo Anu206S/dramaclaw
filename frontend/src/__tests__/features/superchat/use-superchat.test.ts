@@ -64,6 +64,9 @@ import {
   skillStudioQuestionEventIdentityForTest,
   messageIsWaitingForUserReplyForTest,
   messageHasSkillStudioUiEventForTest,
+  messageHasAgentRuntimeActivityForTest,
+  messageHasVisibleAgentProgressActivityForTest,
+  messageIdForThinkingCanvasContextActivityForTest,
   shouldHideSkillStudioStatusOnlyMessageForTest,
   shouldShowComposerWaitingIndicator,
   skillStudioEvaluationDraftFieldsForTest,
@@ -71,7 +74,7 @@ import {
   visibleCanvasContextActivitiesForMessageForTest,
   visibleSkillStudioEventsForMessageForTest,
 } from "@/features/superchat/superchat-panel";
-import type { ChatMessage, ChatRole } from "@/features/superchat/types";
+import type { ChatMessage, ChatMessagePart, ChatRole } from "@/features/superchat/types";
 
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -3586,7 +3589,10 @@ describe("canvas command bridge events", () => {
 
     await waitFor(() => {
       const assistant = hook.result.current.messages.find((item) => item.turnId === "turn-1");
-      const thoughtParts = (assistant?.parts ?? []).filter((part) => part.type === "agent_thought");
+      const thoughtParts = (assistant?.parts ?? []).filter((
+        part,
+      ): part is ChatMessagePart & { type: "agent_thought"; event: unknown } =>
+        part.type === "agent_thought");
       expect(thoughtParts).toHaveLength(1);
       expect(thoughtParts[0]?.event).toMatchObject({
         status: "running",
@@ -3597,6 +3603,39 @@ describe("canvas command bridge events", () => {
 });
 
 describe("tool status parts", () => {
+  it("attaches freezone thinking state to the active runtime-only assistant message", () => {
+    const messages: ChatMessage[] = [
+      {
+        id: "assistant-turn-a",
+        role: "assistant",
+        text: "",
+        timestamp: 1,
+        turnId: "turn-a",
+        parts: [
+          { id: "usage", type: "agent_usage", event: { usage: { used: 10 } } },
+        ],
+      },
+    ];
+
+    expect(messageIdForThinkingCanvasContextActivityForTest(messages, "turn-a")).toBe("assistant-turn-a");
+  });
+
+  it("treats usage-only assistant messages as runtime activity", () => {
+    const message = {
+      id: "assistant-turn-a",
+      role: "assistant",
+      text: "",
+      timestamp: 1,
+      turnId: "turn-a",
+      parts: [
+        { id: "usage", type: "agent_usage", event: { usage: { used: 10 } } },
+      ],
+    } satisfies ChatMessage;
+
+    expect(messageHasAgentRuntimeActivityForTest(message)).toBe(true);
+    expect(messageHasVisibleAgentProgressActivityForTest(message)).toBe(false);
+  });
+
   it("does not force assistant messages wide for runtime-only status parts", () => {
     expect(assistantPartsPreferWideLayoutForTest([
       { id: "usage", type: "agent_usage", event: { usage: { used: 10 } } },
