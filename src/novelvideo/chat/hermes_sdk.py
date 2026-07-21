@@ -84,6 +84,32 @@ DRAMACLAW_WRITE_FAILED_STOP_MESSAGE = (
     "如果是配音缺少声线，可以到「虾塘」上传或录制缺失声线后再继续。"
 )
 
+
+class HermesSessionUnavailableError(RuntimeError):
+    """Raised when Hermes can no longer load or prompt a cached ACP session."""
+
+
+def _is_session_unavailable_error(error: Any) -> bool:
+    if not error:
+        return False
+    if isinstance(error, dict):
+        text = " ".join(
+            str(value)
+            for value in (
+                error.get("message"),
+                error.get("code"),
+                error.get("data"),
+            )
+            if value is not None
+        )
+    else:
+        text = str(error)
+    normalized = text.lower()
+    return (
+        "session" in normalized
+        and "not found" in normalized
+    ) or "failed to recreate agent for acp session" in normalized
+
 _DRAMACLAW_WRITE_TOOLS = {
     "dramaclaw_post",
     "dramaclaw_patch",
@@ -700,6 +726,10 @@ class HermesSdkThread:
                         return
                     err = msg.get("error")
                     if err:
+                        if _is_session_unavailable_error(err):
+                            raise HermesSessionUnavailableError(
+                                str(err.get("message", err)) if isinstance(err, dict) else str(err)
+                            )
                         yield ChatBackendEvent(
                             type="complete", thread_id=self.id, turn_id=turn_id,
                             text=(
@@ -985,4 +1015,4 @@ class HermesSdkThread:
         return self._closed
 
 
-__all__ = ["HermesSdkClient", "HermesSdkThread"]
+__all__ = ["HermesSdkClient", "HermesSdkThread", "HermesSessionUnavailableError"]

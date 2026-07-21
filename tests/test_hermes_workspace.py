@@ -435,6 +435,20 @@ def test_hermes_detects_content_filter_error_text():
     assert hermes_sdk._has_content_filter_signal(payload)
 
 
+def test_hermes_detects_nested_session_unavailable_error_payload():
+    payload = {
+        "code": -32000,
+        "message": "prompt failed",
+        "data": {
+            "details": [
+                {"message": "prompt: session 5e14b825-b50c-4fed-be9e-aaa2a3882b7e not found"},
+            ],
+        },
+    }
+
+    assert hermes_sdk._is_session_unavailable_error(payload)
+
+
 def test_hermes_stops_mainline_writes_but_not_freezone_canvas_writes():
     assert hermes_sdk._should_stop_after_write_tool(
         "dramaclaw_generate_script",
@@ -580,8 +594,30 @@ def test_hermes_uses_settings_db_newapi_before_root_env(
     assert _dramaclaw_provider(parsed)["base_url"] == "http://custom-gateway/v1"
     assert _dramaclaw_provider(parsed)["key_env"] == "NEWAPI_API_KEY"
     assert "custom-key" not in (home / "config.yaml").read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY" not in env_text
+    assert "NEWAPI_API_KEY=custom-key" in env_text
+    assert "OPENAI_API_KEY=custom-key" in env_text
     assert "root-key" not in env_text
+
+
+def test_hermes_env_syncs_current_newapi_key_and_replaces_stale_openai_key(
+    isolated_workspace, repo_skills, repo_plugins
+):
+    save_official_newapi_key(api_key="current-newapi-key", activate=True)
+    home = isolated_workspace / "state" / "admin" / ".hermes-freezone"
+    home.mkdir(parents=True)
+    (home / ".env").write_text(
+        "OPENAI_API_KEY=stale-test-key\n"
+        "UNRELATED_SECRET=keep-me\n",
+        encoding="utf-8",
+    )
+
+    hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    env_text = (home / ".env").read_text(encoding="utf-8")
+
+    assert "NEWAPI_API_KEY=current-newapi-key" in env_text
+    assert "OPENAI_API_KEY=current-newapi-key" in env_text
+    assert "OPENAI_API_KEY=stale-test-key" not in env_text
+    assert "UNRELATED_SECRET=keep-me" in env_text
 
 
 def test_idempotent_rerun(isolated_workspace, repo_skills, repo_plugins):
@@ -614,7 +650,8 @@ def test_fresh_workspace_does_not_persist_newapi_key(
     assert "api_key" not in config["model"]
     assert _dramaclaw_provider(config)["key_env"] == "NEWAPI_API_KEY"
     assert "test-newapi-key" not in (home / "config.yaml").read_text(encoding="utf-8")
-    assert "OPENAI_API_KEY" not in env_text
+    assert "NEWAPI_API_KEY=test-newapi-key" in env_text
+    assert "OPENAI_API_KEY=test-newapi-key" in env_text
 
 
 def test_existing_inline_key_is_removed_automatically(
@@ -651,7 +688,7 @@ custom_providers:
     assert _dramaclaw_provider(config)["key_env"] == "NEWAPI_API_KEY"
 
 
-def test_existing_env_is_preserved(
+def test_existing_openai_env_is_synced_to_current_newapi_key(
     isolated_workspace, repo_skills, repo_plugins, monkeypatch
 ):
     (isolated_workspace / ".env").write_text(
@@ -659,6 +696,7 @@ def test_existing_env_is_preserved(
         encoding="utf-8",
     )
     monkeypatch.setenv("NEWAPI_API_KEY", "root-key")
+    save_official_newapi_key(api_key="root-key", activate=True)
     home = isolated_workspace / "state" / "admin" / ".hermes"
     home.mkdir(parents=True)
     (home / ".env").write_text("OPENAI_API_KEY=user-key\n", encoding="utf-8")
@@ -666,7 +704,8 @@ def test_existing_env_is_preserved(
     hw.ensure_user_hermes_workspace("admin")
     env_text = (home / ".env").read_text(encoding="utf-8")
 
-    assert "OPENAI_API_KEY=user-key" in env_text
+    assert "OPENAI_API_KEY=root-key" in env_text
+    assert "OPENAI_API_KEY=user-key" not in env_text
 
 
 def test_legacy_config_gets_default_plugin_block(isolated_workspace, repo_skills, repo_plugins):

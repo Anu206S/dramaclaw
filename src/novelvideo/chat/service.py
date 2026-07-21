@@ -3934,6 +3934,104 @@ async def _stream_assistant_reply_hermes(
     seen_display_calls: set[str] = set()
     seen_tool_chat_errors: set[str] = set()
 
+    async def hermes_events_with_session_retry():
+        nonlocal thread
+        from novelvideo.chat.hermes_sdk import (
+            HermesSessionUnavailableError,
+            _is_session_unavailable_error,
+        )
+
+        retried = False
+        while True:
+            saw_complete = False
+            restart_stream = False
+            try:
+                async for stream_event in thread.stream(agent_prompt, current_project=project or None):
+                    if stream_event.type == "complete":
+                        saw_complete = True
+                    if (
+                        not retried
+                        and stream_event.type == "complete"
+                        and not assistant_text.strip()
+                        and not tool_text.strip()
+                        and _is_session_unavailable_error(stream_event.text)
+                    ):
+                        logger.warning(
+                            "hermes prompt completed with unavailable cached session; resetting and retrying once "
+                            "user=%s project=%s agent_profile=%s canvas=%s: %s",
+                            username,
+                            project or None,
+                            agent_profile,
+                            canvas_id,
+                            stream_event.text,
+                        )
+                        thread = await _hermes_pool.reset_for_user(
+                            username,
+                            agent_profile=agent_profile,
+                            tool_mode=tool_mode,
+                            scope_kind="project" if project else "home",
+                            project_id=project or None,
+                            surface=surface,
+                            canvas_id=canvas_id,
+                        )
+                        retried = True
+                        restart_stream = True
+                        break
+                    yield stream_event
+                if restart_stream:
+                    continue
+                if (
+                    not retried
+                    and not saw_complete
+                    and not assistant_text.strip()
+                    and not tool_text.strip()
+                ):
+                    logger.warning(
+                        "hermes stream ended before completion; resetting and retrying once "
+                        "user=%s project=%s agent_profile=%s canvas=%s",
+                        username,
+                        project or None,
+                        agent_profile,
+                        canvas_id,
+                    )
+                    thread = await _hermes_pool.reset_for_user(
+                        username,
+                        agent_profile=agent_profile,
+                        tool_mode=tool_mode,
+                        scope_kind="project" if project else "home",
+                        project_id=project or None,
+                        surface=surface,
+                        canvas_id=canvas_id,
+                    )
+                    retried = True
+                    continue
+                else:
+                    return
+            except HermesSessionUnavailableError as exc:
+                if retried or assistant_text.strip() or tool_text.strip():
+                    raise
+                logger.warning(
+                    "hermes cached session unavailable; resetting and retrying once "
+                    "user=%s project=%s agent_profile=%s canvas=%s: %s",
+                    username,
+                    project or None,
+                    agent_profile,
+                    canvas_id,
+                    exc,
+                )
+                thread = await _hermes_pool.reset_for_user(
+                    username,
+                    agent_profile=agent_profile,
+                    tool_mode=tool_mode,
+                    scope_kind="project" if project else "home",
+                    project_id=project or None,
+                    surface=surface,
+                    canvas_id=canvas_id,
+                )
+                retried = True
+                continue
+            return
+
     def persist_partial_reply() -> dict[str, Any] | None:
         nonlocal persisted_message, assistant_text, tool_text
         if persisted_message is not None:
@@ -3991,7 +4089,7 @@ async def _stream_assistant_reply_hermes(
         return persisted_message
 
     try:
-        async for event in thread.stream(agent_prompt, current_project=project or None):
+        async for event in hermes_events_with_session_retry():
             if event.type == "thread_started":
                 await _emit_chat_event_best_effort(
                     on_event,
