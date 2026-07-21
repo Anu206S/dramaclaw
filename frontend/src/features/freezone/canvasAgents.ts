@@ -71,6 +71,18 @@ function titleFromUserMessage(text: string): string {
     : compact;
 }
 
+function createAgentId(agents: FreezoneCanvasAgent[], now: number): string {
+  const baseId = `agent-${Math.max(0, Math.trunc(now))}`;
+  if (!agents.some((agent) => agent.id === baseId)) return baseId;
+  let index = 2;
+  let id = `${baseId}-${index}`;
+  while (agents.some((agent) => agent.id === id)) {
+    index += 1;
+    id = `${baseId}-${index}`;
+  }
+  return id;
+}
+
 function normalizeState(value: unknown, now = Date.now()): FreezoneCanvasAgentState {
   const fallback = defaultAgent(now);
   if (!value || typeof value !== "object" || Array.isArray(value)) {
@@ -240,12 +252,7 @@ export function addFreezoneCanvasAgent(
   now = Date.now(),
 ): { state: FreezoneCanvasAgentState; agent: FreezoneCanvasAgent } {
   const state = readState(projectId, canvasId, now);
-  let index = state.agents.length + 1;
-  let id = `agent-${index}`;
-  while (state.agents.some((agent) => agent.id === id)) {
-    index += 1;
-    id = `agent-${index}`;
-  }
+  const id = createAgentId(state.agents, now);
   const agent: FreezoneCanvasAgent = {
     id,
     name: DEFAULT_FREEZONE_AGENT_NAME,
