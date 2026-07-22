@@ -143,6 +143,31 @@ _DEFAULT_ENV_TEMPLATE = """# DramaClaw-managed Hermes workspace.
 # secret scoping resolves the same gateway key as the API process.
 """
 
+_MANAGED_MODEL_ENV_KEYS = {
+    "NEWAPI_API_KEY",
+    "NEWAPI_BASE_URL",
+    "OPENAI_API_KEY",
+    "OPENAI_API_BASE",
+    "OPENAI_BASE_URL",
+}
+
+
+def _remove_managed_model_env_values(path: Path) -> None:
+    """Remove stale model credentials that can override the worker environment."""
+    try:
+        original = path.read_text(encoding="utf-8")
+    except OSError:
+        return
+    kept: list[str] = []
+    for line in original.splitlines(keepends=True):
+        match = re.match(r"^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=", line)
+        if match and match.group(1) in _MANAGED_MODEL_ENV_KEYS:
+            continue
+        kept.append(line)
+    updated = "".join(kept)
+    if updated != original:
+        path.write_text(updated, encoding="utf-8")
+
 
 def _state_root() -> Path:
     configured = os.environ.get("NOVELVIDEO_STATE_DIR", "").strip()
@@ -385,6 +410,7 @@ def ensure_user_hermes_workspace(username: str, *, profile: str = "director") ->
             env_file.chmod(0o600)
         except OSError:
             pass
+    _remove_managed_model_env_values(env_file)
     _ensure_gateway_env_file(env_file)
 
     return home

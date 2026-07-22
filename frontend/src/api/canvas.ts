@@ -75,6 +75,78 @@ export interface FreezoneCanvasSaveResult {
   backup_status?: CanvasBackupStatus;
 }
 
+export type WorkflowRunStatus = "running" | "completed" | "failed" | "cancelled" | "interrupted";
+export type WorkflowRunActionStatus =
+  | "pending"
+  | "running"
+  | "completed"
+  | "failed"
+  | "blocked"
+  | "skipped";
+
+export interface FreezoneWorkflowRunAction {
+  node_id: string;
+  action: string;
+  status: WorkflowRunActionStatus;
+  updated_at?: string | null;
+  error?: string | null;
+}
+
+export interface FreezoneWorkflowRun {
+  schema_version: "freezone_workflow_run.v1";
+  run_id: string;
+  project_id: string;
+  canvas_id: string;
+  status: WorkflowRunStatus;
+  resumable: boolean;
+  created_at: string;
+  started_at: string;
+  updated_at: string;
+  completed_at?: string | null;
+  actions: FreezoneWorkflowRunAction[];
+  metadata?: Record<string, unknown>;
+}
+
+export async function createFreezoneWorkflowRun(
+  projectId: string,
+  canvasId: string,
+  actions: Array<{ node_id: string; action: string }>,
+): Promise<FreezoneWorkflowRun> {
+  return await apiCall<FreezoneWorkflowRun>(
+    `projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}/workflow-runs`,
+    { method: "POST", json: { actions } },
+  );
+}
+
+export async function updateFreezoneWorkflowRun(
+  projectId: string,
+  canvasId: string,
+  runId: string,
+  payload: {
+    status?: WorkflowRunStatus;
+    action_updates?: Array<{
+      node_id: string;
+      action: string;
+      status: WorkflowRunActionStatus;
+      error?: string | null;
+    }>;
+  },
+): Promise<FreezoneWorkflowRun> {
+  return await apiCall<FreezoneWorkflowRun>(
+    `projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}/workflow-runs/${encodeURIComponent(runId)}`,
+    { method: "PATCH", json: payload },
+  );
+}
+
+export async function listFreezoneWorkflowRuns(
+  projectId: string,
+  canvasId: string,
+): Promise<{ runs: FreezoneWorkflowRun[] }> {
+  return await apiCall<{ runs: FreezoneWorkflowRun[] }>(
+    `projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}/workflow-runs`,
+  );
+}
+
 /**
  * Mint an idempotency token for a single canvas save attempt. Callers should
  * reuse the same id across retries of the same logical save (network blip,

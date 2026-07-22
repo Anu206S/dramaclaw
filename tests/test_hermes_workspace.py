@@ -474,6 +474,64 @@ def test_hermes_allows_more_freezone_tool_calls():
     assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe") == 80
 
 
+def test_hermes_tool_call_guard_counts_update_only_calls():
+    guard = hermes_sdk._TurnToolCallGuard()
+
+    for index in range(3):
+        result = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_get_node_detail",
+                call_id=f"call-{index}",
+                input={"node_id": f"node-{index}"},
+                status="completed",
+            )
+        )
+        assert result is None
+
+    assert guard.total == 3
+
+
+def test_hermes_tool_call_guard_stops_repeated_identical_node_reads():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+
+    for index in range(hermes_sdk.REPEATED_READ_TOOL_CALL_LIMIT + 1):
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_get_node_detail",
+                call_id=f"call-{index}",
+                input={"node_id": "node-a"},
+                status="completed",
+            )
+        )
+
+    assert stop_message is not None
+    assert "重复读取同一个画布节点" in stop_message
+
+
+def test_hermes_tool_call_guard_does_not_double_count_start_and_update():
+    guard = hermes_sdk._TurnToolCallGuard()
+    started = hermes_sdk.ChatBackendEvent(
+        type="tool_started",
+        name="freezone_get_node_detail",
+        call_id="call-a",
+        input={"node_id": "node-a"},
+    )
+    updated = hermes_sdk.ChatBackendEvent(
+        type="tool_updated",
+        name="freezone_get_node_detail",
+        call_id="call-a",
+        input={"node_id": "node-a"},
+        status="completed",
+    )
+
+    assert guard.observe(started) is None
+    assert guard.observe(updated) is None
+    assert guard.total == 1
+
+
 def test_hermes_freezone_tool_limit_message_uses_freezone_context():
     message = hermes_sdk._tool_call_limit_stop_message("freezone_put_agent_catalog_recipe")
 
@@ -699,13 +757,19 @@ def test_existing_openai_env_is_synced_to_current_newapi_key(
     save_official_newapi_key(api_key="root-key", activate=True)
     home = isolated_workspace / "state" / "admin" / ".hermes"
     home.mkdir(parents=True)
-    (home / ".env").write_text("OPENAI_API_KEY=user-key\n", encoding="utf-8")
+    (home / ".env").write_text(
+        "OPENAI_API_KEY=user-key\nOPENAI_BASE_URL=http://old-gateway/v1\n"
+        "OPENROUTER_API_KEY=plugin-key\n",
+        encoding="utf-8",
+    )
 
     hw.ensure_user_hermes_workspace("admin")
     env_text = (home / ".env").read_text(encoding="utf-8")
 
     assert "OPENAI_API_KEY=root-key" in env_text
     assert "OPENAI_API_KEY=user-key" not in env_text
+    assert "OPENAI_BASE_URL" not in env_text
+    assert "OPENROUTER_API_KEY=plugin-key" in env_text
 
 
 def test_legacy_config_gets_default_plugin_block(isolated_workspace, repo_skills, repo_plugins):

@@ -1550,6 +1550,86 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     await waitFor(() => expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument());
   });
 
+  it("retries a timed-out canvas command from its persisted result", async () => {
+    const envelopes = [
+      {
+        schema_version: "canvas_chat_commands.v1" as const,
+        canvas_id: "canvas-a",
+        commands: [
+          {
+            type: "create_node" as const,
+            node_type: "imageGenNode" as const,
+            data: { title: "恢复创建的图片节点", prompt: "test image" },
+          },
+        ],
+      },
+    ];
+    superChatMocks.messages = [
+      {
+        id: "assistant-a",
+        role: "assistant",
+        text: "这轮操作没有收到虾导的有效回复，请稍后重试。",
+        displayName: "Agent",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+        raw: {
+          ui_events: [
+            {
+              id: 2,
+              type: "canvas_command_result",
+              turn_id: "turn-a",
+              schema_version: "canvas_command_result.v1",
+              canvas_id: "canvas-a",
+              bridge_key: "bridge-a",
+              envelopes,
+              result: {
+                applied: 0,
+                openedUiActions: 0,
+                createdNodeIds: [],
+                errors: ["画布操作等待超时，已自动取消"],
+                commandResults: [
+                  {
+                    commandIndex: -1,
+                    type: "validate",
+                    status: "error",
+                    label: "已取消",
+                    error: "画布操作等待超时，已自动取消",
+                  },
+                ],
+              },
+              received_at: 3,
+              cancelled: true,
+              cancel_reason: "timeout",
+            },
+          ],
+        },
+      } as ChatMessage,
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(screen.queryByText("这轮操作没有收到虾导的有效回复，请稍后重试。")).not.toBeInTheDocument();
+    fireEvent.click(await screen.findByText("画布操作已取消"));
+    fireEvent.click(screen.getByRole("button", { name: "重新执行" }));
+
+    await waitFor(() => {
+      expect(useCanvasStore.getState().nodes).toHaveLength(1);
+      expect(useCanvasStore.getState().nodes[0]?.data.title).toBe("恢复创建的图片节点");
+    });
+  });
+
   it("reports and persists cancelled canvas command approvals", async () => {
     superChatMocks.messages = [
       {
@@ -1669,7 +1749,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
               ],
             },
           ],
-          receivedAt: Date.now() - 31_000,
+          receivedAt: Date.now() - 61_000,
         },
       }));
     });
@@ -1748,7 +1828,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     });
 
     expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
-    expect(screen.getByText(/s 后自动取消/)).toBeInTheDocument();
+    expect(screen.getByText(/(?:59|60)s 后自动取消/)).toBeInTheDocument();
   });
 
   it("shows a cancelled feedback when a stale canvas approval remains in message parts", () => {

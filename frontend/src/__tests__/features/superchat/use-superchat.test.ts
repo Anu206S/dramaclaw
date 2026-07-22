@@ -831,6 +831,43 @@ This Freezone chat can change the current canvas by returning a JSON block.
     });
   });
 
+  it("uses the complete persisted text when ordered text parts are stale", () => {
+    const fullText = [
+      "工作流已创建完成，包含以下节点：",
+      "1. 用户需求",
+      "2. 创意大纲",
+      "3. 广告脚本",
+      "4. 多宫格分镜图",
+      "5. 高清分镜图（3张）",
+      "6. 视频片段（3段）",
+    ].join("\n");
+    const normalized = normalizeMessage({
+      id: "assistant-workflow-summary",
+      role: "assistant",
+      content: fullText,
+      parts: [
+        {
+          id: "tool-1",
+          type: "tool_status",
+          event: { role: "tool", text: "加载 Workflow Skill", raw: { type: "tool.result" } },
+        },
+        {
+          id: "text-stale",
+          type: "text",
+          text: "我先读取工作流配置。",
+        },
+        {
+          id: "text-partial",
+          type: "text",
+          text: "工作流已创建完成，包含以下节点：\n1. 用户需求\n2. 创意大纲\n3. 广告脚本\n4. 多宫格分镜图\n5.",
+        },
+      ],
+    });
+
+    expect(normalized?.parts?.map((part) => part.type)).toEqual(["tool_status", "text"]);
+    expect(normalized?.parts?.[1]).toMatchObject({ type: "text", text: fullText });
+  });
+
   it("hydrates ordered interaction parts from newer persisted ui events", () => {
     const normalized = normalizeMessage({
       id: "assistant-1",
@@ -3661,7 +3698,10 @@ describe("canvas command bridge events", () => {
       ): part is ChatMessagePart & { type: "agent_thought"; event: unknown } =>
         part.type === "agent_thought");
       expect(thoughtParts).toHaveLength(1);
-      expect(thoughtParts[0]?.event).toMatchObject({
+      const thoughtPart = thoughtParts[0];
+      expect(thoughtPart?.type).toBe("agent_thought");
+      if (thoughtPart?.type !== "agent_thought") return;
+      expect(thoughtPart.event).toMatchObject({
         status: "running",
         text: "Let me submit recipe 1. Let me submit recipe 2 now.",
       });

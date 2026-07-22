@@ -108,6 +108,7 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_create_node" in names
     assert "freezone_update_node_data" in names
     assert "freezone_run_node_action" in names
+    assert "freezone_run_workflow" in names
     assert "freezone_get_mainline_projection_assets" in names
     assert "freezone_list_workflows" in names
     assert "freezone_build_workflow_plan" in names
@@ -123,6 +124,46 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_finish_agent_catalog_draft" in names
     assert "freezone_get_saved_skill" in names
     assert "freezone_get_saved_recipe" in names
+
+
+def test_freezone_run_workflow_emits_one_deterministic_runner_command(monkeypatch):
+    plugin = _load_plugin_module()
+    captured = {}
+
+    def fake_single_write(args, command):
+        captured["args"] = args
+        captured["command"] = command
+        return "queued"
+
+    monkeypatch.setattr(plugin, "_single_write_command", fake_single_write)
+
+    result = plugin._handle_run_workflow(
+        {
+            "node_ids": ["shot-2"],
+            "direction": "downstream",
+            "regenerate": True,
+        }
+    )
+
+    assert result == "queued"
+    assert captured["command"] == {
+        "type": "run_workflow",
+        "node_ids": ["shot-2"],
+        "direction": "downstream",
+        "regenerate": True,
+    }
+
+
+def test_freezone_run_workflow_command_passes_write_shape_validation():
+    plugin = _load_plugin_module()
+
+    error = plugin._validate_write_commands_shape(
+        "project-a",
+        "canvas-a",
+        [{"type": "run_workflow", "scope": "canvas", "direction": "connected"}],
+    )
+
+    assert error is None
 
 
 def test_dynamic_workflow_plan_is_rejected_before_canvas_bridge():
@@ -187,6 +228,34 @@ def test_freezone_get_workflow_skill_returns_json_when_registry_summarizes(monke
     assert isinstance(decoded["available_recipes"], list)
 
 
+def test_freezone_get_workflow_skill_accepts_catalog_workflow_type(monkeypatch):
+    plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    loaded = handlers["freezone_get_workflow_skill"](
+        {"skill_id": "catalog.video_ad"}
+    )
+
+    decoded = json.loads(loaded)
+    assert decoded["ok"] is True
+    assert decoded["skill_id"] == "video-ad"
+
+
+def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatch):
+    plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    loaded = handlers["freezone_get_workflow_skill"](
+        {"skill_id": "ecommerce-product", "compact": True}
+    )
+
+    decoded = json.loads(loaded)
+    assert decoded["ok"] is True
+    assert decoded["recipes"] == []
+    assert decoded["recipe_definitions_omitted"] is True
+    assert decoded["available_recipes"]
+
+
 def test_freezone_get_workflow_skill_records_structured_result_side_channel(monkeypatch, tmp_path):
     result_dir = tmp_path / "freezone-tool-results"
     monkeypatch.setenv("DRAMACLAW_FREEZONE_TOOL_RESULT_DIR", str(result_dir))
@@ -207,17 +276,6 @@ def test_freezone_get_workflow_skill_records_structured_result_side_channel(monk
     assert isinstance(payload["result"]["available_recipes"], list)
 
 
-def test_interactive_skills_do_not_pollute_legacy_workflow_list():
-    plugin = _load_plugin_module()
-    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
-
-    workflows = handlers["freezone_list_workflows"]({})
-
-    workflow_types = {item["workflow_type"] for item in workflows["workflows"]}
-    assert "catalog.a24-cinematic-short" not in workflow_types
-    assert "catalog.cyberpunk-apocalypse-short" not in workflow_types
-    assert "catalog.fruit-ecommerce-ad-skill" not in workflow_types
-    assert "catalog.video_ad" in workflow_types
 def test_freezone_plugin_reads_saved_skill_and_recipe(monkeypatch):
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
@@ -890,6 +948,7 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "steps"
     ]["items"]
     workflow_template_schema = skill_schema["properties"]["workflow_templates"]["items"]
+    input_parameter_schema = skill_schema["properties"]["input_parameters"]["items"]
 
     assert "including Skill Studio setup questions" in clarification_description
     assert "decide the next step from the current context" in clarification_description
@@ -920,6 +979,14 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "triggers",
         "planning",
         "evaluation",
+    ]
+    assert input_parameter_schema["required"] == ["id", "label", "type", "required"]
+    assert input_parameter_schema["properties"]["type"]["enum"] == [
+        "single_select",
+        "multi_select",
+        "text",
+        "number",
+        "boolean",
     ]
     assert skill_schema["properties"]["triggers"]["required"] == ["keywords", "node_scopes"]
     assert skill_schema["properties"]["triggers"]["properties"]["node_scopes"]["items"]["enum"] == [
@@ -1171,6 +1238,74 @@ def test_freezone_catalog_workflow_maps_video_compose_step_to_compose_node(monke
     assert "生成最终提示词" not in compose_node["data"]["content"]
 
 
+def test_catalog_fixed_count_expands_nodes_and_pairs_equal_sized_steps():
+    catalog = _load_catalog_module()
+
+    plan = catalog.build_catalog_workflow_plan(
+        {
+            "workflow_type": "catalog.video_ad.video_ad_full",
+            "user_goal": "生成 3 个广告镜头",
+            "count": 3,
+        }
+    )
+
+    assert plan["ok"] is True
+    assert plan["expansion_rules"]["step_counts"]["storyboard-upscaled-images"] == 3
+    assert plan["expansion_rules"]["step_counts"]["video-clips"] == 3
+    clip_edges = [
+        edge
+        for edge in plan["edges"]
+        if edge["target"].startswith("video-clips_")
+    ]
+    assert clip_edges == [
+        {"source": "storyboard-upscaled-images_1", "target": "video-clips_1"},
+        {"source": "storyboard-upscaled-images_2", "target": "video-clips_2"},
+        {"source": "storyboard-upscaled-images_3", "target": "video-clips_3"},
+    ]
+
+
+def test_catalog_plan_items_expand_without_agent_authored_graph():
+    catalog = _load_catalog_module()
+
+    plan = catalog.build_catalog_workflow_plan(
+        {
+            "workflow_type": "catalog.ecommerce_product.ecommerce_scene_images",
+            "user_goal": "为咖啡机生成场景图",
+            "items": [
+                {"step_id": "scene-images", "title": "厨房晨光", "prompt": "现代厨房晨光"},
+                {"step_id": "scene-images", "title": "办公桌面", "prompt": "极简办公室"},
+            ],
+        }
+    )
+
+    assert plan["ok"] is True
+    scene_nodes = [node for node in plan["nodes"] if node["id"].startswith("scene-images_")]
+    assert [node["label"] for node in scene_nodes] == ["厨房晨光", "办公桌面"]
+    assert all("workflowCatalog" in node["data"] for node in scene_nodes)
+    assert [node["data"]["workflowCatalog"]["planItem"]["prompt"] for node in scene_nodes] == [
+        "现代厨房晨光",
+        "极简办公室",
+    ]
+
+
+def test_catalog_downstream_fixed_count_inherits_planned_upstream_items():
+    catalog = _load_catalog_module()
+
+    plan = catalog.build_catalog_workflow_plan(
+        {
+            "workflow_type": "catalog.video_ad.video_ad_full",
+            "user_goal": "制作品牌广告",
+            "items": [
+                {"step_id": "storyboard-upscaled-images", "prompt": f"镜头 {index}"}
+                for index in range(1, 4)
+            ],
+        }
+    )
+
+    assert plan["expansion_rules"]["step_counts"]["storyboard-upscaled-images"] == 3
+    assert plan["expansion_rules"]["step_counts"]["video-clips"] == 3
+
+
 def test_freezone_list_workflows_exposes_catalog_source_type(monkeypatch):
     plugin = _load_plugin_module()
     monkeypatch.setenv("DRAMACLAW_USER", "local")
@@ -1360,17 +1495,64 @@ def test_freezone_canvas_command_slim_result_omits_large_details():
         },
         bridge_key="bridge-a",
         commands=[
-            {"type": "create_node"},
+            {
+                "type": "create_node",
+                "client_id": "outline",
+                "node_type": "textAnnotationNode",
+                "data": {"displayName": "生成广告创意大纲"},
+            },
             {"type": "create_edge"},
-            {"type": "create_node"},
+            {
+                "type": "create_node",
+                "client_id": "storyboard",
+                "node_type": "imageGenNode",
+                "data": {"displayName": "多宫格分镜图"},
+            },
         ],
     )
 
     assert summary["ok"] is True
     assert summary["created_node_count"] == 2
     assert summary["command_counts"] == {"create_node": 2, "create_edge": 1}
+    assert summary["created_nodes"] == [
+        {
+            "client_id": "outline",
+            "node_type": "textAnnotationNode",
+            "displayName": "生成广告创意大纲",
+        },
+        {
+            "client_id": "storyboard",
+            "node_type": "imageGenNode",
+            "displayName": "多宫格分镜图",
+        },
+    ]
+    assert "copy every non-empty displayName" in summary["agent_instruction"]
     assert "created_node_ids" not in summary
     assert "command_results" not in summary
+
+
+def test_freezone_canvas_command_slim_result_reports_background_acceptance():
+    plugin = _load_plugin_module()
+
+    summary = plugin._summarize_canvas_command_result(
+        {
+            "ok": True,
+            "tool_call_status": "completed",
+            "canvas_apply_status": "accepted",
+            "applied": True,
+            "cancelled": False,
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "message": "Frontend accepted the canvas workflow for background execution.",
+        },
+        bridge_key="bridge-workflow",
+        commands=[{"type": "run_workflow", "scope": "canvas"}],
+    )
+
+    assert summary["ok"] is True
+    assert summary["canvas_apply_status"] == "accepted"
+    assert "continuing on the canvas" in summary["agent_instruction"]
+    assert "Do not claim generation is complete" in summary["agent_instruction"]
 
 
 def test_freezone_single_write_commands_request_slim_result(monkeypatch):

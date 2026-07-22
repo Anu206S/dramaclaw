@@ -1,5 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import {
+  createFreezoneWorkflowRun,
+  updateFreezoneWorkflowRun,
+} from "@/api/canvas";
 import { CANVAS_NODE_TYPES } from "@/features/canvas/domain/canvasNodes";
 import { canvasEventBus } from "@/features/canvas/application/canvasServices";
 import { subscribeNodeAction } from "@/features/canvas/application/nodeActionResult";
@@ -62,6 +66,15 @@ vi.mock("@/api/ops", async (importOriginal) => {
   };
 });
 
+vi.mock("@/api/canvas", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/canvas")>();
+  return {
+    ...actual,
+    createFreezoneWorkflowRun: vi.fn(async () => ({ run_id: "run-test" })),
+    updateFreezoneWorkflowRun: vi.fn(async () => ({ run_id: "run-test" })),
+  };
+});
+
 vi.mock("@/features/freezone/openPresetProjection", () => ({
   openPresetProjectionInMyCanvas: vi.fn(async () => "user_canvas"),
 }));
@@ -71,6 +84,8 @@ describe("canvas chat commands", () => {
     useCanvasStore.getState().setCanvasData([], []);
     useAuthStore.setState({ username: null, role: null });
     vi.mocked(openPresetProjectionInMyCanvas).mockClear();
+    vi.mocked(createFreezoneWorkflowRun).mockClear();
+    vi.mocked(updateFreezoneWorkflowRun).mockClear();
   });
 
   it("dispatches approval events even when an in-memory subscriber handles them", () => {
@@ -5090,6 +5105,121 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("queues workflow actions beyond the three-task concurrency limit", async () => {
+    const store = useCanvasStore.getState();
+    const nodeIds = Array.from({ length: 5 }, (_, index) => store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: index * 240, y: 0 },
+      { prompt: `商品图 ${index + 1}` },
+    ));
+    const events: Array<{ nodeId: string; requestId?: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, requestId: payload.requestId });
+      },
+    );
+    const completeAction = (event: { nodeId: string; requestId?: string }) => {
+      if (!event.requestId) throw new Error("expected image request id");
+      useCanvasStore.getState().updateNodeData(event.nodeId, {
+        imageUrl: `/static/${event.nodeId}.png`,
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: event.requestId,
+        nodeId: event.nodeId,
+        action: "generate_image",
+        status: "success",
+      });
+    };
+
+    try {
+      const resultPromise = applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: nodeIds.map((nodeId) => ({
+            type: "run_node_action" as const,
+            node_id: nodeId,
+            action: "generate_image",
+          })),
+        }]),
+        { canvasId: "canvas-a", actionTimeoutMs: 1_000 },
+      );
+
+      await vi.waitFor(() => expect(events).toHaveLength(3));
+      await Promise.resolve();
+      expect(events.map(({ nodeId }) => nodeId)).toEqual(nodeIds.slice(0, 3));
+
+      completeAction(events[0]);
+      await vi.waitFor(() => expect(events).toHaveLength(4));
+      expect(events[3].nodeId).toBe(nodeIds[3]);
+
+      completeAction(events[1]);
+      await vi.waitFor(() => expect(events).toHaveLength(5));
+      expect(events[4].nodeId).toBe(nodeIds[4]);
+
+      for (const event of events.slice(2)) completeAction(event);
+      const result = await resultPromise;
+      expect(result.errors).toEqual([]);
+      expect(result.commandResults).toHaveLength(5);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("queues multiple video actions one at a time", async () => {
+    const store = useCanvasStore.getState();
+    const nodeIds = Array.from({ length: 2 }, (_, index) => store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: index * 360, y: 0 },
+      { prompt: `广告镜头 ${index + 1}` },
+    ));
+    const events: Array<{ nodeId: string; requestId?: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => events.push({ nodeId: payload.nodeId, requestId: payload.requestId }),
+    );
+    const completeAction = (event: { nodeId: string; requestId?: string }) => {
+      if (!event.requestId) throw new Error("expected video request id");
+      useCanvasStore.getState().updateNodeData(event.nodeId, {
+        videoUrl: `/static/${event.nodeId}.mp4`,
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: event.requestId,
+        nodeId: event.nodeId,
+        action: "generate_video",
+        status: "success",
+      });
+    };
+
+    try {
+      const resultPromise = applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: nodeIds.map((nodeId) => ({
+            type: "run_node_action" as const,
+            node_id: nodeId,
+            action: "generate_video",
+          })),
+        }]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      await Promise.resolve();
+      expect(events[0].nodeId).toBe(nodeIds[0]);
+
+      completeAction(events[0]);
+      await vi.waitFor(() => expect(events).toHaveLength(2));
+      expect(events[1].nodeId).toBe(nodeIds[1]);
+      completeAction(events[1]);
+
+      const result = await resultPromise;
+      expect(result.errors).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("runs independent workflow branches in parallel and waits before downstream video", async () => {
     const store = useCanvasStore.getState();
     const imageNodeId = store.addNode(
@@ -5405,6 +5535,122 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("reports the node generation error instead of a missing-output fallback", async () => {
+    const textNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.textAnnotation,
+      { x: 0, y: 0 },
+      {
+        content: "待生成内容",
+        workflowCatalog: { recipeId: "video-creative-outline" },
+      },
+    );
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        if (!payload.requestId) return;
+        useCanvasStore.getState().updateNodeData(textNodeId, {
+          generationError: "上游文本模型请求超时",
+        });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync([
+        {
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [
+            {
+              type: "run_node_action",
+              node_id: textNodeId,
+              action: "generate_text",
+            },
+          ],
+        },
+      ]);
+
+      expect(result.errors).toEqual(["上游文本模型请求超时"]);
+      expect(result.commandResults[0]).toMatchObject({
+        type: "run_node_action",
+        status: "error",
+        nodeId: textNodeId,
+        action: "generate_text",
+        error: "上游文本模型请求超时",
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("waits for a single Recipe text action when no async task was handed off", async () => {
+    const textNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.textAnnotation,
+      { x: 0, y: 0 },
+      {
+        content: "待生成内容",
+        workflowCatalog: { recipeId: "video-creative-outline" },
+      },
+    );
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        if (!payload.requestId) return;
+        canvasEventBus.publish("freezone/node-action-accepted", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+        });
+        setTimeout(() => {
+          const content = "# 视频创意大纲";
+          useCanvasStore.getState().updateNodeData(textNodeId, {
+            content,
+            workflowTextGenerated: true,
+          });
+          canvasEventBus.publish("freezone/node-action-result", {
+            requestId: payload.requestId!,
+            nodeId: payload.nodeId,
+            action: payload.action,
+            status: "success",
+            output: { content },
+          });
+        }, 30);
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        [{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{
+            type: "run_node_action",
+            node_id: textNodeId,
+            action: "generate_text",
+          }],
+        }],
+        {
+          actionTimeoutMs: 200,
+          actionResultFieldTimeoutMs: 10,
+        },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.commandResults[0]).toMatchObject({
+        type: "run_node_action",
+        status: "success",
+        nodeId: textNodeId,
+        action: "generate_text",
+        output: { content: "# 视频创意大纲" },
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it.each([
     {
       nodeType: CANVAS_NODE_TYPES.video,
@@ -5652,6 +5898,115 @@ describe("canvas chat commands", () => {
       expect(events).toEqual([
         { nodeId: videoNodeId, action: "generate_video" },
       ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("runs the parent workflow when targeting its disconnected user input node", async () => {
+    const store = useCanvasStore.getState();
+    const inputNodeId = store.addNode(
+      CANVAS_NODE_TYPES.textAnnotation,
+      { x: 0, y: 0 },
+      {
+        content: "用户需求",
+        workflowCatalogRole: "user_input",
+      },
+    );
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 360, y: 0 },
+      { prompt: "商品主图" },
+    );
+    const groupId = store.groupNodes([inputNodeId, imageNodeId], {
+      label: "商品图工作流",
+    });
+    if (!groupId) throw new Error("expected workflow group");
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId) return;
+        store.updateNodeData(imageNodeId, { imageUrl: "/static/project/image.png" });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [{ type: "run_workflow", node_ids: [inputNodeId] }],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("persists workflow run progress without changing node execution", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      { prompt: "商品主图" },
+    );
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        if (!payload.requestId) return;
+        store.updateNodeData(payload.nodeId, { imageUrl: "/static/project/image.png" });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [{ type: "run_workflow", node_ids: [imageNodeId] }],
+          },
+        ]),
+        {
+          projectId: "project-a",
+          canvasId: "canvas-a",
+          actionTimeoutMs: 100,
+        },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(createFreezoneWorkflowRun).toHaveBeenCalledWith(
+        "project-a",
+        "canvas-a",
+        [{ node_id: imageNodeId, action: "generate_image" }],
+      );
+      expect(updateFreezoneWorkflowRun).toHaveBeenLastCalledWith(
+        "project-a",
+        "canvas-a",
+        "run-test",
+        { status: "completed" },
+      );
     } finally {
       unsubscribe();
     }
@@ -5924,11 +6279,19 @@ describe("canvas chat commands", () => {
               videoUrl: "/static/project/video.mp4",
             });
         }
+        if (payload.nodeId === composeNodeId) {
+          useCanvasStore.getState().updateNodeData(composeNodeId, {
+            resultVideoUrl: "/static/project/final.mp4",
+          });
+        }
         canvasEventBus.publish("freezone/node-action-result", {
           requestId: payload.requestId,
           nodeId: payload.nodeId,
           action: payload.action,
           status: "success",
+          output: payload.nodeId === composeNodeId
+            ? { videoUrl: "/static/project/final.mp4" }
+            : undefined,
         });
       },
     );
@@ -5955,7 +6318,7 @@ describe("canvas chat commands", () => {
         "workflow",
         "workflow",
         "workflow",
-        undefined,
+        "workflow",
       ]);
     } finally {
       unsubscribe();
@@ -6386,7 +6749,7 @@ describe("canvas chat commands", () => {
     }
   });
 
-  it("run_workflow opens satisfied video compose without regenerating extra upstream audio", async () => {
+  it("run_workflow automatically composes without regenerating extra upstream audio", async () => {
     const store = useCanvasStore.getState();
     const videoNodeId = store.addNode(
       CANVAS_NODE_TYPES.video,
@@ -6436,11 +6799,15 @@ describe("canvas chat commands", () => {
       (payload) => {
         events.push({ nodeId: payload.nodeId, action: payload.action });
         if (!payload.requestId) return;
+        useCanvasStore.getState().updateNodeData(composeNodeId, {
+          resultVideoUrl: "/static/project/final.mp4",
+        });
         canvasEventBus.publish("freezone/node-action-result", {
           requestId: payload.requestId,
           nodeId: payload.nodeId,
           action: payload.action,
           status: "success",
+          output: { videoUrl: "/static/project/final.mp4" },
         });
       },
     );
@@ -6458,14 +6825,14 @@ describe("canvas chat commands", () => {
 
       expect(result.errors).toEqual([]);
       expect(events).toEqual([
-        { nodeId: composeNodeId, action: "open_video_compose_modal" },
+        { nodeId: composeNodeId, action: "auto_compose_video" },
       ]);
     } finally {
       unsubscribe();
     }
   });
 
-  it("run_workflow on an upstream group opens the downstream satisfied video compose", async () => {
+  it("run_workflow on an upstream group automatically runs downstream compose", async () => {
     const store = useCanvasStore.getState();
     const videoNodeId = store.addNode(
       CANVAS_NODE_TYPES.video,
@@ -6514,11 +6881,15 @@ describe("canvas chat commands", () => {
       (payload) => {
         events.push({ nodeId: payload.nodeId, action: payload.action });
         if (!payload.requestId) return;
+        useCanvasStore.getState().updateNodeData(composeNodeId, {
+          resultVideoUrl: "/static/project/final.mp4",
+        });
         canvasEventBus.publish("freezone/node-action-result", {
           requestId: payload.requestId,
           nodeId: payload.nodeId,
           action: payload.action,
           status: "success",
+          output: { videoUrl: "/static/project/final.mp4" },
         });
       },
     );
@@ -6536,7 +6907,7 @@ describe("canvas chat commands", () => {
 
       expect(result.errors).toEqual([]);
       expect(events).toEqual([
-        { nodeId: composeNodeId, action: "open_video_compose_modal" },
+        { nodeId: composeNodeId, action: "auto_compose_video" },
       ]);
     } finally {
       unsubscribe();

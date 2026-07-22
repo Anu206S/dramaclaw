@@ -489,6 +489,7 @@ export const TextAnnotationNode = memo(({
         nodeData: data,
         nodePrompt: content,
         upstreamText: upstreamTextJoined,
+        upstreamContents,
       });
       updateNodeData(id, {
         content: generated,
@@ -505,7 +506,7 @@ export const TextAnnotationNode = memo(({
       });
       throw error;
     }
-  }, [content, data, id, updateNodeData, upstreamTextJoined]);
+  }, [content, data, id, updateNodeData, upstreamContents, upstreamTextJoined]);
 
   useEffect(() => {
     return subscribeNodeAction(({ nodeId, action, requestId }) => {

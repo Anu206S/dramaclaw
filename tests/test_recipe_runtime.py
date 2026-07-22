@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 
 import pytest
@@ -32,8 +33,29 @@ def test_build_recipe_compiler_task_contains_runtime_context():
     assert "产品锚点" in task
 
 
+def test_build_recipe_compiler_task_limits_large_upstream_context():
+    upstream = "A" * 20_000 + "B" * 20_000
+    task = recipe_runtime.build_recipe_compiler_task(
+        recipe={"id": "scene", "output_kind": "image", "system_prompt": "商业摄影"},
+        node_kind="image",
+        node_prompt="厨房",
+        upstream_text=upstream,
+    )
+
+    assert "[context truncated]" in task
+    assert "A" * 100 in task
+    assert "B" * 100 in task
+    assert len(task) < 18_000
+
+
 @pytest.mark.asyncio
-async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt(monkeypatch):
+async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt(
+    monkeypatch, tmp_path
+):
+    recipe_runtime._prompt_cache.clear()
+    recipe_runtime._prompt_inflight.clear()
+    monkeypatch.setattr(recipe_runtime, "OUTPUT_DIR", tmp_path)
+    calls = 0
     monkeypatch.setattr(
         recipe_runtime,
         "get_recipe_for_runtime",
@@ -50,6 +72,8 @@ async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt
             pass
 
         async def run(self, task):
+            nonlocal calls
+            calls += 1
             assert "trusted internal method" in task
             return SimpleNamespace(output="最终可执行提示词")
 
@@ -66,16 +90,118 @@ async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt
         node_kind="image",
         node_prompt="厨房场景",
     )
+    cached = await recipe_runtime.compile_recipe_prompt(
+        username="local",
+        recipe_id="scene",
+        recipe_version="1",
+        node_kind="image",
+        node_prompt="厨房场景",
+    )
 
     assert result == "最终可执行提示词"
+    assert cached == result
+    assert calls == 1
+
+    recipe_runtime._prompt_cache.clear()
+    persisted = await recipe_runtime.compile_recipe_prompt(
+        username="local",
+        recipe_id="scene",
+        recipe_version="1",
+        node_kind="image",
+        node_prompt="厨房场景",
+    )
+    assert persisted == result
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_compile_recipe_prompt_deduplicates_concurrent_model_calls(monkeypatch, tmp_path):
+    recipe_runtime._prompt_cache.clear()
+    recipe_runtime._prompt_inflight.clear()
+    monkeypatch.setattr(recipe_runtime, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(
+        recipe_runtime,
+        "get_recipe_for_runtime",
+        lambda **_kwargs: {
+            "id": "scene",
+            "version": 1,
+            "output_kind": "image",
+            "system_prompt": "trusted internal method",
+        },
+    )
+    calls = 0
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, _task):
+            nonlocal calls
+            calls += 1
+            await asyncio.sleep(0.01)
+            return SimpleNamespace(output="共享提示词")
+
+    monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        "novelvideo.config.get_newapi_text_pydantic_model",
+        lambda *_args, **_kwargs: object(),
+    )
+    kwargs = {
+        "username": "local",
+        "recipe_id": "scene",
+        "recipe_version": "1",
+        "node_kind": "image",
+        "node_prompt": "厨房场景",
+    }
+
+    results = await asyncio.gather(
+        recipe_runtime.compile_recipe_prompt(**kwargs),
+        recipe_runtime.compile_recipe_prompt(**kwargs),
+    )
+
+    assert results == ["共享提示词", "共享提示词"]
+    assert calls == 1
+
+
+@pytest.mark.asyncio
+async def test_compile_recipe_prompt_skips_model_for_deterministic_strategy(monkeypatch):
+    monkeypatch.setattr(
+        recipe_runtime,
+        "get_recipe_for_runtime",
+        lambda **_kwargs: {
+            "id": "video",
+            "output_kind": "video",
+            "system_prompt": "refine video prompt",
+        },
+    )
+
+    class UnexpectedAgent:
+        def __init__(self, *_args, **_kwargs):
+            raise AssertionError("deterministic strategy must not create an Agent")
+
+    monkeypatch.setattr(recipe_runtime, "Agent", UnexpectedAgent)
+    result = await recipe_runtime.compile_recipe_prompt(
+        username="local",
+        recipe_id="video",
+        node_kind="video",
+        node_prompt="镜头缓慢推进",
+        upstream_text="商品分镜",
+        prompt_strategy="previous_output",
+    )
+
+    assert result == "商品分镜\n\n镜头缓慢推进"
 
 
 @pytest.mark.asyncio
 async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
     monkeypatch.setattr(
         recipe_runtime,
-        "compile_recipe_prompt",
-        lambda **_kwargs: _async_value("生成三屏详情页方案"),
+        "get_recipe_for_runtime",
+        lambda **_kwargs: {
+            "id": "ecommerce-text-plan",
+            "output_kind": "text",
+            "system_prompt": "生成三屏详情页方案",
+        },
     )
 
     class FakeAgent:
@@ -83,7 +209,8 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
             pass
 
         async def run(self, task):
-            assert task == "生成三屏详情页方案"
+            assert "生成三屏详情页方案" in task
+            assert "Produce the final text deliverable now" in task
             return SimpleNamespace(output="# 详情页方案")
 
     monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
@@ -100,7 +227,3 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
     )
 
     assert result == "# 详情页方案"
-
-
-async def _async_value(value):
-    return value

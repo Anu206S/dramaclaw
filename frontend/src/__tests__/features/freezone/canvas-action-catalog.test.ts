@@ -294,7 +294,7 @@ describe("canvas action catalog", () => {
     );
   });
 
-  it("treats video compose nodes as modal-only workflow endpoints", () => {
+  it("exposes automatic and manual video compose actions", () => {
     const compose = node({
       id: "compose-a",
       type: CANVAS_NODE_TYPES.videoCompose,
@@ -308,6 +308,14 @@ describe("canvas action catalog", () => {
     expect(catalog.downstream_spawn_types).toEqual([]);
     expect(catalog.actions).not.toContainEqual(
       expect.objectContaining({ action: "add_next_node" }),
+    );
+    expect(catalog.actions).toContainEqual(
+      expect.objectContaining({
+        action: "auto_compose_video",
+        execution: "frontend_node",
+        command_type: "run_node_action",
+        parameters: { node_id: "compose-a" },
+      }),
     );
     expect(catalog.actions).toContainEqual(
       expect.objectContaining({

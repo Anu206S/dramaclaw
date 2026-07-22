@@ -1235,6 +1235,14 @@ function addFrontendNodeActions(
 
   if (node.type === CANVAS_NODE_TYPES.videoCompose) {
     actions.push({
+      action: "auto_compose_video",
+      execution: "frontend_node",
+      command_type: "run_node_action",
+      description:
+        "Compose completed upstream video/audio nodes automatically. Reuse the saved timeline draft when present; otherwise order clips from the canvas and write the final video back to this compose node.",
+      parameters: { node_id: node.id },
+    });
+    actions.push({
       action: "open_video_compose_modal",
       execution: "manual_ui",
       command_type: "run_node_action",

@@ -187,7 +187,7 @@ function probeMediaDuration(
 }
 
 /** Seed an initial timeline from the selected video/audio canvas nodes. */
-function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
+export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
   const nodes = useCanvasStore.getState().nodes;
   const byId = new Map(nodes.map((node) => [node.id, node] as const));
   const videoClips: ComposeClip[] = [];
@@ -259,7 +259,7 @@ function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineState {
  * 这样合成节点的输入永远 = 画布上当前连着的素材，不会出现「连了却不显示」。
  * 代价：删掉某个仍连着的片段，重开会被补回来——要彻底移除请在画布上断开该节点。
  */
-function reconcileDraftWithUpstream(
+export function reconcileDraftWithUpstream(
   draft: ComposeTimelineState,
   seedNodeIds: string[],
 ): ComposeTimelineState {
@@ -2770,4 +2770,3 @@ function TrackRow({
     </div>
   );
 }
-

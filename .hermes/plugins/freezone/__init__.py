@@ -1524,6 +1524,7 @@ _COMMAND_TYPES = {
     "move_nodes",
     "select_nodes",
     "run_node_action",
+    "run_workflow",
     "open_mainline_projection",
 }
 
@@ -2607,13 +2608,23 @@ def _summarize_canvas_command_result(
     bridge_key: str,
     commands: list[Any],
 ) -> dict[str, Any]:
-    command_counts: dict[str, int] = {}
-    for command in commands:
-        if not isinstance(command, dict):
-            continue
-        command_type = str(command.get("type") or "unknown").strip() or "unknown"
-        command_counts[command_type] = command_counts.get(command_type, 0) + 1
+    command_summary = _command_summary(commands)
     errors = resolved.get("errors") if isinstance(resolved.get("errors"), list) else []
+    agent_instruction = resolved.get("agent_instruction") or (
+        "Canvas command result has been summarized. Do not ask for or print the full commands."
+    )
+    if resolved.get("ok") and resolved.get("canvas_apply_status") == "accepted":
+        agent_instruction = (
+            "Report briefly that the workflow was accepted and is continuing on the canvas. "
+            "Do not claim generation is complete, do not report a timeout, and do not ask the "
+            "user to run nodes manually."
+        )
+    elif resolved.get("ok"):
+        agent_instruction = (
+            "Report success briefly. When listing created workflow nodes, copy every non-empty "
+            "displayName from created_nodes in order; do not reconstruct, truncate, or add a "
+            "partially filled table row. Do not ask for or print the full commands."
+        )
     return {
         "ok": bool(resolved.get("ok")),
         "tool_call_status": resolved.get("tool_call_status") or "completed",
@@ -2627,13 +2638,12 @@ def _summarize_canvas_command_result(
         "opened_ui_actions": resolved.get("opened_ui_actions"),
         "created_node_count": len(resolved.get("created_node_ids") or []),
         "command_count": len(commands),
-        "command_counts": command_counts,
+        "command_counts": command_summary["command_counts"],
+        "created_nodes": command_summary["created_nodes"],
         "error_count": len(errors),
         "errors": [str(item)[:240] for item in errors[:3]],
         "message": resolved.get("message") or "Canvas command finished.",
-        "agent_instruction": resolved.get("agent_instruction") or (
-            "Canvas command result has been summarized. Do not ask for or print the full commands."
-        ),
+        "agent_instruction": agent_instruction,
     }
 
 
@@ -3075,6 +3085,40 @@ def _handle_run_node_action(args: dict[str, Any], **_: Any) -> str:
     return _single_write_command(args, command)
 
 
+def _handle_run_workflow(args: dict[str, Any], **_: Any) -> str:
+    raw_node_ids = args.get("node_ids") or args.get("nodeIds") or []
+    node_ids = [str(node_id).strip() for node_id in raw_node_ids if str(node_id).strip()]
+    scope = str(args.get("scope") or "").strip()
+    if not node_ids and scope != "canvas":
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_scope_required",
+                "error": "node_ids or scope=canvas is required",
+            }
+        )
+    direction = str(args.get("direction") or "connected").strip()
+    if direction not in {"connected", "node", "downstream"}:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "invalid_workflow_direction",
+                "error": f"unsupported workflow direction: {direction}",
+            }
+        )
+    command: dict[str, Any] = {
+        "type": "run_workflow",
+        "direction": direction,
+    }
+    if node_ids:
+        command["node_ids"] = node_ids
+    if scope:
+        command["scope"] = scope
+    if bool(args.get("regenerate") or args.get("force_regenerate") or args.get("forceRegenerate")):
+        command["regenerate"] = True
+    return _single_write_command(args, command)
+
+
 def _handle_open_mainline_projection(args: dict[str, Any], **_: Any) -> str:
     project = str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
     canvas = str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
@@ -3422,6 +3466,36 @@ _SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA = {
     "required": ["id", "description", "steps"],
 }
 
+_SKILL_STUDIO_INPUT_PARAMETER_SCHEMA = {
+    "type": "object",
+    "description": (
+        "One stateless planning input. Values are extracted from the user's request, completed "
+        "with defaults, and confirmed before WorkflowPlan creation; no Skill Session is created."
+    ),
+    "properties": {
+        "id": {"type": "string", "description": "Stable input id written to plan.inputs."},
+        "label": {"type": "string", "description": "User-facing input label."},
+        "type": {
+            "type": "string",
+            "enum": ["single_select", "multi_select", "text", "number", "boolean"],
+        },
+        "required": {"type": "boolean"},
+        "default": {},
+        "options": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"},
+                    "label": {"type": "string"},
+                },
+                "required": ["value", "label"],
+            },
+        },
+    },
+    "required": ["id", "label", "type", "required"],
+}
+
 _SKILL_STUDIO_SKILL_SCHEMA = {
     "type": "object",
     "description": (
@@ -3531,6 +3605,14 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                 "visual_review_items",
                 "text_review_items",
             ],
+        },
+        "input_parameters": {
+            "type": "array",
+            "description": (
+                "Optional structured inputs for deterministic planning. Keep the list short and "
+                "use defaults where safe; the Agent asks only unresolved required values."
+            ),
+            "items": _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA,
         },
         "workflow_templates": {
             "type": "array",
@@ -4209,6 +4291,26 @@ TOOLS = (
                     "type": "integer",
                     "description": "Optional beat count for short drama style workflows.",
                 },
+                "count": {
+                    "type": "integer",
+                    "description": "Optional output count used by user-overridable multiplicity rules.",
+                },
+                "inputs": {
+                    "type": "object",
+                    "description": "Confirmed structured Skill inputs used by deterministic expansion.",
+                },
+                "items": {
+                    "type": "array",
+                    "description": "Compact creative decisions. The tool expands these into nodes, edges, layout, and groups.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "prompt": {"type": "string"},
+                        },
+                    },
+                },
             },
         ),
         _handle_build_workflow_plan,
@@ -4248,6 +4350,21 @@ TOOLS = (
                     "description": "Current user goal used as planning context; it does not route to another Skill.",
                 },
                 "userGoal": {"type": "string", "description": "Alias of user_goal."},
+                "inputs": {
+                    "type": "object",
+                    "description": (
+                        "Structured Skill input values already stated or confirmed by the user. "
+                        "The result returns defaults, missing required fields, validation errors, "
+                        "and the recommended run_after_create mode without creating a session."
+                    ),
+                },
+                "compact": {
+                    "type": "boolean",
+                    "description": (
+                        "When true, omit full Recipe definitions and return planning summaries only. "
+                        "Use this for normal WorkflowPlan generation to reduce context size."
+                    ),
+                },
             },
             ["skill_id"],
         ),
@@ -4292,6 +4409,26 @@ TOOLS = (
                 "beat_count": {
                     "type": "integer",
                     "description": "Optional beat count for short drama style workflows.",
+                },
+                "count": {
+                    "type": "integer",
+                    "description": "Optional output count used by user-overridable multiplicity rules.",
+                },
+                "inputs": {
+                    "type": "object",
+                    "description": "Confirmed structured Skill inputs used by deterministic expansion.",
+                },
+                "items": {
+                    "type": "array",
+                    "description": "Compact creative decisions. Do not send complete nodes or edges.",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "step_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "prompt": {"type": "string"},
+                        },
+                    },
                 },
             },
         ),
@@ -4659,6 +4796,36 @@ TOOLS = (
             ["scope"],
         ),
         _handle_open_mainline_projection,
+    ),
+    (
+        "freezone_run_workflow",
+        _schema(
+            "freezone_run_workflow",
+            "Run, continue, retry, or locally regenerate a canvas workflow through the deterministic DAG runner. The runner expands dependencies, skips completed outputs by default, executes independent nodes in parallel, persists status, and blocks failed descendants without Agent polling.",
+            {
+                **_SCOPE_PROPS,
+                "node_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional start node ids. Required unless scope=canvas.",
+                },
+                "scope": {
+                    "type": "string",
+                    "enum": ["selection", "canvas"],
+                    "description": "Use canvas to continue all unfinished workflow nodes.",
+                },
+                "direction": {
+                    "type": "string",
+                    "enum": ["connected", "node", "downstream"],
+                    "description": "Use downstream for local reruns, node for one-node retry, connected for a selected workflow.",
+                },
+                "regenerate": {
+                    "type": "boolean",
+                    "description": "False/omitted skips completed outputs. Set true only for explicit regeneration.",
+                },
+            },
+        ),
+        _handle_run_workflow,
     ),
     (
         "freezone_run_node_action",

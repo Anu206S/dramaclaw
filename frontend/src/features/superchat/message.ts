@@ -220,7 +220,11 @@ function completeMessagePartsFromText(
     return [...parts, { id: `text-${parts.length + 1}`, type: "text", text }];
   }
   const cursor = textCursorAfterOrderedParts(text, parts);
-  if (cursor == null || cursor >= text.length) return parts;
+  if (cursor == null) {
+    const nonTextParts = parts.filter((part) => part.type !== "text");
+    return [...nonTextParts, { id: `text-${nonTextParts.length + 1}`, type: "text", text }];
+  }
+  if (cursor >= text.length) return parts;
   const trailingText = text.slice(cursor);
   if (!trailingText) return parts;
   const nextParts = [...parts];

@@ -23,6 +23,7 @@ export interface FreezoneRecipeCompilePayload {
   recipeId: string;
   recipeVersion?: string;
   nodeKind: FreezoneRecipeNodeKind;
+  promptStrategy?: "template" | "user_message" | "previous_output" | "llm_refine";
   nodePrompt?: string;
   userGoal?: string;
   upstreamText?: string;
@@ -32,15 +33,21 @@ export interface FreezoneRecipeCompilePayload {
   }>;
 }
 
+const RECIPE_MODEL_TIMEOUT_MS = 10 * 60 * 1000;
+
 export async function compileFreezoneRecipePrompt(
   payload: FreezoneRecipeCompilePayload,
 ): Promise<string> {
   const data = await apiCall<{ prompt: string }>("freezone/recipes/compile", {
     method: "POST",
+    // Prompt compilation invokes the text model before the media task exists.
+    // Keep it aligned with Recipe text execution instead of the shared 30s timeout.
+    timeout: RECIPE_MODEL_TIMEOUT_MS,
     json: {
       recipe_id: payload.recipeId,
       recipe_version: payload.recipeVersion ?? "",
       node_kind: payload.nodeKind,
+      prompt_strategy: payload.promptStrategy ?? "llm_refine",
       node_prompt: payload.nodePrompt ?? "",
       user_goal: payload.userGoal ?? "",
       upstream_text: payload.upstreamText ?? "",
@@ -55,6 +62,9 @@ export async function generateFreezoneRecipeText(
 ): Promise<string> {
   const data = await apiCall<{ content: string }>("freezone/recipes/generate-text", {
     method: "POST",
+    // Recipe-backed text generation is a model call and can legitimately take
+    // longer than the shared 30s API-client timeout.
+    timeout: RECIPE_MODEL_TIMEOUT_MS,
     json: {
       recipe_id: payload.recipeId,
       recipe_version: payload.recipeVersion ?? "",
@@ -713,6 +723,7 @@ export interface FreezoneVideoComposeTrackPayload {
 export interface FreezoneVideoComposePayload {
   title?: string;
   canvasId?: string;
+  nodeId?: string;
   resolution?: FreezoneVideoComposeResolution;
   fps?: number;
   backgroundColor?: string;
@@ -732,6 +743,7 @@ export async function submitFreezoneVideoCompose(
   const body: Record<string, unknown> = {
     title: payload.title ?? "",
     canvas_id: payload.canvasId ?? "",
+    node_id: payload.nodeId ?? "",
     resolution: payload.resolution ?? "1080p",
     fps: payload.fps ?? 30,
     background_color: payload.backgroundColor ?? "#000000",
