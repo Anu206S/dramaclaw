@@ -59,14 +59,13 @@ import { PanelExpandButton } from '@/features/canvas/ui/PanelExpandButton';
 import { useCanvasStore } from '@/stores/canvasStore';
 import {
   fetchFreezoneStoryScriptResult,
-  fetchFreezoneTextTranslateResult,
   submitFreezoneStoryScript,
-  submitFreezoneTextTranslate,
   type FreezoneGenerationHistoryRecord,
   type FreezoneStoryScriptResult,
   type FreezoneStoryScriptRow,
 } from '@/api/ops';
 import { awaitTaskCompletion } from '@/api/tasks';
+import { translateNodeText } from '@/features/canvas/application/translateText';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
 import {
   publishNodeActionAccepted,
@@ -193,7 +192,10 @@ const SCRIPT_TABLE_MIN_WIDTH = SCRIPT_COLUMNS.reduce(
   0,
 );
 
-function isScriptResult(value: unknown): value is FreezoneStoryScriptResult {
+// isScriptResult / ScriptReference / classifyUpstreamNode / useScriptStorySubmit
+// 对外导出：故事板详情的脚本节点工具条（生成分镜脚本 + 历史恢复）复用同一条
+// 提交/恢复路径（Task 8 纯装配，不改这里的语义）。
+export function isScriptResult(value: unknown): value is FreezoneStoryScriptResult {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as { rows?: unknown };
   return Array.isArray(candidate.rows);
@@ -201,7 +203,7 @@ function isScriptResult(value: unknown): value is FreezoneStoryScriptResult {
 
 type ScriptReferenceKind = 'text' | 'image' | 'video' | 'audio';
 
-interface ScriptReference {
+export interface ScriptReference {
   nodeId: string;
   kind: ScriptReferenceKind;
   /** 用作 chip / 预览的图片（image / video 首帧）；text 节点不需要。 */
@@ -216,7 +218,7 @@ interface ScriptReference {
   displayName?: string | null;
 }
 
-function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
+export function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
   if (isTextAnnotationNode(node)) {
     return {
       nodeId: node.id,
@@ -280,7 +282,7 @@ function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
 
 // 提交逻辑抽成共享 hook：节点本体的「重试」按钮与底部操作面板的「生成」按钮共用同一条
 // 提交路径。错误统一写进 data.generationError（渲染在节点本体上），不再用面板本地 state。
-function useScriptStorySubmit(
+export function useScriptStorySubmit(
   nodeId: string,
   references: ScriptReference[],
   prompt: string,
@@ -1016,15 +1018,12 @@ function ScriptOperationsPanel({
     }
     setIsTranslating(true);
     try {
-      const ref = await submitFreezoneTextTranslate(project, {
+      const translated = await translateNodeText(project, {
         text: prompt,
-        nodeType: 'text',
-        canvasId: readUrl().canvas ?? 'default',
         nodeId,
+        nodeType: 'text',
       });
-      await awaitTaskCompletion(ref.task_key, project);
-      const result = await fetchFreezoneTextTranslateResult(project, ref.job_id);
-      updateNodeData(nodeId, { prompt: result.translated_text });
+      updateNodeData(nodeId, { prompt: translated });
     } catch (error) {
       console.error('[script-node] translate failed', error);
     } finally {

@@ -5,26 +5,17 @@ import { NodeToolbar as ReactFlowNodeToolbar, Position } from '@xyflow/react';
 import { ArrowUp, ChevronDown, Globe2, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
-import {
-  CANVAS_NODE_TYPES,
-  EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-  EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
-  type CanvasNode,
-} from '@/features/canvas/domain/canvasNodes';
+import { type CanvasNode } from '@/features/canvas/domain/canvasNodes';
 import { CreditCostInline } from '@/components/credit-cost-inline';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import {
-  fetchFreezoneJobResult,
-  submitFreezoneScene360,
   FREEZONE_SCENE_360_ASPECT_RATIOS,
   DEFAULT_FREEZONE_SCENE_360_ASPECT_RATIO,
   type FreezoneScene360AspectRatio,
 } from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
-import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
-import { readUrl } from '@/lib/url-params';
+import { scene360Image } from '@/features/canvas/application/imageScene360';
 import { NODE_TOOLBAR_CLASS } from './nodeToolbarConfig';
 import { CANVAS_NODE_TOOLBAR_PILL_CLASS } from './nodeFrameStyles';
 import { ZoomScaledToolbar } from './ZoomScaledToolbar';
@@ -33,9 +24,6 @@ import {
   NODE_GENERATE_BUTTON_BASE_CLASS,
   NODE_GENERATE_BUTTON_ENABLED_CLASS,
 } from './nodeControlStyles';
-
-const PANO_VIEWER_LAYOUT_WIDTH = 720;
-const PANO_VIEWER_LAYOUT_HEIGHT = 420;
 
 interface Scene360OverlayProps {
   node: CanvasNode;
@@ -46,11 +34,7 @@ interface Scene360OverlayProps {
 export const Scene360Overlay = memo(
   ({ node, imageSource, onClose }: Scene360OverlayProps) => {
     const { t } = useTranslation();
-    const addNode = useCanvasStore((state) => state.addNode);
-    const addEdge = useCanvasStore((state) => state.addEdge);
     const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
-    const findNodePosition = useCanvasStore((state) => state.findNodePosition);
-    const updateNodeData = useCanvasStore((state) => state.updateNodeData);
     const { models: imageModels } = useFreezoneImageModels();
     const selectedModel = imageModels[0];
     const panoCost = useGenerationCreditCost(
@@ -67,90 +51,15 @@ export const Scene360Overlay = memo(
       DEFAULT_FREEZONE_SCENE_360_ASPECT_RATIO,
     );
 
-    const handleSubmit = useCallback(async () => {
-      const project = readUrl().project;
-      if (!project) {
-        console.error('[scene-360] no project in URL — cannot submit');
-        return;
-      }
-
-      const position = findNodePosition(
-        node.id,
-        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-        EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
-      );
-      const generationStartedAt = Date.now();
-      const nextNodeId = addNode(
-        CANVAS_NODE_TYPES.exportImage,
-        position,
-        {
-          displayName: t('scene360.label'),
-          imageUrl: null,
-          previewImageUrl: null,
-          aspectRatio,
-          resultKind: 'generic',
-          output_role: 'scene_360_candidate',
-          media_kind: 'pano360',
-          isGenerating: true,
-          generationStartedAt,
-        },
-      );
-      addEdge(node.id, nextNodeId);
-      setSelectedNode(nextNodeId);
+    const handleSubmit = useCallback(() => {
+      const result = scene360Image(node.id, imageSource, {
+        displayName: t('scene360.label'),
+        aspectRatio,
+      });
+      if (!result) return;
+      setSelectedNode(result.nodeId);
       onClose();
-
-      try {
-        const ref = await submitFreezoneScene360(project, {
-          referenceUrl: imageSource.split('?')[0],
-          aspectRatio,
-        });
-        updateNodeData(nextNodeId, generationTaskDescriptor(ref));
-        const completed = await awaitTaskCompletion(ref.task_key, project);
-        const directUrl = completed.result?.['output_url'] as string | undefined;
-        let url = directUrl;
-        if (!url) {
-          const fallback = await fetchFreezoneJobResult(project, ref.task_type, ref.job_id);
-          url = fallback.url;
-        }
-        updateNodeData(nextNodeId, {
-          imageUrl: url,
-          previewImageUrl: url,
-          aspectRatio,
-          output_role: 'scene_360_candidate',
-          media_kind: 'pano360',
-          isGenerating: false,
-          generationStartedAt: null,
-          generationError: null,
-        });
-
-        const viewerPosition = findNodePosition(
-          nextNodeId,
-          PANO_VIEWER_LAYOUT_WIDTH,
-          PANO_VIEWER_LAYOUT_HEIGHT,
-        );
-        const viewerNodeId = addNode(CANVAS_NODE_TYPES.pano360Viewer, viewerPosition);
-        addEdge(nextNodeId, viewerNodeId);
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[scene-360] generation failed', err);
-        updateNodeData(nextNodeId, {
-          isGenerating: false,
-          generationStartedAt: null,
-          generationError: message,
-        });
-      }
-    }, [
-      addEdge,
-      addNode,
-      aspectRatio,
-      findNodePosition,
-      imageSource,
-      node,
-      onClose,
-      setSelectedNode,
-      t,
-      updateNodeData,
-    ]);
+    }, [aspectRatio, imageSource, node.id, onClose, setSelectedNode, t]);
 
     return (
       <ReactFlowNodeToolbar

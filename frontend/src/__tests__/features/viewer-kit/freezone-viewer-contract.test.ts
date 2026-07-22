@@ -345,15 +345,20 @@ describe("freezone viewer contracts", () => {
   });
 
   it("keeps generated scene 360 panoramas on the legacy pano viewer path", () => {
+    // 全景生成编排已抽到 application/imageScene360（工作流 overlay 与故事板详情
+    // 共用同一条路径）——节点建造的约束跟着搬到那里断言，overlay 只剩参数 UI。
+    const orchestration = read("src/features/canvas/application/imageScene360.ts");
     const overlay = read("src/features/canvas/ui/Scene360Overlay.tsx");
 
-    expect(overlay).toContain("CANVAS_NODE_TYPES.pano360Viewer");
-    expect(overlay).not.toContain("CANVAS_NODE_TYPES.threeDWorld");
-    expect(overlay).not.toContain("source_type: 'pano360'");
-    expect(overlay).not.toContain("activeSourceId");
-    expect(overlay).toContain("output_role: 'scene_360_candidate'");
-    expect(overlay).toContain("media_kind: 'pano360'");
-    expect(overlay).toContain("aspectRatio,");
+    expect(orchestration).toContain("CANVAS_NODE_TYPES.pano360Viewer");
+    expect(orchestration).toContain("output_role: 'scene_360_candidate'");
+    expect(orchestration).toContain("media_kind: 'pano360'");
+    expect(orchestration).toContain("aspectRatio: opts.aspectRatio,");
+    for (const source of [orchestration, overlay]) {
+      expect(source).not.toContain("CANVAS_NODE_TYPES.threeDWorld");
+      expect(source).not.toContain("source_type: 'pano360'");
+      expect(source).not.toContain("activeSourceId");
+    }
   });
 
   it("lets canvas ThreeDWorldNode open pano360 image sources when explicitly connected", () => {
@@ -443,11 +448,15 @@ describe("freezone viewer contracts", () => {
   });
 
   it("auto-commits present image generation nodes when requested by the preset", () => {
-    const imageGenNode = read("src/features/canvas/nodes/ImageGenNode.tsx");
+    // 生成编排（含 auto-commit）住在表单 hook 里，节点只负责挂载它 ——
+    // 故事板详情复用同一张表单时自动提交行为随之带过去。
+    const imageGenForm = read(
+      "src/features/canvas/nodes/shared/useImageGenerationForm.ts",
+    );
 
-    expect(imageGenNode).toContain("autoCommitOnGenerate");
-    expect(imageGenNode).toContain("canvasEventBus.publish('freezone/commit-node'");
-    expect(imageGenNode).toContain("auto: true");
+    expect(imageGenForm).toContain("autoCommitOnGenerate");
+    expect(imageGenForm).toContain("canvasEventBus.publish('freezone/commit-node'");
+    expect(imageGenForm).toContain("auto: true");
   });
 
   it("routes projection group toolbar actions through projection sync and remove events", () => {

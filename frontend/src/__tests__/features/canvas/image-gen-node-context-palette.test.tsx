@@ -7,15 +7,21 @@ import { describe, expect, it } from "vitest";
 
 describe("ImageGenNode context palette", () => {
   it("wires ImageGenNode to context collection and prompt insertion", () => {
+    // 调色盘按钮的接入与提示词插入逻辑已随生成表单 UI 一起抽到
+    // ImageGenerationForm（可独立挂载于 React Flow 之外），
+    // ImageGenNode 本身只渲染该组件。
     const source = readFileSync(
-      resolve(process.cwd(), "src/features/canvas/nodes/ImageGenNode.tsx"),
+      resolve(
+        process.cwd(),
+        "src/features/canvas/nodes/shared/ImageGenerationForm.tsx",
+      ),
       "utf8",
     );
 
     // 调色盘按钮通过 NodeContextPromptPaletteButton 接入（该 wrapper 内部订阅
     // nodes/edges 构建 palette，宿主节点不再为它订阅整图）。
     expect(source).toContain("<NodeContextPromptPaletteButton");
-    expect(source).toContain("nodeId={id}");
+    expect(source).toContain("nodeId={nodeId}");
     // 插入走编辑器命令式 API（回调稳定，不再依赖 prompt）。
     expect(source).toContain("contextPromptPaletteInsertionText(entry)");
     expect(source).toContain("insertTextAtCursor(");

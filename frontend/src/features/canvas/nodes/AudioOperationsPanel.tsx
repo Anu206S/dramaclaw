@@ -21,11 +21,7 @@ import { useCanvasStore } from '@/stores/canvasStore';
 import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
 import { ReferenceTextChip } from '@/features/canvas/nodes/shared/ReferenceTextChip';
 import { useDetachUpstream } from '@/features/canvas/hooks/useDetachUpstream';
-import {
-  fetchFreezoneTextTranslateResult,
-  submitFreezoneTextTranslate,
-} from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
+import { translateNodeText } from '@/features/canvas/application/translateText';
 import { deriveAudioText, useAudioGeneration } from '@/features/canvas/nodes/useAudioGeneration';
 import { readUrl } from '@/lib/url-params';
 import { PanelExpandButton } from '@/features/canvas/ui/PanelExpandButton';
@@ -59,7 +55,8 @@ const AUDIO_INPUT_FIELD_CLASS =
   'nodrag nowheel w-full rounded-[10px] border border-white/[0.08] bg-transparent px-3 text-[13px] text-text-dark outline-none transition-colors placeholder:text-text-muted/70 hover:border-white/[0.12] focus:border-white/20';
 
 // music 模式时长默认 30s（对齐后端 music_length_ms 默认 30000）。
-const DEFAULT_MUSIC_LENGTH_MS = 30000;
+// 导出：故事板详情的音频操作面复用同一默认值与预设档位，避免两处漂移。
+export const DEFAULT_MUSIC_LENGTH_MS = 30000;
 // 音乐时长下拉样式：暗色画布风格 + min-width 兜底,避免画布缩放/窄触发器时
 // 菜单按触发器屏幕宽渲染导致选项被 truncate 成「1…」。
 const MUSIC_LENGTH_SELECT_CLASS =
@@ -67,7 +64,7 @@ const MUSIC_LENGTH_SELECT_CLASS =
 const MUSIC_LENGTH_SELECT_MENU_CLASS =
   '!z-[260] !min-w-[140px] !border-white/10 !bg-[#202024] !text-text-dark shadow-[0_14px_34px_rgba(0,0,0,0.5)]';
 // 音乐时长预设（毫秒）。后端范围 3000–600000，这里给常用档位。
-const MUSIC_LENGTH_PRESETS: ReadonlyArray<{ ms: number; label: string }> = [
+export const MUSIC_LENGTH_PRESETS: ReadonlyArray<{ ms: number; label: string }> = [
   { ms: 30000, label: '30秒' },
   { ms: 60000, label: '1分钟' },
   { ms: 120000, label: '2分钟' },
@@ -77,7 +74,8 @@ const MUSIC_LENGTH_PRESETS: ReadonlyArray<{ ms: number; label: string }> = [
   { ms: 600000, label: '10分钟' },
 ];
 
-function musicBillingSecondsFromMs(ms: number): number {
+/** 音乐计费秒数（向上取整、至少 1s）。导出供故事板音频表单复用同一口径询价。 */
+export function musicBillingSecondsFromMs(ms: number): number {
   return Math.max(Math.ceil(Math.max(ms, 0) / 1000), 1);
 }
 
@@ -173,15 +171,12 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
     }
     setIsTranslating(true);
     try {
-      const ref = await submitFreezoneTextTranslate(project, {
+      const translated = await translateNodeText(project, {
         text: trimmed,
-        nodeType: 'audio',
-        canvasId: readUrl().canvas ?? 'default',
         nodeId,
+        nodeType: 'audio',
       });
-      await awaitTaskCompletion(ref.task_key, project);
-      const result = await fetchFreezoneTextTranslateResult(project, ref.job_id);
-      handleTextChange(result.translated_text);
+      handleTextChange(translated);
     } catch (error) {
       console.error('[audio-node] translate failed', error);
     } finally {
