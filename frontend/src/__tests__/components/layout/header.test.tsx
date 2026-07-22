@@ -23,6 +23,11 @@ vi.mock("@/lib/queries/model-gateway", () => ({
   useModelGatewayConfig: () => ({ data: undefined }),
 }));
 
+vi.mock("@/components/settings/settings-dialog", () => ({
+  SettingsDialog: ({ open }: { open: boolean }) =>
+    open ? <div role="dialog">Settings dialog</div> : null,
+}));
+
 vi.mock("@tanstack/react-router", () => ({
   Link: ({ children, ...props }: React.ComponentProps<"a">) => <a {...props}>{children}</a>,
   useNavigate: () => vi.fn(),
@@ -107,6 +112,7 @@ function renderHeader() {
 describe("Header runtime gating", () => {
   beforeEach(() => {
     runtimeState.authRequired = true;
+    runtimeState.isCe = false;
     authState.username = "local";
     authState.logout.mockReset();
     resetUserSessionStateMock.mockReset();
@@ -147,6 +153,16 @@ describe("Header runtime gating", () => {
       expect(screen.getByText("local")).toBeInTheDocument();
     });
     expect(screen.queryByText("Log out")).not.toBeInTheDocument();
+  });
+
+  it("keeps the settings entry available in EE runtime", () => {
+    runtimeState.isCe = false;
+
+    renderHeader();
+
+    fireEvent.click(screen.getByLabelText("header.settings"));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("Settings dialog");
   });
 
   it("purges user-scoped caches after logout so the next account can't see stale data", async () => {
