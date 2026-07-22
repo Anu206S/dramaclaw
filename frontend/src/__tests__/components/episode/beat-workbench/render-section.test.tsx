@@ -537,6 +537,54 @@ describe("RenderSection", () => {
     });
   });
 
+  it("prefers the source sketch aspect over the project aspect", async () => {
+    const user = userEvent.setup();
+    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    regenerateMock.mockResolvedValue({ ok: true, scope: "render-scope" });
+    class MockImage {
+      naturalWidth = 1200;
+      naturalHeight = 1800;
+      onload: (() => void) | null = null;
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal("Image", MockImage);
+
+    try {
+      render(
+        <I18nextProvider i18n={i18n}>
+          <RenderSection
+            beat={{ ...beat, sketch_url: "/static/current-sketch.png" }}
+            project="demo"
+            episode={1}
+            images={[renderImage, sketchImage]}
+            assignments={{ "5": "render-5" }}
+          />
+        </I18nextProvider>,
+      );
+
+      await waitFor(() =>
+        expect(generationCreditCostMock).toHaveBeenLastCalledWith(
+          "image_selection",
+          "doubao_seedream-3.0-t2i",
+          { surface: "supertale", imageRole: "render", modeKey: "1x1_2-3" },
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: /重新生成/ }));
+      await user.click(screen.getByRole("button", { name: "确认" }));
+
+      expect(regenerateMock).toHaveBeenCalledWith({
+        beatIndices: [5],
+        modeKey: "1x1_2-3",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("shows render background reference controls and renders current sketch", async () => {
     const user = userEvent.setup();
     regenerateMock.mockResolvedValue({ ok: true, scope: "render-scope" });
