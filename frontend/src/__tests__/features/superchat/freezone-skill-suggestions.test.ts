@@ -5,10 +5,13 @@ import { describe, expect, it } from "vitest";
 import {
   filterFreezoneSkillSuggestions,
   findFreezoneSkillMention,
+  FREEZONE_SKILL_EMPTY_ACTIONS,
   getFreezoneSkillSlashQuery,
+  insertFreezoneSkillEmptyActionPrompt,
   insertFreezoneSkillMention,
   moveFreezoneSkillSuggestionIndex,
   removeFreezoneSkillMention,
+  shouldShowFreezoneSkillSuggestionMenu,
   splitFreezoneSkillMentionText,
   toFreezoneSkillSuggestions,
 } from "@/features/superchat/freezone-skill-suggestions";
@@ -123,5 +126,33 @@ describe("freezone skill slash suggestions", () => {
     expect(moveFreezoneSkillSuggestionIndex(0, -1, 3)).toBe(2);
     expect(moveFreezoneSkillSuggestionIndex(8, 1, 2)).toBe(1);
     expect(moveFreezoneSkillSuggestionIndex(0, 1, 0)).toBe(0);
+  });
+
+  it("keeps the slash skill menu open for empty results", () => {
+    expect(shouldShowFreezoneSkillSuggestionMenu({ isFreezoneLayout: true, slashQuery: "" })).toBe(
+      true,
+    );
+    expect(
+      shouldShowFreezoneSkillSuggestionMenu({ isFreezoneLayout: true, slashQuery: "missing" }),
+    ).toBe(true);
+    expect(shouldShowFreezoneSkillSuggestionMenu({ isFreezoneLayout: true, slashQuery: null })).toBe(
+      false,
+    );
+    expect(shouldShowFreezoneSkillSuggestionMenu({ isFreezoneLayout: false, slashQuery: "" })).toBe(
+      false,
+    );
+  });
+
+  it("fills the composer with an empty-state skill creation prompt", () => {
+    expect(FREEZONE_SKILL_EMPTY_ACTIONS.map((action) => action.id)).toEqual([
+      "summarize-canvas",
+      "create-with-agent",
+    ]);
+    expect(insertFreezoneSkillEmptyActionPrompt("/", FREEZONE_SKILL_EMPTY_ACTIONS[0].prompt)).toBe(
+      "把当前画布总结成一个可复用 Skill",
+    );
+    expect(insertFreezoneSkillEmptyActionPrompt("我想 /skill", FREEZONE_SKILL_EMPTY_ACTIONS[1].prompt)).toBe(
+      "我想 帮我创建一个 Skill：",
+    );
   });
 });
