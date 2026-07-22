@@ -20,6 +20,25 @@ export type FreezoneSkillMentionTextSegment =
   | { type: "text"; text: string }
   | { type: "skill"; skillId: string };
 
+export type FreezoneSkillEmptyAction = {
+  id: "summarize-canvas" | "create-with-agent";
+  label: string;
+  prompt: string;
+};
+
+export const FREEZONE_SKILL_EMPTY_ACTIONS: FreezoneSkillEmptyAction[] = [
+  {
+    id: "summarize-canvas",
+    label: "总结画布为 Skill",
+    prompt: "把当前画布总结成一个可复用 Skill",
+  },
+  {
+    id: "create-with-agent",
+    label: "和 Agent 创建 Skill",
+    prompt: "帮我创建一个 Skill：",
+  },
+];
+
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -105,6 +124,14 @@ export function insertFreezoneSkillMention(value: string, skillId: string): stri
   return `${value.slice(0, tokenStart)}${replacement}`;
 }
 
+export function insertFreezoneSkillEmptyActionPrompt(value: string, prompt: string): string {
+  const slashTokenMatch = value.match(/(?:^|\s)\/([^\s/]*)$/u);
+  if (!slashTokenMatch || slashTokenMatch.index === undefined) return prompt;
+  const matchedToken = slashTokenMatch[0];
+  const tokenStart = slashTokenMatch.index + (matchedToken.startsWith("/") ? 0 : 1);
+  return `${value.slice(0, tokenStart)}${prompt}`;
+}
+
 export function findFreezoneSkillMention(value: string): FreezoneSkillMention | null {
   const matches = value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu);
   let latest: FreezoneSkillMention | null = null;
@@ -167,4 +194,14 @@ export function moveFreezoneSkillSuggestionIndex(
   if (itemCount <= 0) return 0;
   const normalizedCurrent = currentIndex >= 0 && currentIndex < itemCount ? currentIndex : 0;
   return (normalizedCurrent + offset + itemCount) % itemCount;
+}
+
+export function shouldShowFreezoneSkillSuggestionMenu({
+  isFreezoneLayout,
+  slashQuery,
+}: {
+  isFreezoneLayout: boolean;
+  slashQuery: string | null;
+}): boolean {
+  return isFreezoneLayout && slashQuery !== null;
 }
