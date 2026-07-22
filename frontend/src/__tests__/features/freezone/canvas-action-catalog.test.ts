@@ -218,7 +218,7 @@ describe("canvas action catalog", () => {
     });
   });
 
-  it("explains generator prompt fields are combined with upstream prompt text", () => {
+  it("explains generator prompt fields are combined with upstream prompt text and reference mentions", () => {
     const image = node({
       id: "image-prompt-a",
       type: CANVAS_NODE_TYPES.imageGen,
@@ -235,8 +235,40 @@ describe("canvas action catalog", () => {
 
     expect(imagePrompt.description).toContain("combined with upstream prompt_for text");
     expect(imagePrompt.description).toContain("avoid duplicating");
+    expect(imagePrompt.description).toContain("@图片1");
+    expect(imagePrompt.description).toContain("top reference thumbnails");
+    expect(imagePrompt.description).toContain("declare each referenced image's role");
     expect(videoPrompt.description).toContain("combined with upstream prompt_for text");
     expect(videoPrompt.description).toContain("avoid duplicating");
+    expect(videoPrompt.description).toContain("@图片1");
+    expect(videoPrompt.description).toContain("top reference thumbnails");
+    expect(videoPrompt.description).toContain("declare each referenced image's role");
+  });
+
+  it("reminds generator actions to bind upstream references before running", () => {
+    const image = node({
+      id: "image-action-a",
+      type: CANVAS_NODE_TYPES.imageGen,
+      data: { prompt: "@图片1 作为构图参考" },
+    });
+    const video = node({
+      id: "video-action-a",
+      type: CANVAS_NODE_TYPES.video,
+      data: { prompt: "@图片1 作为角色参考", genMode: "imageReference" },
+    });
+
+    const imageAction = buildCanvasNodeActionCatalog(image).actions.find(
+      (action) => action.action === "generate_image",
+    );
+    const videoAction = buildCanvasNodeActionCatalog(video).actions.find(
+      (action) => action.action === "generate_video",
+    );
+
+    expect(imageAction?.description).toContain("@图片N");
+    expect(imageAction?.description).toContain("Before running");
+    expect(videoAction?.description).toContain("@图片N");
+    expect(videoAction?.description).toContain("imageReference");
+    expect(videoAction?.description).toContain("Before running");
   });
 
   it("exposes video download as a runnable node action when a video has media", () => {

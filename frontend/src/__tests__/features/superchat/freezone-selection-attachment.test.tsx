@@ -570,6 +570,36 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     expect(document.execCommand).toHaveBeenCalledWith("copy");
   });
 
+  it("renders historical freezone skill slash mentions as chips without catalog data", () => {
+    superChatMocks.messages = [
+      {
+        id: "history-skill-message",
+        role: "user",
+        text: "/pixar-brand-ip-ad-video 做个手机广告",
+        displayName: "User",
+        timestamp: Date.now(),
+        attachments: [],
+      },
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    const chipLabel = screen.getByText("pixar-brand-ip-ad-video");
+    expect(chipLabel.closest("[data-freezone-skill-message-chip]")).toBeTruthy();
+    expect(screen.getByText("做个手机广告")).toBeInTheDocument();
+  });
+
   it("reveals assistant message actions below the bubble on the left side", () => {
     superChatMocks.messages = [
       {
