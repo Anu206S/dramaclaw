@@ -1,10 +1,40 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 import json
 import sys
 import types
 from pathlib import Path
+
+_MINIMAL_ECOMMERCE_SKILL = {
+    "id": "ecommerce-product",
+    "name": "电商产品图",
+    "version": 6,
+    "description": "测试用电商产品图 Skill",
+    "enabled": True,
+    "triggers": {"node_scopes": ["imageGeneration"]},
+    "allowed_recipe_ids": ["ecommerce-ad-image", "general-image"],
+}
+
+_MINIMAL_ECOMMERCE_RECIPES = [
+    {
+        "id": "ecommerce-ad-image",
+        "name": "电商广告图",
+        "version": 5,
+        "enabled": True,
+        "output_kind": "image",
+        "requires_source_media": True,
+    },
+    {
+        "id": "general-image",
+        "name": "通用图片",
+        "version": 1,
+        "enabled": True,
+        "output_kind": "image",
+        "requires_source_media": False,
+    },
+]
 
 
 def _load_plugin_module():
@@ -55,6 +85,17 @@ def _load_catalog_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _install_minimal_builtin_catalog(monkeypatch, catalog) -> None:
+    def fake_load_json_dir(path):
+        if path == catalog._SKILLS_DIR:
+            return copy.deepcopy([_MINIMAL_ECOMMERCE_SKILL])
+        if path == catalog._RECIPES_DIR:
+            return copy.deepcopy(_MINIMAL_ECOMMERCE_RECIPES)
+        return []
+
+    monkeypatch.setattr(catalog, "_load_json_dir", fake_load_json_dir)
 
 
 def test_freezone_plugin_registers_canvas_command_tools():
@@ -132,7 +173,10 @@ def test_workflow_graph_can_run_validated_nodes_after_create():
 
 
 def test_freezone_get_workflow_skill_returns_json_when_registry_summarizes(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
     plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
+    monkeypatch.setattr(plugin, "get_workflow_skill", catalog.get_workflow_skill)
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
     loaded = handlers["freezone_get_workflow_skill"]({"skill_id": "ecommerce-product"})
@@ -146,7 +190,10 @@ def test_freezone_get_workflow_skill_returns_json_when_registry_summarizes(monke
 def test_freezone_get_workflow_skill_records_structured_result_side_channel(monkeypatch, tmp_path):
     result_dir = tmp_path / "freezone-tool-results"
     monkeypatch.setenv("DRAMACLAW_FREEZONE_TOOL_RESULT_DIR", str(result_dir))
+    catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
     plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
+    monkeypatch.setattr(plugin, "get_workflow_skill", catalog.get_workflow_skill)
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
     handlers["freezone_get_workflow_skill"]({"skill_id": "ecommerce-product"})
