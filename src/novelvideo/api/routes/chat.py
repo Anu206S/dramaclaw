@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import inspect
 import json
 import logging
 import time
@@ -760,6 +761,20 @@ def _scope_from_interaction_payload(payload: SkillStudioToolResultIn | Clarifica
     )
 
 
+async def _project_context_for_interaction_result(
+    user: dict[str, Any],
+    scope: ChatScope,
+) -> ProjectContext | None:
+    try:
+        result = _project_context_for_scope(user, scope)
+        if inspect.isawaitable(result):
+            return await result
+        return result
+    except Exception:
+        logger.debug("failed to resolve project context for interaction result", exc_info=True)
+        return None
+
+
 async def _persist_skill_studio_result_ui_event(
     *,
     user: dict[str, Any],
@@ -770,7 +785,7 @@ async def _persist_skill_studio_result_ui_event(
     scope = _scope_from_interaction_payload(payload)
     if not turn_id or scope is None:
         return
-    project_ctx = await _project_context_for_scope(user, scope)
+    project_ctx = await _project_context_for_interaction_result(user, scope)
     event: dict[str, Any] = {
         "type": "skill_studio.questions" if payload.draft is None else "skill_studio.draft",
         "bridge_key": payload.bridge_key,
@@ -810,7 +825,7 @@ async def _persist_clarification_result_ui_event(
     scope = _scope_from_interaction_payload(payload)
     if not turn_id or scope is None:
         return
-    project_ctx = await _project_context_for_scope(user, scope)
+    project_ctx = await _project_context_for_interaction_result(user, scope)
     chat_store.append_ui_event(
         username,
         _chat_store_scope_for_project_context(scope, project_ctx),
