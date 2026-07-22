@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 import os
 import re
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -234,7 +235,7 @@ def registered_catalog_workflows() -> list[dict[str, Any]]:
     workflows: list[dict[str, Any]] = []
     for skill in _load_skills():
         skill_id = _text(skill.get("id"))
-        if not skill_id or skill.get("_disabled") is True or _is_interactive_skill(skill):
+        if not skill_id or skill.get("_disabled") is True:
             continue
         templates = _templates(skill)
         label = _catalog_label(skill)
@@ -284,6 +285,96 @@ def catalog_workflow_aliases() -> dict[str, str]:
     return aliases
 
 
+def _workflow_input_values(args: dict[str, Any]) -> dict[str, Any]:
+    value = args.get("inputs")
+    if isinstance(value, dict):
+        return dict(value)
+    return {}
+
+
+def _parameter_option_values(parameter: dict[str, Any]) -> list[str]:
+    values: list[str] = []
+    for option in parameter.get("options") or []:
+        value = _text(option.get("value")) if isinstance(option, dict) else _text(option)
+        if value:
+            values.append(value)
+    return values
+
+
+def _is_missing_parameter_value(value: Any) -> bool:
+    return value is None or value == "" or value == []
+
+
+def _skill_input_contract(skill: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+    raw_parameters = skill.get("input_parameters") or []
+    parameters = [item for item in raw_parameters if isinstance(item, dict)]
+    provided = _workflow_input_values(args)
+    resolved: dict[str, Any] = {}
+    missing_required: list[str] = []
+    errors: list[dict[str, str]] = []
+    fields: list[dict[str, Any]] = []
+
+    for parameter in parameters:
+        parameter_id = _text(parameter.get("id"))
+        if not parameter_id:
+            continue
+        has_provided_value = parameter_id in provided
+        value = provided.get(parameter_id) if has_provided_value else deepcopy(parameter.get("default"))
+        required = bool(parameter.get("required"))
+        parameter_type = _text(parameter.get("type")) or "text"
+        option_values = _parameter_option_values(parameter)
+        if required and _is_missing_parameter_value(value):
+            missing_required.append(parameter_id)
+        elif not _is_missing_parameter_value(value):
+            if parameter_type == "multi_select":
+                if not isinstance(value, list):
+                    errors.append({"path": f"inputs.{parameter_id}", "message": "must be an array"})
+                else:
+                    invalid = [str(item) for item in value if option_values and str(item) not in option_values]
+                    if invalid:
+                        errors.append(
+                            {
+                                "path": f"inputs.{parameter_id}",
+                                "message": f"unsupported option: {invalid[0]}",
+                            }
+                        )
+            elif option_values and str(value) not in option_values:
+                errors.append(
+                    {
+                        "path": f"inputs.{parameter_id}",
+                        "message": f"unsupported option: {value}",
+                    }
+                )
+            resolved[parameter_id] = value
+        fields.append(
+            {
+                "id": parameter_id,
+                "label": _text(parameter.get("label")) or parameter_id,
+                "type": parameter_type,
+                "required": required,
+                "default": deepcopy(parameter.get("default")),
+                "options": deepcopy(parameter.get("options") or []),
+                "value": deepcopy(value),
+                "source": "user" if has_provided_value else "default",
+            }
+        )
+
+    execution_mode = _text(resolved.get("execution_mode")) or "manual"
+    return {
+        "schema_version": "freezone_skill_inputs.v1",
+        "fields": fields,
+        "provided": provided,
+        "resolved": resolved,
+        "missing_required": missing_required,
+        "errors": errors,
+        "ready_for_planning": not missing_required and not errors,
+        "requires_confirmation": bool(fields),
+        "execution_mode": execution_mode,
+        "recommended_run_after_create": execution_mode == "auto",
+        "execution_policy": deepcopy(skill.get("execution_policy") or {}),
+    }
+
+
 def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
     """Return one complete planning package for an explicitly selected Skill."""
     skill_id = _text(args.get("skill_id") or args.get("skillId") or args.get("id"))
@@ -293,6 +384,9 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
             "status": "skill_id_required",
             "error": "skill_id is required",
         }
+    catalog_spec = _parse_catalog_type(skill_id)
+    if catalog_spec is not None:
+        skill_id = catalog_spec[0]
     skill = _load_skill(skill_id)
     if skill is None or skill.get("_disabled") is True:
         return {
@@ -324,6 +418,8 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
         if _recipe_matches_references(recipe, referenced_recipe_ids)
     ]
     recipe_summaries = [_recipe_planning_summary(recipe) for recipe in candidate_recipes]
+    input_contract = _skill_input_contract(skill, args)
+    compact = bool(args.get("compact"))
     return {
         "ok": True,
         "schema_version": "freezone_workflow_skill_package.v1",
@@ -331,7 +427,8 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
         "user_goal": _workflow_goal_text(args),
         "source": _catalog_source(skill),
         "skill": _without_private_fields(skill),
-        "recipes": full_recipes,
+        "recipes": [] if compact else full_recipes,
+        "recipe_definitions_omitted": compact,
         "available_recipes": recipe_summaries,
         "capabilities": [
             {
@@ -354,12 +451,14 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
             if capability in allowed_capabilities
         ),
         "allowed_link_types": sorted(ALLOWED_LINK_TYPES),
+        "input_contract": input_contract,
         "planning_contract": {
             "schema_version": PLAN_SCHEMA_VERSION,
             "workflow_type_prefix": "dynamic.",
             "requires_explicit_skill_id": True,
             "requires_explicit_recipe_id": True,
             "strict_validation": True,
+            "plan_inputs_field": "inputs",
             "max_nodes": 200,
             "max_edges": 400,
             "missing_source_media": {
@@ -368,7 +467,11 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
                 "dependency_link_type": "media_input_for",
             },
         },
-        "message": "已加载完整 Workflow Skill 包，可直接规划 freezone_workflow_plan.v1。",
+        "message": (
+            "已加载完整 Workflow Skill 包，可直接规划 freezone_workflow_plan.v1。"
+            if input_contract["ready_for_planning"]
+            else "已加载 Workflow Skill，但必须先补全或修正 input_contract。"
+        ),
     }
 
 
@@ -410,6 +513,19 @@ def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
         for recipe in _workflow_skill_recipe_candidates(skills[skill_id], list(recipes.values()))
     }
     errors: list[dict[str, str]] = []
+    plan_inputs = plan.get("inputs", {})
+    if not isinstance(plan_inputs, dict):
+        errors.append({"path": "inputs", "message": "must be an object"})
+        plan_inputs = {}
+    input_contract = _skill_input_contract(skills[skill_id], {"inputs": plan_inputs})
+    errors.extend(input_contract["errors"])
+    errors.extend(
+        {
+            "path": f"inputs.{parameter_id}",
+            "message": "required Skill input is missing",
+        }
+        for parameter_id in input_contract["missing_required"]
+    )
     for index, node in enumerate(plan.get("nodes") or []):
         node_type = _text(node.get("node_type")) if isinstance(node, dict) else ""
         if node_type not in allowed_node_types:
@@ -451,6 +567,9 @@ def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
             "error": errors[0]["message"],
             "errors": errors,
         }
+    validated["resolved_inputs"] = input_contract["resolved"]
+    validated["execution_mode"] = input_contract["execution_mode"]
+    validated["recommended_run_after_create"] = input_contract["recommended_run_after_create"]
     return validated
 
 
@@ -510,7 +629,7 @@ def resolve_catalog_workflow(args: dict[str, Any]) -> dict[str, Any]:
     skills = _load_skills()
     candidates: list[dict[str, Any]] = []
     for skill in skills:
-        if skill.get("_disabled") is True or _is_interactive_skill(skill):
+        if skill.get("_disabled") is True:
             continue
         skill_id = _text(skill.get("id"))
         if not skill_id:
@@ -643,8 +762,107 @@ def _exact_catalog_workflow_candidate(args: dict[str, Any], user_goal: str) -> d
     return None
 
 
-def _is_interactive_skill(skill: dict[str, Any]) -> bool:
-    return _text(skill.get("type") or skill.get("skill_type")) == "interactive_skill"
+def _workflow_plan_items(args: dict[str, Any]) -> list[dict[str, Any]]:
+    raw = args.get("items") or args.get("plan_items") or args.get("planItems") or []
+    if not isinstance(raw, list):
+        return []
+    return [item for item in raw if isinstance(item, dict)]
+
+
+def _items_for_step(items: list[dict[str, Any]], step_id: str) -> list[dict[str, Any]]:
+    explicit = [
+        item
+        for item in items
+        if _safe_id(_text(_get(item, "stepId", "step_id"))) == step_id
+    ]
+    if explicit:
+        return explicit
+    return [item for item in items if not _text(_get(item, "stepId", "step_id"))]
+
+
+def _requested_output_count(args: dict[str, Any], user_goal: str) -> int | None:
+    inputs = args.get("inputs") if isinstance(args.get("inputs"), dict) else {}
+    for source in (args, inputs):
+        for key in (
+            "count",
+            "item_count",
+            "itemCount",
+            "image_count",
+            "imageCount",
+            "shot_count",
+            "shotCount",
+            "beat_count",
+            "beatCount",
+        ):
+            value = source.get(key)
+            if isinstance(value, bool):
+                continue
+            if isinstance(value, (int, float)) and int(value) > 0:
+                return int(value)
+            if isinstance(value, str) and value.strip().isdigit() and int(value.strip()) > 0:
+                return int(value.strip())
+    match = re.search(r"(?<!\d)(\d{1,2})\s*(?:张|幅|屏|个|段|条|镜头|镜)(?!\d)", user_goal)
+    return int(match.group(1)) if match else None
+
+
+def _step_instance_count(
+    *,
+    step: dict[str, Any],
+    step_id: str,
+    args: dict[str, Any],
+    user_goal: str,
+    items: list[dict[str, Any]],
+    expanded_step_ids: dict[str, list[str]],
+    previous_step_ids: list[str],
+) -> tuple[int, list[dict[str, Any]]]:
+    multiplicity = step.get("multiplicity", "single")
+    if multiplicity == "single" or multiplicity is None:
+        explicit_items = [
+            item
+            for item in items
+            if _safe_id(_text(_get(item, "stepId", "step_id"))) == step_id
+        ]
+        return 1, explicit_items[:1]
+    step_items = _items_for_step(items, step_id)
+    if multiplicity == "per_plan_item":
+        return max(1, len(step_items) or (_requested_output_count(args, user_goal) or 1)), step_items
+    if multiplicity == "per_input":
+        sources = _dependency_sources(step, previous_step_ids)
+        count = sum(len(expanded_step_ids.get(source, [])) for source in sources)
+        return max(1, count), step_items
+    if not isinstance(multiplicity, dict):
+        return 1, step_items[:1]
+
+    default_count = max(1, _int(_get(multiplicity, "defaultCount", "default_count"), 1))
+    count = len(step_items) or default_count
+    if bool(_get(multiplicity, "userOverridable", "user_overridable")):
+        inherited_count = 0
+        sources = _dependency_sources(step, previous_step_ids)
+        if len(sources) == 1:
+            inherited_count = len(expanded_step_ids.get(sources[0], []))
+        count = len(step_items) or (
+            _requested_output_count(args, user_goal) or inherited_count or default_count
+        )
+    minimum = max(1, _int(multiplicity.get("min"), 1))
+    maximum = max(minimum, _int(multiplicity.get("max"), max(minimum, count)))
+    return max(minimum, min(maximum, count)), step_items
+
+
+def _instance_dependencies(
+    *,
+    source_ids: list[str],
+    target_ids: list[str],
+) -> list[dict[str, str]]:
+    if len(source_ids) == len(target_ids) and len(source_ids) > 1:
+        return [
+            {"source": source_id, "target": target_id}
+            for source_id, target_id in zip(source_ids, target_ids, strict=True)
+        ]
+    return [
+        {"source": source_id, "target": target_id}
+        for source_id in source_ids
+        for target_id in target_ids
+    ]
 
 
 def _build_plan(
@@ -664,6 +882,7 @@ def _build_plan(
     raw_steps.sort(
         key=lambda item: (_int(_get(item, "stepNumber", "step_number"), 999), _text(item.get("id")))
     )
+    plan_items = _workflow_plan_items(args)
 
     nodes: list[dict[str, Any]] = [
         {
@@ -683,10 +902,23 @@ def _build_plan(
     ]
     edges: list[dict[str, str]] = []
     step_ids: list[str] = []
+    expanded_step_ids: dict[str, list[str]] = {}
+    expanded_counts: dict[str, int] = {}
 
     for step in raw_steps:
         step_id = _safe_id(_text(step.get("id")) or f"step_{len(step_ids) + 1}")
-        step_ids.append(step_id)
+        count, step_items = _step_instance_count(
+            step=step,
+            step_id=step_id,
+            args=args,
+            user_goal=user_goal,
+            items=plan_items,
+            expanded_step_ids=expanded_step_ids,
+            previous_step_ids=step_ids,
+        )
+        instance_ids = [step_id] if count == 1 else [f"{step_id}_{index + 1}" for index in range(count)]
+        expanded_step_ids[step_id] = instance_ids
+        expanded_counts[step_id] = count
         operation_type = _text(
             _get(step, "recipeId", "recipe_id")
             or _get(step, "operationType", "operation_type", "actionKey", "action_key")
@@ -712,58 +944,75 @@ def _build_plan(
             recipe=recipe,
             user_goal=user_goal,
         )
-        label = _text(_get(step, "goalTemplate", "goal_template")) or _text(
+        base_label = _text(_get(step, "goalTemplate", "goal_template")) or _text(
             recipe.get("name") if recipe else ""
         )
-        if len(label) > 48:
-            label = label[:45] + "..."
-        label = label or operation_type or step_id
-        data = {
-            "displayName": label,
-            "title": label,
-            "content": placeholder,
-            "prompt": placeholder,
-            "description": placeholder,
-            "workflowCatalog": {
-                "skillId": skill_id,
-                "templateId": template_id,
-                "stepId": step_id,
-                "operationType": operation_type,
-                "recipeId": _text(recipe.get("id") if recipe else ""),
-                "recipeVersion": _text(recipe.get("version") if recipe else ""),
-                "promptStrategy": _text(_get(step, "promptStrategy", "prompt_strategy")),
-                "inputStrategy": _get(step, "inputStrategy", "input_strategy") or {},
-                "model": _text(step.get("model")),
-                "needReview": bool(step.get("needReview")),
-                "recipeSettings": recipe_settings,
-                "promptBuilder": prompt_builder,
-            },
-        }
-        model = _text(step.get("model"))
-        if model:
-            data["model"] = model
-        aspect_ratio = _text(_get(step, "aspectRatio", "aspect_ratio"))
-        if aspect_ratio:
-            data["aspectRatio"] = aspect_ratio
-        if executable_prompt:
-            if node_type == "audioNode":
-                data["text"] = executable_prompt
-            else:
-                data["prompt"] = executable_prompt
-        if node_type == "audioNode":
-            data.setdefault("text", placeholder)
-        nodes.append(
-            {
-                "id": step_id,
-                "node_type": node_type,
-                "label": label,
-                "description": placeholder,
-                "stage": _stage_for_step(step, node_type),
-                "data": data,
+        base_label = base_label.replace("{count}", str(count))
+        base_label = base_label or operation_type or step_id
+        for index, instance_id in enumerate(instance_ids):
+            item = step_items[index] if index < len(step_items) else {}
+            item_title = _text(item.get("title") or item.get("label") or item.get("name"))
+            label = item_title or (f"{base_label} {index + 1}" if count > 1 else base_label)
+            if len(label) > 48:
+                label = label[:45] + "..."
+            item_prompt = _text(item.get("prompt") or item.get("description") or item.get("goal"))
+            final_prompt = _join_prompt_parts([executable_prompt, item_prompt])
+            data = {
+                "displayName": label,
+                "title": label,
+                "content": item_prompt or placeholder,
+                "prompt": item_prompt or placeholder,
+                "description": item_prompt or placeholder,
+                "workflowCatalog": {
+                    "skillId": skill_id,
+                    "templateId": template_id,
+                    "stepId": step_id,
+                    "stepInstance": index + 1,
+                    "stepInstanceCount": count,
+                    "operationType": operation_type,
+                    "recipeId": _text(recipe.get("id") if recipe else ""),
+                    "recipeVersion": _text(recipe.get("version") if recipe else ""),
+                    "promptStrategy": _text(_get(step, "promptStrategy", "prompt_strategy")),
+                    "inputStrategy": _get(step, "inputStrategy", "input_strategy") or {},
+                    "model": _text(step.get("model")),
+                    "needReview": bool(step.get("needReview")),
+                    "recipeSettings": recipe_settings,
+                    "promptBuilder": prompt_builder,
+                },
             }
-        )
-        for source in _dependency_sources(step, step_ids[:-1]):
-            edges.append({"source": source, "target": step_id})
+            if item:
+                data["workflowCatalog"]["planItem"] = {
+                    key: value
+                    for key, value in item.items()
+                    if key not in {"step_id", "stepId"}
+                }
+            model = _text(step.get("model"))
+            if model:
+                data["model"] = model
+            aspect_ratio = _text(_get(step, "aspectRatio", "aspect_ratio"))
+            if aspect_ratio:
+                data["aspectRatio"] = aspect_ratio
+            if final_prompt:
+                if node_type == "audioNode":
+                    data["text"] = final_prompt
+                else:
+                    data["prompt"] = final_prompt
+            if node_type == "audioNode":
+                data.setdefault("text", item_prompt or placeholder)
+            nodes.append(
+                {
+                    "id": instance_id,
+                    "node_type": node_type,
+                    "label": label,
+                    "description": item_prompt or placeholder,
+                    "stage": _stage_for_step(step, node_type),
+                    "data": data,
+                }
+            )
+        for source in _dependency_sources(step, step_ids):
+            source_ids = [source] if source == "catalog_user_input" else expanded_step_ids.get(source, [])
+            edges.extend(_instance_dependencies(source_ids=source_ids, target_ids=instance_ids))
+        step_ids.append(step_id)
 
     if len(nodes) > 1:
         groups = [{"label": group_label, "node_ids": [node["id"] for node in nodes]}]
@@ -783,7 +1032,8 @@ def _build_plan(
             "节点创建后仍需用户确认运行；创建节点不会自动生成图片、视频或音频。",
         ],
         "missing_inputs": [],
-        "expansion_rules": {},
+        "expansion_rules": {"step_counts": expanded_counts},
+        "inputs": args.get("inputs") if isinstance(args.get("inputs"), dict) else {},
         "nodes": nodes,
         "edges": edges,
         "layout": {"direction": "left_to_right", "groups": groups},

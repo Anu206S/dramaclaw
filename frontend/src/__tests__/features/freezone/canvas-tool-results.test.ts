@@ -46,6 +46,27 @@ describe("Freezone canvas tool result reporting", () => {
     });
   });
 
+  it("reports background workflow acceptance without claiming completion", () => {
+    reportCanvasCommandToolResult({
+      bridgeKey: "bridge-workflow",
+      turnId: "turn-a",
+      projectId: "project-a",
+      canvasId: "canvas-a",
+      accepted: true,
+    });
+
+    expect(api.post).toHaveBeenCalledWith("api/v1/chat/canvas-command-tool-result", {
+      json: expect.objectContaining({
+        tool_call_status: "completed",
+        canvas_apply_status: "accepted",
+        applied: true,
+        cancelled: false,
+        errors: [],
+      }),
+      timeout: 30_000,
+    });
+  });
+
   it("reports canvas context results with the originating agent id", () => {
     reportCanvasContextToolResult({
       bridgeKey: "bridge-a",

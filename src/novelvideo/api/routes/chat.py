@@ -472,7 +472,7 @@ def _resolve_canvas_command_tool_result_payload(
         raise HTTPException(status_code=400, detail="bridge_key is required")
     command_ok = (
         payload.tool_call_status == "completed"
-        and payload.canvas_apply_status == "applied"
+        and payload.canvas_apply_status in {"applied", "accepted"}
         and payload.applied
         and not payload.cancelled
         and not payload.errors
@@ -485,6 +485,13 @@ def _resolve_canvas_command_tool_result_payload(
         agent_instruction = (
             payload.agent_hint
             or "Do not claim success. Read errors and command_results, then fix the command before trying again. Do not expose raw canvas protocol details to the user."
+        )
+    elif payload.canvas_apply_status == "accepted":
+        message = payload.message or "Frontend accepted the canvas workflow for background execution."
+        agent_instruction = (
+            "Tell the user the workflow has started and continues in the canvas. "
+            "Do not claim that generation is complete, do not report a timeout, and do not ask "
+            "the user to run nodes manually."
         )
     else:
         message = payload.message or "Frontend executor applied the canvas command."
@@ -1285,6 +1292,13 @@ def _load_pending_canvas_command(path: Any) -> dict[str, Any] | None:
     }
 
 
+def _pending_canvas_command_allows_external_poll(envelope: dict[str, Any]) -> bool:
+    return bool(
+        envelope.get("auto_apply_after_mcp_approval") is True
+        or envelope.get("autoApplyAfterMcpApproval") is True
+    )
+
+
 @router.post("/chat/pending-canvas-commands")
 async def list_pending_canvas_commands(
     payload: PendingCanvasCommandsIn,
@@ -1328,6 +1342,11 @@ async def list_pending_canvas_commands(
             if pending.get("canvas_id") and pending.get("canvas_id") != canvas_id:
                 continue
             envelope = pending["envelope"]
+            # Commands created inside an active chat turn are delivered by that
+            # turn's websocket. Exposing them through the external poller races
+            # the websocket and can report a false failure before user approval.
+            if not _pending_canvas_command_allows_external_poll(envelope):
+                continue
             frames.append(
                 {
                     "type": "canvas.command",

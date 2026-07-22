@@ -669,7 +669,19 @@ class ChatStore:
                     "created_at": str(row["created_at"]),
                 }
             )
-        self._attach_ui_events_to_messages(messages, events_by_turn)
+        visible_turn_ids = {
+            str(message.get("turn_id") or "").strip()
+            for message in messages
+            if str(message.get("turn_id") or "").strip()
+        }
+        self._attach_ui_events_to_messages(
+            messages,
+            {
+                turn_id: events
+                for turn_id, events in events_by_turn.items()
+                if turn_id in visible_turn_ids
+            },
+        )
         return messages
 
 

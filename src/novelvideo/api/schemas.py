@@ -1562,6 +1562,7 @@ class FreezoneVideoComposeTrack(BaseModel):
 class FreezoneVideoComposeRequest(BaseModel):
     title: str = Field(default="", description="合成任务标题，可为空")
     canvas_id: str = Field(default="", description="来源画布 id，可为空")
+    node_id: str = Field(default="", description="来源合成节点 id，用于生成历史")
     resolution: Literal["720p", "1080p"] = Field(default="1080p", description="目标输出分辨率")
     fps: int = Field(default=30, ge=1, le=60, description="输出帧率")
     background_color: str = Field(default="#000000", description="补边或空隙使用的背景色")
@@ -1602,6 +1603,9 @@ class FreezoneRecipeCompileRequest(BaseModel):
     recipe_id: str = Field(min_length=1, max_length=128)
     recipe_version: str = Field(default="", max_length=64)
     node_kind: Literal["image", "video", "audio", "text"]
+    prompt_strategy: Literal["template", "user_message", "previous_output", "llm_refine"] = (
+        "llm_refine"
+    )
     node_prompt: str = Field(default="", max_length=20000)
     user_goal: str = Field(default="", max_length=20000)
     upstream_text: str = Field(default="", max_length=40000)

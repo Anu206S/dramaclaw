@@ -887,6 +887,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
       nodeKind: 'image',
       nodePrompt: ownPrompt,
       upstreamText: upstreamTextJoined,
+      upstreamContents,
       fallbackPrompt,
       referenceMedia: referenceUrls.map((_, index) => ({
         kind: 'image',
@@ -1113,6 +1114,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     submitDisabled,
     shouldInlineUpstreamTextAsPrompt,
     updateNodeData,
+    upstreamContents,
     upstreamTextJoined,
     refreshHistory,
     t,

@@ -108,6 +108,14 @@ from novelvideo.freezone.history import (
     read_canvas_generation_history,
     read_generation_history,
 )
+from novelvideo.freezone.workflow_runs import (
+    create_workflow_run,
+    interrupt_stale_workflow_runs,
+    list_workflow_runs,
+    read_workflow_run,
+    reconcile_workflow_runs_with_canvas_nodes,
+    update_workflow_run,
+)
 from novelvideo.freezone.image_node import (
     reverse_prompt_from_image,
 )
@@ -3982,6 +3990,7 @@ async def compile_freezone_recipe(
             user_goal=body.user_goal,
             upstream_text=body.upstream_text,
             reference_media=[item.model_dump() for item in body.reference_media],
+            prompt_strategy=body.prompt_strategy,
         )
     except RecipeRuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
@@ -7768,6 +7777,7 @@ async def freezone_video_compose(
                 payload={
                     "title": body.title,
                     "canvas_id": body.canvas_id,
+                    "node_id": body.node_id,
                     "resolution": body.resolution,
                     "fps": body.fps,
                     "background_color": body.background_color,
@@ -10202,6 +10212,130 @@ async def list_canvas_history(
 
 
 @router.post(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-runs",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def create_canvas_workflow_run(
+    project: str,
+    canvas_id: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    try:
+        run = create_workflow_run(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            project_id=ctx.project_id,
+            canvas_id=canvas_id,
+            actions=body.get("actions") if isinstance(body.get("actions"), list) else [],
+            actor_id=_canvas_actor_id(user),
+            metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+        )
+    except (ValueError, CanvasLockBusy) as exc:
+        raise HTTPException(400 if isinstance(exc, ValueError) else 503, str(exc)) from exc
+    return {"ok": True, "data": run}
+
+
+@router.get(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-runs",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def get_canvas_workflow_runs(
+    project: str,
+    canvas_id: str,
+    limit: int = Query(20, ge=1, le=200),
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user, required_role="viewer"
+    )
+    canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
+    try:
+        stale_after_seconds = max(int(os.getenv("ST_WORKFLOW_RUN_STALE_SECONDS", "60")), 15)
+    except ValueError:
+        stale_after_seconds = 60
+    try:
+        interrupt_stale_workflow_runs(
+            project_dir=canvas_project_dir,
+            canvas_id=canvas_id,
+            stale_after_seconds=stale_after_seconds,
+        )
+    except CanvasLockBusy:
+        pass
+    runs = list_workflow_runs(
+        project_dir=canvas_project_dir, canvas_id=canvas_id, limit=limit
+    )
+    return {"ok": True, "data": {"runs": runs}}
+
+
+@router.get(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-runs/{run_id}",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def get_canvas_workflow_run(
+    project: str,
+    canvas_id: str,
+    run_id: str,
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user, required_role="viewer"
+    )
+    try:
+        run = read_workflow_run(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            run_id=run_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if run is None:
+        raise HTTPException(404, "workflow run not found")
+    return {"ok": True, "data": run}
+
+
+@router.patch(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-runs/{run_id}",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def patch_canvas_workflow_run(
+    project: str,
+    canvas_id: str,
+    run_id: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    try:
+        run = update_workflow_run(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            run_id=run_id,
+            status=body.get("status") if isinstance(body.get("status"), str) else None,
+            action_updates=(
+                body.get("action_updates") if isinstance(body.get("action_updates"), list) else None
+            ),
+        )
+    except (ValueError, CanvasLockBusy) as exc:
+        raise HTTPException(400 if isinstance(exc, ValueError) else 503, str(exc)) from exc
+    if run is None:
+        raise HTTPException(404, "workflow run not found")
+    return {"ok": True, "data": run}
+
+
+@router.post(
     "/projects/{project}/freezone/canvases/{canvas_id}/restore",
     tags=[TAG_FREEZONE_CANVAS],
 )
@@ -10414,6 +10548,18 @@ async def put_canvas(
     except (canvas_store.CanvasStoreError, CanvasLockBusy) as exc:
         _raise_canvas_store_http(exc)
     payload = saved_canvas.payload
+    try:
+        reconcile_workflow_runs_with_canvas_nodes(
+            project_dir=canvas_project_dir,
+            canvas_id=canvas_id,
+            existing_node_ids={
+                str(node.get("id") or "")
+                for node in payload.get("nodes") or []
+                if isinstance(node, dict) and str(node.get("id") or "")
+            },
+        )
+    except CanvasLockBusy as exc:
+        _raise_canvas_store_http(exc)
     if not saved_canvas.idempotent:
         _append_canvas_event(
             project_dir=canvas_project_dir,
@@ -10458,6 +10604,14 @@ async def delete_canvas(project: str, canvas_id: str, user: dict = Depends(get_a
             deleted_by=_canvas_actor_id(user),
         )
     except (canvas_store.CanvasStoreError, CanvasLockBusy) as exc:
+        _raise_canvas_store_http(exc)
+    try:
+        reconcile_workflow_runs_with_canvas_nodes(
+            project_dir=canvas_project_dir,
+            canvas_id=canvas_id,
+            existing_node_ids=set(),
+        )
+    except CanvasLockBusy as exc:
         _raise_canvas_store_http(exc)
     existing = deleted_canvas.existing
     _append_canvas_event(

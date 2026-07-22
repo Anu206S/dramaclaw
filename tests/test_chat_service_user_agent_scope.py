@@ -31,6 +31,71 @@ def test_chat_visible_text_redacts_local_filesystem_paths():
     assert redacted.count("[本地路径]") == 2
 
 
+@pytest.mark.anyio
+async def test_hermes_session_load_null_result_falls_back_to_new_session(
+    tmp_path, monkeypatch
+):
+    thread = hermes_sdk.HermesSdkThread(
+        cli_path=tmp_path / "hermes",
+        cwd=tmp_path,
+        env={},
+        model=None,
+        username="local",
+        session_id="stale-session",
+    )
+    sent_methods: list[str] = []
+
+    async def fake_send(method: str, params: dict) -> int:  # noqa: ARG001
+        sent_methods.append(method)
+        return len(sent_methods)
+
+    responses = iter(
+        [
+            ({"id": 1, "result": None}, []),
+            ({"id": 2, "result": {"sessionId": "fresh-session"}}, []),
+        ]
+    )
+
+    async def fake_read_until_id(target_id: int, timeout: float):  # noqa: ARG001
+        return next(responses)
+
+    monkeypatch.setattr(thread, "_send", fake_send)
+    monkeypatch.setattr(thread, "_read_until_id", fake_read_until_id)
+
+    await thread._ensure_session()
+
+    assert sent_methods == ["session/load", "session/new"]
+    assert thread.id == "fresh-session"
+
+
+@pytest.mark.anyio
+async def test_hermes_session_load_result_keeps_resumed_session(tmp_path, monkeypatch):
+    thread = hermes_sdk.HermesSdkThread(
+        cli_path=tmp_path / "hermes",
+        cwd=tmp_path,
+        env={},
+        model=None,
+        username="local",
+        session_id="existing-session",
+    )
+    sent_methods: list[str] = []
+
+    async def fake_send(method: str, params: dict) -> int:  # noqa: ARG001
+        sent_methods.append(method)
+        return len(sent_methods)
+
+    async def fake_read_until_id(target_id: int, timeout: float):  # noqa: ARG001
+        return {"id": target_id, "result": {"models": {}}}, []
+
+    monkeypatch.setattr(thread, "_send", fake_send)
+    monkeypatch.setattr(thread, "_read_until_id", fake_read_until_id)
+
+    await thread._ensure_session()
+
+    assert sent_methods == ["session/load"]
+    assert thread.id == "existing-session"
+
+
 def test_completion_notice_appends_without_replacing_existing_reply():
     existing = "我已经检查完前置条件，下一步会启动第 1 个任务。"
     notice = "当前任务已开始处理。请稍后让我查看当前任务进度，或在任务完成后再继续下一步。"
@@ -73,7 +138,7 @@ def test_hermes_tool_call_update_keeps_tool_call_id_attribution(tmp_path):
                 "update": {
                     "sessionUpdate": "tool_call",
                     "toolCallId": "tc-list",
-                    "title": "freezone_skill_list",
+                    "title": "freezone_get_workflow_skill",
                 }
             },
         },
@@ -119,11 +184,11 @@ def test_hermes_tool_call_update_keeps_tool_call_id_attribution(tmp_path):
     )
 
     assert started is not None
-    assert started.name == "freezone_skill_list"
+    assert started.name == "freezone_get_workflow_skill"
     assert unrelated_failed is not None
     assert unrelated_failed.name is None
     assert completed is not None
-    assert completed.name == "freezone_skill_list"
+    assert completed.name == "freezone_get_workflow_skill"
 
 
 def test_hermes_tool_call_update_preserves_content_as_output(tmp_path):
@@ -135,7 +200,7 @@ def test_hermes_tool_call_update_preserves_content_as_output(tmp_path):
         username="local",
         session_id="session-1",
     )
-    tool_names = {"tc-list": "freezone_skill_list"}
+    tool_names = {"tc-list": "freezone_get_workflow_skill"}
 
     result = thread._translate_notification(
         {
@@ -163,7 +228,7 @@ def test_hermes_tool_call_update_preserves_content_as_output(tmp_path):
 
     assert result is not None
     assert result.type == "tool_updated"
-    assert result.name == "freezone_skill_list"
+    assert result.name == "freezone_get_workflow_skill"
     assert result.status == "completed"
     assert result.output == [
         {
@@ -180,11 +245,11 @@ def test_hermes_tool_call_update_attaches_recent_freezone_structured_result(tmp_
     result_dir = tmp_path / "freezone-tool-results"
     result_dir.mkdir()
     payload = {
-        "tool_name": "freezone_skill_list",
+        "tool_name": "freezone_get_workflow_skill",
         "created_at": datetime.now(tz=timezone.utc).timestamp(),
         "result": {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]},
     }
-    (result_dir / "freezone_skill_list-1-2.json").write_text(
+    (result_dir / "freezone_get_workflow_skill-1-2.json").write_text(
         json.dumps(payload, ensure_ascii=False),
         encoding="utf-8",
     )
@@ -196,7 +261,7 @@ def test_hermes_tool_call_update_attaches_recent_freezone_structured_result(tmp_
         username="local",
         session_id="session-1",
     )
-    tool_names = {"tc-list": "freezone_skill_list"}
+    tool_names = {"tc-list": "freezone_get_workflow_skill"}
 
     result = thread._translate_notification(
         {
@@ -206,7 +271,7 @@ def test_hermes_tool_call_update_attaches_recent_freezone_structured_result(tmp_
                     "sessionUpdate": "tool_call_update",
                     "toolCallId": "tc-list",
                     "status": "completed",
-                    "content": {"text": "freezone_skill_list result\n- **count:** 1"},
+                    "content": {"text": "freezone_get_workflow_skill result\n- **count:** 1"},
                 }
             },
         },
@@ -216,9 +281,9 @@ def test_hermes_tool_call_update_attaches_recent_freezone_structured_result(tmp_
 
     assert result is not None
     assert result.type == "tool_updated"
-    assert result.name == "freezone_skill_list"
+    assert result.name == "freezone_get_workflow_skill"
     assert result.status == "completed"
-    assert result.output == {"text": "freezone_skill_list result\n- **count:** 1"}
+    assert result.output == {"text": "freezone_get_workflow_skill result\n- **count:** 1"}
     assert result.structured == {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]}
 
 
@@ -237,9 +302,9 @@ def test_anonymous_hermes_tool_call_update_is_not_user_visible():
 
 def test_hermes_lifecycle_tool_updates_are_not_user_visible():
     events = [
-        SimpleNamespace(name="freezone_skill_list", text="", raw={"sessionUpdate": "tool_call"}),
+        SimpleNamespace(name="freezone_get_workflow_skill", text="", raw={"sessionUpdate": "tool_call"}),
         SimpleNamespace(
-            name="freezone_skill_list",
+            name="freezone_get_workflow_skill",
             text="completed",
             raw={"sessionUpdate": "tool_call_update", "status": "completed"},
         ),
@@ -2082,6 +2147,30 @@ def test_chat_message_parts_drop_stale_skill_studio_status_snapshot(monkeypatch,
     assert [part.get("event", {}).get("type") for part in assistant["parts"] if part["type"] == "skill_studio"] == [
         "skill_studio.questions"
     ]
+
+
+def test_chat_history_does_not_restore_orphan_parts_outside_message_limit(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    scope = ChatScope(kind="project", id="project-a", surface="freezone", canvas_id="canvas-a")
+
+    chat_store.append_message("admin", scope, "user", "旧请求", turn_id="turn-old")
+    chat_store.append_message("admin", scope, "assistant", "完整旧回复", turn_id="turn-old")
+    chat_store.append_ui_event(
+        "admin",
+        scope,
+        "turn-old",
+        {
+            "type": "assistant.message_parts",
+            "parts": [{"id": "text-old", "type": "text", "text": "残缺旧回复"}],
+        },
+    )
+    chat_store.append_message("admin", scope, "user", "新请求", turn_id="turn-new")
+    chat_store.append_message("admin", scope, "assistant", "完整新回复", turn_id="turn-new")
+
+    messages = chat_store.list_messages("admin", scope, limit=2)
+
+    assert [message["content"] for message in messages] == ["新请求", "完整新回复"]
+    assert all(message.get("turn_id") != "turn-old" for message in messages)
 
 
 def test_chat_scope_round_trips_freezone_canvas_payload() -> None:

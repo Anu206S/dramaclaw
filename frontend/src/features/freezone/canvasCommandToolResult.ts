@@ -5,7 +5,7 @@ import {
 } from "@/features/freezone/canvasCommandUserMessages";
 import { api } from "@/lib/api";
 
-type CanvasApplyStatus = "applied" | "partially_applied" | "failed" | "cancelled_by_user";
+type CanvasApplyStatus = "accepted" | "applied" | "partially_applied" | "failed" | "cancelled_by_user";
 
 export const FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT = "freezone/canvas-command-tool-result";
 
@@ -49,6 +49,7 @@ export function reportCanvasCommandToolResult({
   agentId,
   result,
   cancelled = false,
+  accepted = false,
 }: {
   bridgeKey?: string | null;
   turnId?: string | null;
@@ -58,6 +59,7 @@ export function reportCanvasCommandToolResult({
   agentId?: string | null;
   result?: CanvasChatCommandApplyResult;
   cancelled?: boolean;
+  accepted?: boolean;
 }) {
   if (!bridgeKey) return;
   const payload = buildCanvasCommandToolResultPayload({
@@ -69,6 +71,7 @@ export function reportCanvasCommandToolResult({
     agentId,
     result,
     cancelled,
+    accepted,
   });
   window.dispatchEvent(new CustomEvent(FREEZONE_CANVAS_COMMAND_TOOL_RESULT_EVENT, { detail: payload }));
   const { type: _type, ...body } = payload;
@@ -89,6 +92,7 @@ function buildCanvasCommandToolResultPayload({
   agentId,
   result,
   cancelled = false,
+  accepted = false,
 }: {
   bridgeKey?: string | null;
   turnId?: string | null;
@@ -98,18 +102,25 @@ function buildCanvasCommandToolResultPayload({
   agentId?: string | null;
   result?: CanvasChatCommandApplyResult;
   cancelled?: boolean;
+  accepted?: boolean;
 }): CanvasCommandToolResultPayload {
-  const canvasApplyStatus: CanvasApplyStatus = cancelled
+  const canvasApplyStatus: CanvasApplyStatus = accepted
+    ? "accepted"
+    : cancelled
     ? "cancelled_by_user"
     : result
       ? canvasApplyStatusFromResult(result)
       : "failed";
-  const userMessage = cancelled
+  const userMessage = accepted
+    ? undefined
+    : cancelled
     ? "画布操作已取消，没有应用到画布。"
     : canvasApplyStatus === "failed"
       ? canvasCommandUserMessageFromResult(result?.errors, result?.commandResults)
       : undefined;
-  const agentHint = cancelled
+  const agentHint = accepted
+    ? "The workflow was accepted and continues in the canvas. Do not claim completion or ask the user to run nodes manually."
+    : cancelled
     ? "Do not claim the canvas change was applied; ask the user before retrying."
     : canvasApplyStatus === "failed"
       ? canvasCommandAgentHintFromResult(result?.errors, result?.commandResults)
@@ -125,14 +136,16 @@ function buildCanvasCommandToolResultPayload({
     agent_id: agentId ?? null,
     tool_call_status: cancelled ? "cancelled" : canvasApplyStatus === "failed" ? "failed" : "completed",
     canvas_apply_status: canvasApplyStatus,
-    applied: !cancelled && Boolean(result && (result.applied > 0 || result.openedUiActions > 0)),
+    applied: accepted || (!cancelled && Boolean(result && (result.applied > 0 || result.openedUiActions > 0))),
     cancelled,
     errors: result?.errors ?? [],
     applied_count: result?.applied ?? 0,
     opened_ui_actions: result?.openedUiActions ?? 0,
     created_node_ids: result?.createdNodeIds ?? [],
     command_results: result?.commandResults ?? [],
-    message: cancelled
+    message: accepted
+      ? "Frontend accepted the canvas workflow for background execution."
+      : cancelled
       ? "画布操作已取消，没有应用到画布。"
       : canvasApplyStatus === "failed"
         ? userMessage ?? "画布操作没有完成，我会换一种方式再试。"

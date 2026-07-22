@@ -97,6 +97,7 @@ import {
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
   applyCanvasChatCommandsAsync,
   canvasCommandEnvelopeMatchesCanvas,
+  canvasCommandEnvelopesRunInBackground,
   emitCanvasCommandApproval,
   extractCanvasChatCommandEnvelopes,
   FREEZONE_CANVAS_COMMAND_RESULT_EVENT,
@@ -132,6 +133,7 @@ import {
 } from "@/features/canvas/ontology/canvasOntology";
 import type { ServerFrame } from "@/features/superchat/types";
 import { initializeEmptyFreezoneAgentChat } from "@/features/superchat/freezoneChatScopeCache";
+import { WorkflowRunRecoveryBar } from "./WorkflowRunRecoveryBar";
 
 export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 
@@ -1462,11 +1464,25 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       if (autoApplyAfterMcpApproval) {
         void (async () => {
           let result: CanvasChatCommandApplyResult;
+          let backgroundAccepted = false;
           try {
-            result = await applyCanvasChatCommandsAsync(normalizedEnvelopes, {
+            const execution = applyCanvasChatCommandsAsync(normalizedEnvelopes, {
               projectId,
               canvasId,
             });
+            if (canvasCommandEnvelopesRunInBackground(normalizedEnvelopes)) {
+              backgroundAccepted = true;
+              reportCanvasCommandToolResult({
+                bridgeKey,
+                turnId,
+                anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+                projectId,
+                canvasId,
+                agentId,
+                accepted: true,
+              });
+            }
+            result = await execution;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             result = {
@@ -1485,15 +1501,17 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
               ],
             };
           }
-          reportCanvasCommandToolResult({
-            bridgeKey,
-            turnId,
-            anchorTextPrefix: detail?.anchorTextPrefix ?? null,
-            projectId,
-            canvasId,
-            agentId,
-            result,
-          });
+          if (!backgroundAccepted) {
+            reportCanvasCommandToolResult({
+              bridgeKey,
+              turnId,
+              anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+              projectId,
+              canvasId,
+              agentId,
+              result,
+            });
+          }
           persistCanvasCommandResult({
             projectId,
             canvasId,
@@ -1833,6 +1851,9 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             />
           )}
           <BackupStatusIndicator status={sync.backupStatus} />
+          {sync.status === "ready" && sync.hydratedCanvasId === canvasId && (
+            <WorkflowRunRecoveryBar projectId={projectId} canvasId={canvasId} />
+          )}
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
           {false && import.meta.env.DEV && (
             <CanvasDebugPanel
