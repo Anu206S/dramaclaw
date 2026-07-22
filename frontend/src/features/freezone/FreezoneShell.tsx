@@ -139,6 +139,7 @@ import {
   buildCanvasContextRequestResponses,
   extractCanvasContextRequestEnvelopes,
 } from "@/features/freezone/chatNodeReferences";
+import { selectNodesForChatReference } from "@/features/freezone/addNodesToChatSelection";
 import {
   buildCanvasOntologyContext,
   type CanvasOntologyContext,
@@ -1274,6 +1275,17 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   useEffect(() => {
     return canvasEventBus.subscribe("freezone/assets-updated", () => {
       setAssetLibraryReloadToken((token) => token + 1);
+    });
+  }, []);
+
+  // 画布节点 / 故事板卡片、详情头部的「添加到对话」——两个视图是同一份节点数据的
+  // 两种投影，所以入口只发事件，落地统一收在这里（选中 + 展开聊天），避免两边各写
+  // 一套后行为漂移。选中即引用的推导见下面的 currentCanvasSelectionAttachment：
+  // chatOpen 打开后那条 effect 会把新选中同步成输入框里的引用条。
+  useEffect(() => {
+    return canvasEventBus.subscribe("freezone/add-nodes-to-chat", ({ nodeIds }) => {
+      if (!selectNodesForChatReference(nodeIds)) return;
+      setChatOpen(true);
     });
   }, []);
 

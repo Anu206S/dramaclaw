@@ -39,6 +39,7 @@ import {
 } from '@/features/canvas/domain/nodeDisplay';
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { isVideoFile, VIDEO_FILE_ACCEPT } from '@/features/canvas/application/videoFileTypes';
+import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canvas/ui/NodeHeader';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import {
@@ -815,6 +816,7 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
         editable
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
+      <AddNodeToChatButton nodeId={id} />
       <CandidateBindingBadges roles={candidateBindingRoles} />
 
       {!data.imageUrl && !transientPreviewUrl && (

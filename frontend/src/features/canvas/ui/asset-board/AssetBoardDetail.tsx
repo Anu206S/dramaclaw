@@ -15,6 +15,7 @@ import {
   type AudioNodeData,
   type CanvasNode,
 } from '@/features/canvas/domain/canvasNodes';
+import { AddNodeToChatIconButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { AudioWaveformPlayer } from '@/features/canvas/ui/AudioWaveformPlayer';
 import { useEstimatedProgress } from '@/features/canvas/ui/useEstimatedProgress';
 import { cn } from '@/lib/utils';
@@ -507,6 +508,17 @@ export function AssetBoardDetail({
           <h3 className="min-w-0 truncate text-sm font-medium text-foreground">{item.title}</h3>
         )}
         <div className="flex-1" />
+        {/* 「添加到对话」：与卡片右上角、画布节点同一个入口（只发事件，选中 + 展开
+            聊天由 FreezoneShell 统一落地）。挂头部而不是下面那条工具条——四栏一视
+            同仁，且引用一个空节点也成立，不该被「有没有出图出片」的门槛挡掉。 */}
+        {!missing && (
+          // side=bottom：按钮贴着详情面板顶边，提示朝上会被面板裁掉。
+          <AddNodeToChatIconButton
+            nodeId={node.id}
+            className={HEADER_ICON_BUTTON_CLASS}
+            side="bottom"
+          />
+        )}
         {/* 节点级操作（对标 liblib 详情右上角的「...」）：设置关键元素 / 创建副本 /
             删除。四栏（文本/图片/视频/音频）一视同仁——这三项与「有没有出图出片」
             无关，所以挂在头部而不是那条要素材才成立的工具条上，空节点同样点得到。

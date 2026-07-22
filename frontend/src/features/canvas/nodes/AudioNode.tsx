@@ -28,6 +28,7 @@ import {
   NodeHeader,
   NODE_HEADER_FLOATING_POSITION_CLASS,
 } from '@/features/canvas/ui/NodeHeader';
+import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { NodeGenerationOverlay } from '@/features/canvas/ui/NodeGenerationOverlay';
 import { AudioWaveformPlayer } from '@/features/canvas/ui/AudioWaveformPlayer';
@@ -322,6 +323,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
         editable
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
+      <AddNodeToChatButton nodeId={id} />
       <NodeContextBadges
         contexts={(data as { mainline_context?: unknown }).mainline_context}
       />
