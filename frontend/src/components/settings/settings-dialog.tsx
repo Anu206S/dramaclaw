@@ -71,6 +71,7 @@ import {
   type FeatureModelProvider,
   type MediaStorageProvider,
 } from "@/stores/settingsStore";
+import { isCeRuntime } from "@/lib/runtime-config";
 import { FreezoneSkillRecipeSettings } from "./freezone-skill-recipe-settings";
 
 interface SettingsDialogProps {
@@ -85,11 +86,20 @@ const SHOW_CODEX_BRIDGE = false;
 
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { t } = useTranslation();
-  const [page, setPage] = useState<"models" | "storage" | "freezone-skills" | "freezone-recipes">("models");
-  const statusQuery = useModelGatewayConfig(open);
+  const ceRuntime = isCeRuntime();
+  const [page, setPage] = useState<"models" | "storage" | "freezone-skills" | "freezone-recipes">(
+    () => (ceRuntime ? "models" : "freezone-skills"),
+  );
+  const statusQuery = useModelGatewayConfig(open && ceRuntime);
   const settingsStatus = statusQuery.data?.data;
   const modelConfigured = Boolean(settingsStatus?.effective.configured);
   const mediaStorageConfigured = Boolean(settingsStatus?.mediaRelay?.configured);
+
+  useEffect(() => {
+    if (!ceRuntime && (page === "models" || page === "storage")) {
+      setPage("freezone-skills");
+    }
+  }, [ceRuntime, page]);
 
   const pageStatus = (configured: boolean, label: string) => {
     if (statusQuery.isLoading) {
@@ -132,36 +142,40 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             aria-label={t("settings.navigationLabel")}
             className="flex w-14 shrink-0 flex-col gap-1 border-r border-border px-2 py-4 sm:w-44 sm:px-3"
           >
-            <button
-              type="button"
-              aria-current={page === "models" ? "page" : undefined}
-              onClick={() => setPage("models")}
-              className={cn(
-                "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
-                page === "models"
-                  ? "bg-white/[0.09] text-foreground"
-                  : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
-              )}
-            >
-              <Cpu className="size-4" aria-hidden />
-              <span className="hidden sm:inline">{t("settings.pages.models")}</span>
-              {pageStatus(modelConfigured, t("settings.pages.models"))}
-            </button>
-            <button
-              type="button"
-              aria-current={page === "storage" ? "page" : undefined}
-              onClick={() => setPage("storage")}
-              className={cn(
-                "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
-                page === "storage"
-                  ? "bg-white/[0.09] text-foreground"
-                  : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
-              )}
-            >
-              <HardDrive className="size-4" aria-hidden />
-              <span className="hidden sm:inline">{t("settings.pages.storage")}</span>
-              {pageStatus(mediaStorageConfigured, t("settings.pages.storage"))}
-            </button>
+            {ceRuntime ? (
+              <>
+                <button
+                  type="button"
+                  aria-current={page === "models" ? "page" : undefined}
+                  onClick={() => setPage("models")}
+                  className={cn(
+                    "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
+                    page === "models"
+                      ? "bg-white/[0.09] text-foreground"
+                      : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+                  )}
+                >
+                  <Cpu className="size-4" aria-hidden />
+                  <span className="hidden sm:inline">{t("settings.pages.models")}</span>
+                  {pageStatus(modelConfigured, t("settings.pages.models"))}
+                </button>
+                <button
+                  type="button"
+                  aria-current={page === "storage" ? "page" : undefined}
+                  onClick={() => setPage("storage")}
+                  className={cn(
+                    "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
+                    page === "storage"
+                      ? "bg-white/[0.09] text-foreground"
+                      : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+                  )}
+                >
+                  <HardDrive className="size-4" aria-hidden />
+                  <span className="hidden sm:inline">{t("settings.pages.storage")}</span>
+                  {pageStatus(mediaStorageConfigured, t("settings.pages.storage"))}
+                </button>
+              </>
+            ) : null}
             <button
               type="button"
               aria-current={page === "freezone-skills" ? "page" : undefined}
