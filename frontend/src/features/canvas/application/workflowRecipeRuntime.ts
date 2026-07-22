@@ -5,19 +5,26 @@ import {
   generateFreezoneRecipeText,
   type FreezoneRecipeNodeKind,
 } from '@/api/ops';
+import { joinUpstreamText } from './graphContentResolver';
+import type { UpstreamContent } from './ports';
 
 interface WorkflowCatalogRuntime {
   recipeId?: unknown;
   recipeVersion?: unknown;
   userGoal?: unknown;
-  promptBuilder?: { userGoal?: unknown };
+  promptStrategy?: unknown;
+  inputStrategy?: unknown;
+  promptBuilder?: { userGoal?: unknown; inputStrategy?: unknown };
 }
+
+type RecipePromptStrategy = 'template' | 'user_message' | 'previous_output' | 'llm_refine';
 
 export interface CompileWorkflowNodePromptInput {
   nodeData: unknown;
   nodeKind: FreezoneRecipeNodeKind;
   nodePrompt: string;
   upstreamText?: string;
+  upstreamContents?: UpstreamContent[];
   fallbackPrompt: string;
   referenceMedia?: Array<{
     kind: 'image' | 'video' | 'audio';
@@ -40,6 +47,45 @@ function text(value: unknown): string {
   return '';
 }
 
+function promptStrategy(value: unknown): RecipePromptStrategy {
+  if (value === 'template' || value === 'user_message' || value === 'previous_output') {
+    return value;
+  }
+  return 'llm_refine';
+}
+
+function strategyStepIds(strategy: Record<string, unknown>): string[] {
+  const single = text(strategy.stepId) || text(strategy.step_id);
+  if (single) return [single];
+  const multiple = Array.isArray(strategy.stepIds)
+    ? strategy.stepIds
+    : Array.isArray(strategy.step_ids)
+      ? strategy.step_ids
+      : [];
+  return multiple.map(text).filter(Boolean);
+}
+
+export function selectWorkflowUpstreamText(
+  nodeData: unknown,
+  upstreamContents: UpstreamContent[] | undefined,
+  fallbackText: string,
+): string {
+  const catalog = readCatalog(nodeData);
+  const builder = asRecord(catalog?.promptBuilder);
+  const strategy = asRecord(catalog?.inputStrategy) ?? asRecord(builder?.inputStrategy);
+  if (!strategy) return fallbackText;
+  const type = text(strategy.type);
+  if (type === 'none' || type === 'user_assets' || type === 'user_message') return '';
+  if (!upstreamContents) return fallbackText;
+  const stepIds = strategyStepIds(strategy);
+  if (stepIds.length === 0) return fallbackText;
+  if (!upstreamContents.some((content) => Boolean(content.workflowStepId))) return fallbackText;
+  const wanted = new Set(stepIds);
+  return joinUpstreamText(
+    upstreamContents.filter((content) => content.workflowStepId && wanted.has(content.workflowStepId)),
+  );
+}
+
 /** Compile only catalog-backed nodes; legacy/manual nodes keep their exact prompt behavior. */
 export async function compileWorkflowNodePrompt(
   input: CompileWorkflowNodePromptInput,
@@ -47,13 +93,19 @@ export async function compileWorkflowNodePrompt(
   const catalog = readCatalog(input.nodeData);
   const recipeId = text(catalog?.recipeId);
   if (!recipeId) return input.fallbackPrompt;
+  const upstreamText = selectWorkflowUpstreamText(
+    input.nodeData,
+    input.upstreamContents,
+    input.upstreamText ?? '',
+  );
 
   return await compileFreezoneRecipePrompt({
     recipeId,
     recipeVersion: text(catalog?.recipeVersion),
     nodeKind: input.nodeKind,
+    promptStrategy: promptStrategy(catalog?.promptStrategy),
     nodePrompt: input.nodePrompt,
-    upstreamText: input.upstreamText ?? '',
+    upstreamText,
     userGoal: text(catalog?.userGoal) || text(catalog?.promptBuilder?.userGoal),
     referenceMedia: input.referenceMedia,
   });
@@ -63,15 +115,21 @@ export async function generateWorkflowText(input: {
   nodeData: unknown;
   nodePrompt: string;
   upstreamText?: string;
+  upstreamContents?: UpstreamContent[];
 }): Promise<string> {
   const catalog = readCatalog(input.nodeData);
   const recipeId = text(catalog?.recipeId);
   if (!recipeId) throw new Error('文本节点缺少 Recipe');
+  const upstreamText = selectWorkflowUpstreamText(
+    input.nodeData,
+    input.upstreamContents,
+    input.upstreamText ?? '',
+  );
   return await generateFreezoneRecipeText({
     recipeId,
     recipeVersion: text(catalog?.recipeVersion),
     nodePrompt: input.nodePrompt,
-    upstreamText: input.upstreamText ?? '',
+    upstreamText,
     userGoal: text(catalog?.userGoal) || text(catalog?.promptBuilder?.userGoal),
   });
 }

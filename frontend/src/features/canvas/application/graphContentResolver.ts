@@ -49,12 +49,20 @@ export class DefaultGraphContentResolver implements GraphContentResolver {
  */
 export function extractUpstreamContent(node: CanvasNode): UpstreamContent {
   const displayNameRaw = (node.data as { displayName?: unknown } | undefined)?.displayName;
+  const workflowCatalog = (node.data as { workflowCatalog?: unknown } | undefined)?.workflowCatalog;
+  const workflowStepIdRaw = workflowCatalog && typeof workflowCatalog === 'object'
+    ? (workflowCatalog as { stepId?: unknown }).stepId
+    : undefined;
   const base: UpstreamContent = {
     nodeId: node.id,
     nodeType: node.type as CanvasNodeType,
     displayName:
       typeof displayNameRaw === 'string' && displayNameRaw.length > 0
         ? displayNameRaw
+        : undefined,
+    workflowStepId:
+      typeof workflowStepIdRaw === 'string' && workflowStepIdRaw.length > 0
+        ? workflowStepIdRaw
         : undefined,
   };
 

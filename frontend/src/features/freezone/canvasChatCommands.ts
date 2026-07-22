@@ -22,7 +22,12 @@ import {
   clearPendingNodeAction,
   dispatchNodeAction,
 } from "@/features/canvas/application/nodeActionResult";
-import type { FreezonePresetCanvasRequest } from "@/api/canvas";
+import {
+  createFreezoneWorkflowRun,
+  updateFreezoneWorkflowRun,
+  type FreezonePresetCanvasRequest,
+  type WorkflowRunActionStatus,
+} from "@/api/canvas";
 import { isAgentCreatableCanvasNodeType } from "@/features/freezone/agentCreatableNodeTypes";
 import { buildCanvasNodeActionCatalog } from "@/features/freezone/canvasNodeActionCatalog";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
@@ -37,10 +42,15 @@ import {
   type CanvasEdgeSemanticKind,
 } from "@/features/freezone/canvasEdgeSemantics";
 import { useCanvasStore } from "@/stores/canvasStore";
+import {
+  deterministicNodeOutputIssue,
+  workflowExpansionIssues,
+} from "@/features/freezone/workflowQualityGate";
 
 export const CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1";
 export const FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT = "freezone/canvas-command-approval";
 export const FREEZONE_CANVAS_COMMAND_RESULT_EVENT = "freezone/canvas-command-result";
+export const FREEZONE_WORKFLOW_RUN_UPDATED_EVENT = "freezone/workflow-run-updated";
 
 type JsonRecord = Record<string, unknown>;
 type MainlineProjectionScope = "episode" | "beat" | "asset";
@@ -125,6 +135,7 @@ export type CanvasChatCommand =
       type: "run_workflow";
       node_ids?: string[];
       scope?: "selection" | "canvas";
+      direction?: "connected" | "node" | "downstream";
       regenerate?: boolean;
     };
 
@@ -211,6 +222,7 @@ type ApplyCanvasChatCommandsOptions = {
   canvasId?: string | null;
   actionTimeoutMs?: number;
   actionAcceptTimeoutMs?: number;
+  actionResultFieldTimeoutMs?: number;
 };
 
 export type CanvasChatCommandPartition = {
@@ -275,6 +287,7 @@ const RUN_NODE_ACTIONS = new Set([
   "generate_video",
   "run_skill",
   "open_video_compose_modal",
+  "auto_compose_video",
   "open_director_world",
   "generate_3gs_world",
   "open_crop_tool",
@@ -335,9 +348,19 @@ const GENERATION_NODE_ACTIONS = new Set([
   "generate_image",
   "generate_audio",
   "generate_video",
+  "auto_compose_video",
   "generate_3gs_world",
   "run_skill",
 ]);
+
+export function canvasCommandEnvelopesRunInBackground(
+  envelopes: CanvasChatCommandEnvelope[],
+): boolean {
+  return envelopes.some((envelope) => envelope.commands.some((command) =>
+    command.type === "run_workflow" ||
+    (command.type === "run_node_action" && GENERATION_NODE_ACTIONS.has(command.action))
+  ));
+}
 
 const UI_OPEN_NODE_ACTIONS = new Set([
   "open_video_compose_modal",
@@ -368,6 +391,63 @@ const DEFAULT_NODE_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS = 3 * 1000;
 const DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS = 3 * 1000;
 const canvasNodeActionQueues = new Map<string, Promise<void>>();
+const WORKFLOW_ACTION_CONCURRENCY = 3;
+const WORKFLOW_ACTION_LANE_LIMITS = {
+  default: 3,
+  video: 1,
+  world: 1,
+  ffmpeg: 1,
+} as const;
+type WorkflowActionLane = keyof typeof WORKFLOW_ACTION_LANE_LIMITS;
+type WorkflowActionSlotWaiter = {
+  lane: WorkflowActionLane;
+  resolve: (release: () => void) => void;
+};
+const workflowActionSlotWaiters: WorkflowActionSlotWaiter[] = [];
+const activeWorkflowActionsByLane: Record<WorkflowActionLane, number> = {
+  default: 0,
+  video: 0,
+  world: 0,
+  ffmpeg: 0,
+};
+let activeWorkflowActions = 0;
+
+function workflowActionLane(action: string): WorkflowActionLane {
+  if (action === "generate_video" || action === "generate_text_video") return "video";
+  if (action === "generate_3gs_world") return "world";
+  if (action === "auto_compose_video") return "ffmpeg";
+  return "default";
+}
+
+function drainWorkflowActionSlots(): void {
+  while (activeWorkflowActions < WORKFLOW_ACTION_CONCURRENCY) {
+    const waiterIndex = workflowActionSlotWaiters.findIndex(
+      ({ lane }) => activeWorkflowActionsByLane[lane] < WORKFLOW_ACTION_LANE_LIMITS[lane],
+    );
+    if (waiterIndex < 0) return;
+    const [waiter] = workflowActionSlotWaiters.splice(waiterIndex, 1);
+    activeWorkflowActions += 1;
+    activeWorkflowActionsByLane[waiter.lane] += 1;
+    let released = false;
+    waiter.resolve(() => {
+      if (released) return;
+      released = true;
+      activeWorkflowActions = Math.max(activeWorkflowActions - 1, 0);
+      activeWorkflowActionsByLane[waiter.lane] = Math.max(
+        activeWorkflowActionsByLane[waiter.lane] - 1,
+        0,
+      );
+      drainWorkflowActionSlots();
+    });
+  }
+}
+
+function acquireWorkflowActionSlot(action: string): Promise<() => void> {
+  return new Promise((resolve) => {
+    workflowActionSlotWaiters.push({ lane: workflowActionLane(action), resolve });
+    drainWorkflowActionSlots();
+  });
+}
 const WORKFLOW_GENERATE_ACTION_BY_NODE_TYPE: Partial<Record<CanvasNodeType, string[]>> = {
   [CANVAS_NODE_TYPES.script]: ["generate_story_script"],
   [CANVAS_NODE_TYPES.imageGen]: ["generate_image"],
@@ -726,11 +806,16 @@ function parseCommand(value: unknown): CanvasChatCommand | null {
         ? value.node_ids.filter((id): id is string => typeof id === "string" && id.trim().length > 0)
         : undefined;
       const scope = value.scope === "canvas" || value.scope === "selection" ? value.scope : undefined;
+      const direction =
+        value.direction === "node" || value.direction === "downstream" || value.direction === "connected"
+          ? value.direction
+          : undefined;
       const regenerate = isTruthyRegenerateValue(value.regenerate ?? value.force_regenerate ?? value.forceRegenerate);
       return {
         type: "run_workflow",
         node_ids: nodeIds && nodeIds.length > 0 ? nodeIds : undefined,
         scope,
+        direction,
         regenerate: regenerate || undefined,
       };
     }
@@ -1269,6 +1354,20 @@ function relatedSatisfiedVideoComposeNodeIds(
   return composeIds;
 }
 
+function normalizeWorkflowStartNodeIds(nodeIds: string[]): string[] {
+  const state = useCanvasStore.getState();
+  const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
+  return [...new Set(nodeIds.map((nodeId) => {
+    const node = nodeByIdMap.get(nodeId);
+    const workflowRole = (node?.data as { workflowCatalogRole?: unknown } | undefined)
+      ?.workflowCatalogRole;
+    if (workflowRole !== "user_input" || !node?.parentId) return nodeId;
+    return nodeByIdMap.get(node.parentId)?.type === CANVAS_NODE_TYPES.group
+      ? node.parentId
+      : nodeId;
+  }))];
+}
+
 function workflowNodeActions(
   command: Extract<CanvasChatCommand, { type: "run_workflow" }>,
   commandIndex: number,
@@ -1276,11 +1375,16 @@ function workflowNodeActions(
 ): PendingNodeAction[] {
   const state = useCanvasStore.getState();
   const initialNodeIds = command.node_ids && command.node_ids.length > 0
-    ? command.node_ids
+    ? normalizeWorkflowStartNodeIds(command.node_ids)
     : command.scope === "canvas"
       ? state.nodes.map((node) => node.id)
       : selectedWorkflowNodeIds();
-  const expandedNodeIds = expandWorkflowNodeIds(initialNodeIds);
+  const directions: Array<"upstream" | "downstream"> = command.direction === "node"
+    ? []
+    : command.direction === "downstream"
+      ? ["downstream"]
+      : ["upstream", "downstream"];
+  const expandedNodeIds = expandWorkflowNodeIds(initialNodeIds, directions);
   const nodeByIdMap = new Map(useCanvasStore.getState().nodes.map((node) => [node.id, node] as const));
   const scopedNodeIds = new Set(expandedNodeIds);
   const protectedUpstreamNodeIds = satisfiedVideoComposeUpstreamNodeIds(expandedNodeIds);
@@ -1297,12 +1401,13 @@ function workflowNodeActions(
       return [{
         commandIndex,
         nodeId,
-        action: "open_video_compose_modal",
+        action: "auto_compose_video",
+        executionMode: "workflow",
         parameters: undefined,
         label: commandLabel({
           type: "run_node_action",
           node_id: nodeId,
-          action: "open_video_compose_modal",
+          action: "auto_compose_video",
         }),
       }];
     }
@@ -1407,6 +1512,9 @@ function hasGeneratedResult(nodeId: string, action: string): boolean {
   if (action === "generate_video" || action === "generate_text_video") {
     return Boolean(nonEmptyString(data.videoUrl) ?? nonEmptyString(data.video_url));
   }
+  if (action === "auto_compose_video") {
+    return Boolean(nonEmptyString(data.resultVideoUrl));
+  }
   if (action === "generate_audio") {
     return Boolean(nonEmptyString(data.audioUrl) ?? nonEmptyString(data.audio_url));
   }
@@ -1481,6 +1589,11 @@ async function waitForSubmittedGenerationOutputFromNode(
   return null;
 }
 
+function nodeGenerationError(nodeId: string): string | null {
+  const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
+  return nonEmptyString(data?.generationError) ?? null;
+}
+
 function isSubmittedGenerationOutput(output: unknown): boolean {
   if (!isRecord(output)) return false;
   if (output.submitted === true || output.status === "submitted") return true;
@@ -1513,7 +1626,11 @@ function hasGeneratedResultOutput(action: string, output: unknown): boolean {
       nonEmptyString(output.url)
     );
   }
-  if (action === "generate_video" || action === "generate_text_video") {
+  if (
+    action === "generate_video" ||
+    action === "generate_text_video" ||
+    action === "auto_compose_video"
+  ) {
     return Boolean(
       nonEmptyString(output.videoUrl) ??
       nonEmptyString(output.video_url) ??
@@ -1555,12 +1672,14 @@ async function waitForGeneratedResultField(
   if (hasGeneratedResultOutput(action, output)) return true;
   if (hasGeneratedResult(nodeId, action)) return true;
   if (hasActiveGenerationHandle(nodeId)) return true;
+  if (nodeGenerationError(nodeId)) return false;
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     if (hasGeneratedResultOutput(action, output)) return true;
     if (hasGeneratedResult(nodeId, action)) return true;
     if (hasActiveGenerationHandle(nodeId)) return true;
+    if (nodeGenerationError(nodeId)) return false;
   }
   return hasGeneratedResultOutput(action, output) || hasGeneratedResult(nodeId, action) || hasActiveGenerationHandle(nodeId);
 }
@@ -1589,7 +1708,11 @@ function clearNodeActionRunning(nodeId: string, action: string): void {
 function mediaRequirementLabel(action: string): string {
   if (action === "generate_text") return "content";
   if (action === "generate_image") return "imageUrl";
-  if (action === "generate_video" || action === "generate_text_video") return "videoUrl";
+  if (
+    action === "generate_video" ||
+    action === "generate_text_video" ||
+    action === "auto_compose_video"
+  ) return "videoUrl";
   if (action === "generate_audio") return "audioUrl";
   return "生成结果";
 }
@@ -1711,6 +1834,54 @@ async function executeQueuedNodeActions(
 ): Promise<void> {
   if (pendingActions.length === 0) return;
   await enqueueCanvasNodeActions(options.canvasId, async () => {
+    const projectId = options.projectId?.trim();
+    const canvasId = options.canvasId?.trim();
+    let workflowRunId: string | null = null;
+    let workflowHeartbeat: ReturnType<typeof setInterval> | null = null;
+    const stopWorkflowHeartbeat = () => {
+      if (workflowHeartbeat !== null) clearInterval(workflowHeartbeat);
+      workflowHeartbeat = null;
+    };
+    if (projectId && canvasId) {
+      try {
+        workflowRunId = (await createFreezoneWorkflowRun(
+          projectId,
+          canvasId,
+          pendingActions.map((action) => ({ node_id: action.nodeId, action: action.action })),
+        )).run_id;
+        const runId = workflowRunId;
+        workflowHeartbeat = setInterval(() => {
+          void updateFreezoneWorkflowRun(projectId, canvasId, runId, { status: "running" })
+            .catch(() => undefined);
+        }, 15_000);
+      } catch {
+        // Execution records are additive. A persistence outage must not block generation.
+      }
+    }
+    const persistRunUpdate = async (
+      updates: Array<{
+        node_id: string;
+        action: string;
+        status: WorkflowRunActionStatus;
+        error?: string | null;
+      }>,
+      status?: "completed" | "failed",
+    ): Promise<void> => {
+      if (!projectId || !canvasId || !workflowRunId) return;
+      try {
+        await updateFreezoneWorkflowRun(projectId, canvasId, workflowRunId, {
+          ...(updates.length > 0 ? { action_updates: updates } : {}),
+          ...(status ? { status } : {}),
+        });
+        if (status && typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
+            detail: { projectId, canvasId, runId: workflowRunId, status },
+          }));
+        }
+      } catch {
+        // Keep the established in-browser runner available when persistence is unavailable.
+      }
+    };
     const { levels, dependenciesByNodeId, cycleError } = orderedNodeActionsByCanvasEdges(pendingActions);
     if (cycleError) {
       result.errors.push(cycleError);
@@ -1725,10 +1896,31 @@ async function executeQueuedNodeActions(
           error: cycleError,
         });
       }
+      await persistRunUpdate(
+        pendingActions.map((action) => ({
+          node_id: action.nodeId,
+          action: action.action,
+          status: "blocked",
+          error: cycleError,
+        })),
+        "failed",
+      );
+      stopWorkflowHeartbeat();
       return;
     }
 
     const blockedNodeIds = new Set<string>();
+    const generationActions = pendingActions.filter((action) =>
+      GENERATION_NODE_ACTIONS.has(action.action));
+    const generationCountByLane = generationActions.reduce<Record<WorkflowActionLane, number>>(
+      (counts, action) => {
+        const lane = workflowActionLane(action.action);
+        counts[lane] += 1;
+        return counts;
+      },
+      { default: 0, video: 0, world: 0, ffmpeg: 0 },
+    );
+    let runFailed = false;
     for (const level of levels) {
       const levelResults = await Promise.all(level.map(async (action) => {
         const blockedUpstream = [...(dependenciesByNodeId.get(action.nodeId) ?? [])]
@@ -1740,121 +1932,145 @@ async function executeQueuedNodeActions(
           };
         }
 
-        const requestId = `node-action:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-        const uiOpenAction = UI_OPEN_NODE_ACTIONS.has(action.action);
-        const waiting = waitForNodeActionResult(
-          requestId,
-          uiOpenAction ? 300 : options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
-          uiOpenAction
-            ? {
-              requestId,
-              nodeId: action.nodeId,
-              action: action.action,
-              status: "success",
-              output: { openedUiAction: true, fallback: true },
-            }
-            : undefined,
-        );
-        const requiresAcceptedSignal = GENERATION_NODE_ACTIONS.has(action.action);
-        const acceptTimeoutMs =
-          options.actionAcceptTimeoutMs ?? DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS;
-        const publishNodeAction = () => dispatchNodeAction({
-          nodeId: action.nodeId,
-          action: action.action,
-          executionMode: action.executionMode,
-          ...(action.parameters ? { parameters: action.parameters } : {}),
-          requestId,
-        });
-        markNodeActionRunning(action.nodeId, action.action);
-        let handlerCount = 0;
-        let accepted = requiresAcceptedSignal
-          ? waitForNodeActionAccepted(requestId, acceptTimeoutMs)
-          : Promise.resolve(true);
+        const releaseActionSlot = await acquireWorkflowActionSlot(action.action);
         try {
-          handlerCount = publishNodeAction();
-        } catch (error) {
-          clearPendingNodeAction(requestId);
-          clearNodeActionRunning(action.nodeId, action.action);
-          return {
-            action,
-            failed: `节点动作执行异常：${errorMessage(error)}`,
-          };
-        }
-        if (handlerCount === 0 && !requiresAcceptedSignal) {
-          clearPendingNodeAction(requestId);
-          clearNodeActionRunning(action.nodeId, action.action);
-          return {
-            action,
-            failed: `节点动作没有处理器：${action.action} (${action.nodeId})。`,
-          };
-        }
-        const firstSignal = await Promise.race([
-          accepted.then((ok) => ({ kind: "accepted" as const, ok })),
-          waiting.then((actionResult) => ({ kind: "result" as const, actionResult })),
-        ]);
-        if (firstSignal.kind === "accepted" && !firstSignal.ok) {
-          clearPendingNodeAction(requestId);
-          clearNodeActionRunning(action.nodeId, action.action);
-          return {
-            action,
-            failed: `节点动作未被目标节点接手：${action.action} (${action.nodeId})。请确认该节点已在画布中渲染后重试。`,
-          };
-        }
-        clearPendingNodeAction(requestId);
-        const singleGenerationSubmission =
-          action.executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
-            ? waitForSubmittedGenerationOutputFromNode(
-              action.nodeId,
-              options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
-            ).then((output): NodeActionResult | Promise<NodeActionResult> => {
-              if (output) {
-                return {
-                  requestId,
-                  nodeId: action.nodeId,
-                  action: action.action,
-                  status: "success" as const,
-                  output,
-                };
+          const lane = workflowActionLane(action.action);
+          const mustHoldCapacityUntilCompleted = GENERATION_NODE_ACTIONS.has(action.action) && (
+            generationActions.length > WORKFLOW_ACTION_CONCURRENCY ||
+            generationCountByLane[lane] > WORKFLOW_ACTION_LANE_LIMITS[lane]
+          );
+          const executionMode = mustHoldCapacityUntilCompleted
+            ? "workflow"
+            : action.executionMode;
+          await persistRunUpdate([{
+            node_id: action.nodeId,
+            action: action.action,
+            status: "running",
+          }]);
+
+          const requestId = `node-action:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+          const uiOpenAction = UI_OPEN_NODE_ACTIONS.has(action.action);
+          const waiting = waitForNodeActionResult(
+            requestId,
+            uiOpenAction ? 300 : options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
+            uiOpenAction
+              ? {
+                requestId,
+                nodeId: action.nodeId,
+                action: action.action,
+                status: "success",
+                output: { openedUiAction: true, fallback: true },
               }
-              return waiting;
-            })
-            : null;
-        const actionResult = firstSignal.kind === "result"
-          ? firstSignal.actionResult
-          : singleGenerationSubmission
-            ? await Promise.race([waiting, singleGenerationSubmission])
-            : await waiting;
-        clearPendingNodeAction(requestId);
-        await requestAnimationFrameOrTimeout();
-        const hasRequiredOutput =
-          action.executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
-            ? await waitForGeneratedResultField(
-              action.nodeId,
+              : undefined,
+          );
+          const requiresAcceptedSignal = GENERATION_NODE_ACTIONS.has(action.action);
+          const acceptTimeoutMs =
+            options.actionAcceptTimeoutMs ?? DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS;
+          const publishNodeAction = () => dispatchNodeAction({
+            nodeId: action.nodeId,
+            action: action.action,
+            executionMode,
+            ...(action.parameters ? { parameters: action.parameters } : {}),
+            requestId,
+          });
+          markNodeActionRunning(action.nodeId, action.action);
+          let handlerCount = 0;
+          const accepted = requiresAcceptedSignal
+            ? waitForNodeActionAccepted(requestId, acceptTimeoutMs)
+            : Promise.resolve(true);
+          try {
+            handlerCount = publishNodeAction();
+          } catch (error) {
+            clearPendingNodeAction(requestId);
+            clearNodeActionRunning(action.nodeId, action.action);
+            return {
+              action,
+              failed: `节点动作执行异常：${errorMessage(error)}`,
+            };
+          }
+          if (handlerCount === 0 && !requiresAcceptedSignal) {
+            clearPendingNodeAction(requestId);
+            clearNodeActionRunning(action.nodeId, action.action);
+            return {
+              action,
+              failed: `节点动作没有处理器：${action.action} (${action.nodeId})。`,
+            };
+          }
+          const firstSignal = await Promise.race([
+            accepted.then((ok) => ({ kind: "accepted" as const, ok })),
+            waiting.then((actionResult) => ({ kind: "result" as const, actionResult })),
+          ]);
+          if (firstSignal.kind === "accepted" && !firstSignal.ok) {
+            clearPendingNodeAction(requestId);
+            clearNodeActionRunning(action.nodeId, action.action);
+            return {
+              action,
+              failed: `节点动作未被目标节点接手：${action.action} (${action.nodeId})。请确认该节点已在画布中渲染后重试。`,
+            };
+          }
+          clearPendingNodeAction(requestId);
+          const singleGenerationSubmission =
+            executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
+              ? waitForSubmittedGenerationOutputFromNode(
+                action.nodeId,
+                options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
+              ).then((output): NodeActionResult | Promise<NodeActionResult> => {
+                if (output) {
+                  return {
+                    requestId,
+                    nodeId: action.nodeId,
+                    action: action.action,
+                    status: "success" as const,
+                    output,
+                  };
+                }
+                return waiting;
+              })
+              : null;
+          const actionResult = firstSignal.kind === "result"
+            ? firstSignal.actionResult
+            : singleGenerationSubmission
+              ? await Promise.race([waiting, singleGenerationSubmission])
+              : await waiting;
+          clearPendingNodeAction(requestId);
+          await requestAnimationFrameOrTimeout();
+          const hasRequiredOutput = await waitForGeneratedResultField(
+            action.nodeId,
+            action.action,
+            actionResult.output,
+            options.actionResultFieldTimeoutMs ?? DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS,
+          );
+          const outputIssue = hasRequiredOutput
+            ? deterministicNodeOutputIssue(
               action.action,
+              nodeById(action.nodeId)?.data,
               actionResult.output,
             )
-            : await waitForGeneratedResultField(
-              action.nodeId,
-              action.action,
-              actionResult.output,
-            );
-
-        const actionOpenedUserUi =
-          isRecord(actionResult.output) &&
-          (actionResult.output.openedUiAction === true ||
-            actionResult.output.requires_user_action === true);
-        const failed = actionResult.status === "error"
-          ? actionResult.error || "节点动作执行失败"
-          : !actionOpenedUserUi && !hasRequiredOutput
-            ? `节点动作完成但未产出 ${mediaRequirementLabel(action.action)}。`
             : null;
 
-        if (failed || actionOpenedUserUi) clearNodeActionRunning(action.nodeId, action.action);
-        return { action, failed, output: actionResult.output };
+          const actionOpenedUserUi =
+            isRecord(actionResult.output) &&
+            (actionResult.output.openedUiAction === true ||
+              actionResult.output.requires_user_action === true);
+          const failed = actionResult.status === "error"
+            ? actionResult.error || "节点动作执行失败"
+            : outputIssue
+              ? outputIssue
+            : !actionOpenedUserUi && !hasRequiredOutput
+              ? nodeGenerationError(action.nodeId) ??
+                `节点动作完成但未产出 ${mediaRequirementLabel(action.action)}。`
+              : null;
+
+          if (failed || actionOpenedUserUi) clearNodeActionRunning(action.nodeId, action.action);
+          return { action, failed, output: actionResult.output };
+        } finally {
+          releaseActionSlot();
+        }
       }));
 
       for (const { action, failed, output } of levelResults) {
         if (failed) {
+          runFailed = true;
           blockedNodeIds.add(action.nodeId);
           result.errors.push(failed);
           result.commandResults.push({
@@ -1881,7 +2097,17 @@ async function executeQueuedNodeActions(
           ...(output ? { output } : {}),
         });
       }
+      await persistRunUpdate(levelResults.map(({ action, failed }) => ({
+        node_id: action.nodeId,
+        action: action.action,
+        status: failed
+          ? failed.startsWith("跳过 ") ? "blocked" : "failed"
+          : "completed",
+        ...(failed ? { error: failed } : {}),
+      })));
     }
+    await persistRunUpdate([], runFailed ? "failed" : "completed");
+    stopWorkflowHeartbeat();
   });
 }
 
@@ -1952,6 +2178,7 @@ function commandLabel(command: CanvasChatCommand): string {
       if (command.action === "generate_video") return "生成视频";
       if (command.action === "run_skill") return "运行技能";
       if (command.action === "open_video_compose_modal") return "打开视频合成";
+      if (command.action === "auto_compose_video") return "自动合成视频";
       if (command.action === "open_director_world") return "打开导演世界";
       if (command.action === "generate_3gs_world") return "生成 3GS 世界";
       if (command.action === "open_split_storyboard_tool") return "打开分格抽取";
@@ -2446,6 +2673,13 @@ function applyCanvasChatCommandsInternal(
               ...command,
               node_ids: command.node_ids?.map((nodeId) => resolveNodeId(nodeId, clientIdMap)),
             };
+            if (resolvedCommand.direction !== "node" && resolvedCommand.direction !== "downstream") {
+              const expansionIssues = workflowExpansionIssues(
+                useCanvasStore.getState().nodes,
+                resolvedCommand.node_ids,
+              );
+              if (expansionIssues.length > 0) throw new Error(expansionIssues[0]);
+            }
             const allActions = workflowNodeActions(resolvedCommand, currentCommandIndex, { skipCompleted: false });
             const actions = workflowNodeActions(
               resolvedCommand,

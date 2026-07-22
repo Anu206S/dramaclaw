@@ -76,6 +76,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
         nodeKind: 'audio',
         nodePrompt: ownText,
         upstreamText: upstreamTextJoined,
+        upstreamContents,
         fallbackPrompt,
       });
       const ref = isMusic
@@ -130,6 +131,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     nodeId,
     ownText,
     updateNodeData,
+    upstreamContents,
     upstreamTextJoined,
   ]);
 

@@ -42,6 +42,7 @@ export interface UpstreamContent {
   nodeId: string;
   nodeType: CanvasNodeType;
   displayName?: string;
+  workflowStepId?: string;
   text?: string;
   imageUrl?: string;
   videoUrl?: string;

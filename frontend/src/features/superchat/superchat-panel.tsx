@@ -24,6 +24,7 @@ import {
   Play,
   Pin,
   PinOff,
+  RefreshCw,
   Search,
   ShieldAlert,
   Wrench,
@@ -112,6 +113,7 @@ import type {
 } from "@/features/freezone/canvasChatCommands";
 import {
   applyCanvasChatCommandsAsync,
+  canvasCommandEnvelopesRunInBackground,
   FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT,
   FREEZONE_CANVAS_COMMAND_RESULT_EVENT,
   subscribeCanvasCommandApprovals,
@@ -380,18 +382,9 @@ const AGENT_TOOL_TITLE_OVERRIDES: Record<string, string> = {
   freezone_list_workflows: "读取可用工作流",
   list_workflows: "读取可用工作流",
   "list workflows": "读取可用工作流",
-  freezone_skill_list: "读取可用 Skill",
-  skill_list: "读取可用 Skill",
-  "skill list": "读取可用 Skill",
-  freezone_skill_start_session: "启动 Skill 会话",
-  skill_start_session: "启动 Skill 会话",
-  "skill start session": "启动 Skill 会话",
-  freezone_skill_status: "读取 Skill 状态",
-  skill_status: "读取 Skill 状态",
-  "skill status": "读取 Skill 状态",
-  freezone_skill_confirm: "确认执行方案",
-  skill_confirm: "确认执行方案",
-  "skill confirm": "确认执行方案",
+  freezone_get_workflow_skill: "加载 Workflow Skill",
+  get_workflow_skill: "加载 Workflow Skill",
+  "get workflow skill": "加载 Workflow Skill",
 };
 
 function toolRawRecord(message: ChatMessage): Record<string, unknown> | null {
@@ -2631,6 +2624,8 @@ function canvasCommandFeedbackIsInvalidCommand(feedback: CanvasCommandFeedback):
 
 type CanvasFeedbackVisualTone = "muted" | "warning" | "destructive" | "success";
 
+const EMPTY_AGENT_REPLY_TEXT = "这轮操作没有收到虾导的有效回复，请稍后重试。";
+
 function canvasContextActivityVisualTone(activity: CanvasContextActivity): CanvasFeedbackVisualTone {
   if (activity.status === "failed") {
     return canvasContextActivityIsValidation(activity) ? "muted" : "warning";
@@ -2676,12 +2671,21 @@ function expiredCanvasApprovalFeedback(approval: PendingCanvasCommandApproval): 
     ],
     key: `expired:${approval.key}`,
     plans: approval.plans,
+    envelopes: approval.envelopes,
+    cancelled: true,
+    cancelReason: "timeout",
     anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
     surfaceOrder: approval.surfaceOrder ?? approval.receivedAt,
   };
 }
 
-function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedback }) {
+function CanvasCommandFeedbackCard({
+  feedback,
+  onRetry,
+}: {
+  feedback: CanvasCommandFeedback;
+  onRetry?: (feedback: CanvasCommandFeedback) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const steps = feedback.commandResults ?? [];
   const successfulCount = feedback.applied + feedback.openedUiActions;
@@ -2693,6 +2697,7 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
   const initiallyCompact = failed && successfulCount === 0;
   const collapseSuccessfulDetails = !failed && steps.length > 2;
   const compactTitle = canvasCommandFeedbackCompactTitle(feedback);
+  const canRetry = feedback.cancelled && feedback.envelopes && feedback.envelopes.length > 0;
   const userFailureMessage = failed
     ? canvasCommandUserMessageFromResult(
         feedback.errors,
@@ -2790,6 +2795,14 @@ function CanvasCommandFeedbackCard({ feedback }: { feedback: CanvasCommandFeedba
           <div className={cn("break-words", invalidCommand ? "text-amber-200/80" : "text-destructive")}>{feedback.errors.join("; ")}</div>
         )}
       </div>
+      {canRetry && onRetry ? (
+        <div className="flex items-center justify-end border-t border-white/[0.06] px-3 py-2.5">
+          <Button size="xs" variant="outline" onClick={() => onRetry(feedback)}>
+            <RefreshCw className="mr-1.5 size-3.5" />
+            重新执行
+          </Button>
+        </div>
+      ) : null}
     </div>
   );
 }
@@ -5777,6 +5790,7 @@ const MessageBubble = memo(function MessageBubble({
   executingCanvasCommandApprovalIds = new Set<string>(),
   onApplyCanvasCommandApproval,
   onCancelCanvasCommandApproval,
+  onRetryCanvasCommandFeedback,
   onSubmitSkillStudioQuestionResponse,
   onSubmitSkillStudioDraftResponse,
   onStartSkillStudioDraftRevision,
@@ -5800,6 +5814,11 @@ const MessageBubble = memo(function MessageBubble({
   executingCanvasCommandApprovalIds?: Set<string>;
   onApplyCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
   onCancelCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
+  onRetryCanvasCommandFeedback?: (
+    feedback: CanvasCommandFeedback,
+    messageId: string,
+    turnId?: string,
+  ) => void;
   onSubmitSkillStudioQuestionResponse?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
     selections: SkillStudioQuestionSelections,
@@ -5869,7 +5888,10 @@ const MessageBubble = memo(function MessageBubble({
     && !isUser
     && !isTool
     && (visibleCanvasCommandFeedbacks.length > 0 || canvasCommandApprovals.length > 0)
-    && looksLikeCanvasExecutionNarration(message.text);
+    && (
+      looksLikeCanvasExecutionNarration(message.text)
+      || displayText.trim() === EMPTY_AGENT_REPLY_TEXT
+    );
   const hasCanvasCommandSurface =
     visibleCanvasCommandFeedbacks.length > 0
     || canvasCommandApprovals.length > 0
@@ -6152,7 +6174,11 @@ const MessageBubble = memo(function MessageBubble({
                       if (!stillPending) {
                         const expiredFeedback = expiredCanvasApprovalFeedback(approval);
                         return expiredFeedback
-                          ? <CanvasCommandFeedbackCard key={part.id} feedback={expiredFeedback} />
+                          ? <CanvasCommandFeedbackCard
+                              key={part.id}
+                              feedback={expiredFeedback}
+                              onRetry={(feedback) => onRetryCanvasCommandFeedback?.(feedback, message.id, message.turnId)}
+                            />
                           : null;
                       }
                       return (
@@ -6166,7 +6192,11 @@ const MessageBubble = memo(function MessageBubble({
                       );
                     }
                     if (part.type === "canvas_feedback") {
-                      return <CanvasCommandFeedbackCard key={part.id} feedback={part.event as CanvasCommandFeedback} />;
+                      return <CanvasCommandFeedbackCard
+                        key={part.id}
+                        feedback={part.event as CanvasCommandFeedback}
+                        onRetry={(feedback) => onRetryCanvasCommandFeedback?.(feedback, message.id, message.turnId)}
+                      />;
                     }
                     if (part.type === "canvas_context") {
                       return <CanvasContextActivityCard key={part.id} activity={part.event as CanvasContextActivity} />;
@@ -6215,7 +6245,11 @@ const MessageBubble = memo(function MessageBubble({
                     );
                   }
                   if (item.kind === "feedback") {
-                    return <CanvasCommandFeedbackCard key={item.key} feedback={item.feedback} />;
+                    return <CanvasCommandFeedbackCard
+                      key={item.key}
+                      feedback={item.feedback}
+                      onRetry={(feedback) => onRetryCanvasCommandFeedback?.(feedback, message.id, message.turnId)}
+                    />;
                   }
                   if (item.kind === "skill_studio") {
                     return (
@@ -8252,6 +8286,9 @@ type CanvasCommandFeedback = Pick<CanvasChatCommandApplyResult, "applied" | "ope
   commandResults: CanvasCommandFeedbackStep[];
   key: string;
   plans?: CanvasCommandPlan[];
+  envelopes?: CanvasChatCommandEnvelope[];
+  cancelled?: boolean;
+  cancelReason?: CanvasCommandApprovalCancelReason;
   anchorTextPrefix?: string;
   surfaceOrder?: number;
 };
@@ -8361,6 +8398,7 @@ type CanvasCommandSurfaceEvent =
     };
 
 const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
+const CANVAS_COMMAND_APPROVAL_TIMEOUT_MS = 60_000;
 
 function loadCanvasCommandExecutionMode(): CanvasCommandExecutionMode {
   if (typeof window === "undefined") return "manual_confirm";
@@ -8428,6 +8466,7 @@ function canvasCommandPlanLabel(command: CanvasChatCommand): string {
       if (command.action === "generate_image") return "生成图片";
       if (command.action === "generate_video") return "生成视频";
       if (command.action === "open_video_compose_modal") return "打开视频合成";
+      if (command.action === "auto_compose_video") return "自动合成视频";
       if (command.action === "open_video_viewer") return "打开视频";
       return "执行节点动作";
     case "open_mainline_projection":
@@ -8831,6 +8870,9 @@ function dedupeCanvasCommandFeedbacks(feedbacks: CanvasCommandFeedback[]): Canva
       const existing = deduped[existingIndex];
       deduped[existingIndex] = {
         ...existing,
+        envelopes: existing.envelopes ?? feedback.envelopes,
+        cancelled: existing.cancelled ?? feedback.cancelled,
+        cancelReason: existing.cancelReason ?? feedback.cancelReason,
         anchorTextPrefix: existing.anchorTextPrefix ?? feedback.anchorTextPrefix,
         surfaceOrder:
           existing.surfaceOrder == null
@@ -9059,16 +9101,18 @@ function canvasCommandFeedbacksFromUiEvents(events: unknown[] | undefined): Canv
     const key = typeof value.bridge_key === "string" && value.bridge_key.trim()
       ? `bridge:${value.bridge_key.trim()}`
       : `event:${String(value.id ?? value.received_at ?? value.receivedAt ?? feedbacks.length)}`;
-    feedbacks.push(
-      mergeCanvasCommandFeedbackValue(
+    const feedback = mergeCanvasCommandFeedbackValue(
         undefined,
         key,
         result,
         canvasCommandPlansFromEnvelopes(envelopes),
         anchorTextPrefix,
         canvasSurfaceEventOrder(value, feedbacks.length),
-      ),
-    );
+      );
+    feedback.envelopes = envelopes;
+    feedback.cancelled = value.cancelled === true;
+    feedback.cancelReason = value.cancel_reason === "timeout" ? "timeout" : value.cancelled === true ? "user" : undefined;
+    feedbacks.push(feedback);
   }
   return feedbacks;
 }
@@ -9860,7 +9904,11 @@ export function SuperChatPanel({
     const receivedAt = detail.receivedAt ?? Date.now();
     const receivedAtLooksLikeEpochMs = receivedAt > 1_000_000_000_000;
     const expiresAt = detail.autoExpires
-      ? (receivedAtLooksLikeEpochMs ? receivedAt + 30_000 : Date.now() + 30_000)
+      ? (
+          receivedAtLooksLikeEpochMs
+            ? receivedAt + CANVAS_COMMAND_APPROVAL_TIMEOUT_MS
+            : Date.now() + CANVAS_COMMAND_APPROVAL_TIMEOUT_MS
+        )
       : undefined;
     return {
       id: key,
@@ -10281,11 +10329,25 @@ export function SuperChatPanel({
         }
 
         let result: CanvasChatCommandApplyResult;
+        let backgroundAccepted = false;
         try {
-          result = await applyCanvasChatCommandsAsync(approval.envelopes, {
+          const execution = applyCanvasChatCommandsAsync(approval.envelopes, {
             projectId: params.project,
             canvasId: effectiveFreezoneCanvasId,
           });
+          if (canvasCommandEnvelopesRunInBackground(approval.envelopes)) {
+            backgroundAccepted = true;
+            reportCanvasCommandToolResult({
+              bridgeKey: approval.bridgeKey,
+              turnId: approval.turnId,
+              anchorTextPrefix: approval.anchorTextPrefix,
+              projectId: params.project,
+              canvasId: effectiveFreezoneCanvasId,
+              agentId: approval.agentId ?? effectiveFreezoneAgentId,
+              accepted: true,
+            });
+          }
+          result = await execution;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const errorMessage = `画布命令执行异常：${message}`;
@@ -10306,15 +10368,17 @@ export function SuperChatPanel({
           };
         }
 
-        reportCanvasCommandToolResult({
-          bridgeKey: approval.bridgeKey,
-          turnId: approval.turnId,
-          anchorTextPrefix: approval.anchorTextPrefix,
-          projectId: params.project,
-          canvasId: effectiveFreezoneCanvasId,
-          agentId: approval.agentId ?? effectiveFreezoneAgentId,
-          result,
-        });
+        if (!backgroundAccepted) {
+          reportCanvasCommandToolResult({
+            bridgeKey: approval.bridgeKey,
+            turnId: approval.turnId,
+            anchorTextPrefix: approval.anchorTextPrefix,
+            projectId: params.project,
+            canvasId: effectiveFreezoneCanvasId,
+            agentId: approval.agentId ?? effectiveFreezoneAgentId,
+            result,
+          });
+        }
         const feedbackKey = canvasCommandFeedbackKey(approval.bridgeKey, approval.turnId, undefined, approval.key);
         appendCanvasCommandFeedback(
           approval.messageId,
@@ -10444,6 +10508,9 @@ export function SuperChatPanel({
       commandResults: result.commandResults,
       key: feedbackKey,
       plans: approval.plans,
+      envelopes: approval.envelopes,
+      cancelled: true,
+      cancelReason: reason,
       anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
       surfaceOrder: receivedAt,
     };
@@ -10461,6 +10528,30 @@ export function SuperChatPanel({
     );
     setPendingCanvasCommandApprovals((current) => removePendingCanvasCommandApproval(current, approval));
   }, [appendCanvasCommandFeedback, chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistCanvasCommandUiEvent, t]);
+
+  const handleRetryCanvasCommandFeedback = useCallback((
+    feedback: CanvasCommandFeedback,
+    messageId: string,
+    turnId?: string,
+  ) => {
+    if (!feedback.envelopes?.length) return;
+    const receivedAt = Date.now();
+    const retryKey = `retry:${feedback.key}:${receivedAt}`;
+    handleApplyCanvasCommandApproval({
+      id: retryKey,
+      key: retryKey,
+      messageId,
+      turnId: turnId ?? null,
+      bridgeKey: null,
+      agentId: effectiveFreezoneAgentId,
+      anchorTextPrefix: feedback.anchorTextPrefix ?? null,
+      surfaceOrder: receivedAt,
+      receivedAt,
+      envelopes: feedback.envelopes,
+      commandCount: feedback.envelopes.reduce((sum, envelope) => sum + envelope.commands.length, 0),
+      plans: feedback.plans ?? canvasCommandPlansFromEnvelopes(feedback.envelopes),
+    });
+  }, [effectiveFreezoneAgentId, handleApplyCanvasCommandApproval]);
 
   useEffect(() => {
     if (canvasCommandExecutionMode !== "auto_execute") return;
@@ -11911,6 +12002,7 @@ export function SuperChatPanel({
                       executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
                       onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
                       onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
+                      onRetryCanvasCommandFeedback={handleRetryCanvasCommandFeedback}
                       onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                       onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                       onStartSkillStudioDraftRevision={startSkillStudioDraftRevision}
@@ -11982,6 +12074,7 @@ export function SuperChatPanel({
                     executingCanvasCommandApprovalIds={executingCanvasCommandApprovalIds}
                     onApplyCanvasCommandApproval={handleApplyCanvasCommandApproval}
                     onCancelCanvasCommandApproval={handleCancelCanvasCommandApproval}
+                    onRetryCanvasCommandFeedback={handleRetryCanvasCommandFeedback}
                     onSubmitSkillStudioQuestionResponse={submitSkillStudioQuestionResponse}
                     onSubmitSkillStudioDraftResponse={submitSkillStudioDraftResponse}
                     onStartSkillStudioDraftRevision={startSkillStudioDraftRevision}

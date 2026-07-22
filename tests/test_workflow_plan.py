@@ -113,6 +113,55 @@ def _dynamic_plan(*, image_count: int = 1) -> dict:
     }
 
 
+def _use_parameterized_catalog(monkeypatch, catalog):
+    def fake_list_user_agent_config_items(_username, kind):
+        if kind == "skills":
+            return [
+                {
+                    "id": "cinematic-short",
+                    "triggers": {"node_scopes": ["textGeneration"]},
+                    "input_parameters": [
+                        {
+                            "id": "duration",
+                            "label": "成片时长",
+                            "type": "single_select",
+                            "required": True,
+                            "default": "60",
+                            "options": [
+                                {"value": "60", "label": "60秒"},
+                                {"value": "90", "label": "90秒"},
+                            ],
+                        },
+                        {
+                            "id": "execution_mode",
+                            "label": "执行模式",
+                            "type": "single_select",
+                            "required": True,
+                            "default": "auto",
+                            "options": [
+                                {"value": "auto", "label": "全自动"},
+                                {"value": "manual", "label": "只创建画布"},
+                            ],
+                        },
+                    ],
+                    "planning": {"planning_notes": "动态规划电影短片"},
+                }
+            ]
+        if kind == "recipes":
+            return [
+                {
+                    "id": "general-text",
+                    "version": 1,
+                    "output_kind": "text",
+                    "system_prompt": "生成文本",
+                }
+            ]
+        raise AssertionError(kind)
+
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
+    monkeypatch.setattr(catalog, "_catalog_username", lambda: "local")
+
+
 def test_workflow_skill_package_supports_skill_without_template(monkeypatch):
     catalog = _load_catalog_module()
 
@@ -189,6 +238,47 @@ def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
     assert builtin_package["ok"] is True
 
 
+def test_parameterized_skill_uses_stateless_input_contract(monkeypatch):
+    catalog = _load_catalog_module()
+    _use_parameterized_catalog(monkeypatch, catalog)
+
+    package = catalog.get_workflow_skill(
+        {
+            "skill_id": "cinematic-short",
+            "user_goal": "生成一支竖屏电影感短片",
+            "inputs": {"duration": "90"},
+        }
+    )
+
+    assert package["ok"] is True
+    assert "type" not in package["skill"]
+    assert "parameters" not in package["skill"]
+    assert package["skill"]["input_parameters"]
+    assert package["input_contract"]["ready_for_planning"] is True
+    assert package["input_contract"]["resolved"]["duration"] == "90"
+    assert package["input_contract"]["recommended_run_after_create"] is True
+    recipe_ids = {item["id"] for item in package["available_recipes"]}
+    assert "general-text" in recipe_ids
+
+
+def test_workflow_skill_input_contract_rejects_unknown_option(monkeypatch):
+    catalog = _load_catalog_module()
+    _use_parameterized_catalog(monkeypatch, catalog)
+
+    package = catalog.get_workflow_skill(
+        {
+            "skill_id": "cinematic-short",
+            "inputs": {"duration": "120"},
+        }
+    )
+
+    assert package["ok"] is True
+    assert package["input_contract"]["ready_for_planning"] is False
+    assert package["input_contract"]["errors"] == [
+        {"path": "inputs.duration", "message": "unsupported option: 120"}
+    ]
+
+
 def test_dynamic_workflow_plan_accepts_different_node_counts(monkeypatch):
     catalog = _load_catalog_module()
     _install_minimal_builtin_catalog(monkeypatch, catalog)
@@ -200,6 +290,46 @@ def test_dynamic_workflow_plan_accepts_different_node_counts(monkeypatch):
     assert three["node_count"] == 4
     assert six["ok"] is True
     assert six["node_count"] == 7
+
+
+def test_dynamic_workflow_plan_validates_skill_inputs(monkeypatch):
+    catalog = _load_catalog_module()
+    _use_parameterized_catalog(monkeypatch, catalog)
+    plan = {
+        "schema_version": "freezone_workflow_plan.v1",
+        "workflow_type": "dynamic.cinematic-short",
+        "skill": {"id": "cinematic-short"},
+        "inputs": {"duration": "120", "execution_mode": "manual"},
+        "nodes": [
+            {
+                "id": "concept",
+                "node_type": "textAnnotationNode",
+                "stage": "story",
+                "data": {
+                    "prompt": "生成电影短片概念",
+                    "workflowCatalog": {
+                        "skillId": "cinematic-short",
+                        "recipeId": "general-text",
+                        "recipeVersion": "1",
+                    },
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    invalid = catalog.validate_agent_workflow_plan(plan)
+    assert invalid["ok"] is False
+    assert invalid["errors"][0] == {
+        "path": "inputs.duration",
+        "message": "unsupported option: 120",
+    }
+
+    plan["inputs"]["duration"] = "90"
+    valid = catalog.validate_agent_workflow_plan(plan)
+    assert valid["ok"] is True
+    assert valid["execution_mode"] == "manual"
+    assert valid["recommended_run_after_create"] is False
 
 
 def test_strict_workflow_plan_rejects_unknown_node_bad_edge_and_cycle():

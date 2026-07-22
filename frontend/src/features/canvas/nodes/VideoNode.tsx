@@ -2036,6 +2036,7 @@ export const VideoNode = memo(
           nodeKind: "video",
           nodePrompt: trimmedPrompt,
           upstreamText: upstreamTextJoined,
+          upstreamContents,
           fallbackPrompt,
           referenceMedia: referenceMediaCapInfo.map(({ item }) => ({
             kind: item.kind,
@@ -2483,6 +2484,7 @@ export const VideoNode = memo(
       sceneOptimize,
       submitDisabled,
       updateNodeData,
+      upstreamContents,
       upstreamTextJoined,
     ]);
 

@@ -69,6 +69,10 @@ FREEZONE_TURN_TOOL_CALL_LIMIT = max(
     TURN_TOOL_CALL_LIMIT,
     80,
 )
+REPEATED_READ_TOOL_CALL_LIMIT = max(
+    2,
+    _env_int("HERMES_REPEATED_READ_TOOL_CALL_LIMIT", 5),
+)
 TOOL_DETAIL_LIMIT = 1600
 PERMISSION_REQUEST_TIMEOUT_SECONDS = 60.0
 CONTENT_FILTER_MESSAGE = (
@@ -250,6 +254,59 @@ def _tool_call_limit_stop_message(name: object) -> str:
         "本轮操作已停止：虾导连续调用工具过多，可能在自动推进过大范围。"
         "请缩小指令范围，例如只检查前置条件，或只启动一个具体 beat 的视频任务。"
     )
+
+
+_FREEZONE_READ_TOOLS_WITH_REPEAT_GUARD = {
+    "freezone_get_node_detail",
+    "freezone_get_node_action_catalog",
+    "freezone_summarize_canvas",
+}
+
+
+class _TurnToolCallGuard:
+    def __init__(self) -> None:
+        self.total = 0
+        self._counted_call_ids: set[str] = set()
+        self._last_read_signature: str | None = None
+        self._repeated_read_count = 0
+
+    def observe(self, event: ChatBackendEvent) -> str | None:
+        if event.type not in {"tool_started", "tool_updated"}:
+            return None
+        call_id = str(event.call_id or "").strip()
+        if call_id:
+            if call_id in self._counted_call_ids:
+                return None
+            self._counted_call_ids.add(call_id)
+        elif event.type != "tool_started":
+            # Anonymous updates cannot be distinguished from a matching start.
+            return None
+
+        self.total += 1
+        tool_name = str(event.name or "").strip()
+        if tool_name in _FREEZONE_READ_TOOLS_WITH_REPEAT_GUARD:
+            try:
+                encoded_input = json.dumps(event.input, ensure_ascii=False, sort_keys=True, default=str)
+            except (TypeError, ValueError):
+                encoded_input = repr(event.input)
+            signature = f"{tool_name}:{encoded_input}"
+            if signature == self._last_read_signature:
+                self._repeated_read_count += 1
+            else:
+                self._last_read_signature = signature
+                self._repeated_read_count = 1
+            if self._repeated_read_count > REPEATED_READ_TOOL_CALL_LIMIT:
+                return (
+                    "本轮操作已停止：虾导重复读取同一个画布节点，且没有产生新的操作。"
+                    "请重新发送一条明确的继续或重试指令。"
+                )
+        else:
+            self._last_read_signature = None
+            self._repeated_read_count = 0
+
+        if self.total > _turn_tool_call_limit_for_tool(tool_name):
+            return _tool_call_limit_stop_message(tool_name)
+        return None
 
 
 def _should_stop_after_write_tool(first_write_tool: str | None, next_tool_name: object) -> bool:
@@ -608,10 +665,10 @@ class HermesSdkThread:
                 {"sessionId": self.id, "cwd": str(self._cwd), "mcpServers": []},
             )
             resp, _ = await self._read_until_id(req_id, SESSION_NEW_TIMEOUT)
-            if resp and "error" not in resp:
+            if resp and "error" not in resp and resp.get("result") is not None:
                 return
             _log.warning("session/load failed, falling back to session/new: %s",
-                         resp.get("error") if resp else "timeout")
+                         resp.get("error") if resp and resp.get("error") else "not found")
             self._is_new = True
 
         req_id = await self._send(
@@ -689,7 +746,7 @@ class HermesSdkThread:
             # session/update notifications hermes sends.
             assert self._proc.stdout is not None
             deadline = asyncio.get_event_loop().time() + STREAM_READ_TIMEOUT
-            tool_call_count = 0
+            tool_call_guard = _TurnToolCallGuard()
             first_write_tool: str | None = None
             active_tool_name: str | None = None
             tool_name_by_call_id: dict[str, str] = {}
@@ -753,8 +810,24 @@ class HermesSdkThread:
                     tool_name_by_call_id=tool_name_by_call_id,
                 )
                 if ev is not None:
+                    stop_text = tool_call_guard.observe(ev)
+                    if stop_text:
+                        _log.warning(
+                            "Hermes turn stopped by tool call guard: thread=%s turn=%s total=%s tool=%s",
+                            self.id,
+                            turn_id,
+                            tool_call_guard.total,
+                            ev.name or "tool",
+                        )
+                        await self.close()
+                        yield ChatBackendEvent(
+                            type="complete",
+                            thread_id=self.id,
+                            turn_id=turn_id,
+                            text=stop_text,
+                        )
+                        return
                     if ev.type == "tool_started":
-                        tool_call_count += 1
                         tool_name = str(ev.name or "").strip()
                         active_tool_name = tool_name
                         if _should_stop_after_write_tool(first_write_tool, tool_name):
@@ -802,22 +875,6 @@ class HermesSdkThread:
                         if _is_dramaclaw_write_tool(tool_name):
                             first_write_tool = tool_name
                             first_write_failed = False
-                        tool_call_limit = _turn_tool_call_limit_for_tool(tool_name)
-                        if tool_call_count > tool_call_limit:
-                            _log.warning(
-                                "Hermes turn exceeded tool call limit: thread=%s turn=%s limit=%s",
-                                self.id,
-                                turn_id,
-                                tool_call_limit,
-                            )
-                            await self.close()
-                            yield ChatBackendEvent(
-                                type="complete",
-                                thread_id=self.id,
-                                turn_id=turn_id,
-                                text=_tool_call_limit_stop_message(tool_name),
-                            )
-                            return
                     elif (
                         ev.type == "tool_updated"
                         and (ev.raw or {}).get("sessionUpdate") == "tool_call_update"

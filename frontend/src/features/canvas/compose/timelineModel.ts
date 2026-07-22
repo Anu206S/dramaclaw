@@ -233,6 +233,7 @@ export function activeClipAt(
 export interface BuildComposeOptions {
   title?: string;
   canvasId?: string;
+  nodeId?: string;
   fps?: number;
 }
 
@@ -262,6 +263,7 @@ export function buildComposePayload(
   return {
     title: options.title,
     canvasId: options.canvasId,
+    nodeId: options.nodeId,
     resolution: state.resolution,
     fps: options.fps ?? 30,
     // ⚠️ 后端需支持 cover_url 才会把封面烧进导出的 MP4；未支持时被忽略，

@@ -4,6 +4,7 @@ from starlette.websockets import WebSocketDisconnect
 from novelvideo.api.routes import chat as chat_route
 from novelvideo.chat.store import ChatScope
 from novelvideo.freezone.canvas_command_bridge import (
+    put_pending_canvas_command,
     put_pending_clarification_event,
     put_pending_skill_studio_event,
     wait_canvas_command_result,
@@ -152,6 +153,84 @@ def test_canvas_command_tool_result_prefers_user_message_and_agent_hint(monkeypa
     assert result["agent_instruction"] == payload.agent_hint
     assert result["agent_hint"] == payload.agent_hint
     assert "planning_text" in result["errors"][0]
+
+
+def test_canvas_command_tool_result_accepts_background_workflow(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    captured: dict[str, object] = {}
+
+    def fake_resolve_canvas_command(key, result, *, bridge_dir=None):
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(chat_route, "resolve_canvas_command", fake_resolve_canvas_command)
+
+    payload = chat_route.CanvasCommandToolResultIn(
+        bridge_key="bridge-workflow",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        tool_call_status="completed",
+        canvas_apply_status="accepted",
+        applied=True,
+    )
+
+    chat_route._resolve_canvas_command_tool_result_payload(payload, username="admin")
+
+    result = captured["result"]
+    assert isinstance(result, dict)
+    assert result["ok"] is True
+    assert result["canvas_apply_status"] == "accepted"
+    assert "continues in the canvas" in result["agent_instruction"]
+    assert "Do not claim" in result["agent_instruction"]
+
+
+@pytest.mark.anyio
+async def test_pending_canvas_command_poll_only_returns_external_auto_apply_commands(
+    monkeypatch, tmp_path
+) -> None:
+    bridge_dir = tmp_path / "bridge"
+    monkeypatch.setattr(
+        chat_route,
+        "_candidate_canvas_bridge_dirs_for_scope",
+        lambda *_args, **_kwargs: [bridge_dir],
+    )
+    commands = [{"type": "select_nodes", "nodeIds": ["node-a"]}]
+    put_pending_canvas_command(
+        key="chat-turn-command",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        commands=commands,
+        envelope={
+            "schema_version": "canvas_chat_commands.v1",
+            "canvas_id": "canvas-a",
+            "commands": commands,
+        },
+        bridge_dir=bridge_dir,
+    )
+    put_pending_canvas_command(
+        key="approved-external-command",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        commands=commands,
+        envelope={
+            "schema_version": "canvas_chat_commands.v1",
+            "canvas_id": "canvas-a",
+            "auto_apply_after_mcp_approval": True,
+            "commands": commands,
+        },
+        bridge_dir=bridge_dir,
+    )
+
+    result = await chat_route.list_pending_canvas_commands(
+        chat_route.PendingCanvasCommandsIn(
+            project_id="project-a",
+            canvas_id="canvas-a",
+        ),
+        user={"username": "admin"},
+    )
+
+    frames = result["data"]["frames"]
+    assert [frame["bridge_key"] for frame in frames] == ["approved-external-command"]
 
 
 @pytest.mark.anyio
@@ -438,11 +517,11 @@ def test_tool_result_payload_includes_structured_json() -> None:
 
 def test_tool_result_payload_prefers_explicit_structured_json() -> None:
     payload = chat_route._tool_result_payload(
-        "freezone_skill_list result\n- **count:** 1",
+        "freezone_get_workflow_skill result\n- **count:** 1",
         {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]},
     )
 
-    assert payload["text"].startswith("freezone_skill_list result")
+    assert payload["text"].startswith("freezone_get_workflow_skill result")
     assert payload["json"] == {"ok": True, "skills": [{"id": "pixar-ip-brand-ad"}]}
 
 

@@ -637,6 +637,7 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
       nodeKind: 'image',
       nodePrompt: ownPrompt,
       upstreamText: upstreamTextJoined,
+      upstreamContents,
       fallbackPrompt,
       referenceMedia: [...incomingImages, ...upstreamReferenceUrls].map((_, index) => ({
         kind: 'image',
@@ -821,6 +822,7 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
     supportedAspectRatioValues,
     t,
     updateNodeData,
+    upstreamContents,
     upstreamReferenceUrls,
     upstreamTextJoined,
   ]);
