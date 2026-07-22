@@ -37,6 +37,7 @@ import type {
   DragEvent as ReactDragEvent,
   KeyboardEvent as ReactKeyboardEvent,
   MouseEvent as ReactMouseEvent,
+  ReactElement,
   ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
@@ -8078,7 +8079,7 @@ function FreezoneSkillInlineEditor({
   onFocus,
   onBlur,
   onKeyDown,
-}: FreezoneSkillInlineEditorProps): JSX.Element {
+}: FreezoneSkillInlineEditorProps): ReactElement {
   const editorRef = useRef<HTMLDivElement | null>(null);
   const lastEmittedValueRef = useRef(value);
   const lastRenderedSuggestionsKeyRef = useRef("");
