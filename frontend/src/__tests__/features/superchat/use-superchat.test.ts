@@ -3573,6 +3573,8 @@ describe("canvas command bridge events", () => {
   });
 
   it("keeps one thought segment across skill studio status updates", async () => {
+    localStorage.clear();
+    apiPostMock.mockClear();
     class TestWebSocket {
       static OPEN = 1;
       readyState = 1;
@@ -3652,7 +3654,8 @@ describe("canvas command bridge events", () => {
     });
 
     await waitFor(() => {
-      const assistant = hook.result.current.messages.find((item) => item.turnId === "turn-1");
+      const assistant = hook.result.current.messages.find((item) =>
+        item.role === "assistant" && item.turnId === "turn-1");
       const thoughtParts = (assistant?.parts ?? []).filter((
         part,
       ): part is ChatMessagePart & { type: "agent_thought"; event: unknown } =>

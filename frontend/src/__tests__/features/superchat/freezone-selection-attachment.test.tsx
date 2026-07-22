@@ -482,6 +482,38 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     expect(screen.getByTitle(/image-node-1/)).toHaveClass("group/canvas-ref");
   });
 
+  it("uses media-specific fallback icons for selected empty canvas nodes", () => {
+    const audioNode = {
+      id: "audio-node-1",
+      type: "audioNode",
+      position: { x: 0, y: 0 },
+      selected: true,
+      data: {
+        displayName: "配音与BGM",
+        audioUrl: null,
+      },
+    } satisfies Partial<CanvasNode> as CanvasNode;
+    useCanvasStore.getState().setCanvasData([audioNode], []);
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([audioNode], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [audioNode.id],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    expect(screen.getByRole("button", { name: "配音与BGM · audio-node-1" })).toHaveAttribute(
+      "data-media-kind",
+      "audio",
+    );
+  });
+
   it("clears local queued messages when switching freezone canvas scope", () => {
     superChatMocks.busy = true;
     const { rerender } = render(
