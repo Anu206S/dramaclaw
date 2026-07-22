@@ -7,11 +7,16 @@ import { toast } from "sonner";
 
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 
+const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const freezoneAgentConfigMocks = vi.hoisted(() => ({
   delete: vi.fn(),
   items: [] as Array<Record<string, unknown>>,
   refetch: vi.fn(),
   save: vi.fn(),
+}));
+
+vi.mock("@/lib/runtime-config", () => ({
+  isCeRuntime: () => runtimeState.isCeRuntime,
 }));
 
 vi.mock("@/lib/queries/freezone-agent-config", () => ({
@@ -236,6 +241,7 @@ function renderSettingsDialog() {
 }
 
 beforeEach(() => {
+  runtimeState.isCeRuntime = true;
   freezoneAgentConfigMocks.delete.mockReset();
   freezoneAgentConfigMocks.items = [];
   freezoneAgentConfigMocks.refetch.mockReset();
@@ -251,6 +257,24 @@ describe("SettingsDialog pages", () => {
       "page",
     );
     expect(screen.getByText("选择模型网关渠道")).toBeInTheDocument();
+  });
+
+  it("limits EE settings to Freezone Skills and Recipes", () => {
+    runtimeState.isCeRuntime = false;
+
+    renderSettingsDialog();
+
+    expect(screen.queryByRole("button", { name: /模型配置/ })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /媒体存储/ })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "虾画 Skills" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(screen.getByText("暂无虾画 Skills")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+
+    expect(screen.getByText("暂无虾画 Recipes")).toBeInTheDocument();
   });
 
   it("switches to Freezone Skills and Recipes without replacing the original settings", () => {
