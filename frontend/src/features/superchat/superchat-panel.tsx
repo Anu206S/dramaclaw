@@ -8144,6 +8144,7 @@ function FreezoneSkillInlineEditor({
         ref={setEditorRef}
         contentEditable
         role="textbox"
+        aria-label={placeholder}
         aria-multiline="true"
         suppressContentEditableWarning
         onInput={handleInput}

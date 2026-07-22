@@ -1828,7 +1828,11 @@ async function executeQueuedNodeActions(
         await requestAnimationFrameOrTimeout();
         const hasRequiredOutput =
           action.executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
-            ? hasGeneratedResultOutput(action.action, actionResult.output)
+            ? await waitForGeneratedResultField(
+              action.nodeId,
+              action.action,
+              actionResult.output,
+            )
             : await waitForGeneratedResultField(
               action.nodeId,
               action.action,
