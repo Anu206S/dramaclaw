@@ -29,6 +29,17 @@ const apiMocks = vi.hoisted(() => ({
   post: vi.fn(() => ({ catch: vi.fn() })),
 }));
 
+function getFreezoneComposerTextbox(): HTMLElement {
+  return screen.getByRole("textbox", {
+    name: "想画什么、改哪里，直接告诉虾画",
+  });
+}
+
+function setFreezoneComposerText(input: HTMLElement, value: string): void {
+  input.textContent = value;
+  fireEvent.input(input);
+}
+
 vi.mock("react-i18next", () => ({
   useTranslation: () => ({
     t: (key: string, options?: { count?: number }) => {
@@ -182,7 +193,8 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
       />,
     );
 
-    expect(screen.getByPlaceholderText("想画什么、改哪里，直接告诉虾画")).toBeInTheDocument();
+    expect(getFreezoneComposerTextbox()).toBeInTheDocument();
+    expect(screen.getByText("想画什么、改哪里，直接告诉虾画")).toBeInTheDocument();
   });
 
   it("renders Freezone-only header actions when provided", () => {
@@ -485,8 +497,8 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
       />,
     );
 
-    const input = screen.getByPlaceholderText("想画什么、改哪里，直接告诉虾画");
-    fireEvent.change(input, { target: { value: "帮我加个视频节点" } });
+    const input = getFreezoneComposerTextbox();
+    setFreezoneComposerText(input, "帮我加个视频节点");
     fireEvent.keyDown(input, { key: "Enter" });
 
     expect(screen.getByText("待发送 1 条")).toBeInTheDocument();
@@ -522,8 +534,8 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
       />,
     );
 
-    const input = screen.getByPlaceholderText("想画什么、改哪里，直接告诉虾画");
-    fireEvent.change(input, { target: { value: "查看下当前画布summary 然后返回ok" } });
+    const input = getFreezoneComposerTextbox();
+    setFreezoneComposerText(input, "查看下当前画布summary 然后返回ok");
     fireEvent.keyDown(input, {
       key: "Enter",
       code: "Enter",
