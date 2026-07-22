@@ -33,6 +33,7 @@ import {
   withImageCacheBust,
 } from '@/features/canvas/application/imageData';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
+import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canvas/ui/NodeHeader';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { CanvasNodeImage } from '@/features/canvas/ui/CanvasNodeImage';
@@ -211,6 +212,7 @@ export const ImageNode = memo(({ id, data, selected, type, width, height }: Imag
         editable
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
+      <AddNodeToChatButton nodeId={id} />
       <CandidateBindingBadges roles={candidateBindingRoles} />
 
       {data.imageUrl && naturalSize ? (

@@ -9,6 +9,7 @@ import {
   type AssetBoardItem,
   type AssetBoardReference,
 } from '@/features/canvas/domain/assetBoard';
+import { AddNodeToChatIconButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { cn } from '@/lib/utils';
 
 import { useEstimatedProgress } from '../useEstimatedProgress';
@@ -293,18 +294,28 @@ export function AssetBoardCard({
             </span>
           )}
         </div>
-        <button
-          type="button"
-          aria-label="在画布中定位"
-          title="在画布中定位"
-          onClick={(event) => {
-            event.stopPropagation();
-            onLocate(item.nodeId);
-          }}
-          className="invisible shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground group-hover:visible group-focus-within:visible"
-        >
-          <MapPin className="h-3.5 w-3.5" />
-        </button>
+        {/* 悬停才浮出的卡片动作组。故事板和画布是同一份节点数据的两种投影，
+            「添加到对话」的行为必须一致——所以直接用共用组件（发事件、由 FreezoneShell
+            统一落地选中 + 展开聊天），只把样式换成本视图的图标按钮语言。 */}
+        <div className="invisible flex shrink-0 items-center gap-0.5 group-hover:visible group-focus-within:visible">
+          <AddNodeToChatIconButton
+            nodeId={item.nodeId}
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+            iconClassName="h-3.5 w-3.5"
+          />
+          <button
+            type="button"
+            aria-label="在画布中定位"
+            title="在画布中定位"
+            onClick={(event) => {
+              event.stopPropagation();
+              onLocate(item.nodeId);
+            }}
+            className="rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-foreground"
+          >
+            <MapPin className="h-3.5 w-3.5" />
+          </button>
+        </div>
       </div>
 
       {/* 文本卡只显示图标 + 标题（上方标题行），正文不进列表——去详情里看（用户要求）。 */}

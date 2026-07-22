@@ -41,6 +41,7 @@ import {
   NodeHeader,
   NODE_HEADER_FLOATING_POSITION_CLASS,
 } from '@/features/canvas/ui/NodeHeader';
+import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { PanelExpandButton } from '@/features/canvas/ui/PanelExpandButton';
 import {
@@ -664,6 +665,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
           ) : null}
         </>
       )}
+      <AddNodeToChatButton nodeId={id} />
       <CandidateBindingBadges roles={candidateBindingRoles} />
 
       <NodeResizeHandle
