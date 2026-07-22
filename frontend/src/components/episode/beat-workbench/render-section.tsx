@@ -134,6 +134,8 @@ export function RenderSection({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { spec: aspectSpec } = useProjectAspectRatio(project);
+  const singleRenderModeKey =
+    aspectSpec.renderAspect === "16:9" ? "1x1_16-9" : "1x1_2-3";
   const poolSelect = usePoolSelect(project, episode);
   const regenerate = useRegenerateRenderBeats(project, episode);
   const renderSettings = useRenderSettings(project);
@@ -151,7 +153,7 @@ export function RenderSection({
   const renderRegenCost = useGenerationCreditCost(
     "image_selection",
     renderSettings.data?.data.render_image_selection,
-    { surface: "supertale", imageRole: "render", modeKey: "1x1_2-3" },
+    { surface: "supertale", imageRole: "render", modeKey: singleRenderModeKey },
   );
   const uploadRender = useUploadBeatImage(project, episode, "render");
   const backgroundAnchors = useBeatBackgroundAnchors(project, episode, beat.beat_number);
@@ -259,7 +261,10 @@ export function RenderSection({
         toast.error(backgroundRes.error || t("episode.workbench.render.backgroundSaveFailed"));
         return;
       }
-      const res = await regenerate.mutateAsync({ beatIndices: [beat.beat_number], modeKey: "1x1_2-3" });
+      const res = await regenerate.mutateAsync({
+        beatIndices: [beat.beat_number],
+        modeKey: singleRenderModeKey,
+      });
       if (res.ok === false) {
         toast.error(res.error || t("episode.workbench.render.regenFailed"));
         return;
