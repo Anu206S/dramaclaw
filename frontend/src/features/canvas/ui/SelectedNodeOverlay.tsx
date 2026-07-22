@@ -10,11 +10,7 @@ import { useTranslation } from 'react-i18next';
 
 import { useCanvasStore } from '@/stores/canvasStore';
 import {
-  CANVAS_NODE_TYPES,
-  DEFAULT_ASPECT_RATIO,
   DEFAULT_NODE_WIDTH,
-  EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-  EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
   isExportImageNode,
   isImageEditNode,
   isImageGenNode,
@@ -25,6 +21,11 @@ import {
   type CanvasNode,
   type ExportImageNodeResultKind,
 } from '@/features/canvas/domain/canvasNodes';
+import { createUpscaleResultNode } from '@/features/canvas/application/imageUpscale';
+import {
+  createRotateResultNode,
+  discardRotateResultNode,
+} from '@/features/canvas/application/imageRotate';
 import { NodeActionToolbar } from './NodeActionToolbar';
 import { NodeIdBadge } from './NodeIdBadge';
 import { AssetCommitHandle } from './AssetCommitHandle';
@@ -89,10 +90,6 @@ export const SelectedNodeOverlay = memo(() => {
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
   const setActiveOverlayNodeId = useCanvasStore((state) => state.setActiveOverlayNodeId);
   const onNodesChange = useCanvasStore((state) => state.onNodesChange);
-  const addNode = useCanvasStore((state) => state.addNode);
-  const addEdge = useCanvasStore((state) => state.addEdge);
-  const deleteNode = useCanvasStore((state) => state.deleteNode);
-  const findNodePosition = useCanvasStore((state) => state.findNodePosition);
   const reactFlow = useReactFlow();
 
   // 顶部 toolbar 触发的二级 overlay（全景 / 多维度 / 打光 / 九宫格 等）
@@ -325,47 +322,15 @@ export const SelectedNodeOverlay = memo(() => {
 
   const handleOpenRotate = useCallback(
     (sourceNodeId: string) => {
-      const sourceNode = nodes.find((n) => n.id === sourceNodeId);
-      if (!sourceNode) return;
-      if (
-        !isUploadNode(sourceNode)
-        && !isImageEditNode(sourceNode)
-        && !isImageGenNode(sourceNode)
-        && !isExportImageNode(sourceNode)
-      ) {
-        return;
-      }
-      const sourceImageUrl =
-        sourceNode.data.imageUrl || sourceNode.data.previewImageUrl || null;
-      if (!sourceImageUrl) return;
-
-      const sourceAspectRatio =
-        typeof (sourceNode.data as { aspectRatio?: unknown }).aspectRatio === 'string'
-          ? ((sourceNode.data as { aspectRatio?: string }).aspectRatio ?? DEFAULT_ASPECT_RATIO)
-          : DEFAULT_ASPECT_RATIO;
-      const position = findNodePosition(
-        sourceNode.id,
-        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-        EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
-      );
-      const newNodeId = addNode(
-        CANVAS_NODE_TYPES.exportImage,
-        position,
-        {
-          displayName: t('rotateEditor.resultTitle'),
-          imageUrl: null,
-          previewImageUrl: sourceImageUrl,
-          aspectRatio: sourceAspectRatio,
-          resultKind: 'generic',
-          isGenerating: false,
-        },
-      );
-      addEdge(sourceNode.id, newNodeId);
+      const newNodeId = createRotateResultNode(sourceNodeId, {
+        displayName: t('rotateEditor.resultTitle'),
+      });
+      if (!newNodeId) return;
       setRotateNodeId(newNodeId);
       clearFlowSelection();
       setSelectedNode(null);
     },
-    [addEdge, addNode, clearFlowSelection, findNodePosition, nodes, setSelectedNode, t]
+    [clearFlowSelection, setSelectedNode, t]
   );
 
   // 旋转结果节点可能被用户用键盘直接删掉（绕过编辑器的关闭流程）。此时
@@ -383,61 +348,22 @@ export const SelectedNodeOverlay = memo(() => {
       // 进入旋转时会预创建一个「旋转结果」节点。用户退出 / 按 Esc / 没做任何
       // 变换就关闭（committed=false）时，把它删掉，否则会凭空多出一个节点。
       if (!committed && rotateNodeId) {
-        deleteNode(rotateNodeId);
+        discardRotateResultNode(rotateNodeId);
       }
       setRotateNodeId(null);
     },
-    [deleteNode, rotateNodeId]
+    [rotateNodeId]
   );
 
   const handleOpenUpscale = useCallback(
     (sourceNodeId: string) => {
-      const sourceNode = nodes.find((n) => n.id === sourceNodeId);
-      if (!sourceNode) return;
-      if (
-        !isUploadNode(sourceNode)
-        && !isImageEditNode(sourceNode)
-        && !isImageGenNode(sourceNode)
-        && !isExportImageNode(sourceNode)
-      ) {
-        return;
-      }
-      // 与工具栏 canHandleImage / 其它图片工具一致，用统一 helper 取图源
-      // ——它能识别 imageGen 节点（含 referenceImageUrl 兜底）。此前这里只读
-      // imageUrl||previewImageUrl 且守卫漏了 imageGen，导致在生成图节点上点「高清」无反应。
-      const sourceImageUrl = resolveNodeSourceImageUrl(sourceNode);
-      if (!sourceImageUrl) return;
-
-      const sourceAspectRatio =
-        typeof (sourceNode.data as { aspectRatio?: unknown }).aspectRatio === 'string'
-          ? ((sourceNode.data as { aspectRatio?: string }).aspectRatio ?? DEFAULT_ASPECT_RATIO)
-          : DEFAULT_ASPECT_RATIO;
-      const position = findNodePosition(
-        sourceNode.id,
-        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-        EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
-      );
-      const placeholderNodeId = addNode(
-        CANVAS_NODE_TYPES.exportImage,
-        position,
-        {
-          displayName: t('upscaleEditor.title'),
-          imageUrl: null,
-          previewImageUrl: sourceImageUrl,
-          aspectRatio: sourceAspectRatio,
-          resultKind: 'upscale',
-          isGenerating: false,
-          // Persist enough to (re-)run the upscale and to drive the always-attached panel.
-          upscaleSourceUrl: sourceImageUrl,
-          upscaleModelId: 'newapi_gpt_image2',
-          upscaleImageSize: '2K',
-          upscaleScaleFactor: 2,
-        },
-      );
-      addEdge(sourceNode.id, placeholderNodeId);
+      const placeholderNodeId = createUpscaleResultNode(sourceNodeId, {
+        displayName: t('upscaleEditor.title'),
+      });
+      if (!placeholderNodeId) return;
       setSelectedNode(placeholderNodeId);
     },
-    [addEdge, addNode, findNodePosition, nodes, setSelectedNode, t],
+    [setSelectedNode, t],
   );
 
   const upscalePanelNode = useMemo(() => {

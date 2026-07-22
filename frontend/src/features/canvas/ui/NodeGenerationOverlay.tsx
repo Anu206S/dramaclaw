@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useEffect, useMemo, useState } from 'react';
+import { useEstimatedProgress } from './useEstimatedProgress';
 
 type NodeGenerationOverlayProps = {
   /** 生成开始时间戳,用于模拟进度。为空时从挂载时刻开始计时。 */
@@ -28,25 +28,9 @@ export function NodeGenerationOverlay({
   rounded = 'rounded-[var(--node-radius)]',
   messageKey: _messageKey = 'canvas.generationProgress',
 }: NodeGenerationOverlayProps) {
-  const [now, setNow] = useState(() => Date.now());
-  const [mountedAt] = useState(() => Date.now());
-
-  useEffect(() => {
-    const timer = window.setInterval(() => {
-      setNow(Date.now());
-    }, 120);
-    return () => {
-      window.clearInterval(timer);
-    };
-  }, []);
-
-  const percent = useMemo(() => {
-    const begin = typeof startedAt === 'number' ? startedAt : mountedAt;
-    const duration = Math.max(1000, durationMs);
-    const elapsed = Math.max(0, now - begin);
-    const progress = Math.min(elapsed / duration, 0.96);
-    return Math.round(progress * 100);
-  }, [durationMs, mountedAt, now, startedAt]);
+  // 估算算法已抽到 useEstimatedProgress（与故事板卡片/详情共用）；这里的调用
+  // 参数与轮询节奏跟抽取前逐行一致，工作流侧可见行为零变化。
+  const percent = useEstimatedProgress(startedAt, durationMs);
 
   return (
     <div

@@ -16,10 +16,10 @@ import {
   DEFAULT_NODE_WIDTH,
   type CanvasNode,
 } from '@/features/canvas/domain/canvasNodes';
-import { useCanvasStore } from '@/stores/canvasStore';
-import { uploadFreezoneImage } from '@/api/ops';
-import { loadImageElement } from '@/features/canvas/application/imageData';
-import { readUrl } from '@/lib/url-params';
+import {
+  isIdentityRotateTransform,
+  rotateImageInPlace,
+} from '@/features/canvas/application/imageRotate';
 import { NODE_TOOLBAR_CLASS } from './nodeToolbarConfig';
 import { CANVAS_NODE_TOOLBAR_PILL_CLASS } from './nodeFrameStyles';
 
@@ -45,7 +45,6 @@ function normalizeAngle(angle: number): number {
 export const RotateEditorOverlay = memo(
   ({ node, imageSource, onClose }: RotateEditorOverlayProps) => {
     const { t } = useTranslation();
-    const updateNodeData = useCanvasStore((state) => state.updateNodeData);
 
     const [angle, setAngle] = useState(0);
     const [mirrorH, setMirrorH] = useState(false);
@@ -83,80 +82,24 @@ export const RotateEditorOverlay = memo(
 
     const handleSave = useCallback(async () => {
       if (isSaving) return;
+      const transform = { angleDeg: angle, mirrorH, mirrorV };
       // 没有任何变换时直接关闭，不必上传重写。视作「未提交」，让调用方把预创建
       // 的结果节点删掉（等同退出）。
-      if (angle === 0 && !mirrorH && !mirrorV) {
+      if (isIdentityRotateTransform(transform)) {
         onClose(false);
         return;
       }
-      const project = readUrl().project;
-      if (!project) {
-        console.error('[rotate] no project in URL — cannot persist result');
-        return;
-      }
+
+      // isGenerating 置位与后续写回都在 application 函数内完成；缺 project 时返回
+      // null，此处不改变编辑态（与原「直接 return、不关闭」行为一致）。
+      const completion = rotateImageInPlace(node.id, imageSource, transform);
+      if (!completion) return;
 
       setIsSaving(true);
-      updateNodeData(node.id, {
-        isGenerating: true,
-        generationStartedAt: Date.now(),
-        generationError: null,
-        generationErrorDetails: null,
-      });
       // 已开始写回旋转结果到该节点 —— 标记为已提交，调用方保留节点。
       onClose(true);
-
       try {
-        const image = await loadImageElement(imageSource);
-        const sw = image.naturalWidth;
-        const sh = image.naturalHeight;
-
-        // 旋转后的画布需要包含图片所有四角（任意角度）。
-        const rad = (angle * Math.PI) / 180;
-        const cos = Math.abs(Math.cos(rad));
-        const sin = Math.abs(Math.sin(rad));
-        const dw = Math.max(1, Math.round(sw * cos + sh * sin));
-        const dh = Math.max(1, Math.round(sw * sin + sh * cos));
-
-        const canvas = document.createElement('canvas');
-        canvas.width = dw;
-        canvas.height = dh;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) throw new Error('2d context unavailable');
-
-        ctx.translate(dw / 2, dh / 2);
-        ctx.rotate(rad);
-        ctx.scale(mirrorH ? -1 : 1, mirrorV ? -1 : 1);
-        ctx.drawImage(image, -sw / 2, -sh / 2);
-
-        const blob: Blob = await new Promise((resolve, reject) => {
-          canvas.toBlob(
-            (b) => (b ? resolve(b) : reject(new Error('toBlob returned null'))),
-            'image/png',
-          );
-        });
-
-        const filename = `rotate-${node.id}-${Date.now()}.png`;
-        const uploaded = await uploadFreezoneImage(project, blob, filename);
-
-        const newAspectRatio = `${dw}:${dh}`;
-        updateNodeData(node.id, {
-          imageUrl: uploaded.url,
-          previewImageUrl: uploaded.url,
-          aspectRatio: newAspectRatio,
-          isGenerating: false,
-          generationStartedAt: null,
-          generationError: null,
-          generationErrorDetails: null,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[rotate] save failed', err);
-        updateNodeData(node.id, {
-          isGenerating: false,
-          generationStartedAt: null,
-          generationError: message,
-          generationErrorDetails: message,
-        });
+        await completion;
       } finally {
         setIsSaving(false);
       }
@@ -168,7 +111,6 @@ export const RotateEditorOverlay = memo(
       mirrorV,
       node.id,
       onClose,
-      updateNodeData,
     ]);
 
     useEffect(() => {

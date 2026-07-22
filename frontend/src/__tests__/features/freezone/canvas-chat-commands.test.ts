@@ -1407,8 +1407,10 @@ describe("canvas chat commands", () => {
     );
 
     expect(result.errors).toEqual([]);
+    // 聊天指令建节点不带 displayName，走 addNode 的标题自动发号（「文本1」）——
+    // 与画布上手动新建的节点同一套命名，避免同类型节点重名。
     expect(textNode?.data).toMatchObject({
-      displayName: "文本",
+      displayName: "文本1",
       content: "普通文本内容",
     });
     expect(scriptNode?.data).toMatchObject({ prompt: "广告脚本生成要求" });

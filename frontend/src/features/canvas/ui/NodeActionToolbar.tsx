@@ -57,12 +57,11 @@ import { useTranslation } from "react-i18next";
 
 import { toast } from "sonner";
 
-import { downloadBlobAsFile, downloadUrlAsFile } from "@/lib/browserDownload";
+import { downloadUrlAsFile } from "@/lib/browserDownload";
 import {
   AUDIO_DOWNLOAD_FORMATS,
   canProduceFormat,
   getAudioExtFromUrl,
-  transcodeAudio,
   type AudioDownloadFormat,
 } from "@/lib/audioTranscode";
 import { nodeMainlineFlags } from "@/features/canvas/domain/mainlineNodeFlags";
@@ -77,8 +76,6 @@ import {
   NODE_TOOL_TYPES,
   CANVAS_NODE_TYPES,
   DEFAULT_NODE_WIDTH,
-  EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-  EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
   isAudioNode,
   isExportImageNode,
   isGroupNode,
@@ -99,10 +96,10 @@ import { GROUP_COLOR_PRESETS } from "@/features/canvas/domain/groupColors";
 import { StoryboardGroupToolbar } from "@/features/canvas/ui/StoryboardGroupToolbar";
 import { canvasEventBus } from "@/features/canvas/application/canvasServices";
 import { useCanvasProjectionStatus } from "@/features/freezone/projectionStatusStore";
-import {
-  matteInWorker,
-  preloadMatteWorker,
-} from "@/features/canvas/application/matteClient";
+import { preloadMatteWorker } from "@/features/canvas/application/matteClient";
+import { matteImage } from "@/features/canvas/application/matteImage";
+import { downloadAudioAs } from "@/features/canvas/application/audioDownload";
+import { createVideoUpscaleResultNode } from "@/features/canvas/application/videoUpscale";
 import { getNodeToolPlugins } from "@/features/canvas/tools";
 import type { ToolIconKey } from "@/features/canvas/tools";
 import { UiChipButton, UiPanel } from "@/components/ui";
@@ -111,15 +108,9 @@ import { copyImageSourceToClipboard } from "@/commands/image";
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import { useSettingsStore } from "@/stores/settingsStore";
 import { useCanvasStore } from "@/stores/canvasStore";
-import {
-  fetchFreezoneAudioSeparateResult,
-  submitFreezoneAnalyzeVideoStory,
-  submitFreezoneAudioSeparate,
-  uploadFreezoneImage,
-} from "@/api/ops";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
-import { awaitTaskCompletion } from "@/api/tasks";
-import { normalizeVideoStoryRows } from "@/features/canvas/application/videoStoryNormalizer";
+import { analyzeVideoStory } from "@/features/canvas/application/videoAnalyzeStory";
+import { separateVideoAudio } from "@/features/canvas/application/videoSeparateAudio";
 import { readUrl } from "@/lib/url-params";
 import { sanitizeStoryboardText } from "@/features/canvas/application/storyboardText";
 import { buildGenerationErrorReport } from "@/features/canvas/application/generationErrorReport";
@@ -487,7 +478,6 @@ export const NodeActionToolbar = memo(
       (state) => state.arrangeGroupChildren,
     );
     const updateNodeData = useCanvasStore((state) => state.updateNodeData);
-    const findNodePosition = useCanvasStore((state) => state.findNodePosition);
     const canReupload = isUploadNode(node) && Boolean(node.data.imageUrl);
     const ignoreAtTagWhenCopyingAndGenerating = useSettingsStore(
       (state) => state.ignoreAtTagWhenCopyingAndGenerating,
@@ -869,99 +859,14 @@ export const NodeActionToolbar = memo(
     // 保留此 helper 以便将来其它预设改图入口复用。
     void handleCreatePresetEditNode;
 
+    // 抠图编排移到 application/matteImage（故事板详情工具条共用），语义零变化。
     const handleMatteImage = useCallback(() => {
       if (!imageSource) {
         return;
       }
-      const projectId = readUrl().project;
-      if (!projectId) {
-        console.warn(
-          "[matte] no project_id in URL (?p=<project_id>) — cannot persist matted PNG",
-        );
-        return;
-      }
       closeDownloadMenu();
-
-      const sourceAspectRatio =
-        typeof (node.data as { aspectRatio?: unknown }).aspectRatio === "string"
-          ? ((node.data as { aspectRatio?: string }).aspectRatio ?? "1:1")
-          : "1:1";
-      const position = findNodePosition(
-        node.id,
-        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-        EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
-      );
-      // Same inheritance contract as the spawn-style overlays — matting
-      // produces a user_spawned exportImage child that still represents
-      // the same canonical slot at Push time.
-      const matteInitialData = inheritMainlineFields(
-        { data: node.data as Record<string, unknown> },
-        {
-          displayName: t("nodeToolbar.matting"),
-          imageUrl: null,
-          previewImageUrl: null,
-          aspectRatio: sourceAspectRatio,
-          resultKind: "matte",
-          isGenerating: true,
-          generationStartedAt: Date.now(),
-        },
-      );
-      const nextNodeId = addNode(
-        CANVAS_NODE_TYPES.exportImage,
-        position,
-        matteInitialData as unknown as Parameters<typeof addNode>[2],
-      );
-      addEdge(node.id, nextNodeId);
-      setSelectedNode(nextNodeId);
-
-      const sourceUrl = imageSource;
-      void (async () => {
-        try {
-          const sourceResp = await fetch(sourceUrl);
-          if (!sourceResp.ok) {
-            throw new Error(`fetch source failed: ${sourceResp.status}`);
-          }
-          const sourceBlob = await sourceResp.blob();
-          // 整段去背在自建 Worker 内执行(见 matteClient / matteWorker):无论 WebGPU
-          // 是否可用,主线程都不阻塞,点击抠图后画布保持流畅。
-          const mattedBlob = await matteInWorker(sourceBlob);
-          const filename = `matte-${node.id}-${Date.now()}.png`;
-          const uploaded = await uploadFreezoneImage(
-            projectId,
-            mattedBlob,
-            filename,
-          );
-          updateNodeData(nextNodeId, {
-            imageUrl: uploaded.url,
-            previewImageUrl: uploaded.url,
-            isGenerating: false,
-            generationStartedAt: null,
-            generationError: null,
-            generationErrorDetails: null,
-          });
-        } catch (error) {
-          console.error("[matte] failed", error);
-          const message =
-            error instanceof Error ? error.message : String(error);
-          updateNodeData(nextNodeId, {
-            isGenerating: false,
-            generationStartedAt: null,
-            generationError: message,
-            generationErrorDetails: message,
-          });
-        }
-      })();
-    }, [
-      addEdge,
-      addNode,
-      closeDownloadMenu,
-      findNodePosition,
-      imageSource,
-      node,
-      setSelectedNode,
-      t,
-      updateNodeData,
-    ]);
+      matteImage(node.id, imageSource, { displayName: t("nodeToolbar.matting") });
+    }, [closeDownloadMenu, imageSource, node.id, t]);
 
     const handleOpenWorkbench = useCallback(() => {
       if (!workbenchTarget || openingWorkbench) {
@@ -1555,106 +1460,17 @@ export const NodeActionToolbar = memo(
                   );
                 };
 
-                const handleVideoAnalyze = async () => {
+                const handleVideoAnalyze = () => {
                   if (!hasVideo || !videoUrl || isAnalyzing) {
                     return;
                   }
-                  const projectId = readUrl().project;
-                  if (!projectId) {
-                    console.error("[video-analyze] no project in URL");
-                    return;
-                  }
-                  updateNodeData(node.id, {
-                    isAnalyzing: true,
-                    analysisError: null,
-                  });
-
-                  // 立即在下游建一个 loading 态的视频故事节点 —— 不等后端返回。
-                  // 数据回来后再 updateNodeData 把分镜填进去；失败则把错误写到该节点。
-                  const storyPosition = findNodePosition(node.id, 720, 360);
-                  const storyNodeId = addNode(
-                    CANVAS_NODE_TYPES.videoStory,
-                    storyPosition,
-                    {
-                      sourceVideoUrl: videoUrl,
-                      rows: [],
-                      rawResult: null,
-                      isAnalyzing: true,
-                      analysisStartedAt: Date.now(),
-                      analysisError: null,
-                    },
-                  );
-                  addEdge(node.id, storyNodeId);
-
-                  try {
-                    const durationSec =
-                      typeof videoData.durationMs === "number" && videoData.durationMs > 0
-                        ? videoData.durationMs / 1000
-                        : undefined;
-                    const submitResp = (await submitFreezoneAnalyzeVideoStory(
-                      projectId,
-                      { videoUrl, durationSec },
-                    )) as unknown;
-                    console.info("[video-analyze] submit response", submitResp);
-
-                    const submitRecord =
-                      submitResp && typeof submitResp === "object"
-                        ? (submitResp as Record<string, unknown>)
-                        : {};
-                    const taskKey =
-                      typeof submitRecord.task_key === "string"
-                        ? submitRecord.task_key
-                        : null;
-
-                    let rawResult: Record<string, unknown>;
-                    if (taskKey) {
-                      const completed = await awaitTaskCompletion(taskKey, projectId);
-                      console.info(
-                        "[video-analyze] task completed",
-                        completed.result,
-                      );
-                      rawResult = (completed.result ?? {}) as Record<string, unknown>;
-                    } else {
-                      // Endpoint returned the result synchronously (OpenAPI 200 is `{}` —
-                      // not guaranteed to be the async FreezoneJobAcceptedResponse).
-                      console.info(
-                        "[video-analyze] no task_key, treating response as inline result",
-                      );
-                      rawResult = submitRecord;
-                    }
-
-                    const rows = normalizeVideoStoryRows(rawResult);
-                    console.info(
-                      "[video-analyze] normalized rows",
-                      rows.length,
-                      rows,
-                    );
-
-                    // 把解析结果回填到先前创建的 loading 故事节点。
-                    updateNodeData(storyNodeId, {
-                      rows,
-                      rawResult,
-                      isAnalyzing: false,
-                      analysisError: null,
-                    });
-                    updateNodeData(node.id, {
-                      isAnalyzing: false,
-                      analysisError: null,
-                    });
-                  } catch (error) {
-                    const message =
-                      error instanceof Error ? error.message : String(error);
-                    console.error("[video-analyze] failed", error);
-                    // 把错误写到下游故事节点,清掉它的 loading 态。
-                    updateNodeData(storyNodeId, {
-                      isAnalyzing: false,
-                      analysisError: message,
-                    });
-                    updateNodeData(node.id, {
-                      isAnalyzing: false,
-                      analysisError: message,
-                    });
-                  }
+                  // 编排在 application/videoAnalyzeStory（故事板详情「解析」共用）：
+                  // 同步建 loading 故事节点 → 提交 → 归一化回填 / 写错。
+                  const durationSec =
+                    typeof videoData.durationMs === "number" && videoData.durationMs > 0
+                      ? videoData.durationMs / 1000
+                      : undefined;
+                  analyzeVideoStory(node.id, { videoUrl, durationSec });
                 };
 
                 const handleVideoDownload = async () => {
@@ -1693,33 +1509,21 @@ export const NodeActionToolbar = memo(
                 // 「高清」：在下游建一个视频节点（复用 video 节点的播放器/角标/尺寸，
                 // 与普通视频节点一致），以本视频为源、打 isUpscaleNode 标记 —— 选中后在
                 // 其下方展开 VideoUpscaleEditorOverlay 配置面板，提交走 /freezone/video/upscale。
+                // 节点创建走 application/videoUpscale 的共享函数（故事板详情同源）；
+                // 选中态切换是工作流入口特有的（为了展开配置面板），留在这里。
                 const handleVideoUpscale = () => {
                   if (!hasVideo || !videoUrl) {
                     return;
                   }
-                  const position = findNodePosition(node.id, 580, 380);
-                  const upscaleNodeId = addNode(
-                    CANVAS_NODE_TYPES.video,
-                    position,
-                    {
-                      displayName: `${t("node.videoUpscale.nodeTitle")}（1080P）`,
-                      videoUrl: null,
-                      previewImageUrl:
-                        typeof videoData.previewImageUrl === "string"
-                          ? videoData.previewImageUrl
-                          : null,
-                      aspectRatio:
-                        typeof videoData.aspectRatio === "string"
-                          ? videoData.aspectRatio
-                          : "16:9",
-                      isUpscaleNode: true,
-                      upscaleSourceUrl: videoUrl,
-                      upscaleResolution: "1080p",
-                      upscaleDenoise: "1x",
-                      isGenerating: false,
-                    } as unknown as Parameters<typeof addNode>[2],
-                  );
-                  addEdge(node.id, upscaleNodeId);
+                  const upscaleNodeId = createVideoUpscaleResultNode(node.id, {
+                    sourceUrl: videoUrl,
+                    displayName: `${t("node.videoUpscale.nodeTitle")}（1080P）`,
+                    resolution: "1080p",
+                    denoise: "1x",
+                  });
+                  if (!upscaleNodeId) {
+                    return;
+                  }
                   onNodesChange([
                     { id: node.id, type: "select", selected: false },
                     { id: upscaleNodeId, type: "select", selected: true },
@@ -1729,234 +1533,13 @@ export const NodeActionToolbar = memo(
 
                 const isSeparatingAv = Boolean(videoData.isSeparatingAv);
 
-                const handleAudioSeparate = async () => {
+                const handleAudioSeparate = () => {
                   if (!hasVideo || !videoUrl || isSeparatingAv) {
                     return;
                   }
-                  const projectId = readUrl().project;
-                  if (!projectId) {
-                    console.error("[audio-separate] no project in URL");
-                    return;
-                  }
-                  updateNodeData(node.id, { isSeparatingAv: true });
-                  try {
-                    const ref = await submitFreezoneAudioSeparate(
-                      projectId,
-                      { sourceUrl: videoUrl },
-                    );
-                    const completed = await awaitTaskCompletion(ref.task_key, projectId);
-                    console.info(
-                      "[audio-separate] task completed",
-                      completed.result,
-                    );
-
-                    // Walk an arbitrary JSON tree and pull every string that
-                    // looks like a URL/path. Backend hasn't typed the result
-                    // schema, so we can't rely on key names alone.
-                    const collectStrings = (
-                      value: unknown,
-                      out: string[],
-                    ): void => {
-                      if (typeof value === "string") {
-                        if (value.length > 0) out.push(value);
-                        return;
-                      }
-                      if (Array.isArray(value)) {
-                        for (const item of value) collectStrings(item, out);
-                        return;
-                      }
-                      if (value && typeof value === "object") {
-                        for (const item of Object.values(
-                          value as Record<string, unknown>,
-                        )) {
-                          collectStrings(item, out);
-                        }
-                      }
-                    };
-
-                    // Fallback only: some legacy results carry a backend
-                    // filesystem path (e.g. `/data/output/<user>/<project>/...`)
-                    // instead of a servable URL. Rewriting `<...>/output/` into
-                    // `/static/<user>/<project>/...` yields the LEGACY scheme,
-                    // which production now rejects with 410 — so this is used
-                    // strictly as a last resort when no `*_url` field exists.
-                    const toStaticUrl = (raw: string): string => {
-                      if (!raw) return raw;
-                      if (
-                        raw.startsWith("/static/") ||
-                        raw.startsWith("http://") ||
-                        raw.startsWith("https://") ||
-                        raw.startsWith("blob:") ||
-                        raw.startsWith("data:")
-                      ) {
-                        return raw;
-                      }
-                      const outputIdx = raw.lastIndexOf("/output/");
-                      if (outputIdx >= 0) {
-                        return `/static/${raw.slice(outputIdx + "/output/".length)}`;
-                      }
-                      return raw;
-                    };
-
-                    const pickUrlField = (
-                      source: Record<string, unknown>,
-                      keys: string[],
-                    ): string | null => {
-                      for (const key of keys) {
-                        const value = source[key];
-                        if (typeof value === "string" && value.length > 0) {
-                          return value;
-                        }
-                      }
-                      return null;
-                    };
-
-                    const classify = (
-                      source: Record<string, unknown> | null | undefined,
-                    ): { audio: string | null; video: string | null } => {
-                      if (!source)
-                        return { audio: null, video: null };
-
-                      // Prefer the backend-provided canonical URLs. The result
-                      // carries BOTH a filesystem `*_path`
-                      // (`/data/output/<user>/<project>/...`) and a
-                      // ready-to-serve `*_url` (`/static/projects/<project_id>/...`).
-                      // Only the `*_url` form is reachable online — OpenResty
-                      // returns 410 for legacy `/static/<user>/<project>/...`.
-                      // Never derive a URL from `*_path`.
-                      let audio = pickUrlField(source, ["audio_url", "audioUrl"]);
-                      let video = pickUrlField(source, [
-                        "mute_video_url",
-                        "muteVideoUrl",
-                      ]);
-
-                      // Fallback heuristic for results that don't carry explicit
-                      // URL fields: walk the tree and pick by extension,
-                      // preferring already-servable `/static`/http URLs over raw
-                      // filesystem paths so we never reconstruct a legacy URL.
-                      if (!audio || !video) {
-                        const strings: string[] = [];
-                        collectStrings(source, strings);
-                        const isServable = (s: string) =>
-                          s.startsWith("/static/") ||
-                          s.startsWith("http://") ||
-                          s.startsWith("https://");
-                        strings.sort(
-                          (a, b) =>
-                            Number(isServable(b)) - Number(isServable(a)),
-                        );
-                        const audioExt =
-                          /\.(mp3|m4a|aac|wav|flac|ogg|opus)(\?|$)/i;
-                        const videoExt =
-                          /\.(mp4|mov|webm|mkv|avi|m4v)(\?|$)/i;
-                        for (const s of strings) {
-                          if (
-                            !audio &&
-                            (audioExt.test(s) || /audio|sound/i.test(s))
-                          ) {
-                            audio = s;
-                          } else if (
-                            !video &&
-                            (videoExt.test(s) ||
-                              /silent|mute|no[_-]?audio|video/i.test(s))
-                          ) {
-                            video = s;
-                          }
-                          if (audio && video) break;
-                        }
-                      }
-
-                      return {
-                        audio: audio ? toStaticUrl(audio) : null,
-                        video: video ? toStaticUrl(video) : null,
-                      };
-                    };
-
-                    let { audio: audioOutputUrl, video: silentVideoOutputUrl } =
-                      classify(
-                        (completed.result ?? null) as Record<
-                          string,
-                          unknown
-                        > | null,
-                      );
-
-                    // Fallback: hit the dedicated job-result endpoint when SSE
-                    // result didn't carry the URLs (some freezone task types
-                    // surface artifacts only via /jobs/.../result).
-                    if (!audioOutputUrl || !silentVideoOutputUrl) {
-                      try {
-                        const jobResult =
-                          await fetchFreezoneAudioSeparateResult(
-                            projectId,
-                            ref.job_id,
-                          );
-                        console.info(
-                          "[audio-separate] job result",
-                          jobResult,
-                        );
-                        const classified = classify(jobResult);
-                        audioOutputUrl = audioOutputUrl ?? classified.audio;
-                        silentVideoOutputUrl =
-                          silentVideoOutputUrl ?? classified.video;
-                      } catch (jobErr) {
-                        console.warn(
-                          "[audio-separate] job result fetch failed",
-                          jobErr,
-                        );
-                      }
-                    }
-
-                    if (!audioOutputUrl || !silentVideoOutputUrl) {
-                      console.warn(
-                        "[audio-separate] could not resolve audio/video urls",
-                        { sseResult: completed.result },
-                      );
-                      return;
-                    }
-                    console.info("[audio-separate] resolved urls", {
-                      audioOutputUrl,
-                      silentVideoOutputUrl,
-                    });
-                    const rawName =
-                      typeof videoData.sourceFileName === "string" &&
-                      videoData.sourceFileName.trim().length > 0
-                        ? videoData.sourceFileName
-                        : typeof videoData.displayName === "string" &&
-                            videoData.displayName.trim().length > 0
-                          ? videoData.displayName
-                          : "video";
-                    const baseName = rawName.replace(/\.[^/.]+$/, "");
-                    const audioTitle = `${baseName}_背景音`;
-                    const silentTitle = `${baseName}_无声`;
-
-                    const audioPos = findNodePosition(node.id, 480, 180);
-                    const audioNodeId = addNode(
-                      CANVAS_NODE_TYPES.audio,
-                      audioPos,
-                      {
-                        audioUrl: audioOutputUrl,
-                        sourceFileName: audioTitle,
-                        displayName: audioTitle,
-                      },
-                    );
-                    addEdge(node.id, audioNodeId);
-
-                    const silentPos = findNodePosition(node.id, 480, 270);
-                    const silentNodeId = addNode(
-                      CANVAS_NODE_TYPES.video,
-                      silentPos,
-                      {
-                        videoUrl: silentVideoOutputUrl,
-                        sourceFileName: `${silentTitle}.mp4`,
-                        displayName: silentTitle,
-                      },
-                    );
-                    addEdge(node.id, silentNodeId);
-                  } catch (error) {
-                    console.error("[audio-separate] failed", error);
-                  } finally {
-                    updateNodeData(node.id, { isSeparatingAv: false });
-                  }
+                  // 编排在 application/videoSeparateAudio（故事板详情「分离音视频」
+                  // 共用）：提交 → 挑音频/静音视频地址 → 各建一个下游节点。
+                  void separateVideoAudio(node.id, { sourceUrl: videoUrl });
                 };
 
                 return (
@@ -2006,7 +1589,7 @@ export const NodeActionToolbar = memo(
                       }
                       onClick={(event) => {
                         event.stopPropagation();
-                        void handleVideoAnalyze();
+                        handleVideoAnalyze();
                       }}
                     >
                       {isAnalyzing ? (
@@ -2091,7 +1674,7 @@ export const NodeActionToolbar = memo(
                       }
                       onClick={(event) => {
                         event.stopPropagation();
-                        void handleAudioSeparate();
+                        handleAudioSeparate();
                       }}
                     >
                       {isSeparatingAv ? (
@@ -2169,6 +1752,8 @@ export const NodeActionToolbar = memo(
                   );
                 })();
 
+                // 透传/转码下载核心移到 application/audioDownload（故事板音频
+                // chip 共用）；可用性守卫与 toast 留在这里，转码态仍写 node data。
                 const handleAudioDownload = async (
                   format: AudioDownloadFormat,
                 ) => {
@@ -2179,41 +1764,18 @@ export const NodeActionToolbar = memo(
                     toast.error(t("nodeToolbar.audio.m4aSourceOnly"));
                     return;
                   }
-                  const filename = `${baseFileName}.${format}`;
-                  const resolvedUrl = resolveImageDisplayUrl(audioUrl);
-                  // Passthrough (target container == source): download original
-                  // bytes via downloadUrlAsFile (robust cross-origin fallback +
-                  // correct extension), no lossy re-encode.
-                  const passthrough =
-                    format === sourceExt ||
-                    (format === "m4a" && canProduceFormat("m4a", sourceExt));
-                  if (passthrough) {
-                    try {
-                      await downloadUrlAsFile(resolvedUrl, filename);
-                    } catch (error) {
-                      console.error("[audio-download] passthrough failed", error);
-                      toast.error(t("nodeToolbar.audio.downloadFailed"));
-                    }
-                    return;
-                  }
-                  updateNodeData(node.id, { convertingAudioFormat: format });
                   try {
-                    const resp = await fetch(resolvedUrl);
-                    if (!resp.ok) {
-                      throw new Error(`fetch failed: ${resp.status}`);
-                    }
-                    const srcBlob = await resp.blob();
-                    const outBlob = await transcodeAudio(
-                      srcBlob,
-                      sourceExt,
-                      format,
-                    );
-                    downloadBlobAsFile(outBlob, filename);
+                    await downloadAudioAs(format, {
+                      audioUrl,
+                      baseFileName,
+                      onConvertingChange: (converting) =>
+                        updateNodeData(node.id, {
+                          convertingAudioFormat: converting,
+                        }),
+                    });
                   } catch (error) {
-                    console.error("[audio-download] transcode failed", error);
+                    console.error("[audio-download] failed", error);
                     toast.error(t("nodeToolbar.audio.downloadFailed"));
-                  } finally {
-                    updateNodeData(node.id, { convertingAudioFormat: null });
                   }
                 };
 

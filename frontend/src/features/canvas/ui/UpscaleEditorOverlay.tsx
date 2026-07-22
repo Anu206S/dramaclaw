@@ -7,14 +7,8 @@ import { useTranslation } from 'react-i18next';
 
 import { type CanvasNode } from '@/features/canvas/domain/canvasNodes';
 import { useCanvasStore } from '@/stores/canvasStore';
-import {
-  fetchFreezoneJobResult,
-  submitFreezoneUpscale,
-  type FreezoneUpscaleScaleFactor,
-} from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
-import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
-import { readUrl } from '@/lib/url-params';
+import { type FreezoneUpscaleScaleFactor } from '@/api/ops';
+import { submitImageUpscale } from '@/features/canvas/application/imageUpscale';
 import {
   DEFAULT_SHARED_MODEL_ID,
   ProviderModelPicker,
@@ -126,58 +120,22 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
 
   const handleSubmit = useCallback(async () => {
     if (isSubmitting) return;
-    if (!sourceUrl) {
-      console.error('[upscale] missing upscaleSourceUrl on node.data — cannot submit');
-      return;
-    }
-    const project = readUrl().project;
-    if (!project) {
-      console.error('[upscale] no project in URL — cannot submit');
-      return;
-    }
 
     const apiModel =
       selectedModel?.apiModel
       ?? persistedModelId;
 
-    setIsSubmitting(true);
-    const generationStartedAt = Date.now();
-    updateNodeData(node.id, {
-      isGenerating: true,
-      generationStartedAt,
-      generationError: null,
+    const completion = submitImageUpscale(node.id, {
+      sourceUrl,
+      scaleFactor: persistedScaleFactor,
+      imageSize: persistedImageSize,
+      model: apiModel,
     });
+    if (!completion) return;
 
+    setIsSubmitting(true);
     try {
-      const ref = await submitFreezoneUpscale(project, {
-        sourceUrl: sourceUrl.split('?')[0],
-        scaleFactor: persistedScaleFactor,
-        imageSize: persistedImageSize,
-        model: apiModel,
-      });
-      updateNodeData(node.id, generationTaskDescriptor(ref));
-      const completed = await awaitTaskCompletion(ref.task_key, project);
-      const directUrl = completed.result?.['output_url'] as string | undefined;
-      let url = directUrl;
-      if (!url) {
-        const fallback = await fetchFreezoneJobResult(project, ref.task_type, ref.job_id);
-        url = fallback.url;
-      }
-      updateNodeData(node.id, {
-        imageUrl: url,
-        previewImageUrl: url,
-        isGenerating: false,
-        generationStartedAt: null,
-        generationError: null,
-      });
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      console.error('[upscale] generation failed', err);
-      updateNodeData(node.id, {
-        isGenerating: false,
-        generationStartedAt: null,
-        generationError: message,
-      });
+      await completion;
     } finally {
       setIsSubmitting(false);
     }
@@ -189,7 +147,6 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
     persistedScaleFactor,
     selectedModel,
     sourceUrl,
-    updateNodeData,
   ]);
 
   return (

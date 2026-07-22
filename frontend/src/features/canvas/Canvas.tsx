@@ -733,11 +733,21 @@ interface PendingNodePlacement {
 interface CanvasProps {
   onBlankPaneClick?: () => void;
   controlsPlacement?: 'bottom-right' | 'top-right';
+  /**
+   * 故事板 overlay（AssetBoardView）等全屏视图盖在保活画布上时置 true：
+   * 屏蔽画布注册的所有 window/document 级键盘与粘贴监听，并隐藏会压在
+   * overlay 之上的悬浮控件（CanvasQuickActionBar）。否则 Delete/Tab/⌘Z/
+   * 粘贴等会穿透到隐藏画布（删节点、弹 NodeSelectionMenu、建上传节点并
+   * 持久化）。不能复用 useViewerImmersiveBody 的 body class 方案——那会把
+   * 故事板自己隐藏掉（见 src/index.css 的 viewer-immersive 规则）。
+   */
+  suspended?: boolean;
 }
 
 export function Canvas({
   onBlankPaneClick,
   controlsPlacement = 'bottom-right',
+  suspended = false,
 }: CanvasProps = {}) {
   const { t } = useTranslation();
   const reactFlowInstance = useReactFlow();
@@ -745,6 +755,10 @@ export function Canvas({
   const nodeTypes = useMemo(() => canvasNodeTypes, []);
   const edgeTypes = useMemo(() => canvasEdgeTypes, []);
   const wrapperRef = useRef<HTMLDivElement>(null);
+  // 用 ref 镜像 suspended：各全局键盘/粘贴监听读 ref 而非闭包值，
+  // prop 变化不触发监听器重绑，切换视图零成本即时生效。
+  const suspendedRef = useRef(suspended);
+  suspendedRef.current = suspended;
   const suppressNextPaneClickRef = useRef(false);
   // After a marquee box-select we must swallow the trailing pane `click` at the capture
   // phase: React Flow's Pane onClick calls resetSelectedElements() unconditionally (right
@@ -1129,6 +1143,9 @@ export function Canvas({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (suspendedRef.current) {
+        return;
+      }
       if (!isSpacePanKey(event) || isTypingTarget(event.target) || isImmersiveViewerActive()) {
         return;
       }
@@ -1136,6 +1153,8 @@ export function Canvas({
       clearMarqueeSelection();
     };
 
+    // keyup 不加 suspendedRef 守卫：它只把 spacePanActiveRef 复位为
+    // false（惰性状态）。若守卫,「按住空格→切故事板→松开」会让 ref 卡在 true。
     const handleKeyUp = (event: KeyboardEvent) => {
       if (!isSpacePanKey(event)) {
         return;
@@ -2031,6 +2050,9 @@ export function Canvas({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (suspendedRef.current) {
+        return;
+      }
       if (
         event.defaultPrevented ||
         event.isComposing ||
@@ -2073,6 +2095,9 @@ export function Canvas({
   // a bare digit jumps to it, and ⌘/Ctrl+Shift+E clears them all.
   useEffect(() => {
     const handleBookmarkKeys = (event: KeyboardEvent) => {
+      if (suspendedRef.current) {
+        return;
+      }
       if (isTypingTarget(event.target) || isImmersiveViewerActive()) {
         return;
       }
@@ -2115,6 +2140,9 @@ export function Canvas({
   // collides with ⌘M (minimize) or text input.
   useEffect(() => {
     const handleMinimapKey = (event: KeyboardEvent) => {
+      if (suspendedRef.current) {
+        return;
+      }
       if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) {
         return;
       }
@@ -2137,11 +2165,15 @@ export function Canvas({
   // keyup that fires off-window (e.g. after an alt-tab) can't leave it stuck on.
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (suspendedRef.current) {
+        return;
+      }
       if (event.code !== 'Space' || isTypingTarget(event.target)) {
         return;
       }
       spacePanActiveRef.current = true;
     };
+    // keyup 不守卫,理由同上面 space-pan capture 监听:只复位为惰性状态。
     const handleKeyUp = (event: KeyboardEvent) => {
       if (event.code !== 'Space') {
         return;
@@ -2454,6 +2486,9 @@ export function Canvas({
 
   useEffect(() => {
     const handlePaste = (event: ClipboardEvent) => {
+      if (suspendedRef.current) {
+        return;
+      }
       pasteImageHandledRef.current = false;
       if (isTypingTarget(event.target) || isImmersiveViewerActive()) {
         return;
@@ -2556,6 +2591,9 @@ export function Canvas({
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
+      if (suspendedRef.current) {
+        return;
+      }
       if (isTypingTarget(event.target)) {
         return;
       }
@@ -4745,14 +4783,17 @@ export function Canvas({
 
       <CanvasFpsMeter />
 
-      <BackToNodesHint />
+      {/* z-[130] 的「回到节点」提示会浮到故事板(z-30)之上，挂起时一并隐藏。 */}
+      {!suspended && <BackToNodesHint />}
 
       <CanvasZoomControl
         onOrganize={handleOrganizeCanvas}
         placement={controlsPlacement}
       />
 
-      {!taskPanelOpen && (
+      {/* 快捷操作条 z-[41] 高于故事板 overlay(z-30)，挂起时必须隐藏；
+          右侧 z-30 的缩放/小地图/FPS 控件与故事板同级、按 DOM 顺序被盖住，无需处理。 */}
+      {!taskPanelOpen && !suspended && (
         <CanvasQuickActionBar
           placement={controlsPlacement}
           skillItems={skillRegistry}
