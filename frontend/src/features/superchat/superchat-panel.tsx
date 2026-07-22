@@ -146,10 +146,13 @@ import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-e
 import {
   filterFreezoneSkillSuggestions,
   findFreezoneSkillMention,
+  FREEZONE_SKILL_EMPTY_ACTIONS,
   type FreezoneSkillSuggestion,
   getFreezoneSkillSlashQuery,
+  insertFreezoneSkillEmptyActionPrompt,
   insertFreezoneSkillMention,
   moveFreezoneSkillSuggestionIndex,
+  shouldShowFreezoneSkillSuggestionMenu,
   splitFreezoneSkillMentionText,
   toFreezoneSkillSuggestions,
 } from "@/features/superchat/freezone-skill-suggestions";
@@ -9603,12 +9606,17 @@ export function SuperChatPanel({
     () => isFreezoneLayout ? findFreezoneSkillMention(draft) : null,
     [draft, isFreezoneLayout],
   );
-  const showFreezoneSkillSuggestions =
-    isFreezoneLayout
-    && freezoneSkillSlashQuery !== null
-    && visibleFreezoneSkillSuggestions.length > 0;
+  const showFreezoneSkillSuggestions = shouldShowFreezoneSkillSuggestionMenu({
+    isFreezoneLayout,
+    slashQuery: freezoneSkillSlashQuery,
+  });
   const insertFreezoneSkillSuggestion = useCallback((skillId: string) => {
     setDraft((current) => insertFreezoneSkillMention(current, skillId));
+    setActiveFreezoneSkillSuggestionIndex(0);
+    restoreDraftFocusRef.current = true;
+  }, []);
+  const insertFreezoneSkillEmptyAction = useCallback((prompt: string) => {
+    setDraft((current) => insertFreezoneSkillEmptyActionPrompt(current, prompt));
     setActiveFreezoneSkillSuggestionIndex(0);
     restoreDraftFocusRef.current = true;
   }, []);
@@ -12197,36 +12205,62 @@ export function SuperChatPanel({
                   技能
                 </div>
                 <div className="max-h-52 overflow-y-auto pr-1">
-                  {visibleFreezoneSkillSuggestions.map((skill, index) => (
-                    <button
-                      key={skill.id}
-                      ref={(element) => {
-                        freezoneSkillSuggestionRefs.current[index] = element;
-                      }}
-                      type="button"
-                      className={cn(
-                        "flex h-8 w-full items-center gap-2 rounded-md px-1 text-left text-sm transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06] focus-visible:outline-none",
-                        activeFreezoneSkillSuggestionIndex === index && "bg-white/[0.06]",
-                      )}
-                      onMouseDown={(event) => {
-                        event.preventDefault();
-                      }}
-                      onMouseEnter={() => setActiveFreezoneSkillSuggestionIndex(index)}
-                      onClick={() => insertFreezoneSkillSuggestion(skill.id)}
-                    >
-                      <Package className="size-3.5 shrink-0 text-muted-foreground/80" />
-                      <span className="flex min-w-0 flex-1 items-baseline gap-2">
-                        <span className="shrink-0 text-[13px] font-medium text-foreground/90">
-                          {skill.label}
-                        </span>
-                        {skill.description && (
-                          <span className="truncate text-xs text-muted-foreground/65">
-                            {skill.description}
-                          </span>
+                  {visibleFreezoneSkillSuggestions.length > 0 ? (
+                    visibleFreezoneSkillSuggestions.map((skill, index) => (
+                      <button
+                        key={skill.id}
+                        ref={(element) => {
+                          freezoneSkillSuggestionRefs.current[index] = element;
+                        }}
+                        type="button"
+                        className={cn(
+                          "flex h-8 w-full items-center gap-2 rounded-md px-1 text-left text-sm transition hover:bg-white/[0.06] focus-visible:bg-white/[0.06] focus-visible:outline-none",
+                          activeFreezoneSkillSuggestionIndex === index && "bg-white/[0.06]",
                         )}
-                      </span>
-                    </button>
-                  ))}
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                        }}
+                        onMouseEnter={() => setActiveFreezoneSkillSuggestionIndex(index)}
+                        onClick={() => insertFreezoneSkillSuggestion(skill.id)}
+                      >
+                        <Package className="size-3.5 shrink-0 text-muted-foreground/80" />
+                        <span className="flex min-w-0 flex-1 items-baseline gap-2">
+                          <span className="shrink-0 text-[13px] font-medium text-foreground/90">
+                            {skill.label}
+                          </span>
+                          {skill.description && (
+                            <span className="truncate text-xs text-muted-foreground/65">
+                              {skill.description}
+                            </span>
+                          )}
+                        </span>
+                      </button>
+                    ))
+                  ) : (
+                    <div className="px-0.5 pb-2 pt-0.5 text-xs leading-5 text-muted-foreground/65">
+                      <div className="font-normal text-muted-foreground/72">
+                        还没有可用技能
+                      </div>
+                      <div className="mt-1 max-w-[30rem] text-[11px] leading-4 text-muted-foreground/45">
+                        可以让 Agent 把当前画布总结成 Skill，也可以直接描述你的工作流，让它帮你创建专属技能。
+                      </div>
+                      <div className="mt-2 flex flex-wrap gap-1.5">
+                        {FREEZONE_SKILL_EMPTY_ACTIONS.map((action) => (
+                          <button
+                            key={action.id}
+                            type="button"
+                            className="rounded-full border border-white/[0.08] bg-white/[0.035] px-2.5 py-1 text-[11px] leading-4 text-muted-foreground/70 transition hover:border-white/[0.16] hover:bg-white/[0.06] hover:text-foreground/85 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/20"
+                            onMouseDown={(event) => {
+                              event.preventDefault();
+                            }}
+                            onClick={() => insertFreezoneSkillEmptyAction(action.prompt)}
+                          >
+                            {action.label}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             )}
