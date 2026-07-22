@@ -661,7 +661,7 @@ describe("canvas chat commands", () => {
         canvasEventBus.publish("freezone/node-action-accepted", {
           requestId: payload.requestId,
           nodeId: payload.nodeId,
-          action: payload.action,
+          action: "generate_image",
         });
         canvasEventBus.publish("freezone/node-action-result", {
           requestId: payload.requestId,
@@ -791,10 +791,11 @@ describe("canvas chat commands", () => {
         if (payload.nodeId !== imageNodeId || payload.action !== "generate_image")
           return;
         if (!payload.requestId) return;
+        const requestId = payload.requestId;
         canvasEventBus.publish("freezone/node-action-accepted", {
-          requestId: payload.requestId,
+          requestId,
           nodeId: payload.nodeId,
-          action: payload.action,
+          action: "generate_image",
         });
         setTimeout(() => {
           useCanvasStore.getState().updateNodeData(imageNodeId, {
@@ -802,9 +803,9 @@ describe("canvas chat commands", () => {
             generationTaskJobId: "job-image-slow-submit",
           });
           canvasEventBus.publish("freezone/node-action-result", {
-            requestId: payload.requestId,
+            requestId,
             nodeId: payload.nodeId,
-            action: payload.action,
+            action: "generate_image",
             status: "success",
             output: {
               submitted: true,
