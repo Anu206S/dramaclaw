@@ -1441,6 +1441,46 @@ function hasActiveGenerationHandle(nodeId: string): boolean {
   );
 }
 
+function submittedGenerationOutputFromNode(nodeId: string): Record<string, unknown> | null {
+  const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
+  if (!data) return null;
+  const taskKey =
+    nonEmptyString(data.generationTaskKey) ??
+    nonEmptyString(data.taskKey) ??
+    nonEmptyString(data.task_key);
+  const jobId =
+    nonEmptyString(data.generationTaskJobId) ??
+    nonEmptyString(data.generationJobId) ??
+    nonEmptyString(data.jobId) ??
+    nonEmptyString(data.job_id);
+  const taskType =
+    nonEmptyString(data.generationTaskType) ??
+    nonEmptyString(data.taskType) ??
+    nonEmptyString(data.task_type);
+  if (!taskKey && !jobId) return null;
+  return {
+    submitted: true,
+    ...(taskKey ? { task_key: taskKey, taskKey } : {}),
+    ...(taskType ? { task_type: taskType, taskType } : {}),
+    ...(jobId ? { job_id: jobId, jobId } : {}),
+  };
+}
+
+async function waitForSubmittedGenerationOutputFromNode(
+  nodeId: string,
+  timeoutMs: number,
+): Promise<Record<string, unknown> | null> {
+  const immediate = submittedGenerationOutputFromNode(nodeId);
+  if (immediate) return immediate;
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    const output = submittedGenerationOutputFromNode(nodeId);
+    if (output) return output;
+  }
+  return null;
+}
+
 function isSubmittedGenerationOutput(output: unknown): boolean {
   if (!isRecord(output)) return false;
   if (output.submitted === true || output.status === "submitted") return true;
@@ -1761,31 +1801,39 @@ async function executeQueuedNodeActions(
           };
         }
         clearPendingNodeAction(requestId);
-        const actionResult = firstSignal.kind === "result"
-          ? firstSignal.actionResult
-          : action.executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
-            ? await Promise.race([
-              waiting,
-              (async (): Promise<NodeActionResult> => {
-                await requestAnimationFrameOrTimeout();
-                const handedOff = await waitForGeneratedResultField(action.nodeId, action.action);
+        const singleGenerationSubmission =
+          action.executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
+            ? waitForSubmittedGenerationOutputFromNode(
+              action.nodeId,
+              options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
+            ).then((output): NodeActionResult | Promise<NodeActionResult> => {
+              if (output) {
                 return {
                   requestId,
                   nodeId: action.nodeId,
                   action: action.action,
                   status: "success" as const,
-                  output: handedOff ? { submitted: true } : {},
+                  output,
                 };
-              })(),
-            ])
+              }
+              return waiting;
+            })
+            : null;
+        const actionResult = firstSignal.kind === "result"
+          ? firstSignal.actionResult
+          : singleGenerationSubmission
+            ? await Promise.race([waiting, singleGenerationSubmission])
             : await waiting;
         clearPendingNodeAction(requestId);
         await requestAnimationFrameOrTimeout();
-        const hasRequiredOutput = await waitForGeneratedResultField(
-          action.nodeId,
-          action.action,
-          actionResult.output,
-        );
+        const hasRequiredOutput =
+          action.executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
+            ? hasGeneratedResultOutput(action.action, actionResult.output)
+            : await waitForGeneratedResultField(
+              action.nodeId,
+              action.action,
+              actionResult.output,
+            );
 
         const actionOpenedUserUi =
           isRecord(actionResult.output) &&

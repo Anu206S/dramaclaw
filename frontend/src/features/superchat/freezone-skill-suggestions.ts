@@ -10,6 +10,16 @@ export type FreezoneSkillSuggestion = {
   keywords: string[];
 };
 
+export type FreezoneSkillMention = {
+  skillId: string;
+  start: number;
+  end: number;
+};
+
+export type FreezoneSkillMentionTextSegment =
+  | { type: "text"; text: string }
+  | { type: "skill"; skillId: string };
+
 function readString(value: unknown): string {
   return typeof value === "string" ? value.trim() : "";
 }
@@ -93,6 +103,60 @@ export function insertFreezoneSkillMention(value: string, skillId: string): stri
   const matchedToken = slashTokenMatch[0];
   const tokenStart = slashTokenMatch.index + (matchedToken.startsWith("/") ? 0 : 1);
   return `${value.slice(0, tokenStart)}${replacement}`;
+}
+
+export function findFreezoneSkillMention(value: string): FreezoneSkillMention | null {
+  const matches = value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu);
+  let latest: FreezoneSkillMention | null = null;
+  for (const match of matches) {
+    if (match.index === undefined) continue;
+    const matchedToken = match[0] ?? "";
+    const skillId = match[1]?.trim();
+    if (!skillId) continue;
+    const start = match.index + (matchedToken.startsWith("/") ? 0 : 1);
+    latest = {
+      skillId,
+      start,
+      end: start + skillId.length + 1,
+    };
+  }
+  return latest;
+}
+
+export function removeFreezoneSkillMention(
+  value: string,
+  mention: FreezoneSkillMention | null,
+): string {
+  if (!mention) return value;
+  const before = value.slice(0, mention.start);
+  const after = value.slice(mention.end);
+  if (before.length === 0) return after.trimStart();
+  if (after.length === 0) return before.trimEnd();
+  if (/\s$/u.test(before) && /^\s/u.test(after)) return `${before}${after.trimStart()}`;
+  return `${before}${after}`;
+}
+
+export function splitFreezoneSkillMentionText(value: string): FreezoneSkillMentionTextSegment[] {
+  const segments: FreezoneSkillMentionTextSegment[] = [];
+  let cursor = 0;
+  const matches = value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu);
+  for (const match of matches) {
+    if (match.index === undefined) continue;
+    const matchedToken = match[0] ?? "";
+    const skillId = match[1]?.trim();
+    if (!skillId) continue;
+    const tokenStart = match.index + (matchedToken.startsWith("/") ? 0 : 1);
+    const tokenEnd = tokenStart + skillId.length + 1;
+    if (tokenStart > cursor) {
+      segments.push({ type: "text", text: value.slice(cursor, tokenStart) });
+    }
+    segments.push({ type: "skill", skillId });
+    cursor = tokenEnd;
+  }
+  if (cursor < value.length) {
+    segments.push({ type: "text", text: value.slice(cursor) });
+  }
+  return segments.length > 0 ? segments : [{ type: "text", text: value }];
 }
 
 export function moveFreezoneSkillSuggestionIndex(
