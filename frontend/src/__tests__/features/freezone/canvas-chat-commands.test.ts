@@ -777,6 +777,79 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("waits for slow image task submission after the node accepts generation", async () => {
+    const imageNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "猫吃鱼",
+      },
+    );
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        if (payload.nodeId !== imageNodeId || payload.action !== "generate_image")
+          return;
+        if (!payload.requestId) return;
+        canvasEventBus.publish("freezone/node-action-accepted", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+        });
+        setTimeout(() => {
+          useCanvasStore.getState().updateNodeData(imageNodeId, {
+            generationTaskKey: "task-image-slow-submit",
+            generationTaskJobId: "job-image-slow-submit",
+          });
+          canvasEventBus.publish("freezone/node-action-result", {
+            requestId: payload.requestId,
+            nodeId: payload.nodeId,
+            action: payload.action,
+            status: "success",
+            output: {
+              submitted: true,
+              task_key: "task-image-slow-submit",
+              job_id: "job-image-slow-submit",
+            },
+          });
+        }, 3100);
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        [
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: imageNodeId,
+                action: "generate_image",
+              },
+            ],
+          },
+        ],
+        { actionTimeoutMs: 5000 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.commandResults).toEqual([
+        expect.objectContaining({
+          type: "run_node_action",
+          status: "success",
+          action: "generate_image",
+          output: expect.objectContaining({
+            submitted: true,
+            task_key: "task-image-slow-submit",
+          }),
+        }),
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("treats accepted single video generation with a task handle as handed off", async () => {
     const videoNodeId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.video,

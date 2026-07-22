@@ -4,9 +4,12 @@ import { describe, expect, it } from "vitest";
 
 import {
   filterFreezoneSkillSuggestions,
+  findFreezoneSkillMention,
   getFreezoneSkillSlashQuery,
   insertFreezoneSkillMention,
   moveFreezoneSkillSuggestionIndex,
+  removeFreezoneSkillMention,
+  splitFreezoneSkillMentionText,
   toFreezoneSkillSuggestions,
 } from "@/features/superchat/freezone-skill-suggestions";
 
@@ -72,6 +75,46 @@ describe("freezone skill slash suggestions", () => {
     expect(insertFreezoneSkillMention("帮我 /post", "poster_design")).toBe("帮我 /poster_design ");
     expect(insertFreezoneSkillMention("第一行\n/post", "poster_design")).toBe("第一行\n/poster_design ");
     expect(insertFreezoneSkillMention("帮我做", "poster_design")).toBe("帮我做 /poster_design ");
+  });
+
+  it("finds a completed skill mention wherever slash suggestions can be used", () => {
+    expect(findFreezoneSkillMention("/poster_design 做一张海报")).toMatchObject({
+      skillId: "poster_design",
+      start: 0,
+      end: 14,
+    });
+    expect(findFreezoneSkillMention("帮我 /poster_design 做一张海报")).toMatchObject({
+      skillId: "poster_design",
+      start: 3,
+      end: 17,
+    });
+    expect(findFreezoneSkillMention("第一行\n/poster_design 做一张海报")).toMatchObject({
+      skillId: "poster_design",
+      start: 4,
+      end: 18,
+    });
+    expect(findFreezoneSkillMention("https://example.com/poster_design")).toBeNull();
+  });
+
+  it("removes a selected skill mention without leaving doubled spacing", () => {
+    const mention = findFreezoneSkillMention("帮我 /poster_design 做一张海报");
+    expect(removeFreezoneSkillMention("帮我 /poster_design 做一张海报", mention)).toBe("帮我 做一张海报");
+    expect(removeFreezoneSkillMention("/poster_design 做一张海报", findFreezoneSkillMention("/poster_design 做一张海报"))).toBe(
+      "做一张海报",
+    );
+  });
+
+  it("splits sent message text into normal text and skill mention parts", () => {
+    expect(splitFreezoneSkillMentionText("/poster_design 做一张海报")).toEqual([
+      { type: "skill", skillId: "poster_design" },
+      { type: "text", text: " 做一张海报" },
+    ]);
+    expect(splitFreezoneSkillMentionText("帮我 /poster_design 做一张海报 /copy_plan")).toEqual([
+      { type: "text", text: "帮我 " },
+      { type: "skill", skillId: "poster_design" },
+      { type: "text", text: " 做一张海报 " },
+      { type: "skill", skillId: "copy_plan" },
+    ]);
   });
 
   it("cycles the active suggestion index with arrow keys", () => {
