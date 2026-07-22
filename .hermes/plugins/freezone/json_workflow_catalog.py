@@ -184,6 +184,38 @@ _FALLBACK_WORKFLOW_SPECS: tuple[dict[str, Any], ...] = (
         "generation_type": "video",
     },
     {
+        "id": "ecommerce-product",
+        "name": "电商产品图",
+        "description": "电商产品素材制作，包括详情页、广告图、场景图等图片生成流程。",
+        "aliases": ["ecommerce_product", "ecommerce", "product_image"],
+        "keywords": ["详情页", "广告图", "场景图", "产品图", "商品图", "电商"],
+        "template_id": "ecommerce-scene-images",
+        "template_name": "产品场景图",
+        "operation_type": "ecommerce-scene-image",
+        "goal": "并行生成产品场景图",
+        "node_type": "imageGeneration",
+        "generation_type": "image",
+        "steps": [
+            {
+                "id": "scene-images",
+                "step_number": 1,
+                "goal_template": "并行生成 {count} 张产品场景图，每张展示产品在不同场景中的效果",
+                "node_type": "imageGeneration",
+                "action_key": "ecommerce-scene-image",
+                "prompt_strategy": "llm_refine",
+                "input_strategy": {"type": "user_assets", "filter": "image"},
+                "aspect_ratio": "3:4",
+                "multiplicity": {
+                    "type": "fixed_count",
+                    "default_count": 4,
+                    "user_overridable": True,
+                    "min": 2,
+                    "max": 12,
+                },
+            }
+        ],
+    },
+    {
         "id": "video-ad",
         "name": "广告视频",
         "description": "生成产品或品牌广告视频工作流。",
@@ -206,24 +238,57 @@ _FALLBACK_WORKFLOW_SPECS: tuple[dict[str, Any], ...] = (
                 "input_strategy": {"type": "none"},
             },
             {
-                "id": "storyboard-grid",
+                "id": "ad-brief",
                 "step_number": 2,
+                "goal_template": "生成视频广告脚本",
+                "node_type": "textGeneration",
+                "action_key": "video-ad-brief",
+                "prompt_strategy": "llm_refine",
+                "input_strategy": {"type": "previous_step", "step_id": "ad-outline"},
+            },
+            {
+                "id": "storyboard-grid",
+                "step_number": 3,
                 "goal_template": "将广告脚本中的所有 Shot 合成为多宫格分镜图",
                 "node_type": "imageGeneration",
                 "action_key": "video-storyboard-grid",
                 "prompt_strategy": "llm_refine",
-                "input_strategy": {"type": "previous_step", "step_id": "ad-outline"},
+                "input_strategy": {"type": "previous_step", "step_id": "ad-brief"},
                 "model": "nano-banana-2",
             },
             {
-                "id": "video-clips",
-                "step_number": 3,
-                "goal_template": "基于广告分镜图生成视频片段",
-                "node_type": "videoGeneration",
-                "action_key": "video-ad-clips",
-                "prompt_strategy": "previous_output",
+                "id": "storyboard-upscaled-images",
+                "step_number": 4,
+                "goal_template": "基于多宫格分镜图逐镜放大生成高清广告分镜图（{count} 张）",
+                "node_type": "imageGeneration",
+                "action_key": "video-frame-extraction",
+                "prompt_strategy": "llm_refine",
                 "input_strategy": {"type": "previous_step", "step_id": "storyboard-grid"},
+                "model": "nano-banana-2",
+                "multiplicity": {
+                    "type": "fixed_count",
+                    "default_count": 6,
+                    "user_overridable": True,
+                    "min": 1,
+                    "max": 24,
+                },
+            },
+            {
+                "id": "video-clips",
+                "step_number": 5,
+                "goal_template": "基于高清广告分镜图生成视频片段（{count} 段）",
+                "node_type": "videoGeneration",
+                "action_key": "video-clip-generation",
+                "prompt_strategy": "llm_refine",
+                "input_strategy": {"type": "previous_step", "step_id": "storyboard-upscaled-images"},
                 "model": "omni-flash",
+                "multiplicity": {
+                    "type": "fixed_count",
+                    "default_count": 6,
+                    "user_overridable": True,
+                    "min": 1,
+                    "max": 24,
+                },
             },
         ],
     },
@@ -1698,17 +1763,7 @@ def _fallback_agent_config_items(kind: str) -> list[dict[str, Any]]:
     if kind == "skills":
         return [_fallback_skill(spec) for spec in _FALLBACK_WORKFLOW_SPECS]
     if kind == "recipes":
-        return [_fallback_recipe(spec) for spec in _FALLBACK_WORKFLOW_SPECS] + [
-            {
-                "id": "video-storyboard-grid",
-                "name": "广告多宫格分镜图",
-                "output_kind": "image",
-                "action_keys": ["video-storyboard-grid"],
-                "system_prompt": "Image generation AI prompt generation. 输出用于生成多宫格广告分镜图的提示词/指令。",
-                "requires_source_media": True,
-                "_catalog_source": "builtin",
-            }
-        ]
+        return _fallback_recipes()
     return []
 
 
@@ -1758,6 +1813,43 @@ def _fallback_recipe(spec: dict[str, Any]) -> dict[str, Any]:
         "requires_source_media": True,
         "_catalog_source": "builtin",
     }
+
+
+def _fallback_recipes() -> list[dict[str, Any]]:
+    recipes: dict[str, dict[str, Any]] = {}
+    for spec in _FALLBACK_WORKFLOW_SPECS:
+        fallback = _fallback_recipe(spec)
+        if fallback["id"]:
+            recipes[fallback["id"]] = fallback
+        for step in spec.get("steps") or []:
+            if not isinstance(step, dict):
+                continue
+            action_key = _text(
+                _get(step, "recipeId", "recipe_id")
+                or _get(step, "operationType", "operation_type", "actionKey", "action_key")
+            )
+            if not action_key or action_key in recipes:
+                continue
+            node_type = _text(_get(step, "nodeType", "node_type"))
+            output_kind = _OUTPUT_KIND_BY_CAPABILITY.get(
+                node_type,
+                _OUTPUT_KIND_BY_CAPABILITY.get(
+                    _CAPABILITY_BY_NODE_TYPE.get(node_type, ""),
+                    _text(spec.get("generation_type")) or "text",
+                ),
+            )
+            recipes[action_key] = {
+                "id": action_key,
+                "name": _text(_get(step, "goalTemplate", "goal_template"))
+                or _text(spec.get("goal"))
+                or action_key,
+                "output_kind": output_kind,
+                "action_keys": [action_key],
+                "system_prompt": "Prompt generation recipe. 输出可交给下游节点执行的提示词/指令。",
+                "requires_source_media": output_kind != "text",
+                "_catalog_source": "builtin",
+            }
+    return [recipes[key] for key in sorted(recipes)]
 
 
 def _catalog_username() -> str:
