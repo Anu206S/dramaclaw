@@ -563,6 +563,7 @@ function FreezoneSkillMentionChip({
 }) {
   return (
     <span
+      data-freezone-skill-message-chip={label}
       className="mx-0.5 inline-flex max-w-[min(260px,80%)] select-none items-center gap-1.5 rounded-[7px] border border-white/[0.12] bg-white/[0.08] px-2 py-0.5 align-baseline text-xs text-foreground/90"
       title={title}
     >
@@ -604,7 +605,11 @@ function FreezoneUserMessageText({
                 title={segment.skillId}
               />
             ) : (
-              <span key={`${index}-${segment.skillId}`}>/{segment.skillId}</span>
+              <FreezoneSkillMentionChip
+                key={`${index}-${segment.skillId}`}
+                label={segment.skillId}
+                title={segment.skillId}
+              />
             );
           })}
         </p>

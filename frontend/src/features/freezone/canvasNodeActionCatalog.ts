@@ -71,7 +71,11 @@ const IMAGE_TOOL_NODE_TYPES = new Set<CanvasNodeType>([
 
 const IMAGE_ACTION_SIZE_OPTIONS = ["1K", "2K", "4K"] as const;
 const GENERATOR_PROMPT_DESCRIPTION =
-  "If this node has upstream text connected with prompt_for, this prompt is combined with upstream prompt_for text during generation; avoid duplicating the same content in both places. Prefer putting long editable prompts in the upstream input_text node, and use this field only for short non-overlapping modifiers or leave it empty.";
+  "If this node has upstream text connected with prompt_for, this prompt is combined with upstream prompt_for text during generation; avoid duplicating the same content in both places. Prefer putting long editable prompts in the upstream input_text node, and use this field only for short non-overlapping modifiers or leave it empty. If this node has upstream image references, use @图片1, @图片2, etc. in the prompt to bind specific top reference thumbnails by their left-to-right order. For multiple images, declare each referenced image's role instead of saying only \"use the references\".";
+const GENERATE_IMAGE_ACTION_DESCRIPTION =
+  "Submit this image generation node using its current prompt/references. Before running, ensure upstream image references that matter are explicitly bound in the prompt with @图片N and each reference role is clear. This runs the same frontend flow as pressing the node submit button.";
+const GENERATE_VIDEO_ACTION_DESCRIPTION =
+  "Submit this video node using its current prompt/references/generation mode. Before running, ensure upstream image references that matter are explicitly bound in the prompt with @图片N and each reference role is clear; this is especially important for imageReference, firstLastFrame, and allReference modes. This runs the same frontend flow as pressing the node submit button.";
 
 function hasString(value: unknown): boolean {
   return typeof value === "string" && value.trim().length > 0;
@@ -1163,7 +1167,7 @@ function addFrontendNodeActions(
       action: "generate_image",
       execution: "frontend_node",
       command_type: "run_node_action",
-      description: "Submit this image generation node using its current prompt/references. This runs the same frontend flow as pressing the node submit button.",
+      description: GENERATE_IMAGE_ACTION_DESCRIPTION,
       parameters: { node_id: node.id },
     });
   }
@@ -1173,7 +1177,7 @@ function addFrontendNodeActions(
       action: "generate_video",
       execution: "frontend_node",
       command_type: "run_node_action",
-      description: "Submit this video node using its current prompt/references/generation mode. This runs the same frontend flow as pressing the node submit button.",
+      description: GENERATE_VIDEO_ACTION_DESCRIPTION,
       parameters: { node_id: node.id },
     });
   }
