@@ -1,9 +1,47 @@
 from __future__ import annotations
 
+import copy
 import importlib.util
 from pathlib import Path
 
 from novelvideo.freezone.workflow_plan import validate_workflow_plan
+
+_MINIMAL_ECOMMERCE_SKILL = {
+    "id": "ecommerce-product",
+    "name": "电商产品图",
+    "version": 6,
+    "description": "测试用电商产品图 Skill",
+    "enabled": True,
+    "triggers": {"node_scopes": ["imageGeneration"]},
+    "allowed_recipe_ids": ["ecommerce-ad-image", "general-image"],
+}
+
+_MINIMAL_ECOMMERCE_RECIPES = [
+    {
+        "id": "ecommerce-ad-image",
+        "name": "电商广告图",
+        "version": 5,
+        "enabled": True,
+        "output_kind": "image",
+        "requires_source_media": True,
+    },
+    {
+        "id": "general-image",
+        "name": "通用图片",
+        "version": 1,
+        "enabled": True,
+        "output_kind": "image",
+        "requires_source_media": False,
+    },
+    {
+        "id": "general-video",
+        "name": "通用视频",
+        "version": 1,
+        "enabled": True,
+        "output_kind": "video",
+        "requires_source_media": False,
+    },
+]
 
 
 def _load_catalog_module():
@@ -20,6 +58,17 @@ def _load_catalog_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def _install_minimal_builtin_catalog(monkeypatch, catalog) -> None:
+    def fake_load_json_dir(path):
+        if path == catalog._SKILLS_DIR:
+            return copy.deepcopy([_MINIMAL_ECOMMERCE_SKILL])
+        if path == catalog._RECIPES_DIR:
+            return copy.deepcopy(_MINIMAL_ECOMMERCE_RECIPES)
+        return []
+
+    monkeypatch.setattr(catalog, "_load_json_dir", fake_load_json_dir)
 
 
 def _dynamic_plan(*, image_count: int = 1) -> dict:
@@ -108,6 +157,7 @@ def test_workflow_skill_package_supports_skill_without_template(monkeypatch):
 
 def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
     catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
 
     def fake_list_user_agent_config_items(_username, kind):
         if kind == "skills":
@@ -139,8 +189,9 @@ def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
     assert builtin_package["ok"] is True
 
 
-def test_dynamic_workflow_plan_accepts_different_node_counts():
+def test_dynamic_workflow_plan_accepts_different_node_counts(monkeypatch):
     catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
 
     three = catalog.validate_agent_workflow_plan(_dynamic_plan(image_count=3))
     six = catalog.validate_agent_workflow_plan(_dynamic_plan(image_count=6))
@@ -171,8 +222,9 @@ def test_strict_workflow_plan_rejects_unknown_node_bad_edge_and_cycle():
     assert any("cycle" in error["message"] for error in result["errors"])
 
 
-def test_catalog_validation_rejects_unknown_recipe_and_version_mismatch():
+def test_catalog_validation_rejects_unknown_recipe_and_version_mismatch(monkeypatch):
     catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
     unknown = _dynamic_plan()
     unknown["nodes"][1]["data"]["workflowCatalog"]["recipeId"] = "not-a-recipe"
     mismatch = _dynamic_plan()
@@ -187,8 +239,9 @@ def test_catalog_validation_rejects_unknown_recipe_and_version_mismatch():
     assert "version mismatch" in mismatch_result["error"]
 
 
-def test_catalog_validation_requires_recipe_and_skill_capability():
+def test_catalog_validation_requires_recipe_and_skill_capability(monkeypatch):
     catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
     missing_recipe = _dynamic_plan()
     missing_recipe["nodes"][1]["data"].pop("workflowCatalog")
     unsupported_capability = _dynamic_plan()
@@ -209,8 +262,9 @@ def test_catalog_validation_requires_recipe_and_skill_capability():
     )
 
 
-def test_catalog_validation_requires_real_or_generated_source_media():
+def test_catalog_validation_requires_real_or_generated_source_media(monkeypatch):
     catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
     missing_source = _dynamic_plan()
     missing_source["nodes"][1]["data"].pop("referenceImageUrl")
 
