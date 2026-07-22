@@ -2977,6 +2977,9 @@ function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUi
   const visibleEvents = events.filter((event) =>
     !(event.type === "skill_studio.questions" && event.submitted !== true),
   );
+  if (message.text.trim()) {
+    return visibleEvents.filter((event) => event.type !== "skill_studio.status");
+  }
   const hasClarificationCard = assistantClarificationEventsFromUiEvents(messageUiEvents(message)).length > 0;
   if (hasClarificationCard) return filterStaleSkillStudioStatus(visibleEvents);
   const hasSubmittedCard = visibleEvents.some((event) =>
@@ -2988,6 +2991,24 @@ function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUi
 }
 
 export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEventsForMessage;
+
+function visibleAssistantOrderedPartsForMessage(message: ChatMessage): ChatMessagePart[] {
+  if (!message.parts?.some((part) => part.type !== "text")) return [];
+  const parts = hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? [];
+  if (!message.text.trim()) return parts;
+  return parts.filter((part) => {
+    if (part.type !== "skill_studio") return true;
+    const event = part.event;
+    return !(
+      event
+      && typeof event === "object"
+      && !Array.isArray(event)
+      && (event as Record<string, unknown>).type === "skill_studio.status"
+    );
+  });
+}
+
+export const visibleAssistantOrderedPartsForMessageForTest = visibleAssistantOrderedPartsForMessage;
 
 function uiEventsAfterLatestSkillStudioDraft(events: unknown[] | undefined): unknown[] | undefined {
   if (!events?.length) return events;
@@ -5758,8 +5779,8 @@ const MessageBubble = memo(function MessageBubble({
   const assistantInteractionFlowItems = !isUser && !isTool
     ? buildAssistantInteractionFlowItems(displayText, skillStudioEvents, clarificationSummaryEvents)
     : [];
-  const assistantOrderedPartsRaw = !isUser && !isTool && message.parts?.some((part) => part.type !== "text")
-    ? hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? []
+  const assistantOrderedPartsRaw = !isUser && !isTool
+    ? visibleAssistantOrderedPartsForMessage(message)
     : [];
   const assistantOrderedParts = collapseRepeatedCanvasStatusParts(assistantOrderedPartsRaw);
   const assistantPartGroups = groupAssistantOrderedParts(assistantOrderedParts);

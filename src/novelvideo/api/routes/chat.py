@@ -927,6 +927,7 @@ async def resolve_clarification_tool_result(
 async def _receive_bridge_results_during_turn(
     *,
     websocket: WebSocket,
+    user: dict[str, Any],
     username: str,
 ) -> None:
     while True:
@@ -1888,7 +1889,7 @@ async def _stream_project_turn(
         _chat_heartbeat(websocket, scope=scope, turn_id=turn_id, send_lock=send_lock)
     )
     bridge_result_receive_task = asyncio.create_task(
-        _receive_bridge_results_during_turn(websocket=websocket, username=username)
+        _receive_bridge_results_during_turn(websocket=websocket, user=user, username=username)
     )
     emitted_bridge_keys: set[str] = set()
     pending_canvas_task = asyncio.create_task(
