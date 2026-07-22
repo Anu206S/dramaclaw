@@ -1306,6 +1306,43 @@ def test_catalog_downstream_fixed_count_inherits_planned_upstream_items():
     assert plan["expansion_rules"]["step_counts"]["video-clips"] == 3
 
 
+def test_catalog_code_fallback_matches_core_builtin_workflow_shapes(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "_load_json_dir", lambda _path: [])
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    skill = catalog.get_workflow_skill({"skill_id": "ecommerce-product", "compact": True})
+    assert skill["ok"] is True
+    assert skill["available_recipes"]
+
+    video_plan = catalog.build_catalog_workflow_plan(
+        {
+            "workflow_type": "catalog.video_ad.video_ad_full",
+            "user_goal": "生成 3 个广告镜头",
+            "count": 3,
+        }
+    )
+    assert video_plan["ok"] is True
+    assert video_plan["expansion_rules"]["step_counts"]["storyboard-upscaled-images"] == 3
+    assert video_plan["expansion_rules"]["step_counts"]["video-clips"] == 3
+
+    scene_plan = catalog.build_catalog_workflow_plan(
+        {
+            "workflow_type": "catalog.ecommerce_product.ecommerce_scene_images",
+            "user_goal": "为咖啡机生成场景图",
+            "items": [
+                {"step_id": "scene-images", "title": "厨房晨光", "prompt": "现代厨房晨光"},
+                {"step_id": "scene-images", "title": "办公桌面", "prompt": "极简办公室"},
+            ],
+        }
+    )
+    assert scene_plan["ok"] is True
+    scene_nodes = [
+        node for node in scene_plan["nodes"] if node["id"].startswith("scene-images_")
+    ]
+    assert [node["label"] for node in scene_nodes] == ["厨房晨光", "办公桌面"]
+
+
 def test_freezone_list_workflows_exposes_catalog_source_type(monkeypatch):
     plugin = _load_plugin_module()
     monkeypatch.setenv("DRAMACLAW_USER", "local")
