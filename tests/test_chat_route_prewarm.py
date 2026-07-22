@@ -633,6 +633,7 @@ async def test_receive_bridge_results_during_turn_resolves_skill_studio_result(m
 
     await chat_route._receive_bridge_results_during_turn(
         websocket=FakeWebSocket(),  # type: ignore[arg-type]
+        user={"username": "admin"},
         username="admin",
     )
 
@@ -675,6 +676,7 @@ async def test_receive_bridge_results_during_turn_resolves_clarification_result(
 
     await chat_route._receive_bridge_results_during_turn(
         websocket=FakeWebSocket(),  # type: ignore[arg-type]
+        user={"username": "admin"},
         username="admin",
     )
 

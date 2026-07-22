@@ -14,6 +14,25 @@ import {
   updateFreezoneCanvasAgentFromUserMessage,
 } from "@/features/freezone/canvasAgents";
 
+function installLocalStorage(value: Storage): () => void {
+  const originalWindowStorage = window.localStorage;
+  const originalGlobalStorage = globalThis.localStorage;
+  Object.defineProperty(window, "localStorage", { value, writable: true, configurable: true });
+  Object.defineProperty(globalThis, "localStorage", { value, writable: true, configurable: true });
+  return () => {
+    Object.defineProperty(window, "localStorage", {
+      value: originalWindowStorage,
+      writable: true,
+      configurable: true,
+    });
+    Object.defineProperty(globalThis, "localStorage", {
+      value: originalGlobalStorage,
+      writable: true,
+      configurable: true,
+    });
+  };
+}
+
 describe("Freezone canvas agents", () => {
   beforeEach(() => {
     vi.restoreAllMocks();
@@ -67,18 +86,28 @@ describe("Freezone canvas agents", () => {
   });
 
   it("keeps adding a conversation when local storage is full", () => {
-    const setItemSpy = vi
-      .spyOn(window.localStorage, "setItem")
-      .mockImplementation(() => {
-        throw new DOMException("Storage quota exceeded", "QuotaExceededError");
-      });
+    const setItem = vi.fn(() => {
+      throw new DOMException("Storage quota exceeded", "QuotaExceededError");
+    });
+    const restoreLocalStorage = installLocalStorage({
+      length: 0,
+      clear: vi.fn(),
+      getItem: vi.fn(() => null),
+      key: vi.fn(() => null),
+      removeItem: vi.fn(),
+      setItem,
+    });
 
-    const result = addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
+    try {
+      const result = addFreezoneCanvasAgent("project-a", "canvas-a", 2000);
 
-    expect(result.agent).toMatchObject({ id: "agent-2000", name: "新对话" });
-    expect(result.state.activeAgentId).toBe("agent-2000");
-    expect(result.state.agents.map((agent) => agent.id)).toEqual(["main", "agent-2000"]);
-    expect(setItemSpy).toHaveBeenCalled();
+      expect(result.agent).toMatchObject({ id: "agent-2000", name: "新对话" });
+      expect(result.state.activeAgentId).toBe("agent-2000");
+      expect(result.state.agents.map((agent) => agent.id)).toEqual(["main", "agent-2000"]);
+      expect(setItem).toHaveBeenCalled();
+    } finally {
+      restoreLocalStorage();
+    }
   });
 
   it("persists the active agent per canvas without reordering recency", () => {
