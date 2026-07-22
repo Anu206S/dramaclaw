@@ -142,9 +142,12 @@ import {
 import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-execution-narration";
 import {
   filterFreezoneSkillSuggestions,
+  findFreezoneSkillMention,
+  type FreezoneSkillSuggestion,
   getFreezoneSkillSlashQuery,
   insertFreezoneSkillMention,
   moveFreezoneSkillSuggestionIndex,
+  splitFreezoneSkillMentionText,
   toFreezoneSkillSuggestions,
 } from "@/features/superchat/freezone-skill-suggestions";
 import {
@@ -549,6 +552,65 @@ function MessageText({
   return markdown
     ? <MarkdownMessageText text={text} />
     : <PlainMessageText text={text} />;
+}
+
+function FreezoneSkillMentionChip({
+  label,
+  title,
+}: {
+  label: string;
+  title?: string;
+}) {
+  return (
+    <span
+      className="mx-0.5 inline-flex max-w-[min(260px,80%)] select-none items-center gap-1.5 rounded-[7px] border border-white/[0.12] bg-white/[0.08] px-2 py-0.5 align-baseline text-xs text-foreground/90"
+      title={title}
+    >
+      <span className="inline-flex size-3 shrink-0 items-center justify-center rounded-[3px] border border-primary/40 text-[8px] leading-none text-primary">
+        ◇
+      </span>
+      <span className="truncate">{label}</span>
+    </span>
+  );
+}
+
+function FreezoneUserMessageText({
+  text,
+  suggestions,
+}: {
+  text: string;
+  suggestions: FreezoneSkillSuggestion[];
+}) {
+  const normalized = normalizeMessageText(text);
+  if (!normalized) return null;
+  const suggestionById = new Map(suggestions.map((suggestion) => [suggestion.id, suggestion]));
+  const paragraphs = normalized
+    .split(/\n{2}/)
+    .map((paragraph) => paragraph.trim())
+    .filter(Boolean);
+  if (paragraphs.length === 0) return null;
+
+  return (
+    <div className="space-y-2 break-words leading-relaxed">
+      {paragraphs.map((paragraph, paragraphIndex) => (
+        <p key={`${paragraphIndex}-${paragraph.slice(0, 12)}`} className="whitespace-pre-wrap">
+          {splitFreezoneSkillMentionText(paragraph).map((segment, index) => {
+            if (segment.type === "text") return <span key={`${index}-text`}>{segment.text}</span>;
+            const suggestion = suggestionById.get(segment.skillId);
+            return suggestion ? (
+              <FreezoneSkillMentionChip
+                key={`${index}-${segment.skillId}`}
+                label={suggestion.label}
+                title={segment.skillId}
+              />
+            ) : (
+              <span key={`${index}-${segment.skillId}`}>/{segment.skillId}</span>
+            );
+          })}
+        </p>
+      ))}
+    </div>
+  );
 }
 
 const ASSISTANT_ERROR_TEXT_PATTERNS: RegExp[] = [
@@ -5715,6 +5777,7 @@ const MessageBubble = memo(function MessageBubble({
   onSkillStudioDraftChange,
   onCancelSkillStudioDraft,
   onPreserveScrollAnchor,
+  freezoneSkillSuggestions = [],
 }: {
   message: ChatMessage;
   variant?: SuperChatPanelVariant;
@@ -5752,6 +5815,7 @@ const MessageBubble = memo(function MessageBubble({
     draft: Record<string, unknown>,
   ) => void;
   onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
+  freezoneSkillSuggestions?: FreezoneSkillSuggestion[];
 }) {
   const isUser = message.role === "user";
   const isTool = isToolMessage(message);
@@ -5972,7 +6036,11 @@ const MessageBubble = memo(function MessageBubble({
               <div className="rounded-[14px] border-0 bg-white/[0.12] px-3 py-2.5 text-sm leading-6 text-foreground shadow-none">
                 <AttachmentList attachments={message.attachments} align="start" compact />
                 {displayText && (
-                  <div className="whitespace-pre-wrap break-words">{displayText}</div>
+                  isFreezoneLayout ? (
+                    <FreezoneUserMessageText text={displayText} suggestions={freezoneSkillSuggestions} />
+                  ) : (
+                    <div className="whitespace-pre-wrap break-words">{displayText}</div>
+                  )
                 )}
                 <StructuredRenderer blocks={visibleBlocks} />
               </div>
@@ -5990,7 +6058,11 @@ const MessageBubble = memo(function MessageBubble({
             <div className="rounded-[14px] border-0 bg-white/[0.12] px-4 py-2.5 text-sm leading-6 text-foreground shadow-none">
               <AttachmentList attachments={message.attachments} align="end" />
               {displayText && (
-                <div className="whitespace-pre-wrap break-words">{displayText}</div>
+                isFreezoneLayout ? (
+                  <FreezoneUserMessageText text={displayText} suggestions={freezoneSkillSuggestions} />
+                ) : (
+                  <div className="whitespace-pre-wrap break-words">{displayText}</div>
+                )
               )}
               <StructuredRenderer blocks={visibleBlocks} />
             </div>
@@ -7882,6 +7954,202 @@ export function shouldShowComposerWaitingStatus(
   return showWaitingIndicator;
 }
 
+function serializeFreezoneSkillEditor(root: HTMLElement): string {
+  const readNode = (node: Node): string => {
+    if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
+    if (!(node instanceof HTMLElement)) return "";
+    if (node.dataset.freezoneSkillId) return `/${node.dataset.freezoneSkillId}`;
+    if (node.tagName === "BR") return "\n";
+    const childText = Array.from(node.childNodes).map(readNode).join("");
+    if (node.tagName === "DIV" || node.tagName === "P") return `${childText}\n`;
+    return childText;
+  };
+  return Array.from(root.childNodes).map(readNode).join("").replace(/\n$/u, "");
+}
+
+function renderFreezoneSkillEditorContent(
+  root: HTMLElement,
+  value: string,
+  suggestions: FreezoneSkillSuggestion[],
+): void {
+  const suggestionById = new Map(suggestions.map((suggestion) => [suggestion.id, suggestion]));
+  root.textContent = "";
+
+  let cursor = 0;
+  const matches = value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu);
+  for (const match of matches) {
+    if (match.index === undefined) continue;
+    const matchedToken = match[0] ?? "";
+    const skillId = match[1]?.trim();
+    if (!skillId) continue;
+    const suggestion = suggestionById.get(skillId);
+    if (!suggestion) continue;
+
+    const tokenStart = match.index + (matchedToken.startsWith("/") ? 0 : 1);
+    const tokenEnd = tokenStart + skillId.length + 1;
+    if (tokenStart > cursor) {
+      root.appendChild(document.createTextNode(value.slice(cursor, tokenStart)));
+    }
+
+    const chip = document.createElement("span");
+    chip.dataset.freezoneSkillId = skillId;
+    chip.contentEditable = "false";
+    chip.className = "mx-0.5 inline-flex max-w-[min(260px,80%)] select-none items-center gap-1.5 rounded-[7px] border border-white/[0.12] bg-white/[0.08] px-2 py-0.5 align-baseline text-xs text-foreground/90";
+    chip.title = skillId;
+
+    const icon = document.createElement("span");
+    icon.className = "inline-flex size-3 shrink-0 items-center justify-center rounded-[3px] border border-primary/40 text-[8px] leading-none text-primary";
+    icon.textContent = "◇";
+    chip.appendChild(icon);
+
+    const label = document.createElement("span");
+    label.className = "truncate";
+    label.textContent = suggestion.label;
+    chip.appendChild(label);
+
+    root.appendChild(chip);
+    cursor = tokenEnd;
+  }
+
+  if (cursor < value.length) {
+    root.appendChild(document.createTextNode(value.slice(cursor)));
+  }
+}
+
+function adjacentFreezoneSkillChip(
+  editor: HTMLElement,
+  direction: "backward" | "forward",
+): HTMLElement | null {
+  const selection = window.getSelection();
+  if (!selection || !selection.isCollapsed) return null;
+  const anchorNode = selection.anchorNode;
+  if (!anchorNode || !editor.contains(anchorNode)) return null;
+
+  const asSkillChip = (node: Node | null): HTMLElement | null => {
+    if (!(node instanceof HTMLElement)) return null;
+    return node.dataset.freezoneSkillId ? node : null;
+  };
+
+  if (anchorNode === editor) {
+    const index = selection.anchorOffset + (direction === "backward" ? -1 : 0);
+    return asSkillChip(editor.childNodes.item(index));
+  }
+
+  if (anchorNode.nodeType === Node.TEXT_NODE) {
+    const text = anchorNode.textContent ?? "";
+    if (direction === "backward" && selection.anchorOffset === 0) {
+      return asSkillChip(anchorNode.previousSibling);
+    }
+    if (direction === "forward" && selection.anchorOffset === text.length) {
+      return asSkillChip(anchorNode.nextSibling);
+    }
+    return null;
+  }
+
+  if (anchorNode instanceof HTMLElement) {
+    const closestChip = anchorNode.closest<HTMLElement>("[data-freezone-skill-id]");
+    if (closestChip && editor.contains(closestChip)) return closestChip;
+  }
+  return null;
+}
+
+type FreezoneSkillInlineEditorProps = {
+  value: string;
+  suggestions: FreezoneSkillSuggestion[];
+  placeholder: string;
+  inputRef: (element: HTMLElement | null) => void;
+  onChange: (value: string) => void;
+  onFocus: () => void;
+  onBlur: () => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
+};
+
+function FreezoneSkillInlineEditor({
+  value,
+  suggestions,
+  placeholder,
+  inputRef,
+  onChange,
+  onFocus,
+  onBlur,
+  onKeyDown,
+}: FreezoneSkillInlineEditorProps): JSX.Element {
+  const editorRef = useRef<HTMLDivElement | null>(null);
+  const lastEmittedValueRef = useRef(value);
+  const lastRenderedSuggestionsKeyRef = useRef("");
+
+  useLayoutEffect(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const currentValue = serializeFreezoneSkillEditor(editor);
+    const suggestionsKey = suggestions.map((suggestion) => `${suggestion.id}:${suggestion.label}`).join("\n");
+    const suggestionsChanged = suggestionsKey !== lastRenderedSuggestionsKeyRef.current;
+    const suggestionIds = new Set(suggestions.map((suggestion) => suggestion.id));
+    const renderableMentionCount = Array.from(value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu))
+      .filter((match) => suggestionIds.has(match[1]?.trim() ?? ""))
+      .length;
+    const renderedChipCount = editor.querySelectorAll("[data-freezone-skill-id]").length;
+    const hasMissingRenderedChip = renderableMentionCount !== renderedChipCount;
+    const isUserInputEcho = document.activeElement === editor && value === lastEmittedValueRef.current;
+    if (isUserInputEcho && currentValue === value && !suggestionsChanged && !hasMissingRenderedChip) return;
+    renderFreezoneSkillEditorContent(editor, value, suggestions);
+    lastRenderedSuggestionsKeyRef.current = suggestionsKey;
+  }, [suggestions, value]);
+
+  const setEditorRef = useCallback((element: HTMLDivElement | null) => {
+    editorRef.current = element;
+    inputRef(element);
+  }, [inputRef]);
+
+  const handleInput = useCallback(() => {
+    const editor = editorRef.current;
+    if (!editor) return;
+    const nextValue = serializeFreezoneSkillEditor(editor);
+    lastEmittedValueRef.current = nextValue;
+    onChange(nextValue);
+  }, [onChange]);
+
+  const handleKeyDown = useCallback((event: ReactKeyboardEvent<HTMLElement>) => {
+    if (event.key === "Backspace" || event.key === "Delete") {
+      const editor = editorRef.current;
+      const chip = editor
+        ? adjacentFreezoneSkillChip(editor, event.key === "Backspace" ? "backward" : "forward")
+        : null;
+      if (editor && chip) {
+        event.preventDefault();
+        chip.remove();
+        const nextValue = serializeFreezoneSkillEditor(editor);
+        lastEmittedValueRef.current = nextValue;
+        onChange(nextValue);
+        return;
+      }
+    }
+    onKeyDown(event);
+  }, [onChange, onKeyDown]);
+
+  return (
+    <div className="relative">
+      {value.trim().length === 0 && (
+        <div className="pointer-events-none absolute inset-x-0 top-0 px-3.5 py-3 text-sm text-muted-foreground/70">
+          {placeholder}
+        </div>
+      )}
+      <div
+        ref={setEditorRef}
+        contentEditable
+        role="textbox"
+        aria-multiline="true"
+        suppressContentEditableWarning
+        onInput={handleInput}
+        onFocus={onFocus}
+        onBlur={onBlur}
+        onKeyDown={handleKeyDown}
+        className="max-h-[220px] min-h-11 overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent px-3.5 py-3 text-sm leading-6 text-foreground outline-none empty:min-h-11 focus-visible:ring-0"
+      />
+    </div>
+  );
+}
+
 const CANVAS_CONTEXT_REQUEST_LABELS: Record<string, string> = {
   canvas_ontology: "画布 Ontology",
   canvas_summary: "画布摘要",
@@ -9170,7 +9438,7 @@ export function SuperChatPanel({
   const [activeFreezoneSkillSuggestionIndex, setActiveFreezoneSkillSuggestionIndex] = useState(0);
   const freezoneSkillSuggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
-  const draftInputRef = useRef<HTMLTextAreaElement | null>(null);
+  const draftInputRef = useRef<HTMLElement | null>(null);
   const restoreDraftFocusRef = useRef(false);
   const dragDepthRef = useRef(0);
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
@@ -9226,6 +9494,9 @@ export function SuperChatPanel({
   }, [chat.busy, chat.connected, chat.connecting, onConnectionStateChange]);
 
   const isFreezoneLayout = variant === "freezone";
+  const setDraftInputElement = useCallback((element: HTMLElement | null) => {
+    draftInputRef.current = element;
+  }, []);
   const freezoneSkillSuggestions = useMemo(
     () => toFreezoneSkillSuggestions(freezoneSkillCatalog),
     [freezoneSkillCatalog],
@@ -9236,6 +9507,10 @@ export function SuperChatPanel({
       ? []
       : filterFreezoneSkillSuggestions(freezoneSkillSuggestions, freezoneSkillSlashQuery).slice(0, 8),
     [freezoneSkillSlashQuery, freezoneSkillSuggestions],
+  );
+  const freezoneSkillMentionCandidate = useMemo(
+    () => isFreezoneLayout ? findFreezoneSkillMention(draft) : null,
+    [draft, isFreezoneLayout],
   );
   const showFreezoneSkillSuggestions =
     isFreezoneLayout
@@ -9248,7 +9523,11 @@ export function SuperChatPanel({
   }, []);
 
   useEffect(() => {
-    if (!isFreezoneLayout || freezoneSkillSlashQuery === null || freezoneSkillCatalogLoaded) return;
+    if (
+      !isFreezoneLayout
+      || freezoneSkillCatalogLoaded
+      || (freezoneSkillSlashQuery === null && !freezoneSkillMentionCandidate)
+    ) return;
     let cancelled = false;
     void apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills")
       .then((items) => {
@@ -9266,7 +9545,7 @@ export function SuperChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [freezoneSkillCatalogLoaded, freezoneSkillSlashQuery, isFreezoneLayout]);
+  }, [freezoneSkillCatalogLoaded, freezoneSkillMentionCandidate, freezoneSkillSlashQuery, isFreezoneLayout]);
 
   useEffect(() => {
     setActiveFreezoneSkillSuggestionIndex(0);
@@ -10804,12 +11083,24 @@ export function SuperChatPanel({
   useLayoutEffect(() => {
     if (!restoreDraftFocusRef.current) return;
     restoreDraftFocusRef.current = false;
-    const textarea = draftInputRef.current;
-    if (!textarea || textarea.disabled) return;
-    if (document.activeElement === textarea) return;
-    textarea.focus({ preventScroll: true });
-    const end = textarea.value.length;
-    textarea.setSelectionRange(end, end);
+    const input = draftInputRef.current;
+    if (!input) return;
+    if (input instanceof HTMLTextAreaElement && input.disabled) return;
+    if (document.activeElement !== input) {
+      input.focus({ preventScroll: true });
+    }
+    if (input instanceof HTMLTextAreaElement) {
+      const end = input.value.length;
+      input.setSelectionRange(end, end);
+      return;
+    }
+    const selection = window.getSelection();
+    if (!selection) return;
+    const range = document.createRange();
+    range.selectNodeContents(input);
+    range.collapse(false);
+    selection.removeAllRanges();
+    selection.addRange(range);
   }, [draft]);
 
   const submit = () => {
@@ -10855,6 +11146,66 @@ export function SuperChatPanel({
       setAttachments([]);
       deselectFreezoneNodeReferences(sentCanvasNodeIds);
     });
+  };
+
+  const handleDraftKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (
+      showFreezoneSkillSuggestions
+      && (event.key === "ArrowDown" || event.key === "ArrowUp")
+    ) {
+      event.preventDefault();
+      setActiveFreezoneSkillSuggestionIndex((index) =>
+        moveFreezoneSkillSuggestionIndex(
+          index,
+          event.key === "ArrowDown" ? 1 : -1,
+          visibleFreezoneSkillSuggestions.length,
+        ),
+      );
+      return;
+    }
+    if (
+      showFreezoneSkillSuggestions
+      && event.key === "Enter"
+      && !event.shiftKey
+      && visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex]
+    ) {
+      event.preventDefault();
+      insertFreezoneSkillSuggestion(
+        visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex].id,
+      );
+      return;
+    }
+    if (
+      queuedMessages.length > 0
+      && draft.trim().length === 0
+      && (event.key === "ArrowUp" || event.key === "ArrowDown")
+    ) {
+      event.preventDefault();
+      selectQueuedMessageByOffset(event.key === "ArrowUp" ? -1 : 1);
+      return;
+    }
+    if (
+      event.key === "ArrowUp"
+      && queuedMessages.length === 0
+      && (draft.trim().length === 0 || selectedHistoryMessageIndex !== null)
+    ) {
+      event.preventDefault();
+      selectHistoryMessage("older");
+      return;
+    }
+    if (
+      event.key === "ArrowDown"
+      && queuedMessages.length === 0
+      && selectedHistoryMessageIndex !== null
+    ) {
+      event.preventDefault();
+      selectHistoryMessage("newer");
+      return;
+    }
+    if (shouldSubmitComposerEnter(event)) {
+      event.preventDefault();
+      submit();
+    }
   };
 
   const submitSkillStudioQuestionResponse = useCallback(async (
@@ -11519,6 +11870,7 @@ export function SuperChatPanel({
                       onSkillStudioDraftChange={handleSkillStudioDraftChange}
                       onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                       onPreserveScrollAnchor={preserveScrollAnchor}
+                      freezoneSkillSuggestions={freezoneSkillSuggestions}
                     />
                   </div>
                 ))}
@@ -11544,6 +11896,7 @@ export function SuperChatPanel({
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
+                    freezoneSkillSuggestions={freezoneSkillSuggestions}
                   />
                 )}
                 {orphanCanvasCommandSurfaces.map((surface) => (
@@ -11588,6 +11941,7 @@ export function SuperChatPanel({
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
+                    freezoneSkillSuggestions={freezoneSkillSuggestions}
                   />
                 ))}
                 {thinkingCanvasContextActivity && !thinkingCanvasContextMessageId && (
@@ -11613,6 +11967,7 @@ export function SuperChatPanel({
                     onSkillStudioDraftChange={handleSkillStudioDraftChange}
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
+                    freezoneSkillSuggestions={freezoneSkillSuggestions}
                   />
                 )}
               </div>
@@ -11833,82 +12188,37 @@ export function SuperChatPanel({
             )}
             {!hasActiveComposerPrompt && (
               <>
-                <Textarea
-                  ref={draftInputRef}
-                  value={draft}
-                  onChange={(event) => {
-                    setSelectedHistoryMessageIndex(null);
-                    setDraft(event.target.value);
-                  }}
-                  onFocus={() => setComposerInputFocused(true)}
-                  onBlur={() => setComposerInputFocused(false)}
-                  onKeyDown={(event) => {
-                    if (
-                      showFreezoneSkillSuggestions
-                      && (event.key === "ArrowDown" || event.key === "ArrowUp")
-                    ) {
-                      event.preventDefault();
-                      setActiveFreezoneSkillSuggestionIndex((index) =>
-                        moveFreezoneSkillSuggestionIndex(
-                          index,
-                          event.key === "ArrowDown" ? 1 : -1,
-                          visibleFreezoneSkillSuggestions.length,
-                        ),
-                      );
-                      return;
-                    }
-                    if (
-                      showFreezoneSkillSuggestions
-                      && event.key === "Enter"
-                      && !event.shiftKey
-                      && visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex]
-                    ) {
-                      event.preventDefault();
-                      insertFreezoneSkillSuggestion(
-                        visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex].id,
-                      );
-                      return;
-                    }
-                    if (
-                      queuedMessages.length > 0
-                      && draft.trim().length === 0
-                      && (event.key === "ArrowUp" || event.key === "ArrowDown")
-                    ) {
-                      event.preventDefault();
-                      selectQueuedMessageByOffset(event.key === "ArrowUp" ? -1 : 1);
-                      return;
-                    }
-                    if (
-                      event.key === "ArrowUp"
-                      && queuedMessages.length === 0
-                      && (draft.trim().length === 0 || selectedHistoryMessageIndex !== null)
-                    ) {
-                      event.preventDefault();
-                      selectHistoryMessage("older");
-                      return;
-                    }
-                    if (
-                      event.key === "ArrowDown"
-                      && queuedMessages.length === 0
-                      && selectedHistoryMessageIndex !== null
-                    ) {
-                      event.preventDefault();
-                      selectHistoryMessage("newer");
-                      return;
-                    }
-                    if (shouldSubmitComposerEnter(event)) {
-                      event.preventDefault();
-                      submit();
-                    }
-                  }}
-                  dir="auto"
-                  placeholder={isFreezoneLayout ? t("aiAssistant.freezonePlaceholder") : t("aiAssistant.placeholder")}
-                  className={cn(
-                    "max-h-[220px] min-h-14 resize-none border-0 bg-transparent px-5 py-4 text-base shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent",
-                    isFreezoneLayout && "min-h-11 px-3.5 py-3 text-sm",
-                  )}
-                  rows={1}
-                />
+                {isFreezoneLayout ? (
+                  <FreezoneSkillInlineEditor
+                    value={draft}
+                    suggestions={freezoneSkillSuggestions}
+                    placeholder={t("aiAssistant.freezonePlaceholder")}
+                    inputRef={setDraftInputElement}
+                    onChange={(nextValue) => {
+                      setSelectedHistoryMessageIndex(null);
+                      setDraft(nextValue);
+                    }}
+                    onFocus={() => setComposerInputFocused(true)}
+                    onBlur={() => setComposerInputFocused(false)}
+                    onKeyDown={handleDraftKeyDown}
+                  />
+                ) : (
+                  <Textarea
+                    ref={setDraftInputElement}
+                    value={draft}
+                    onChange={(event) => {
+                      setSelectedHistoryMessageIndex(null);
+                      setDraft(event.target.value);
+                    }}
+                    onFocus={() => setComposerInputFocused(true)}
+                    onBlur={() => setComposerInputFocused(false)}
+                    onKeyDown={handleDraftKeyDown}
+                    dir="auto"
+                    placeholder={t("aiAssistant.placeholder")}
+                    className="max-h-[220px] min-h-14 resize-none border-0 bg-transparent px-5 py-4 text-base shadow-none placeholder:text-muted-foreground/70 focus-visible:ring-0 dark:bg-transparent"
+                    rows={1}
+                  />
+                )}
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="flex items-center gap-1">
                     {isFreezoneLayout && (
