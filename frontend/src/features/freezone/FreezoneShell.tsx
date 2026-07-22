@@ -4,9 +4,17 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
-import { PanelRightClose, PanelRightOpen, Plus, Search } from "lucide-react";
+import {
+  Clapperboard,
+  PanelRightClose,
+  PanelRightOpen,
+  Plus,
+  Search,
+  Workflow,
+} from "lucide-react";
 import { Canvas } from "@/features/canvas/Canvas";
 import { NodeReplaceDragPreview } from "@/features/canvas/ui/NodeReplaceDragPreview";
+import { AssetBoardView } from "@/features/canvas/ui/asset-board/AssetBoardView";
 import {
   listCharacters,
   listFreezoneProjectAssets,
@@ -91,6 +99,10 @@ import {
   queueLocalFreezoneProjection,
   removeLocalFreezoneProjection,
 } from "@/features/freezone/canvasSyncRuntime";
+import {
+  useFreezoneViewMode,
+  type FreezoneViewMode,
+} from "@/features/freezone/useFreezoneViewMode";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import {
@@ -754,6 +766,24 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     revision: number;
     refreshToken: number;
   } | null>(null);
+
+  const [viewMode, setViewMode] = useFreezoneViewMode();
+  // 懒挂载：首次切到故事板才 mount AssetBoardView，之后保活（visible 切 visibility）。
+  const [boardMounted, setBoardMounted] = useState(viewMode === "board");
+  const handleViewModeChange = useCallback(
+    (mode: FreezoneViewMode) => {
+      if (mode === "board") setBoardMounted(true);
+      setViewMode(mode);
+    },
+    [setViewMode],
+  );
+  const handleLocateNode = useCallback(
+    (nodeId: string) => {
+      setViewMode("workflow");
+      useCanvasStore.getState().requestFocusNode(nodeId);
+    },
+    [setViewMode],
+  );
 
   const invalidateCommittedTargetQueries = useCallback((target: PushTarget) => {
     if (isDirectorWorldSourceSlotTarget(target) || target.kind === "scene_director_world") {
@@ -1831,6 +1861,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             <Canvas
               onBlankPaneClick={handleBlankPaneClick}
               controlsPlacement="bottom-right"
+              suspended={viewMode === "board"}
             />
           )}
           {showLoadingOverlay && <CanvasLoadingOverlay />}
@@ -1891,6 +1922,59 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
               setToast(message);
             }}
           />
+          {/* 故事板视图：懒挂载 + 保活（对标 liblib，秒切且滚动/筛选状态保留）。 */}
+          {!showBlockingLoading && boardMounted && (
+            <AssetBoardView
+              visible={viewMode === "board"}
+              onLocateNode={handleLocateNode}
+            />
+          )}
+          {/* 工作流/故事板 切换开关：顶部居中悬浮，压在故事板 overlay(z-30) 之上。
+              选中态样式对齐头部「虾画/虾集」产品切换（project-header-navigation.tsx
+              的 ProjectHeaderNavigation）：该开关是手写的胶囊 + 滑块，并非
+              components/nav/sliding-tabs.tsx 的 SlidingTabs，因此这里直接复刻同一套
+              容器/选中/未选中类，而不是套用 shadcn Tabs 默认的深色选中态。
+              容器底色沿用本任务前一步确定的硬编码 #262626（与故事板背景同色）。
+              top-1.5：与顶栏 虾画/虾集 的间距对齐虾集子菜单的紧凑距离（用户指定）。 */}
+          {!showBlockingLoading && (
+            <div className="absolute left-1/2 top-1.5 z-40 -translate-x-1/2">
+              <nav aria-label="画布视图切换" className="relative flex h-8 items-center rounded-full bg-[#262626] shadow-lg">
+                <span
+                  aria-hidden="true"
+                  className={cn(
+                    "absolute left-0 top-1/2 h-7 w-[88px] -translate-y-1/2 rounded-full bg-foreground transition-transform duration-300 ease-[var(--ease-out-quint)]",
+                    viewMode === "board" && "translate-x-[88px]",
+                  )}
+                />
+                <button
+                  type="button"
+                  data-testid="freezone-view-workflow"
+                  onClick={() => handleViewModeChange("workflow")}
+                  className={cn(
+                    "relative z-10 inline-flex h-8 w-[88px] items-center justify-center gap-1.5 rounded-full text-xs font-semibold transition-colors",
+                    viewMode === "workflow" ? "text-background" : "text-muted-foreground hover:text-foreground",
+                  )}
+                  aria-pressed={viewMode === "workflow"}
+                >
+                  <Workflow className="size-3.5" />
+                  工作流
+                </button>
+                <button
+                  type="button"
+                  data-testid="freezone-view-board"
+                  onClick={() => handleViewModeChange("board")}
+                  className={cn(
+                    "relative z-10 inline-flex h-8 w-[88px] items-center justify-center gap-1.5 rounded-full text-xs font-semibold transition-colors",
+                    viewMode === "board" ? "text-background" : "text-muted-foreground hover:text-foreground",
+                  )}
+                  aria-pressed={viewMode === "board"}
+                >
+                  <Clapperboard className="size-3.5" />
+                  故事板
+                </button>
+              </nav>
+            </div>
+          )}
         </main>
         <FreezoneChatDock
           projectId={projectId}
@@ -2801,7 +2885,7 @@ interface SelectedImageSummary {
 
 function Toast({ text, onClose }: { text: string; onClose: () => void }) {
   return (
-    <div className="absolute left-1/2 top-6 z-40 max-w-md -translate-x-1/2 rounded-lg border border-border-default bg-surface/95 px-4 py-2 text-sm text-text shadow-xl backdrop-blur">
+    <div className="absolute left-1/2 top-16 z-40 max-w-md -translate-x-1/2 rounded-lg border border-border-default bg-surface/95 px-4 py-2 text-sm text-text shadow-xl backdrop-blur">
       <div className="flex items-center gap-3">
         <span className="break-words flex-1 min-w-0">{text}</span>
         <button
@@ -2856,7 +2940,7 @@ function CanvasConflictOverlay({
   };
 
   return (
-    <div className="absolute inset-0 bg-bg-dark/60 flex items-center justify-center">
+    <div className="absolute inset-0 z-50 bg-bg-dark/60 flex items-center justify-center">
       <div className="px-4 py-3 rounded-lg bg-surface border border-amber-400/50 text-sm text-amber-100 max-w-md flex flex-col gap-3">
         <div className="font-medium">画布保存冲突</div>
         <div className="text-text-muted">
@@ -2979,7 +3063,7 @@ function CanvasErrorOverlay({
   onRetry: () => void;
 }) {
   return (
-    <div className="absolute inset-0 flex items-center justify-center bg-bg-dark/45 px-6">
+    <div className="absolute inset-0 z-50 flex items-center justify-center bg-bg-dark/45 px-6">
       <div className="flex w-full max-w-2xl flex-col gap-3 rounded-xl border border-red-400/25 bg-red-950/[0.14] px-4 py-3 text-sm shadow-[0_18px_60px_rgba(0,0,0,0.28)] backdrop-blur-xl">
         <div className="font-medium text-red-200">画布同步失败</div>
         <div className="max-h-32 overflow-y-auto whitespace-pre-wrap break-words rounded-lg border border-white/[0.06] bg-black/20 px-3 py-2 text-xs leading-5 text-red-100/75">

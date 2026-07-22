@@ -5,52 +5,23 @@ import { NodeToolbar as ReactFlowNodeToolbar, Position } from '@xyflow/react';
 import { ArrowUp, Image as ImageIcon, X } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 
+import { type CanvasNode } from '@/features/canvas/domain/canvasNodes';
 import {
-  CANVAS_NODE_TYPES,
-  DEFAULT_ASPECT_RATIO,
-  EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-  EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
-  type CanvasNode,
-} from '@/features/canvas/domain/canvasNodes';
-import { useCanvasStore } from '@/stores/canvasStore';
-import {
-  fetchFreezoneJobResult,
-  submitFreezoneTemplateEdit,
-  type FreezoneTemplateEditMode,
-} from '@/api/ops';
+  submitGridTemplateAction,
+  type GridActionKey,
+} from '@/features/canvas/application/gridTemplateAction';
 import { CreditCostInline } from '@/components/credit-cost-inline';
-import { awaitTaskCompletion } from '@/api/tasks';
-import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
-import { readUrl } from '@/lib/url-params';
 import { NODE_TOOLBAR_CLASS } from './nodeToolbarConfig';
 import { CANVAS_NODE_TOOLBAR_PILL_CLASS } from './nodeFrameStyles';
 
-export type GridActionKey =
-  | 'multiCameraGrid'
-  | 'plotFourGrid'
-  | 'faceThreeView'
-  | 'productThreeView'
-  | 'serialStoryboard25'
-  | 'cinematicLightCorrection'
-  | 'characterThreeView'
-  | 'frameProjection3sLater'
-  | 'frameProjection5sEarlier';
+// 提交编排移到 application/gridTemplateAction（故事板详情工具条共用）；key 类型
+// 原地 re-export，NodeActionToolbar 等既有引用无需改动。
+export type { GridActionKey } from '@/features/canvas/application/gridTemplateAction';
 
-const GRID_ACTION_MODE_MAP: Record<GridActionKey, FreezoneTemplateEditMode> = {
-  multiCameraGrid: 'multi_camera_nine_grid',
-  plotFourGrid: 'story_pitch_four_grid',
-  faceThreeView: 'character_face_three_view',
-  productThreeView: 'product_three_view',
-  serialStoryboard25: 'storyboard_25_grid',
-  cinematicLightCorrection: 'cinematic_light_correction',
-  characterThreeView: 'character_three_view_generation',
-  frameProjection3sLater: 'image_projection_after_3s',
-  frameProjection5sEarlier: 'image_projection_before_5s',
-};
-
-function imageModelSupportsQuality(apiModel: string | null | undefined): boolean {
+/** 是否该图片模型支持 quality 参数（宫格活价查询需要按模型带上正确的 params）。 */
+export function imageModelSupportsQuality(apiModel: string | null | undefined): boolean {
   const normalized = String(apiModel ?? '').trim().toLowerCase();
   return (
     normalized === 'gpt-image-2'
@@ -90,11 +61,6 @@ interface GridActionConfirmOverlayProps {
 export const GridActionConfirmOverlay = memo(
   ({ node, imageSource, request, onClose }: GridActionConfirmOverlayProps) => {
     const { t } = useTranslation();
-    const addNode = useCanvasStore((state) => state.addNode);
-    const addEdge = useCanvasStore((state) => state.addEdge);
-    const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
-    const findNodePosition = useCanvasStore((state) => state.findNodePosition);
-    const updateNodeData = useCanvasStore((state) => state.updateNodeData);
     const { models: imageModels } = useFreezoneImageModels();
     const selectedModel = imageModels[0];
     const gridActionCost = useGenerationCreditCost(
@@ -108,81 +74,17 @@ export const GridActionConfirmOverlay = memo(
       },
     );
 
-    const handleSubmit = useCallback(async () => {
-      const project = readUrl().project;
-      if (!project) {
-        console.error('[grid-action] no project in URL — cannot submit');
-        return;
-      }
-
-      const sourceAspectRatio =
-        typeof (node.data as { aspectRatio?: unknown }).aspectRatio === 'string'
-          ? ((node.data as { aspectRatio?: string }).aspectRatio ?? DEFAULT_ASPECT_RATIO)
-          : DEFAULT_ASPECT_RATIO;
-      const position = findNodePosition(
-        node.id,
-        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
-        EXPORT_RESULT_NODE_LAYOUT_HEIGHT
-      );
-      const generationStartedAt = Date.now();
-      const nextNodeId = addNode(
-        CANVAS_NODE_TYPES.exportImage,
-        position,
-        {
-          displayName: request.label,
-          imageUrl: null,
-          previewImageUrl: null,
-          aspectRatio: sourceAspectRatio,
-          resultKind: 'generic',
-          isGenerating: true,
-          generationStartedAt,
-        }
-      );
-      addEdge(node.id, nextNodeId);
-      setSelectedNode(nextNodeId);
+    // 结果节点创建 + 提交编排在 submitGridTemplateAction（首个 await 之前同步建节点，
+    // 因此这里紧跟着的 onClose 与旧内联实现时序一致）。
+    const handleSubmit = useCallback(() => {
+      void submitGridTemplateAction({
+        sourceNodeId: node.id,
+        imageSource,
+        key: request.key,
+        label: request.label,
+      });
       onClose();
-
-      try {
-        const ref = await submitFreezoneTemplateEdit(project, {
-          sourceUrl: imageSource.split('?')[0],
-          mode: GRID_ACTION_MODE_MAP[request.key],
-          prompt: request.label,
-        });
-        updateNodeData(nextNodeId, generationTaskDescriptor(ref));
-        const completed = await awaitTaskCompletion(ref.task_key, project);
-        const directUrl = completed.result?.['output_url'] as string | undefined;
-        let url = directUrl;
-        if (!url) {
-          const fallback = await fetchFreezoneJobResult(project, ref.task_type, ref.job_id);
-          url = fallback.url;
-        }
-        updateNodeData(nextNodeId, {
-          imageUrl: url,
-          previewImageUrl: url,
-          isGenerating: false,
-          generationStartedAt: null,
-          generationError: null,
-        });
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[grid-action] generation failed', err);
-        updateNodeData(nextNodeId, {
-          isGenerating: false,
-          generationStartedAt: null,
-          generationError: message,
-        });
-      }
-    }, [
-      addEdge,
-      addNode,
-      findNodePosition,
-      imageSource,
-      node,
-      onClose,
-      request,
-      setSelectedNode,
-      updateNodeData,
-    ]);
+    }, [imageSource, node.id, onClose, request.key, request.label]);
 
     return (
       <ReactFlowNodeToolbar

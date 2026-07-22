@@ -6,6 +6,7 @@ import type {
   DirectorObjectLayer,
   DirectorWorldSource,
 } from '@/features/viewer-kit/three-d/directorManifest';
+import type { KeyElementCategory } from './keyElements';
 
 export const CANVAS_NODE_TYPES = {
   upload: 'uploadNode',
@@ -57,6 +58,13 @@ export type ImageQuality = 'low' | 'medium' | 'high';
 
 export interface NodeDisplayData {
   displayName?: string;
+  /** 关键元素分类：用户把该节点标记为关键元素并归类（见 domain/keyElements）。
+   *  纯展示元数据、画布级持久化、工作流侧不读——未标记为 undefined/null。 */
+  keyElementCategory?: KeyElementCategory | null;
+  /** 未命名节点的自动序号：新建时写入，默认名后拼上它（「文本1」「文本2」…），
+   *  避免同类型节点重名。用户改了 displayName 后这个序号就不再露出。
+   *  见 domain/nodeDisplay 的 getDefaultNodeDisplayName / nextAutoTitleIndex。 */
+  autoTitleIndex?: number;
   [key: string]: unknown;
 }
 
@@ -168,6 +176,12 @@ export interface VideoNodeData extends NodeDisplayData {
   upscaleResolution?: '1080p' | '2k' | '4k';
   /** 降噪强度。 */
   upscaleDenoise?: 'none' | '1x' | '2x';
+  /**
+   * 故事板详情「剪辑」为该视频节点自身打开合成时间线时的草稿（关闭弹窗时写回，
+   * 重开/刷新后恢复）。语义与 {@link VideoComposeNodeData.draftTimeline} 一致，
+   * 结构为 `ComposeTimelineState`，这里存 unknown 以免领域层反向依赖 compose 特性层。
+   */
+  draftTimeline?: unknown;
   [key: string]: unknown;
 }
 

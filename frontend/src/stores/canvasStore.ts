@@ -46,7 +46,25 @@ import {
   nodeHasTargetHandle,
   isUpstreamConnectionAllowed,
 } from '@/features/canvas/domain/nodeRegistry';
-import { EXPORT_RESULT_DISPLAY_NAME } from '@/features/canvas/domain/nodeDisplay';
+import {
+  EXPORT_RESULT_DISPLAY_NAME,
+  isNodeUsingDefaultDisplayName,
+  withAutoTitleIndex,
+} from '@/features/canvas/domain/nodeDisplay';
+
+/**
+ * 副本发号：源节点用的还是默认名（含带序号的「文本1」）→ 丢掉标题重新发号，避免
+ * 副本与源节点同名；用户已自定义过标题则原样保留（复制出来同名是预期行为）。
+ */
+function withAutoTitleIndexForClone(
+  type: CanvasNodeType,
+  data: Partial<CanvasNodeData>,
+  existingNodes: ReadonlyArray<{ type?: string | null; data?: unknown }>,
+): Partial<CanvasNodeData> {
+  if (!isNodeUsingDefaultDisplayName(type, data)) return data;
+  const { displayName: _replacedByAutoTitle, ...rest } = data;
+  return withAutoTitleIndex(type, rest, existingNodes);
+}
 import {
   type ViewportBookmark,
   type ViewportBookmarks,
@@ -1607,9 +1625,17 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
 
   addNode: (type, position, data = {}) => {
     const state = get();
+    // 没带标题的新节点补一个自动序号，标题写成「文本1」「图片节点2」这样，避免同类型
+    // 节点重名分不清（带了 displayName 的——如各类结果节点——不动）。
+    //
+    // 注意 displayName 必须一起写：各节点定义的 createDefaultData() 本来就把默认名
+    // 预填进 displayName 了，只塞 autoTitleIndex 不会改变渲染结果。同时写入 index 是
+    // 为了让 getDefaultNodeDisplayName 也算出带序号的默认名——isNodeUsingDefaultDisplayName
+    // 据此仍判定为「用的是默认名」（UploadNode 的自动改名依赖这一点）。
+    const dataWithAutoTitle = withAutoTitleIndex(type, data, state.nodes);
     const createdNode = maybeApplyImageAutoResize(
-      canvasNodeFactory.createNode(type, position, data),
-      data,
+      canvasNodeFactory.createNode(type, position, dataWithAutoTitle),
+      dataWithAutoTitle,
     );
     const newNode =
       createdNode.type === CANVAS_NODE_TYPES.skill && !createdNode.measured
@@ -1641,10 +1667,13 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
       x: source.position.x,
       y: source.position.y + (sourceHeight + 24) * index,
     };
-    const newNode = canvasNodeFactory.createNode(source.type, position, {
-      ...(source.data as Partial<CanvasNodeData>),
-      ...dataOverrides,
-    });
+    // 副本不能沿用源节点的标题/序号（会重号）：源节点用的是默认名时给副本重新发号。
+    const clonedData = withAutoTitleIndexForClone(
+      source.type,
+      { ...(source.data as Partial<CanvasNodeData>), ...dataOverrides },
+      state.nodes,
+    );
+    const newNode = canvasNodeFactory.createNode(source.type, position, clonedData);
 
     // Mirror the source's upstream connections so the clone resolves the same
     // references (上游图/文本) as the original generation.
@@ -1706,6 +1735,7 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         nameOverrides.label = `${sourceData.label} - 副本`;
       }
 
+      // 这条路径上面已经把标题改成「… - 副本」，天然不会与源节点重名，无需重新发号。
       const newNode = canvasNodeFactory.createNode(source.type, position, {
         ...(source.data as Partial<CanvasNodeData>),
         ...(nameOverrides as Partial<CanvasNodeData>),
