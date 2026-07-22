@@ -7616,6 +7616,44 @@ function canvasReferenceIsVideoUrl(value: string | null): boolean {
   return /\.(m4v|mov|mp4|webm)(\?|#|$)/i.test(value ?? "");
 }
 
+type CanvasReferenceFallbackKind = "image" | "video" | "audio" | "text" | "model" | "structure";
+
+function canvasReferenceFallbackKind(node: CanvasNodeReferencePreview): CanvasReferenceFallbackKind {
+  if (node.mediaType === "image" || node.mediaType === "pano360") return "image";
+  if (node.mediaType === "video") return "video";
+  if (node.mediaType === "audio") return "audio";
+  if (node.mediaType === "model") return "model";
+  if (node.nodeType === "textAnnotationNode" || node.nodeType === "scriptNode") return "text";
+  if (
+    node.nodeType === "imageNode" ||
+    node.nodeType === "imageGenNode" ||
+    node.nodeType === "exportImageNode" ||
+    node.nodeType === "pano360ViewerNode" ||
+    node.nodeType === "uploadNode"
+  ) {
+    return "image";
+  }
+  if (node.nodeType === "videoNode" || node.nodeType === "videoComposeNode") return "video";
+  if (node.nodeType === "audioNode") return "audio";
+  if (node.nodeType === "threeDWorldNode") return "model";
+  return "structure";
+}
+
+function CanvasReferenceFallbackIcon({
+  kind,
+  className,
+}: {
+  kind: CanvasReferenceFallbackKind;
+  className: string;
+}) {
+  if (kind === "image") return <Image className={className} />;
+  if (kind === "video") return <Play className={className} />;
+  if (kind === "audio") return <Volume2 className={className} />;
+  if (kind === "text") return <File className={className} />;
+  if (kind === "model") return <Package className={className} />;
+  return <ListTree className={className} />;
+}
+
 function CanvasReferenceVideoPreview({
   src,
   title,
@@ -7703,6 +7741,7 @@ function CanvasNodeReferenceThumb({
     node.mediaType === "image" ||
     node.mediaType === "pano360" ||
     canvasReferenceIsImageUrl(mediaSrc);
+  const fallbackKind = canvasReferenceFallbackKind(node);
   const title = node.label || node.nodeId;
   const updatePreviewPosition = useCallback(() => {
     const rect = thumbRef.current?.getBoundingClientRect();
@@ -7724,6 +7763,7 @@ function CanvasNodeReferenceThumb({
       ref={thumbRef}
       className="group relative size-11 shrink-0 cursor-pointer overflow-visible focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/20"
       aria-label={`${title} · ${node.nodeId}`}
+      data-media-kind={fallbackKind}
       role="button"
       onMouseEnter={updatePreviewPosition}
       onMouseMove={updatePreviewPosition}
@@ -7748,7 +7788,7 @@ function CanvasNodeReferenceThumb({
           />
         ) : (
           <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-            {isVideo ? <Play className="size-4" /> : <ListTree className="size-4" />}
+            <CanvasReferenceFallbackIcon kind={fallbackKind} className="size-4" />
           </div>
       )}
       </div>
@@ -7793,7 +7833,7 @@ function CanvasNodeReferenceThumb({
                 />
               ) : (
                 <div className="flex h-full w-full items-center justify-center text-muted-foreground">
-                  {isVideo ? <Play className="size-8" /> : <ListTree className="size-8" />}
+                  <CanvasReferenceFallbackIcon kind={fallbackKind} className="size-8" />
                 </div>
               )}
             </div>
