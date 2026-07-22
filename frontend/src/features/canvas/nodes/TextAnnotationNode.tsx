@@ -27,6 +27,7 @@ import {
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import { isSystemManagedNodeData } from '@/features/canvas/domain/mainlineNodeFlags';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
+import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canvas/ui/NodeHeader';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { NodeGenerationOverlay } from '@/features/canvas/ui/NodeGenerationOverlay';
@@ -349,6 +350,8 @@ export const TextAnnotationNode = memo(({
         editable={!isSystemManaged}
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
+
+      <AddNodeToChatButton nodeId={id} />
 
       <NodeResizeHandle
         minWidth={MIN_WIDTH}

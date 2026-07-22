@@ -25,6 +25,7 @@ import {
 } from '@/features/canvas/domain/canvasNodes';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
 import { coerceSlotTarget } from '@/features/canvas/domain/mainlineNodeTypes';
+import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canvas/ui/NodeHeader';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { ReferenceDetachButton } from '@/features/canvas/nodes/shared/ReferenceDetachButton';
@@ -1057,6 +1058,9 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
         editable
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
+
+      {/* 根容器有 p-2，往里挪一格才落在图片区里而不是压在卡片边框上。 */}
+      <AddNodeToChatButton nodeId={id} className="right-3 top-3" />
 
       <div className={`flex min-h-0 flex-1 flex-col overflow-hidden rounded-xl border ${CANVAS_NODE_INPUT_SURFACE_CLASS} ${CANVAS_NODE_INPUT_FRAME_CLASS}`}>
         <div className="relative min-h-[190px] flex-[1.25] border-b border-[rgba(255,255,255,0.08)] bg-black/20">

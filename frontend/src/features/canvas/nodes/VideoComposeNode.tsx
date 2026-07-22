@@ -28,6 +28,7 @@ import {
   CANVAS_NODE_INPUT_SURFACE_CLASS,
   canvasNodeFrameClass,
 } from "@/features/canvas/ui/nodeFrameStyles";
+import { AddNodeToChatButton } from "@/features/canvas/ui/AddNodeToChatButton";
 import { readUrl } from "@/lib/url-params";
 import {
   buildInitialTimeline,
@@ -225,6 +226,8 @@ export const VideoComposeNode = memo(
           id="source"
           className="!h-2 !w-2 !border-0 !bg-[rgb(148,163,184)]"
         />
+
+        <AddNodeToChatButton nodeId={id} />
 
         <NodeHeader
           className={NODE_HEADER_FLOATING_POSITION_CLASS}
