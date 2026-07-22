@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { PointerEvent as ReactPointerEvent } from "react";
+import type { CSSProperties, PointerEvent as ReactPointerEvent } from "react";
 import { useTranslation } from "react-i18next";
 import { useQueryClient } from "@tanstack/react-query";
 import {
@@ -170,6 +170,21 @@ const FREEZONE_CHAT_WIDTH_MAX = 760;
 const FREEZONE_AGENT_HISTORY_WIDTH_DEFAULT = 220;
 const FREEZONE_AGENT_HISTORY_WIDTH_MIN = 180;
 const FREEZONE_AGENT_HISTORY_WIDTH_MAX = 360;
+/**
+ * 抽屉最多能挤到只剩这么宽的左侧内容。
+ * - 工作流（浮层）：画布可以任意窄，360 只是别让它彻底消失。
+ * - 故事板（挤占）：三栏各有 200px 下限 + 两条 12px 分隔 + 容器 px-4，
+ *   低于 680 三栏就会被 min-width 顶出容器、右栏被裁掉。
+ */
+const FREEZONE_CHAT_MIN_CONTENT_WIDTH = 360;
+const FREEZONE_CHAT_MIN_BOARD_CONTENT_WIDTH = 680;
+/**
+ * 抽屉内两栏的宽度走 CSS 变量（挂在 <aside> 上，两栏继承着读）。
+ * 这样拖拽时只需要改外壳这一个元素的 style，就能同时驱动外壳与内部两栏，
+ * 全程不碰 React —— 见 startPaneResize 里的 paint()。
+ */
+const CHAT_PANE_WIDTH_VAR = "--freezone-chat-pane-width";
+const AGENT_HISTORY_PANE_WIDTH_VAR = "--freezone-agent-history-pane-width";
 const EXTERNAL_CANVAS_COMMAND_POLL_MS = 800;
 const EXTERNAL_CANVAS_REVISION_POLL_MS = 2_000;
 
@@ -1998,6 +2013,9 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
           open={chatOpen}
           onOpenChange={handleChatOpenChange}
+          // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
+          // 画布视口不受影响（否则每次开合聊天都会让 ReactFlow 重排一次视口）。
+          pushesContent={viewMode === "board"}
           title={t("freezone.chat.title")}
           description={t("freezone.chat.description")}
           toggleLabel={t("freezone.chat.toggle")}
@@ -2073,6 +2091,7 @@ function FreezoneChatDock({
   onPendingAttachmentsConsumed,
   open,
   onOpenChange,
+  pushesContent,
   title,
   description,
   toggleLabel,
@@ -2086,6 +2105,8 @@ function FreezoneChatDock({
   onPendingAttachmentsConsumed: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** true=抽屉在 flex 行里占位（左侧内容被挤窄）；false=纯浮层，左侧内容不动。 */
+  pushesContent: boolean;
   title: string;
   description: string;
   toggleLabel: string;
@@ -2112,6 +2133,8 @@ function FreezoneChatDock({
     ),
   );
   const [resizingPane, setResizingPane] = useState<"chat" | "history" | null>(null);
+  const asideRef = useRef<HTMLElement | null>(null);
+  const spacerRef = useRef<HTMLDivElement | null>(null);
   const localAgentSelectionRef = useRef(false);
   const [agentState, setAgentState] = useState<FreezoneCanvasAgentState>(() => {
     const loaded = loadFreezoneCanvasAgentsWithSource(projectId, canvasId);
@@ -2193,6 +2216,10 @@ function FreezoneChatDock({
     });
   }, [agentState.agents]);
 
+  const minContentWidth = pushesContent
+    ? FREEZONE_CHAT_MIN_BOARD_CONTENT_WIDTH
+    : FREEZONE_CHAT_MIN_CONTENT_WIDTH;
+
   const startPaneResize = useCallback((
     pane: "chat" | "history",
     event: ReactPointerEvent<HTMLDivElement>,
@@ -2212,7 +2239,7 @@ function FreezoneChatDock({
     const clampChatWidth = (value: number) => {
       const maxByViewport = Math.max(
         FREEZONE_CHAT_WIDTH_MIN,
-        window.innerWidth - 360 - (agentHistoryOpen ? agentHistoryWidth : 0),
+        window.innerWidth - minContentWidth - (agentHistoryOpen ? agentHistoryWidth : 0),
       );
       return clampNumber(
         value,
@@ -2223,7 +2250,7 @@ function FreezoneChatDock({
     const clampHistoryWidth = (value: number) => {
       const maxByViewport = Math.max(
         FREEZONE_AGENT_HISTORY_WIDTH_MIN,
-        window.innerWidth - 360 - chatWidth,
+        window.innerWidth - minContentWidth - chatWidth,
       );
       return clampNumber(
         value,
@@ -2232,22 +2259,51 @@ function FreezoneChatDock({
       );
     };
 
+    // 拖拽期绕开 React：只改 DOM 宽度（外壳 width + 两条内栏读的 CSS 变量），
+    // 松手才回写 state / 落库。每动一下就 setState 的话，整棵 SuperChatPanel
+    // （消息列表 + 输入区）都要重渲染，一帧根本画不完，手感就是拖不动、跟不上手。
+    let nextChatWidth = startChatWidth;
+    let nextHistoryWidth = startHistoryWidth;
+    let pointerX = startX;
+    let frame = 0;
+
+    const measure = () => {
+      const delta = startX - pointerX;
+      if (pane === "chat") {
+        nextChatWidth = clampChatWidth(startChatWidth + delta);
+      } else {
+        nextHistoryWidth = clampHistoryWidth(startHistoryWidth + delta);
+      }
+    };
+
+    const paint = () => {
+      frame = 0;
+      measure();
+      const dockWidth = agentHistoryOpen ? nextChatWidth + nextHistoryWidth + 8 : nextChatWidth;
+      const aside = asideRef.current;
+      if (aside) {
+        aside.style.width = `${dockWidth}px`;
+        aside.style.setProperty(CHAT_PANE_WIDTH_VAR, `${nextChatWidth}px`);
+        aside.style.setProperty(AGENT_HISTORY_PANE_WIDTH_VAR, `${nextHistoryWidth}px`);
+      }
+      if (spacerRef.current) spacerRef.current.style.width = `${dockWidth}px`;
+    };
+
     const handlePointerMove = (moveEvent: PointerEvent) => {
       if (moveEvent.pointerId !== pointerId) return;
-      if (pane === "chat") {
-        const nextWidth = clampChatWidth(startChatWidth + startX - moveEvent.clientX);
-        setChatWidth(nextWidth);
-        storePanelWidth(FREEZONE_CHAT_WIDTH_STORAGE_KEY, nextWidth);
-        return;
-      }
-      const nextWidth = clampHistoryWidth(startHistoryWidth + startX - moveEvent.clientX);
-      setAgentHistoryWidth(nextWidth);
-      storePanelWidth(FREEZONE_AGENT_HISTORY_WIDTH_STORAGE_KEY, nextWidth);
+      pointerX = moveEvent.clientX;
+      // 一帧只画一次：高刷鼠标/触控板一帧能推十几个 pointermove，逐个改宽度
+      // 等于一帧做十几次布局，白烧的那部分永远不会被显示出来。
+      if (frame === 0) frame = window.requestAnimationFrame(paint);
     };
 
     const cleanup = () => {
       if (cleaned) return;
       cleaned = true;
+      if (frame !== 0) {
+        window.cancelAnimationFrame(frame);
+        frame = 0;
+      }
       window.removeEventListener("pointermove", handlePointerMove);
       window.removeEventListener("pointerup", cleanup);
       window.removeEventListener("pointercancel", cleanup);
@@ -2260,6 +2316,13 @@ function FreezoneChatDock({
       }
       document.body.style.cursor = "";
       document.body.style.userSelect = "";
+      // 取消掉的那帧里还压着最后一次 pointermove，先补算再落库，
+      // 否则松手瞬间宽度会回跳一帧。
+      measure();
+      setChatWidth(nextChatWidth);
+      setAgentHistoryWidth(nextHistoryWidth);
+      storePanelWidth(FREEZONE_CHAT_WIDTH_STORAGE_KEY, nextChatWidth);
+      storePanelWidth(FREEZONE_AGENT_HISTORY_WIDTH_STORAGE_KEY, nextHistoryWidth);
       setResizingPane(null);
     };
 
@@ -2274,7 +2337,7 @@ function FreezoneChatDock({
     window.addEventListener("pointercancel", cleanup);
     window.addEventListener("blur", cleanup);
     target.addEventListener("lostpointercapture", cleanup);
-  }, [agentHistoryOpen, agentHistoryWidth, chatWidth]);
+  }, [agentHistoryOpen, agentHistoryWidth, chatWidth, minContentWidth]);
 
   const agentHeaderActions = (
     <>
@@ -2412,6 +2475,25 @@ function FreezoneChatDock({
     );
   }
 
+  // 抽屉总宽（聊天 + 可选的历史 Agent 栏，中间 8px 分隔条）。占位块用同一个值，
+  // 保证被挤窄的左侧内容与抽屉严丝合缝。
+  const dockWidth = agentHistoryOpen ? chatWidth + agentHistoryWidth + 8 : chatWidth;
+  // CSS 侧再兜一层：换窗口尺寸、或带着一个宽抽屉从工作流切到故事板时，存下来的
+  // 宽度可能已经超额——这里直接压回去，而不是改写用户的宽度偏好。
+  const dockMaxWidth = `calc(100vw - ${minContentWidth}px)`;
+  const resizing = resizingPane !== null;
+  // 开合 / 收起历史栏时宽度平滑过渡；拖拽期必须整条关掉——拖的是同一个 width，
+  // 留着过渡就等于给每一帧都排一段 300ms 缓动，手感变成「橡皮筋拖后腿」。
+  const dockTransition = resizing
+    ? "transition-none"
+    : "transition-[opacity,transform,width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]";
+  const dockStyle = {
+    width: dockWidth,
+    maxWidth: dockMaxWidth,
+    [CHAT_PANE_WIDTH_VAR]: `${chatWidth}px`,
+    [AGENT_HISTORY_PANE_WIDTH_VAR]: `${agentHistoryWidth}px`,
+  } as CSSProperties;
+
   return (
     <>
       {!open && (
@@ -2421,31 +2503,59 @@ function FreezoneChatDock({
           onClick={() => onOpenChange(true)}
         />
       )}
+      {/* 故事板：在 flex 行里占一格，把 <main>(flex-1) 挤窄——抽屉本身仍是绝对定位
+          的浮层，正好盖住这一格。这样开合/拖宽只动这个占位块，抽屉内部布局与工作流
+          态共用同一份代码。拖拽中关掉宽度过渡，否则跟手会有一帧延迟。 */}
+      {pushesContent && (
+        <div
+          ref={spacerRef}
+          aria-hidden="true"
+          className={cn(
+            "hidden shrink-0 lg:block",
+            resizing
+              ? "transition-none"
+              : "transition-[width] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
+          )}
+          style={{ width: panelVisible ? dockWidth : 0, maxWidth: dockMaxWidth }}
+        />
+      )}
       <aside
+        ref={asideRef}
         className={cn(
-          "absolute bottom-4 right-4 top-4 z-40 hidden origin-right flex-col overflow-hidden rounded-[14px] border border-white/[0.12] bg-zinc-950/55 shadow-none backdrop-blur-2xl transition-[opacity,transform] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)] lg:flex",
-          panelVisible ? "translate-x-0 scale-100 opacity-100" : "translate-x-10 scale-[0.985] opacity-0",
+          // 贴右边、通高（对标 liblib）：不留外边距、不圆角，只留一条左描边把
+          // 抽屉与画布/故事板分开。
+          "absolute inset-y-0 right-0 z-40 hidden flex-col overflow-hidden border-l border-white/[0.12] bg-zinc-950/55 shadow-none backdrop-blur-2xl lg:flex",
+          dockTransition,
+          panelVisible ? "translate-x-0 opacity-100" : "translate-x-10 opacity-0",
           !panelVisible && "pointer-events-none",
         )}
-        style={{
-          width: agentHistoryOpen ? chatWidth + agentHistoryWidth + 8 : chatWidth,
-          maxWidth: "calc(100vw - 360px)",
-        }}
+        style={dockStyle}
         aria-label={title}
       >
+        {/* 命中区整条压在面板内侧（12px）：外壳是 overflow-hidden，把手往画布那侧
+            平移出去的部分会被裁掉——连同命中区一起裁，原来 -translate-x-1 的写法
+            实际只剩 4px 能抓，这也是「拖起来别扭」的一半原因。
+            视觉只是贴着左描边的一条细线：hover 加粗提亮、拖拽中保持高亮。 */}
         <div
-          className="group absolute inset-y-0 left-0 z-30 flex w-2 -translate-x-1 cursor-col-resize touch-none items-stretch justify-center"
+          className="group absolute inset-y-0 left-0 z-30 flex w-3 cursor-col-resize touch-none items-stretch justify-start"
           role="separator"
           aria-orientation="vertical"
           aria-label="调整聊天宽度"
           title="调整聊天宽度"
           onPointerDown={(event) => startPaneResize("chat", event)}
         >
-          <span className="h-full w-px bg-white/10 opacity-0 transition-opacity group-hover:opacity-100 group-focus-visible:opacity-100" />
+          <span
+            className={cn(
+              "h-full w-px transition-[width,background-color,opacity] duration-150 ease-out",
+              resizingPane === "chat"
+                ? "w-[3px] bg-white/45 opacity-100"
+                : "bg-white/25 opacity-0 group-hover:w-[3px] group-hover:opacity-100 group-focus-visible:opacity-100",
+            )}
+          />
         </div>
-        {resizingPane && <div className="fixed inset-0 z-50 cursor-col-resize" aria-hidden="true" />}
+        {resizing && <div className="fixed inset-0 z-50 cursor-col-resize" aria-hidden="true" />}
         <div className="flex min-h-0 flex-1">
-          <div className="min-w-0 shrink-0" style={{ width: chatWidth }}>
+          <div className="min-w-0 shrink-0" style={{ width: `var(${CHAT_PANE_WIDTH_VAR})` }}>
             {agentPanels}
           </div>
           {agentHistoryOpen && (
@@ -2457,15 +2567,24 @@ function FreezoneChatDock({
               title="调整历史 Agent 宽度"
               onPointerDown={(event) => startPaneResize("history", event)}
             >
-              <span className="h-full w-px bg-white/14 transition-colors group-hover:bg-white/35" />
+              <span
+                className={cn(
+                  "h-full w-px transition-colors",
+                  resizingPane === "history" ? "bg-white/45" : "bg-white/14 group-hover:bg-white/35",
+                )}
+              />
             </div>
           )}
           <div
             className={cn(
-              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-zinc-950/45 transition-[width,opacity] duration-200",
+              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-zinc-950/45",
+              // 与外壳同一条时间线：收起/展开一起走 300ms，拖拽期一起关掉。
+              resizing
+                ? "transition-none"
+                : "transition-[width,opacity] duration-300 ease-[cubic-bezier(0.22,1,0.36,1)]",
               agentHistoryOpen ? "opacity-100" : "w-0 opacity-0",
             )}
-            style={{ width: agentHistoryOpen ? agentHistoryWidth : 0 }}
+            style={{ width: agentHistoryOpen ? `var(${AGENT_HISTORY_PANE_WIDTH_VAR})` : 0 }}
             aria-hidden={!agentHistoryOpen}
           >
             {agentHistoryPanel}
