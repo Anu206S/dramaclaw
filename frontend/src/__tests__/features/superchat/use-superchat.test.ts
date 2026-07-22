@@ -72,6 +72,7 @@ import {
   skillStudioEvaluationDraftFieldsForTest,
   skillStudioEventsFromUiEventsForTest,
   visibleCanvasContextActivitiesForMessageForTest,
+  visibleAssistantOrderedPartsForMessageForTest,
   visibleSkillStudioEventsForMessageForTest,
 } from "@/features/superchat/superchat-panel";
 import type { ChatMessage, ChatMessagePart, ChatRole } from "@/features/superchat/types";
@@ -2028,6 +2029,69 @@ describe("Skill Studio status events", () => {
         },
       ],
     }).map((event) => event.type)).toEqual([]);
+  });
+
+  it("hides submitted Skill Studio progress status once assistant prose has started", () => {
+    expect(visibleSkillStudioEventsForMessageForTest({
+      id: "assistant-turn-1",
+      role: "assistant",
+      text: "好的，我来构建 Skill 草稿。",
+      timestamp: 10,
+      turnId: "turn-1",
+      uiEvents: [
+        {
+          type: "assistant.clarification.request",
+          bridge_key: "clarify-key-1",
+          submitted: true,
+          action: "submit",
+          questions: [],
+          answers: {},
+        },
+        {
+          type: "skill_studio.status",
+          status: "draft_begin",
+          message: "正在创建草稿结构...",
+        },
+      ],
+    }).map((event) => event.type)).toEqual([]);
+  });
+
+  it("hides submitted Skill Studio progress parts once assistant prose has started", () => {
+    const assistant = message(
+      "assistant-turn-1",
+      "assistant",
+      "好的，通用品牌广告短片流程 + 细粒度 5 个 Recipe。我来构建 Skill 草稿。",
+      10,
+      "turn-1",
+    );
+    assistant.parts = [
+      {
+        id: "clarification:clarify-key-1",
+        type: "clarification",
+        event: {
+          type: "assistant.clarification.request",
+          bridge_key: "clarify-key-1",
+          submitted: true,
+          action: "submit",
+          questions: [],
+          answers: {},
+        },
+      },
+      {
+        id: "skill_studio.status",
+        type: "skill_studio",
+        event: {
+          type: "skill_studio.status",
+          status: "draft_begin",
+          message: "正在创建草稿结构...",
+        },
+      },
+    ];
+    assistant.uiEvents = assistant.parts.flatMap((part) => part.type === "text" ? [] : [part.event]);
+
+    expect(visibleAssistantOrderedPartsForMessageForTest(assistant).map((part) => part.type)).toEqual([
+      "clarification",
+    ]);
   });
 
   it("hides routing status once an assistant clarification card is visible", () => {

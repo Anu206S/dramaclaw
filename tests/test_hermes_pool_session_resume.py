@@ -49,6 +49,20 @@ class _FakeThread:
         return self.closed
 
 
+def _pinned_hermes_version() -> str:
+    return (Path(__file__).resolve().parents[1] / ".hermes-version").read_text(
+        encoding="utf-8",
+    ).strip()
+
+
+def _write_fake_hermes_cli(path: Path) -> None:
+    path.write_text(
+        f"#!/bin/sh\necho 'Hermes Agent v{_pinned_hermes_version()}'\n",
+        encoding="utf-8",
+    )
+    path.chmod(0o755)
+
+
 def _patch_fake_hermes_pool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -61,8 +75,7 @@ def _patch_fake_hermes_pool(
     fake_auth = _FakeAuthService()
     gateway = {"fingerprint": "gateway-1"}
     fake_cli = tmp_path / "hermes"
-    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
-    fake_cli.chmod(0o755)
+    _write_fake_hermes_cli(fake_cli)
 
     class FakeHermesSdkClient:
         def __init__(self, **_kwargs) -> None:
@@ -267,8 +280,7 @@ async def test_hermes_pool_freezone_profile_uses_isolated_home_and_canvas_env(
 
     fake_auth = _FakeAuthService()
     fake_cli = tmp_path / "hermes"
-    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
-    fake_cli.chmod(0o755)
+    _write_fake_hermes_cli(fake_cli)
     workspaces: list[tuple[str, str]] = []
     client_kwargs: list[dict] = []
 
@@ -364,8 +376,7 @@ async def test_hermes_pool_starts_fresh_session_when_resume_fails(
     calls: list[tuple[str, str | None]] = []
     fake_auth = _FakeAuthService()
     fake_cli = tmp_path / "hermes"
-    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
-    fake_cli.chmod(0o755)
+    _write_fake_hermes_cli(fake_cli)
 
     class FakeHermesSdkClient:
         def __init__(self, **_kwargs) -> None:
@@ -428,8 +439,7 @@ async def test_hermes_pool_surfaces_error_when_resume_and_fresh_start_fail(
     calls: list[tuple[str, str | None]] = []
     fake_auth = _FakeAuthService()
     fake_cli = tmp_path / "hermes"
-    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
-    fake_cli.chmod(0o755)
+    _write_fake_hermes_cli(fake_cli)
 
     class FakeHermesSdkClient:
         def __init__(self, **_kwargs) -> None:
@@ -488,8 +498,7 @@ async def test_hermes_pool_does_not_restore_stale_session_after_rotation_fallbac
     calls: list[tuple[str, str | None]] = []
     fake_auth = _FakeAuthService()
     fake_cli = tmp_path / "hermes"
-    fake_cli.write_text("#!/bin/sh\necho 'Hermes Agent v0.18.0'\n", encoding="utf-8")
-    fake_cli.chmod(0o755)
+    _write_fake_hermes_cli(fake_cli)
     starts = 0
 
     class FakeHermesSdkClient:
