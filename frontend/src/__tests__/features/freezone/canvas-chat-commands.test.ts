@@ -3574,6 +3574,100 @@ describe("canvas chat commands", () => {
     expect(nodeDetail?.data).not.toHaveProperty("display_nodes");
   });
 
+  it("returns ordered reference media in node detail for generator prompts", async () => {
+    const store = useCanvasStore.getState();
+    const storyboardId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        displayName: "6镜分镜草图",
+        imageUrl: "/static/project/storyboard.png",
+        previewImageUrl: "/static/project/storyboard-thumb.png",
+      },
+    );
+    const characterId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 240 },
+      {
+        displayName: "IP角色立绘",
+        imageUrl: "/static/project/character.png",
+      },
+    );
+    const videoId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        displayName: "镜头2-拍朋友",
+        prompt: "生成视频",
+        referenceOrder: [characterId, storyboardId],
+      },
+    );
+    store.addEdge(storyboardId, videoId);
+    store.addEdge(characterId, videoId);
+    const envelopes = extractCanvasContextRequestEnvelopes([
+      {
+        schema_version: "canvas_context_request.v1",
+        requests: [{ type: "node_detail", node_id: videoId }],
+      },
+    ]);
+
+    const response = await buildCanvasContextRequestResponse({
+      project: "project-a",
+      canvasId: "canvas-a",
+      nodes: useCanvasStore.getState().nodes,
+      edges: useCanvasStore.getState().edges,
+      ontologyContext: null,
+      envelopes,
+    });
+    const responsePayload = JSON.parse(response?.split("\n")[2] ?? "{}") as {
+      responses?: Array<{
+        type?: string;
+        data?: {
+          nodes?: Array<{
+            node_id?: string;
+            reference_media?: Array<{
+              mention?: string;
+              node_id?: string;
+              label?: string;
+              media_type?: string;
+              source_url?: string;
+              preview_url?: string;
+              link_type?: string;
+            }>;
+          }>;
+          instruction?: string;
+        };
+      }>;
+    };
+    const nodeDetail = responsePayload.responses?.find(
+      (item) => item.type === "node_detail",
+    );
+    const videoDetail = nodeDetail?.data?.nodes?.find(
+      (node) => node.node_id === videoId,
+    );
+
+    expect(videoDetail?.reference_media).toEqual([
+      expect.objectContaining({
+        mention: "@图片1",
+        node_id: characterId,
+        label: "IP角色立绘",
+        media_type: "image",
+        source_url: "/static/project/character.png",
+        link_type: "media_input_for",
+      }),
+      expect.objectContaining({
+        mention: "@图片2",
+        node_id: storyboardId,
+        label: "6镜分镜草图",
+        media_type: "image",
+        source_url: "/static/project/storyboard.png",
+        preview_url: "/static/project/storyboard-thumb.png",
+        link_type: "media_input_for",
+      }),
+    ]);
+    expect(nodeDetail?.data?.instruction).toContain("@图片1");
+  });
+
   it("hides mainline projection commands outside the current user's personal canvas", async () => {
     useAuthStore.setState({ username: "admin", role: "admin" });
     const envelopes = extractCanvasContextRequestEnvelopes([

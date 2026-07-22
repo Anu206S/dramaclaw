@@ -13,6 +13,10 @@ import {
 } from "@/features/canvas/ontology/canvasOntology";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import {
+  sortUpstreamByReferenceOrder,
+  upstreamNodesInEdgeOrder,
+} from "@/features/canvas/nodes/referenceOrdering";
+import {
   buildCanvasNodeActionCatalog,
   type CanvasNodeActionCatalog,
 } from "@/features/freezone/canvasNodeActionCatalog";
@@ -68,6 +72,16 @@ type CanvasEdgeReferenceItem = {
   target: string;
   source_handle: string | null;
   target_handle: string | null;
+  link_type: string | null;
+};
+
+type CanvasNodeReferenceMediaItem = {
+  mention: string;
+  node_id: string;
+  label: string;
+  media_type: "image" | "video" | "audio";
+  source_url: string;
+  preview_url: string | null;
   link_type: string | null;
 };
 
@@ -277,6 +291,77 @@ function edgeReferenceItem(
     target_handle: edge.targetHandle ?? null,
     link_type: ontologyLink.link_type,
   };
+}
+
+function referenceMentionForMediaType(
+  mediaType: CanvasNodeReferenceMediaItem["media_type"],
+  index: number,
+): string {
+  if (mediaType === "video") return `@视频${index}`;
+  if (mediaType === "audio") return `@音频${index}`;
+  return `@图片${index}`;
+}
+
+function nodeReferenceMedia(
+  node: CanvasNode,
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
+): CanvasNodeReferenceMediaItem[] {
+  if (
+    node.type !== CANVAS_NODE_TYPES.imageGen &&
+    node.type !== CANVAS_NODE_TYPES.imageEdit &&
+    node.type !== CANVAS_NODE_TYPES.video &&
+    node.type !== CANVAS_NODE_TYPES.script
+  ) {
+    return [];
+  }
+  const upstream = sortUpstreamByReferenceOrder(
+    upstreamNodesInEdgeOrder(nodes, edges, node.id),
+    (node.data as { referenceOrder?: string[] }).referenceOrder,
+  );
+  const edgeBySource = new Map(
+    edges
+      .filter((edge) => edge.target === node.id)
+      .map((edge) => [edge.source, edge] as const),
+  );
+  const nodeById = new Map(nodes.map((item) => [item.id, item] as const));
+  const mediaCounts: Record<CanvasNodeReferenceMediaItem["media_type"], number> =
+    {
+      image: 0,
+      video: 0,
+      audio: 0,
+    };
+  const seenByTypeAndUrl = new Set<string>();
+  const items: CanvasNodeReferenceMediaItem[] = [];
+
+  for (const upstreamNode of upstream) {
+    const mediaType = nodeMediaType(upstreamNode);
+    if (
+      mediaType !== "image" &&
+      mediaType !== "video" &&
+      mediaType !== "audio"
+    ) {
+      continue;
+    }
+    const sourceUrl = nodeSourceUrl(upstreamNode);
+    if (!sourceUrl) continue;
+    const dedupeKey = `${mediaType}:${sourceUrl}`;
+    if (seenByTypeAndUrl.has(dedupeKey)) continue;
+    seenByTypeAndUrl.add(dedupeKey);
+    mediaCounts[mediaType] += 1;
+    const edge = edgeBySource.get(upstreamNode.id);
+    items.push({
+      mention: referenceMentionForMediaType(mediaType, mediaCounts[mediaType]),
+      node_id: upstreamNode.id,
+      label: resolveNodeDisplayName(upstreamNode.type, upstreamNode.data),
+      media_type: mediaType,
+      source_url: sourceUrl,
+      preview_url: nodePreviewUrl(upstreamNode),
+      link_type: edge ? deriveCanvasOntologyLink(edge, nodeById).link_type : null,
+    });
+  }
+
+  return items;
 }
 
 export function isCanvasNodeReferenceAttachment(
@@ -1956,6 +2041,7 @@ function compactMainlineContext(value: unknown): unknown {
 
 function compactNodeDetailItem(
   node: CanvasNodeReferenceItem,
+  referenceMedia?: CanvasNodeReferenceMediaItem[],
 ): Record<string, unknown> {
   const item: Record<string, unknown> = {
     node_id: node.node_id,
@@ -1973,6 +2059,8 @@ function compactNodeDetailItem(
   if (node.mainline_context)
     item.mainline_context = compactMainlineContext(node.mainline_context);
   if (node.candidate_origin) item.candidate_origin = node.candidate_origin;
+  if (referenceMedia && referenceMedia.length > 0)
+    item.reference_media = referenceMedia;
   const actionSummary = compactActionSummary(node.action_catalog);
   if (actionSummary) item.action_summary = actionSummary;
   return item;
@@ -1994,17 +2082,23 @@ function buildCompactCanvasNodeDetailPayload(
   );
   const payload = attachment ? JSON.parse(attachment.content || "null") : null;
   if (!isRecord(payload) || !Array.isArray(payload.nodes)) return null;
+  const nodeById = new Map(nodes.map((node) => [node.id, node] as const));
   return {
     schema_version: "canvas_node_detail.v1",
     project,
     canvas_id: canvasId,
     detail_mode: "compact",
-    nodes: payload.nodes.map((node) =>
-      compactNodeDetailItem(node as CanvasNodeReferenceItem),
-    ),
+    nodes: payload.nodes.map((node) => {
+      const item = node as CanvasNodeReferenceItem;
+      const sourceNode = nodeById.get(item.node_id);
+      return compactNodeDetailItem(
+        item,
+        sourceNode ? nodeReferenceMedia(sourceNode, allNodes, edges) : [],
+      );
+    }),
     edges: Array.isArray(payload.edges) ? payload.edges : [],
     instruction:
-      "This is compact node detail. For full editable field schema or action parameters, call freezone_get_node_action_catalog for the specific node_id. For a group child that needs inspection, call freezone_get_node_detail with that child node_id.",
+      "This is compact node detail. If a node includes reference_media, use mention values such as @图片1 in prompt edits; numbering matches the node's top reference thumbnails from left to right. For full editable field schema or action parameters, call freezone_get_node_action_catalog for the specific node_id. For a group child that needs inspection, call freezone_get_node_detail with that child node_id.",
   };
 }
 
