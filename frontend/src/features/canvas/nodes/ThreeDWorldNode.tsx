@@ -902,7 +902,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
 
   const handleOpenDirector = useCallback(async () => {
     const projectId = readUrl().project;
-    if (!projectId) return;
+    if (!projectId) return false;
     setDirectorBusy(true);
     try {
       let manifest: DirectorStageManifest | null = null;
@@ -935,8 +935,10 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
       });
       setDirectorManifest(manifest);
       setDirectorDialogOpen(Boolean(manifest));
+      return Boolean(manifest);
     } catch (err) {
       console.error('[3d-world] director dialog open failed', err);
+      return false;
     } finally {
       setDirectorBusy(false);
     }
@@ -1068,7 +1070,21 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
 
   useEffect(() => {
     return subscribeNodeAction(({ nodeId, action, requestId }) => {
-      if (nodeId !== id || action !== 'generate_3gs_world') return;
+      if (nodeId !== id) return;
+      if (action === 'open_director_world') {
+        publishNodeActionAccepted(requestId, id, action);
+        void handleOpenDirector()
+          .then((opened) => {
+            if (!opened) {
+              publishNodeActionError(requestId, id, action, '无法打开导演世界');
+              return;
+            }
+            publishNodeActionSuccess(requestId, id, action, { openedUiAction: true });
+          })
+          .catch((error) => publishNodeActionError(requestId, id, action, error));
+        return;
+      }
+      if (action !== 'generate_3gs_world') return;
       publishNodeActionAccepted(requestId, id, action);
       void handleSubmit()
         .then((output) => {
@@ -1085,7 +1101,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
         })
         .catch((error) => publishNodeActionError(requestId, id, action, error));
     });
-  }, [handleSubmit, id]);
+  }, [handleOpenDirector, handleSubmit, id]);
 
   const handleCaptureSelectedBackground = useCallback(
     async (blob: Blob) => {

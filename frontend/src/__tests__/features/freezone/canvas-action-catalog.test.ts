@@ -838,8 +838,8 @@ describe("canvas action catalog", () => {
     const mattingCapability = catalog.frontend_command_catalog.find(
       (item) => item.id === "ui.run_matting_tool",
     );
-    expect(mattingCapability?.frontend_mapping.description).toContain("去背景");
-    expect(mattingCapability?.frontend_mapping.description).toContain("透明背景");
+    expect(mattingCapability?.frontend_mapping?.description).toContain("去背景");
+    expect(mattingCapability?.frontend_mapping?.description).toContain("透明背景");
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.run_grid_product_three_view");
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.generate_video");
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.generate_audio");

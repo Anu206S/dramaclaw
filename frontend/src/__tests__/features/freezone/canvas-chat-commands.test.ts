@@ -4295,7 +4295,7 @@ describe("canvas chat commands", () => {
     }
   });
 
-  it("runs the audio voice picker through the canvas event bus", () => {
+  it("runs the audio voice picker through the canvas event bus", async () => {
     const audioNodeId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.audio,
       { x: 0, y: 0 },
@@ -4334,6 +4334,7 @@ describe("canvas chat commands", () => {
 
       expect(result.errors).toEqual([]);
       expect(result.openedUiActions).toBe(1);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(events).toEqual([
         {
           nodeId: audioNodeId,

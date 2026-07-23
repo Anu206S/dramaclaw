@@ -529,7 +529,12 @@ export const NodeActionToolbar = memo(
         ? node.data.videoUrl
         : null;
     }, [node]);
-    const hasVideo = Boolean(videoUrl);
+    const audioUrl = useMemo(() => {
+      if (!isAudioNode(node)) return null;
+      return typeof node.data.audioUrl === "string" && node.data.audioUrl.length > 0
+        ? node.data.audioUrl
+        : null;
+    }, [node]);
     // commit 按钮现在覆盖所有媒体节点(图像/视频/音频/3GS)——只要能从节点推断出
     // 可提交的媒体 url 就显示。具体提交目标在 CommitDialog 里按 mediaType 处理。
     const canCommitNode = useMemo(
@@ -827,6 +832,59 @@ export const NodeActionToolbar = memo(
       }
     }, [requireVideoUrl, resolveVideoDownloadFilename]);
 
+    const resolveAudioDownloadBaseFileName = useCallback(() => {
+      const data = node.data as Record<string, unknown>;
+      const raw =
+        typeof data.sourceFileName === "string" && data.sourceFileName.trim().length > 0
+          ? data.sourceFileName.trim()
+          : typeof data.displayName === "string" && data.displayName.trim().length > 0
+            ? data.displayName.trim()
+            : `audio-${node.id}`;
+      return raw.replace(
+        /\.(mp3|m4a|aac|wav|flac|ogg|opus|mp4|m4b)$/i,
+        "",
+      );
+    }, [node.data, node.id]);
+
+    const resolveAudioDownloadFormat = useCallback((): AudioDownloadFormat => {
+      if (!audioUrl) return "mp3";
+      const sourceExt = getAudioExtFromUrl(audioUrl);
+      if (sourceExt === "mp3" || sourceExt === "m4a" || sourceExt === "wav") {
+        return sourceExt;
+      }
+      return "mp3";
+    }, [audioUrl]);
+
+    const handleDownloadAudioNode = useCallback(async () => {
+      if (!isAudioNode(node) || !audioUrl) {
+        throw new Error("当前节点没有可下载音频");
+      }
+      const format = resolveAudioDownloadFormat();
+      const sourceExt = getAudioExtFromUrl(audioUrl);
+      if (!canProduceFormat(format, sourceExt)) {
+        throw new Error("当前音频格式不支持该下载格式");
+      }
+      try {
+        await downloadAudioAs(format, {
+          audioUrl,
+          baseFileName: resolveAudioDownloadBaseFileName(),
+          onConvertingChange: (converting) =>
+            updateNodeData(node.id, {
+              convertingAudioFormat: converting,
+            }),
+        });
+      } catch (error) {
+        console.error("[audio-download] failed", error);
+        throw error;
+      }
+    }, [
+      audioUrl,
+      node,
+      resolveAudioDownloadBaseFileName,
+      resolveAudioDownloadFormat,
+      updateNodeData,
+    ]);
+
     const handleOpenVideoUpscale = useCallback(() => {
       const url = requireVideoUrl();
       const upscaleNodeId = createVideoUpscaleResultNode(node.id, {
@@ -1064,6 +1122,13 @@ export const NodeActionToolbar = memo(
             .catch((error) => publishNodeActionError(requestId, node.id, action, error));
           return;
         }
+        if (action === "download_audio") {
+          publishNodeActionAccepted(requestId, node.id, action);
+          void handleDownloadAudioNode()
+            .then(() => publishNodeActionSuccess(requestId, node.id, action, { downloaded: true }))
+            .catch((error) => publishNodeActionError(requestId, node.id, action, error));
+          return;
+        }
         if (action === "open_video_upscale_tool") {
           try {
             publishNodeActionAccepted(requestId, node.id, action);
@@ -1103,6 +1168,7 @@ export const NodeActionToolbar = memo(
       });
     }, [
       handleAnalyzeVideo,
+      handleDownloadAudioNode,
       handleDownloadSaveAs,
       handleDownloadVideo,
       handleMatteImage,
