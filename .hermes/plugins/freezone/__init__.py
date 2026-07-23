@@ -59,6 +59,8 @@ _SKILL_STUDIO_WORKFLOW_NODE_TYPE_VALUES = [
     *_SKILL_STUDIO_NODE_SCOPE_VALUES,
     "videoCompose",
 ]
+_SKILL_STUDIO_DEFAULT_SKILL_SCHEMA_VERSION = "dramaclaw.workflow-skill.v1"
+_SKILL_STUDIO_DEFAULT_SKILL_VERSION = "1.0.0"
 
 _PLUGIN_DIR = Path(__file__).resolve().parent
 if str(_PLUGIN_DIR) not in sys.path:
@@ -733,6 +735,10 @@ def _skill_studio_missing_session_result() -> str:
     )
 
 
+def _skill_studio_meta_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     project, canvas = _skill_studio_scope_from_args(args)
     session_id = _skill_studio_session_id_from_args(args)
@@ -769,6 +775,19 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     )
 
 
+def _normalize_skill_studio_skill(skill: dict[str, Any], *, existing: dict[str, Any] | None = None) -> dict[str, Any]:
+    normalized = dict(skill)
+    normalized["schema_version"] = (
+        _skill_studio_meta_text((existing or {}).get("schema_version"))
+        or _SKILL_STUDIO_DEFAULT_SKILL_SCHEMA_VERSION
+    )
+    normalized["version"] = (
+        _skill_studio_meta_text((existing or {}).get("version"))
+        or _SKILL_STUDIO_DEFAULT_SKILL_VERSION
+    )
+    return normalized
+
+
 def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
     project, canvas = _skill_studio_scope_from_args(args)
     session_id = _skill_studio_session_id_from_args(args)
@@ -799,7 +818,7 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
         )
     draft["project_id"] = project or draft.get("project_id")
     draft["canvas_id"] = canvas or draft.get("canvas_id")
-    draft["skill"] = skill
+    draft["skill"] = _normalize_skill_studio_skill(skill, existing=draft.get("skill"))
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
         canvas or draft.get("canvas_id"),
@@ -3350,28 +3369,6 @@ _SKILL_STUDIO_QUESTION_SCHEMA = {
     "required": ["id", "title", "options"],
 }
 
-_SKILL_STUDIO_ASPECT_RATIO_SCHEMA = {
-    "type": "object",
-    "description": (
-        "Default canvas aspect ratio by catalog task type. Only imageGeneration and "
-        "videoGeneration keys are allowed. For imageGeneration choose one of 1:1, 9:16, "
-        "16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, 21:9. For videoGeneration choose one of "
-        "16:9, 4:3, 1:1, 3:4, 9:16, 21:9. Do not use auto, textGeneration, "
-        "audioGeneration, model names, or arbitrary keys for saved Skill defaults."
-    ),
-    "properties": {
-        "imageGeneration": {
-            "type": "string",
-            "enum": ["1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "4:5", "5:4", "21:9"],
-        },
-        "videoGeneration": {
-            "type": "string",
-            "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
-        },
-    },
-    "additionalProperties": False,
-}
-
 _SKILL_STUDIO_RATING_BAND_SCHEMA = {
     "type": "object",
     "properties": {
@@ -3451,7 +3448,8 @@ _SKILL_STUDIO_WORKFLOW_STEP_SCHEMA = {
             "description": (
                 "Optional explicit aspect ratio for imageGeneration/videoGeneration steps, "
                 "such as 9:16, 1:1, 16:9, 3:4, or 4:3. Use this on ratio-specific "
-                "variant steps even when planning.default_aspect_ratios defines a primary default."
+                "fixed-template steps only; dynamic workflow Skills should expose ratio choices "
+                "through input_parameters instead of Skill-level defaults."
             ),
         },
         "need_review": {
@@ -3515,14 +3513,11 @@ _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA = {
         "default": {},
         "options": {
             "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "value": {"type": "string"},
-                    "label": {"type": "string"},
-                },
-                "required": ["value", "label"],
-            },
+            "description": (
+                "Selectable values shown to the user. Use one human-readable string per option; "
+                "do not split options into internal value and display label."
+            ),
+            "items": {"type": "string"},
         },
     },
     "required": ["id", "label", "type", "required"],
@@ -3538,6 +3533,10 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
         "id": {
             "type": "string",
             "description": "Lowercase id using letters, numbers, underscores, or hyphens.",
+        },
+        "name": {
+            "type": "string",
+            "description": "User-facing skill name.",
         },
         "description": {
             "type": "string",
@@ -3576,7 +3575,8 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                     "description": (
                         "Planner-facing executable path summary for this skill. Start with ordered "
                         "steps, task types, action_keys, upstream dependencies, review/wait behavior, "
-                        "and aspect ratio policy; put visual or style guidance after the execution path."
+                        "and any aspect ratio choices represented by input_parameters; put visual or "
+                        "style guidance after the execution path."
                     ),
                 },
                 "prompt_guide": {
@@ -3588,17 +3588,16 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                     "description": (
                         "hard execution rules the agent should follow in this domain, not only style "
                         "principles. Include step order, one-node-per-step constraints, input source "
-                        "rules, review gates, aspect ratios, and forbidden premature downstream execution."
+                        "rules, review gates, user-selectable output controls, and forbidden premature "
+                        "downstream execution."
                     ),
                     "items": {"type": "string"},
                 },
-                "default_aspect_ratios": _SKILL_STUDIO_ASPECT_RATIO_SCHEMA,
             },
             "required": [
                 "planning_notes",
                 "prompt_guide",
                 "conduct_rules",
-                "default_aspect_ratios",
             ],
         },
         "evaluation": {
@@ -3641,16 +3640,25 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
         "input_parameters": {
             "type": "array",
             "description": (
-                "Optional structured inputs for deterministic planning. Keep the list short and "
-                "use defaults where safe; the Agent asks only unresolved required values."
+                "Structured inputs for deterministic planning. New workflow Skills should include "
+                "the user-varying choices here instead of hard-coding them in workflow templates."
             ),
             "items": _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA,
+        },
+        "allowed_recipe_ids": {
+            "type": "array",
+            "description": (
+                "Strict Recipe id whitelist for dynamic WorkflowPlan generation. New workflow "
+                "Skills should list every Recipe they may use here."
+            ),
+            "items": {"type": "string"},
         },
         "workflow_templates": {
             "type": "array",
             "description": (
-                "Optional executable canvas workflow templates for this Skill. "
-                "Include this when the Skill should build or extend a multi-node Freezone workflow."
+                "Legacy or compatibility executable canvas workflow templates. New workflow Skills "
+                "should prefer allowed_recipe_ids plus input_parameters; include templates only when "
+                "the user explicitly wants a fixed template or old fixed-workflow compatibility."
             ),
             "items": _SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA,
         },

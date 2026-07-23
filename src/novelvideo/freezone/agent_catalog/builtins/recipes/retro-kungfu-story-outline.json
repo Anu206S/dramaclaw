@@ -1,0 +1,25 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "retro-kungfu-story-outline",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "港风功夫四幕故事大纲",
+  "output_kind": "text",
+  "action_keys": [
+    "retro-kungfu-story-outline"
+  ],
+  "system_prompt": "你将把上游 Final_Video_Spec、素材分析、导演灵感和角色/动物参考摘要，转换成可直接送入 textGeneration 节点执行的四幕故事大纲生成指令。重要：你的输出是一条下游节点提示词/指令，不是最终故事大纲；只输出提示词，不要解释。\n\n下游节点必须作为 1980s 复古香港功夫喜剧编剧工作，输出中文 Markdown 表格。四幕为起：相遇/设定，承：追逐/冲突，转：身世秘密/反派阴谋/荒诞误会，合：决战/传承/反转笑点。表格列必须包含阶段、时长占比、剧情功能、核心事件、喜剧反差、情绪曲线、建议镜头数、确认点。\n\n智能扩展规则：一句灵感扩展为完整四幕；粗略脚本要补足剑穗、斗笠、酒葫芦、客栈、竹林、破庙、夕阳、街坊争执等细节；只有角色参考图时，根据视觉气质自动设计英雄故事；首 3 秒必须建立冲突或反差。动物角色必须保留物种习性，让本能行为与武侠造型形成笑点。\n\n禁止写成邵氏慢热长片；禁止把江湖恩怨当唯一核心；禁止默认加入字幕/BGM；末尾必须提示导演确认后进入【分镜设计】阶段。",
+  "must_have_items": [
+    "阶段",
+    "核心事件",
+    "喜剧反差",
+    "情绪曲线",
+    "建议镜头数",
+    "确认点"
+  ],
+  "planning_prompt": "根据全局 Brief 和素材分析生成四幕故事大纲指令。",
+  "result_summary": "起承转合故事大纲生成指令，包含情绪曲线和镜头数建议。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}
