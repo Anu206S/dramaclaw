@@ -69,7 +69,27 @@ const INTERNAL_HIDDEN_TOOL_STATUS_NAMES = new Set<string>([
   "freezone_request_user_clarification",
   "freezone_summarize_canvas",
   "freezone_validate_canvas_commands",
+  "tool_describe",
+  "tool describe",
+  "tool-describe",
+  "Tool Describe",
+  "ToolDescribe",
+  "tool_search",
+  "tool search",
+  "tool-search",
+  "Tool Search",
+  "ToolSearch",
 ]);
+
+function normalizeToolStatusName(name: string): string {
+  return name.trim().replace(/[\s_-]+/gu, " ").toLowerCase();
+}
+
+function isInternalHiddenToolStatusName(name: string): boolean {
+  if (INTERNAL_HIDDEN_TOOL_STATUS_NAMES.has(name)) return true;
+  const normalized = normalizeToolStatusName(name);
+  return normalized === "tool search" || normalized === "tool describe";
+}
 export const SUPERCHAT_CANVAS_COMMAND_EVENT = "superchat/canvas-command";
 export const SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT = "superchat/canvas-context-request";
 const MESSAGE_CACHE_PREFIX = SUPERCHAT_MESSAGE_CACHE_PREFIX;
@@ -797,10 +817,17 @@ function assistantPartsWithoutPart(
 function mergeAssistantMessageParts(
   transientParts: ChatMessagePart[],
   finalParts: ChatMessagePart[] | undefined,
+  finalText?: string,
 ): ChatMessagePart[] | undefined {
   const stableTransientParts = removeSkillStudioStatusParts(transientParts) ?? [];
   const stableFinalParts = removeSkillStudioStatusParts(finalParts);
-  if (!stableFinalParts?.length) return stableTransientParts.length > 0 ? stableTransientParts : undefined;
+  if (!stableFinalParts?.length) {
+    if (stableTransientParts.length === 0) return undefined;
+    const nonTextParts = stableTransientParts.filter((part) => part.type !== "text");
+    const text = typeof finalText === "string" ? finalText.trim() : "";
+    if (!text) return stableTransientParts;
+    return appendTextPart(nonTextParts, finalText);
+  }
   if (stableTransientParts.length === 0) return stableFinalParts;
   const finalKeys = new Set(
     stableFinalParts
@@ -1050,7 +1077,7 @@ function upsertServerAssistantMessage(
     mergeUiEventLists(transientUiEvents, nextMessage.uiEvents),
   );
   const mergedParts = assistantPartsForPersistence(
-    mergeAssistantMessageParts(transientParts, nextMessage.parts),
+    mergeAssistantMessageParts(transientParts, nextMessage.parts, nextMessage.text),
     nextMessage.text,
   );
   const mergedMessage = {
@@ -1191,7 +1218,7 @@ export function shouldRenderToolStatusPart(payload: ServerFrame): boolean {
 export function shouldRenderAgentToolStatusPart(payload: ServerFrame): boolean {
   if (!("name" in payload) || typeof payload.name !== "string") return true;
   if (EXECUTABLE_HIDDEN_TOOL_NAMES.has(payload.name)) return false;
-  if (INTERNAL_HIDDEN_TOOL_STATUS_NAMES.has(payload.name)) return false;
+  if (isInternalHiddenToolStatusName(payload.name)) return false;
   return true;
 }
 

@@ -95,6 +95,12 @@ import {
 import { GROUP_COLOR_PRESETS } from "@/features/canvas/domain/groupColors";
 import { StoryboardGroupToolbar } from "@/features/canvas/ui/StoryboardGroupToolbar";
 import { canvasEventBus } from "@/features/canvas/application/canvasServices";
+import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from "@/features/canvas/application/nodeActionResult";
 import { useCanvasProjectionStatus } from "@/features/freezone/projectionStatusStore";
 import { preloadMatteWorker } from "@/features/canvas/application/matteClient";
 import { matteImage } from "@/features/canvas/application/matteImage";
@@ -860,13 +866,41 @@ export const NodeActionToolbar = memo(
     void handleCreatePresetEditNode;
 
     // 抠图编排移到 application/matteImage（故事板详情工具条共用），语义零变化。
-    const handleMatteImage = useCallback(() => {
+    const handleMatteImage = useCallback(async (): Promise<Record<string, unknown>> => {
       if (!imageSource) {
-        return;
+        throw new Error("当前节点没有可抠图图片");
       }
       closeDownloadMenu();
-      matteImage(node.id, imageSource, { displayName: t("nodeToolbar.matting") });
+      const result = matteImage(node.id, imageSource, { displayName: t("nodeToolbar.matting") });
+      if (!result) {
+        throw new Error("[matte] no project_id in URL (?p=<project_id>) — cannot persist matted PNG");
+      }
+      await result.completion;
+      const data = useCanvasStore.getState().nodes.find((item) => item.id === result.nodeId)?.data;
+      const generationError =
+        typeof data?.generationError === "string" && data.generationError.length > 0
+          ? data.generationError
+          : null;
+      if (generationError) {
+        throw new Error(generationError);
+      }
+      return {
+        nodeId: result.nodeId,
+        imageUrl: data?.imageUrl,
+        previewImageUrl: data?.previewImageUrl,
+        resultKind: "matte",
+      };
     }, [closeDownloadMenu, imageSource, node.id, t]);
+
+    useEffect(() => {
+      return subscribeNodeAction(({ nodeId, action, requestId }) => {
+        if (nodeId !== node.id || action !== "run_matting_tool") return;
+        publishNodeActionAccepted(requestId, node.id, action);
+        void handleMatteImage()
+          .then((output) => publishNodeActionSuccess(requestId, node.id, action, output))
+          .catch((error) => publishNodeActionError(requestId, node.id, action, error));
+      });
+    }, [handleMatteImage, node.id]);
 
     const handleOpenWorkbench = useCallback(() => {
       if (!workbenchTarget || openingWorkbench) {
@@ -1093,7 +1127,12 @@ export const NodeActionToolbar = memo(
                     key: "matting" as const,
                     icon: Scissors,
                     label: t("nodeToolbar.matting"),
-                    run: () => handleMatteImage(),
+                    run: () => {
+                      void handleMatteImage().catch((error) => {
+                        console.error("[matte] failed", error);
+                        toast.error("抠图失败");
+                      });
+                    },
                   },
                   {
                     key: "crop" as const,

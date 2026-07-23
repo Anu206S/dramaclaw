@@ -1620,6 +1620,27 @@ function genericToolTitle(message: ChatMessage): string {
     .replace(/\b\w/gu, (value) => value.toUpperCase());
 }
 
+function normalizeInternalToolName(name: string): string {
+  return name.trim().replace(/[\s_-]+/gu, " ").toLowerCase();
+}
+
+function shouldHideInternalToolMessage(message: ChatMessage): boolean {
+  const raw = toolRawRecord(message);
+  const candidates = [
+    raw?.name,
+    raw?.tool_name,
+    raw?.toolName,
+    raw?.function_name,
+    raw?.functionName,
+    message.displayName,
+    message.text,
+  ];
+  return candidates.some((candidate) =>
+    typeof candidate === "string" &&
+    ["tool search", "tool describe"].includes(normalizeInternalToolName(candidate))
+  );
+}
+
 function AgentToolActivityCard({ message }: { message: ChatMessage }) {
   if (freezoneToolDisplay(message)) return <FreezoneToolActivityCard message={message} />;
   const raw = toolRawRecord(message);
@@ -1800,6 +1821,49 @@ type AgentThoughtRuntimePart = ChatMessagePart & {
   event: unknown;
 };
 
+function agentThoughtText(part: ChatMessagePart): string {
+  if (part.type !== "agent_thought") return "";
+  const event = part.event && typeof part.event === "object" && !Array.isArray(part.event)
+    ? part.event as Record<string, unknown>
+    : {};
+  return typeof event.text === "string" ? event.text.trim() : "";
+}
+
+function mergeAdjacentAgentThoughtParts(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const merged: ChatMessagePart[] = [];
+  for (const part of parts) {
+    const previous = merged[merged.length - 1];
+    if (part.type === "agent_thought" && previous?.type === "agent_thought") {
+      const previousEvent = previous.event && typeof previous.event === "object" && !Array.isArray(previous.event)
+        ? previous.event as Record<string, unknown>
+        : {};
+      const currentEvent = part.event && typeof part.event === "object" && !Array.isArray(part.event)
+        ? part.event as Record<string, unknown>
+        : {};
+      const text = [agentThoughtText(previous), agentThoughtText(part)]
+        .filter(Boolean)
+        .join("\n\n");
+      merged[merged.length - 1] = {
+        ...previous,
+        id: `${previous.id}+${part.id}`,
+        seq: typeof previous.seq === "number" ? previous.seq : part.seq,
+        event: {
+          ...previousEvent,
+          text,
+          status: currentEvent.status === "running" || previousEvent.status === "running"
+            ? "running"
+            : currentEvent.status ?? previousEvent.status,
+        },
+      };
+      continue;
+    }
+    merged.push(part);
+  }
+  return merged;
+}
+
+export const mergeAdjacentAgentThoughtPartsForTest = mergeAdjacentAgentThoughtParts;
+
 function AgentThoughtRuntimeItem({ part }: { part: AgentThoughtRuntimePart }) {
   const event = part.event && typeof part.event === "object" && !Array.isArray(part.event)
     ? part.event as Record<string, unknown>
@@ -1846,9 +1910,14 @@ function AgentThoughtRuntimeItem({ part }: { part: AgentThoughtRuntimePart }) {
 }
 
 function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
-  const runtimeParts = [...parts]
-    .filter((part) => part.type !== "agent_usage")
-    .sort(compareRuntimeParts);
+  const runtimeParts = mergeAdjacentAgentThoughtParts(
+    [...parts]
+      .filter((part) =>
+      part.type !== "agent_usage" &&
+      !(part.type === "tool_status" && shouldHideInternalToolMessage(part.event as ChatMessage))
+      )
+      .sort(compareRuntimeParts),
+  );
   if (runtimeParts.length === 0) return null;
   return (
     <div className="w-fit max-w-full space-y-1 text-xs text-muted-foreground">
@@ -1945,6 +2014,7 @@ function agentActivityLabelFromMessage(message: ChatMessage | undefined): string
   for (const part of [...message.parts].reverse()) {
     if (part.type === "tool_status") {
       const toolMessage = part.event as ChatMessage;
+      if (shouldHideInternalToolMessage(toolMessage)) continue;
       if (freezoneToolStatus(toolMessage) !== "running") continue;
       return `正在${freezoneToolDisplay(toolMessage)?.title ?? genericToolTitle(toolMessage)}`;
     }
@@ -5847,6 +5917,9 @@ const MessageBubble = memo(function MessageBubble({
 }) {
   const isUser = message.role === "user";
   const isTool = isToolMessage(message);
+  if (isTool && shouldHideInternalToolMessage(message)) {
+    return null;
+  }
   const isHistoricalTool = isTool && isHistoricalToolMessage(message);
   const isFreezoneLayout = variant === "freezone";
   const freezoneToolActivity = isTool ? freezoneToolDisplay(message) : null;

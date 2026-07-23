@@ -39,7 +39,27 @@ const HIDDEN_TOOL_STATUS_NAMES = new Set<string>([
   "freezone_summarize_canvas",
   "freezone_update_node_data",
   "freezone_validate_canvas_commands",
+  "tool_describe",
+  "tool describe",
+  "tool-describe",
+  "Tool Describe",
+  "ToolDescribe",
+  "tool_search",
+  "tool search",
+  "tool-search",
+  "Tool Search",
+  "ToolSearch",
 ]);
+
+function normalizeToolStatusName(name: string): string {
+  return name.trim().replace(/[\s_-]+/gu, " ").toLowerCase();
+}
+
+function isHiddenToolStatusName(name: string): boolean {
+  if (HIDDEN_TOOL_STATUS_NAMES.has(name)) return true;
+  const normalized = normalizeToolStatusName(name);
+  return normalized === "tool search" || normalized === "tool describe";
+}
 
 function stripInternalContextBlocks(text: string): string {
   return text.replace(INTERNAL_CONTEXT_BLOCK_RE, "\n").trim();
@@ -242,7 +262,7 @@ function isHiddenCanvasWriteToolStatusPart(event: unknown): boolean {
   const raw = (event as Record<string, unknown>).raw;
   if (!raw || typeof raw !== "object" || Array.isArray(raw)) return false;
   const name = (raw as Record<string, unknown>).name;
-  return typeof name === "string" && HIDDEN_TOOL_STATUS_NAMES.has(name);
+  return typeof name === "string" && isHiddenToolStatusName(name);
 }
 
 function mediaKindToType(kind: unknown): string | undefined {

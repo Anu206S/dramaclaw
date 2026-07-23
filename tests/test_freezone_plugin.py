@@ -1588,8 +1588,70 @@ def test_freezone_canvas_command_slim_result_reports_background_acceptance():
 
     assert summary["ok"] is True
     assert summary["canvas_apply_status"] == "accepted"
+    assert "workflow was accepted" in summary["agent_instruction"]
     assert "continuing on the canvas" in summary["agent_instruction"]
     assert "Do not claim generation is complete" in summary["agent_instruction"]
+
+
+def test_freezone_canvas_command_slim_result_reports_node_action_submission():
+    plugin = _load_plugin_module()
+
+    summary = plugin._summarize_canvas_command_result(
+        {
+            "ok": True,
+            "tool_call_status": "completed",
+            "canvas_apply_status": "accepted",
+            "applied": True,
+            "cancelled": False,
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "message": "Canvas command was submitted to the canvas.",
+        },
+        bridge_key="bridge-node-action",
+        commands=[
+            {
+                "type": "run_node_action",
+                "node_id": "image-node",
+                "action": "run_matting_tool",
+            }
+        ],
+    )
+
+    assert summary["ok"] is True
+    assert summary["canvas_apply_status"] == "accepted"
+    assert "submitted to the canvas" in summary["agent_instruction"]
+    assert "do not say a tool was opened" in summary["agent_instruction"]
+    assert "run nodes manually" not in summary["agent_instruction"]
+
+
+def test_freezone_canvas_command_slim_result_reports_open_node_action_as_opened_panel():
+    plugin = _load_plugin_module()
+
+    summary = plugin._summarize_canvas_command_result(
+        {
+            "ok": True,
+            "tool_call_status": "completed",
+            "canvas_apply_status": "applied",
+            "applied": True,
+            "cancelled": False,
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "message": "Frontend executor applied the canvas command.",
+        },
+        bridge_key="bridge-open-light",
+        commands=[
+            {
+                "type": "run_node_action",
+                "node_id": "image-node",
+                "action": "open_light_tool",
+            }
+        ],
+    )
+
+    assert summary["ok"] is True
+    assert "panel has been opened" in summary["agent_instruction"]
+    assert "processing" in summary["agent_instruction"]
+    assert "submitted for generation" in summary["agent_instruction"]
 
 
 def test_freezone_single_write_commands_request_slim_result(monkeypatch):

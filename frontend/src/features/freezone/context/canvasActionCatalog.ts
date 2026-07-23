@@ -73,7 +73,10 @@ function commandCapability(
         pushable: false,
       },
     ],
-    frontend_mapping: entry.parameters,
+    frontend_mapping: {
+      ...entry.parameters,
+      description: entry.description,
+    },
   };
 }
 
@@ -545,13 +548,28 @@ export const BASE_CANVAS_ACTION_CAPABILITIES: CanvasActionCapability[] = [
   imageUiCapability("ui.open_crop_tool", "裁剪", "open_crop_tool"),
   imageUiCapability("ui.open_annotate_tool", "标注", "open_annotate_tool"),
   imageUiCapability("ui.open_split_storyboard_tool", "分格抽取", "open_split_storyboard_tool"),
-  imageUiCapability("ui.run_matting_tool", "抠图", "run_matting_tool"),
+  imageUiCapability(
+    "ui.run_matting_tool",
+    "抠图",
+    "run_matting_tool",
+    "抠图 / 去背景 / 移除背景 / 透明背景：对源图片执行前景抠图，生成透明背景 PNG 结果图。",
+  ),
   imageUiCapability("ui.run_upscale_tool", "高清放大", "run_upscale_tool"),
   imageUiCapability("ui.open_redraw_tool", "重绘", "open_redraw_tool"),
   imageUiCapability("ui.open_erase_tool", "擦除", "open_erase_tool"),
   imageUiCapability("ui.run_outpaint_tool", "扩图", "run_outpaint_tool"),
-  imageUiCapability("ui.run_scene360_tool", "生成 360 全景", "run_scene360_tool"),
-  imageUiCapability("ui.open_multi_angle_tool", "多角度/多视图", "open_multi_angle_tool"),
+  imageUiCapability(
+    "ui.run_scene360_tool",
+    "生成 360 全景",
+    "run_scene360_tool",
+    "全景 / 360 全景：提交图片节点的 360 全景生成，并创建全景结果图和 360 查看器节点。",
+  ),
+  imageUiCapability(
+    "ui.open_multi_angle_tool",
+    "多维度 / 多角度 / 多视图 / 多视角",
+    "open_multi_angle_tool",
+    "多维度 / 多角度 / 多视图 / 多视角：打开图片节点的多维度面板。",
+  ),
   imageUiCapability("ui.open_light_tool", "打光", "open_light_tool"),
   imageUiCapability("ui.open_rotate_tool", "旋转", "open_rotate_tool"),
   imageUiCapability("ui.run_grid_multi_camera", "多机位九宫格", "run_grid_multi_camera"),

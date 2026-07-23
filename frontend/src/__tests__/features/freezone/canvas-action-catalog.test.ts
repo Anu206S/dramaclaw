@@ -179,6 +179,32 @@ describe("canvas action catalog", () => {
     );
   });
 
+  it("exposes scene 360 as a direct generation action", () => {
+    const image = node({
+      id: "scene-source-a",
+      type: CANVAS_NODE_TYPES.imageGen,
+      data: {
+        imageUrl: "/static/projects/demo/freezone/source.png",
+      },
+    });
+
+    const catalog = buildCanvasNodeActionCatalog(image);
+
+    expect(catalog.actions).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          action: "run_scene360_tool",
+          execution: "frontend_node",
+          command_type: "run_node_action",
+          description: expect.stringContaining("全景"),
+        }),
+      ]),
+    );
+    expect(catalog.actions).not.toContainEqual(
+      expect.objectContaining({ action: "open_scene360_tool" }),
+    );
+  });
+
   it("describes video node editable schema with aspect ratio options", () => {
     const video = node({
       id: "video-aspect-a",
@@ -786,6 +812,11 @@ describe("canvas action catalog", () => {
     );
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.run_upscale_tool");
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.run_matting_tool");
+    const mattingCapability = catalog.frontend_command_catalog.find(
+      (item) => item.id === "ui.run_matting_tool",
+    );
+    expect(mattingCapability?.frontend_mapping.description).toContain("去背景");
+    expect(mattingCapability?.frontend_mapping.description).toContain("透明背景");
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.run_grid_product_three_view");
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.generate_video");
     expect(catalog.frontend_command_catalog.map((item) => item.id)).toContain("ui.generate_audio");
@@ -877,6 +908,20 @@ describe("canvas action catalog", () => {
       node_type: CANVAS_NODE_TYPES.threeDWorld,
       frontend_mapping: expect.objectContaining({
         run_action: "open_director_world",
+      }),
+    });
+    expect(catalog.canvas_action_catalog.find((item) => item.id === "ui.open_multi_angle_tool")).toMatchObject({
+      display_name: expect.stringContaining("多维度"),
+      frontend_mapping: expect.objectContaining({
+        description: expect.stringContaining("多维度"),
+      }),
+    });
+    expect(catalog.canvas_action_catalog.find((item) => item.id === "ui.run_scene360_tool")).toMatchObject({
+      display_name: expect.stringContaining("全景"),
+      execution: "frontend_node",
+      frontend_mapping: expect.objectContaining({
+        action: "run_scene360_tool",
+        description: expect.stringContaining("全景"),
       }),
     });
     expect(catalog.canvas_action_catalog.find((item) => item.id === "freezone.image.to_3gs")).toMatchObject({

@@ -438,6 +438,27 @@ describe("freezone viewer contracts", () => {
     expect(en).toContain('"generateDirectorWorld": "Generate 3DGS World"');
   });
 
+  it("keeps matting toolbar actions connected to chat node-action receipts", () => {
+    const toolbar = read("src/features/canvas/ui/NodeActionToolbar.tsx");
+
+    expect(toolbar).toContain("subscribeNodeAction");
+    expect(toolbar).toContain('action !== "run_matting_tool"');
+    expect(toolbar).toContain("publishNodeActionAccepted");
+    expect(toolbar).toContain("publishNodeActionSuccess");
+    expect(toolbar).toContain("publishNodeActionError");
+  });
+
+  it("keeps chat node actions wired to secondary image panels", () => {
+    const overlay = read("src/features/canvas/ui/SelectedNodeOverlay.tsx");
+
+    expect(overlay).toContain("subscribeNodeAction");
+    expect(overlay).toContain("'open_light_tool'");
+    expect(overlay).toContain("handleOpenLightEditor(nodeId)");
+    expect(overlay).toContain("'open_split_storyboard_tool'");
+    expect(overlay).toContain("NODE_TOOL_TYPES.splitStoryboard");
+    expect(overlay).toContain("openedUiAction: true");
+  });
+
   it("keeps freezone 3GS commit roles for generated PLY source kinds", () => {
     const commit = read("src/features/freezone/commit/promoteToAsset.ts");
 
