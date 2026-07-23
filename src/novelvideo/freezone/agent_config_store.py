@@ -4,16 +4,18 @@ from __future__ import annotations
 
 import json
 import os
-import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
 from novelvideo.config import OUTPUT_DIR
+from novelvideo.freezone.agent_catalog_schema import (
+    SAFE_AGENT_CONFIG_ID,
+    validate_agent_config_item,
+)
 
 AgentConfigKind = Literal["skills", "recipes"]
 
-_SAFE_ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 BUILTIN_AGENT_CATALOG_DIR = Path(__file__).with_name("agent_catalog") / "builtins"
 _CATALOG_CACHE: dict[tuple[str, str, tuple, tuple], list[dict]] = {}
 
@@ -84,10 +86,14 @@ def save_user_agent_config_item(
     kind: AgentConfigKind | str,
     payload: dict,
 ) -> dict:
+    checked_kind = _validate_kind(kind)
     item_id = _validate_item_id(str(payload.get("id") or ""))
-    root = user_agent_config_dir(username, kind)
+    root = user_agent_config_dir(username, checked_kind)
     root.mkdir(parents=True, exist_ok=True)
-    stored_payload = _strip_response_metadata(payload)
+    stored_payload = validate_agent_config_item(
+        checked_kind,
+        _strip_response_metadata(payload),
+    )
 
     target = root / f"{item_id}.json"
     tmp = target.with_suffix(".json.tmp")
@@ -135,7 +141,7 @@ def _validate_kind(kind: AgentConfigKind | str) -> AgentConfigKind:
 
 
 def _validate_item_id(item_id: str) -> str:
-    if not _SAFE_ITEM_ID.fullmatch(item_id):
+    if not SAFE_AGENT_CONFIG_ID.fullmatch(item_id):
         raise ValueError("invalid agent config id")
     return item_id
 
@@ -153,7 +159,11 @@ def _read_agent_config_items(root: Path) -> list[dict]:
         if not isinstance(payload, dict):
             continue
         item_id = payload.get("id")
-        if not isinstance(item_id, str) or not _SAFE_ITEM_ID.fullmatch(item_id):
+        if not isinstance(item_id, str) or not SAFE_AGENT_CONFIG_ID.fullmatch(item_id):
+            continue
+        try:
+            payload = validate_agent_config_item(_kind_from_dir(root), payload)
+        except ValueError:
             continue
         try:
             payload["_catalog_updated_at"] = path.stat().st_mtime
@@ -176,6 +186,10 @@ def _directory_signature(root: Path) -> tuple:
             continue
         files.append((path.name, stat.st_mtime_ns, stat.st_size))
     return (str(root), tuple(files))
+
+
+def _kind_from_dir(root: Path) -> AgentConfigKind:
+    return _validate_kind(root.name)
 
 
 def _builtin_agent_config_exists(kind: AgentConfigKind, item_id: str) -> bool:
