@@ -123,11 +123,15 @@ interface DimensionDraft {
 
 interface FreezoneSkillRecipeSettingsProps {
   kind: FreezoneCatalogKind;
+  onBackToSkills?: () => void;
+  onOpenRecipes?: () => void;
   open: boolean;
 }
 
 export function FreezoneSkillRecipeSettings({
   kind,
+  onBackToSkills,
+  onOpenRecipes,
 }: FreezoneSkillRecipeSettingsProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -352,6 +356,28 @@ export function FreezoneSkillRecipeSettings({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {isSkills && onOpenRecipes ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-white/[0.08] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+                onClick={onOpenRecipes}
+              >
+                {t("settings.freezoneCatalog.advancedManagement")}
+              </Button>
+            ) : null}
+            {!isSkills && onBackToSkills ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-white/[0.08] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+                onClick={onBackToSkills}
+              >
+                {t("settings.freezoneCatalog.backToSkills")}
+              </Button>
+            ) : null}
             <input
               ref={importInputRef}
               type="file"

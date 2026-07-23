@@ -3714,10 +3714,10 @@
     },
     "freezoneCatalog": {
       "skills": {
-        "description": "Skills control Freezone Agent domain behavior and evaluation rules."
+        "description": "Manage skills the Agent can use directly."
       },
       "recipes": {
-        "description": "Recipes control Freezone generation prompts and operation-type matching."
+        "description": "Maintain the underlying Recipes that Skills can call, usually for debugging or built-in capability management."
       },
       "searchSkills": "Search Skill (ID, description, input/output)",
       "searchRecipes": "Search Recipe (ID, name, type)",
@@ -3739,6 +3739,8 @@
       "editItem": "Edit {{id}}",
       "deleteItem": "Delete {{id}}",
       "refresh": "Refresh",
+      "advancedManagement": "Advanced",
+      "backToSkills": "Back to Skills",
       "import": "Import",
       "export": "Export",
       "new": "New",
