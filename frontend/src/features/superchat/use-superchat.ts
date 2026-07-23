@@ -814,6 +814,11 @@ function assistantPartsWithoutPart(
   return nextParts.length > 0 ? nextParts : undefined;
 }
 
+function stableUiEventMergeKey(part: ChatMessagePart): string {
+  if (part.type === "text") return part.id;
+  return uiEventMergeKey(part.event) ?? part.id;
+}
+
 function mergeAssistantMessageParts(
   transientParts: ChatMessagePart[],
   finalParts: ChatMessagePart[] | undefined,
@@ -826,18 +831,17 @@ function mergeAssistantMessageParts(
     const nonTextParts = stableTransientParts.filter((part) => part.type !== "text");
     const text = typeof finalText === "string" ? finalText.trim() : "";
     if (!text) return stableTransientParts;
-    return appendTextPart(nonTextParts, finalText);
+    return appendTextPart(nonTextParts, text);
   }
   if (stableTransientParts.length === 0) return stableFinalParts;
   const finalKeys = new Set(
     stableFinalParts
       .filter((part) => part.type !== "text")
-      .map((part) => uiEventMergeKey(part.event) ?? part.id),
+      .map(stableUiEventMergeKey),
   );
   const missingTransientParts = stableTransientParts.filter((part) => {
     if (part.type === "text") return false;
-    const key = uiEventMergeKey(part.event) ?? part.id;
-    return !finalKeys.has(key);
+    return !finalKeys.has(stableUiEventMergeKey(part));
   });
   return missingTransientParts.length > 0
     ? [...missingTransientParts, ...stableFinalParts]

@@ -5,6 +5,7 @@ import {
   useCallback,
   useEffect,
   useMemo,
+  useState,
 } from 'react';
 import {
   Handle,
@@ -36,7 +37,8 @@ import { useNodeGenerationTaskState } from '@/features/canvas/application/useNod
 import { CANVAS_NODE_PANEL_SURFACE_CLASS, canvasNodeFrameClass } from '@/features/canvas/ui/nodeFrameStyles';
 import { useCanvasStore, useIsBoxSelecting } from '@/stores/canvasStore';
 import { AudioOperationsPanel } from '@/features/canvas/nodes/AudioOperationsPanel';
-import { useAudioGeneration } from '@/features/canvas/nodes/useAudioGeneration';
+import { deriveAudioText, useAudioGeneration } from '@/features/canvas/nodes/useAudioGeneration';
+import { translateNodeText } from '@/features/canvas/application/translateText';
 import {
   publishNodeActionAccepted,
   publishNodeActionError,
@@ -50,6 +52,7 @@ import {
 } from '@/features/freezone/context/NodeContextBadges';
 import { fetchFreezoneAudioReferences, uploadFreezoneImage } from '@/api/ops';
 import { readUrl } from '@/lib/url-params';
+import { VoiceSelectionModal } from './VoiceSelectionModal';
 
 type AudioNodeProps = NodeProps & {
   id: string;
@@ -106,27 +109,57 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
   const isBoxSelecting = useIsBoxSelecting();
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const { isGenerating, task } = useNodeGenerationTaskState(data);
+  const [voicePickerOpen, setVoicePickerOpen] = useState(false);
   // 重试用与面板提交同一套生成逻辑（hook）。
   const { generate } = useAudioGeneration(id, data);
   useEffect(() => {
     return subscribeNodeAction(({ nodeId, action, requestId }) => {
-      if (nodeId !== id || action !== 'generate_audio') return;
-      publishNodeActionAccepted(requestId, id, action);
-      void generate()
-        .then((output) => {
+      if (nodeId !== id) return;
+      if (action === 'generate_audio') {
+        publishNodeActionAccepted(requestId, id, action);
+        void generate()
+          .then((output) => {
+            const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
+            const latestAudioUrl = latest?.type === CANVAS_NODE_TYPES.audio
+              && typeof latest.data.audioUrl === 'string'
+              ? latest.data.audioUrl
+              : undefined;
+            publishNodeActionSuccess(requestId, id, action, {
+              ...(output.audioUrl ? { audioUrl: output.audioUrl } : {}),
+              ...(latestAudioUrl ? { audioUrl: latestAudioUrl } : {}),
+            });
+          })
+          .catch((error) => publishNodeActionError(requestId, id, action, error));
+        return;
+      }
+      if (action === 'translate_text') {
+        publishNodeActionAccepted(requestId, id, action);
+        void (async () => {
+          const project = readUrl().project;
+          if (!project) throw new Error('缺少项目 ID，无法翻译音频文本');
           const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
-          const latestAudioUrl = latest?.type === CANVAS_NODE_TYPES.audio
-            && typeof latest.data.audioUrl === 'string'
-            ? latest.data.audioUrl
-            : undefined;
-          publishNodeActionSuccess(requestId, id, action, {
-            ...(output.audioUrl ? { audioUrl: output.audioUrl } : {}),
-            ...(latestAudioUrl ? { audioUrl: latestAudioUrl } : {}),
+          if (latest?.type !== CANVAS_NODE_TYPES.audio) {
+            throw new Error('音频节点不存在');
+          }
+          const text = deriveAudioText(latest.data as AudioNodeData).trim();
+          if (!text) throw new Error('音频节点没有可翻译文本');
+          const translated = await translateNodeText(project, {
+            text,
+            nodeId: id,
+            nodeType: 'audio',
           });
-        })
-        .catch((error) => publishNodeActionError(requestId, id, action, error));
+          updateNodeData(id, { text: translated });
+          publishNodeActionSuccess(requestId, id, action, { text: translated });
+        })().catch((error) => publishNodeActionError(requestId, id, action, error));
+        return;
+      }
+      if (action === 'open_voice_picker') {
+        publishNodeActionAccepted(requestId, id, action);
+        setVoicePickerOpen(true);
+        publishNodeActionSuccess(requestId, id, action, { openedUiAction: true });
+      }
     });
-  }, [generate, id]);
+  }, [generate, id, updateNodeData]);
 
 
   // 任务流(SSE)回报失败时把错误持久化进节点数据 + 清 isGenerating——覆盖刷新后、
@@ -162,6 +195,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
   const hasMainlineContext = hasMainlineContexts(
     (data as { mainline_context?: unknown }).mainline_context,
   );
+  const currentVoiceRef: AudioVoiceRef = data.voiceRef ?? { scope: 'project_narrator' };
 
   // 上传一份本地音频到后端 freezone — 复用通用 upload 端点（后端不区分 mime）。
   // 上传成功后落 audioUrl/sourceFileName 进 store，AudioOperationsPanel 那边
@@ -390,6 +424,21 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
           想要重新合成只能先清掉音频（暂时通过删节点重建）。 */}
       {selected && !isBoxSelecting && !data.audioUrl && (
         <AudioOperationsPanel nodeId={id} data={data} />
+      )}
+      {data.audioKind !== 'music' && (
+        <VoiceSelectionModal
+          open={voicePickerOpen}
+          onClose={() => setVoicePickerOpen(false)}
+          currentRef={currentVoiceRef}
+          onPick={({ ref, label, language }) => {
+            updateNodeData(id, {
+              voiceRef: ref,
+              voiceLabel: label,
+              voiceLanguage: language ?? '',
+            });
+            setVoicePickerOpen(false);
+          }}
+        />
       )}
     </div>
   );

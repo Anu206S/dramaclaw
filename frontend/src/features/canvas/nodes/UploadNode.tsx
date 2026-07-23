@@ -83,6 +83,11 @@ import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { useShallow } from 'zustand/react/shallow';
 import { useSettingsStore } from '@/stores/settingsStore';
+import {
+  publishNodeActionAccepted,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from '@/features/canvas/application/nodeActionResult';
 
 type UploadNodeProps = NodeProps & {
   id: string;
@@ -621,6 +626,15 @@ export const UploadNode = memo(({ id, data, selected, width, height }: UploadNod
   const handlePickFile = useCallback(() => {
     inputRef.current?.click();
   }, []);
+
+  useEffect(() => {
+    return subscribeNodeAction(({ nodeId, action, requestId }) => {
+      if (nodeId !== id || action !== 'open_upload_picker') return;
+      publishNodeActionAccepted(requestId, id, action);
+      handlePickFile();
+      publishNodeActionSuccess(requestId, id, action, { openedUiAction: true });
+    });
+  }, [handlePickFile, id]);
 
   const handleOpenDirectorStage = useCallback(async () => {
     if (!canOpenDirectorStage) return;
