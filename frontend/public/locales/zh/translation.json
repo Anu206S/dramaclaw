@@ -3714,10 +3714,10 @@
     },
     "freezoneCatalog": {
       "skills": {
-        "description": "Skills 控制虾画 Agent 的领域行为和评估规则。"
+        "description": "管理 Agent 可直接使用的技能。"
       },
       "recipes": {
-        "description": "Recipes 控制虾画生成节点的提示词策略和操作类型匹配。"
+        "description": "维护 Skill 可调用的底层 Recipes，通常用于调试或内置能力管理。"
       },
       "searchSkills": "搜索 Skill（ID、描述、输入/输出）",
       "searchRecipes": "搜索 Recipe（ID、名称、类型）",
@@ -3739,6 +3739,8 @@
       "editItem": "编辑 {{id}}",
       "deleteItem": "删除 {{id}}",
       "refresh": "刷新",
+      "advancedManagement": "高级管理",
+      "backToSkills": "返回 Skills",
       "import": "导入",
       "export": "导出",
       "new": "新增",
