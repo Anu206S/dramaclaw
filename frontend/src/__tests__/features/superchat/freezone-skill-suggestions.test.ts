@@ -44,6 +44,30 @@ describe("freezone skill slash suggestions", () => {
     ]);
   });
 
+  it("builds suggestions from workflow skills with allowed recipes", () => {
+    const suggestions = toFreezoneSkillSuggestions([
+      {
+        id: "lego-minifigure-animation-video",
+        name: "乐高小人动画短片",
+        enabled: true,
+        allowed_recipe_ids: ["lego-minifig-video-spec"],
+        category: "video",
+        description: "把主题发展成 LEGO Minifigure 风格动画短片",
+        triggers: { keywords: ["乐高动画"] },
+      },
+    ]);
+
+    expect(suggestions).toEqual([
+      {
+        id: "lego-minifigure-animation-video",
+        label: "乐高小人动画短片",
+        category: "video",
+        description: "把主题发展成 LEGO Minifigure 风格动画短片",
+        keywords: ["乐高动画"],
+      },
+    ]);
+  });
+
   it("opens only for the current slash token and filters by id, category, description, or keywords", () => {
     const suggestions = toFreezoneSkillSuggestions([
       {

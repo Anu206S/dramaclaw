@@ -13106,9 +13106,6 @@ export function SuperChatPanel({
                       <span className="truncate text-[13px] font-semibold leading-5 text-foreground/92">
                         {skill.label}
                       </span>
-                      <span className="shrink-0 rounded-md bg-white/[0.07] px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
-                        /{skill.id}
-                      </span>
                     </span>
                     {skill.description && (
                       <span className="mt-0.5 block truncate text-xs leading-4 text-muted-foreground/75">

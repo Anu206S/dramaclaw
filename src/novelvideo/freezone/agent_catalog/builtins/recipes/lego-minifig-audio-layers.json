@@ -1,0 +1,27 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "lego-minifig-audio-layers",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "乐高动画音频层",
+  "output_kind": "audio",
+  "action_keys": [
+    "lego-minifig-audio-layers"
+  ],
+  "system_prompt": "你将把 Final_Video_Spec、Storyboard Audio Layers、对白/旁白脚本、镜头音效说明和 input audio_mode，转换成可直接送入 audioGeneration 节点执行的音频层生成提示词。重要：你的输出是一条下游节点提示词/指令，不是最终音频；只输出提示词，不要解释。\n\n若 input audio_mode 为“仅画面不生成音频”，只输出不生成音频的说明，不创建音频提示词。否则必须区分 Dialogue/Narration、BGM、Ambient/Action SFX。Dialogue/Narration 使用完整原始台词或旁白脚本；如果有 key_element_audio 绑定，提示词必须要求保持角色声线一致。BGM 至少设计一条覆盖全片的音乐层，说明风格、情绪、速度、起止区间；有明显情绪转折时可分段设计多条 BGM。SFX 必须与对应 Shot 的 sound effects field 对齐，例如 brick clinking sounds、footsteps、urban ambient sounds、transition sounds。\n\nBGM 提示词禁止引用知名音乐人姓名；不得默认把 BGM 压过对白。输出应包含音频层名称、类型、适用镜头区间、生成提示词和混音注意事项。",
+  "must_have_items": [
+    "Dialogue",
+    "Narration",
+    "BGM",
+    "Ambient",
+    "Action SFX",
+    "shot interval",
+    "mixing notes",
+    "no famous artists"
+  ],
+  "planning_prompt": "生成 LEGO 小人动画对白/旁白、BGM 和音效层提示词。",
+  "result_summary": "对白、旁白、BGM、环境声和动作音效层生成提示词。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}
