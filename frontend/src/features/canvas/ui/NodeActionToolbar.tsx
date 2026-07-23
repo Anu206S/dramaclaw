@@ -523,6 +523,13 @@ export const NodeActionToolbar = memo(
     // 用统一 helper 解析节点当前图片源，避免每种图片节点各写一套判断。
     const imageSource = useMemo(() => resolveNodeSourceImageUrl(node), [node]);
     const canHandleImage = Boolean(imageSource);
+    const videoUrl = useMemo(() => {
+      if (!isVideoNode(node)) return null;
+      return typeof node.data.videoUrl === "string" && node.data.videoUrl.length > 0
+        ? node.data.videoUrl
+        : null;
+    }, [node]);
+    const hasVideo = Boolean(videoUrl);
     // commit 按钮现在覆盖所有媒体节点(图像/视频/音频/3GS)——只要能从节点推断出
     // 可提交的媒体 url 就显示。具体提交目标在 CommitDialog 里按 mediaType 处理。
     const canCommitNode = useMemo(
@@ -753,7 +760,7 @@ export const NodeActionToolbar = memo(
 
     const handleDownloadSaveAs = useCallback(async () => {
       if (!imageSource) {
-        return;
+        throw new Error("当前节点没有可下载图片");
       }
       try {
         await downloadUrlAsFile(
@@ -763,8 +770,129 @@ export const NodeActionToolbar = memo(
         closeDownloadMenu();
       } catch (error) {
         console.error("Failed to download image", error);
+        throw error;
       }
     }, [closeDownloadMenu, imageSource, resolveImageDownloadFilename]);
+
+    const resolveVideoDownloadFilename = useCallback(() => {
+      const data = node.data as Record<string, unknown>;
+      const sourceFileName =
+        typeof data.sourceFileName === "string" && data.sourceFileName.trim().length > 0
+          ? data.sourceFileName.trim()
+          : "";
+      if (sourceFileName) return sourceFileName;
+      const displayName =
+        typeof data.displayName === "string" && data.displayName.trim().length > 0
+          ? data.displayName.trim()
+          : "";
+      return displayName ? `${displayName}.mp4` : `video-${node.id}.mp4`;
+    }, [node.data, node.id]);
+
+    const requireVideoUrl = useCallback(() => {
+      if (!isVideoNode(node) || !videoUrl) {
+        throw new Error("当前节点没有可操作的视频");
+      }
+      return videoUrl;
+    }, [node, videoUrl]);
+
+    const handleOpenVideoClip = useCallback(() => {
+      requireVideoUrl();
+      updateNodeData(node.id, {
+        isClipMode: true,
+      });
+      setSelectedNode(node.id);
+    }, [node.id, requireVideoUrl, setSelectedNode, updateNodeData]);
+
+    const handleOpenVideoViewer = useCallback(() => {
+      const url = requireVideoUrl();
+      canvasEventBus.publish("video-viewer/open", {
+        videoUrl: url,
+        title:
+          typeof node.data.displayName === "string"
+            ? node.data.displayName
+            : undefined,
+      });
+    }, [node.data, requireVideoUrl]);
+
+    const handleDownloadVideo = useCallback(async () => {
+      const url = requireVideoUrl();
+      try {
+        await downloadUrlAsFile(
+          resolveImageDisplayUrl(url),
+          resolveVideoDownloadFilename(),
+        );
+      } catch (error) {
+        console.error("[video-download] failed", error);
+        throw error;
+      }
+    }, [requireVideoUrl, resolveVideoDownloadFilename]);
+
+    const handleOpenVideoUpscale = useCallback(() => {
+      const url = requireVideoUrl();
+      const upscaleNodeId = createVideoUpscaleResultNode(node.id, {
+        sourceUrl: url,
+        displayName: `${t("node.videoUpscale.nodeTitle")}（1080P）`,
+        resolution: "1080p",
+        denoise: "1x",
+      });
+      if (!upscaleNodeId) {
+        throw new Error("无法创建视频高清节点");
+      }
+      onNodesChange([
+        { id: node.id, type: "select", selected: false },
+        { id: upscaleNodeId, type: "select", selected: true },
+      ]);
+      setSelectedNode(upscaleNodeId);
+      requestFocusNode(upscaleNodeId);
+    }, [node.id, onNodesChange, requestFocusNode, requireVideoUrl, setSelectedNode, t]);
+
+    const handleAnalyzeVideo = useCallback(() => {
+      const url = requireVideoUrl();
+      const videoData = node.data as Record<string, unknown>;
+      const durationSec =
+        typeof videoData.durationMs === "number" && videoData.durationMs > 0
+          ? videoData.durationMs / 1000
+          : undefined;
+      const result = analyzeVideoStory(node.id, { videoUrl: url, durationSec });
+      if (!result) {
+        throw new Error("无法启动视频解析");
+      }
+      onNodesChange([
+        { id: node.id, type: "select", selected: false },
+        { id: result.nodeId, type: "select", selected: true },
+      ]);
+      setSelectedNode(result.nodeId);
+      requestFocusNode(result.nodeId);
+      return result;
+    }, [node.data, node.id, onNodesChange, requestFocusNode, requireVideoUrl, setSelectedNode]);
+
+    const handleSeparateVideoAudio = useCallback(async () => {
+      const url = requireVideoUrl();
+      const result = await separateVideoAudio(node.id, { sourceUrl: url });
+      const focusNodeId = result.videoNodeId ?? result.audioNodeId ?? null;
+      if (focusNodeId) {
+        onNodesChange([
+          { id: node.id, type: "select", selected: false },
+          { id: focusNodeId, type: "select", selected: true },
+        ]);
+        setSelectedNode(focusNodeId);
+        requestFocusNode(focusNodeId);
+      }
+      return result;
+    }, [node.id, onNodesChange, requestFocusNode, requireVideoUrl, setSelectedNode]);
+
+    const handleOpenVideoSubtitleErase = useCallback(
+      (mode: "smart" | "box") => {
+        requireVideoUrl();
+        updateNodeData(node.id, {
+          subtitleEraseMode: mode,
+          subtitleEraseBox: null,
+          isClipMode: false,
+        });
+        setSelectedNode(node.id);
+      },
+      [node.id, requireVideoUrl, setSelectedNode, updateNodeData],
+    );
 
     // 以下符号被暂时隐藏的 toolbar 按钮使用，保留代码不删除：
     // - Sparkles 图标用于 AI 改图按钮
@@ -894,13 +1022,97 @@ export const NodeActionToolbar = memo(
 
     useEffect(() => {
       return subscribeNodeAction(({ nodeId, action, requestId }) => {
-        if (nodeId !== node.id || action !== "run_matting_tool") return;
-        publishNodeActionAccepted(requestId, node.id, action);
-        void handleMatteImage()
-          .then((output) => publishNodeActionSuccess(requestId, node.id, action, output))
-          .catch((error) => publishNodeActionError(requestId, node.id, action, error));
+        if (nodeId !== node.id) return;
+        if (action === "run_matting_tool") {
+          publishNodeActionAccepted(requestId, node.id, action);
+          void handleMatteImage()
+            .then((output) => publishNodeActionSuccess(requestId, node.id, action, output))
+            .catch((error) => publishNodeActionError(requestId, node.id, action, error));
+          return;
+        }
+        if (action === "download_image") {
+          publishNodeActionAccepted(requestId, node.id, action);
+          void handleDownloadSaveAs()
+            .then(() => publishNodeActionSuccess(requestId, node.id, action, { downloaded: true }))
+            .catch((error) => publishNodeActionError(requestId, node.id, action, error));
+          return;
+        }
+        if (action === "open_video_clip_tool") {
+          try {
+            publishNodeActionAccepted(requestId, node.id, action);
+            handleOpenVideoClip();
+            publishNodeActionSuccess(requestId, node.id, action, { openedUiAction: true });
+          } catch (error) {
+            publishNodeActionError(requestId, node.id, action, error);
+          }
+          return;
+        }
+        if (action === "open_video_viewer") {
+          try {
+            publishNodeActionAccepted(requestId, node.id, action);
+            handleOpenVideoViewer();
+            publishNodeActionSuccess(requestId, node.id, action, { openedUiAction: true });
+          } catch (error) {
+            publishNodeActionError(requestId, node.id, action, error);
+          }
+          return;
+        }
+        if (action === "download_video") {
+          publishNodeActionAccepted(requestId, node.id, action);
+          void handleDownloadVideo()
+            .then(() => publishNodeActionSuccess(requestId, node.id, action, { downloaded: true }))
+            .catch((error) => publishNodeActionError(requestId, node.id, action, error));
+          return;
+        }
+        if (action === "open_video_upscale_tool") {
+          try {
+            publishNodeActionAccepted(requestId, node.id, action);
+            handleOpenVideoUpscale();
+            publishNodeActionSuccess(requestId, node.id, action, { openedUiAction: true });
+          } catch (error) {
+            publishNodeActionError(requestId, node.id, action, error);
+          }
+          return;
+        }
+        if (action === "run_video_analyze_story") {
+          try {
+            publishNodeActionAccepted(requestId, node.id, action);
+            const result = handleAnalyzeVideo();
+            publishNodeActionSuccess(requestId, node.id, action, { nodeId: result.nodeId });
+          } catch (error) {
+            publishNodeActionError(requestId, node.id, action, error);
+          }
+          return;
+        }
+        if (action === "run_audio_separate") {
+          publishNodeActionAccepted(requestId, node.id, action);
+          void handleSeparateVideoAudio()
+            .then((output) => publishNodeActionSuccess(requestId, node.id, action, { ...output }))
+            .catch((error) => publishNodeActionError(requestId, node.id, action, error));
+          return;
+        }
+        if (action === "open_video_subtitle_erase_smart" || action === "open_video_subtitle_erase_box") {
+          try {
+            publishNodeActionAccepted(requestId, node.id, action);
+            handleOpenVideoSubtitleErase(action === "open_video_subtitle_erase_smart" ? "smart" : "box");
+            publishNodeActionSuccess(requestId, node.id, action, { openedUiAction: true });
+          } catch (error) {
+            publishNodeActionError(requestId, node.id, action, error);
+          }
+        }
       });
-    }, [handleMatteImage, node.id]);
+    }, [
+      handleAnalyzeVideo,
+      handleDownloadSaveAs,
+      handleDownloadVideo,
+      handleMatteImage,
+      handleOpenVideoClip,
+      handleOpenVideoSubtitleErase,
+      handleOpenVideoUpscale,
+      handleOpenVideoViewer,
+      handleSeparateVideoAudio,
+      node.id,
+    ]);
 
     const handleOpenWorkbench = useCallback(() => {
       if (!workbenchTarget || openingWorkbench) {

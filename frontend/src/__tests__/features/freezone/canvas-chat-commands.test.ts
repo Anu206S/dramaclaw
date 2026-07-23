@@ -573,13 +573,13 @@ describe("canvas chat commands", () => {
     expect(edge?.data ?? {}).not.toHaveProperty("edgeKind");
   });
 
-  it("returns a canvas command error when a node action handler throws", async () => {
+  it("does not block single node command dispatch when a node action handler throws", async () => {
     const videoId = useCanvasStore
       .getState()
       .addNode(
         CANVAS_NODE_TYPES.video,
         { x: 0, y: 0 },
-        { videoUrl: "/static/video.mp4" },
+        { prompt: "A city walk" },
       );
     const unsubscribe = canvasEventBus.subscribe(
       "freezone/run-node-action",
@@ -596,7 +596,7 @@ describe("canvas chat commands", () => {
             {
               type: "run_node_action",
               node_id: videoId,
-              action: "run_audio_separate",
+              action: "generate_video",
             },
           ],
         },
@@ -605,9 +605,8 @@ describe("canvas chat commands", () => {
       expect(result.commandResults).toEqual([
         expect.objectContaining({
           type: "run_node_action",
-          status: "error",
-          action: "run_audio_separate",
-          error: expect.stringContaining("handler exploded"),
+          status: "success",
+          action: "generate_video",
         }),
       ]);
     } finally {
@@ -7526,6 +7525,40 @@ describe("canvas chat commands", () => {
             type: "run_node_action",
             node_id: nodeId,
             action: "download_audio",
+          }),
+        ],
+      }),
+    ]);
+  });
+
+  it("parses image download as a runnable node action", () => {
+    const nodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        imageUrl: "/static/project/image.png",
+      },
+    );
+    const envelopes = extractCanvasChatCommandEnvelopes([
+      {
+        schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        commands: [
+          {
+            type: "run_node_action",
+            node_id: nodeId,
+            action: "download_image",
+          },
+        ],
+      },
+    ]);
+
+    expect(envelopes).toEqual([
+      expect.objectContaining({
+        commands: [
+          expect.objectContaining({
+            type: "run_node_action",
+            node_id: nodeId,
+            action: "download_image",
           }),
         ],
       }),

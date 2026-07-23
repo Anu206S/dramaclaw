@@ -574,6 +574,19 @@ export const SelectedNodeOverlay = memo(() => {
           handleOpenOutpaint(nodeId);
           publishNodeActionSuccess(requestId, nodeId, action, { openedUiAction: true });
           return;
+        case 'open_rotate_tool': {
+          const beforeNodeIds = new Set(useCanvasStore.getState().nodes.map((node) => node.id));
+          handleOpenRotate(nodeId);
+          const created = useCanvasStore
+            .getState()
+            .nodes.some((node) => !beforeNodeIds.has(node.id));
+          if (!created) {
+            publishNodeActionError(requestId, nodeId, action, "目标节点没有可用于旋转的图片");
+            return;
+          }
+          publishNodeActionSuccess(requestId, nodeId, action, { openedUiAction: true });
+          return;
+        }
         case 'open_upscale_tool':
           handleOpenUpscale(nodeId);
           publishNodeActionSuccess(requestId, nodeId, action, { openedUiAction: true });
@@ -588,6 +601,7 @@ export const SelectedNodeOverlay = memo(() => {
     handleOpenMultiAngleEditor,
     handleOpenOutpaint,
     handleOpenRedraw,
+    handleOpenRotate,
     handleOpenScene360,
     handleOpenUpscale,
   ]);

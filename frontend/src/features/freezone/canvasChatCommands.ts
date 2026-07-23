@@ -324,6 +324,7 @@ const RUN_NODE_ACTIONS = new Set([
   "run_grid_frame_projection_5s_earlier",
   "open_grid_frame_projection_5s_earlier",
   "open_video_viewer",
+  "download_image",
   "download_video",
   "open_video_clip_tool",
   "open_video_upscale_tool",
@@ -2211,10 +2212,17 @@ function commandLabel(command: CanvasChatCommand): string {
       if (command.action === "run_grid_frame_projection_5s_earlier") return "推演 5 秒前画面";
       if (command.action === "open_video_viewer") return "打开视频";
       if (command.action === "download_video") return "下载视频";
+      if (command.action === "open_video_clip_tool") return "打开视频剪辑";
+      if (command.action === "open_video_upscale_tool") return "打开视频高清";
+      if (command.action === "run_video_analyze_story") return "解析视频";
+      if (command.action === "run_audio_separate") return "分离音视频";
       if (command.action === "download_audio") return "下载音频";
+      if (command.action === "open_video_subtitle_erase_smart") return "智能去字幕";
+      if (command.action === "open_video_subtitle_erase_box") return "框选去字幕";
       if (command.action === "capture_pano_current_view") return "截取当前 360 视角";
       if (command.action === "capture_pano_2x2_views") return "截取 360 四视角";
       if (command.action === "capture_pano_4x3_views") return "截取 360 十二视角";
+      if (command.action === "download_image") return "下载图片";
       if (command.action === "set_pano_current_view_as_background") return "设为当前背景";
       if (command.action === "reset_pano_view") return "复位 360 视角";
       if (command.action === "sync_beat_context_to_mainline") return "同步镜头上下文";
