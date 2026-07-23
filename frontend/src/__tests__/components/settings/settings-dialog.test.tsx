@@ -98,8 +98,8 @@ vi.mock("react-i18next", () => ({
         "settings.modelConfig.fields.apiKey": "API Key",
         "settings.mediaStorage.title": "图床 / 媒体存储",
         "settings.mediaStorage.description": "媒体存储说明",
-        "settings.freezoneCatalog.skills.description": "Skills 控制虾画 Agent 的领域行为和评估规则",
-        "settings.freezoneCatalog.recipes.description": "Recipes 控制虾画生成节点的提示词策略",
+        "settings.freezoneCatalog.skills.description": "管理 Agent 可直接使用的技能。",
+        "settings.freezoneCatalog.recipes.description": "维护 Skill 可调用的底层 Recipes，通常用于调试或内置能力管理。",
         "settings.freezoneCatalog.searchSkills": "搜索 Skill",
         "settings.freezoneCatalog.searchRecipes": "搜索 Recipe",
         "settings.freezoneCatalog.emptySkills": "暂无虾画 Skills",
@@ -125,6 +125,8 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.editItem": `编辑 ${options?.id ?? ""}`,
         "settings.freezoneCatalog.deleteItem": `删除 ${options?.id ?? ""}`,
         "settings.freezoneCatalog.refresh": "刷新",
+        "settings.freezoneCatalog.advancedManagement": "高级管理",
+        "settings.freezoneCatalog.backToSkills": "返回 Skills",
         "settings.freezoneCatalog.import": "导入",
         "settings.freezoneCatalog.export": "导出",
         "settings.freezoneCatalog.new": "新增",
@@ -280,6 +282,11 @@ function renderSettingsDialog() {
   );
 }
 
+function openRecipesManagement() {
+  fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
+  fireEvent.click(screen.getByRole("button", { name: "高级管理" }));
+}
+
 beforeEach(() => {
   runtimeState.isCeRuntime = true;
   freezoneAgentConfigMocks.delete.mockReset();
@@ -300,7 +307,7 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByText("选择模型网关渠道")).toBeInTheDocument();
   });
 
-  it("limits EE settings to Freezone Skills and Recipes", () => {
+  it("limits EE settings to Freezone Skills with Recipes under advanced management", () => {
     runtimeState.isCeRuntime = false;
 
     renderSettingsDialog();
@@ -312,13 +319,15 @@ describe("SettingsDialog pages", () => {
       "page",
     );
     expect(screen.getByText("暂无虾画 Skills")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "虾画 Recipes" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
 
     expect(screen.getByText("暂无虾画 Recipes")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "返回 Skills" })).toBeInTheDocument();
   });
 
-  it("switches to Freezone Skills and Recipes without replacing the original settings", () => {
+  it("opens Recipes from the Skills advanced management entry", () => {
     renderSettingsDialog();
 
     fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
@@ -326,8 +335,9 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByText("暂无虾画 Skills")).toBeInTheDocument();
     expect(screen.getByText("导入")).toBeInTheDocument();
     expect(screen.queryByText("freezone_demo")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "虾画 Recipes" })).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
 
     expect(screen.getByText("暂无虾画 Recipes")).toBeInTheDocument();
   });
@@ -366,10 +376,10 @@ describe("SettingsDialog pages", () => {
     expect(screen.queryByText("新增 Skill")).not.toBeInTheDocument();
   });
 
-  it("opens the new Recipe editor shell from the Recipes tab", () => {
+  it("opens the new Recipe editor shell from advanced management", () => {
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
 
     expect(screen.getByText("新增 Recipe")).toBeInTheDocument();
@@ -384,7 +394,7 @@ describe("SettingsDialog pages", () => {
   it("shows raw JSON that maps to the current new Recipe form fields", () => {
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
     fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
       target: { value: "digital-product-text-plan" },
@@ -440,7 +450,7 @@ describe("SettingsDialog pages", () => {
     });
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
     fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
       target: { value: "copyable-recipe" },
@@ -464,7 +474,7 @@ describe("SettingsDialog pages", () => {
   it("does not save a Freezone Recipe until all required fields are present", () => {
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
     fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
       target: { value: "story-recipe" },
@@ -823,7 +833,7 @@ describe("SettingsDialog pages", () => {
     ];
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
 
     expect(screen.getByText("公益宣传海报生成").closest("article")).toHaveTextContent("图片");
     expect(screen.getByText("公益宣传文案").closest("article")).toHaveTextContent("文本");
@@ -979,7 +989,7 @@ describe("SettingsDialog pages", () => {
   it("rejects imported Freezone Recipes that miss required fields", async () => {
     renderSettingsDialog();
 
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
+    openRecipesManagement();
     const importInput = screen.getByLabelText("导入");
     const file = new File(
       [
