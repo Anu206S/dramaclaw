@@ -20,6 +20,11 @@ except Exception:  # pragma: no cover - Hermes can run before app imports are av
     list_user_agent_config_items = None
 
 try:
+    from novelvideo.freezone.agent_catalog_schema import validate_agent_config_item
+except Exception:  # pragma: no cover - Hermes can run before app imports are available.
+    validate_agent_config_item = None
+
+try:
     from novelvideo.freezone.workflow_plan import (
         ALLOWED_LINK_TYPES,
         ALLOWED_NODE_TYPES,
@@ -1714,7 +1719,7 @@ def _without_private_fields(value: Any) -> Any:
 def _load_agent_config_items(kind: str, fallback_dir: Path) -> list[dict[str, Any]]:
     fallback_items = _merge_builtin_agent_config_items(
         _fallback_agent_config_items(kind),
-        _load_json_dir(fallback_dir),
+        _validate_loaded_agent_config_items(kind, _load_json_dir(fallback_dir)),
     )
     if list_user_agent_config_items is not None:
         username = _catalog_username()
@@ -1915,9 +1920,25 @@ def _load_json_dir(path: Path) -> list[dict[str, Any]]:
             payload = json.loads(file_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if isinstance(payload, dict):
-            items.append(payload)
+        if not isinstance(payload, dict):
+            continue
+        items.append(payload)
     return items
+
+
+def _validate_loaded_agent_config_items(
+    kind: str,
+    items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if validate_agent_config_item is None or kind not in {"skills", "recipes"}:
+        return items
+    validated_items: list[dict[str, Any]] = []
+    for payload in items:
+        try:
+            validated_items.append(validate_agent_config_item(kind, payload))
+        except ValueError:
+            continue
+    return validated_items
 
 
 def _templates(skill: dict[str, Any]) -> list[dict[str, Any]]:

@@ -12,8 +12,21 @@ _MINIMAL_ECOMMERCE_SKILL = {
     "version": 6,
     "description": "测试用电商产品图 Skill",
     "enabled": True,
-    "triggers": {"node_scopes": ["imageGeneration"]},
+    "category": "image",
+    "triggers": {
+        "keywords": ["电商产品图"],
+        "node_scopes": ["imageGeneration"],
+    },
     "allowed_recipe_ids": ["ecommerce-ad-image", "general-image"],
+    "planning": {
+        "planning_notes": "根据商品素材动态规划电商图。",
+        "conduct_rules": ["保留商品主体。"],
+    },
+    "evaluation": {
+        "rating_bands": [{"score": 5, "description": "商品表达清晰。"}],
+        "quality_threshold": 4,
+        "domain_constraints": ["不得改变商品关键外观。"],
+    },
 }
 
 _MINIMAL_ECOMMERCE_RECIPES = [
@@ -23,6 +36,10 @@ _MINIMAL_ECOMMERCE_RECIPES = [
         "version": 5,
         "enabled": True,
         "output_kind": "image",
+        "action_keys": ["ecommerce-ad-image"],
+        "system_prompt": "输出电商广告图提示词。",
+        "planning_prompt": "规划电商广告图。",
+        "result_summary": "电商广告图已生成。",
         "requires_source_media": True,
     },
     {
@@ -31,6 +48,10 @@ _MINIMAL_ECOMMERCE_RECIPES = [
         "version": 1,
         "enabled": True,
         "output_kind": "image",
+        "action_keys": ["general-image"],
+        "system_prompt": "输出通用图片提示词。",
+        "planning_prompt": "规划通用图片。",
+        "result_summary": "通用图片已生成。",
         "requires_source_media": False,
     },
     {
@@ -39,6 +60,10 @@ _MINIMAL_ECOMMERCE_RECIPES = [
         "version": 1,
         "enabled": True,
         "output_kind": "video",
+        "action_keys": ["general-video"],
+        "system_prompt": "输出通用视频提示词。",
+        "planning_prompt": "规划通用视频。",
+        "result_summary": "通用视频已生成。",
         "requires_source_media": False,
     },
 ]

@@ -738,6 +738,26 @@ describe("SettingsDialog pages", () => {
       target: { value: "故事" },
     });
     fireEvent.keyDown(screen.getByPlaceholderText("输入关键词"), { key: "Enter" });
+    fireEvent.change(screen.getByPlaceholderText("输入 Recipe ID"), {
+      target: { value: "story-recipe" },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText("输入 Recipe ID"), { key: "Enter" });
+    fireEvent.change(screen.getByPlaceholderText("规划提示..."), {
+      target: { value: "根据故事需求动态规划。" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("行为规则..."), {
+      target: { value: "保持故事一致性" },
+    });
+    fireEvent.keyDown(screen.getByPlaceholderText("行为规则..."), { key: "Enter" });
+    fireEvent.change(screen.getByPlaceholderText("如：7"), { target: { value: "7" } });
+    fireEvent.change(screen.getByPlaceholderText("输入规则"), {
+      target: { value: "不得偏离故事主题" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加锚点" }));
+    fireEvent.change(screen.getByPlaceholderText("0"), { target: { value: "5" } });
+    fireEvent.change(screen.getByPlaceholderText("该分数段的描述"), {
+      target: { value: "故事完整" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => {
@@ -747,6 +767,7 @@ describe("SettingsDialog pages", () => {
           id: "story-skill",
           description: "故事规则",
           category: "general",
+          allowed_recipe_ids: ["story-recipe"],
         }),
       });
     });
@@ -841,15 +862,38 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByText("user-skill").closest("article")).not.toHaveTextContent("内置");
   });
 
-  it("marks customized built-in items and toggles pure built-ins with a minimal overlay", async () => {
+  it("marks customized built-in items and toggles pure built-ins with the full payload", async () => {
     freezoneAgentConfigMocks.items = [
       {
         id: "builtin-skill",
+        schema_version: "dramaclaw.workflow-skill.v1",
+        name: "内置 Skill",
+        version: "1.0.0",
         _catalog_source: "builtin",
         enabled: true,
         category: "general",
         description: "内置规则",
         triggers: { keywords: ["builtin"] },
+        allowed_recipe_ids: ["builtin-recipe"],
+        input_parameters: [
+          {
+            id: "aspect_ratio",
+            label: "画幅",
+            type: "single_select",
+            required: true,
+            default: "16:9",
+            options: ["16:9", "1:1"],
+          },
+        ],
+        planning: {
+          planning_notes: "根据用户目标动态规划。",
+          conduct_rules: ["保持主体一致。"],
+        },
+        evaluation: {
+          rating_bands: [{ score: 5, description: "结果清晰" }],
+          quality_threshold: 4,
+          domain_constraints: ["不得改变主体。"],
+        },
       },
       {
         id: "customized-skill",
@@ -866,18 +910,44 @@ describe("SettingsDialog pages", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
 
-    expect(screen.getByText("builtin-skill").closest("article")).toHaveTextContent("内置");
+    expect(screen.getByText("内置 Skill").closest("article")).toHaveTextContent("内置");
     expect(screen.getByText("customized-skill").closest("article")).toHaveTextContent("定制");
     expect(screen.queryByText("已定制")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("switch", { name: "切换 builtin-skill 启用状态" }));
+    fireEvent.click(screen.getByRole("switch", { name: "切换 内置 Skill 启用状态" }));
 
     await waitFor(() => {
       expect(freezoneAgentConfigMocks.save).toHaveBeenCalledWith({
         kind: "skills",
         payload: {
           id: "builtin-skill",
+          schema_version: "dramaclaw.workflow-skill.v1",
+          name: "内置 Skill",
+          version: "1.0.0",
           enabled: false,
+          category: "general",
+          description: "内置规则",
+          triggers: { keywords: ["builtin"] },
+          allowed_recipe_ids: ["builtin-recipe"],
+          input_parameters: [
+            {
+              id: "aspect_ratio",
+              label: "画幅",
+              type: "single_select",
+              required: true,
+              default: "16:9",
+              options: ["16:9", "1:1"],
+            },
+          ],
+          planning: {
+            planning_notes: "根据用户目标动态规划。",
+            conduct_rules: ["保持主体一致。"],
+          },
+          evaluation: {
+            rating_bands: [{ score: 5, description: "结果清晰" }],
+            quality_threshold: 4,
+            domain_constraints: ["不得改变主体。"],
+          },
         },
       });
     });
@@ -927,6 +997,34 @@ describe("SettingsDialog pages", () => {
 
     await waitFor(() => {
       expect(freezoneAgentConfigMocks.save).not.toHaveBeenCalled();
+    });
+  });
+
+  it("rejects imported Freezone Skills that miss required schema fields", async () => {
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
+    const importInput = screen.getByLabelText("导入");
+    const file = new File(
+      [
+        JSON.stringify({
+          id: "loose-skill",
+          name: "半截 Skill",
+          enabled: true,
+          allowed_recipe_ids: ["loose-recipe"],
+          category: "video",
+          description: "缺少规划和评估字段",
+          triggers: { keywords: ["半截"] },
+        }),
+      ],
+      "skill.json",
+      { type: "application/json" },
+    );
+    fireEvent.change(importInput, { target: { files: [file] } });
+
+    await waitFor(() => {
+      expect(freezoneAgentConfigMocks.save).not.toHaveBeenCalled();
+      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("planning.planning_notes"));
     });
   });
 
