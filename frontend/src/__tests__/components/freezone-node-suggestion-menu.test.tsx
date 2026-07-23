@@ -11,6 +11,7 @@ function makeItems(n: number): FreezoneNodeSuggestion[] {
     column: "image" as const,
     title: `节点 ${i}`,
     thumbnailUrl: null,
+    mediaUrl: null,
     keyElementCategory: null,
   }));
 }
@@ -89,7 +90,7 @@ describe("<FreezoneNodeSuggestionMenu />", () => {
 
   it("renders an <img> with the thumbnail src when thumbnailUrl is set", () => {
     const items: FreezoneNodeSuggestion[] = [
-      { nodeId: "node-thumb", column: "image", title: "有缩略图", thumbnailUrl: "https://x/thumb.jpg", keyElementCategory: null },
+      { nodeId: "node-thumb", column: "image", title: "有缩略图", thumbnailUrl: "https://x/thumb.jpg", mediaUrl: null, keyElementCategory: null },
     ];
     const { container } = render(
       <FreezoneNodeSuggestionMenu

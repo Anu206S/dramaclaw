@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useRef, useState, type ReactElement } from 'react';
-import { ChevronDown, ImageIcon } from 'lucide-react';
+import { ChevronDown, ImageIcon, MessageSquarePlus } from 'lucide-react';
 
 import {
   DropdownMenu,
@@ -9,7 +9,14 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu';
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from '@/components/ui/tooltip';
 import type { AssetBoardItem } from '@/features/canvas/domain/assetBoard';
+import { ADD_NODE_TO_CHAT_LABEL, addNodesToChat } from '@/features/canvas/ui/AddNodeToChatButton';
 import {
   KEY_ELEMENT_CATEGORY_KEYS,
   KEY_ELEMENT_CATEGORY_LABEL,
@@ -143,35 +150,64 @@ export function KeyElementsBar({
           ))}
         </div>
       ) : visibleKey.length > 0 ? (
-        <div className="flex items-start gap-3 overflow-x-auto">
-          {visibleKey.map((item) => (
-            <button
-              key={item.nodeId}
-              type="button"
-              onClick={() => onOpen(item)}
-              title={item.title}
-              className="flex w-12 shrink-0 flex-col items-center gap-1"
-            >
-              <span className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black/20 transition-colors hover:border-white/25">
-                {item.thumbnailUrl ? (
-                  // alt="" 让缩略图是装饰性的：按钮可及名称由下方标题 span 提供。
-                  <img
-                    src={item.thumbnailUrl}
-                    alt=""
-                    loading="lazy"
-                    draggable={false}
-                    className="h-full w-full object-cover"
-                  />
-                ) : (
-                  <ImageIcon className="h-5 w-5 text-white/30" />
-                )}
-              </span>
-              <span className="w-full truncate text-center text-[11px] text-white/60">
-                {item.title}
-              </span>
-            </button>
-          ))}
-        </div>
+        // hoverable 浮层承载「添加到对话」pill：TooltipContent 走 Portal，不受这条
+        // overflow-x-auto 裁剪；hover 缩略图即在其正上方浮出，点 pill 把该节点 @ 进虾导。
+        <TooltipProvider delay={120}>
+          <div className="flex items-start gap-3 overflow-x-auto">
+            {visibleKey.map((item) => (
+              <Tooltip key={item.nodeId}>
+                <TooltipTrigger
+                  render={
+                    // 不再挂原生 title：与浮层提示并存会同时冒两个；可及名称由下方标题 span 提供。
+                    <button
+                      type="button"
+                      onClick={() => onOpen(item)}
+                      className="flex w-12 shrink-0 flex-col items-center gap-1"
+                    >
+                      <span className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-md border border-white/10 bg-black/20 transition-colors hover:border-white/25">
+                        {item.thumbnailUrl ? (
+                          // alt="" 让缩略图是装饰性的：按钮可及名称由下方标题 span 提供。
+                          <img
+                            src={item.thumbnailUrl}
+                            alt=""
+                            loading="lazy"
+                            draggable={false}
+                            className="h-full w-full object-cover"
+                          />
+                        ) : (
+                          <ImageIcon className="h-5 w-5 text-white/30" />
+                        )}
+                      </span>
+                      <span className="w-full truncate text-center text-[11px] text-white/60">
+                        {item.title}
+                      </span>
+                    </button>
+                  }
+                />
+                <TooltipContent
+                  side="top"
+                  sideOffset={6}
+                  showArrow={false}
+                  className="border-0 bg-transparent p-0 shadow-none"
+                >
+                  <button
+                    type="button"
+                    onClick={(event) => {
+                      // 不冒泡到缩略图：它的 onClick 会打开详情，这里只要把节点 @ 进虾导。
+                      event.stopPropagation();
+                      addNodesToChat([item.nodeId]);
+                    }}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    className="inline-flex items-center gap-1 rounded-md bg-[#2e2e2e] px-2.5 py-1.5 text-xs font-medium text-white/90 shadow-xl ring-1 ring-white/10 transition-colors hover:bg-[#3a3a3a] hover:text-white"
+                  >
+                    <MessageSquarePlus className="h-3.5 w-3.5" />
+                    {ADD_NODE_TO_CHAT_LABEL}
+                  </button>
+                </TooltipContent>
+              </Tooltip>
+            ))}
+          </div>
+        </TooltipProvider>
       ) : (
         // 关键元素标签下、当前分类为空（切了个空分类）：占位而不塌成没有内容。
         <p className="py-1 text-[12px] text-white/40">该分类下暂无关键元素</p>

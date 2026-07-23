@@ -11,6 +11,8 @@ export type FreezoneNodeSuggestion = {
   column: AssetBoardColumn;
   title: string;
   thumbnailUrl: string | null;
+  /** 片源地址（视频/音频/图片本体）。给「没记封面的视频」取首帧兜底用。 */
+  mediaUrl: string | null;
   /** 关键元素分类（用户标记）；未标记为 null。默认排序据此把关键元素置顶。 */
   keyElementCategory: KeyElementCategory | null;
 };
@@ -43,6 +45,7 @@ export function buildFreezoneNodeSuggestions(board: AssetBoardData): FreezoneNod
     column: item.column,
     title: item.title,
     thumbnailUrl: item.thumbnailUrl,
+    mediaUrl: item.mediaUrl,
     keyElementCategory: item.keyElementCategory,
   }));
   return flattened
@@ -86,10 +89,13 @@ export type FreezoneNodeMention = {
   end: number;
 };
 
-/** 供编辑器 chip 展示的节点查表：nodeId → 缩略图/列。label 以 token 自带为准。 */
+/**
+ * 供编辑器 chip / 悬浮预览展示的节点查表：nodeId → 缩略图/片源/列。label 以 token 自带为准。
+ * mediaUrl 是给「没记封面的视频」取首帧兜底用的（与故事板 VideoThumb 同口径）。
+ */
 export type FreezoneNodeMentionLookup = Map<
   string,
-  { thumbnailUrl: string | null; column: AssetBoardColumn }
+  { thumbnailUrl: string | null; mediaUrl: string | null; column: AssetBoardColumn }
 >;
 
 /** 节点名进 token 前清洗：去掉会破坏 `@[名](id)` 语法的字符，折叠空白。 */
@@ -148,11 +154,80 @@ export function freezoneNodeMentionText(value: string): string {
   });
 }
 
-/** 从候选列表建 nodeId → 缩略图/列 查表，供编辑器 chip 渲染缩略图。 */
+/** 从候选列表建 nodeId → 缩略图/片源/列 查表，供编辑器 chip 渲染缩略图与首帧兜底。 */
 export function buildFreezoneNodeMentionLookup(
   items: FreezoneNodeSuggestion[],
 ): FreezoneNodeMentionLookup {
   return new Map(
-    items.map((item) => [item.nodeId, { thumbnailUrl: item.thumbnailUrl, column: item.column }]),
+    items.map((item) => [
+      item.nodeId,
+      { thumbnailUrl: item.thumbnailUrl, mediaUrl: item.mediaUrl, column: item.column },
+    ]),
   );
+}
+
+/**
+ * 「添加到对话」落地：把一批 nodeId 追加成 draft 里的行内 mention chip。
+ * - titleLookup 无该 id（节点已不在画布上）→ 跳过；
+ * - draft 已提及 or 同批重复 → 跳过，避免重复 chip。
+ * 逐个复用 insertFreezoneNodeMention（无尾随 @query 时即在末尾追加）。
+ */
+export function appendFreezoneNodeMentions(
+  draft: string,
+  nodeIds: string[],
+  titleLookup: Map<string, string>,
+): string {
+  const seen = new Set(freezoneNodeMentionIds(draft));
+  let result = draft;
+  for (const nodeId of nodeIds) {
+    if (seen.has(nodeId)) continue;
+    const title = titleLookup.get(nodeId);
+    if (title === undefined) continue;
+    result = insertFreezoneNodeMention(result, nodeId, title);
+    seen.add(nodeId);
+  }
+  return result;
+}
+
+/** 栏目 → 悬浮预览里显示的中文类型标签。 */
+const FREEZONE_NODE_COLUMN_LABEL: Record<AssetBoardColumn, string> = {
+  text: "文本",
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+};
+
+/**
+ * 输入框里引用 chip 的悬浮预览内容。
+ * - thumbnailUrl 有值 → 直接 <img>（图片本体 / 视频封面）；
+ * - thumbnailUrl 为空但 videoPosterUrl 有值 → 用片源取首帧 <video>（视频没记封面时的兜底）；
+ * - 两者都空 → 文本/音频等，走类型占位。
+ */
+export type FreezoneNodePreviewInfo = {
+  label: string;
+  thumbnailUrl: string | null;
+  /** 无封面的视频 → 用片源取首帧的兜底源；非视频或已有封面为 null。 */
+  videoPosterUrl: string | null;
+  typeLabel: string;
+};
+
+/**
+ * 从 chip 自带的 label 与查表 meta 组出预览卡内容：
+ * - 图片/视频有缩略图 → 放大展示；视频没记封面 → 用 mediaUrl 取首帧兜底（对齐故事板 VideoThumb）；
+ * - 文本/音频等无图 → 只给类型占位；
+ * - meta 缺失（节点已不在画布上）→ 类型回落成「引用」，仍展示 label。
+ */
+export function buildFreezoneNodePreviewInfo(
+  label: string,
+  meta: { thumbnailUrl: string | null; mediaUrl: string | null; column: AssetBoardColumn } | null,
+): FreezoneNodePreviewInfo {
+  const thumbnailUrl = meta?.thumbnailUrl ?? null;
+  const videoPosterUrl =
+    !thumbnailUrl && meta?.column === "video" ? (meta.mediaUrl ?? null) : null;
+  return {
+    label,
+    thumbnailUrl,
+    videoPosterUrl,
+    typeLabel: meta ? FREEZONE_NODE_COLUMN_LABEL[meta.column] : "引用",
+  };
 }
