@@ -788,7 +788,11 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   const [boardMounted, setBoardMounted] = useState(viewMode === "board");
   const handleViewModeChange = useCallback(
     (mode: FreezoneViewMode) => {
-      if (mode === "board") setBoardMounted(true);
+      if (mode === "board") {
+        setBoardMounted(true);
+        // 进入故事板默认展开虾导，便于直接对着素材开聊。
+        setChatOpen(true);
+      }
       setViewMode(mode);
     },
     [setViewMode],
@@ -2524,7 +2528,11 @@ function FreezoneChatDock({
         className={cn(
           // 贴右边、通高（对标 liblib）：不留外边距、不圆角，只留一条左描边把
           // 抽屉与画布/故事板分开。
-          "absolute inset-y-0 right-0 z-40 hidden flex-col overflow-hidden border-l border-white/[0.12] bg-zinc-950/55 shadow-none backdrop-blur-2xl lg:flex",
+          "absolute inset-y-0 right-0 z-40 hidden flex-col overflow-hidden border-l border-white/[0.12] shadow-none lg:flex",
+          // 拖拽期换成近乎不透明的实底、关掉背景模糊：通高 backdrop-blur-2xl 每帧
+          // 都要把整屏高的大半径模糊重新光栅化一遍，是「拖不动、跟不上手」的主因。
+          // 拖的时候底下内容本就静止，换实底几乎看不出差别，松手再恢复毛玻璃。
+          resizing ? "bg-zinc-950/95" : "bg-zinc-950/55 backdrop-blur-2xl",
           dockTransition,
           panelVisible ? "translate-x-0 opacity-100" : "translate-x-10 opacity-0",
           !panelVisible && "pointer-events-none",
