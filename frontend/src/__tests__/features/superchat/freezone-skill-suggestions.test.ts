@@ -138,9 +138,23 @@ describe("freezone skill slash suggestions", () => {
     expect(shouldShowFreezoneSkillSuggestionMenu({ isFreezoneLayout: true, slashQuery: null })).toBe(
       false,
     );
+    expect(
+      shouldShowFreezoneSkillSuggestionMenu({
+        isFreezoneLayout: true,
+        slashQuery: null,
+        explicitOpen: true,
+      }),
+    ).toBe(true);
     expect(shouldShowFreezoneSkillSuggestionMenu({ isFreezoneLayout: false, slashQuery: "" })).toBe(
       false,
     );
+    expect(
+      shouldShowFreezoneSkillSuggestionMenu({
+        isFreezoneLayout: false,
+        slashQuery: null,
+        explicitOpen: true,
+      }),
+    ).toBe(false);
   });
 
   it("fills the composer with an empty-state skill creation prompt", () => {
