@@ -156,6 +156,22 @@ import {
   splitFreezoneSkillMentionText,
   toFreezoneSkillSuggestions,
 } from "@/features/superchat/freezone-skill-suggestions";
+import { buildAssetBoard, type AssetBoardColumn } from "@/features/canvas/domain/assetBoard";
+import {
+  FREEZONE_NODE_SUGGESTION_PAGE,
+  buildFreezoneNodeMentionLookup,
+  buildFreezoneNodeSuggestions,
+  filterFreezoneNodeSuggestions,
+  freezoneNodeMentionIds,
+  freezoneNodeMentionText,
+  getFreezoneNodeAtQuery,
+  insertFreezoneNodeMention,
+  parseFreezoneNodeMentions,
+  sanitizeFreezoneNodeLabel,
+  stripFreezoneNodeAtQuery,
+  type FreezoneNodeMentionLookup,
+} from "@/features/superchat/freezone-node-suggestions";
+import { FreezoneNodeSuggestionMenu } from "@/features/superchat/FreezoneNodeSuggestionMenu";
 import {
   freezoneAgentConfigQueryKey,
   type FreezoneAgentConfigKind,
@@ -7884,7 +7900,7 @@ function CanvasNodeReferenceThumb({
       onKeyDown={(event) => handleCanvasReferenceKeyDown(event, node.nodeId)}
       tabIndex={0}
     >
-      <div className="h-full w-full overflow-hidden rounded-lg border border-white/10 bg-white/[0.07] transition group-hover:border-white/25 group-hover:ring-2 group-hover:ring-white/10">
+      <div className="h-full w-full overflow-hidden rounded-md border border-white/10 bg-white/[0.07] transition group-hover:border-white/25 group-hover:ring-2 group-hover:ring-white/10">
         {previewSrc && previewIsVideo ? (
           <CanvasReferenceVideoPreview src={previewSrc} title={title} iconClassName="size-4" />
         ) : previewSrc && (previewIsImage || isImage) ? (
@@ -8115,6 +8131,11 @@ function serializeFreezoneSkillEditor(root: HTMLElement): string {
     if (node.nodeType === Node.TEXT_NODE) return node.textContent ?? "";
     if (!(node instanceof HTMLElement)) return "";
     if (node.dataset.freezoneSkillId) return `/${node.dataset.freezoneSkillId}`;
+    if (node.dataset.freezoneNodeId) {
+      const label =
+        sanitizeFreezoneNodeLabel(node.dataset.freezoneNodeLabel ?? "") || node.dataset.freezoneNodeId;
+      return `@[${label}](${node.dataset.freezoneNodeId})`;
+    }
     if (node.tagName === "BR") return "\n";
     const childText = Array.from(node.childNodes).map(readNode).join("");
     if (node.tagName === "DIV" || node.tagName === "P") return `${childText}\n`;
@@ -8123,50 +8144,117 @@ function serializeFreezoneSkillEditor(root: HTMLElement): string {
   return Array.from(root.childNodes).map(readNode).join("").replace(/\n$/u, "");
 }
 
+const FREEZONE_CHIP_CLASS =
+  "mx-0.5 inline-flex max-w-[min(260px,80%)] select-none items-center gap-1.5 rounded-[7px] border border-white/[0.12] bg-white/[0.08] px-2 py-0.5 align-baseline text-xs text-foreground/90";
+
+function buildFreezoneSkillChipElement(skillId: string, label: string): HTMLElement {
+  const chip = document.createElement("span");
+  chip.dataset.freezoneSkillId = skillId;
+  chip.contentEditable = "false";
+  chip.className = FREEZONE_CHIP_CLASS;
+  chip.title = skillId;
+
+  const icon = document.createElement("span");
+  icon.className = "inline-flex size-3 shrink-0 items-center justify-center rounded-[3px] border border-primary/40 text-[8px] leading-none text-primary";
+  icon.textContent = "◇";
+  chip.appendChild(icon);
+
+  const text = document.createElement("span");
+  text.className = "truncate";
+  text.textContent = label;
+  chip.appendChild(text);
+  return chip;
+}
+
+const FREEZONE_NODE_CHIP_GLYPH: Record<AssetBoardColumn, string> = {
+  text: "T",
+  image: "▣",
+  video: "▶",
+  audio: "♪",
+};
+
+/** 草稿无节点提及时复用的空查表，避免每帧新建 Map 触发编辑器重渲染。 */
+const EMPTY_FREEZONE_NODE_MENTION_LOOKUP: FreezoneNodeMentionLookup = new Map();
+
+function buildFreezoneNodeChipElement(
+  nodeId: string,
+  label: string,
+  meta: { thumbnailUrl: string | null; column: AssetBoardColumn } | null,
+): HTMLElement {
+  const chip = document.createElement("span");
+  chip.dataset.freezoneNodeId = nodeId;
+  chip.dataset.freezoneNodeLabel = label;
+  chip.contentEditable = "false";
+  chip.className = FREEZONE_CHIP_CLASS;
+  chip.title = label;
+
+  if (meta?.thumbnailUrl) {
+    const thumb = document.createElement("img");
+    thumb.src = meta.thumbnailUrl;
+    thumb.alt = "";
+    thumb.loading = "lazy";
+    thumb.className = "size-4 shrink-0 rounded-[3px] object-cover";
+    chip.appendChild(thumb);
+  } else {
+    const icon = document.createElement("span");
+    icon.className = "inline-flex size-4 shrink-0 items-center justify-center rounded-[3px] bg-white/[0.08] text-[9px] leading-none text-muted-foreground";
+    icon.textContent = meta ? FREEZONE_NODE_CHIP_GLYPH[meta.column] : "@";
+    chip.appendChild(icon);
+  }
+
+  const text = document.createElement("span");
+  text.className = "truncate";
+  text.textContent = label;
+  chip.appendChild(text);
+  return chip;
+}
+
 function renderFreezoneSkillEditorContent(
   root: HTMLElement,
   value: string,
   suggestions: FreezoneSkillSuggestion[],
+  nodeLookup: FreezoneNodeMentionLookup,
 ): void {
   const suggestionById = new Map(suggestions.map((suggestion) => [suggestion.id, suggestion]));
   root.textContent = "";
 
-  let cursor = 0;
-  const matches = value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu);
-  for (const match of matches) {
+  const mentions: Array<{ start: number; end: number; build: () => HTMLElement }> = [];
+
+  for (const match of value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu)) {
     if (match.index === undefined) continue;
     const matchedToken = match[0] ?? "";
     const skillId = match[1]?.trim();
     if (!skillId) continue;
     const suggestion = suggestionById.get(skillId);
     if (!suggestion) continue;
-
-    const tokenStart = match.index + (matchedToken.startsWith("/") ? 0 : 1);
-    const tokenEnd = tokenStart + skillId.length + 1;
-    if (tokenStart > cursor) {
-      root.appendChild(document.createTextNode(value.slice(cursor, tokenStart)));
-    }
-
-    const chip = document.createElement("span");
-    chip.dataset.freezoneSkillId = skillId;
-    chip.contentEditable = "false";
-    chip.className = "mx-0.5 inline-flex max-w-[min(260px,80%)] select-none items-center gap-1.5 rounded-[7px] border border-white/[0.12] bg-white/[0.08] px-2 py-0.5 align-baseline text-xs text-foreground/90";
-    chip.title = skillId;
-
-    const icon = document.createElement("span");
-    icon.className = "inline-flex size-3 shrink-0 items-center justify-center rounded-[3px] border border-primary/40 text-[8px] leading-none text-primary";
-    icon.textContent = "◇";
-    chip.appendChild(icon);
-
-    const label = document.createElement("span");
-    label.className = "truncate";
-    label.textContent = suggestion.label;
-    chip.appendChild(label);
-
-    root.appendChild(chip);
-    cursor = tokenEnd;
+    const start = match.index + (matchedToken.startsWith("/") ? 0 : 1);
+    mentions.push({
+      start,
+      end: start + skillId.length + 1,
+      build: () => buildFreezoneSkillChipElement(skillId, suggestion.label),
+    });
   }
 
+  for (const mention of parseFreezoneNodeMentions(value)) {
+    mentions.push({
+      start: mention.start,
+      end: mention.end,
+      build: () =>
+        buildFreezoneNodeChipElement(mention.nodeId, mention.label, nodeLookup.get(mention.nodeId) ?? null),
+    });
+  }
+
+  mentions.sort((a, b) => a.start - b.start);
+
+  let cursor = 0;
+  for (const mention of mentions) {
+    if (mention.start < cursor) continue; // 防御：token 不重叠
+    if (mention.start > cursor) {
+      root.appendChild(document.createTextNode(value.slice(cursor, mention.start)));
+    }
+    root.appendChild(mention.build());
+    cursor = mention.end;
+  }
   if (cursor < value.length) {
     root.appendChild(document.createTextNode(value.slice(cursor)));
   }
@@ -8181,29 +8269,31 @@ function adjacentFreezoneSkillChip(
   const anchorNode = selection.anchorNode;
   if (!anchorNode || !editor.contains(anchorNode)) return null;
 
-  const asSkillChip = (node: Node | null): HTMLElement | null => {
+  const asChip = (node: Node | null): HTMLElement | null => {
     if (!(node instanceof HTMLElement)) return null;
-    return node.dataset.freezoneSkillId ? node : null;
+    return node.dataset.freezoneSkillId || node.dataset.freezoneNodeId ? node : null;
   };
 
   if (anchorNode === editor) {
     const index = selection.anchorOffset + (direction === "backward" ? -1 : 0);
-    return asSkillChip(editor.childNodes.item(index));
+    return asChip(editor.childNodes.item(index));
   }
 
   if (anchorNode.nodeType === Node.TEXT_NODE) {
     const text = anchorNode.textContent ?? "";
     if (direction === "backward" && selection.anchorOffset === 0) {
-      return asSkillChip(anchorNode.previousSibling);
+      return asChip(anchorNode.previousSibling);
     }
     if (direction === "forward" && selection.anchorOffset === text.length) {
-      return asSkillChip(anchorNode.nextSibling);
+      return asChip(anchorNode.nextSibling);
     }
     return null;
   }
 
   if (anchorNode instanceof HTMLElement) {
-    const closestChip = anchorNode.closest<HTMLElement>("[data-freezone-skill-id]");
+    const closestChip = anchorNode.closest<HTMLElement>(
+      "[data-freezone-skill-id],[data-freezone-node-id]",
+    );
     if (closestChip && editor.contains(closestChip)) return closestChip;
   }
   return null;
@@ -8212,6 +8302,7 @@ function adjacentFreezoneSkillChip(
 type FreezoneSkillInlineEditorProps = {
   value: string;
   suggestions: FreezoneSkillSuggestion[];
+  nodeLookup: FreezoneNodeMentionLookup;
   placeholder: string;
   inputRef: (element: HTMLElement | null) => void;
   onChange: (value: string) => void;
@@ -8223,6 +8314,7 @@ type FreezoneSkillInlineEditorProps = {
 function FreezoneSkillInlineEditor({
   value,
   suggestions,
+  nodeLookup,
   placeholder,
   inputRef,
   onChange,
@@ -8241,16 +8333,19 @@ function FreezoneSkillInlineEditor({
     const suggestionsKey = suggestions.map((suggestion) => `${suggestion.id}:${suggestion.label}`).join("\n");
     const suggestionsChanged = suggestionsKey !== lastRenderedSuggestionsKeyRef.current;
     const suggestionIds = new Set(suggestions.map((suggestion) => suggestion.id));
-    const renderableMentionCount = Array.from(value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu))
-      .filter((match) => suggestionIds.has(match[1]?.trim() ?? ""))
-      .length;
-    const renderedChipCount = editor.querySelectorAll("[data-freezone-skill-id]").length;
+    const renderableMentionCount =
+      Array.from(value.matchAll(/(?:^|\s)\/([^\s/]+)(?=\s|$)/gu)).filter((match) =>
+        suggestionIds.has(match[1]?.trim() ?? ""),
+      ).length + parseFreezoneNodeMentions(value).length;
+    const renderedChipCount = editor.querySelectorAll(
+      "[data-freezone-skill-id],[data-freezone-node-id]",
+    ).length;
     const hasMissingRenderedChip = renderableMentionCount !== renderedChipCount;
     const isUserInputEcho = document.activeElement === editor && value === lastEmittedValueRef.current;
     if (isUserInputEcho && currentValue === value && !suggestionsChanged && !hasMissingRenderedChip) return;
-    renderFreezoneSkillEditorContent(editor, value, suggestions);
+    renderFreezoneSkillEditorContent(editor, value, suggestions, nodeLookup);
     lastRenderedSuggestionsKeyRef.current = suggestionsKey;
-  }, [suggestions, value]);
+  }, [suggestions, value, nodeLookup]);
 
   const setEditorRef = useCallback((element: HTMLDivElement | null) => {
     editorRef.current = element;
@@ -9603,6 +9698,8 @@ export function SuperChatPanel({
   const [freezoneSkillCatalog, setFreezoneSkillCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
   const [freezoneSkillCatalogLoaded, setFreezoneSkillCatalogLoaded] = useState(false);
   const [activeFreezoneSkillSuggestionIndex, setActiveFreezoneSkillSuggestionIndex] = useState(0);
+  const [activeNodeSuggestionIndex, setActiveNodeSuggestionIndex] = useState(0);
+  const [nodeSuggestionVisibleCount, setNodeSuggestionVisibleCount] = useState(FREEZONE_NODE_SUGGESTION_PAGE);
   const freezoneSkillSuggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftInputRef = useRef<HTMLElement | null>(null);
@@ -9694,6 +9791,31 @@ export function SuperChatPanel({
     restoreDraftFocusRef.current = true;
   }, []);
 
+  const nodeAtQuery = isFreezoneLayout ? getFreezoneNodeAtQuery(draft) : null;
+  const showNodeSuggestions = isFreezoneLayout && nodeAtQuery !== null;
+  const allNodeSuggestions = useMemo(
+    () => (showNodeSuggestions ? buildFreezoneNodeSuggestions(buildAssetBoard(canvasNodes, canvasEdges)) : []),
+    [canvasEdges, canvasNodes, showNodeSuggestions],
+  );
+  const filteredNodeSuggestions = useMemo(
+    () => (nodeAtQuery === null ? [] : filterFreezoneNodeSuggestions(allNodeSuggestions, nodeAtQuery)),
+    [allNodeSuggestions, nodeAtQuery],
+  );
+  // 仅当草稿里已含节点 token 时才建查表；避免无引用时每帧重算 buildAssetBoard。
+  const hasNodeMentionDraft = isFreezoneLayout && draft.includes("@[");
+  const nodeMentionLookup = useMemo(
+    () =>
+      hasNodeMentionDraft
+        ? buildFreezoneNodeMentionLookup(buildFreezoneNodeSuggestions(buildAssetBoard(canvasNodes, canvasEdges)))
+        : EMPTY_FREEZONE_NODE_MENTION_LOOKUP,
+    [hasNodeMentionDraft, canvasNodes, canvasEdges],
+  );
+  const selectNodeSuggestion = useCallback((nodeId: string, title: string) => {
+    setDraft((current) => insertFreezoneNodeMention(current, nodeId, title));
+    setActiveNodeSuggestionIndex(0);
+    restoreDraftFocusRef.current = true;
+  }, []);
+
   useEffect(() => {
     if (
       !isFreezoneLayout
@@ -9722,6 +9844,17 @@ export function SuperChatPanel({
   useEffect(() => {
     setActiveFreezoneSkillSuggestionIndex(0);
   }, [freezoneSkillSlashQuery]);
+
+  useEffect(() => {
+    setActiveNodeSuggestionIndex(0);
+    setNodeSuggestionVisibleCount(FREEZONE_NODE_SUGGESTION_PAGE);
+  }, [nodeAtQuery]);
+
+  useEffect(() => {
+    setActiveNodeSuggestionIndex((index) =>
+      filteredNodeSuggestions.length > 0 ? Math.min(index, filteredNodeSuggestions.length - 1) : 0,
+    );
+  }, [filteredNodeSuggestions.length]);
 
   useEffect(() => {
     setActiveFreezoneSkillSuggestionIndex((index) =>
@@ -9762,6 +9895,34 @@ export function SuperChatPanel({
     isFreezoneLayout,
     params.project,
     selectedFreezoneNodes,
+  ]);
+  // 正文里 @ 提及的节点 → 结构化附件（与「当前选中」附件并行，提交时合并去重）。
+  const mentionedNodeReferenceAttachment = useMemo(() => {
+    if (!isFreezoneLayout) return null;
+    const ids = freezoneNodeMentionIds(draft);
+    if (ids.length === 0) return null;
+    const project = params.project?.trim();
+    const currentCanvasId = freezoneCanvasId ?? canvasId;
+    if (!project || !currentCanvasId) return null;
+    const idSet = new Set(ids);
+    const mentioned = canvasNodes.filter((node) => idSet.has(node.id));
+    if (mentioned.length === 0) return null;
+    return buildCanvasNodeReferenceAttachment(
+      project,
+      currentCanvasId,
+      mentioned,
+      canvasEdges,
+      canvasNodes,
+      { displayNodes: mentioned },
+    );
+  }, [
+    canvasEdges,
+    canvasId,
+    canvasNodes,
+    draft,
+    freezoneCanvasId,
+    isFreezoneLayout,
+    params.project,
   ]);
   const existingCanvasNodeIds = useMemo(
     () => new Set(canvasNodes.map((node) => node.id)),
@@ -11323,10 +11484,17 @@ export function SuperChatPanel({
   }, [draft]);
 
   const submit = () => {
-    const messageAttachments = selectedFreezoneNodeAttachment
-      ? mergeCanvasNodeReferenceAttachments([...attachments, selectedFreezoneNodeAttachment])
+    // 双轨附件：画布「当前选中」+ 正文 @ 提及，各自可能为 null，合并去重。
+    const canvasRefAttachments = [
+      selectedFreezoneNodeAttachment,
+      mentionedNodeReferenceAttachment,
+    ].filter((attachment): attachment is ChatAttachment => attachment !== null);
+    const messageAttachments = canvasRefAttachments.length > 0
+      ? mergeCanvasNodeReferenceAttachments([...attachments, ...canvasRefAttachments])
       : attachments;
-    const hasCurrentContent = draft.trim().length > 0 || messageAttachments.length > 0;
+    // 发给 agent 的正文把 @[名](id) 还原成可读的 [名]，nodeId 交由附件精确定位。
+    const readableDraft = freezoneNodeMentionText(draft).trim();
+    const hasCurrentContent = readableDraft.length > 0 || messageAttachments.length > 0;
     if (!hasCurrentContent || preparingSend) return;
     if (!chat.connected) {
       toast.error(t("aiAssistant.waiting"));
@@ -11334,10 +11502,10 @@ export function SuperChatPanel({
     }
     setSelectedHistoryMessageIndex(null);
     const hasOnlyCanvasReferences =
-      draft.trim().length === 0
+      readableDraft.length === 0
       && messageAttachments.length > 0
       && messageAttachments.every(isCanvasNodeReferenceAttachment);
-    const text = draft.trim() || (
+    const text = readableDraft || (
       hasOnlyCanvasReferences
         ? t("aiAssistant.canvasReferenceOnlyPrompt")
         : t("aiAssistant.attachmentOnlyPrompt")
@@ -11368,6 +11536,45 @@ export function SuperChatPanel({
   };
 
   const handleDraftKeyDown = (event: ReactKeyboardEvent<HTMLElement>) => {
+    if (showNodeSuggestions && (event.key === "ArrowDown" || event.key === "ArrowUp")) {
+      event.preventDefault();
+      const cap = Math.min(nodeSuggestionVisibleCount, filteredNodeSuggestions.length);
+      // 已在已渲染末项且仍有更多结果：先加载下一页再前移，让键盘也能走到窗口外的节点。
+      if (
+        event.key === "ArrowDown"
+        && activeNodeSuggestionIndex >= cap - 1
+        && nodeSuggestionVisibleCount < filteredNodeSuggestions.length
+      ) {
+        setNodeSuggestionVisibleCount((count) =>
+          Math.min(count + FREEZONE_NODE_SUGGESTION_PAGE, filteredNodeSuggestions.length),
+        );
+        setActiveNodeSuggestionIndex((index) => index + 1);
+        return;
+      }
+      setActiveNodeSuggestionIndex((index) =>
+        moveFreezoneSkillSuggestionIndex(index, event.key === "ArrowDown" ? 1 : -1, cap),
+      );
+      return;
+    }
+    if (
+      showNodeSuggestions
+      && (event.key === "Enter" || event.key === "Tab")
+      && !event.shiftKey
+      && !event.nativeEvent.isComposing
+      && filteredNodeSuggestions[activeNodeSuggestionIndex]
+    ) {
+      event.preventDefault();
+      const chosen = filteredNodeSuggestions[activeNodeSuggestionIndex];
+      selectNodeSuggestion(chosen.nodeId, chosen.title);
+      return;
+    }
+    if (showNodeSuggestions && event.key === "Escape") {
+      // Esc 收起菜单：仅抹掉正在输入的 @token，保留其余正文，并恢复输入框焦点。
+      event.preventDefault();
+      setDraft((current) => stripFreezoneNodeAtQuery(current));
+      restoreDraftFocusRef.current = true;
+      return;
+    }
     if (
       showFreezoneSkillSuggestions
       && (event.key === "ArrowDown" || event.key === "ArrowUp")
@@ -12337,6 +12544,20 @@ export function SuperChatPanel({
                 </div>
               </div>
             )}
+            {!hasActiveComposerPrompt && showNodeSuggestions && (
+              <FreezoneNodeSuggestionMenu
+                items={filteredNodeSuggestions}
+                visibleCount={nodeSuggestionVisibleCount}
+                activeIndex={activeNodeSuggestionIndex}
+                onActiveIndexChange={setActiveNodeSuggestionIndex}
+                onSelect={selectNodeSuggestion}
+                onReachEnd={() =>
+                  setNodeSuggestionVisibleCount((count) =>
+                    Math.min(count + FREEZONE_NODE_SUGGESTION_PAGE, filteredNodeSuggestions.length),
+                  )
+                }
+              />
+            )}
             {!hasActiveComposerPrompt && visibleComposerAttachments.length > 0 && (
               <div className="flex flex-wrap items-center gap-2 px-4 pt-3">
                 {visibleComposerAttachments.map((attachment) => (
@@ -12439,6 +12660,7 @@ export function SuperChatPanel({
                   <FreezoneSkillInlineEditor
                     value={draft}
                     suggestions={freezoneSkillSuggestions}
+                    nodeLookup={nodeMentionLookup}
                     placeholder={t("aiAssistant.freezonePlaceholder")}
                     inputRef={setDraftInputElement}
                     onChange={(nextValue) => {
