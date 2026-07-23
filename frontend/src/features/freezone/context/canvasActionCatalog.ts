@@ -546,6 +546,7 @@ export const BASE_CANVAS_ACTION_CAPABILITIES: CanvasActionCapability[] = [
     },
   },
   imageUiCapability("ui.open_crop_tool", "裁剪", "open_crop_tool"),
+  imageUiCapability("ui.download_image", "下载图片", "download_image"),
   imageUiCapability("ui.open_annotate_tool", "标注", "open_annotate_tool"),
   imageUiCapability("ui.open_split_storyboard_tool", "分格抽取", "open_split_storyboard_tool"),
   imageUiCapability(

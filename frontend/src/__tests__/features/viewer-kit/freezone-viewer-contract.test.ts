@@ -442,7 +442,18 @@ describe("freezone viewer contracts", () => {
     const toolbar = read("src/features/canvas/ui/NodeActionToolbar.tsx");
 
     expect(toolbar).toContain("subscribeNodeAction");
-    expect(toolbar).toContain('action !== "run_matting_tool"');
+    expect(toolbar).toContain('action === "run_matting_tool"');
+    expect(toolbar).toContain('action === "download_image"');
+    expect(toolbar).toContain('action === "open_video_clip_tool"');
+    expect(toolbar).toContain('action === "open_video_viewer"');
+    expect(toolbar).toContain('action === "open_video_upscale_tool"');
+    expect(toolbar).toContain('action === "run_video_analyze_story"');
+    expect(toolbar).toContain('action === "run_audio_separate"');
+    expect(toolbar).toContain('action === "open_video_subtitle_erase_smart"');
+    expect(toolbar).toContain("handleDownloadSaveAs()");
+    expect(toolbar).toContain("handleOpenVideoClip()");
+    expect(toolbar).toContain("requestFocusNode(upscaleNodeId)");
+    expect(toolbar).toContain("requestFocusNode(result.nodeId)");
     expect(toolbar).toContain("publishNodeActionAccepted");
     expect(toolbar).toContain("publishNodeActionSuccess");
     expect(toolbar).toContain("publishNodeActionError");
@@ -454,7 +465,9 @@ describe("freezone viewer contracts", () => {
     expect(overlay).toContain("subscribeNodeAction");
     expect(overlay).toContain("'open_light_tool'");
     expect(overlay).toContain("handleOpenLightEditor(nodeId)");
-    expect(overlay).toContain("'open_split_storyboard_tool'");
+    expect(overlay).toContain("'open_rotate_tool'");
+    expect(overlay).toContain("handleOpenRotate(nodeId)");
+    expect(overlay).toContain("open_split_storyboard_tool");
     expect(overlay).toContain("NODE_TOOL_TYPES.splitStoryboard");
     expect(overlay).toContain("openedUiAction: true");
   });

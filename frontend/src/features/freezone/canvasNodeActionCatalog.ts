@@ -901,6 +901,14 @@ function addImageToolActions(node: CanvasNode, actions: CanvasNodeActionCatalogE
   if (!node.type || !IMAGE_TOOL_NODE_TYPES.has(node.type) || !nodeHasImageSource(node)) return;
   actions.push(
     {
+      action: "download_image",
+      execution: "frontend_node",
+      command_type: "run_node_action",
+      description:
+        "Trigger a browser download for this image node's current media immediately. No extra toolbar confirmation, UI panel, node creation, or generation is needed.",
+      parameters: { node_id: node.id },
+    },
+    {
       action: "open_crop_tool",
       execution: "manual_ui",
       command_type: "run_node_action",
