@@ -180,8 +180,46 @@ def test_canvas_command_tool_result_accepts_background_workflow(monkeypatch, tmp
     assert isinstance(result, dict)
     assert result["ok"] is True
     assert result["canvas_apply_status"] == "accepted"
-    assert "continues in the canvas" in result["agent_instruction"]
+    assert "submitted to the canvas" in result["agent_instruction"]
+    assert "tool was opened" in result["agent_instruction"]
+    assert "operate it manually" in result["agent_instruction"]
     assert "Do not claim" in result["agent_instruction"]
+
+
+def test_canvas_command_tool_result_reports_open_node_action_as_opened_panel(monkeypatch, tmp_path) -> None:
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    captured: dict[str, object] = {}
+
+    def fake_resolve_canvas_command(key, result, *, bridge_dir=None):
+        captured["result"] = result
+        return result
+
+    monkeypatch.setattr(chat_route, "resolve_canvas_command", fake_resolve_canvas_command)
+
+    payload = chat_route.CanvasCommandToolResultIn(
+        bridge_key="bridge-open-light",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        tool_call_status="completed",
+        canvas_apply_status="applied",
+        applied=True,
+        opened_ui_actions=1,
+        command_results=[
+            {
+                "type": "run_node_action",
+                "status": "success",
+                "action": "open_light_tool",
+            }
+        ],
+    )
+
+    chat_route._resolve_canvas_command_tool_result_payload(payload, username="admin")
+
+    result = captured["result"]
+    assert isinstance(result, dict)
+    assert "panel has been opened" in result["agent_instruction"]
+    assert "processing" in result["agent_instruction"]
+    assert "submitted for generation" in result["agent_instruction"]
 
 
 @pytest.mark.anyio

@@ -926,7 +926,8 @@ function addImageToolActions(node: CanvasNode, actions: CanvasNodeActionCatalogE
       action: "run_matting_tool",
       execution: "frontend_node",
       command_type: "run_node_action",
-      description: "Run foreground matting on this image node and create a downstream export image node.",
+      description:
+        "抠图 / 去背景 / 移除背景 / 透明背景：Run foreground matting on this image node, create a transparent-background PNG, and add a downstream export image node.",
       parameters: { node_id: node.id },
     },
     {
@@ -971,7 +972,7 @@ function addImageToolActions(node: CanvasNode, actions: CanvasNodeActionCatalogE
       action: "run_scene360_tool",
       execution: "frontend_node",
       command_type: "run_node_action",
-      description: "Generate a 360 panorama candidate from this image node with default parameters. Creates an export image node and a 360 viewer node. Does not open UI.",
+      description: "全景 / 360 全景：submit 360 panorama generation from this image node with default parameters. Creates an export image node and a 360 viewer node. Use this when the user asks to use the panorama feature.",
       parameters: {
         node_id: node.id,
         result_policy: "spawn_child",
@@ -982,7 +983,7 @@ function addImageToolActions(node: CanvasNode, actions: CanvasNodeActionCatalogE
       action: "open_multi_angle_tool",
       execution: "manual_ui",
       command_type: "run_node_action",
-      description: "Open the multi-angle panel for this image node. Current chat can request this to open the UI; it does not directly run generation or export.",
+      description: "多维度 / 多角度 / 多视图 / 多视角：open the multi-angle panel for this image node. Current chat can request this to open the UI; it does not directly run generation or export.",
       parameters: { node_id: node.id },
     },
     {
