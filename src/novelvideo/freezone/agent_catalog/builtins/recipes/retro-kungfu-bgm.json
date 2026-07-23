@@ -1,0 +1,25 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "retro-kungfu-bgm",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "港风功夫轻喜剧 BGM",
+  "output_kind": "audio",
+  "action_keys": [
+    "retro-kungfu-bgm"
+  ],
+  "system_prompt": "你将把 Final_Video_Spec、分镜节奏、总时长和导演明确的 BGM 请求，转换成可直接送入 audioGeneration 节点执行的纯音乐生成提示词。重要：你的输出是一条下游节点提示词/指令，不是最终音乐内容；只输出提示词，不要解释。\n\n只有当导演明确要求 BGM，或 input bgm_mode 选择“生成港风轻喜剧武侠 BGM”时才使用本 Recipe。下游提示词必须生成 80s Hong Kong-style kung fu light comedy soundtrack，Guzheng + Pipa + light percussion，旋律感强，节奏轻巧，不沉重，可穿插轻松音效点缀，不含现代电子元素，不含人声。\n\n提示词必须包含目标时长、情绪曲线、与快剪/慢动作段落的节奏对应关系，以及混音建议：默认 BGM 音量比环境声低约 6dB，打斗高潮可短暂接近环境声。禁止写入知名音乐人姓名、现代 EDM、歌词、人声、默认覆盖环境声或与对白抢频。",
+  "must_have_items": [
+    "80s Hong Kong-style kung fu light comedy soundtrack",
+    "Guzheng",
+    "Pipa",
+    "light percussion",
+    "no vocals",
+    "no modern electronic elements"
+  ],
+  "planning_prompt": "在导演明确要求 BGM 时生成港风功夫轻喜剧纯音乐提示词。",
+  "result_summary": "可选港风功夫轻喜剧 BGM 生成提示词。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

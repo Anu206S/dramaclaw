@@ -11,6 +11,7 @@ const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const freezoneAgentConfigMocks = vi.hoisted(() => ({
   delete: vi.fn(),
   items: [] as Array<Record<string, unknown>>,
+  itemsByKind: {} as Record<string, Array<Record<string, unknown>>>,
   refetch: vi.fn(),
   save: vi.fn(),
 }));
@@ -20,13 +21,16 @@ vi.mock("@/lib/runtime-config", () => ({
 }));
 
 vi.mock("@/lib/queries/freezone-agent-config", () => ({
-  useFreezoneAgentConfigItems: () => ({
-    data: freezoneAgentConfigMocks.items,
-    isLoading: false,
-    isError: false,
-    isFetching: false,
-    refetch: freezoneAgentConfigMocks.refetch,
-  }),
+  useFreezoneAgentConfigItems: (kind: string) => {
+    const scopedItems = freezoneAgentConfigMocks.itemsByKind[kind];
+    return {
+      data: scopedItems ?? freezoneAgentConfigMocks.items,
+      isLoading: false,
+      isError: false,
+      isFetching: false,
+      refetch: freezoneAgentConfigMocks.refetch,
+    };
+  },
   useSaveFreezoneAgentConfigItem: () => ({
     mutateAsync: freezoneAgentConfigMocks.save,
     isPending: false,
@@ -108,6 +112,12 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.deleted": "虾画配置已删除",
         "settings.freezoneCatalog.deleteFailed": "删除失败，请重试",
         "settings.freezoneCatalog.deleteSelected": "删除选中",
+        "settings.freezoneCatalog.deleteSkillDialog.title": "删除 Skill",
+        "settings.freezoneCatalog.deleteSkillDialog.description": `确定要删除「${options?.id ?? ""}」吗？`,
+        "settings.freezoneCatalog.deleteSkillDialog.recipeHint": `这个 Skill 当前关联 ${options?.count ?? 0} 个 Recipes。`,
+        "settings.freezoneCatalog.deleteSkillDialog.cancel": "取消",
+        "settings.freezoneCatalog.deleteSkillDialog.deleteSkillOnly": "只删除 Skill",
+        "settings.freezoneCatalog.deleteSkillDialog.deleteWithRecipes": "同时删除 Recipes",
         "settings.freezoneCatalog.exported": "虾画配置已导出",
         "settings.freezoneCatalog.imported": "虾画配置已导入",
         "settings.freezoneCatalog.importFailed": "导入失败，请选择有效的 JSON 文件",
@@ -135,6 +145,8 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newSkill.save": "保存",
         "settings.freezoneCatalog.newSkill.id": "ID",
         "settings.freezoneCatalog.newSkill.idHint": "仅允许 a-z、0-9、-、_",
+        "settings.freezoneCatalog.newSkill.name": "名称",
+        "settings.freezoneCatalog.newSkill.namePlaceholder": "如：品牌视频 Skill",
         "settings.freezoneCatalog.newSkill.category": "分类",
         "settings.freezoneCatalog.newSkill.description": "适用说明",
         "settings.freezoneCatalog.newSkill.descriptionPlaceholder": "适用场景描述",
@@ -145,6 +157,34 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newSkill.keywordsHint": "支持权重",
         "settings.freezoneCatalog.newSkill.nodeScopes": "节点类型",
         "settings.freezoneCatalog.newSkill.nodeScopesPlaceholder": "textGeneration / imageGeneration / videoGeneration / audioGeneration",
+        "settings.freezoneCatalog.newSkill.workflow2Title": "工作流设置",
+        "settings.freezoneCatalog.newSkill.workflow2Description": "工作流字段",
+        "settings.freezoneCatalog.newSkill.schemaVersion": "Schema 版本",
+        "settings.freezoneCatalog.newSkill.version": "版本",
+        "settings.freezoneCatalog.newSkill.allowedRecipeIds": "关联 Recipes",
+        "settings.freezoneCatalog.newSkill.allowedRecipeIdsPlaceholder": "输入 Recipe ID",
+        "settings.freezoneCatalog.newSkill.allowedRecipeIdsHint": "动态规划时使用",
+        "settings.freezoneCatalog.newSkill.inputParameters": "开始前选项",
+        "settings.freezoneCatalog.newSkill.inputParametersEmpty": "没有选项",
+        "settings.freezoneCatalog.newSkill.inputParameterRequired": "必填",
+        "settings.freezoneCatalog.newSkill.inputParameterDefault": "默认",
+        "settings.freezoneCatalog.newSkill.inputParameterOptions": `${options?.count ?? 0} 个选项`,
+        "settings.freezoneCatalog.newSkill.inputParameterOptionList": "选项列表",
+        "settings.freezoneCatalog.newSkill.addInputParameter": "新增选项",
+        "settings.freezoneCatalog.newSkill.deleteInputParameter": "删除选项",
+        "settings.freezoneCatalog.newSkill.inputParameterId": "参数 ID",
+        "settings.freezoneCatalog.newSkill.inputParameterIdPlaceholder": "如 total_duration",
+        "settings.freezoneCatalog.newSkill.inputParameterLabel": "显示名称",
+        "settings.freezoneCatalog.newSkill.inputParameterLabelPlaceholder": "如 目标时长",
+        "settings.freezoneCatalog.newSkill.inputParameterType": "类型",
+        "settings.freezoneCatalog.newSkill.inputParameterDefaultPlaceholder": "如 15s",
+        "settings.freezoneCatalog.newSkill.inputParameterOptionsPlaceholder": "一行一个选项",
+        "settings.freezoneCatalog.newSkill.inputParameterTypes.single_select": "单选",
+        "settings.freezoneCatalog.newSkill.inputParameterTypes.multi_select": "多选",
+        "settings.freezoneCatalog.newSkill.inputParameterTypes.text": "文本",
+        "settings.freezoneCatalog.newSkill.inputParameterTypes.number": "数字",
+        "settings.freezoneCatalog.newSkill.inputParameterTypes.boolean": "开关",
+        "settings.freezoneCatalog.newSkill.inputParametersPlaceholder": "[]",
         "settings.freezoneCatalog.newSkill.planningTitle": "规则配置",
         "settings.freezoneCatalog.newSkill.planningDescription": "规则策略",
         "settings.freezoneCatalog.newSkill.planningNotes": "规划器提示词",
@@ -244,6 +284,7 @@ beforeEach(() => {
   runtimeState.isCeRuntime = true;
   freezoneAgentConfigMocks.delete.mockReset();
   freezoneAgentConfigMocks.items = [];
+  freezoneAgentConfigMocks.itemsByKind = {};
   freezoneAgentConfigMocks.refetch.mockReset();
   freezoneAgentConfigMocks.save.mockReset();
 });
@@ -555,34 +596,8 @@ describe("SettingsDialog pages", () => {
       key: "Enter",
       code: "Enter",
     });
-    expect(screen.getByLabelText("默认画幅 任务类型")).toHaveValue("");
-    expect(screen.getByLabelText("默认画幅 比例")).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("默认画幅 任务类型"), {
-      target: { value: "imageGeneration" },
-    });
-    fireEvent.change(screen.getByLabelText("默认画幅 比例"), { target: { value: "16:9" } });
-    fireEvent.click(screen.getByRole("button", { name: "添加 默认画幅" }));
-    fireEvent.change(screen.getByLabelText("默认画幅 任务类型"), {
-      target: { value: "videoGeneration" },
-    });
-    fireEvent.change(screen.getByLabelText("默认画幅 比例"), { target: { value: "16:9" } });
-    fireEvent.click(screen.getByRole("button", { name: "添加 默认画幅" }));
-    expect(screen.getByLabelText("模型偏好 任务类型")).toHaveValue("");
-    expect(screen.getByLabelText("模型偏好 模型名称")).toBeDisabled();
-    fireEvent.change(screen.getByLabelText("模型偏好 任务类型"), {
-      target: { value: "imageGeneration" },
-    });
-    fireEvent.change(screen.getByLabelText("模型偏好 模型名称"), {
-      target: { value: "newapi_gpt_image2" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "添加 模型偏好" }));
-    fireEvent.change(screen.getByLabelText("模型偏好 任务类型"), {
-      target: { value: "videoGeneration" },
-    });
-    fireEvent.change(screen.getByLabelText("模型偏好 模型名称"), {
-      target: { value: "newapi_seedance-2.0" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "添加 模型偏好" }));
+    expect(screen.queryByText("默认画幅")).not.toBeInTheDocument();
+    expect(screen.queryByText("模型偏好")).not.toBeInTheDocument();
     fireEvent.change(screen.getByPlaceholderText("如：7"), { target: { value: "7" } });
     fireEvent.change(screen.getByPlaceholderText("输入规则"), {
       target: { value: "domainrules" },
@@ -636,14 +651,6 @@ describe("SettingsDialog pages", () => {
         planning_notes: "planhints",
         prompt_guide: "sytleguide",
         conduct_rules: ["behaviorrules"],
-        default_aspect_ratios: {
-          imageGeneration: "16:9",
-          videoGeneration: "16:9",
-        },
-        model_preferences: {
-          imageGeneration: "newapi_gpt_image2",
-          videoGeneration: "newapi_seedance-2.0",
-        },
       },
       evaluation: {
         rating_bands: [
@@ -670,6 +677,8 @@ describe("SettingsDialog pages", () => {
         domain_constraints: ["domainrules"],
       },
     });
+    expect(rawJson.planning.default_aspect_ratios).toBeUndefined();
+    expect(rawJson.planning.model_preferences).toBeUndefined();
   });
 
   it("copies the generated Skill raw JSON from the raw JSON header", async () => {
@@ -1042,11 +1051,60 @@ describe("SettingsDialog pages", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "删除 story-skill" }));
+    expect(screen.getByText("删除 Skill")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "只删除 Skill" }));
 
     await waitFor(() => {
       expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
         kind: "skills",
         id: "story-skill",
+      });
+    });
+  });
+
+  it("can delete a Skill with its linked Recipes", async () => {
+    freezoneAgentConfigMocks.itemsByKind = {
+      skills: [
+        {
+          id: "story-skill",
+          description: "故事规则",
+          allowed_recipe_ids: ["recipe-a", "recipe-b"],
+        },
+      ],
+      recipes: [
+        { id: "recipe-a", output_kind: "text", result_summary: "A" },
+        { id: "recipe-b", output_kind: "image", result_summary: "B" },
+        { id: "recipe-c", output_kind: "video", result_summary: "C" },
+      ],
+    };
+    freezoneAgentConfigMocks.delete.mockResolvedValue({ deleted: true });
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除 story-skill" }));
+
+    expect(screen.getByText("recipe-a")).toBeInTheDocument();
+    expect(screen.getByText("recipe-b")).toBeInTheDocument();
+    expect(screen.queryByText("recipe-c")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "同时删除 Recipes" }));
+
+    await waitFor(() => {
+      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
+        kind: "skills",
+        id: "story-skill",
+      });
+      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
+        kind: "recipes",
+        id: "recipe-a",
+      });
+      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
+        kind: "recipes",
+        id: "recipe-b",
+      });
+      expect(freezoneAgentConfigMocks.delete).not.toHaveBeenCalledWith({
+        kind: "recipes",
+        id: "recipe-c",
       });
     });
   });
@@ -1080,8 +1138,7 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByRole("checkbox", { name: "图片生成 imageGeneration" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "查看 / 编辑原始 JSON（高级）" }));
     const rawJson = JSON.parse(screen.getByLabelText("原始 JSON").textContent ?? "{}");
-    expect(rawJson.planning.default_aspect_ratios).toEqual({
-      imageGeneration: "9:16",
-    });
+    expect(rawJson.planning.default_aspect_ratios).toBeUndefined();
+    expect(rawJson.planning.model_preferences).toBeUndefined();
   });
 });
