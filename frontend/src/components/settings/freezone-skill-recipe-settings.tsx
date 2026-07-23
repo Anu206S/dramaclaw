@@ -2489,8 +2489,8 @@ function CatalogList({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
-              <h4 className="truncate font-mono text-[13px] font-semibold text-foreground">
-                {item.id}
+              <h4 className="truncate text-[13px] font-semibold text-foreground">
+                {item.title}
               </h4>
               {item.generationType ? (
                 <span className={catalogGenerationTypeBadgeClass(item.generationType)}>
@@ -2515,7 +2515,7 @@ function CatalogList({
               type="button"
               role="switch"
               aria-checked={item.enabled}
-              aria-label={t("settings.freezoneCatalog.toggleEnabled", { id: item.id })}
+              aria-label={t("settings.freezoneCatalog.toggleEnabled", { id: item.title })}
               onClick={() => onToggleEnabled(item, !item.enabled)}
               className={cn(
                 "relative h-4 w-7 rounded-full border transition-colors",
@@ -2533,7 +2533,7 @@ function CatalogList({
             </button>
             <button
               type="button"
-              aria-label={t("settings.freezoneCatalog.editItem", { id: item.id })}
+              aria-label={t("settings.freezoneCatalog.editItem", { id: item.title })}
               onClick={() => onEdit(item)}
               className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
             >
@@ -2541,7 +2541,7 @@ function CatalogList({
             </button>
             <button
               type="button"
-              aria-label={t("settings.freezoneCatalog.deleteItem", { id: item.id })}
+              aria-label={t("settings.freezoneCatalog.deleteItem", { id: item.title })}
               onClick={() => onDelete(item)}
               className="grid size-7 place-items-center rounded-md text-destructive transition-colors hover:bg-destructive/10"
             >
@@ -2583,7 +2583,7 @@ function toManagedCatalogItem(
     enabled: item.enabled !== false,
     id,
     payload: item,
-    title: id,
+    title: getString(item.name) || id,
     description: getString(item.description),
     tags: [
       getString(item.category),

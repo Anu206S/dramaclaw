@@ -804,9 +804,9 @@ describe("SettingsDialog pages", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
 
-    expect(screen.getByText("public-welfare-poster-9-16").closest("article")).toHaveTextContent("图片");
-    expect(screen.getByText("public-welfare-copy").closest("article")).toHaveTextContent("文本");
-    expect(screen.getByText("public-welfare-copy").closest("article")).toHaveTextContent("定制");
+    expect(screen.getByText("公益宣传海报生成").closest("article")).toHaveTextContent("图片");
+    expect(screen.getByText("公益宣传文案").closest("article")).toHaveTextContent("文本");
+    expect(screen.getByText("公益宣传文案").closest("article")).toHaveTextContent("定制");
     expect(screen.queryByText("已定制")).not.toBeInTheDocument();
     expect(screen.queryByText("image")).not.toBeInTheDocument();
     expect(screen.queryByText("text")).not.toBeInTheDocument();

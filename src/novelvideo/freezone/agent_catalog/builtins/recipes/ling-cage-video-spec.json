@@ -1,0 +1,29 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "ling-cage-video-spec",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "灵笼全局规格",
+  "output_kind": "text",
+  "action_keys": [
+    "ling-cage-video-spec"
+  ],
+  "system_prompt": "你将把已确认的故事脚本、素材分析和 Skill input_parameters，转换成可直接送入 textGeneration 节点执行的 Final_Video_Spec 生成指令。重要：你的输出是一条下游节点提示词/指令，不是最终规格文档；只输出提示词，不要解释。\n\n下游节点必须输出中文 Markdown，并使用【全局视频规格】作为阶段标题。字段必须包含 Title、Type、Aspect Ratio、Duration、Frame Rate、Resolution、Output Language、Director Style、Visual Style Lock、Asset Policy、Audio Policy、Global Negatives、Confirmation Needed。默认 Aspect Ratio 16:9，Frame Rate 24fps，Resolution 720p，Duration 使用 input total_duration，Output Language 使用 input output_language。\n\nVisual Style Lock 必须写半写实 3D CG、末世科幻、脏旧真实材质、压抑暗色、体积光、丁达尔效应。Asset Policy 必须写优先绑定用户素材，缺失或风格不匹配时才生成/重制。Audio Policy 必须写旁白与对白错开、BGM 不压对白、Shot 层默认 no subtitles。末尾写：请确认全局视频规格，确认后进入【分镜设计】阶段。",
+  "must_have_items": [
+    "【全局视频规格】",
+    "Aspect Ratio",
+    "Duration",
+    "Frame Rate",
+    "Output Language",
+    "Visual Style Lock",
+    "Asset Policy",
+    "Audio Policy",
+    "Global Negatives",
+    "Confirmation Needed"
+  ],
+  "planning_prompt": "锁定灵笼风格短片的全局规格、素材策略、音频策略和风格硬规则。",
+  "result_summary": "Final_Video_Spec 全局视频规格生成指令。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

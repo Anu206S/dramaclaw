@@ -1712,9 +1712,10 @@ def _without_private_fields(value: Any) -> Any:
 
 
 def _load_agent_config_items(kind: str, fallback_dir: Path) -> list[dict[str, Any]]:
-    fallback_items = _load_json_dir(fallback_dir)
-    if not fallback_items:
-        fallback_items = _fallback_agent_config_items(kind)
+    fallback_items = _merge_builtin_agent_config_items(
+        _fallback_agent_config_items(kind),
+        _load_json_dir(fallback_dir),
+    )
     if list_user_agent_config_items is not None:
         username = _catalog_username()
         if username:
@@ -1725,6 +1726,28 @@ def _load_agent_config_items(kind: str, fallback_dir: Path) -> list[dict[str, An
             except Exception:
                 pass
     return fallback_items
+
+
+def _merge_builtin_agent_config_items(
+    fallback_items: list[dict[str, Any]],
+    builtin_items: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    """Merge code fallback builtins with JSON-backed builtin catalog items."""
+
+    by_id: dict[str, dict[str, Any]] = {
+        _text(item.get("id")): {**item, "_catalog_source": item.get("_catalog_source") or "builtin"}
+        for item in fallback_items
+        if _text(item.get("id"))
+    }
+    for item in builtin_items:
+        if not isinstance(item, dict):
+            continue
+        item_id = _text(item.get("id"))
+        if not item_id:
+            continue
+        base = by_id.get(item_id, {})
+        by_id[item_id] = {**base, **item, "_catalog_source": item.get("_catalog_source") or "builtin"}
+    return [by_id[key] for key in sorted(by_id)]
 
 
 def _merge_agent_config_items(
