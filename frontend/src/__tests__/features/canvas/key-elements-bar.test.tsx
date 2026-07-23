@@ -4,9 +4,24 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { describe, expect, it, vi } from 'vitest';
 
+import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { CANVAS_NODE_TYPES, type CanvasNode } from '@/features/canvas/domain/canvasNodes';
 import { AssetBoardView } from '@/features/canvas/ui/asset-board/AssetBoardView';
 import { useCanvasStore } from '@/stores/canvasStore';
+
+/** 收集本段内 publish 出来的 freezone/add-nodes-to-chat 载荷。 */
+function captureAddToChat(run: () => void): string[][] {
+  const seen: string[][] = [];
+  const unsubscribe = canvasEventBus.subscribe('freezone/add-nodes-to-chat', ({ nodeIds }) => {
+    seen.push(nodeIds);
+  });
+  try {
+    run();
+  } finally {
+    unsubscribe();
+  }
+  return seen;
+}
 
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
@@ -103,6 +118,32 @@ describe('故事板关键元素栏', () => {
 
     fireEvent.click(within(keyElementsBar()).getByRole('button', { name: '主角立绘' }));
     expect(screen.getByRole('region', { name: '资产详情' })).toBeInTheDocument();
+  });
+
+  it('关键元素配「添加到对话」pill 入口（对标 liblib 的 hover 浮层）', async () => {
+    // 浮层走 Tooltip Portal，真实浏览器靠 CSS 仅在 hover 时可见；jsdom 无 CSS，
+    // 这里只断言入口挂得出、可及名对得上，可见性交给上面的手动/视觉验证。
+    const user = userEvent.setup();
+    seed([imageNode('a', { displayName: '主角立绘', keyElementCategory: 'character' })]);
+    render(<AssetBoardView visible onLocateNode={vi.fn()} />);
+
+    await user.hover(within(keyElementsBar()).getByRole('button', { name: '主角立绘' }));
+    expect(await screen.findByRole('button', { name: '添加到对话' })).toBeInTheDocument();
+  });
+
+  it('点 pill → 走 add-nodes-to-chat 事件、带该节点 id，且不打开详情', async () => {
+    const user = userEvent.setup();
+    seed([imageNode('a', { displayName: '主角立绘', keyElementCategory: 'character' })]);
+    render(<AssetBoardView visible onLocateNode={vi.fn()} />);
+
+    await user.hover(within(keyElementsBar()).getByRole('button', { name: '主角立绘' }));
+    const pill = await screen.findByRole('button', { name: '添加到对话' });
+    const events = captureAddToChat(() => {
+      fireEvent.click(pill);
+    });
+    expect(events).toEqual([['a']]);
+    // 点 pill 不误触缩略图的「打开详情」。
+    expect(screen.queryByRole('region', { name: '资产详情' })).not.toBeInTheDocument();
   });
 
   it('关键元素 + 音频 → 顶栏两个标签，切到「音频」显示音频 chip（对标 liblib）', async () => {

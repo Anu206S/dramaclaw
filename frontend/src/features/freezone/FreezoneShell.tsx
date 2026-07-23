@@ -139,7 +139,6 @@ import {
   buildCanvasContextRequestResponses,
   extractCanvasContextRequestEnvelopes,
 } from "@/features/freezone/chatNodeReferences";
-import { selectNodesForChatReference } from "@/features/freezone/addNodesToChatSelection";
 import {
   buildCanvasOntologyContext,
   type CanvasOntologyContext,
@@ -205,6 +204,31 @@ function loadStoredPanelWidth(key: string, fallback: number, min: number, max: n
 function storePanelWidth(key: string, value: number): void {
   if (typeof window === "undefined") return;
   window.localStorage.setItem(key, String(Math.round(value)));
+}
+
+/**
+ * 虾画 agent 的开合状态：持久化到 localStorage，刷新/重进画布后恢复，避免工作流中
+ * 一刷新就丢掉已打开的对话。key 同样避开 `supertale-` 前缀（会被 reset-region-state
+ * 的清扫误删）——开合只是 UI 偏好，跨区域保留没问题。
+ */
+const CHAT_OPEN_STORAGE_KEY = "st.freezone.chatOpen";
+
+function loadChatOpen(): boolean {
+  if (typeof window === "undefined") return false;
+  try {
+    return window.localStorage.getItem(CHAT_OPEN_STORAGE_KEY) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function storeChatOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(CHAT_OPEN_STORAGE_KEY, open ? "1" : "0");
+  } catch {
+    // storage full / unavailable — 开合状态就不持久化
+  }
 }
 
 async function listServerFreezoneCanvasAgents(
@@ -760,8 +784,9 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   const [assetLibraryReloadToken, setAssetLibraryReloadToken] = useState(0);
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(false);
+  const [chatOpen, setChatOpen] = useState(loadChatOpen);
   const [pendingChatAttachments, setPendingChatAttachments] = useState<ChatAttachment[]>([]);
+  const [pendingChatNodeMentions, setPendingChatNodeMentions] = useState<string[]>([]);
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
@@ -896,11 +921,17 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     if (!chatOpen || !currentCanvasSelectionAttachment) return;
     setPendingChatAttachments([currentCanvasSelectionAttachment]);
   }, [chatOpen, currentCanvasSelectionAttachment]);
+  // 开合状态落盘：刷新/重进画布后由 useState(loadChatOpen) 恢复。所有开关路径
+  // （手动按钮、命令自动展开、空白点击）都经由 chatOpen，故一个 effect 全覆盖。
+  useEffect(() => {
+    storeChatOpen(chatOpen);
+  }, [chatOpen]);
 
   const handleBlankPaneClick = useCallback(() => {
     setAssetPanelCollapsed(true);
     setDebugPanelOpen(false);
-    setChatOpen(false);
+    // 点画布空白不再自动关闭虾画 agent：用户要求它只能靠面板右上角的关闭按钮
+    // （onOpenChange(false)）手动关，避免工作流中误点空白就丢掉对话。
   }, []);
 
   useEffect(() => {
@@ -1298,12 +1329,16 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   }, []);
 
   // 画布节点 / 故事板卡片、详情头部的「添加到对话」——两个视图是同一份节点数据的
-  // 两种投影，所以入口只发事件，落地统一收在这里（选中 + 展开聊天），避免两边各写
-  // 一套后行为漂移。选中即引用的推导见下面的 currentCanvasSelectionAttachment：
-  // chatOpen 打开后那条 effect 会把新选中同步成输入框里的引用条。
+  // 两种投影，所以入口只发事件，落地统一收在这里（追加行内 mention + 展开聊天），
+  // 避免两边各写一套后行为漂移。和 @ 菜单同一套模型：不选中画布节点、不出引用条，
+  // 而是把 @[节点名](id) 行内 chip 插进虾导 draft（drain 见 SuperChatPanel）。
+  // 过滤画布上已不存在的 id：全是幽灵就不展开聊天。
   useEffect(() => {
     return canvasEventBus.subscribe("freezone/add-nodes-to-chat", ({ nodeIds }) => {
-      if (!selectNodesForChatReference(nodeIds)) return;
+      const onCanvas = new Set(useCanvasStore.getState().nodes.map((node) => node.id));
+      const valid = nodeIds.filter((id) => onCanvas.has(id));
+      if (valid.length === 0) return;
+      setPendingChatNodeMentions(valid);
       setChatOpen(true);
     });
   }, []);
@@ -2015,6 +2050,8 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           currentCanvasOntologyContext={currentCanvasOntologyContext}
           pendingAttachments={pendingChatAttachments}
           onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
+          pendingNodeMentions={pendingChatNodeMentions}
+          onPendingNodeMentionsConsumed={() => setPendingChatNodeMentions([])}
           open={chatOpen}
           onOpenChange={handleChatOpenChange}
           // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
@@ -2093,6 +2130,8 @@ function FreezoneChatDock({
   currentCanvasOntologyContext,
   pendingAttachments,
   onPendingAttachmentsConsumed,
+  pendingNodeMentions,
+  onPendingNodeMentionsConsumed,
   open,
   onOpenChange,
   pushesContent,
@@ -2107,6 +2146,8 @@ function FreezoneChatDock({
   currentCanvasOntologyContext: CanvasOntologyContext;
   pendingAttachments: ChatAttachment[];
   onPendingAttachmentsConsumed: () => void;
+  pendingNodeMentions: string[];
+  onPendingNodeMentionsConsumed: () => void;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   /** true=抽屉在 flex 行里占位（左侧内容被挤窄）；false=纯浮层，左侧内容不动。 */
@@ -2404,6 +2445,8 @@ function FreezoneChatDock({
           currentCanvasOntologyContext={currentCanvasOntologyContext}
           pendingAttachments={active ? pendingAttachments : []}
           onPendingAttachmentsConsumed={active ? onPendingAttachmentsConsumed : undefined}
+          pendingNodeMentions={active ? pendingNodeMentions : []}
+          onPendingNodeMentionsConsumed={active ? onPendingNodeMentionsConsumed : undefined}
           onRequestClose={() => onOpenChange(false)}
           freezoneHeaderActions={agentHeaderActions}
           onFreezoneUserMessage={(message, timestamp) => handleAgentUserMessage(agent.id, message, timestamp)}
