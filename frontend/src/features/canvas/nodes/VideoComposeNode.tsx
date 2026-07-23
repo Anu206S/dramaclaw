@@ -109,9 +109,12 @@ export const VideoComposeNode = memo(
     }, [id, updateNodeInternals]);
 
     const handleOpen = useCallback(() => {
-      if (!canOpen || !project) return;
+      if (!project) return false;
+      if (!canOpen) return false;
+      setSelectedNode(id);
       setEditorOpen(true);
-    }, [canOpen, project]);
+      return true;
+    }, [canOpen, id, project, setSelectedNode]);
 
     const handleAutoCompose = useCallback(async () => {
       if (!project || !canAutoCompose) {
@@ -199,13 +202,23 @@ export const VideoComposeNode = memo(
 
     useEffect(
       () => subscribeNodeAction(({ nodeId, action, requestId }) => {
-        if (nodeId !== id || action !== "auto_compose_video") return;
+        if (nodeId !== id) return;
+        if (action === "open_video_compose_modal") {
+          publishNodeActionAccepted(requestId, id, action);
+          if (!handleOpen()) {
+            publishNodeActionError(requestId, id, action, "视频合成至少需要 2 个已完成视频输入");
+            return;
+          }
+          publishNodeActionSuccess(requestId, id, action, { openedUiAction: true });
+          return;
+        }
+        if (action !== "auto_compose_video") return;
         publishNodeActionAccepted(requestId, id, action);
         void handleAutoCompose()
           .then((output) => publishNodeActionSuccess(requestId, id, action, output))
           .catch((error) => publishNodeActionError(requestId, id, action, error));
       }),
-      [handleAutoCompose, id],
+      [handleAutoCompose, handleOpen, id],
     );
 
     return (

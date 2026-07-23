@@ -20,6 +20,14 @@ describe("freezone viewer contracts", () => {
 
     expect(node).toContain("snap2x2");
     expect(node).toContain("snap4x3");
+    expect(node).toContain("subscribeNodeAction");
+    expect(node).toContain("action === 'capture_pano_current_view'");
+    expect(node).toContain("action === 'capture_pano_2x2_views'");
+    expect(node).toContain("action === 'capture_pano_4x3_views'");
+    expect(node).toContain("action === 'set_pano_current_view_as_background'");
+    expect(node).toContain("action === 'reset_pano_view'");
+    expect(node).toContain("requestFocusNode(nodeId)");
+    expect(node).toContain("requestFocusNode(groupId)");
     expect(node).toContain("sphere_correction_deg");
     expect(node).toContain("selected_background");
     expect(node).toContain("360 自由画布查看器");
@@ -449,14 +457,48 @@ describe("freezone viewer contracts", () => {
     expect(toolbar).toContain('action === "open_video_upscale_tool"');
     expect(toolbar).toContain('action === "run_video_analyze_story"');
     expect(toolbar).toContain('action === "run_audio_separate"');
+    expect(toolbar).toContain('action === "download_audio"');
     expect(toolbar).toContain('action === "open_video_subtitle_erase_smart"');
     expect(toolbar).toContain("handleDownloadSaveAs()");
+    expect(toolbar).toContain("handleDownloadAudioNode()");
     expect(toolbar).toContain("handleOpenVideoClip()");
     expect(toolbar).toContain("requestFocusNode(upscaleNodeId)");
     expect(toolbar).toContain("requestFocusNode(result.nodeId)");
     expect(toolbar).toContain("publishNodeActionAccepted");
     expect(toolbar).toContain("publishNodeActionSuccess");
     expect(toolbar).toContain("publishNodeActionError");
+  });
+
+  it("keeps audio node actions connected to chat node-action receipts", () => {
+    const audioNode = read("src/features/canvas/nodes/AudioNode.tsx");
+
+    expect(audioNode).toContain("subscribeNodeAction");
+    expect(audioNode).toContain("action === 'generate_audio'");
+    expect(audioNode).toContain("action === 'translate_text'");
+    expect(audioNode).toContain("action === 'open_voice_picker'");
+    expect(audioNode).toContain("setVoicePickerOpen(true)");
+    expect(audioNode).toContain("<VoiceSelectionModal");
+  });
+
+  it("keeps video compose open action connected to its modal", () => {
+    const composeNode = read("src/features/canvas/nodes/VideoComposeNode.tsx");
+
+    expect(composeNode).toContain("action === \"open_video_compose_modal\"");
+    expect(composeNode).toContain("handleOpen()");
+    expect(composeNode).toContain("setEditorOpen(true)");
+    expect(composeNode).toContain("openedUiAction: true");
+  });
+
+  it("keeps upload picker and director world open actions connected to node UI", () => {
+    const uploadNode = read("src/features/canvas/nodes/UploadNode.tsx");
+    const worldNode = read("src/features/canvas/nodes/ThreeDWorldNode.tsx");
+
+    expect(uploadNode).toContain("'open_upload_picker'");
+    expect(uploadNode).toContain("inputRef.current?.click()");
+    expect(uploadNode).toContain("openedUiAction: true");
+    expect(worldNode).toContain("'open_director_world'");
+    expect(worldNode).toContain("handleOpenDirector()");
+    expect(worldNode).toContain("openedUiAction: true");
   });
 
   it("keeps chat node actions wired to secondary image panels", () => {

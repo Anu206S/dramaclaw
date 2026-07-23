@@ -367,27 +367,6 @@ const UI_OPEN_NODE_ACTIONS = new Set([
   "open_video_compose_modal",
 ]);
 
-const CURRENT_MEDIA_NODE_ACTIONS = new Set([
-  "run_matting_tool",
-  "run_upscale_tool",
-  "run_outpaint_tool",
-  "run_scene360_tool",
-  "run_grid_multi_camera",
-  "run_grid_plot_four",
-  "run_grid_face_three_view",
-  "run_grid_product_three_view",
-  "run_grid_serial_storyboard_25",
-  "run_grid_cinematic_light_correction",
-  "run_grid_character_three_view",
-  "run_grid_frame_projection_3s_later",
-  "run_grid_frame_projection_5s_earlier",
-  "capture_pano_current_view",
-  "capture_pano_2x2_views",
-  "capture_pano_4x3_views",
-  "set_pano_current_view_as_background",
-  "reset_pano_view",
-]);
-
 const RESULT_SPAWNING_NODE_ACTIONS = new Set([
   "run_outpaint_tool",
   "run_scene360_tool",
@@ -1279,30 +1258,6 @@ function defaultWorkflowActionForNode(node: CanvasNode): string | null {
     return action;
   }
   return null;
-}
-
-function upstreamWorkflowActionDependencies(nodeId: string): PendingNodeAction[] {
-  const state = useCanvasStore.getState();
-  const actionNode = nodeById(nodeId);
-  if (!actionNode) return [];
-  if (actionNode.type === CANVAS_NODE_TYPES.videoCompose && hasVideoComposeMinimumInputs(nodeId)) {
-    return [];
-  }
-  const expandedNodeIds = expandWorkflowNodeIds([nodeId], ["upstream"]).filter((id) => id !== nodeId);
-  const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
-  return expandedNodeIds.flatMap((upstreamId) => {
-    const node = nodeByIdMap.get(upstreamId);
-    if (!node || node.type === CANVAS_NODE_TYPES.group) return [];
-    const action = defaultWorkflowActionForNode(node);
-    if (!action || hasGeneratedResult(upstreamId, action)) return [];
-    return [{
-      commandIndex: -1,
-      nodeId: upstreamId,
-      action,
-      executionMode: "workflow",
-      label: commandLabel({ type: "run_node_action", node_id: upstreamId, action }),
-    }];
-  });
 }
 
 function hasVideoComposeMinimumInputs(nodeId: string, allowedSourceNodeIds?: Set<string>): boolean {
@@ -2386,14 +2341,6 @@ function applyCanvasChatCommandsInternal(
   const pendingMainlineProjections: PendingMainlineProjection[] = [];
   const queuedNodeActionKeys = new Set<string>();
   const normalizedEnvelopes = normalizeCanvasChatCommandEnvelopesForValidation(envelopes);
-  const requestedNodeActionKeys = new Set(
-    normalizedEnvelopes.flatMap((envelope) =>
-      envelope.commands.flatMap((command) => {
-        if (command.type !== "run_node_action") return [];
-        return [`${command.node_id}:${command.action}`];
-      }),
-    ),
-  );
   const validation = validateCanvasChatCommandEnvelopes(
     normalizedEnvelopes,
     useCanvasStore.getState().nodes,
