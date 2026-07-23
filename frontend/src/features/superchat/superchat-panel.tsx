@@ -9697,10 +9697,17 @@ export function SuperChatPanel({
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [freezoneSkillCatalog, setFreezoneSkillCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
   const [freezoneSkillCatalogLoaded, setFreezoneSkillCatalogLoaded] = useState(false);
+  const [freezoneSkillMenuExplicitOpen, setFreezoneSkillMenuExplicitOpen] = useState(false);
+  const [freezoneSkillMenuSearch, setFreezoneSkillMenuSearch] = useState("");
+  const [freezoneSkillMenuPosition, setFreezoneSkillMenuPosition] = useState<{
+    left: number;
+    bottom: number;
+  } | null>(null);
   const [activeFreezoneSkillSuggestionIndex, setActiveFreezoneSkillSuggestionIndex] = useState(0);
   const [activeNodeSuggestionIndex, setActiveNodeSuggestionIndex] = useState(0);
   const [nodeSuggestionVisibleCount, setNodeSuggestionVisibleCount] = useState(FREEZONE_NODE_SUGGESTION_PAGE);
   const freezoneSkillSuggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
+  const freezoneSkillMenuButtonRef = useRef<HTMLButtonElement | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftInputRef = useRef<HTMLElement | null>(null);
   const restoreDraftFocusRef = useRef(false);
@@ -9767,26 +9774,40 @@ export function SuperChatPanel({
   );
   const freezoneSkillSlashQuery = isFreezoneLayout ? getFreezoneSkillSlashQuery(draft) : null;
   const visibleFreezoneSkillSuggestions = useMemo(
-    () => freezoneSkillSlashQuery === null
-      ? []
-      : filterFreezoneSkillSuggestions(freezoneSkillSuggestions, freezoneSkillSlashQuery).slice(0, 8),
-    [freezoneSkillSlashQuery, freezoneSkillSuggestions],
+    () => {
+      if (freezoneSkillSlashQuery !== null) {
+        return filterFreezoneSkillSuggestions(freezoneSkillSuggestions, freezoneSkillSlashQuery).slice(0, 8);
+      }
+      if (!freezoneSkillMenuExplicitOpen) return [];
+      return filterFreezoneSkillSuggestions(freezoneSkillSuggestions, freezoneSkillMenuSearch).slice(0, 30);
+    },
+    [
+      freezoneSkillMenuExplicitOpen,
+      freezoneSkillMenuSearch,
+      freezoneSkillSlashQuery,
+      freezoneSkillSuggestions,
+    ],
   );
   const freezoneSkillMentionCandidate = useMemo(
     () => isFreezoneLayout ? findFreezoneSkillMention(draft) : null,
     [draft, isFreezoneLayout],
   );
   const showFreezoneSkillSuggestions = shouldShowFreezoneSkillSuggestionMenu({
+    explicitOpen: freezoneSkillMenuExplicitOpen,
     isFreezoneLayout,
     slashQuery: freezoneSkillSlashQuery,
   });
   const insertFreezoneSkillSuggestion = useCallback((skillId: string) => {
     setDraft((current) => insertFreezoneSkillMention(current, skillId));
+    setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillMenuSearch("");
     setActiveFreezoneSkillSuggestionIndex(0);
     restoreDraftFocusRef.current = true;
   }, []);
   const insertFreezoneSkillEmptyAction = useCallback((prompt: string) => {
     setDraft((current) => insertFreezoneSkillEmptyActionPrompt(current, prompt));
+    setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillMenuSearch("");
     setActiveFreezoneSkillSuggestionIndex(0);
     restoreDraftFocusRef.current = true;
   }, []);
@@ -9820,7 +9841,7 @@ export function SuperChatPanel({
     if (
       !isFreezoneLayout
       || freezoneSkillCatalogLoaded
-      || (freezoneSkillSlashQuery === null && !freezoneSkillMentionCandidate)
+      || (freezoneSkillSlashQuery === null && !freezoneSkillMentionCandidate && !freezoneSkillMenuExplicitOpen)
     ) return;
     let cancelled = false;
     void apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills")
@@ -9839,9 +9860,19 @@ export function SuperChatPanel({
     return () => {
       cancelled = true;
     };
-  }, [freezoneSkillCatalogLoaded, freezoneSkillMentionCandidate, freezoneSkillSlashQuery, isFreezoneLayout]);
+  }, [
+    freezoneSkillCatalogLoaded,
+    freezoneSkillMentionCandidate,
+    freezoneSkillMenuExplicitOpen,
+    freezoneSkillSlashQuery,
+    isFreezoneLayout,
+  ]);
 
   useEffect(() => {
+    if (freezoneSkillSlashQuery !== null) {
+      setFreezoneSkillMenuExplicitOpen(false);
+      setFreezoneSkillMenuSearch("");
+    }
     setActiveFreezoneSkillSuggestionIndex(0);
   }, [freezoneSkillSlashQuery]);
 
@@ -9870,6 +9901,45 @@ export function SuperChatPanel({
     const activeElement = freezoneSkillSuggestionRefs.current[activeFreezoneSkillSuggestionIndex];
     activeElement?.scrollIntoView({ block: "nearest" });
   }, [activeFreezoneSkillSuggestionIndex, showFreezoneSkillSuggestions]);
+
+  useLayoutEffect(() => {
+    if (!freezoneSkillMenuExplicitOpen) {
+      setFreezoneSkillMenuPosition(null);
+      return;
+    }
+    const updatePosition = () => {
+      const button = freezoneSkillMenuButtonRef.current;
+      if (!button) return;
+      const rect = button.getBoundingClientRect();
+      const menuWidth = 380;
+      setFreezoneSkillMenuPosition({
+        left: Math.max(8, Math.min(rect.left - 8, window.innerWidth - menuWidth - 8)),
+        bottom: Math.max(8, window.innerHeight - rect.top + 10),
+      });
+    };
+    updatePosition();
+    window.addEventListener("resize", updatePosition);
+    window.addEventListener("scroll", updatePosition, true);
+    return () => {
+      window.removeEventListener("resize", updatePosition);
+      window.removeEventListener("scroll", updatePosition, true);
+    };
+  }, [freezoneSkillMenuExplicitOpen]);
+
+  useEffect(() => {
+    if (!freezoneSkillMenuExplicitOpen) return;
+    const handlePointerDown = (event: PointerEvent) => {
+      const target = event.target;
+      if (!(target instanceof Node)) return;
+      if (freezoneSkillMenuButtonRef.current?.contains(target)) return;
+      if (target instanceof Element && target.closest("[data-freezone-skill-menu='true']")) return;
+      setFreezoneSkillMenuExplicitOpen(false);
+    };
+    document.addEventListener("pointerdown", handlePointerDown);
+    return () => {
+      document.removeEventListener("pointerdown", handlePointerDown);
+    };
+  }, [freezoneSkillMenuExplicitOpen]);
   const selectedFreezoneNodes = useMemo(
     () => (isFreezoneLayout ? getSelectedFreezoneNodes(canvasNodes, selectedCanvasNodeId) : []),
     [canvasNodes, isFreezoneLayout, selectedCanvasNodeId],
@@ -12479,7 +12549,7 @@ export function SuperChatPanel({
                 onSubmit={submitAssistantClarificationResponse}
               />
             )}
-            {!hasActiveComposerPrompt && showFreezoneSkillSuggestions && (
+            {!hasActiveComposerPrompt && showFreezoneSkillSuggestions && !freezoneSkillMenuExplicitOpen && (
               <div className="border-b border-white/10 bg-black/20 px-3 py-2.5">
                 <div className="mb-1.5 px-0.5 text-xs text-muted-foreground/85">
                   技能
@@ -12691,7 +12761,7 @@ export function SuperChatPanel({
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="flex items-center gap-1">
                     {isFreezoneLayout && (
-                      <div>
+                      <>
                         <Button
                           ref={canvasCommandModeButtonRef}
                           type="button"
@@ -12712,7 +12782,34 @@ export function SuperChatPanel({
                             </>
                           )}
                         </Button>
-                      </div>
+                        <Button
+                          ref={freezoneSkillMenuButtonRef}
+                          type="button"
+                          variant="ghost"
+                          size="icon"
+                          className={cn(
+                            "size-8 rounded-full text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+                            showFreezoneSkillSuggestions && freezoneSkillMenuExplicitOpen && "bg-white/[0.08] text-foreground",
+                          )}
+                          onMouseDown={(event) => {
+                            event.preventDefault();
+                          }}
+                          onClick={() => {
+                            setSelectedHistoryMessageIndex(null);
+                            if (!freezoneSkillMenuExplicitOpen) {
+                              setFreezoneSkillMenuSearch("");
+                            }
+                            setFreezoneSkillMenuExplicitOpen((open) => !open);
+                            setActiveFreezoneSkillSuggestionIndex(0);
+                            restoreDraftFocusRef.current = true;
+                          }}
+                          aria-label="选择 Skill"
+                          title="选择 Skill"
+                          aria-expanded={showFreezoneSkillSuggestions}
+                        >
+                          <Package className="size-4" />
+                        </Button>
+                      </>
                     )}
                     {ENABLE_SUPERCHAT_FILE_UPLOAD && (
                       <Button
@@ -12788,6 +12885,134 @@ export function SuperChatPanel({
         onClose={() => setMediaDetail(null)}
         onOpenMedia={setMediaDetail}
       />
+      {isFreezoneLayout && freezoneSkillMenuExplicitOpen && freezoneSkillMenuPosition && createPortal(
+        <div
+          data-freezone-skill-menu="true"
+          className="fixed z-[1000] w-[min(380px,calc(100vw-16px))] overflow-hidden rounded-2xl border border-white/[0.12] bg-[#18191d]/95 p-3 text-foreground shadow-[0_18px_48px_rgba(0,0,0,0.52)] backdrop-blur-xl"
+          style={{
+            left: freezoneSkillMenuPosition.left,
+            bottom: freezoneSkillMenuPosition.bottom,
+          }}
+        >
+          <div className="mb-3 flex items-center justify-between gap-3">
+            <div className="text-sm font-semibold leading-6 text-foreground/95">
+              Skill
+            </div>
+            <button
+              type="button"
+              className="inline-flex h-7 items-center gap-1 rounded-full border border-white/[0.10] bg-white/[0.08] px-2.5 text-xs font-medium text-foreground/88 shadow-[0_8px_18px_rgba(0,0,0,0.28)] transition hover:border-white/[0.16] hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25"
+              onClick={() => insertFreezoneSkillEmptyAction("帮我创建一个 Skill：")}
+            >
+              <Plus className="size-3.5" />
+              创建
+              <ChevronDown className="size-3" />
+            </button>
+          </div>
+          <label className="relative mb-3 block">
+            <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-white/35" />
+            <input
+              value={freezoneSkillMenuSearch}
+              onChange={(event) => {
+                setFreezoneSkillMenuSearch(event.target.value);
+                setActiveFreezoneSkillSuggestionIndex(0);
+              }}
+              onKeyDown={(event) => {
+                if (event.key === "Escape") {
+                  event.preventDefault();
+                  setFreezoneSkillMenuExplicitOpen(false);
+                  return;
+                }
+                if (event.key === "ArrowDown" || event.key === "ArrowUp") {
+                  event.preventDefault();
+                  setActiveFreezoneSkillSuggestionIndex((index) =>
+                    moveFreezoneSkillSuggestionIndex(
+                      index,
+                      event.key === "ArrowDown" ? 1 : -1,
+                      visibleFreezoneSkillSuggestions.length,
+                    ),
+                  );
+                  return;
+                }
+                if (
+                  event.key === "Enter"
+                  && visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex]
+                ) {
+                  event.preventDefault();
+                  insertFreezoneSkillSuggestion(
+                    visibleFreezoneSkillSuggestions[activeFreezoneSkillSuggestionIndex].id,
+                  );
+                }
+              }}
+              placeholder="搜索 Skill"
+              className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.06] pl-8 pr-3 text-sm text-foreground outline-none placeholder:text-white/32 transition focus:border-white/[0.18] focus:bg-white/[0.08]"
+            />
+          </label>
+          <div className="max-h-72 overflow-y-auto pr-1">
+            {visibleFreezoneSkillSuggestions.length > 0 ? (
+              visibleFreezoneSkillSuggestions.map((skill, index) => (
+                <button
+                  key={skill.id}
+                  ref={(element) => {
+                    freezoneSkillSuggestionRefs.current[index] = element;
+                  }}
+                  type="button"
+                  className={cn(
+                    "flex w-full items-start gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-white/[0.07] focus-visible:bg-white/[0.07] focus-visible:outline-none",
+                    activeFreezoneSkillSuggestionIndex === index && "bg-white/[0.08]",
+                  )}
+                  onMouseEnter={() => setActiveFreezoneSkillSuggestionIndex(index)}
+                  onClick={() => insertFreezoneSkillSuggestion(skill.id)}
+                >
+                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-xl border border-white/[0.10] bg-white/[0.06] text-white/62">
+                    <Wrench className="size-3.5" />
+                  </span>
+                  <span className="min-w-0 flex-1">
+                    <span className="flex min-w-0 items-center gap-2">
+                      <span className="truncate text-[13px] font-semibold leading-5 text-foreground/92">
+                        {skill.label}
+                      </span>
+                      <span className="shrink-0 rounded-md bg-white/[0.07] px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
+                        /{skill.id}
+                      </span>
+                    </span>
+                    {skill.description && (
+                      <span className="mt-0.5 block truncate text-xs leading-4 text-muted-foreground/75">
+                        {skill.description}
+                      </span>
+                    )}
+                  </span>
+                </button>
+              ))
+            ) : (
+              <div className="px-1 pb-1 pt-0.5 text-xs leading-5 text-muted-foreground/78">
+                <div className="font-medium text-foreground/78">
+                  {freezoneSkillMenuSearch.trim() ? "没有匹配的 Skill" : "这里暂时没有 Skill"}
+                </div>
+                {!freezoneSkillMenuSearch.trim() && (
+                  <>
+                    <div className="mt-1 text-muted-foreground/62">
+                      可以让 Agent 把当前画布总结成 Skill，也可以描述你的工作流来创建专属技能。
+                    </div>
+                    <div className="mt-3 flex flex-wrap gap-2">
+                      {FREEZONE_SKILL_EMPTY_ACTIONS.map((action) => (
+                        <button
+                          key={action.id}
+                          type="button"
+                          className="rounded-full border border-white/[0.10] bg-white/[0.07] px-3 py-1.5 text-[11px] leading-4 text-foreground/78 shadow-[0_8px_18px_rgba(0,0,0,0.24)] transition hover:border-white/[0.16] hover:bg-white/[0.11] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25"
+                          onClick={() => insertFreezoneSkillEmptyAction(action.prompt)}
+                        >
+                          {action.label}
+                        </button>
+                      ))}
+                    </div>
+                  </>
+                )}
+              </div>
+            )}
+          </div>
+        </div>,
+        document.body,
+      )}
       {isFreezoneLayout && canvasCommandModeMenuOpen && canvasCommandModeMenuPosition && createPortal(
         <div
           data-canvas-command-mode-menu="true"
