@@ -367,6 +367,56 @@ const UI_OPEN_NODE_ACTIONS = new Set([
   "open_video_compose_modal",
 ]);
 
+const CURRENT_MEDIA_NODE_ACTIONS = new Set([
+  "open_crop_tool",
+  "open_annotate_tool",
+  "open_redraw_tool",
+  "open_erase_tool",
+  "open_upscale_tool",
+  "open_outpaint_tool",
+  "open_scene360_tool",
+  "open_multi_angle_tool",
+  "open_light_tool",
+  "open_rotate_tool",
+  "run_matting_tool",
+  "run_upscale_tool",
+  "run_outpaint_tool",
+  "run_scene360_tool",
+  "run_grid_multi_camera",
+  "run_grid_plot_four",
+  "run_grid_face_three_view",
+  "run_grid_product_three_view",
+  "run_grid_serial_storyboard_25",
+  "run_grid_cinematic_light_correction",
+  "run_grid_character_three_view",
+  "run_grid_frame_projection_3s_later",
+  "run_grid_frame_projection_5s_earlier",
+  "open_grid_multi_camera",
+  "open_grid_plot_four",
+  "open_grid_face_three_view",
+  "open_grid_product_three_view",
+  "open_grid_serial_storyboard_25",
+  "open_grid_cinematic_light_correction",
+  "open_grid_character_three_view",
+  "open_grid_frame_projection_3s_later",
+  "open_grid_frame_projection_5s_earlier",
+  "download_image",
+  "open_video_viewer",
+  "download_video",
+  "open_video_clip_tool",
+  "open_video_upscale_tool",
+  "run_video_analyze_story",
+  "run_audio_separate",
+  "download_audio",
+  "open_video_subtitle_erase_smart",
+  "open_video_subtitle_erase_box",
+  "capture_pano_current_view",
+  "capture_pano_2x2_views",
+  "capture_pano_4x3_views",
+  "set_pano_current_view_as_background",
+  "reset_pano_view",
+]);
+
 const RESULT_SPAWNING_NODE_ACTIONS = new Set([
   "run_outpaint_tool",
   "run_scene360_tool",
@@ -1260,6 +1310,30 @@ function defaultWorkflowActionForNode(node: CanvasNode): string | null {
   return null;
 }
 
+function upstreamWorkflowActionDependencies(nodeId: string): PendingNodeAction[] {
+  const state = useCanvasStore.getState();
+  const actionNode = nodeById(nodeId);
+  if (!actionNode) return [];
+  if (actionNode.type === CANVAS_NODE_TYPES.videoCompose && hasVideoComposeMinimumInputs(nodeId)) {
+    return [];
+  }
+  const expandedNodeIds = expandWorkflowNodeIds([nodeId], ["upstream"]).filter((id) => id !== nodeId);
+  const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
+  return expandedNodeIds.flatMap((upstreamId) => {
+    const node = nodeByIdMap.get(upstreamId);
+    if (!node || node.type === CANVAS_NODE_TYPES.group) return [];
+    const action = defaultWorkflowActionForNode(node);
+    if (!action || hasGeneratedResult(upstreamId, action)) return [];
+    return [{
+      commandIndex: -1,
+      nodeId: upstreamId,
+      action,
+      executionMode: "workflow",
+      label: commandLabel({ type: "run_node_action", node_id: upstreamId, action }),
+    }];
+  });
+}
+
 function hasVideoComposeMinimumInputs(nodeId: string, allowedSourceNodeIds?: Set<string>): boolean {
   const state = useCanvasStore.getState();
   const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
@@ -1953,6 +2027,9 @@ async function executeQueuedNodeActions(
           } catch (error) {
             clearPendingNodeAction(requestId);
             clearNodeActionRunning(action.nodeId, action.action);
+            if (action.executionMode === "single") {
+              return { action, failed: null };
+            }
             return {
               action,
               failed: `节点动作执行异常：${errorMessage(error)}`,
@@ -2341,6 +2418,14 @@ function applyCanvasChatCommandsInternal(
   const pendingMainlineProjections: PendingMainlineProjection[] = [];
   const queuedNodeActionKeys = new Set<string>();
   const normalizedEnvelopes = normalizeCanvasChatCommandEnvelopesForValidation(envelopes);
+  const requestedNodeActionKeys = new Set(
+    normalizedEnvelopes.flatMap((envelope) =>
+      envelope.commands.flatMap((command) => {
+        if (command.type !== "run_node_action") return [];
+        return [`${command.node_id}:${command.action}`];
+      }),
+    ),
+  );
   const validation = validateCanvasChatCommandEnvelopes(
     normalizedEnvelopes,
     useCanvasStore.getState().nodes,
@@ -2577,26 +2662,66 @@ function applyCanvasChatCommandsInternal(
           }
           case "run_node_action": {
             const targetId = resolveNodeId(command.node_id, clientIdMap);
-            assertNodeActionAvailable(targetId, command.action);
+            if (options.queueNodeActions) {
+              assertNodeActionAvailable(targetId, command.action);
+              if (CURRENT_MEDIA_NODE_ACTIONS.has(command.action)) {
+                runNodeAction(targetId, command.action, command.parameters);
+                result.openedUiActions += 1;
+                result.commandResults.push({
+                  commandIndex: currentCommandIndex,
+                  type: command.type,
+                  status: "success",
+                  label: commandLabel(command),
+                  nodeId: targetId,
+                  action: command.action,
+                });
+                if (!RESULT_SPAWNING_NODE_ACTIONS.has(command.action)) {
+                  selectAndFocusNode(targetId);
+                }
+                break;
+              }
+              const shouldRunUpstreamDependencies = !CURRENT_MEDIA_NODE_ACTIONS.has(command.action);
+              if (shouldRunUpstreamDependencies) {
+                const incompleteDependencies = upstreamWorkflowActionDependencies(targetId)
+                  .filter((dependency) => !requestedNodeActionKeys.has(`${dependency.nodeId}:${dependency.action}`));
+                for (const dependency of incompleteDependencies) {
+                  const dependencyKey = `${dependency.nodeId}:${dependency.action}`;
+                  if (queuedNodeActionKeys.has(dependencyKey)) continue;
+                  assertNodeActionAvailable(dependency.nodeId, dependency.action);
+                  queuedNodeActionKeys.add(dependencyKey);
+                  pendingNodeActions.push({
+                    ...dependency,
+                    commandIndex: currentCommandIndex,
+                  });
+                }
+              }
+              const targetKey = `${targetId}:${command.action}`;
+              if (!queuedNodeActionKeys.has(targetKey)) {
+                queuedNodeActionKeys.add(targetKey);
+                pendingNodeActions.push({
+                  commandIndex: currentCommandIndex,
+                  nodeId: targetId,
+                  action: command.action,
+                  executionMode: "single",
+                  parameters: command.parameters,
+                  label: commandLabel(command),
+                });
+              }
+            } else {
+              runNodeAction(targetId, command.action, command.parameters);
+              result.openedUiActions += 1;
+              result.commandResults.push({
+                commandIndex: currentCommandIndex,
+                type: command.type,
+                status: "success",
+                label: commandLabel(command),
+                nodeId: targetId,
+                action: command.action,
+              });
+            }
             if (!RESULT_SPAWNING_NODE_ACTIONS.has(command.action)) {
               selectAndFocusNode(targetId);
             }
-            setTimeout(() => {
-              try {
-                runNodeAction(targetId, command.action, command.parameters);
-              } catch (error) {
-                console.error("[freezone] run node action failed", error);
-              }
-            }, 0);
-            result.openedUiActions += 1;
-            result.commandResults.push({
-              commandIndex: currentCommandIndex,
-              type: command.type,
-              status: "success",
-              label: commandLabel(command),
-              nodeId: targetId,
-              action: command.action,
-            });
             break;
           }
           case "open_mainline_projection": {

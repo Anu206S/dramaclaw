@@ -37,6 +37,7 @@ import {
   useSaveFreezoneAgentConfigItem,
   type FreezoneAgentConfigPayload,
 } from "@/lib/queries/freezone-agent-config";
+import { validateFreezoneAgentConfigPayload } from "@/lib/freezone-agent-config-schema";
 import { cn } from "@/lib/utils";
 
 type FreezoneCatalogKind = "skills" | "recipes";
@@ -168,8 +169,9 @@ export function FreezoneSkillRecipeSettings({
 
   const saveItem = async (payload: FreezoneAgentConfigPayload) => {
     const cleanPayload = stripCatalogMetadata(payload);
-    if (!validateCatalogPayload(kind, cleanPayload)) {
-      toast.error(t("settings.freezoneCatalog.saveFailed"));
+    const validation = validateFreezoneAgentConfigPayload(kind, cleanPayload);
+    if (!validation.ok) {
+      toast.error(`${t("settings.freezoneCatalog.saveFailed")}：${validation.message}`);
       return;
     }
     try {
@@ -189,10 +191,7 @@ export function FreezoneSkillRecipeSettings({
 
   const toggleItemEnabled = async (item: ManagedCatalogItem, enabled: boolean) => {
     try {
-      const payload =
-        item.builtin && !item.customized
-          ? { id: item.id, enabled }
-          : { ...stripCatalogMetadata(item.payload), enabled };
+      const payload = { ...stripCatalogMetadata(item.payload), enabled };
       await saveCatalogItem.mutateAsync({
         kind,
         payload,
@@ -313,8 +312,11 @@ export function FreezoneSkillRecipeSettings({
         if (!isPlainObject(payload)) throw new Error("invalid json");
         return payload as FreezoneAgentConfigPayload;
       });
-      if (!normalizedPayloads.every((payload) => validateCatalogPayload(kind, payload))) {
-        throw new Error("invalid catalog payload");
+      for (const payload of normalizedPayloads) {
+        const validation = validateFreezoneAgentConfigPayload(kind, payload);
+        if (!validation.ok) {
+          throw new Error(validation.message);
+        }
       }
       for (const payload of normalizedPayloads) {
         await saveCatalogItem.mutateAsync({
@@ -323,8 +325,9 @@ export function FreezoneSkillRecipeSettings({
         });
       }
       toast.success(t("settings.freezoneCatalog.imported"));
-    } catch {
-      toast.error(t("settings.freezoneCatalog.importFailed"));
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.importFailed")}${message}`);
     } finally {
       if (importInputRef.current) {
         importInputRef.current.value = "";
@@ -1213,25 +1216,6 @@ function isValidRecipeDraft(draft: RecipeDraft) {
     draft.system_prompt.trim().length > 0 &&
     draft.planningPrompt.trim().length > 0 &&
     draft.resultSummary.trim().length > 0
-  );
-}
-
-function validateCatalogPayload(kind: FreezoneCatalogKind, payload: FreezoneAgentConfigPayload) {
-  if (kind === "skills") {
-    const triggers = getRecord(payload.triggers);
-    return (
-      getString(payload.id).trim().length > 0 &&
-      getString(payload.category).trim().length > 0 &&
-      getString(payload.description).trim().length > 0 &&
-      getStringArray(triggers.keywords).some((keyword) => keyword.trim().length > 0)
-    );
-  }
-  return (
-    getString(payload.id).trim().length > 0 &&
-    getString(payload.name).trim().length > 0 &&
-    isRecipeGenerationType(payload.output_kind) &&
-    getStringArray(payload.action_keys).some((key) => key.trim().length > 0) &&
-    getString(payload.system_prompt).trim().length > 0
   );
 }
 
