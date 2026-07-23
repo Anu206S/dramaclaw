@@ -179,6 +179,29 @@ describe("canvas action catalog", () => {
     );
   });
 
+  it("exposes image download as a runnable node action when an image has media", () => {
+    const image = node({
+      id: "image-download-a",
+      type: CANVAS_NODE_TYPES.imageGen,
+      data: {
+        imageUrl: "/static/projects/demo/freezone/image.png",
+        sourceFileName: "demo.png",
+      },
+    });
+
+    const catalog = buildCanvasNodeActionCatalog(image);
+
+    expect(catalog.actions).toContainEqual(
+      expect.objectContaining({
+        action: "download_image",
+        execution: "frontend_node",
+        command_type: "run_node_action",
+        description: expect.stringContaining("Trigger a browser download"),
+        parameters: { node_id: "image-download-a" },
+      }),
+    );
+  });
+
   it("exposes scene 360 as a direct generation action", () => {
     const image = node({
       id: "scene-source-a",

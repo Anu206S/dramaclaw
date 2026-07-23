@@ -96,6 +96,26 @@ describe('imageRotate application（预建/取消 + 原地旋转写回）', () =
     ).toBe(true);
   });
 
+  it('createRotateResultNode：支持只有 referenceImageUrl 的 imageGen 节点', () => {
+    useCanvasStore.getState().setCanvasData(
+      [
+        {
+          id: 'src-ref',
+          type: CANVAS_NODE_TYPES.imageGen,
+          position: { x: 0, y: 0 },
+          data: { referenceImageUrl: '/static/reference.png', aspectRatio: '1:1' },
+        } as CanvasNode,
+      ],
+      [],
+    );
+
+    const nodeId = createRotateResultNode('src-ref', { displayName: '旋转结果' });
+
+    const created = useCanvasStore.getState().nodes.find((node) => node.id === nodeId);
+    expect(created?.type).toBe(CANVAS_NODE_TYPES.exportImage);
+    expect(created?.data.previewImageUrl).toBe('/static/reference.png');
+  });
+
   it('discardRotateResultNode：删掉预建节点（取消/退出路径）', () => {
     const nodeId = createRotateResultNode('src-1', { displayName: '旋转结果' }) as string;
     discardRotateResultNode(nodeId);

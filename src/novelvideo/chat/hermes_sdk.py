@@ -28,12 +28,6 @@ from novelvideo.chat.backend_sdk import ChatBackendEvent
 
 _log = logging.getLogger(__name__)
 
-# How long to wait for the ACP initialize response before giving up.
-INITIALIZE_TIMEOUT = 30.0
-# How long to wait for hermes to produce a session/new response.
-SESSION_NEW_TIMEOUT = 90.0  # cold start runs startup probes (vision/aux); allow them to finish
-
-
 def _env_float(name: str, default: float) -> float:
     try:
         return float(os.environ.get(name, str(default)))
@@ -46,6 +40,14 @@ def _env_int(name: str, default: int) -> int:
         return int(os.environ.get(name, str(default)))
     except (TypeError, ValueError):
         return default
+
+
+# How long to wait for the ACP initialize response before giving up. Some
+# Hermes builds perform plugin/tool bootstrap during initialize, so keep this
+# aligned with session/new's cold-start budget.
+INITIALIZE_TIMEOUT = 90.0
+# How long to wait for hermes to produce a session/new response.
+SESSION_NEW_TIMEOUT = 90.0
 
 
 # Per-line stdout read timeout while streaming a prompt. Freezone canvas write

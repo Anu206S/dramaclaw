@@ -10,6 +10,7 @@ import {
   isImageEditNode,
   isImageGenNode,
   isUploadNode,
+  resolveNodeSourceImageUrl,
 } from '@/features/canvas/domain/canvasNodes';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
@@ -41,8 +42,7 @@ export function createRotateResultNode(
   ) {
     return null;
   }
-  const sourceImageUrl =
-    sourceNode.data.imageUrl || sourceNode.data.previewImageUrl || null;
+  const sourceImageUrl = resolveNodeSourceImageUrl(sourceNode);
   if (!sourceImageUrl) {
     return null;
   }

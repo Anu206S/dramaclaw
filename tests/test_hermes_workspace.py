@@ -211,7 +211,7 @@ def test_freezone_profile_refreshes_stale_repo_symlinks(
 
 
 def test_hermes_initialize_timeout_allows_cold_start():
-    assert hermes_sdk.INITIALIZE_TIMEOUT == 30.0
+    assert hermes_sdk.INITIALIZE_TIMEOUT == 90.0
 
 
 def test_hermes_stdio_line_limit_allows_large_acp_tool_calls():
