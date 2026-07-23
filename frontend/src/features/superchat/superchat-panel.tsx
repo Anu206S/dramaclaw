@@ -3772,6 +3772,7 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
   );
   const payload: FreezoneAgentConfigPayload = {
     id: textField(skill.id),
+    name: textField(skill.name),
     enabled: skill.enabled !== false,
     description: textField(skill.description),
     category: firstNonEmptyText(skill.category, "general"),
@@ -3806,6 +3807,22 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
   };
   if (workflowTemplates.length > 0) {
     payload.workflow_templates = workflowTemplates;
+  }
+  const inputParameters = getRecordArray(skill.input_parameters ?? skill.inputParameters).map((item) => ({ ...item }));
+  if (inputParameters.length > 0) {
+    payload.input_parameters = inputParameters;
+  }
+  const allowedRecipeIds = cleanStringArray(skill.allowed_recipe_ids ?? skill.allowedRecipeIds);
+  if (allowedRecipeIds.length > 0) {
+    payload.allowed_recipe_ids = allowedRecipeIds;
+  }
+  const schemaVersion = textField(skill.schema_version ?? skill.schemaVersion);
+  if (schemaVersion) {
+    payload.schema_version = schemaVersion;
+  }
+  const version = textField(skill.version);
+  if (version) {
+    payload.version = version;
   }
   return payload;
 }

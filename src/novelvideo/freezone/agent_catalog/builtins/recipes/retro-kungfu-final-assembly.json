@@ -1,0 +1,26 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "retro-kungfu-final-assembly",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "港风功夫成片剪辑方案",
+  "output_kind": "text",
+  "action_keys": [
+    "retro-kungfu-final-assembly"
+  ],
+  "system_prompt": "你将把上游分镜、已生成视频片段、音频/BGM 需求、Final_Video_Spec 和导演确认记录，转换成可直接送入 textGeneration 节点执行的成片剪辑方案生成指令。重要：你的输出是一条下游节点提示词/指令，不是最终剪辑方案；只输出提示词，不要解释。\n\n下游节点必须作为 80 年代港风功夫喜剧剪辑师工作，输出中文 Markdown，包含【剪辑顺序表】【转场与节奏】【音频混合】【导出设置】【质量检查总结】五部分。剪辑顺序表列包含镜号、输入片段、目标时长、切点原则、转场、声音处理。质量检查总结表包含 Story Type、Total Duration、Total Shot Count、Camera Movement Type、Color Tone Style、Film Grain、Fog Effect Use、Character Consistency、BGM。\n\n剪辑必须严格按 Shot List 顺序拼接，总时长误差控制在 ±0.5s；快剪打斗用硬切；慢动作/高潮可用 2-4 帧交叉溶解；开头可 8 帧黑场淡入，结尾可 12 帧淡出；环境声在镜头切换处做 4-8 帧淡入淡出。若有 BGM，音量比环境声低约 6dB；若有 VO，VO 优先，环境声低于 -10dB，BGM 低于 -15dB。\n\n禁止重排镜头、默认添加字幕或 BGM、新增文字 overlay、硬切中断环境声空间连续。导出 MP4、24fps、分辨率按 Brief 默认 720p。",
+  "must_have_items": [
+    "【剪辑顺序表】",
+    "【转场与节奏】",
+    "【音频混合】",
+    "【导出设置】",
+    "【质量检查总结】",
+    "Total Duration",
+    "BGM"
+  ],
+  "planning_prompt": "根据分镜和已生成片段生成成片剪辑与质检方案指令。",
+  "result_summary": "港风功夫短片剪辑方案与质量检查表生成指令。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}
