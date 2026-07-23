@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "enabled": true,
   "name": "港风功夫萌宠短片",
-  "description": "把人物、宠物、动物参考或一句灵感发展成 80 年代复古香港功夫喜剧短片，按全局 Brief、四幕大纲、分镜、关键元素、逐镜视频、可选 BGM 和成片剪辑方案分阶段推进。",
+  "description": "把人物、宠物、动物参考或一句灵感发展成 80 年代复古香港功夫喜剧短片，按全局 Brief、四幕大纲、分镜、关键元素、逐镜视频和可选 BGM 分阶段推进。",
   "category": "video",
   "triggers": {
     "keywords": [
@@ -92,11 +92,10 @@
     "retro-kungfu-shot-list",
     "retro-kungfu-key-elements",
     "retro-kungfu-shot-video",
-    "retro-kungfu-bgm",
-    "retro-kungfu-final-assembly"
+    "retro-kungfu-bgm"
   ],
   "planning": {
-    "planning_notes": "动态执行路径：先根据 total_duration、character_input_method、bgm_mode、aspect_ratio、execution_mode、当前文字灵感和画布/上传素材判断入口。缺少文字灵感且没有角色参考时，先用 retro-kungfu-video-spec 产出缺素材提示，不继续生成。信息足够时，先创建 textGeneration/retro-kungfu-video-spec 锁定 Final_Video_Spec；导演确认后创建 textGeneration/retro-kungfu-story-outline；大纲确认后创建 textGeneration/retro-kungfu-shot-list，按每批 4-6 镜头确认；分镜确认后创建 imageGeneration/retro-kungfu-key-elements 生成角色、动物、场景、道具关键元素；关键元素确认后按镜头创建 videoGeneration/retro-kungfu-shot-video；若 bgm_mode 选择“生成港风轻喜剧武侠 BGM”，再创建 audioGeneration/retro-kungfu-bgm；最终用 textGeneration/retro-kungfu-final-assembly 生成剪辑、混音、导出和质检方案。画幅使用 input aspect_ratio，默认 16:9；默认 720p、无字幕、无 BGM。",
+    "planning_notes": "动态执行路径：先根据 total_duration、character_input_method、bgm_mode、aspect_ratio、execution_mode、当前文字灵感和画布/上传素材判断入口。缺少文字灵感且没有角色参考时，先用 retro-kungfu-video-spec 产出缺素材提示，不继续生成。信息足够时，先创建 textGeneration/retro-kungfu-video-spec 锁定 Final_Video_Spec；导演确认后创建 textGeneration/retro-kungfu-story-outline；大纲确认后创建 textGeneration/retro-kungfu-shot-list，按每批 4-6 镜头确认；分镜确认后创建 imageGeneration/retro-kungfu-key-elements 生成角色、动物、场景、道具关键元素；关键元素确认后按镜头创建 videoGeneration/retro-kungfu-shot-video；若 bgm_mode 选择“生成港风轻喜剧武侠 BGM”，再创建 audioGeneration/retro-kungfu-bgm。画幅使用 input aspect_ratio，默认 16:9；默认 720p、无字幕、无 BGM。",
     "prompt_guide": "始终称呼用户为“导演”。阶段标题使用【模块名】格式，输出中文 Markdown 表格。创作核心是 1980s 复古香港功夫喜剧：喜剧优先，功夫是外壳；宠物/动物保留本能行为，与武侠造型形成荒诞反差。首 3 秒必须建立冲突或反差。全局视觉为暖黄偏暗、低饱和强光、35mm 旧胶片颗粒、硬光轮廓、暗部重亮部柔。默认 15 秒、720p、中文叙事、无字幕、无背景音乐；画幅使用开始前选项；只有导演明确要求时才生成 BGM。",
     "conduct_rules": [
       "不要一次性连续跑完整流程；每个阶段产出后必须暂停等待导演确认/修改/重生成。",
@@ -161,8 +160,7 @@
       "默认保留环境声；对白/旁白使用港式普通话口音和老麦克风颗粒。",
       "首 3 秒必须建立冲突或反差。",
       "宠物/动物必须同时保留物种习性和武侠造型。",
-      "禁止无人机航拍、明显手持晃动、过度平滑稳定器滑轨感。",
-      "视频剪辑按分镜顺序拼接，总时长误差控制在 ±0.5 秒。"
+      "禁止无人机航拍、明显手持晃动、过度平滑稳定器滑轨感。"
     ]
   }
 }

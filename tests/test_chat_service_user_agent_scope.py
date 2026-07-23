@@ -1134,7 +1134,7 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "prompt/instruction generator" in prompt
     assert "不要直接生成最终内容" in prompt
     assert "送入对应节点" in prompt
-    assert "planning.planning_notes must start with an executable path summary" in prompt
+    assert "planning.planning_notes must start with a dynamic executable path summary" in prompt
     assert "planning.conduct_rules must include hard execution rules" in prompt
     assert "workflow_templates[].condition should be machine-readable" in prompt
     assert '{"type":"previous_step","step_id":"..."}' in prompt
@@ -1212,7 +1212,8 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
     assert "Do not ask for Skill name, category, or whether to include workflow templates" in prompt
     assert "concrete case vs reusable template" in prompt
     assert "recipe granularity" in prompt
-    assert "If the user selects or already submitted workflow-template inclusion" in prompt
+    assert "New multi-node workflow Skills should use the 2.0 dynamic format by default" in prompt
+    assert "Do not require workflow_templates for new dynamic Skills" in prompt
     assert "workflow_templates" in prompt
     assert "node_type=videoCompose" in prompt
     assert "Do not create a Recipe for videoCompose" in prompt
