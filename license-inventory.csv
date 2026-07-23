@@ -1103,7 +1103,6 @@ frontend/src/features/freezone/CanvasDebugPanel.tsx,Elastic-2.0,2026 SuperTale c
 frontend/src/features/freezone/CanvasesTab.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/freezone/FreezoneShell.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/freezone/WorkflowRunRecoveryBar.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
-frontend/src/features/freezone/addNodesToChatSelection.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/freezone/agentCreatableNodeTypes.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/freezone/canvasAgents.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/freezone/canvasChatCommands.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation

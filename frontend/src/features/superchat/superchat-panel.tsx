@@ -159,7 +159,9 @@ import {
 import { buildAssetBoard, type AssetBoardColumn } from "@/features/canvas/domain/assetBoard";
 import {
   FREEZONE_NODE_SUGGESTION_PAGE,
+  appendFreezoneNodeMentions,
   buildFreezoneNodeMentionLookup,
+  buildFreezoneNodePreviewInfo,
   buildFreezoneNodeSuggestions,
   filterFreezoneNodeSuggestions,
   freezoneNodeMentionIds,
@@ -170,6 +172,7 @@ import {
   sanitizeFreezoneNodeLabel,
   stripFreezoneNodeAtQuery,
   type FreezoneNodeMentionLookup,
+  type FreezoneNodePreviewInfo,
 } from "@/features/superchat/freezone-node-suggestions";
 import { FreezoneNodeSuggestionMenu } from "@/features/superchat/FreezoneNodeSuggestionMenu";
 import {
@@ -8179,20 +8182,30 @@ const EMPTY_FREEZONE_NODE_MENTION_LOOKUP: FreezoneNodeMentionLookup = new Map();
 function buildFreezoneNodeChipElement(
   nodeId: string,
   label: string,
-  meta: { thumbnailUrl: string | null; column: AssetBoardColumn } | null,
+  meta: { thumbnailUrl: string | null; mediaUrl: string | null; column: AssetBoardColumn } | null,
 ): HTMLElement {
   const chip = document.createElement("span");
   chip.dataset.freezoneNodeId = nodeId;
   chip.dataset.freezoneNodeLabel = label;
   chip.contentEditable = "false";
   chip.className = FREEZONE_CHIP_CLASS;
-  chip.title = label;
+  // 不挂原生 title：hover 走下方 React 富预览浮层，两者并存会同时冒两个提示。
+  chip.setAttribute("aria-label", label);
 
   if (meta?.thumbnailUrl) {
     const thumb = document.createElement("img");
     thumb.src = meta.thumbnailUrl;
     thumb.alt = "";
     thumb.loading = "lazy";
+    thumb.className = "size-4 shrink-0 rounded-[3px] object-cover";
+    chip.appendChild(thumb);
+  } else if (meta?.column === "video" && meta.mediaUrl) {
+    // 视频没记封面：拿片源取首帧当缩略图（对齐故事板 VideoThumb 的 #t=0.1 兜底）。
+    const thumb = document.createElement("video");
+    thumb.src = `${meta.mediaUrl}#t=0.1`;
+    thumb.muted = true;
+    thumb.preload = "metadata";
+    thumb.playsInline = true;
     thumb.className = "size-4 shrink-0 rounded-[3px] object-cover";
     chip.appendChild(thumb);
   } else {
@@ -8325,6 +8338,10 @@ function FreezoneSkillInlineEditor({
   const editorRef = useRef<HTMLDivElement | null>(null);
   const lastEmittedValueRef = useRef(value);
   const lastRenderedSuggestionsKeyRef = useRef("");
+  // 悬浮预览：hover 引用 chip 时在其上方（空间不足则下方）浮出放大缩略图 + 名称/类型卡。
+  const [mentionPreview, setMentionPreview] = useState<
+    (FreezoneNodePreviewInfo & { left: number; top: number; placement: "above" | "below" }) | null
+  >(null);
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
@@ -8378,6 +8395,39 @@ function FreezoneSkillInlineEditor({
     onKeyDown(event);
   }, [onChange, onKeyDown]);
 
+  // 事件委托：chip 是命令式注入的动态 DOM，逐个挂 mouseenter 会随每次重渲染丢失，
+  // 故在稳定的编辑器根上用冒泡的 mouseover 判定「当前指到哪个引用 chip」。指到非 chip
+  // 处（正文/空白）同样走这里清空，离开编辑器再由 mouseleave 兜底。
+  const handleEditorMouseOver = useCallback(
+    (event: ReactMouseEvent<HTMLDivElement>) => {
+      const editor = editorRef.current;
+      const target = event.target;
+      const chip =
+        target instanceof Element
+          ? (target.closest("[data-freezone-node-id]") as HTMLElement | null)
+          : null;
+      if (!editor || !chip || !editor.contains(chip)) {
+        setMentionPreview(null);
+        return;
+      }
+      const nodeId = chip.dataset.freezoneNodeId ?? "";
+      const label = chip.dataset.freezoneNodeLabel ?? nodeId;
+      const info = buildFreezoneNodePreviewInfo(label, nodeLookup.get(nodeId) ?? null);
+      const rect = chip.getBoundingClientRect();
+      const left = Math.min(Math.max((rect.left + rect.right) / 2, 16), window.innerWidth - 16);
+      // 输入框贴着面板底部，上方基本恒有空间；仅在贴近视口顶端（放不下卡片）时翻到下方。
+      const placement: "above" | "below" = rect.top >= 240 ? "above" : "below";
+      setMentionPreview({
+        ...info,
+        left,
+        top: placement === "above" ? rect.top - 8 : rect.bottom + 8,
+        placement,
+      });
+    },
+    [nodeLookup],
+  );
+  const clearMentionPreview = useCallback(() => setMentionPreview(null), []);
+
   return (
     <div className="relative">
       {value.trim().length === 0 && (
@@ -8396,8 +8446,57 @@ function FreezoneSkillInlineEditor({
         onFocus={onFocus}
         onBlur={onBlur}
         onKeyDown={handleKeyDown}
+        onMouseOver={handleEditorMouseOver}
+        onMouseLeave={clearMentionPreview}
         className="max-h-[220px] min-h-11 overflow-y-auto whitespace-pre-wrap break-words border-0 bg-transparent px-3.5 py-3 text-sm leading-6 text-foreground outline-none empty:min-h-11 focus-visible:ring-0"
       />
+      {mentionPreview &&
+        createPortal(
+          <div
+            className={cn(
+              "pointer-events-none fixed z-[80] -translate-x-1/2",
+              mentionPreview.placement === "above" && "-translate-y-full",
+            )}
+            style={{ left: mentionPreview.left, top: mentionPreview.top }}
+          >
+            <div className="overflow-hidden rounded-lg border border-border bg-popover p-1.5 shadow-xl">
+              {mentionPreview.thumbnailUrl ? (
+                <img
+                  src={mentionPreview.thumbnailUrl}
+                  alt=""
+                  className="block max-h-48 max-w-[220px] rounded-md object-contain"
+                />
+              ) : (
+                mentionPreview.videoPosterUrl && (
+                  // 视频引用：hover 预览时自动循环播放（静音+内联满足浏览器自动播放策略），
+                  // 不再停在首帧。key 绑片源，切到另一个视频 chip 时重挂 <video> 从头播。
+                  <video
+                    key={mentionPreview.videoPosterUrl}
+                    src={mentionPreview.videoPosterUrl}
+                    autoPlay
+                    loop
+                    muted
+                    playsInline
+                    preload="metadata"
+                    className="block max-h-48 max-w-[220px] rounded-md object-contain"
+                  />
+                )
+              )}
+              <div
+                className={cn(
+                  "flex items-center gap-1.5 px-1 text-xs text-popover-foreground",
+                  mentionPreview.thumbnailUrl || mentionPreview.videoPosterUrl ? "pt-1.5" : "py-0.5",
+                )}
+              >
+                <span className="shrink-0 rounded-[4px] bg-white/10 px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                  {mentionPreview.typeLabel}
+                </span>
+                <span className="max-w-[180px] truncate font-medium">{mentionPreview.label}</span>
+              </div>
+            </div>
+          </div>,
+          document.body,
+        )}
     </div>
   );
 }
@@ -9648,6 +9747,9 @@ interface SuperChatPanelProps {
   currentCanvasOntologyContext?: CanvasOntologyContext | null;
   pendingAttachments?: ChatAttachment[];
   onPendingAttachmentsConsumed?: () => void;
+  /** 「添加到对话」落地：一批 nodeId,面板挂载后 drain 成 draft 里的行内 mention chip。 */
+  pendingNodeMentions?: string[];
+  onPendingNodeMentionsConsumed?: () => void;
   onRequestClose?: () => void;
   freezoneHeaderActions?: ReactNode;
   onFreezoneUserMessage?: (message: string, timestamp: number) => void;
@@ -9664,6 +9766,8 @@ export function SuperChatPanel({
   currentCanvasOntologyContext = null,
   pendingAttachments = [],
   onPendingAttachmentsConsumed,
+  pendingNodeMentions = [],
+  onPendingNodeMentionsConsumed,
   onRequestClose,
   freezoneHeaderActions,
   onFreezoneUserMessage,
@@ -11226,6 +11330,20 @@ export function SuperChatPanel({
     onPendingAttachmentsConsumed?.();
     restoreDraftFocusRef.current = true;
   }, [existingCanvasNodeIds, onPendingAttachmentsConsumed, pendingAttachments]);
+
+  // 「添加到对话」：把待处理的 nodeId drain 成 draft 里的行内 mention chip，
+  // 标题从画布节点解析（与 @ 菜单同源）。挂载后 pendingNodeMentions 已就位即抽干。
+  useEffect(() => {
+    if (pendingNodeMentions.length === 0) return;
+    const titleLookup = new Map(
+      buildFreezoneNodeSuggestions(buildAssetBoard(canvasNodes, canvasEdges)).map(
+        (suggestion) => [suggestion.nodeId, suggestion.title] as const,
+      ),
+    );
+    setDraft((current) => appendFreezoneNodeMentions(current, pendingNodeMentions, titleLookup));
+    onPendingNodeMentionsConsumed?.();
+    restoreDraftFocusRef.current = true;
+  }, [pendingNodeMentions, canvasNodes, canvasEdges, onPendingNodeMentionsConsumed]);
 
   useEffect(() => {
     if (variant !== "freezone" || currentCanvasSelection.length > 0) return;

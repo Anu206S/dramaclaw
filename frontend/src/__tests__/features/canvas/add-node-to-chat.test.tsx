@@ -10,7 +10,6 @@ import { CANVAS_NODE_TYPES, type CanvasEdge, type CanvasNode } from '@/features/
 import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { AssetBoardCard } from '@/features/canvas/ui/asset-board/AssetBoardCard';
 import { AssetBoardView } from '@/features/canvas/ui/asset-board/AssetBoardView';
-import { selectNodesForChatReference } from '@/features/freezone/addNodesToChatSelection';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 // ImageViewerModal（AssetBoardView 内常驻挂载）用到 useTranslation。
@@ -108,46 +107,8 @@ describe('添加到对话（画布节点 / 故事板共用入口）', () => {
     expect(onLocate).not.toHaveBeenCalled();
   });
 
-  describe('落地到画布选中（FreezoneShell 订阅到事件后调用的那半边）', () => {
-    beforeEach(() => {
-      const nodes: CanvasNode[] = [
-        {
-          id: 'text-1',
-          type: CANVAS_NODE_TYPES.textAnnotation,
-          position: { x: 0, y: 0 },
-          data: { content: 'A', displayName: '甲' },
-        },
-        {
-          id: 'text-2',
-          type: CANVAS_NODE_TYPES.textAnnotation,
-          position: { x: 200, y: 0 },
-          data: { content: 'B', displayName: '乙' },
-        },
-      ];
-      useCanvasStore.getState().setCanvasData(nodes, []);
-    });
-
-    it('追加而非替换：连点两个节点攒成一组引用，多选时 selectedNodeId 收敛为 null', () => {
-      expect(selectNodesForChatReference(['text-1'])).toBe(true);
-      expect(useCanvasStore.getState().selectedNodeId).toBe('text-1');
-
-      expect(selectNodesForChatReference(['text-2'])).toBe(true);
-      const state = useCanvasStore.getState();
-      expect(state.nodes.filter((node) => node.selected).map((node) => node.id)).toEqual([
-        'text-1',
-        'text-2',
-      ]);
-      expect(state.selectedNodeId).toBeNull();
-    });
-
-    it('节点已不在画布上 → 不动选中，也不该让 Shell 展开聊天', () => {
-      selectNodesForChatReference(['text-1']);
-      expect(selectNodesForChatReference(['ghost'])).toBe(false);
-      expect(
-        useCanvasStore.getState().nodes.filter((node) => node.selected).map((node) => node.id),
-      ).toEqual(['text-1']);
-    });
-  });
+  // 落地半边（事件 → 虾导 draft 追加 @[名](id) 行内 chip）改由
+  // freezone-node-suggestions.test.ts 的 appendFreezoneNodeMentions 单测覆盖。
 
   describe('故事板详情头部', () => {
     beforeEach(() => {

@@ -3,7 +3,9 @@
 import { describe, expect, it } from "vitest";
 import type { AssetBoardData, AssetBoardItem } from "@/features/canvas/domain/assetBoard";
 import {
+  appendFreezoneNodeMentions,
   buildFreezoneNodeMentionLookup,
+  buildFreezoneNodePreviewInfo,
   buildFreezoneNodeSuggestions,
   filterFreezoneNodeSuggestions,
   freezoneNodeMentionIds,
@@ -38,7 +40,7 @@ function item(partial: Partial<AssetBoardItem> & Pick<AssetBoardItem, "nodeId" |
 const board: AssetBoardData = {
   text: [item({ nodeId: "t1", column: "text", title: "分镜表" })],
   image: [item({ nodeId: "i1", column: "image", title: "多角度", thumbnailUrl: "https://x/i1.jpg" })],
-  video: [item({ nodeId: "v1", column: "video", title: "视频节点5" })],
+  video: [item({ nodeId: "v1", column: "video", title: "视频节点5", mediaUrl: "https://x/v1.mp4" })],
   audio: [item({ nodeId: "a1", column: "audio", title: "背景音乐" })],
 };
 
@@ -75,6 +77,7 @@ describe("buildFreezoneNodeSuggestions", () => {
       column: "image",
       title: "多角度",
       thumbnailUrl: "https://x/i1.jpg",
+      mediaUrl: null,
       keyElementCategory: null,
     });
   });
@@ -193,8 +196,127 @@ describe("freezoneNodeMentionText", () => {
 });
 
 describe("buildFreezoneNodeMentionLookup", () => {
-  it("maps nodeId to thumbnail/column", () => {
+  it("maps nodeId to thumbnail/media/column", () => {
     const lookup = buildFreezoneNodeMentionLookup(buildFreezoneNodeSuggestions(board));
-    expect(lookup.get("i1")).toEqual({ thumbnailUrl: "https://x/i1.jpg", column: "image" });
+    expect(lookup.get("i1")).toEqual({
+      thumbnailUrl: "https://x/i1.jpg",
+      mediaUrl: null,
+      column: "image",
+    });
+  });
+
+  it("carries a video's mediaUrl for first-frame fallback when it has no poster thumbnail", () => {
+    const lookup = buildFreezoneNodeMentionLookup(buildFreezoneNodeSuggestions(board));
+    expect(lookup.get("v1")).toEqual({
+      thumbnailUrl: null,
+      mediaUrl: "https://x/v1.mp4",
+      column: "video",
+    });
+  });
+});
+
+describe("appendFreezoneNodeMentions", () => {
+  const titles = new Map([
+    ["node50", "图片节点50"],
+    ["t1", "分镜表"],
+  ]);
+
+  it("appends a single mention resolving its title from the lookup", () => {
+    expect(appendFreezoneNodeMentions("帮我处理", ["node50"], titles)).toBe(
+      "帮我处理 @[图片节点50](node50) ",
+    );
+  });
+
+  it("appends multiple ids in order", () => {
+    expect(appendFreezoneNodeMentions("看", ["node50", "t1"], titles)).toBe(
+      "看 @[图片节点50](node50) @[分镜表](t1) ",
+    );
+  });
+
+  it("skips ids missing from the lookup (node not on canvas)", () => {
+    expect(appendFreezoneNodeMentions("draft", ["ghost"], titles)).toBe("draft");
+  });
+
+  it("skips ids already mentioned in the draft", () => {
+    expect(appendFreezoneNodeMentions("已有 @[分镜表](t1) ", ["t1"], titles)).toBe(
+      "已有 @[分镜表](t1) ",
+    );
+  });
+
+  it("dedupes repeated ids within the same batch", () => {
+    expect(appendFreezoneNodeMentions("", ["t1", "t1"], titles)).toBe("@[分镜表](t1) ");
+  });
+
+  it("leaves the draft unchanged for an empty batch", () => {
+    expect(appendFreezoneNodeMentions("原样", [], titles)).toBe("原样");
+  });
+});
+
+describe("buildFreezoneNodePreviewInfo", () => {
+  it("keeps the thumbnail and maps image column to 图片", () => {
+    expect(
+      buildFreezoneNodePreviewInfo("多角度", { thumbnailUrl: "https://x/i1.jpg", mediaUrl: null, column: "image" }),
+    ).toEqual({
+      label: "多角度",
+      thumbnailUrl: "https://x/i1.jpg",
+      videoPosterUrl: null,
+      typeLabel: "图片",
+    });
+  });
+
+  it("prefers a video's poster thumbnail (no first-frame fallback needed)", () => {
+    expect(
+      buildFreezoneNodePreviewInfo("片段5", {
+        thumbnailUrl: "https://x/v1.jpg",
+        mediaUrl: "https://x/v1.mp4",
+        column: "video",
+      }),
+    ).toEqual({
+      label: "片段5",
+      thumbnailUrl: "https://x/v1.jpg",
+      videoPosterUrl: null,
+      typeLabel: "视频",
+    });
+  });
+
+  it("falls back to the video mediaUrl for a first-frame poster when it has no thumbnail", () => {
+    expect(
+      buildFreezoneNodePreviewInfo("无封面视频", { thumbnailUrl: null, mediaUrl: "https://x/v1.mp4", column: "video" }),
+    ).toEqual({
+      label: "无封面视频",
+      thumbnailUrl: null,
+      videoPosterUrl: "https://x/v1.mp4",
+      typeLabel: "视频",
+    });
+  });
+
+  it("does NOT use mediaUrl as a poster for non-video columns (audio has a media url too)", () => {
+    // 音频也有 mediaUrl，但预览不该拿它当 <video> 首帧——只有视频列才走首帧兜底。
+    expect(
+      buildFreezoneNodePreviewInfo("配乐", { thumbnailUrl: null, mediaUrl: "https://x/bg.mp3", column: "audio" }),
+    ).toEqual({
+      label: "配乐",
+      thumbnailUrl: null,
+      videoPosterUrl: null,
+      typeLabel: "音频",
+    });
+  });
+
+  it("has no thumbnail for text nodes but still labels the type", () => {
+    expect(buildFreezoneNodePreviewInfo("分镜表", { thumbnailUrl: null, mediaUrl: null, column: "text" })).toEqual({
+      label: "分镜表",
+      thumbnailUrl: null,
+      videoPosterUrl: null,
+      typeLabel: "文本",
+    });
+  });
+
+  it("falls back to 引用 when the node is no longer on canvas (meta missing)", () => {
+    expect(buildFreezoneNodePreviewInfo("旧引用", null)).toEqual({
+      label: "旧引用",
+      thumbnailUrl: null,
+      videoPosterUrl: null,
+      typeLabel: "引用",
+    });
   });
 });
