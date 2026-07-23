@@ -62,6 +62,8 @@ describe("Freezone canvas tool result reporting", () => {
         applied: true,
         cancelled: false,
         errors: [],
+        message: "Canvas command was submitted to the canvas.",
+        agent_hint: expect.stringContaining("submitted to the canvas"),
       }),
       timeout: 30_000,
     });

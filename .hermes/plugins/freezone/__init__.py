@@ -1848,6 +1848,23 @@ def _command_summary(commands: list[Any]) -> dict[str, Any]:
     }
 
 
+def _commands_include_type(commands: list[Any], command_type: str) -> bool:
+    return any(
+        isinstance(command, dict)
+        and str(command.get("type") or "").strip() == command_type
+        for command in commands
+    )
+
+
+def _commands_include_open_node_action(commands: list[Any]) -> bool:
+    return any(
+        isinstance(command, dict)
+        and str(command.get("type") or "").strip() == "run_node_action"
+        and str(command.get("action") or "").strip().startswith("open_")
+        for command in commands
+    )
+
+
 def _create_mcp_canvas_approval(
     *,
     project: str,
@@ -2614,17 +2631,32 @@ def _summarize_canvas_command_result(
         "Canvas command result has been summarized. Do not ask for or print the full commands."
     )
     if resolved.get("ok") and resolved.get("canvas_apply_status") == "accepted":
-        agent_instruction = (
-            "Report briefly that the workflow was accepted and is continuing on the canvas. "
-            "Do not claim generation is complete, do not report a timeout, and do not ask the "
-            "user to run nodes manually."
-        )
+        if _commands_include_type(commands, "run_workflow"):
+            agent_instruction = (
+                "Report briefly that the workflow was accepted and is continuing on the canvas. "
+                "Do not claim generation is complete, do not report a timeout, and do not ask the "
+                "user to run nodes manually."
+            )
+        else:
+            agent_instruction = (
+                "Report briefly that the canvas command has been submitted to the canvas. Do not "
+                "claim generation is complete, do not report a timeout, do not say a tool was opened, "
+                "and do not ask the user to operate it manually."
+            )
     elif resolved.get("ok"):
-        agent_instruction = (
-            "Report success briefly. When listing created workflow nodes, copy every non-empty "
-            "displayName from created_nodes in order; do not reconstruct, truncate, or add a "
-            "partially filled table row. Do not ask for or print the full commands."
-        )
+        if _commands_include_open_node_action(commands):
+            agent_instruction = (
+                "Report success briefly and say the requested canvas panel has been opened. "
+                "Do not say it is processing or submitted for generation. Do not ask for or print the full commands."
+            )
+        else:
+            agent_instruction = (
+                "Report success briefly. When listing created workflow nodes, copy every non-empty "
+                "displayName from created_nodes in order; do not reconstruct, truncate, or add a "
+                "partially filled table row. If commands include run_node_action, say the requested "
+                "canvas action has been submitted to the canvas; do not say a panel was opened. "
+                "Do not ask for or print the full commands."
+            )
     return {
         "ok": bool(resolved.get("ok")),
         "tool_call_status": resolved.get("tool_call_status") or "completed",

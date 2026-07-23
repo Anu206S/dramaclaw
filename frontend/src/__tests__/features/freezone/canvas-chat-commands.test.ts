@@ -917,6 +917,8 @@ describe("canvas chat commands", () => {
         { actionTimeoutMs: 50 },
       );
 
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       expect(result.errors).toEqual([]);
       expect(events).toEqual([
         {
@@ -3018,6 +3020,12 @@ describe("canvas chat commands", () => {
     expect(catalog.actions.map((action) => action.action)).toContain(
       "run_matting_tool",
     );
+    const mattingAction = catalog.actions.find(
+      (action) => action.action === "run_matting_tool",
+    );
+    expect(mattingAction?.description).toContain("抠图");
+    expect(mattingAction?.description).toContain("去背景");
+    expect(mattingAction?.description).toContain("透明背景");
     expect(catalog.actions.map((action) => action.action)).toContain(
       "open_split_storyboard_tool",
     );
@@ -4758,12 +4766,175 @@ describe("canvas chat commands", () => {
         { canvasId: "canvas-a", actionTimeoutMs: 100 },
       );
 
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
       expect(result.errors).toEqual([]);
+      expect(result.applied).toBe(0);
+      expect(result.openedUiActions).toBe(1);
       expect(events).toEqual([
         {
           nodeId: targetImageId,
           action: "run_matting_tool",
           executionMode: "single",
+        },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("submits grid node actions without queueing a canvas operation", async () => {
+    const targetImageId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.exportImage,
+      { x: 0, y: 0 },
+      {
+        imageUrl: "/static/project/current-image.png",
+        previewImageUrl: "/static/project/current-image.png",
+      },
+    );
+    const events: Array<{ nodeId: string; action: string; hasRequestId: boolean }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push({
+        nodeId: payload.nodeId,
+        action: payload.action,
+        hasRequestId: Boolean(payload.requestId),
+      });
+    });
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: targetImageId,
+                action: "run_grid_multi_camera",
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(result.errors).toEqual([]);
+      expect(result.applied).toBe(0);
+      expect(result.openedUiActions).toBe(1);
+      expect(useCanvasStore.getState().pendingFocusNodeId).not.toBe(targetImageId);
+      expect(events).toEqual([
+        {
+          nodeId: targetImageId,
+          action: "run_grid_multi_camera",
+          hasRequestId: false,
+        },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("submits outpaint node actions as result-spawning canvas work", async () => {
+    const targetImageId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.exportImage,
+      { x: 0, y: 0 },
+      {
+        imageUrl: "/static/project/current-image.png",
+        previewImageUrl: "/static/project/current-image.png",
+      },
+    );
+    const events: Array<{ nodeId: string; action: string; hasRequestId: boolean }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push({
+        nodeId: payload.nodeId,
+        action: payload.action,
+        hasRequestId: Boolean(payload.requestId),
+      });
+    });
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: targetImageId,
+                action: "run_outpaint_tool",
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(result.errors).toEqual([]);
+      expect(result.applied).toBe(0);
+      expect(result.openedUiActions).toBe(1);
+      expect(useCanvasStore.getState().pendingFocusNodeId).not.toBe(targetImageId);
+      expect(events).toEqual([
+        {
+          nodeId: targetImageId,
+          action: "run_outpaint_tool",
+          hasRequestId: false,
+        },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("submits upscale node actions through the selected source node context", async () => {
+    const targetImageId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.exportImage,
+      { x: 0, y: 0 },
+      {
+        imageUrl: "/static/project/current-image.png",
+        previewImageUrl: "/static/project/current-image.png",
+      },
+    );
+    const events: Array<{ nodeId: string; action: string; hasRequestId: boolean }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push({
+        nodeId: payload.nodeId,
+        action: payload.action,
+        hasRequestId: Boolean(payload.requestId),
+      });
+    });
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: targetImageId,
+                action: "run_upscale_tool",
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(result.errors).toEqual([]);
+      expect(result.applied).toBe(0);
+      expect(result.openedUiActions).toBe(1);
+      expect(useCanvasStore.getState().pendingFocusNodeId).toBe(targetImageId);
+      expect(events).toEqual([
+        {
+          nodeId: targetImageId,
+          action: "run_upscale_tool",
+          hasRequestId: false,
         },
       ]);
     } finally {
@@ -4830,6 +5001,8 @@ describe("canvas chat commands", () => {
         ]),
         { canvasId: "canvas-a", actionTimeoutMs: 100 },
       );
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
 
       expect(result.errors).toEqual([]);
       expect(events).toEqual([
@@ -7237,7 +7410,7 @@ describe("canvas chat commands", () => {
     }
   });
 
-  it("runs image toolbar actions through the canvas event bus", () => {
+  it("runs image toolbar actions through the canvas event bus", async () => {
     const nodeId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.imageGen,
       { x: 0, y: 0 },
@@ -7277,6 +7450,7 @@ describe("canvas chat commands", () => {
 
       expect(result.errors).toEqual([]);
       expect(result.openedUiActions).toBe(2);
+      await new Promise((resolve) => setTimeout(resolve, 0));
       expect(events).toEqual([
         {
           nodeId,

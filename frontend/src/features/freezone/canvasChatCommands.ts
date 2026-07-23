@@ -387,6 +387,20 @@ const CURRENT_MEDIA_NODE_ACTIONS = new Set([
   "reset_pano_view",
 ]);
 
+const RESULT_SPAWNING_NODE_ACTIONS = new Set([
+  "run_outpaint_tool",
+  "run_scene360_tool",
+  "run_grid_multi_camera",
+  "run_grid_plot_four",
+  "run_grid_face_three_view",
+  "run_grid_product_three_view",
+  "run_grid_serial_storyboard_25",
+  "run_grid_cinematic_light_correction",
+  "run_grid_character_three_view",
+  "run_grid_frame_projection_3s_later",
+  "run_grid_frame_projection_5s_earlier",
+]);
+
 const DEFAULT_NODE_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS = 3 * 1000;
 const DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS = 3 * 1000;
@@ -2608,48 +2622,26 @@ function applyCanvasChatCommandsInternal(
           }
           case "run_node_action": {
             const targetId = resolveNodeId(command.node_id, clientIdMap);
-            if (options.queueNodeActions) {
-              assertNodeActionAvailable(targetId, command.action);
-              const shouldRunUpstreamDependencies = !CURRENT_MEDIA_NODE_ACTIONS.has(command.action);
-              if (shouldRunUpstreamDependencies) {
-                const incompleteDependencies = upstreamWorkflowActionDependencies(targetId)
-                  .filter((dependency) => !requestedNodeActionKeys.has(`${dependency.nodeId}:${dependency.action}`));
-                for (const dependency of incompleteDependencies) {
-                  const dependencyKey = `${dependency.nodeId}:${dependency.action}`;
-                  if (queuedNodeActionKeys.has(dependencyKey)) continue;
-                  assertNodeActionAvailable(dependency.nodeId, dependency.action);
-                  queuedNodeActionKeys.add(dependencyKey);
-                  pendingNodeActions.push({
-                    ...dependency,
-                    commandIndex: currentCommandIndex,
-                  });
-                }
-              }
-              const targetKey = `${targetId}:${command.action}`;
-              if (!queuedNodeActionKeys.has(targetKey)) {
-                queuedNodeActionKeys.add(targetKey);
-                pendingNodeActions.push({
-                  commandIndex: currentCommandIndex,
-                  nodeId: targetId,
-                  action: command.action,
-                  executionMode: "single",
-                  parameters: command.parameters,
-                  label: commandLabel(command),
-                });
-              }
-            } else {
-              runNodeAction(targetId, command.action, command.parameters);
-              result.openedUiActions += 1;
-              result.commandResults.push({
-                commandIndex: currentCommandIndex,
-                type: command.type,
-                status: "success",
-                label: commandLabel(command),
-                nodeId: targetId,
-                action: command.action,
-              });
+            assertNodeActionAvailable(targetId, command.action);
+            if (!RESULT_SPAWNING_NODE_ACTIONS.has(command.action)) {
+              selectAndFocusNode(targetId);
             }
-            selectAndFocusNode(targetId);
+            setTimeout(() => {
+              try {
+                runNodeAction(targetId, command.action, command.parameters);
+              } catch (error) {
+                console.error("[freezone] run node action failed", error);
+              }
+            }, 0);
+            result.openedUiActions += 1;
+            result.commandResults.push({
+              commandIndex: currentCommandIndex,
+              type: command.type,
+              status: "success",
+              label: commandLabel(command),
+              nodeId: targetId,
+              action: command.action,
+            });
             break;
           }
           case "open_mainline_projection": {

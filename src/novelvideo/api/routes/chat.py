@@ -477,6 +477,17 @@ def _resolve_canvas_command_tool_result_payload(
         and not payload.cancelled
         and not payload.errors
     )
+    has_run_node_action = any(
+        isinstance(item, dict) and item.get("type") == "run_node_action"
+        for item in payload.command_results
+    )
+    has_open_node_action = any(
+        isinstance(item, dict)
+        and item.get("type") == "run_node_action"
+        and isinstance(item.get("action"), str)
+        and item["action"].startswith("open_")
+        for item in payload.command_results
+    )
     if payload.canvas_apply_status == "cancelled_by_user":
         message = "User cancelled the canvas command before execution."
         agent_instruction = "Do not claim the canvas change was applied; ask the user before retrying."
@@ -487,15 +498,25 @@ def _resolve_canvas_command_tool_result_payload(
             or "Do not claim success. Read errors and command_results, then fix the command before trying again. Do not expose raw canvas protocol details to the user."
         )
     elif payload.canvas_apply_status == "accepted":
-        message = payload.message or "Frontend accepted the canvas workflow for background execution."
+        message = payload.message or "Canvas command was submitted to the canvas."
         agent_instruction = (
-            "Tell the user the workflow has started and continues in the canvas. "
-            "Do not claim that generation is complete, do not report a timeout, and do not ask "
-            "the user to run nodes manually."
+            "Tell the user the canvas command has been submitted to the canvas. Do not claim that "
+            "generation is complete, do not say a tool was opened, and do not ask the user to operate it manually."
         )
     else:
         message = payload.message or "Frontend executor applied the canvas command."
-        agent_instruction = "Canvas command applied successfully."
+        if has_open_node_action:
+            agent_instruction = (
+                "Canvas command applied successfully. Tell the user the requested canvas panel has been opened. "
+                "Do not say it is processing or submitted for generation."
+            )
+        elif has_run_node_action:
+            agent_instruction = (
+                "Canvas command applied successfully. Tell the user the requested canvas action has been submitted to the canvas. "
+                "Do not say a panel was opened."
+            )
+        else:
+            agent_instruction = "Canvas command applied successfully."
     result = {
         "ok": command_ok,
         "turn_id": payload.turn_id,

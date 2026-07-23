@@ -67,6 +67,7 @@ import {
   messageHasAgentRuntimeActivityForTest,
   messageHasVisibleAgentProgressActivityForTest,
   messageIdForThinkingCanvasContextActivityForTest,
+  mergeAdjacentAgentThoughtPartsForTest,
   shouldHideSkillStudioStatusOnlyMessageForTest,
   shouldShowComposerWaitingIndicator,
   skillStudioEvaluationDraftFieldsForTest,
@@ -738,6 +739,37 @@ This Freezone chat can change the current canvas by returning a JSON block.
     expect(normalized?.parts?.map((part) => part.type)).toEqual(["text"]);
   });
 
+  it("removes internal tool search and describe status parts from history", () => {
+    const normalized = normalizeMessage({
+      id: "assistant-1",
+      role: "assistant",
+      text: "已打开打光面板。",
+      parts: [
+        {
+          id: "tool-search",
+          type: "tool_status",
+          event: {
+            role: "tool",
+            text: "Tool Search",
+            raw: { type: "agent.tool.updated", name: "Tool Search" },
+          },
+        },
+        {
+          id: "tool-describe",
+          type: "tool_status",
+          event: {
+            role: "tool",
+            text: "Tool Describe",
+            raw: { type: "agent.tool.updated", name: "tool-describe" },
+          },
+        },
+        { id: "text-a", type: "text", text: "已打开打光面板。" },
+      ],
+    });
+
+    expect(normalized?.parts?.map((part) => part.type)).toEqual(["text"]);
+  });
+
   it("keeps ordered agent runtime parts from cache or server history", () => {
     const normalized = normalizeMessage({
       id: "assistant-1",
@@ -1019,6 +1051,39 @@ describe("upsertServerAssistantMessage", () => {
 
     const assistant = merged.find((item) => item.role === "assistant");
     expect(assistant?.parts?.map((part) => part.type)).toEqual(["agent_thought", "text"]);
+  });
+
+  it("replaces partial streamed text when the final assistant message arrives", () => {
+    const current: ChatMessage[] = [
+      {
+        id: "assistant-turn-grid",
+        role: "assistant",
+        text: "多角度网格已提交到画布，稍",
+        timestamp: 20,
+        turnId: "turn-grid",
+        parts: [
+          { id: "text-1", type: "text", text: "多角度网格已提交到画布，稍" },
+        ],
+      },
+    ];
+
+    const merged = upsertServerAssistantMessageForTest(
+      current,
+      {
+        id: 11,
+        role: "assistant",
+        content: "多角度网格已提交到画布，稍等结果生成。",
+        turn_id: "turn-grid",
+        created_at: "2026-07-23T01:56:37.894980+00:00",
+      },
+      "turn-grid",
+    );
+
+    const assistant = merged.find((item) => item.role === "assistant");
+    expect(assistant?.text).toBe("多角度网格已提交到画布，稍等结果生成。");
+    expect(assistant?.parts?.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+      "多角度网格已提交到画布，稍等结果生成。",
+    ]);
   });
 
   it("preserves transient ui events when the final assistant message arrives", () => {
@@ -3818,6 +3883,48 @@ describe("tool status parts", () => {
     });
   });
 
+  it("merges adjacent agent thought parts into one runtime item", () => {
+    const merged = mergeAdjacentAgentThoughtPartsForTest([
+      {
+        id: "thought-1",
+        type: "agent_thought",
+        seq: 1,
+        event: { text: "先理解用户需求。", status: "completed" },
+      },
+      {
+        id: "thought-2",
+        type: "agent_thought",
+        seq: 2,
+        event: { text: "再检查画布状态。", status: "running" },
+      },
+      toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-1",
+        name: "freezone_run_node_action",
+        status: "completed",
+      }, "turn-a"),
+      {
+        id: "thought-3",
+        type: "agent_thought",
+        seq: 4,
+        event: { text: "最后组织回复。", status: "completed" },
+      },
+    ]);
+
+    expect(merged).toHaveLength(3);
+    expect(merged[0]).toMatchObject({
+      id: "thought-1+thought-2",
+      type: "agent_thought",
+      seq: 1,
+      event: {
+        text: "先理解用户需求。\n\n再检查画布状态。",
+        status: "running",
+      },
+    });
+    expect(merged[2]).toMatchObject({ id: "thought-3" });
+  });
+
   it("keeps repeated calls to the same tool separate", () => {
     const first = toolStatusPartForTest("agent.tool.started", {
       type: "agent.tool.started",
@@ -3884,6 +3991,20 @@ describe("tool status parts", () => {
       type: "agent.tool.started",
       turn_id: "turn-a",
       name: "freezone_get_canvas_ontology",
+      status: "running",
+    })).toBe(false);
+  });
+
+  it.each([
+    "tool_search",
+    "Tool Search",
+    "tool-describe",
+    "ToolDescribe",
+  ])("does not render internal %s tool status parts", (name) => {
+    expect(shouldRenderAgentToolStatusPart({
+      type: "agent.tool.started",
+      turn_id: "turn-a",
+      name,
       status: "running",
     })).toBe(false);
   });

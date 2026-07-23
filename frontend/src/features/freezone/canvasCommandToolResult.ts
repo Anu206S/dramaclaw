@@ -119,7 +119,7 @@ function buildCanvasCommandToolResultPayload({
       ? canvasCommandUserMessageFromResult(result?.errors, result?.commandResults)
       : undefined;
   const agentHint = accepted
-    ? "The workflow was accepted and continues in the canvas. Do not claim completion or ask the user to run nodes manually."
+    ? "The canvas command has been submitted to the canvas. Reply briefly that it has been submitted; do not say a tool was opened or ask the user to operate it manually."
     : cancelled
     ? "Do not claim the canvas change was applied; ask the user before retrying."
     : canvasApplyStatus === "failed"
@@ -144,7 +144,7 @@ function buildCanvasCommandToolResultPayload({
     created_node_ids: result?.createdNodeIds ?? [],
     command_results: result?.commandResults ?? [],
     message: accepted
-      ? "Frontend accepted the canvas workflow for background execution."
+      ? "Canvas command was submitted to the canvas."
       : cancelled
       ? "画布操作已取消，没有应用到画布。"
       : canvasApplyStatus === "failed"
