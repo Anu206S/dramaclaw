@@ -197,11 +197,13 @@ export function moveFreezoneSkillSuggestionIndex(
 }
 
 export function shouldShowFreezoneSkillSuggestionMenu({
+  explicitOpen = false,
   isFreezoneLayout,
   slashQuery,
 }: {
+  explicitOpen?: boolean;
   isFreezoneLayout: boolean;
   slashQuery: string | null;
 }): boolean {
-  return isFreezoneLayout && slashQuery !== null;
+  return isFreezoneLayout && (explicitOpen || slashQuery !== null);
 }
