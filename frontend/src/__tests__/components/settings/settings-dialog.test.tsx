@@ -10,9 +10,13 @@ import { SettingsDialog } from "@/components/settings/settings-dialog";
 const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const freezoneAgentConfigMocks = vi.hoisted(() => ({
   delete: vi.fn(),
+  exportBundle: vi.fn(),
+  installBundle: vi.fn(),
+  installCommunityBundle: vi.fn(),
   items: [] as Array<Record<string, unknown>>,
   itemsByKind: {} as Record<string, Array<Record<string, unknown>>>,
   refetch: vi.fn(),
+  refetchCommunityCatalog: vi.fn(),
   save: vi.fn(),
 }));
 
@@ -38,6 +42,25 @@ vi.mock("@/lib/queries/freezone-agent-config", () => ({
   useDeleteFreezoneAgentConfigItem: () => ({
     mutateAsync: freezoneAgentConfigMocks.delete,
     isPending: false,
+  }),
+  useInstallFreezoneAgentBundle: () => ({
+    mutateAsync: freezoneAgentConfigMocks.installBundle,
+    isPending: false,
+  }),
+  useExportFreezoneAgentBundle: () => ({
+    mutateAsync: freezoneAgentConfigMocks.exportBundle,
+    isPending: false,
+  }),
+  useFreezoneCommunityCatalog: () => ({
+    data: { schema_version: "dramaclaw.community-catalog.v1", items: [] },
+    isLoading: false,
+    isError: false,
+    refetch: freezoneAgentConfigMocks.refetchCommunityCatalog,
+  }),
+  useInstallFreezoneCommunityBundle: () => ({
+    mutateAsync: freezoneAgentConfigMocks.installCommunityBundle,
+    isPending: false,
+    variables: undefined,
   }),
 }));
 
@@ -128,7 +151,10 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.advancedManagement": "高级管理",
         "settings.freezoneCatalog.backToSkills": "返回 Skills",
         "settings.freezoneCatalog.import": "导入",
+        "settings.freezoneCatalog.importBundle": "导入 Skill",
         "settings.freezoneCatalog.export": "导出",
+        "settings.freezoneCatalog.exportBundle": "导出 Skill",
+        "settings.freezoneCatalog.community.open": "社区 Skill",
         "settings.freezoneCatalog.new": "新增",
         "settings.freezoneCatalog.selectAll": "全选",
         "settings.freezoneCatalog.readOnly": "只读",
@@ -290,10 +316,27 @@ function openRecipesManagement() {
 beforeEach(() => {
   runtimeState.isCeRuntime = true;
   freezoneAgentConfigMocks.delete.mockReset();
+  freezoneAgentConfigMocks.exportBundle.mockReset();
+  freezoneAgentConfigMocks.installBundle.mockReset();
+  freezoneAgentConfigMocks.installCommunityBundle.mockReset();
   freezoneAgentConfigMocks.items = [];
   freezoneAgentConfigMocks.itemsByKind = {};
   freezoneAgentConfigMocks.refetch.mockReset();
+  freezoneAgentConfigMocks.refetchCommunityCatalog.mockReset();
   freezoneAgentConfigMocks.save.mockReset();
+  freezoneAgentConfigMocks.exportBundle.mockImplementation(
+    async ({ bundle }: { bundle: Record<string, unknown> }) => bundle,
+  );
+  freezoneAgentConfigMocks.installBundle.mockResolvedValue({
+    bundle_id: "test-bundle",
+    installed_skill: "test-skill",
+    installed_recipes: [],
+  });
+  freezoneAgentConfigMocks.installCommunityBundle.mockResolvedValue({
+    bundle_id: "community-bundle",
+    installed_skill: "community-skill",
+    installed_recipes: [],
+  });
 });
 
 describe("SettingsDialog pages", () => {
@@ -333,7 +376,7 @@ describe("SettingsDialog pages", () => {
     fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
 
     expect(screen.getByText("暂无虾画 Skills")).toBeInTheDocument();
-    expect(screen.getByText("导入")).toBeInTheDocument();
+    expect(screen.getByText("导入 Skill")).toBeInTheDocument();
     expect(screen.queryByText("freezone_demo")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "虾画 Recipes" })).not.toBeInTheDocument();
 
@@ -349,11 +392,11 @@ describe("SettingsDialog pages", () => {
     renderSettingsDialog();
 
     fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
-    fireEvent.click(screen.getByRole("button", { name: "导入" }));
+    fireEvent.click(screen.getByRole("button", { name: "导入 Skill" }));
 
     expect(clickSpy).toHaveBeenCalledTimes(1);
-    expect(screen.getByLabelText("导入")).toHaveAttribute("type", "file");
-    expect(screen.getByLabelText("导入")).toHaveAttribute("accept", ".json,application/json");
+    expect(screen.getByLabelText("导入 Skill")).toHaveAttribute("type", "file");
+    expect(screen.getByLabelText("导入 Skill")).toHaveAttribute("accept", ".json,application/json");
 
     clickSpy.mockRestore();
   });
@@ -1075,9 +1118,11 @@ describe("SettingsDialog pages", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
       fireEvent.click(screen.getAllByRole("checkbox")[1]);
-      fireEvent.click(screen.getByRole("button", { name: "导出" }));
+      fireEvent.click(screen.getByRole("button", { name: "导出 Skill" }));
 
-      expect(anchorClick).toHaveBeenCalledTimes(1);
+      await waitFor(() => {
+        expect(anchorClick).toHaveBeenCalledTimes(1);
+      });
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:freezone-config");
       const exportedBlob = createObjectURL.mock.calls[0]?.[0];
       if (!(exportedBlob instanceof Blob)) {

@@ -1523,6 +1523,8 @@ src/novelvideo/env.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggrega
 src/novelvideo/export/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/export/episode_export.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/freezone/agent_bundle_schema.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/freezone/agent_bundle_store.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/agent_catalog/builtins/recipes/lego-minifig-audio-layers.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/agent_catalog/builtins/recipes/lego-minifig-input-analysis.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/agent_catalog/builtins/recipes/lego-minifig-key-elements.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1552,6 +1554,8 @@ src/novelvideo/freezone/agent_catalog/builtins/skills/ling-cage-cinematic-video.
 src/novelvideo/freezone/agent_catalog/builtins/skills/outdoor-stage-duel-video.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/agent_catalog/builtins/skills/retro-hong-kong-kungfu-comedy-video.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/agent_catalog_schema.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/freezone/agent_catalog_security.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/freezone/agent_community_catalog.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/agent_config_store.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/audio_node.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/freezone/canvas_command_bridge.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1828,6 +1832,7 @@ tests/test_api_compose_export_contract.py,Elastic-2.0,2026 SuperTale contributor
 tests/test_api_config_runtime.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_api_coverage.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_api_episode_detail.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_api_freezone_agent_bundles.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_api_freezone_canvas_from_preset.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_api_freezone_projection.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_api_freezone_workflow_runs.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1890,6 +1895,7 @@ tests/test_env_config_ratchet.py,Elastic-2.0,2026 SuperTale contributors,REUSE.t
 tests/test_episode_optimizer_colors.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_fish_speech_prompt_removed.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_format_check.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_freezone_agent_bundle.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_freezone_agent_config_store.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_freezone_asset_library_backend.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_freezone_audio_backend.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
