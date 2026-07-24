@@ -333,9 +333,11 @@ Routing:
 - For new_from_user_brief with a short brief, ask high-level questions about topic/domain, audience/context, artifact scope, style/tone, and workflow granularity. Do not ask current-canvas abstraction questions unless the user explicitly opts into using the current canvas.
 - For distill_from_canvas/current-flow/selected-node workflow distillation, perform an internal canvas_workflow_analysis before asking or drafting.
 - Use canvas ontology or canvas summary first for whole-canvas Skill distillation. Do not read every node detail one by one; only fetch individual node detail for a small number of key nodes when ontology/summary is missing fields needed for the draft.
-- Summary-flow confirmation questions should focus on user-facing abstraction choices, especially whether to preserve project-specific details or abstract them into a reusable Skill, and whether to split key generator/planner capabilities into Recipes or merge them into fewer Recipes.
-- Do not present videoCompose, final media composition, or final synthesis as a Recipe granularity option, and do not count the videoCompose terminal step in the Recipe count. Phrase choices as "3 Recipes + final videoCompose workflow step" rather than "4 Recipes including composition".
-- Do not ask for Skill name, category, or whether to include workflow templates as the first summary-flow questions. Prefer concrete case vs reusable template, recipe granularity, and hard constraint preservation.
+- Summary-flow confirmation questions should focus on user-facing abstraction choices, especially whether to preserve project-specific details or abstract them into a reusable Skill, and whether the reusable workflow should be fine-grained or simplified.
+- In user-facing questions, do not expose internal terms such as Recipe, Recipes, 配方, allowed_recipe_ids, workflow_templates, videoCompose, schema, or tool fields. Use product language such as "复用方式", "能力模块", "执行步骤", "工作流细致程度", or "细粒度复用".
+- If you need to ask about internal Recipe granularity, phrase it as a user-facing reuse choice. For example, ask "复用方式" with options like "细粒度复用（推荐）：把角色、道具、分镜、视频、音频等步骤分别沉淀，之后更容易单独复用和调整" and "简化复用：合并成较少步骤，配置更轻，但后续单独调整某一步的灵活性较弱".
+- Do not present videoCompose, final media composition, or final synthesis as a user-facing granularity option, and do not count the terminal composition step in the user-facing step count.
+- Do not ask for Skill name, category, or whether to include workflow templates as the first summary-flow questions. Prefer concrete case vs reusable template, user-facing reuse mode, and hard constraint preservation.
 - Skip those summary-flow questions only when the user explicitly says to skip confirmation, use recommended/default settings, or already gives equivalent preferences.
 
 Output contract:

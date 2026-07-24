@@ -658,8 +658,11 @@ def _resolve_skill_studio_tool_result_payload(
         if saved_to_catalog:
             agent_instruction = (
                 "The frontend has saved this Skill/Recipe draft to the Freezone catalog. "
+                "This is a frontend save event, not a natural-language user reply and not the user saying 'ok'. "
+                "Do not apply user-profile rules for short 'ok' replies. "
                 "Treat it as official saved catalog content that can be used immediately. "
-                "Do not ask the user to save it again."
+                "Do not ask the user to save it again, do not analyze the draft, do not start another Skill Studio step, "
+                "and do not include hidden reasoning. Reply briefly in Chinese only that it has been saved to Xi画 Skills / Recipes."
             )
             message = payload.message or "Frontend saved the Skill/Recipe draft to the Freezone catalog."
         elif cancelled:
@@ -808,10 +811,15 @@ async def _persist_skill_studio_result_ui_event(
     user: dict[str, Any],
     username: str,
     payload: SkillStudioToolResultIn,
+    resolved: dict[str, Any] | None = None,
 ) -> None:
     turn_id = str(payload.turn_id or "").strip()
     scope = _scope_from_interaction_payload(payload)
     if not turn_id or scope is None:
+        return
+    if resolved is not None and resolved.get("ok") is False and (
+        payload.saved_to_catalog or payload.skill_studio_status == "catalog_saved"
+    ):
         return
     project_ctx = await _project_context_for_interaction_result(user, scope)
     event: dict[str, Any] = {
@@ -830,11 +838,20 @@ async def _persist_skill_studio_result_ui_event(
         event["draft"] = payload.draft
     if payload.action == "start_revision" or payload.skill_studio_status == "revision_started":
         event["revision_pending"] = True
-    if payload.saved_to_catalog or payload.skill_studio_status == "catalog_saved":
+    saved_to_catalog = (
+        bool(resolved.get("saved_to_catalog"))
+        if resolved is not None
+        else (payload.saved_to_catalog or payload.skill_studio_status == "catalog_saved")
+    )
+    if saved_to_catalog:
         event["saved_to_catalog"] = True
         draft_skill_ids, draft_recipe_ids = _skill_studio_draft_catalog_ids(payload.draft)
-        event["saved_skill_ids"] = payload.saved_skill_ids or draft_skill_ids
-        event["saved_recipe_ids"] = payload.saved_recipe_ids or draft_recipe_ids
+        if resolved is not None:
+            event["saved_skill_ids"] = list(resolved.get("saved_skill_ids") or [])
+            event["saved_recipe_ids"] = list(resolved.get("saved_recipe_ids") or [])
+        else:
+            event["saved_skill_ids"] = payload.saved_skill_ids or draft_skill_ids
+            event["saved_recipe_ids"] = payload.saved_recipe_ids or draft_recipe_ids
     chat_store.append_ui_event(
         username,
         _chat_store_scope_for_project_context(scope, project_ctx),
@@ -947,7 +964,12 @@ async def resolve_skill_studio_tool_result(
     username = str(user["username"])
     resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
     try:
-        await _persist_skill_studio_result_ui_event(user=user, username=username, payload=payload)
+        await _persist_skill_studio_result_ui_event(
+            user=user,
+            username=username,
+            payload=payload,
+            resolved=resolved,
+        )
     except Exception:
         logger.exception("failed to persist skill studio result ui event")
     return {"ok": True, "data": resolved}
@@ -1000,9 +1022,14 @@ async def _receive_bridge_results_during_turn(
 
         if event_type == "skill_studio.result":
             payload = SkillStudioToolResultIn.model_validate(raw)
-            _resolve_skill_studio_tool_result_payload(payload, username=username)
+            resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
             try:
-                await _persist_skill_studio_result_ui_event(user=user, username=username, payload=payload)
+                await _persist_skill_studio_result_ui_event(
+                    user=user,
+                    username=username,
+                    payload=payload,
+                    resolved=resolved,
+                )
             except Exception:
                 logger.exception("failed to persist skill studio result ui event")
             continue
@@ -2581,9 +2608,14 @@ async def chat_ws(websocket: WebSocket) -> None:
 
             if event_type == "skill_studio.result":
                 payload = SkillStudioToolResultIn.model_validate(raw)
-                _resolve_skill_studio_tool_result_payload(payload, username=username)
+                resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
                 try:
-                    await _persist_skill_studio_result_ui_event(user=user, username=username, payload=payload)
+                    await _persist_skill_studio_result_ui_event(
+                        user=user,
+                        username=username,
+                        payload=payload,
+                        resolved=resolved,
+                    )
                 except Exception:
                     logger.exception("failed to persist skill studio result ui event")
                 continue

@@ -27,6 +27,7 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
+  SlidersHorizontal,
   Wrench,
   X,
   Volume2,
@@ -3061,6 +3062,16 @@ function isRealSkillStudioProgressStatus(event: unknown): boolean {
   return skillStudioStatusPriority(event) >= 2;
 }
 
+function isTransientSkillStudioStatus(event: unknown): boolean {
+  return Boolean(
+    event
+    && typeof event === "object"
+    && !Array.isArray(event)
+    && (event as Record<string, unknown>).type === "skill_studio.status"
+    && !isRealSkillStudioProgressStatus(event),
+  );
+}
+
 function filterStaleSkillStudioStatus(events: SkillStudioUiEvent[]): SkillStudioUiEvent[] {
   return events.filter((event) => event.type !== "skill_studio.status" || isRealSkillStudioProgressStatus(event));
 }
@@ -3151,7 +3162,7 @@ function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUi
     !(event.type === "skill_studio.questions" && event.submitted !== true),
   );
   if (message.text.trim()) {
-    return visibleEvents.filter((event) => event.type !== "skill_studio.status");
+    return visibleEvents.filter((event) => !isTransientSkillStudioStatus(event));
   }
   const hasClarificationCard = assistantClarificationEventsFromUiEvents(messageUiEvents(message)).length > 0;
   if (hasClarificationCard) return filterStaleSkillStudioStatus(visibleEvents);
@@ -3168,20 +3179,109 @@ export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEvent
 function visibleAssistantOrderedPartsForMessage(message: ChatMessage): ChatMessagePart[] {
   if (!message.parts?.some((part) => part.type !== "text")) return [];
   const parts = hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? [];
-  if (!message.text.trim()) return parts;
-  return parts.filter((part) => {
+  const visibleParts = !message.text.trim() ? parts : parts.filter((part) => {
     if (part.type !== "skill_studio") return true;
     const event = part.event;
-    return !(
-      event
-      && typeof event === "object"
-      && !Array.isArray(event)
-      && (event as Record<string, unknown>).type === "skill_studio.status"
-    );
+    return !isTransientSkillStudioStatus(event);
   });
+  return reorderAssistantInteractionParts(visibleParts, message.text);
 }
 
 export const visibleAssistantOrderedPartsForMessageForTest = visibleAssistantOrderedPartsForMessage;
+
+function reorderAssistantInteractionParts(parts: ChatMessagePart[], text: string): ChatMessagePart[] {
+  if (!text.trim()) return parts;
+  const interactionParts = parts.filter((part) => part.type === "skill_studio" || part.type === "clarification");
+  const textParts = parts.filter((part) => part.type === "text");
+  if (interactionParts.length === 0 || textParts.length === 0) return parts;
+  const skillStudioParts = interactionParts.filter((part): part is ChatMessagePart & { type: "skill_studio" } =>
+    part.type === "skill_studio",
+  );
+  const clarificationParts = interactionParts.filter((part): part is ChatMessagePart & { type: "clarification" } =>
+    part.type === "clarification",
+  );
+  const flowItems = buildCanvasCommandFlowItems(
+    text,
+    [],
+    [],
+    [],
+    skillStudioParts.map((part) => {
+      const event = part.event as SkillStudioUiEvent;
+      return event.type === "skill_studio.draft"
+        ? { ...event, anchor_text_prefix: text }
+        : event;
+    }),
+    clarificationParts.map((part) => part.event as AssistantClarificationUiEvent),
+  );
+  if (flowItems.length === 0) return parts;
+  const remainingSkillParts = [...skillStudioParts];
+  const remainingClarificationParts = [...clarificationParts];
+  const reorderedContentParts: ChatMessagePart[] = [];
+  let textIndex = 0;
+
+  const appendFlowItem = (item: CanvasCommandFlowItem): void => {
+    if (item.kind === "text") {
+      reorderedContentParts.push({
+        id: `anchored-text-${textIndex}`,
+        type: "text",
+        text: item.text,
+      });
+      textIndex += 1;
+      return;
+    }
+    if (item.kind === "skill_studio") {
+      const itemKey = uiEventStableKey(item.event);
+      const partIndex = remainingSkillParts.findIndex((part) =>
+        part.event === item.event || (itemKey && uiEventStableKey(part.event) === itemKey),
+      );
+      const [part] = partIndex >= 0 ? remainingSkillParts.splice(partIndex, 1) : [];
+      if (part) reorderedContentParts.push(part);
+      return;
+    }
+    if (item.kind === "clarification") {
+      const partIndex = remainingClarificationParts.findIndex((part) => part.event === item.event);
+      const [part] = partIndex >= 0 ? remainingClarificationParts.splice(partIndex, 1) : [];
+      if (part) reorderedContentParts.push(part);
+    }
+  };
+
+  const contentIds = new Set([...interactionParts, ...textParts].map((part) => part.id));
+  const output: ChatMessagePart[] = [];
+  let flowCursor = 0;
+  const flushThroughInteractionPart = (part: ChatMessagePart): void => {
+    const key = part.type === "text" ? null : uiEventStableKey(part.event);
+    while (flowCursor < flowItems.length) {
+      const item = flowItems[flowCursor];
+      flowCursor += 1;
+      appendFlowItem(item);
+      if (
+        key
+        && (item.kind === "skill_studio" || item.kind === "clarification")
+        && uiEventStableKey(item.event) === key
+      ) {
+        break;
+      }
+    }
+  };
+
+  for (const part of parts) {
+    if (part.type === "text") continue;
+    if (contentIds.has(part.id)) {
+      flushThroughInteractionPart(part);
+      while (reorderedContentParts.length > 0) {
+        const nextPart = reorderedContentParts.shift();
+        if (nextPart) output.push(nextPart);
+      }
+      continue;
+    }
+    output.push(part);
+  }
+  while (flowCursor < flowItems.length) {
+    appendFlowItem(flowItems[flowCursor]);
+    flowCursor += 1;
+  }
+  return [...output, ...reorderedContentParts];
+}
 
 function uiEventsAfterLatestSkillStudioDraft(events: unknown[] | undefined): unknown[] | undefined {
   if (!events?.length) return events;
@@ -3391,6 +3491,7 @@ const skillStudioDraftFieldLabels = {
     category: "Category",
     description: "Description",
     keywords: "触发关键词",
+    inputParameters: "开始前选项",
     node_scopes: "节点类型",
     metaPlanningHints: "规划器提示词",
     promptStyleGuide: "风格指引",
@@ -3633,6 +3734,32 @@ function listText(value: unknown): string {
   if (typeof value === "string") {
     return parseListText(value).join("、") || value.trim();
   }
+  return "";
+}
+
+function skillStudioInputParameterTypeLabel(value: unknown): string {
+  switch (value) {
+    case "single_select":
+      return "单选";
+    case "multi_select":
+      return "多选";
+    case "number":
+      return "数字";
+    case "boolean":
+      return "开关";
+    case "text":
+      return "文本";
+    default:
+      return textField(value) || "参数";
+  }
+}
+
+function skillStudioInputParameterValueLabel(value: unknown): string {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map((item) => String(item ?? "").trim()).filter(Boolean).join("、");
   return "";
 }
 
@@ -4438,16 +4565,68 @@ function draftPayloadFromEvent(event: Extract<SkillStudioUiEvent, { type: "skill
   };
 }
 
+function normalizeSkillStudioDraftForCatalog(draft: Record<string, unknown>): Record<string, unknown> {
+  const skill = draft.skill && typeof draft.skill === "object" && !Array.isArray(draft.skill)
+    ? { ...(draft.skill as Record<string, unknown>) }
+    : {};
+  const inputParameters = Array.isArray(skill.input_parameters)
+    ? skill.input_parameters
+    : Array.isArray(skill.inputParameters)
+      ? skill.inputParameters
+      : null;
+  if (inputParameters) {
+    skill.input_parameters = inputParameters.flatMap((parameter) => {
+      if (!parameter || typeof parameter !== "object" || Array.isArray(parameter)) return [];
+      const source = parameter as Record<string, unknown>;
+      const normalized: Record<string, unknown> = {};
+      for (const key of ["id", "label", "type", "required", "default"] as const) {
+        if (source[key] !== undefined) normalized[key] = source[key];
+      }
+      const options = Array.isArray(source.options)
+        ? source.options.map((option) => String(option ?? "").trim()).filter(Boolean)
+        : [];
+      if (options.length > 0) {
+        normalized.options = options;
+      }
+      if (
+        normalized.type === "single_select" &&
+        typeof normalized.default === "string" &&
+        options.length > 0 &&
+        !options.includes(normalized.default)
+      ) {
+        const defaultValue = normalized.default.trim();
+        const matchingOption = options.find((option) =>
+          option === defaultValue ||
+          option.startsWith(`${defaultValue} `) ||
+          option.startsWith(`${defaultValue}　`),
+        );
+        if (matchingOption) {
+          normalized.default = matchingOption;
+        }
+      }
+      return [normalized];
+    });
+    delete skill.inputParameters;
+  }
+  return {
+    ...draft,
+    skill,
+  };
+}
+
+export const normalizeSkillStudioDraftForCatalogForTest = normalizeSkillStudioDraftForCatalog;
+
 export function buildSkillStudioDraftToolResultForTest(
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
   draft: Record<string, unknown>,
 ) {
-  const skill = draft.skill && typeof draft.skill === "object" && !Array.isArray(draft.skill)
-    ? draft.skill as Record<string, unknown>
+  const normalizedDraft = normalizeSkillStudioDraftForCatalog(draft);
+  const skill = normalizedDraft.skill && typeof normalizedDraft.skill === "object" && !Array.isArray(normalizedDraft.skill)
+    ? normalizedDraft.skill as Record<string, unknown>
     : {};
-  const recipes = Array.isArray(draft.recipes) ? draft.recipes : [];
-  const summary = typeof draft.summary === "string" ? draft.summary : event.summary || "";
-  const warnings = Array.isArray(draft.warnings) ? draft.warnings : [];
+  const recipes = Array.isArray(normalizedDraft.recipes) ? normalizedDraft.recipes : [];
+  const summary = typeof normalizedDraft.summary === "string" ? normalizedDraft.summary : event.summary || "";
+  const warnings = Array.isArray(normalizedDraft.warnings) ? normalizedDraft.warnings : [];
   const savedSkillIds = textField(skill.id) ? [textField(skill.id)] : [];
   const savedRecipeIds = recipes
     .map((recipe) => textField((recipe as Record<string, unknown>).id))
@@ -4474,6 +4653,15 @@ export function buildSkillStudioDraftToolResultForTest(
       "该 Skill / Recipe 已写入虾画配置，可立即使用。请不要再要求用户保存为正式能力。",
     ].filter(Boolean).join("\n"),
   };
+}
+
+interface SkillStudioToolResultResponse {
+  ok?: boolean;
+  saved_to_catalog?: boolean;
+  saved_skill_ids?: string[];
+  saved_recipe_ids?: string[];
+  errors?: string[];
+  message?: string;
 }
 
 export function buildSkillStudioDraftCancelToolResultForTest(
@@ -5239,6 +5427,7 @@ function SkillStudioDraftCard({
   const evaluation = getRecord(skill.evaluation);
   const evaluationFields = skillStudioEvaluationDraftFields(evaluation);
   const workflowTemplates = getRecordArray(skill.workflow_templates ?? skill.workflowTemplates);
+  const inputParameters = getRecordArray(skill.input_parameters ?? skill.inputParameters);
   const syncDraftObject = useCallback((updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
     setDraftObject((current) => {
       const next = updater(current);
@@ -5446,6 +5635,70 @@ function SkillStudioDraftCard({
 	            />
 	          </div>
 	        </details>
+
+        {inputParameters.length > 0 && (
+          <details className="group border-t border-white/[0.07]">
+            <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+              <span className="flex min-w-0 items-center gap-2 text-foreground/85">
+                <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                <SlidersHorizontal className="size-3.5 shrink-0 text-muted-foreground" />
+                <span>{skillStudioDraftFieldLabels.skill.inputParameters}</span>
+              </span>
+              <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.08] px-2 py-0.5 text-[10px] text-cyan-100/80">
+                {inputParameters.length} 个选项
+              </span>
+            </summary>
+            <div className="space-y-2 border-t border-white/[0.06] px-3 pb-3 pt-2">
+              {inputParameters.map((parameter, parameterIndex) => {
+                const parameterId = textField(parameter.id);
+                const label = textField(parameter.label) || parameterId || `选项 ${parameterIndex + 1}`;
+                const options = cleanStringArray(parameter.options);
+                const defaultValue = skillStudioInputParameterValueLabel(parameter.default);
+                return (
+                  <div key={parameterId || parameterIndex} className="rounded-lg border border-white/[0.07] bg-black/15 px-2.5 py-2">
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-medium text-foreground/90">{label}</div>
+                        {parameterId && (
+                          <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{parameterId}</div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {skillStudioInputParameterTypeLabel(parameter.type)}
+                        </span>
+                        {defaultValue && (
+                          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            默认 {defaultValue}
+                          </span>
+                        )}
+                        {options.length > 0 && (
+                          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {options.length} 个选项
+                          </span>
+                        )}
+                        {parameter.required === true && (
+                          <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] text-cyan-200">
+                            必填
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    {options.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {options.map((option) => (
+                          <span key={option} className="rounded-md bg-white/[0.055] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {option}
+                          </span>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          </details>
+        )}
 
         {workflowTemplates.length > 0 && (
           <details className="group border-t border-white/[0.07]">
@@ -11996,10 +12249,17 @@ export function SuperChatPanel({
     }
     try {
       const payload = buildSkillStudioDraftToolResultForTest(event, draftPayload);
-      if (!chat.submitSkillStudioResult(payload)) {
-        toast.error("Skill Studio 连接未就绪，请重试");
+      const result = await apiCall<SkillStudioToolResultResponse>("chat/skill-studio-tool-result", {
+        method: "POST",
+        json: payload,
+      });
+      if (!result.ok || !result.saved_to_catalog) {
+        const errorText = result.errors?.find(Boolean) || result.message || "后端没有确认保存成功";
+        toast.error(`添加 Skill / Recipe 失败：${errorText}`);
         return false;
       }
+      payload.saved_skill_ids = result.saved_skill_ids ?? payload.saved_skill_ids;
+      payload.saved_recipe_ids = result.saved_recipe_ids ?? payload.saved_recipe_ids;
       const savedKinds = new Set<FreezoneAgentConfigKind>([
         ...(payload.saved_skill_ids.length > 0 ? ["skills" as const] : []),
         ...(payload.saved_recipe_ids.length > 0 ? ["recipes" as const] : []),
@@ -12059,7 +12319,7 @@ export function SuperChatPanel({
       toast.error("添加 Skill / Recipe 失败，请检查必填字段后重试");
       return false;
     }
-  }, [chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
+  }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
 
   const handleSkillStudioDraftChange = useCallback((
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,

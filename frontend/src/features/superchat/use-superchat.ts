@@ -701,13 +701,37 @@ function appendTextPart(parts: ChatMessagePart[] | undefined, text: string): Cha
   return nextParts;
 }
 
+function textFromParts(parts: ChatMessagePart[]): string {
+  return parts
+    .filter((part): part is Extract<ChatMessagePart, { type: "text" }> => part.type === "text")
+    .map((part) => part.text)
+    .join("");
+}
+
+function assistantPartsWithFinalText(
+  parts: ChatMessagePart[],
+  finalText?: string,
+): ChatMessagePart[] {
+  const text = typeof finalText === "string" ? finalText : "";
+  if (!text.trim()) return parts;
+  const existingText = textFromParts(parts);
+  if (!existingText) {
+    return appendTextPart(parts, text) ?? parts;
+  }
+  if (text === existingText) return parts;
+  if (text.startsWith(existingText)) {
+    return appendTextPart(parts, text.slice(existingText.length)) ?? parts;
+  }
+  return parts;
+}
+
 function assistantPartsWithText(
   parts: ChatMessagePart[] | undefined,
   previousText: string,
   nextText: string,
 ): ChatMessagePart[] | undefined {
   if (!nextText) return parts;
-  const baseParts = removeSkillStudioStatusParts(parts);
+  const baseParts = removeSkillStudioStatusParts(parts, { keepRealProgress: true });
   if (previousText && nextText.startsWith(previousText)) {
     return appendTextPart(baseParts, nextText.slice(previousText.length));
   }
@@ -749,20 +773,32 @@ function isSkillStudioStatusEvent(event: unknown): boolean {
   );
 }
 
+function isRealSkillStudioProgressStatusEvent(event: unknown): boolean {
+  if (!isSkillStudioStatusEvent(event)) return false;
+  const status = (event as Record<string, unknown>).status;
+  return status === "draft_begin"
+    || status === "draft_skill_ready"
+    || status === "draft_recipe_ready";
+}
+
 function removeSkillStudioStatusParts(
   parts: ChatMessagePart[] | undefined,
+  options: { keepRealProgress?: boolean } = {},
 ): ChatMessagePart[] | undefined {
   if (!parts?.length) return parts;
-  const nextParts = parts.filter((part) =>
-    !(part.type === "skill_studio" && isSkillStudioStatusEvent(part.event)),
-  );
+  const nextParts = parts.filter((part) => {
+    if (part.type !== "skill_studio" || !isSkillStudioStatusEvent(part.event)) return true;
+    return options.keepRealProgress === true && isRealSkillStudioProgressStatusEvent(part.event);
+  });
   return nextParts.length === parts.length ? parts : nextParts;
 }
 
-function removeSkillStudioStatusUiEvents(events: unknown[] | undefined): unknown[] | undefined {
+function removeTransientSkillStudioStatusUiEvents(events: unknown[] | undefined): unknown[] | undefined {
   if (!events?.length) return events;
-  const nextEvents = events.filter((event) => !isSkillStudioStatusEvent(event));
-  return nextEvents.length > 0 ? nextEvents : undefined;
+  const nextEvents = events.filter((event) =>
+    !isSkillStudioStatusEvent(event) || isRealSkillStudioProgressStatusEvent(event),
+  );
+  return nextEvents.length === events.length ? events : nextEvents.length > 0 ? nextEvents : undefined;
 }
 
 function assistantPartsWithUiEvent(
@@ -824,14 +860,11 @@ function mergeAssistantMessageParts(
   finalParts: ChatMessagePart[] | undefined,
   finalText?: string,
 ): ChatMessagePart[] | undefined {
-  const stableTransientParts = removeSkillStudioStatusParts(transientParts) ?? [];
-  const stableFinalParts = removeSkillStudioStatusParts(finalParts);
+  const stableTransientParts = removeSkillStudioStatusParts(transientParts, { keepRealProgress: true }) ?? [];
+  const stableFinalParts = removeSkillStudioStatusParts(finalParts, { keepRealProgress: true });
   if (!stableFinalParts?.length) {
     if (stableTransientParts.length === 0) return undefined;
-    const nonTextParts = stableTransientParts.filter((part) => part.type !== "text");
-    const text = typeof finalText === "string" ? finalText.trim() : "";
-    if (!text) return stableTransientParts;
-    return appendTextPart(nonTextParts, text);
+    return assistantPartsWithFinalText(stableTransientParts, finalText);
   }
   if (stableTransientParts.length === 0) return stableFinalParts;
   const finalKeys = new Set(
@@ -1077,7 +1110,7 @@ function upsertServerAssistantMessage(
       .filter((message) => message.role === "assistant" && message.turnId === normalizedTurnId)
       .flatMap((message) => message.parts ?? [])
     : [];
-  const dedupedUiEvents = removeSkillStudioStatusUiEvents(
+  const dedupedUiEvents = removeTransientSkillStudioStatusUiEvents(
     mergeUiEventLists(transientUiEvents, nextMessage.uiEvents),
   );
   const mergedParts = assistantPartsForPersistence(
@@ -1116,8 +1149,8 @@ function removeSkillStudioStatusForTurn(
   let changed = false;
   const nextMessages = messages.flatMap((message): ChatMessage[] => {
     if (message.role !== "assistant" || message.turnId !== turnId) return [message];
-    const parts = removeSkillStudioStatusParts(message.parts);
-    const uiEvents = removeSkillStudioStatusUiEvents(message.uiEvents);
+    const parts = removeSkillStudioStatusParts(message.parts, { keepRealProgress: true });
+    const uiEvents = removeTransientSkillStudioStatusUiEvents(message.uiEvents);
     if (parts === message.parts && uiEvents === message.uiEvents) return [message];
     changed = true;
     const nextMessage = {
