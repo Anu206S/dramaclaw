@@ -83,6 +83,7 @@ import {
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
+import { CommunitySkillDialog } from "@/components/settings/freezone-skill-recipe-settings";
 import { calculateTimelineContextDelta } from "@/features/superchat/timeline-scroll";
 import { useEventBus } from "@/task-center/event-bus-context";
 import {
@@ -180,6 +181,9 @@ import {
   freezoneAgentConfigQueryKey,
   type FreezoneAgentConfigKind,
   type FreezoneAgentConfigPayload,
+  type FreezoneCommunityCatalogItem,
+  useFreezoneCommunityCatalog,
+  useInstallFreezoneCommunityBundle,
 } from "@/lib/queries/freezone-agent-config";
 
 type SpecMediaDetailSection = {
@@ -10046,6 +10050,7 @@ export function SuperChatPanel({
   const params = useParams({ strict: false }) as { project?: string };
   const queryClient = useQueryClient();
   const username = useAuthStore((s) => s.username);
+  const isFreezoneLayout = variant === "freezone";
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -10072,6 +10077,9 @@ export function SuperChatPanel({
   const [freezoneSkillCatalog, setFreezoneSkillCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
   const [freezoneSkillCatalogLoaded, setFreezoneSkillCatalogLoaded] = useState(false);
   const [freezoneSkillMenuExplicitOpen, setFreezoneSkillMenuExplicitOpen] = useState(false);
+  const [freezoneSkillCreateMenuOpen, setFreezoneSkillCreateMenuOpen] = useState(false);
+  const [freezoneCommunitySkillDialogOpen, setFreezoneCommunitySkillDialogOpen] = useState(false);
+  const [freezoneSkillDialogMode, setFreezoneSkillDialogMode] = useState<"community" | "mine">("community");
   const [freezoneSkillMenuSearch, setFreezoneSkillMenuSearch] = useState("");
   const [freezoneSkillMenuPosition, setFreezoneSkillMenuPosition] = useState<{
     left: number;
@@ -10082,6 +10090,10 @@ export function SuperChatPanel({
   const [nodeSuggestionVisibleCount, setNodeSuggestionVisibleCount] = useState(FREEZONE_NODE_SUGGESTION_PAGE);
   const freezoneSkillSuggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const freezoneSkillMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const freezoneCommunityCatalogQuery = useFreezoneCommunityCatalog(
+    isFreezoneLayout && freezoneCommunitySkillDialogOpen && freezoneSkillDialogMode === "community",
+  );
+  const installFreezoneCommunityBundle = useInstallFreezoneCommunityBundle();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftInputRef = useRef<HTMLElement | null>(null);
   const restoreDraftFocusRef = useRef(false);
@@ -10138,7 +10150,6 @@ export function SuperChatPanel({
     });
   }, [chat.busy, chat.connected, chat.connecting, onConnectionStateChange]);
 
-  const isFreezoneLayout = variant === "freezone";
   const setDraftInputElement = useCallback((element: HTMLElement | null) => {
     draftInputRef.current = element;
   }, []);
@@ -10174,6 +10185,7 @@ export function SuperChatPanel({
   const insertFreezoneSkillSuggestion = useCallback((skillId: string) => {
     setDraft((current) => insertFreezoneSkillMention(current, skillId));
     setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillCreateMenuOpen(false);
     setFreezoneSkillMenuSearch("");
     setActiveFreezoneSkillSuggestionIndex(0);
     restoreDraftFocusRef.current = true;
@@ -10181,10 +10193,40 @@ export function SuperChatPanel({
   const insertFreezoneSkillEmptyAction = useCallback((prompt: string) => {
     setDraft((current) => insertFreezoneSkillEmptyActionPrompt(current, prompt));
     setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillCreateMenuOpen(false);
     setFreezoneSkillMenuSearch("");
     setActiveFreezoneSkillSuggestionIndex(0);
     restoreDraftFocusRef.current = true;
   }, []);
+  const openFreezoneCommunitySkillDialog = useCallback(() => {
+    setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillCreateMenuOpen(false);
+    setFreezoneSkillDialogMode("community");
+    setFreezoneCommunitySkillDialogOpen(true);
+  }, []);
+  const selectFreezoneSkillFromDialog = useCallback((skillId: string) => {
+    insertFreezoneSkillSuggestion(skillId);
+    setFreezoneCommunitySkillDialogOpen(false);
+  }, [insertFreezoneSkillSuggestion]);
+  const reloadFreezoneSkillCatalog = useCallback(() => {
+    setFreezoneSkillCatalogLoaded(false);
+  }, []);
+  const installFreezoneCommunitySkill = useCallback(async (item: FreezoneCommunityCatalogItem) => {
+    try {
+      const result = await installFreezoneCommunityBundle.mutateAsync({ bundleUrl: item.bundle_url });
+      toast.success(
+        `已安装 ${result.installed_skill}${result.installed_recipes.length > 0 ? `，包含 ${result.installed_recipes.length} 个 Recipes` : ""}`,
+      );
+      void queryClient.invalidateQueries({ queryKey: freezoneAgentConfigQueryKey("skills") });
+      void queryClient.invalidateQueries({ queryKey: freezoneAgentConfigQueryKey("recipes") });
+      const skills = await apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills");
+      setFreezoneSkillCatalog(skills);
+      setFreezoneSkillCatalogLoaded(true);
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`安装 Skill 失败${message}`);
+    }
+  }, [installFreezoneCommunityBundle, queryClient]);
 
   const nodeAtQuery = isFreezoneLayout ? getFreezoneNodeAtQuery(draft) : null;
   const showNodeSuggestions = isFreezoneLayout && nodeAtQuery !== null;
@@ -10215,7 +10257,12 @@ export function SuperChatPanel({
     if (
       !isFreezoneLayout
       || freezoneSkillCatalogLoaded
-      || (freezoneSkillSlashQuery === null && !freezoneSkillMentionCandidate && !freezoneSkillMenuExplicitOpen)
+      || (
+        freezoneSkillSlashQuery === null
+        && !freezoneSkillMentionCandidate
+        && !freezoneSkillMenuExplicitOpen
+        && !freezoneCommunitySkillDialogOpen
+      )
     ) return;
     let cancelled = false;
     void apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills")
@@ -10237,6 +10284,7 @@ export function SuperChatPanel({
   }, [
     freezoneSkillCatalogLoaded,
     freezoneSkillMentionCandidate,
+    freezoneCommunitySkillDialogOpen,
     freezoneSkillMenuExplicitOpen,
     freezoneSkillSlashQuery,
     isFreezoneLayout,
@@ -10279,6 +10327,7 @@ export function SuperChatPanel({
   useLayoutEffect(() => {
     if (!freezoneSkillMenuExplicitOpen) {
       setFreezoneSkillMenuPosition(null);
+      setFreezoneSkillCreateMenuOpen(false);
       return;
     }
     const updatePosition = () => {
@@ -13193,6 +13242,7 @@ export function SuperChatPanel({
                             setSelectedHistoryMessageIndex(null);
                             if (!freezoneSkillMenuExplicitOpen) {
                               setFreezoneSkillMenuSearch("");
+                              setFreezoneSkillCreateMenuOpen(false);
                             }
                             setFreezoneSkillMenuExplicitOpen((open) => !open);
                             setActiveFreezoneSkillSuggestionIndex(0);
@@ -13293,15 +13343,64 @@ export function SuperChatPanel({
             <div className="text-sm font-semibold leading-6 text-foreground/95">
               Skill
             </div>
-            <button
-              type="button"
-              className="inline-flex h-7 items-center gap-1 rounded-full border border-white/[0.10] bg-white/[0.08] px-2.5 text-xs font-medium text-foreground/88 shadow-[0_8px_18px_rgba(0,0,0,0.28)] transition hover:border-white/[0.16] hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25"
-              onClick={() => insertFreezoneSkillEmptyAction("帮我创建一个 Skill：")}
-            >
-              <Plus className="size-3.5" />
-              创建
-              <ChevronDown className="size-3" />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <div className="relative">
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1 rounded-full border border-white/[0.10] bg-white/[0.08] px-2.5 text-xs font-medium text-foreground/88 shadow-[0_8px_18px_rgba(0,0,0,0.28)] transition hover:border-white/[0.16] hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25",
+                    freezoneSkillCreateMenuOpen && "border-white/[0.18] bg-white/[0.12] text-foreground",
+                  )}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                  }}
+                  onClick={() => setFreezoneSkillCreateMenuOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={freezoneSkillCreateMenuOpen}
+                >
+                  <Plus className="size-3.5" />
+                  创建
+                  <ChevronDown className={cn("size-3 transition", freezoneSkillCreateMenuOpen && "rotate-180")} />
+                </button>
+                {freezoneSkillCreateMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-[calc(100%+8px)] z-10 w-[218px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#202126]/98 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+                  >
+                    {FREEZONE_SKILL_EMPTY_ACTIONS.map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] leading-5 text-foreground/88 transition hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                        }}
+                        onClick={() => insertFreezoneSkillEmptyAction(action.prompt)}
+                      >
+                        {action.id === "summarize-canvas" ? (
+                          <ListTree className="size-4 shrink-0 text-muted-foreground/80" />
+                        ) : (
+                          <Plus className="size-4 shrink-0 text-muted-foreground/80" />
+                        )}
+                        <span>{action.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-7 items-center gap-0.5 rounded-full px-2 text-xs font-medium text-muted-foreground transition hover:bg-white/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={openFreezoneCommunitySkillDialog}
+              >
+                更多
+                <ChevronRight className="size-3" />
+              </button>
+            </div>
           </div>
           <label className="relative mb-3 block">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-white/35" />
@@ -13404,6 +13503,30 @@ export function SuperChatPanel({
           </div>
         </div>,
         document.body,
+      )}
+      {isFreezoneLayout && (
+        <CommunitySkillDialog
+          mode={freezoneSkillDialogMode}
+          open={freezoneCommunitySkillDialogOpen}
+          items={freezoneCommunityCatalogQuery.data?.items ?? []}
+          localItems={freezoneSkillSuggestions}
+          installedSkillIds={new Set(freezoneSkillSuggestions.map((skill) => skill.id))}
+          loading={freezoneSkillDialogMode === "mine" ? !freezoneSkillCatalogLoaded : freezoneCommunityCatalogQuery.isLoading}
+          error={freezoneSkillDialogMode === "community" && freezoneCommunityCatalogQuery.isError}
+          installing={installFreezoneCommunityBundle.isPending}
+          installingBundleUrl={installFreezoneCommunityBundle.variables?.bundleUrl}
+          onModeChange={setFreezoneSkillDialogMode}
+          onOpenChange={setFreezoneCommunitySkillDialogOpen}
+          onRetry={() => {
+            if (freezoneSkillDialogMode === "mine") {
+              reloadFreezoneSkillCatalog();
+            } else {
+              void freezoneCommunityCatalogQuery.refetch();
+            }
+          }}
+          onInstall={(item) => void installFreezoneCommunitySkill(item)}
+          onSelectLocalSkill={selectFreezoneSkillFromDialog}
+        />
       )}
       {isFreezoneLayout && canvasCommandModeMenuOpen && canvasCommandModeMenuPosition && createPortal(
         <div
