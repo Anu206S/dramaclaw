@@ -2,23 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import re
 from typing import Any
-
-try:
-    from json_workflow_catalog import (
-        build_catalog_workflow_plan,
-        catalog_workflow_aliases,
-        registered_catalog_workflows,
-    )
-except Exception:  # pragma: no cover - optional catalog should not break legacy workflows.
-    build_catalog_workflow_plan = None
-
-    def registered_catalog_workflows() -> list[dict[str, Any]]:
-        return []
-
-    def catalog_workflow_aliases() -> dict[str, str]:
-        return {}
 
 CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1"
 
@@ -109,36 +96,6 @@ STAGE_ORDER = {
     "review": 7,
 }
 
-REGISTERED_WORKFLOWS = registered_catalog_workflows()
-WORKFLOW_ALIASES = catalog_workflow_aliases()
-
-
-def build_workflow_plan(args: dict[str, Any]) -> dict[str, Any]:
-    """Build a deterministic Freezone workflow plan from a workflow type."""
-    workflow_types = _workflow_type_values(args)
-    if len(workflow_types) > 1:
-        return _multi_workflow_plan(args, workflow_types)
-    workflow_type = _normalize_workflow_type(
-        workflow_types[0]
-        if workflow_types
-        else (
-            args.get("workflow_type")
-            or args.get("workflowType")
-            or args.get("type")
-            or "short_drama"
-        )
-    )
-    if build_catalog_workflow_plan is not None:
-        catalog_plan = build_catalog_workflow_plan({**args, "workflow_type": workflow_type})
-        if catalog_plan is not None:
-            return catalog_plan
-    return {
-        "ok": False,
-        "status": "unsupported_workflow_type",
-        "error": f"unsupported workflow_type: {workflow_type}",
-    }
-
-
 def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
     """Convert a workflow plan/graph payload into canvas_chat_commands.v1 commands.
 
@@ -146,26 +103,16 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
     ids into same-envelope ``client_id`` aliases and only emits valid canvas
     command refs. It never emits ``auto:*`` ids.
     """
-    payload = _workflow_payload(args)
-    if not isinstance(payload.get("nodes"), list) or not payload.get("nodes"):
-        workflow_types = _workflow_type_values(args)
-        if (
-            len(workflow_types) > 1
-            or args.get("workflow_type")
-            or args.get("workflowType")
-            or args.get("type")
-        ):
-            planned = build_workflow_plan(args)
-            if not planned.get("ok"):
-                return {
-                    "ok": False,
-                    "status": planned.get("status") or "workflow_plan_failed",
-                    "error": planned.get("error") or "failed to build workflow plan",
-                    "commands": [],
-                    "skipped_edges": [],
-                    "warnings": [],
-                }
-            payload = planned
+    payload = args.get("plan")
+    if not isinstance(payload, dict):
+        return {
+            "ok": False,
+            "status": "dynamic_workflow_plan_required",
+            "error": "plan must be a complete freezone_workflow_plan.v1 object",
+            "commands": [],
+            "skipped_edges": [],
+            "warnings": [],
+        }
     raw_nodes = payload.get("nodes")
     if not isinstance(raw_nodes, list) or not raw_nodes:
         return {
@@ -180,6 +127,7 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
     warnings: list[str] = []
     skipped_edges: list[dict[str, Any]] = []
     commands: list[dict[str, Any]] = []
+    workflow_instance_id = _workflow_instance_id(args, payload)
     node_by_plan_id: dict[str, dict[str, Any]] = {}
     used_client_ids: set[str] = set()
 
@@ -294,6 +242,8 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
         )
         if node["plan_id"] in prompt_source_plan_ids and node["node_type"] in TEXTUAL_NODE_TYPES:
             data.setdefault("semanticOutputRole", "input_text")
+        data.setdefault("workflowInstanceId", workflow_instance_id)
+        data.setdefault("workflowPlanNodeId", node["plan_id"])
         command = {
             "type": "create_node",
             "client_id": node["client_id"],
@@ -375,11 +325,32 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
         "ok": True,
         "status": "workflow_graph_commands_created",
         "schema_version": CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        "workflow_instance_id": workflow_instance_id,
         "run_after_create": run_after_create,
         "commands": commands,
         "skipped_edges": skipped_edges,
         "warnings": warnings,
     }
+
+
+def _workflow_instance_id(args: dict[str, Any], payload: dict[str, Any]) -> str:
+    explicit = str(
+        args.get("workflow_instance_id")
+        or args.get("workflowInstanceId")
+        or payload.get("workflow_instance_id")
+        or payload.get("workflowInstanceId")
+        or ""
+    ).strip()
+    if explicit:
+        return explicit[:160]
+    encoded = json.dumps(
+        payload,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+        default=str,
+    ).encode("utf-8")
+    return f"workflow_plan_{hashlib.sha256(encoded).hexdigest()[:24]}"
 
 
 def _bool_value(value: Any, default: bool = False) -> bool:
@@ -394,150 +365,6 @@ def _bool_value(value: Any, default: bool = False) -> bool:
     if isinstance(value, (int, float)):
         return bool(value)
     return default
-
-
-def _workflow_payload(args: dict[str, Any]) -> dict[str, Any]:
-    for key in ("plan", "workflow", "graph", "body"):
-        value = args.get(key)
-        if isinstance(value, dict):
-            return value
-    return args
-
-
-def _workflow_type_values(args: dict[str, Any]) -> list[str]:
-    raw = (
-        args.get("workflow_types")
-        or args.get("workflowTypes")
-        or args.get("types")
-        or args.get("workflow_type")
-        or args.get("workflowType")
-        or args.get("type")
-    )
-    values: list[Any]
-    if isinstance(raw, list):
-        values = raw
-    elif isinstance(raw, str) and "," in raw:
-        values = raw.split(",")
-    elif raw is None:
-        values = []
-    else:
-        values = [raw]
-    normalized: list[str] = []
-    for value in values:
-        workflow_type = _normalize_workflow_type(value)
-        if workflow_type and workflow_type not in normalized:
-            normalized.append(workflow_type)
-    return normalized
-
-
-def _normalize_workflow_type(value: Any) -> str:
-    text = str(value or "").strip().lower().replace("-", "_").replace(" ", "_")
-    return WORKFLOW_ALIASES.get(text, text or "short_drama")
-
-
-def _multi_workflow_plan(args: dict[str, Any], workflow_types: list[str]) -> dict[str, Any]:
-    nodes: list[dict[str, Any]] = []
-    edges: list[dict[str, str]] = []
-    groups: list[dict[str, Any]] = []
-    summaries: list[str] = []
-    row_gap = 1250
-
-    for workflow_index, workflow_type in enumerate(workflow_types):
-        child_args = dict(args)
-        child_args.pop("workflow_types", None)
-        child_args.pop("workflowTypes", None)
-        child_args.pop("types", None)
-        child_args["workflow_type"] = workflow_type
-        child_plan = build_workflow_plan(child_args)
-        if not child_plan.get("ok"):
-            return child_plan
-        prefix = _safe_client_id(workflow_type)
-        id_map: dict[str, str] = {}
-        for node_index, node in enumerate(child_plan.get("nodes") or []):
-            if not isinstance(node, dict):
-                continue
-            node_id = str(node.get("id") or f"node_{node_index + 1}").strip()
-            prefixed_id = f"{prefix}_{node_id}"
-            id_map[node_id] = prefixed_id
-            next_node = dict(node)
-            next_node["id"] = prefixed_id
-            stage_index = _stage_index(next_node, _node_type(next_node))
-            next_node.setdefault(
-                "position",
-                {
-                    "x": 80 + stage_index * 340,
-                    "y": 80 + workflow_index * row_gap + (node_index % 4) * 220,
-                },
-            )
-            nodes.append(next_node)
-        for edge in child_plan.get("edges") or []:
-            if not isinstance(edge, dict):
-                continue
-            source = id_map.get(str(edge.get("source") or ""))
-            target = id_map.get(str(edge.get("target") or ""))
-            if not source or not target:
-                continue
-            next_edge = dict(edge)
-            next_edge["source"] = source
-            next_edge["target"] = target
-            edges.append(next_edge)
-        child_layout = (
-            child_plan.get("layout") if isinstance(child_plan.get("layout"), dict) else {}
-        )
-        for group in _groups(child_plan.get("groups"), child_layout):
-            node_ids = [id_map[item] for item in group["node_ids"] if item in id_map]
-            if len(node_ids) >= 2:
-                groups.append(
-                    {
-                        "label": group.get("label") or child_plan.get("title") or "工作流",
-                        "node_ids": node_ids,
-                    }
-                )
-        summary = child_plan.get("summary")
-        if isinstance(summary, str) and summary.strip():
-            summaries.append(summary.strip())
-
-    title = str(args.get("title") or args.get("name") or "批量工作流").strip() or "批量工作流"
-    return _plan(
-        workflow_type="multi_workflow",
-        title=title,
-        summary="；".join(summaries) or "批量创建多个虾画节点工作流。",
-        nodes=nodes,
-        edges=edges,
-        groups=groups,
-    )
-
-def _plan(
-    *,
-    workflow_type: str,
-    title: str,
-    summary: str,
-    nodes: list[dict[str, Any]],
-    edges: list[dict[str, str]],
-    groups: list[dict[str, Any]],
-) -> dict[str, Any]:
-    return {
-        "ok": True,
-        "schema_version": "freezone_workflow_plan.v1",
-        "workflow_type": workflow_type,
-        "mode": "analysis_only",
-        "summary": summary,
-        "source_context": {"user_goal": title, "canvas_context": [], "input_assets": []},
-        "analysis": {"entities": [], "production_units": [], "risks": []},
-        "phases": [group["label"] for group in groups],
-        "assumptions": ["节点创建和生成执行需等待用户确认。"],
-        "missing_inputs": [],
-        "expansion_rules": {},
-        "nodes": nodes,
-        "edges": edges,
-        "layout": {"direction": "left_to_right", "groups": groups},
-        "execution_policy": {
-            "requires_user_confirmation": True,
-            "auto_create_nodes": False,
-            "auto_generate_content": False,
-            "handoff_tool": "freezone_create_workflow_graph",
-        },
-    }
 
 
 def _node_plan_id(node: dict[str, Any], index: int) -> str:
@@ -633,6 +460,10 @@ def _node_data(
     _normalize_model_alias(result, node_type)
     if node_type == "audioNode":
         result.setdefault("audioKind", "speech")
+        if result.get("audioKind") == "speech":
+            result.setdefault("speechMode", "preset")
+            result.setdefault("presetModel", "edge-tts")
+            result.setdefault("presetVoice", "Serena")
         result.setdefault("audioUrl", None)
         result.setdefault("sourceFileName", None)
         result.setdefault("durationMs", None)

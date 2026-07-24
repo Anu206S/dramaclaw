@@ -1008,22 +1008,6 @@ def test_prompt_injects_json_render_contract(monkeypatch, tmp_path):
     assert prompt.rstrip().endswith("查看肖像图片，用 json-render 显示")
 
 
-def test_freezone_prompt_does_not_use_legacy_preferences(monkeypatch, tmp_path):
-    state_dir = tmp_path / "state"
-    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_dir))
-
-    prompt = chat_service._prompt_with_user_context(
-        "admin",
-        "project-a",
-        "帮我整理当前画布",
-        tool_mode="freezone_canvas",
-        surface_context={"freezone_canvas_id": "canvas-a"},
-    )
-
-    assert "[USER_PREFERENCES]" not in prompt
-    assert not (state_dir / "admin" / "preferences.md").exists()
-
-
 def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainline_generation(
     monkeypatch, tmp_path
 ):
@@ -1150,11 +1134,11 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "prompt/instruction generator" in prompt
     assert "不要直接生成最终内容" in prompt
     assert "送入对应节点" in prompt
-    assert "planning.planning_notes must start with a dynamic executable path summary" in prompt
+    assert "planning.planning_notes must start with an executable path summary" in prompt
     assert "planning.conduct_rules must include hard execution rules" in prompt
-    assert "workflow_templates[].condition should be machine-readable" in prompt
-    assert '{"type":"previous_step","step_id":"..."}' in prompt
-    assert "workflow_templates[].steps[] should include aspect_ratio" in prompt
+    assert "Do not include workflow_templates" in prompt
+    assert "complete dynamic freezone_workflow_plan.v1" in prompt
+    assert "dynamic dependency rules" in prompt
     assert "Recipe system_prompt must never be the final downstream prompt itself" in prompt
     assert "重要：你的输出是一条提示词/指令" in prompt
     assert "终端生成型" not in prompt
@@ -1225,13 +1209,11 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
     assert "Do not treat tool schemas as authoring guidance" in prompt
     assert "capability modeling" in prompt
     assert "schema fields are final serialization constraints" in prompt
-    assert "Do not ask for Skill name, category, or whether to include workflow templates" in prompt
-    assert "concrete case vs reusable template" in prompt
+    assert "Do not ask for Skill name, category, or fixed topology" in prompt
+    assert "concrete case vs reusable Skill" in prompt
     assert "recipe granularity" in prompt
-    assert "New multi-node workflow Skills should use the 2.0 dynamic format by default" in prompt
-    assert "Do not require workflow_templates for new dynamic Skills" in prompt
-    assert "workflow_templates" in prompt
-    assert "node_type=videoCompose" in prompt
+    assert "Do not include workflow_templates" in prompt
+    assert "terminal node in the runtime dynamic plan" in prompt
     assert "Do not create a Recipe for videoCompose" in prompt
     assert "Do not present videoCompose, final media composition, or final synthesis as a Recipe granularity option" in prompt
     assert "do not count the videoCompose terminal step in the Recipe count" in prompt
@@ -1241,7 +1223,7 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
     assert "domain_contract or creative_contract" in prompt
     assert "repeated prompt phrases, media facts, source filenames, references, and edges" in prompt
     assert "not from displayName or node type alone" in prompt
-    assert "Write the domain_contract or creative_contract into existing fields: planning_notes, conduct_rules, evaluation.domain_constraints, workflow step descriptions, and Recipe quality standards" in prompt
+    assert "Write the domain_contract or creative_contract into existing fields: planning_notes, conduct_rules, evaluation.domain_constraints, and Recipe quality standards" in prompt
     assert "perform skill_identity_analysis after prompt_evidence_analysis" in prompt
     assert "case_variables, reusable_protocol_terms, output_format_terms, use_case_terms, and workflow_method_terms" in prompt
     assert "Skill name, id, description, and triggers.keywords" in prompt

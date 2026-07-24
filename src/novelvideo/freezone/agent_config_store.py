@@ -4,26 +4,31 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from copy import deepcopy
 from pathlib import Path
 from typing import Literal
 
 from novelvideo.config import OUTPUT_DIR
-from novelvideo.freezone.agent_catalog_schema import (
-    SAFE_AGENT_CONFIG_ID,
-    validate_agent_config_item,
-)
 
 AgentConfigKind = Literal["skills", "recipes"]
 
+_SAFE_ITEM_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
 BUILTIN_AGENT_CATALOG_DIR = Path(__file__).with_name("agent_catalog") / "builtins"
+PROJECT_AGENT_CATALOG_DIR = (
+    Path(__file__).resolve().parents[3] / ".hermes" / "plugins" / "freezone" / "catalog"
+)
 _CATALOG_CACHE: dict[tuple[str, str, tuple, tuple], list[dict]] = {}
-_STORED_METADATA_PREFIXES = ("_catalog_bundle_",)
 
 
 def builtin_agent_catalog_dir(kind: AgentConfigKind | str) -> Path:
     checked_kind = _validate_kind(kind)
     return BUILTIN_AGENT_CATALOG_DIR / checked_kind
+
+
+def project_agent_catalog_dir(kind: AgentConfigKind | str) -> Path:
+    checked_kind = _validate_kind(kind)
+    return PROJECT_AGENT_CATALOG_DIR / checked_kind
 
 
 def user_agent_config_dir(username: str, kind: AgentConfigKind | str) -> Path:
@@ -34,11 +39,13 @@ def user_agent_config_dir(username: str, kind: AgentConfigKind | str) -> Path:
 def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> list[dict]:
     checked_kind = _validate_kind(kind)
     builtin_root = builtin_agent_catalog_dir(checked_kind)
+    project_root = project_agent_catalog_dir(checked_kind)
     user_root = user_agent_config_dir(username, checked_kind)
     cache_key = (
         username,
         checked_kind,
         _directory_signature(builtin_root),
+        _directory_signature(project_root),
         _directory_signature(user_root),
     )
     cached = _CATALOG_CACHE.get(cache_key)
@@ -47,6 +54,9 @@ def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> 
 
     builtin_items_by_id: dict[str, dict] = {}
     for payload in _read_agent_config_items(builtin_root):
+        item_id = str(payload["id"])
+        builtin_items_by_id[item_id] = payload
+    for payload in _read_agent_config_items(project_root):
         item_id = str(payload["id"])
         builtin_items_by_id[item_id] = payload
 
@@ -87,17 +97,10 @@ def save_user_agent_config_item(
     kind: AgentConfigKind | str,
     payload: dict,
 ) -> dict:
-    checked_kind = _validate_kind(kind)
     item_id = _validate_item_id(str(payload.get("id") or ""))
-    root = user_agent_config_dir(username, checked_kind)
+    root = user_agent_config_dir(username, kind)
     root.mkdir(parents=True, exist_ok=True)
-    stored_metadata = _stored_metadata(payload)
-    payload_without_response_metadata = _strip_response_metadata(payload)
-    stored_payload = validate_agent_config_item(
-        checked_kind,
-        _strip_stored_metadata(payload_without_response_metadata),
-    )
-    stored_payload.update(stored_metadata)
+    stored_payload = _strip_response_metadata(payload)
 
     target = root / f"{item_id}.json"
     tmp = target.with_suffix(".json.tmp")
@@ -145,7 +148,7 @@ def _validate_kind(kind: AgentConfigKind | str) -> AgentConfigKind:
 
 
 def _validate_item_id(item_id: str) -> str:
-    if not SAFE_AGENT_CONFIG_ID.fullmatch(item_id):
+    if not _SAFE_ITEM_ID.fullmatch(item_id):
         raise ValueError("invalid agent config id")
     return item_id
 
@@ -160,25 +163,18 @@ def _read_agent_config_items(root: Path) -> list[dict]:
             payload = json.loads(path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if not isinstance(payload, dict):
-            continue
-        item_id = payload.get("id")
-        if not isinstance(item_id, str) or not SAFE_AGENT_CONFIG_ID.fullmatch(item_id):
-            continue
-        try:
-            stored_metadata = _stored_metadata(payload)
-            payload = validate_agent_config_item(
-                _kind_from_dir(root),
-                _strip_stored_metadata(payload),
-            )
-            payload.update(stored_metadata)
-        except ValueError:
-            continue
-        try:
-            payload["_catalog_updated_at"] = path.stat().st_mtime
-        except OSError:
-            payload["_catalog_updated_at"] = 0
-        items.append(payload)
+        payloads = payload if isinstance(payload, list) else [payload]
+        for item in payloads:
+            if not isinstance(item, dict):
+                continue
+            item_id = item.get("id")
+            if not isinstance(item_id, str) or not _SAFE_ITEM_ID.fullmatch(item_id):
+                continue
+            try:
+                item["_catalog_updated_at"] = path.stat().st_mtime
+            except OSError:
+                item["_catalog_updated_at"] = 0
+            items.append(item)
     return items
 
 
@@ -197,32 +193,16 @@ def _directory_signature(root: Path) -> tuple:
     return (str(root), tuple(files))
 
 
-def _kind_from_dir(root: Path) -> AgentConfigKind:
-    return _validate_kind(root.name)
-
-
 def _builtin_agent_config_exists(kind: AgentConfigKind, item_id: str) -> bool:
-    return (builtin_agent_catalog_dir(kind) / f"{item_id}.json").exists()
+    return any(
+        str(payload.get("id") or "") == item_id
+        for root in (builtin_agent_catalog_dir(kind), project_agent_catalog_dir(kind))
+        for payload in _read_agent_config_items(root)
+    )
 
 
 def _strip_response_metadata(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if not key.startswith("_catalog_")}
-
-
-def _stored_metadata(payload: dict) -> dict:
-    return {
-        key: value
-        for key, value in payload.items()
-        if any(key.startswith(prefix) for prefix in _STORED_METADATA_PREFIXES)
-    }
-
-
-def _strip_stored_metadata(payload: dict) -> dict:
-    return {
-        key: value
-        for key, value in payload.items()
-        if not any(key.startswith(prefix) for prefix in _STORED_METADATA_PREFIXES)
-    }
 
 
 def _user_agent_config_sort_key(payload: dict) -> tuple[int, float, str]:

@@ -245,8 +245,20 @@ describe("canvas action catalog", () => {
     const catalog = buildCanvasNodeActionCatalog(video);
 
     expect(catalog.editable_fields).toEqual(
-      expect.arrayContaining(["genMode", "aspectRatio", "quality", "durationSec", "generateAudio", "count"]),
+      expect.arrayContaining([
+        "genMode",
+        "aspectRatio",
+        "quality",
+        "durationSec",
+        "generateAudio",
+        "humanReview",
+        "count",
+      ]),
     );
+    expect(catalog.editable_schema.humanReview).toMatchObject({
+      type: "boolean",
+      current_value: false,
+    });
     expect(catalog.editable_schema.genMode).toMatchObject({
       type: "enum",
       current_value: "imageToVideo",

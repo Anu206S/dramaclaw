@@ -71,3 +71,37 @@ def test_workflow_run_api_rejects_empty_actions(workflow_run_client: TestClient)
     )
 
     assert response.status_code == 400
+
+
+def test_workflow_run_list_cancels_orphaned_failed_record(
+    workflow_run_client: TestClient,
+    monkeypatch,
+) -> None:
+    from novelvideo.api.routes import freezone
+
+    base = "/api/v1/projects/proj_demo/freezone/canvases/default/workflow-runs"
+    created = workflow_run_client.post(
+        base,
+        json={"actions": [{"node_id": "deleted-node", "action": "generate_image"}]},
+    ).json()["data"]
+    workflow_run_client.patch(
+        f"{base}/{created['run_id']}",
+        json={
+            "status": "failed",
+            "action_updates": [
+                {
+                    "node_id": "deleted-node",
+                    "action": "generate_image",
+                    "status": "failed",
+                }
+            ],
+        },
+    )
+    monkeypatch.setattr(freezone.canvas_store, "read_canvas", lambda *_args, **_kwargs: None)
+
+    runs = workflow_run_client.get(base).json()["data"]["runs"]
+
+    listed = next(item for item in runs if item["run_id"] == created["run_id"])
+    assert listed["status"] == "cancelled"
+    assert listed["resumable"] is False
+    assert listed["metadata"]["cancel_reason"] == "workflow_nodes_deleted"

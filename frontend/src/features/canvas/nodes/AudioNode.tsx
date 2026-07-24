@@ -196,6 +196,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
     (data as { mainline_context?: unknown }).mainline_context,
   );
   const currentVoiceRef: AudioVoiceRef = data.voiceRef ?? { scope: 'project_narrator' };
+  const speechMode = data.speechMode ?? (data.voiceRef ? 'clone' : 'preset');
 
   // 上传一份本地音频到后端 freezone — 复用通用 upload 端点（后端不区分 mime）。
   // 上传成功后落 audioUrl/sourceFileName 进 store，AudioOperationsPanel 那边
@@ -257,6 +258,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
   // 闭包等回来又被 cancelled 挡住，结果谁都写不进 store。请求级去重交给
   // `getCachedAudioReferences` 的 promise cache。
   useEffect(() => {
+    if (data.audioKind === 'music' || speechMode !== 'clone') return;
     const v = data.voiceRef;
     const isFactoryFallback =
       v != null &&
@@ -324,7 +326,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
     return () => {
       cancelled = true;
     };
-  }, [data.voiceRef, id, updateNodeData]);
+  }, [data.audioKind, data.voiceRef, id, speechMode, updateNodeData]);
 
   const cardToneClass = canvasNodeFrameClass({
     selected,
@@ -432,6 +434,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
           currentRef={currentVoiceRef}
           onPick={({ ref, label, language }) => {
             updateNodeData(id, {
+              speechMode: 'clone',
               voiceRef: ref,
               voiceLabel: label,
               voiceLanguage: language ?? '',

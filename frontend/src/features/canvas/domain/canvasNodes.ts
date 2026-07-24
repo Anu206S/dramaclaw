@@ -474,6 +474,14 @@ export interface AudioNodeData extends NodeDisplayData {
    * - 'music'：文字生成音乐(/freezone/audio/eleven-music),用 text 作为音乐描述 prompt。
    */
   audioKind?: 'speech' | 'music';
+  /**
+   * speech 模式的音色来源：
+   * - preset：系统音色，直接文生语音，不需要参考音频。
+   * - clone：项目/角色/账号声线，需要已有参考音频。
+   */
+  speechMode?: 'preset' | 'clone';
+  presetVoice?: string;
+  presetModel?: string;
   /** music 模式：生成长度(毫秒),范围 3000–600000,缺省按后端默认 30000。 */
   musicLengthMs?: number;
   /** music 模式：是否强制纯音乐(force_instrumental),缺省 true。 */

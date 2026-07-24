@@ -114,6 +114,7 @@ import {
   extractCanvasChatCommandEnvelopes,
   FREEZONE_CANVAS_COMMAND_RESULT_EVENT,
   normalizeCanvasChatCommandEnvelopesForValidation,
+  waitForImmediateCanvasCommandResult,
   type CanvasChatCommandApplyResult,
 } from "@/features/freezone/canvasChatCommands";
 import {
@@ -1567,18 +1568,25 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
               canvasId,
             });
             if (canvasCommandEnvelopesRunInBackground(normalizedEnvelopes)) {
-              backgroundAccepted = true;
-              reportCanvasCommandToolResult({
-                bridgeKey,
-                turnId,
-                anchorTextPrefix: detail?.anchorTextPrefix ?? null,
-                projectId,
-                canvasId,
-                agentId,
-                accepted: true,
-              });
+              const immediateResult = await waitForImmediateCanvasCommandResult(execution);
+              if (immediateResult) {
+                result = immediateResult;
+              } else {
+                backgroundAccepted = true;
+                reportCanvasCommandToolResult({
+                  bridgeKey,
+                  turnId,
+                  anchorTextPrefix: detail?.anchorTextPrefix ?? null,
+                  projectId,
+                  canvasId,
+                  agentId,
+                  accepted: true,
+                });
+                result = await execution;
+              }
+            } else {
+              result = await execution;
             }
-            result = await execution;
           } catch (error) {
             const message = error instanceof Error ? error.message : String(error);
             result = {

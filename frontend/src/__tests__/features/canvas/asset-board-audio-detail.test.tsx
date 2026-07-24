@@ -135,8 +135,25 @@ describe('AssetBoard 音频进主从详情', () => {
     const [project, payload] = vi.mocked(submitFreezoneAudioSpeech).mock.calls[0];
     expect(project).toBe('demo-project');
     expect(payload.text).toBe('你好');
+    expect(payload.speechMode).toBe('preset');
+    expect(payload.voiceRef).toBeNull();
     // 详情按 key=nodeId 重挂也不重复提交：在途态放模块级登记表。
     await waitFor(() => expect(inFlightAudioOps.get('audio-1')).toBe('generate'));
+  });
+
+  it('语音生成只提交可朗读正文，不朗读时长和音效说明', async () => {
+    seed([audioNode({
+      audioUrl: null,
+      text: '【时长】79s\n【旁白】（低沉）真正的旁白。\n【音效】雷声',
+    })]);
+    render(<AssetBoardView visible onLocateNode={vi.fn()} />);
+    fireEvent.click(screen.getByRole('button', { name: '背景音乐' }));
+
+    fireEvent.click(within(detailPanel()).getByRole('button', { name: /^生成$/ }));
+
+    await waitFor(() => expect(submitFreezoneAudioSpeech).toHaveBeenCalled());
+    const [, payload] = vi.mocked(submitFreezoneAudioSpeech).mock.calls[0];
+    expect(payload.text).toBe('真正的旁白。');
   });
 
   it('故事板隐藏（visible=false）→ 命令波形播放器暂停内部 <audio>', () => {

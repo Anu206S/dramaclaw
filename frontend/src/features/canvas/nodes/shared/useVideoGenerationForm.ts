@@ -77,7 +77,10 @@ import {
   type FreezoneVideoResolution,
 } from "@/api/ops";
 import { awaitTaskCompletion } from "@/api/tasks";
-import { generationTaskDescriptor } from "@/features/canvas/application/resumeGeneration";
+import {
+  CLEARED_GENERATION_TASK_FIELDS,
+  generationTaskDescriptor,
+} from "@/features/canvas/application/resumeGeneration";
 import { translateNodeText } from "@/features/canvas/application/translateText";
 import { readUrl } from "@/lib/url-params";
 import { DEFAULT_VIDEO_MODEL_ID } from "@/features/canvas/ui/ProviderModelPicker";
@@ -1369,6 +1372,7 @@ export function useVideoGenerationForm(
         Array.from({ length: total }, (_, runIndex) => runOne(runIndex)),
       );
       setAlbumPendingTotal(id, 0);
+      updateNodeData(id, CLEARED_GENERATION_TASK_FIELDS);
       // 整批结束后再决定错误反馈：
       //  - 一条都没成功 → 弹一次错误框（含真人素材被拦截的专用引导）；
       //  - 部分成功 → 不弹模态打断，仅用轻量 toast 告知少出了几条。
@@ -1380,9 +1384,8 @@ export function useVideoGenerationForm(
         const displayErrorMessage = backendErrorToastMessage(firstError, t);
         const haystack = `${displayErrorMessage}\n${resolved.details ?? ""}`;
         if (
-          haystack.includes(
-            "InputImageSensitiveContentDetected.PrivateInformation",
-          )
+          haystack.includes("InputImageSensitiveContentDetected.PrivateInformation")
+          || haystack.includes("InputImageSensitiveContentDetected.PrivacyInformation")
         ) {
           // 素材含真实人脸被拦截：引导用户开启「真人素材审核」后重试。
           void showErrorDialog(
@@ -1407,7 +1410,7 @@ export function useVideoGenerationForm(
       return completedUrls[0] ? { videoUrl: completedUrls[0] } : {};
     } catch (error) {
       console.error("[video-node] video gen failed", error);
-      updateNodeData(id, { isGenerating: false, generationStartedAt: null });
+      updateNodeData(id, CLEARED_GENERATION_TASK_FIELDS);
       setAlbumPendingTotal(id, 0);
     }
     } finally {

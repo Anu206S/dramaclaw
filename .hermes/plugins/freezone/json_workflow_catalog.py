@@ -1,9 +1,4 @@
-"""Build Freezone workflow plans from Freezone agent catalog JSON files.
-
-This module is intentionally independent from the legacy registered workflow
-builders.  It only returns the same ``freezone_workflow_plan.v1`` shape that
-``workflow_graph.py`` already knows how to turn into canvas commands.
-"""
+"""Resolve Workflow Skills and validate agent-authored dynamic workflow plans."""
 
 from __future__ import annotations
 
@@ -20,11 +15,6 @@ except Exception:  # pragma: no cover - Hermes can run before app imports are av
     list_user_agent_config_items = None
 
 try:
-    from novelvideo.freezone.agent_catalog_schema import validate_agent_config_item
-except Exception:  # pragma: no cover - Hermes can run before app imports are available.
-    validate_agent_config_item = None
-
-try:
     from novelvideo.freezone.workflow_plan import (
         ALLOWED_LINK_TYPES,
         ALLOWED_NODE_TYPES,
@@ -35,20 +25,16 @@ except Exception:  # pragma: no cover - Hermes can run before app imports are av
     ALLOWED_LINK_TYPES = set()
     ALLOWED_NODE_TYPES = set()
 
-CATALOG_PREFIX = "catalog."
 PLAN_SCHEMA_VERSION = "freezone_workflow_plan.v1"
+WORKFLOW_INTENT_SCHEMA_VERSION = "freezone_workflow_intent.v1"
 
 _ROOT = Path(__file__).resolve().parents[3]
 _CATALOG_ROOT = _ROOT / "src" / "novelvideo" / "freezone" / "agent_catalog" / "builtins"
 _SKILLS_DIR = _CATALOG_ROOT / "skills"
 _RECIPES_DIR = _CATALOG_ROOT / "recipes"
-
-_NODE_TYPE_BY_GENERATION = {
-    "text": "textAnnotationNode",
-    "image": "imageGenNode",
-    "video": "videoNode",
-    "audio": "audioNode",
-}
+_PLUGIN_CATALOG_ROOT = Path(__file__).resolve().parent / "catalog"
+_PLUGIN_SKILLS_DIR = _PLUGIN_CATALOG_ROOT / "skills"
+_PLUGIN_RECIPES_DIR = _PLUGIN_CATALOG_ROOT / "recipes"
 
 _NODE_TYPE_BY_STEP = {
     "textGeneration": "textAnnotationNode",
@@ -58,8 +44,17 @@ _NODE_TYPE_BY_STEP = {
     "videoCompose": "videoComposeNode",
 }
 
+_NODE_TYPE_BY_OUTPUT_KIND = {
+    "text": "textAnnotationNode",
+    "image": "imageGenNode",
+    "video": "videoNode",
+    "audio": "audioNode",
+}
+
 _STAGE_BY_NODE_TYPE = {
     "textAnnotationNode": "story",
+    "scriptNode": "story",
+    "beatContextNode": "beat",
     "imageGenNode": "image",
     "videoNode": "video",
     "audioNode": "audio",
@@ -81,6 +76,30 @@ _OUTPUT_KIND_BY_CAPABILITY = {
     "imageGeneration": "image",
     "videoGeneration": "video",
     "audioGeneration": "audio",
+}
+
+# These built-in prompt Recipes consume the user goal or upstream structured text.
+# Older catalog copies marked them as requiring binary media, which makes valid
+# text-first blueprints impossible to compile.
+_TEXT_FIRST_BUILTIN_RECIPE_IDS = {
+    "digital-product-text-plan",
+    "drama-character-extraction",
+    "drama-character-turnaround",
+    "drama-plot-outline",
+    "drama-prop-extraction",
+    "drama-prop-image",
+    "drama-scene-extraction",
+    "drama-scene-image",
+    "drama-shot-group-detail",
+    "drama-shot-planning",
+    "ecommerce-text-plan",
+    "keyframe-scene-script",
+    "social-copywriting",
+    "video-ad-brief",
+    "video-ad-creative-outline",
+    "video-creative-outline",
+    "video-storyboard-grid",
+    "video-storyboard-script",
 }
 
 _FALLBACK_WORKFLOW_SPECS: tuple[dict[str, Any], ...] = (
@@ -300,61 +319,6 @@ _FALLBACK_WORKFLOW_SPECS: tuple[dict[str, Any], ...] = (
 )
 
 
-def registered_catalog_workflows() -> list[dict[str, Any]]:
-    """Return assistant-visible workflow entries backed by JSON skills."""
-    workflows: list[dict[str, Any]] = []
-    for skill in _load_skills():
-        skill_id = _text(skill.get("id"))
-        if not skill_id or skill.get("_disabled") is True:
-            continue
-        templates = _templates(skill)
-        label = _catalog_label(skill)
-        workflows.append(
-            {
-                "workflow_type": _catalog_type(skill_id),
-                "label": f"{label}（配置）",
-                "description": _text(skill.get("description")),
-                "aliases": _catalog_aliases(skill, None),
-                "template_count": len(templates),
-                "source": "workflow_json",
-                "catalog_source": _catalog_source(skill),
-                "catalog_source_label": _catalog_source_label(skill),
-                "catalog_base_source": _text(skill.get("_catalog_base_source")),
-            }
-        )
-        for template in templates:
-            template_id = _text(template.get("id"))
-            if not template_id:
-                continue
-            workflows.append(
-                {
-                    "workflow_type": _catalog_type(skill_id, template_id),
-                    "label": f"{label} / {_template_label(template)}（配置）",
-                    "description": _text(template.get("description")),
-                    "aliases": _catalog_aliases(skill, template),
-                    "template_count": 1,
-                    "source": "workflow_json",
-                    "catalog_source": _catalog_source(skill),
-                    "catalog_source_label": _catalog_source_label(skill),
-                    "catalog_base_source": _text(skill.get("_catalog_base_source")),
-                }
-            )
-    return sorted(workflows, key=lambda item: str(item.get("workflow_type") or ""))
-
-
-def catalog_workflow_aliases() -> dict[str, str]:
-    aliases: dict[str, str] = {}
-    for workflow in registered_catalog_workflows():
-        workflow_type = _text(workflow.get("workflow_type"))
-        if not workflow_type:
-            continue
-        aliases[_alias_key(workflow_type)] = workflow_type
-        for alias in workflow.get("aliases") or []:
-            if isinstance(alias, str) and alias.strip():
-                aliases[_alias_key(alias)] = workflow_type
-    return aliases
-
-
 def _workflow_input_values(args: dict[str, Any]) -> dict[str, Any]:
     value = args.get("inputs")
     if isinstance(value, dict):
@@ -365,7 +329,9 @@ def _workflow_input_values(args: dict[str, Any]) -> dict[str, Any]:
 def _parameter_option_values(parameter: dict[str, Any]) -> list[str]:
     values: list[str] = []
     for option in parameter.get("options") or []:
-        value = _text(option.get("value")) if isinstance(option, dict) else _text(option)
+        value = (
+            _text(option.get("value")) if isinstance(option, dict) else _text(option)
+        )
         if value:
             values.append(value)
     return values
@@ -375,10 +341,127 @@ def _is_missing_parameter_value(value: Any) -> bool:
     return value is None or value == "" or value == []
 
 
-def _skill_input_contract(skill: dict[str, Any], args: dict[str, Any]) -> dict[str, Any]:
+def _allowed_inferred_option(parameter: dict[str, Any], value: str) -> str | None:
+    return value if value in _parameter_option_values(parameter) else None
+
+
+def _infer_parameter_value(parameter: dict[str, Any], user_goal: str) -> Any:
+    """Extract only unambiguous structured values from the user's own words."""
+    parameter_id = _text(parameter.get("id"))
+    goal = user_goal.strip()
+    lowered = goal.lower()
+    if not parameter_id or not goal:
+        return None
+
+    options = [
+        item for item in parameter.get("options") or [] if isinstance(item, dict)
+    ]
+    for option in options:
+        value = _text(option.get("value"))
+        label = _text(option.get("label"))
+        if label and label.lower() in lowered:
+            return value
+
+    if parameter_id in {"aspect_ratio", "aspectRatio"}:
+        ratio_match = re.search(r"(?<!\d)(\d{1,2}\s*:\s*\d{1,2})(?!\d)", goal)
+        if ratio_match:
+            ratio = re.sub(r"\s+", "", ratio_match.group(1))
+            return _allowed_inferred_option(parameter, ratio)
+        aliases = (
+            (("竖屏", "竖版", "vertical", "portrait"), "9:16"),
+            (("横屏", "横版", "landscape"), "16:9"),
+            (("方形", "正方形", "square"), "1:1"),
+            (("宽画幅", "超宽屏", "ultrawide"), "21:9"),
+        )
+        for keywords, value in aliases:
+            if any(keyword in lowered for keyword in keywords):
+                return _allowed_inferred_option(parameter, value)
+
+    if parameter_id == "execution_mode":
+        if any(
+            keyword in lowered
+            for keyword in (
+                "只创建",
+                "仅创建",
+                "不执行",
+                "不自动执行",
+                "不要执行",
+                "手动执行",
+            )
+        ):
+            return _allowed_inferred_option(parameter, "manual")
+        if any(
+            keyword in lowered
+            for keyword in ("自动执行", "自动运行", "直接执行", "直接生成")
+        ):
+            return _allowed_inferred_option(parameter, "auto")
+
+    if parameter_id == "voice_mode":
+        voice_aliases = (
+            (("无对白", "不要对白", "纯音乐"), "no_dialogue"),
+            (("旁白", "解说"), "voiceover"),
+            (("对白", "对话"), "dialogue"),
+        )
+        for keywords, value in voice_aliases:
+            if any(keyword in lowered for keyword in keywords):
+                return _allowed_inferred_option(parameter, value)
+
+    if parameter_id in {"duration", "duration_seconds"}:
+        duration_match = re.search(
+            r"(?<!\d)(\d{1,4})\s*(?:秒|s\b|sec(?:ond)?s?\b)", lowered
+        )
+        if duration_match:
+            seconds = int(duration_match.group(1))
+            exact = _allowed_inferred_option(parameter, str(seconds))
+            if exact is not None:
+                return exact
+            for option in options:
+                value = _text(option.get("value"))
+                range_match = re.fullmatch(r"(\d+)[_-](\d+)", value)
+                if range_match and int(range_match.group(1)) <= seconds <= int(
+                    range_match.group(2)
+                ):
+                    return value
+
+    if parameter_id in {
+        "count",
+        "item_count",
+        "image_count",
+        "shot_count",
+        "beat_count",
+    }:
+        count_match = re.search(
+            r"(?<!\d)(\d{1,2})\s*(?:张|幅|屏|个|段|条|镜头|镜)(?!\d)", goal
+        )
+        if count_match:
+            return int(count_match.group(1))
+
+    return None
+
+
+def _infer_workflow_inputs(
+    skill: dict[str, Any], args: dict[str, Any]
+) -> dict[str, Any]:
+    user_goal = _workflow_goal_text(args)
+    inferred: dict[str, Any] = {}
+    for parameter in skill.get("input_parameters") or []:
+        if not isinstance(parameter, dict):
+            continue
+        parameter_id = _text(parameter.get("id"))
+        value = _infer_parameter_value(parameter, user_goal)
+        if parameter_id and not _is_missing_parameter_value(value):
+            inferred[parameter_id] = value
+    return inferred
+
+
+def _skill_input_contract(
+    skill: dict[str, Any], args: dict[str, Any]
+) -> dict[str, Any]:
     raw_parameters = skill.get("input_parameters") or []
     parameters = [item for item in raw_parameters if isinstance(item, dict)]
     provided = _workflow_input_values(args)
+    inferred = _infer_workflow_inputs(skill, args)
+    effective = {**inferred, **provided}
     resolved: dict[str, Any] = {}
     missing_required: list[str] = []
     errors: list[dict[str, str]] = []
@@ -389,7 +472,12 @@ def _skill_input_contract(skill: dict[str, Any], args: dict[str, Any]) -> dict[s
         if not parameter_id:
             continue
         has_provided_value = parameter_id in provided
-        value = provided.get(parameter_id) if has_provided_value else deepcopy(parameter.get("default"))
+        has_inferred_value = parameter_id in inferred and not has_provided_value
+        value = (
+            effective.get(parameter_id)
+            if parameter_id in effective
+            else deepcopy(parameter.get("default"))
+        )
         required = bool(parameter.get("required"))
         parameter_type = _text(parameter.get("type")) or "text"
         option_values = _parameter_option_values(parameter)
@@ -398,9 +486,18 @@ def _skill_input_contract(skill: dict[str, Any], args: dict[str, Any]) -> dict[s
         elif not _is_missing_parameter_value(value):
             if parameter_type == "multi_select":
                 if not isinstance(value, list):
-                    errors.append({"path": f"inputs.{parameter_id}", "message": "must be an array"})
+                    errors.append(
+                        {
+                            "path": f"inputs.{parameter_id}",
+                            "message": "must be an array",
+                        }
+                    )
                 else:
-                    invalid = [str(item) for item in value if option_values and str(item) not in option_values]
+                    invalid = [
+                        str(item)
+                        for item in value
+                        if option_values and str(item) not in option_values
+                    ]
                     if invalid:
                         errors.append(
                             {
@@ -425,7 +522,11 @@ def _skill_input_contract(skill: dict[str, Any], args: dict[str, Any]) -> dict[s
                 "default": deepcopy(parameter.get("default")),
                 "options": deepcopy(parameter.get("options") or []),
                 "value": deepcopy(value),
-                "source": "user" if has_provided_value else "default",
+                "source": (
+                    "user"
+                    if has_provided_value
+                    else "inferred" if has_inferred_value else "default"
+                ),
             }
         )
 
@@ -434,6 +535,7 @@ def _skill_input_contract(skill: dict[str, Any], args: dict[str, Any]) -> dict[s
         "schema_version": "freezone_skill_inputs.v1",
         "fields": fields,
         "provided": provided,
+        "inferred": inferred,
         "resolved": resolved,
         "missing_required": missing_required,
         "errors": errors,
@@ -454,9 +556,6 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
             "status": "skill_id_required",
             "error": "skill_id is required",
         }
-    catalog_spec = _parse_catalog_type(skill_id)
-    if catalog_spec is not None:
-        skill_id = catalog_spec[0]
     skill = _load_skill(skill_id)
     if skill is None or skill.get("_disabled") is True:
         return {
@@ -487,23 +586,41 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
         for recipe in candidate_recipes
         if _recipe_matches_references(recipe, referenced_recipe_ids)
     ]
-    recipe_summaries = [_recipe_planning_summary(recipe) for recipe in candidate_recipes]
+    recipe_summaries = [
+        _recipe_planning_summary(recipe) for recipe in candidate_recipes
+    ]
+    recipes_by_output_kind: dict[str, list[str]] = {}
+    source_anchor_recipe_ids: dict[str, list[str]] = {}
+    for recipe in recipe_summaries:
+        output_kind = _text(recipe.get("output_kind"))
+        recipe_id = _text(recipe.get("id"))
+        if not output_kind or not recipe_id:
+            continue
+        recipes_by_output_kind.setdefault(output_kind, []).append(recipe_id)
+        if not recipe.get("requires_source_media"):
+            source_anchor_recipe_ids.setdefault(output_kind, []).append(recipe_id)
     input_contract = _skill_input_contract(skill, args)
     compact = bool(args.get("compact"))
+    planning_skill = _without_private_fields(skill)
+    if isinstance(planning_skill, dict):
+        planning_skill.pop("workflow_templates", None)
+        planning_skill.pop("templates", None)
     return {
         "ok": True,
         "schema_version": "freezone_workflow_skill_package.v1",
         "skill_id": _text(skill.get("id")),
         "user_goal": _workflow_goal_text(args),
         "source": _catalog_source(skill),
-        "skill": _without_private_fields(skill),
+        "skill": planning_skill,
         "recipes": [] if compact else full_recipes,
         "recipe_definitions_omitted": compact,
         "available_recipes": recipe_summaries,
         "capabilities": [
             {
                 "id": capability,
-                "output_kind": _OUTPUT_KIND_BY_CAPABILITY.get(capability, "composition"),
+                "output_kind": _OUTPUT_KIND_BY_CAPABILITY.get(
+                    capability, "composition"
+                ),
                 "node_type": next(
                     (
                         node_type
@@ -525,6 +642,9 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
         "planning_contract": {
             "schema_version": PLAN_SCHEMA_VERSION,
             "workflow_type_prefix": "dynamic.",
+            "mode": "dynamic_only",
+            "requires_agent_authored_topology": True,
+            "fixed_templates_enabled": False,
             "requires_explicit_skill_id": True,
             "requires_explicit_recipe_id": True,
             "strict_validation": True,
@@ -535,7 +655,14 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
                 "strategy": "generate_anchor_then_continue",
                 "anchor_recipe_requires_source_media": False,
                 "dependency_link_type": "media_input_for",
+                "source_anchor_recipe_ids": source_anchor_recipe_ids,
             },
+            "recipe_ids_by_output_kind": recipes_by_output_kind,
+            "recipe_selection_rule": (
+                "Recipe output_kind must match the node type. For a generated source-media "
+                "anchor, choose a same-output Recipe listed in source_anchor_recipe_ids; "
+                "never copy a downstream text Recipe onto an image anchor."
+            ),
         },
         "message": (
             "已加载完整 Workflow Skill 包，可直接规划 freezone_workflow_plan.v1。"
@@ -543,6 +670,712 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
             else "已加载 Workflow Skill，但必须先补全或修正 input_contract。"
         ),
     }
+
+
+def compile_workflow_intent(intent: Any) -> dict[str, Any]:
+    """Compile a compact Agent decision into a complete, validated dynamic plan."""
+    if not isinstance(intent, dict):
+        return _intent_error("intent must be an object", path="intent")
+    schema_version = _text(intent.get("schema_version"))
+    if schema_version and schema_version != WORKFLOW_INTENT_SCHEMA_VERSION:
+        return _intent_error(
+            f"schema_version must equal {WORKFLOW_INTENT_SCHEMA_VERSION}",
+            path="schema_version",
+        )
+    skill_id = _text(intent.get("skill_id") or intent.get("skillId"))
+    if not skill_id:
+        return _intent_error("skill_id is required", path="skill_id")
+    skill = _load_skill(skill_id)
+    if skill is None or skill.get("_disabled") is True:
+        return _intent_error(f"workflow skill not found: {skill_id}", path="skill_id")
+
+    user_goal = _workflow_goal_text(intent)
+    if not user_goal:
+        return _intent_error("user_goal is required", path="user_goal")
+    input_contract = _skill_input_contract(skill, intent)
+    if input_contract["errors"] or input_contract["missing_required"]:
+        errors = list(input_contract["errors"])
+        errors.extend(
+            {
+                "path": f"inputs.{parameter_id}",
+                "message": "required Skill input is missing",
+            }
+            for parameter_id in input_contract["missing_required"]
+        )
+        return {
+            "ok": False,
+            "status": "invalid_workflow_intent",
+            "error": errors[0]["message"],
+            "errors": errors,
+        }
+
+    template = _select_intent_template(skill, intent)
+    if template is None:
+        return _intent_error(
+            f"skill {skill_id} does not define a workflow blueprint",
+            path="skill_id",
+        )
+    recipes = _intent_recipe_index()
+    items = _intent_items(intent)
+    excluded_steps = {
+        _safe_id(_text(item))
+        for item in intent.get("exclude_steps", [])
+        if _text(item)
+    }
+    include_audio = _intent_bool(intent, "include_audio", True)
+    include_compose = _intent_bool(intent, "include_compose", True)
+    resolved_inputs = input_contract["resolved"]
+    title = _text(intent.get("title")) or _catalog_label(skill)
+    template_id = _text(template.get("id"))
+
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "workflow_input",
+            "node_type": "textAnnotationNode",
+            "name": "用户需求 / 输入素材",
+            "description": user_goal,
+            "stage": "input",
+            "data": {
+                "displayName": "用户需求 / 输入素材",
+                "title": "用户需求 / 输入素材",
+                "content": user_goal,
+                "prompt": user_goal,
+                "workflowCatalogRole": "user_input",
+            },
+        }
+    ]
+    node_types = {"workflow_input": "textAnnotationNode"}
+    node_recipes: dict[str, dict[str, Any] | None] = {"workflow_input": None}
+    edges: list[dict[str, str]] = []
+    expanded_steps: dict[str, list[str]] = {}
+    previous_step_ids: list[str] = []
+    step_counts: dict[str, int] = {}
+
+    raw_anchor = intent.get("source_anchor", intent.get("sourceAnchor"))
+    anchor_explicit = raw_anchor is not None and raw_anchor is not False
+    anchor_disabled = raw_anchor is False
+    anchor = _intent_source_anchor(intent, skill_id, user_goal, recipes)
+    if anchor is not None:
+        nodes.append(anchor)
+        node_types[anchor["id"]] = anchor["node_type"]
+        node_recipes[anchor["id"]] = recipes.get("general-image")
+
+    raw_steps = [step for step in template.get("steps") or [] if isinstance(step, dict)]
+    raw_steps.sort(
+        key=lambda item: (
+            _int(_get(item, "stepNumber", "step_number"), 999),
+            _text(item.get("id")),
+        )
+    )
+    for step in raw_steps:
+        step_id = _safe_id(_text(step.get("id")) or f"step_{len(previous_step_ids) + 1}")
+        if step_id in excluded_steps:
+            continue
+        node_type = _intent_step_node_type(step)
+        if node_type == "audioNode" and not include_audio:
+            continue
+        recipe = _intent_step_recipe(step, node_type, recipes)
+        if node_type != "videoComposeNode" and recipe is None:
+            return _intent_error(
+                f"no compatible Recipe found for step {step_id}",
+                path=f"steps.{step_id}",
+            )
+        count, step_items = _intent_step_instances(
+            step,
+            step_id=step_id,
+            intent=intent,
+            items=items,
+            expanded_steps=expanded_steps,
+            previous_step_ids=previous_step_ids,
+        )
+        instance_ids = (
+            [step_id]
+            if count == 1
+            else [f"{step_id}_{index + 1}" for index in range(count)]
+        )
+        expanded_steps[step_id] = instance_ids
+        step_counts[step_id] = count
+        for index, instance_id in enumerate(instance_ids):
+            item = step_items[index] if index < len(step_items) else {}
+            node = _intent_step_node(
+                skill=skill,
+                template=template,
+                step=step,
+                recipe=recipe,
+                node_type=node_type,
+                instance_id=instance_id,
+                instance_index=index,
+                instance_count=count,
+                item=item,
+                user_goal=user_goal,
+                resolved_inputs=resolved_inputs,
+            )
+            nodes.append(node)
+            node_types[instance_id] = node_type
+            node_recipes[instance_id] = recipe
+        source_step_ids = _intent_dependency_steps(step, previous_step_ids)
+        for source_step_id in source_step_ids:
+            source_ids = (
+                ["workflow_input"]
+                if source_step_id == "workflow_input"
+                else expanded_steps.get(source_step_id, [])
+            )
+            edges.extend(
+                _intent_dependency_edges(
+                    source_ids,
+                    instance_ids,
+                    node_types=node_types,
+                )
+            )
+        previous_step_ids.append(step_id)
+
+    unsatisfied_source_nodes = _intent_unsatisfied_source_nodes(
+        node_types=node_types,
+        node_recipes=node_recipes,
+        edges=edges,
+    )
+    if unsatisfied_source_nodes and anchor is None and not anchor_disabled:
+        anchor = _intent_source_anchor(
+            {"source_anchor": {}},
+            skill_id,
+            user_goal,
+            recipes,
+        )
+        if anchor is not None:
+            nodes.insert(1, anchor)
+            node_types[anchor["id"]] = anchor["node_type"]
+            node_recipes[anchor["id"]] = recipes.get("general-image")
+    if anchor is not None:
+        anchor_targets = (
+            [
+                _text(node.get("id"))
+                for node in nodes
+                if node.get("node_type") == "imageGenNode"
+                and _text(node.get("id")) != anchor["id"]
+            ]
+            if anchor_explicit
+            else unsatisfied_source_nodes
+        )
+        for node_id in anchor_targets:
+            edges.append(
+                {
+                    "source": anchor["id"],
+                    "target": node_id,
+                    "link_type": "media_input_for",
+                }
+            )
+
+    if include_compose:
+        compose_sources = [
+            node_id
+            for node_id, node_type in node_types.items()
+            if node_type in {"videoNode", "audioNode"}
+        ]
+        has_video_source = any(
+            node_types.get(source_id) == "videoNode" for source_id in compose_sources
+        )
+        if compose_sources and has_video_source:
+            compose_id = "final_compose"
+            nodes.append(
+                {
+                    "id": compose_id,
+                    "node_type": "videoComposeNode",
+                    "name": "成片合成",
+                    "description": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
+                    "stage": "compose",
+                    "data": {
+                        "displayName": "成片合成",
+                        "title": "成片合成",
+                        "content": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
+                        "prompt": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
+                        "workflowCatalog": {
+                            "skillId": skill_id,
+                            "templateId": template_id,
+                            "stepId": compose_id,
+                            "promptBuilder": {"userGoal": user_goal},
+                        },
+                    },
+                }
+            )
+            node_types[compose_id] = "videoComposeNode"
+            node_recipes[compose_id] = None
+            edges.extend(
+                {
+                    "source": source_id,
+                    "target": compose_id,
+                    "link_type": "composition_input_for",
+                }
+                for source_id in compose_sources
+            )
+
+    edges = _dedupe_intent_edges(edges)
+    plan = {
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "workflow_type": f"dynamic.{skill_id}",
+        "mode": "tool_compiled_dynamic",
+        "skill": {"id": skill_id, "version": skill.get("version")},
+        "summary": _text(intent.get("summary")) or user_goal,
+        "source_context": {
+            "user_goal": user_goal,
+            "canvas_context": [],
+            "input_assets": [],
+        },
+        "analysis": {"entities": [], "production_units": [], "risks": []},
+        "phases": [
+            _text(_get(step, "goalTemplate", "goal_template"))
+            for step in raw_steps
+            if _text(_get(step, "goalTemplate", "goal_template"))
+        ],
+        "assumptions": list(intent.get("assumptions") or []),
+        "missing_inputs": [],
+        "expansion_rules": {"step_counts": step_counts},
+        "inputs": resolved_inputs,
+        "nodes": nodes,
+        "edges": edges,
+        "layout": {
+            "direction": "left_to_right",
+            "groups": [
+                {
+                    "label": title,
+                    "node_ids": [_text(node.get("id")) for node in nodes],
+                }
+            ],
+        },
+        "execution_policy": {
+            "requires_user_confirmation": True,
+            "auto_create_nodes": False,
+            "auto_generate_content": False,
+            "handoff_tool": "freezone_create_workflow_from_intent",
+        },
+    }
+    validated = validate_agent_workflow_plan(plan)
+    if not validated.get("ok"):
+        return {
+            **validated,
+            "status": "compiled_workflow_plan_invalid",
+            "compiled_plan": plan,
+        }
+    return {
+        "ok": True,
+        "status": "workflow_intent_compiled",
+        "schema_version": WORKFLOW_INTENT_SCHEMA_VERSION,
+        "skill_id": skill_id,
+        "template_id": template_id,
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "step_counts": step_counts,
+        "plan": plan,
+    }
+
+
+def _intent_error(message: str, *, path: str) -> dict[str, Any]:
+    return {
+        "ok": False,
+        "status": "invalid_workflow_intent",
+        "error": message,
+        "errors": [{"path": path, "message": message}],
+    }
+
+
+def _intent_bool(intent: dict[str, Any], key: str, default: bool) -> bool:
+    value = intent.get(key)
+    if value is None:
+        return default
+    return value if isinstance(value, bool) else default
+
+
+def _select_intent_template(
+    skill: dict[str, Any], intent: dict[str, Any]
+) -> dict[str, Any] | None:
+    templates = _templates(skill)
+    requested = _text(intent.get("template_id") or intent.get("templateId"))
+    if requested:
+        normalized = _alias_key(requested)
+        return next(
+            (
+                template
+                for template in templates
+                if _alias_key(_text(template.get("id"))) == normalized
+            ),
+            None,
+        )
+    has_source_media = bool(intent.get("has_source_media") or intent.get("source_assets"))
+    if has_source_media:
+        for template in templates:
+            condition = template.get("condition")
+            if isinstance(condition, dict) and _get(
+                condition, "hasInputTypes", "has_input_types"
+            ):
+                return template
+    for template in templates:
+        condition = template.get("condition")
+        if isinstance(condition, dict) and _get(condition, "textOnly", "text_only"):
+            return template
+    return templates[0] if templates else None
+
+
+def _intent_recipe_index() -> dict[str, dict[str, Any]]:
+    result: dict[str, dict[str, Any]] = {}
+    for recipe in _load_agent_config_items("recipes", _RECIPES_DIR):
+        if recipe.get("enabled") is False:
+            continue
+        recipe_id = _text(recipe.get("id"))
+        if recipe_id:
+            result[recipe_id] = recipe
+        for field in ("actionKeys", "action_keys", "operationTypes", "operation_types"):
+            for action_key in recipe.get(field) or []:
+                if _text(action_key):
+                    result.setdefault(_text(action_key), recipe)
+    return result
+
+
+def _intent_items(intent: dict[str, Any]) -> list[dict[str, Any]]:
+    raw_items = intent.get("items") or intent.get("shots") or []
+    if not isinstance(raw_items, list):
+        return []
+    items: list[dict[str, Any]] = []
+    for raw_item in raw_items[:24]:
+        if isinstance(raw_item, str) and raw_item.strip():
+            items.append({"title": raw_item.strip(), "prompt": raw_item.strip()})
+        elif isinstance(raw_item, dict):
+            title = _text(raw_item.get("title") or raw_item.get("name"))
+            prompt = _text(
+                raw_item.get("prompt")
+                or raw_item.get("description")
+                or raw_item.get("goal")
+            )
+            narration = _text(
+                raw_item.get("narration")
+                or raw_item.get("voiceover")
+                or raw_item.get("dialogue")
+                or raw_item.get("speech_text")
+                or raw_item.get("speechText")
+            )
+            step_id = _text(raw_item.get("step_id") or raw_item.get("stepId"))
+            if title or prompt or narration:
+                items.append(
+                    {
+                        "title": title or prompt or narration,
+                        "prompt": prompt or title or narration,
+                        **({"narration": narration} if narration else {}),
+                        **({"step_id": _safe_id(step_id)} if step_id else {}),
+                    }
+                )
+    return items
+
+
+def _intent_source_anchor(
+    intent: dict[str, Any],
+    skill_id: str,
+    user_goal: str,
+    recipes: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    raw_anchor = (
+        intent.get("source_anchor")
+        if "source_anchor" in intent
+        else intent.get("sourceAnchor")
+    )
+    if raw_anchor is True:
+        raw_anchor = {}
+    if not isinstance(raw_anchor, dict) or raw_anchor.get("enabled") is False:
+        return None
+    recipe = recipes.get("general-image")
+    if recipe is None:
+        return None
+    title = _text(raw_anchor.get("title")) or "产品基准图"
+    prompt = _text(raw_anchor.get("prompt") or raw_anchor.get("description"))
+    prompt = prompt or f"根据用户需求生成清晰、完整、可复用的视觉基准图：{user_goal}"
+    return {
+        "id": "source_anchor",
+        "node_type": "imageGenNode",
+        "name": title,
+        "description": prompt,
+        "stage": "asset",
+        "data": {
+            "displayName": title,
+            "title": title,
+            "content": prompt,
+            "prompt": prompt,
+            "description": prompt,
+            "workflowCatalog": {
+                "skillId": skill_id,
+                "stepId": "source_anchor",
+                "recipeId": _text(recipe.get("id")),
+                "recipeVersion": recipe.get("version"),
+                "promptBuilder": {
+                    "userGoal": user_goal,
+                    "recipeId": _text(recipe.get("id")),
+                },
+            },
+        },
+    }
+
+
+def _intent_step_node_type(step: dict[str, Any]) -> str:
+    return _NODE_TYPE_BY_STEP.get(
+        _text(_get(step, "nodeType", "node_type")),
+        "textAnnotationNode",
+    )
+
+
+def _intent_step_recipe(
+    step: dict[str, Any],
+    node_type: str,
+    recipes: dict[str, dict[str, Any]],
+) -> dict[str, Any] | None:
+    reference = _text(
+        _get(step, "recipeId", "recipe_id")
+        or _get(step, "operationType", "operation_type", "actionKey", "action_key")
+    )
+    recipe = recipes.get(reference) if reference else None
+    capability = _CAPABILITY_BY_NODE_TYPE.get(node_type, "")
+    output_kind = _OUTPUT_KIND_BY_CAPABILITY.get(capability, "")
+    recipe_output_kind = _text(
+        recipe.get("output_kind")
+        or recipe.get("generationType")
+        or recipe.get("generation_type")
+    ) if recipe else ""
+    if recipe is None or (output_kind and recipe_output_kind != output_kind):
+        recipe = recipes.get(f"general-{output_kind}") if output_kind else None
+    return recipe
+
+
+def _intent_unsatisfied_source_nodes(
+    *,
+    node_types: dict[str, str],
+    node_recipes: dict[str, dict[str, Any] | None],
+    edges: list[dict[str, str]],
+) -> list[str]:
+    satisfied = {
+        edge["target"]
+        for edge in edges
+        if edge.get("link_type") in {"media_input_for", "derived_from"}
+        and node_types.get(edge.get("source", ""))
+        in {"imageGenNode", "videoNode", "audioNode"}
+    }
+    return [
+        node_id
+        for node_id, recipe in node_recipes.items()
+        if recipe
+        and bool(recipe.get("requires_source_media") or recipe.get("requiresSourceMedia"))
+        and node_id not in satisfied
+    ]
+
+
+def _intent_step_instances(
+    step: dict[str, Any],
+    *,
+    step_id: str,
+    intent: dict[str, Any],
+    items: list[dict[str, Any]],
+    expanded_steps: dict[str, list[str]],
+    previous_step_ids: list[str],
+) -> tuple[int, list[dict[str, Any]]]:
+    explicit_items = [item for item in items if item.get("step_id") == step_id]
+    generic_items = [item for item in items if not item.get("step_id")]
+    multiplicity = step.get("multiplicity", "single")
+    if multiplicity is None or multiplicity == "single":
+        return 1, explicit_items[:1]
+    step_items = explicit_items or generic_items
+    if multiplicity == "per_plan_item":
+        return max(1, len(step_items)), step_items
+    if multiplicity == "per_input":
+        sources = _intent_dependency_steps(step, previous_step_ids)
+        count = sum(len(expanded_steps.get(source, [])) for source in sources)
+        return max(1, count), step_items
+    if not isinstance(multiplicity, dict):
+        return 1, step_items[:1]
+    default_count = max(1, _int(_get(multiplicity, "defaultCount", "default_count"), 1))
+    step_counts = intent.get("step_counts") if isinstance(intent.get("step_counts"), dict) else {}
+    requested = _int(step_counts.get(step_id), 0)
+    if not requested:
+        requested = len(step_items)
+    if not requested:
+        requested = _intent_requested_count(intent)
+    if not requested and _get(multiplicity, "userOverridable", "user_overridable"):
+        sources = _intent_dependency_steps(step, previous_step_ids)
+        if len(sources) == 1:
+            requested = len(expanded_steps.get(sources[0], []))
+    count = requested or default_count
+    minimum = max(1, _int(multiplicity.get("min"), 1))
+    maximum = max(minimum, _int(multiplicity.get("max"), count))
+    return max(minimum, min(maximum, count)), step_items
+
+
+def _intent_requested_count(intent: dict[str, Any]) -> int:
+    inputs = intent.get("inputs") if isinstance(intent.get("inputs"), dict) else {}
+    for source in (intent, inputs):
+        for key in ("count", "shot_count", "image_count", "beat_count", "item_count"):
+            value = _int(source.get(key), 0)
+            if value > 0:
+                return value
+    return 0
+
+
+def _intent_dependency_steps(
+    step: dict[str, Any], previous_step_ids: list[str]
+) -> list[str]:
+    strategy = _get(step, "inputStrategy", "input_strategy")
+    if not isinstance(strategy, dict):
+        return previous_step_ids[-1:] or ["workflow_input"]
+    step_id = _text(_get(strategy, "stepId", "step_id"))
+    if step_id:
+        return [_safe_id(step_id)]
+    step_ids = _get(strategy, "stepIds", "step_ids")
+    if isinstance(step_ids, list):
+        normalized = [_safe_id(_text(item)) for item in step_ids if _text(item)]
+        if normalized:
+            return normalized
+    strategy_type = _text(strategy.get("type"))
+    if strategy_type == "none":
+        return []
+    if strategy_type == "user_assets":
+        return ["workflow_input"]
+    if strategy_type in {"previous_steps", "previous_steps_and_user_assets"}:
+        return previous_step_ids or ["workflow_input"]
+    return previous_step_ids[-1:] or ["workflow_input"]
+
+
+def _intent_dependency_edges(
+    source_ids: list[str],
+    target_ids: list[str],
+    *,
+    node_types: dict[str, str],
+) -> list[dict[str, str]]:
+    pairs = (
+        list(zip(source_ids, target_ids, strict=True))
+        if len(source_ids) == len(target_ids) and len(source_ids) > 1
+        else [(source_id, target_id) for source_id in source_ids for target_id in target_ids]
+    )
+    return [
+        {
+            "source": source_id,
+            "target": target_id,
+            "link_type": _intent_link_type(
+                node_types.get(source_id, ""),
+                node_types.get(target_id, ""),
+            ),
+        }
+        for source_id, target_id in pairs
+    ]
+
+
+def _intent_link_type(source_type: str, target_type: str) -> str:
+    if target_type == "videoComposeNode":
+        return "composition_input_for"
+    if source_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
+        if target_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
+            return "context_for"
+        return "prompt_for"
+    if source_type in {"imageGenNode", "videoNode", "audioNode"}:
+        return "media_input_for"
+    return "context_for"
+
+
+def _intent_step_node(
+    *,
+    skill: dict[str, Any],
+    template: dict[str, Any],
+    step: dict[str, Any],
+    recipe: dict[str, Any] | None,
+    node_type: str,
+    instance_id: str,
+    instance_index: int,
+    instance_count: int,
+    item: dict[str, Any],
+    user_goal: str,
+    resolved_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    base_label = _text(_get(step, "goalTemplate", "goal_template")) or _text(step.get("id"))
+    base_label = base_label.replace("{count}", str(instance_count))
+    model = _text(step.get("model"))
+    item_title = _text(item.get("title"))
+    if instance_count > 1:
+        kind = {"imageGenNode": "高清分镜", "videoNode": "视频"}.get(node_type, "节点")
+        label = f"Shot {instance_index + 1} {kind}"
+        if item_title:
+            label = f"{label} · {item_title}"
+    else:
+        label = item_title or base_label
+    label = label[:64]
+    item_prompt = _text(item.get("prompt"))
+    if node_type == "audioNode" and model in {
+        "edge-tts",
+        "LingShan-TTS-2",
+        "qwen3-tts-flash",
+    }:
+        item_prompt = _text(item.get("narration")) or item_prompt
+    prompt = item_prompt or base_label
+    timeline_role = _text(_get(step, "timelineRole", "timeline_role"))
+    data: dict[str, Any] = {
+        "displayName": label,
+        "title": label,
+        "content": prompt,
+        "prompt": prompt,
+        "description": prompt,
+        "workflowCatalog": {
+            "skillId": _text(skill.get("id")),
+            "templateId": _text(template.get("id")),
+            "stepId": _safe_id(_text(step.get("id"))),
+            "stepInstance": instance_index + 1,
+            "stepInstanceCount": instance_count,
+            **({"timelineRole": timeline_role} if timeline_role else {}),
+            "operationType": _text(
+                _get(step, "operationType", "operation_type", "actionKey", "action_key")
+            ),
+            "recipeId": _text(recipe.get("id") if recipe else ""),
+            "recipeVersion": recipe.get("version") if recipe else None,
+            "promptStrategy": _text(_get(step, "promptStrategy", "prompt_strategy")),
+            "inputStrategy": _get(step, "inputStrategy", "input_strategy") or {},
+            "promptBuilder": {
+                "userGoal": user_goal,
+                "goalTemplate": base_label,
+                "recipeId": _text(recipe.get("id") if recipe else ""),
+                **({"planItem": item} if item else {}),
+            },
+        },
+    }
+    if model:
+        data["model"] = model
+    aspect_ratio = _text(resolved_inputs.get("aspect_ratio")) or _text(
+        _get(step, "aspectRatio", "aspect_ratio")
+    )
+    if aspect_ratio and node_type in {"imageGenNode", "videoNode"}:
+        data["aspectRatio"] = aspect_ratio
+    if node_type == "audioNode":
+        data["text"] = prompt
+        if model == "suno_music":
+            data["audioKind"] = "music"
+            data["makeInstrumental"] = True
+            data["sunoGptDescriptionPrompt"] = prompt
+        elif model in {"edge-tts", "LingShan-TTS-2", "qwen3-tts-flash"}:
+            data["audioKind"] = "speech"
+            data["speechMode"] = "preset"
+            data["presetModel"] = (
+                "edge-tts" if model in {"LingShan-TTS-2", "qwen3-tts-flash"} else model
+            )
+            data["presetVoice"] = "Serena"
+            data["voice"] = "Serena"
+            data["languageType"] = "Chinese"
+    return {
+        "id": instance_id,
+        "node_type": node_type,
+        "name": label,
+        "description": prompt,
+        "stage": _STAGE_BY_NODE_TYPE.get(node_type, "story"),
+        "data": data,
+    }
+
+
+def _dedupe_intent_edges(edges: list[dict[str, str]]) -> list[dict[str, str]]:
+    result: list[dict[str, str]] = []
+    seen: set[tuple[str, str, str]] = set()
+    for edge in edges:
+        key = (edge["source"], edge["target"], edge["link_type"])
+        if key not in seen:
+            result.append(edge)
+            seen.add(key)
+    return result
 
 
 def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
@@ -578,9 +1411,13 @@ def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
         if capability in allowed_capabilities
     }
     allowed_node_types.add("textAnnotationNode")
+    if "videoNode" in allowed_node_types:
+        allowed_node_types.add("videoComposeNode")
     allowed_recipe_ids = {
         _text(recipe.get("id"))
-        for recipe in _workflow_skill_recipe_candidates(skills[skill_id], list(recipes.values()))
+        for recipe in _workflow_skill_recipe_candidates(
+            skills[skill_id], list(recipes.values())
+        )
     }
     errors: list[dict[str, str]] = []
     plan_inputs = plan.get("inputs", {})
@@ -615,7 +1452,10 @@ def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
             "audioNode",
             "scriptNode",
             "beatContextNode",
-        } or (node_type == "textAnnotationNode" and stage not in {"input", "resource", "asset"})
+        } or (
+            node_type == "textAnnotationNode"
+            and stage not in {"input", "resource", "asset"}
+        )
         if requires_recipe and not recipe_id:
             errors.append(
                 {
@@ -639,919 +1479,10 @@ def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
         }
     validated["resolved_inputs"] = input_contract["resolved"]
     validated["execution_mode"] = input_contract["execution_mode"]
-    validated["recommended_run_after_create"] = input_contract["recommended_run_after_create"]
+    validated["recommended_run_after_create"] = input_contract[
+        "recommended_run_after_create"
+    ]
     return validated
-
-
-def build_catalog_workflow_plan(args: dict[str, Any]) -> dict[str, Any] | None:
-    """Return a plan for ``catalog.*`` workflow types, or ``None`` if not applicable."""
-    workflow_type = _requested_workflow_type(args)
-    if not workflow_type:
-        return None
-    spec = _parse_catalog_type(workflow_type)
-    if spec is None:
-        return None
-    skill_id, template_id = spec
-    skill = _load_skill(skill_id)
-    if skill is None:
-        return _error(f"catalog skill not found: {skill_id}")
-    template = _choose_template(skill, template_id, args)
-    if template is None:
-        return _error(f"catalog template not found for skill: {skill_id}")
-    recipes = _recipe_index()
-    return _build_plan(skill=skill, template=template, recipes=recipes, args=args)
-
-
-def resolve_catalog_workflow(args: dict[str, Any]) -> dict[str, Any]:
-    """Resolve a user request to JSON-backed workflow skill/template candidates.
-
-    This is intentionally deterministic.  The assistant can call it as the
-    first read-only step, show the top candidate to the user, then call
-    ``freezone_build_workflow_plan`` or ``freezone_create_workflow_graph`` only
-    after confirmation.
-    """
-    user_goal = _workflow_goal_text(args)
-    limit = _int(args.get("limit"), 5)
-    if limit < 1:
-        limit = 5
-    exact = _exact_catalog_workflow_candidate(args, user_goal)
-    if exact is not None:
-        return {
-            "ok": True,
-            "resolver": "workflow_json_catalog.v1",
-            "user_goal": user_goal,
-            "matched": True,
-            "ambiguous": False,
-            "matched_skill_count": 1,
-            "recommended": exact,
-            "candidates": [exact],
-            "next_step": {
-                "requires_user_confirmation": True,
-                "message": "已精确命中 JSON workflow skill/template；请确认后继续生成工作流计划。",
-                "tool": "freezone_build_workflow_plan",
-                "arguments": {
-                    "workflow_type": exact.get("workflow_type"),
-                    "user_goal": user_goal,
-                },
-            },
-        }
-
-    skills = _load_skills()
-    candidates: list[dict[str, Any]] = []
-    for skill in skills:
-        if skill.get("_disabled") is True:
-            continue
-        skill_id = _text(skill.get("id"))
-        if not skill_id:
-            continue
-        skill_score, skill_reasons = _skill_score(skill, user_goal)
-        templates = _templates(skill) or [{}]
-        for template in templates:
-            template_id = _text(template.get("id"))
-            template_score, template_reasons = _template_resolution_score(template, user_goal)
-            score = skill_score + template_score
-            if not user_goal:
-                score = 0.0
-            workflow_type = _catalog_type(skill_id, template_id or None)
-            candidates.append(
-                {
-                    "workflow_type": workflow_type,
-                    "skill_id": skill_id,
-                    "skill_name": _catalog_label(skill),
-                    "template_id": template_id,
-                    "template_name": _template_label(template) if template else "",
-                    "score": round(score, 3),
-                    "reasons": skill_reasons + template_reasons,
-                    "description": _text(template.get("description"))
-                    or _text(skill.get("description")),
-                    "step_count": len(template.get("steps") or []) if template else 0,
-                    "source": "workflow_json",
-                    "catalog_source": _catalog_source(skill),
-                    "catalog_source_label": _catalog_source_label(skill),
-                }
-            )
-    candidates.sort(
-        key=lambda item: (
-            -float(item.get("score") or 0),
-            str(item.get("workflow_type") or ""),
-        )
-    )
-    scored_user_candidates = [
-        candidate
-        for candidate in candidates
-        if float(candidate.get("score") or 0) > 0
-        and _text(candidate.get("catalog_source")) != "builtin"
-    ]
-    resolution_candidates = scored_user_candidates or candidates
-    top_candidates = resolution_candidates[:limit]
-    top = top_candidates[0] if top_candidates else None
-    second_score = float(top_candidates[1].get("score") or 0) if len(top_candidates) > 1 else 0.0
-    top_score = float(top.get("score") or 0) if top else 0.0
-    matched = bool(top and top_score > 0)
-    matched_skill_ids = {
-        _text(candidate.get("skill_id"))
-        for candidate in top_candidates
-        if float(candidate.get("score") or 0) > 0 and _text(candidate.get("skill_id"))
-    }
-    ambiguous = bool(
-        matched
-        and (
-            len(matched_skill_ids) > 1
-            or (second_score > 0 and top_score - second_score < 1.0)
-        )
-    )
-    next_step = {
-        "requires_user_confirmation": False,
-        "message": "没有命中 JSON workflow skill；请询问用户补充目标或手动选择 workflow。",
-    }
-    if matched and top:
-        if ambiguous:
-            next_step = {
-                "requires_user_selection": True,
-                "message": "命中多个 JSON workflow skill/template；请让用户从 candidates 中选择一个 workflow_type 后再继续。",
-                "candidate_workflow_types": [
-                    _text(candidate.get("workflow_type"))
-                    for candidate in top_candidates
-                    if float(candidate.get("score") or 0) > 0
-                ],
-            }
-        else:
-            next_step = {
-                "requires_user_confirmation": True,
-                "message": "请先向用户确认命中的 skill/template，再继续生成工作流计划。",
-                "tool": "freezone_build_workflow_plan",
-                "arguments": {
-                    "workflow_type": top.get("workflow_type"),
-                    "user_goal": user_goal,
-                },
-            }
-    return {
-        "ok": True,
-        "resolver": "workflow_json_catalog.v1",
-        "user_goal": user_goal,
-        "matched": matched,
-        "ambiguous": ambiguous,
-        "matched_skill_count": len(matched_skill_ids),
-        "recommended": top if matched else None,
-        "candidates": top_candidates,
-        "next_step": next_step,
-    }
-
-
-def _exact_catalog_workflow_candidate(args: dict[str, Any], user_goal: str) -> dict[str, Any] | None:
-    requested_type = _text(args.get("workflow_type") or args.get("workflowType") or args.get("type"))
-    normalized_request = _alias_key(requested_type or user_goal)
-    if not normalized_request:
-        return None
-    aliases = catalog_workflow_aliases()
-    workflow_type = aliases.get(normalized_request)
-    if workflow_type is None and normalized_request.startswith(CATALOG_PREFIX):
-        workflow_type = normalized_request
-    if workflow_type is None:
-        return None
-    for workflow in registered_catalog_workflows():
-        if _alias_key(workflow.get("workflow_type")) != _alias_key(workflow_type):
-            continue
-        parsed = _parse_catalog_type(_text(workflow.get("workflow_type")))
-        skill_id = parsed[0] if parsed else ""
-        template_id = parsed[1] if parsed else ""
-        return {
-            "workflow_type": workflow.get("workflow_type"),
-            "skill_id": skill_id,
-            "skill_name": str(workflow.get("label") or "").replace("（配置）", "").split(" / ")[0],
-            "template_id": template_id or "",
-            "template_name": str(workflow.get("label") or "").replace("（配置）", ""),
-            "score": 99.0,
-            "reasons": [f"精确匹配 workflow_type/alias：{requested_type or user_goal}"],
-            "description": workflow.get("description") or "",
-            "step_count": 0,
-            "source": "workflow_json",
-            "catalog_source": workflow.get("catalog_source") or "",
-            "catalog_source_label": workflow.get("catalog_source_label") or "",
-        }
-    return None
-
-
-def _workflow_plan_items(args: dict[str, Any]) -> list[dict[str, Any]]:
-    raw = args.get("items") or args.get("plan_items") or args.get("planItems") or []
-    if not isinstance(raw, list):
-        return []
-    return [item for item in raw if isinstance(item, dict)]
-
-
-def _items_for_step(items: list[dict[str, Any]], step_id: str) -> list[dict[str, Any]]:
-    explicit = [
-        item
-        for item in items
-        if _safe_id(_text(_get(item, "stepId", "step_id"))) == step_id
-    ]
-    if explicit:
-        return explicit
-    return [item for item in items if not _text(_get(item, "stepId", "step_id"))]
-
-
-def _requested_output_count(args: dict[str, Any], user_goal: str) -> int | None:
-    inputs = args.get("inputs") if isinstance(args.get("inputs"), dict) else {}
-    for source in (args, inputs):
-        for key in (
-            "count",
-            "item_count",
-            "itemCount",
-            "image_count",
-            "imageCount",
-            "shot_count",
-            "shotCount",
-            "beat_count",
-            "beatCount",
-        ):
-            value = source.get(key)
-            if isinstance(value, bool):
-                continue
-            if isinstance(value, (int, float)) and int(value) > 0:
-                return int(value)
-            if isinstance(value, str) and value.strip().isdigit() and int(value.strip()) > 0:
-                return int(value.strip())
-    match = re.search(r"(?<!\d)(\d{1,2})\s*(?:张|幅|屏|个|段|条|镜头|镜)(?!\d)", user_goal)
-    return int(match.group(1)) if match else None
-
-
-def _step_instance_count(
-    *,
-    step: dict[str, Any],
-    step_id: str,
-    args: dict[str, Any],
-    user_goal: str,
-    items: list[dict[str, Any]],
-    expanded_step_ids: dict[str, list[str]],
-    previous_step_ids: list[str],
-) -> tuple[int, list[dict[str, Any]]]:
-    multiplicity = step.get("multiplicity", "single")
-    if multiplicity == "single" or multiplicity is None:
-        explicit_items = [
-            item
-            for item in items
-            if _safe_id(_text(_get(item, "stepId", "step_id"))) == step_id
-        ]
-        return 1, explicit_items[:1]
-    step_items = _items_for_step(items, step_id)
-    if multiplicity == "per_plan_item":
-        return max(1, len(step_items) or (_requested_output_count(args, user_goal) or 1)), step_items
-    if multiplicity == "per_input":
-        sources = _dependency_sources(step, previous_step_ids)
-        count = sum(len(expanded_step_ids.get(source, [])) for source in sources)
-        return max(1, count), step_items
-    if not isinstance(multiplicity, dict):
-        return 1, step_items[:1]
-
-    default_count = max(1, _int(_get(multiplicity, "defaultCount", "default_count"), 1))
-    count = len(step_items) or default_count
-    if bool(_get(multiplicity, "userOverridable", "user_overridable")):
-        inherited_count = 0
-        sources = _dependency_sources(step, previous_step_ids)
-        if len(sources) == 1:
-            inherited_count = len(expanded_step_ids.get(sources[0], []))
-        count = len(step_items) or (
-            _requested_output_count(args, user_goal) or inherited_count or default_count
-        )
-    minimum = max(1, _int(multiplicity.get("min"), 1))
-    maximum = max(minimum, _int(multiplicity.get("max"), max(minimum, count)))
-    return max(minimum, min(maximum, count)), step_items
-
-
-def _instance_dependencies(
-    *,
-    source_ids: list[str],
-    target_ids: list[str],
-) -> list[dict[str, str]]:
-    if len(source_ids) == len(target_ids) and len(source_ids) > 1:
-        return [
-            {"source": source_id, "target": target_id}
-            for source_id, target_id in zip(source_ids, target_ids, strict=True)
-        ]
-    return [
-        {"source": source_id, "target": target_id}
-        for source_id in source_ids
-        for target_id in target_ids
-    ]
-
-
-def _build_plan(
-    *,
-    skill: dict[str, Any],
-    template: dict[str, Any],
-    recipes: dict[str, dict[str, Any]],
-    args: dict[str, Any],
-) -> dict[str, Any]:
-    skill_id = _text(skill.get("id"))
-    template_id = _text(template.get("id"))
-    user_goal = _workflow_goal_text(args) or _template_label(template)
-    title = _text(args.get("title") or args.get("name")) or _catalog_label(skill)
-    group_label = f"{title} / {_template_label(template)}"
-
-    raw_steps = [step for step in template.get("steps") or [] if isinstance(step, dict)]
-    raw_steps.sort(
-        key=lambda item: (_int(_get(item, "stepNumber", "step_number"), 999), _text(item.get("id")))
-    )
-    plan_items = _workflow_plan_items(args)
-
-    nodes: list[dict[str, Any]] = [
-        {
-            "id": "catalog_user_input",
-            "node_type": "textAnnotationNode",
-            "label": "用户需求 / 输入素材",
-            "description": user_goal,
-            "stage": "input",
-            "data": {
-                "displayName": "用户需求 / 输入素材",
-                "title": "用户需求 / 输入素材",
-                "content": user_goal,
-                "prompt": user_goal,
-                "workflowCatalogRole": "user_input",
-            },
-        }
-    ]
-    edges: list[dict[str, str]] = []
-    step_ids: list[str] = []
-    expanded_step_ids: dict[str, list[str]] = {}
-    expanded_counts: dict[str, int] = {}
-
-    for step in raw_steps:
-        step_id = _safe_id(_text(step.get("id")) or f"step_{len(step_ids) + 1}")
-        count, step_items = _step_instance_count(
-            step=step,
-            step_id=step_id,
-            args=args,
-            user_goal=user_goal,
-            items=plan_items,
-            expanded_step_ids=expanded_step_ids,
-            previous_step_ids=step_ids,
-        )
-        instance_ids = [step_id] if count == 1 else [f"{step_id}_{index + 1}" for index in range(count)]
-        expanded_step_ids[step_id] = instance_ids
-        expanded_counts[step_id] = count
-        operation_type = _text(
-            _get(step, "recipeId", "recipe_id")
-            or _get(step, "operationType", "operation_type", "actionKey", "action_key")
-        )
-        recipe = recipes.get(operation_type) if operation_type else None
-        node_type = _node_type_for_step(step, recipe)
-        placeholder = _compose_node_placeholder(
-            skill=skill,
-            template=template,
-            step=step,
-            recipe=recipe,
-            node_type=node_type,
-        )
-        executable_prompt = _compose_executable_prompt(
-            step=step,
-            recipe=recipe,
-            node_type=node_type,
-            user_goal=user_goal,
-        )
-        recipe_settings = _recipe_settings(recipe)
-        prompt_builder = _prompt_builder(
-            step=step,
-            recipe=recipe,
-            user_goal=user_goal,
-        )
-        base_label = _text(_get(step, "goalTemplate", "goal_template")) or _text(
-            recipe.get("name") if recipe else ""
-        )
-        base_label = base_label.replace("{count}", str(count))
-        base_label = base_label or operation_type or step_id
-        for index, instance_id in enumerate(instance_ids):
-            item = step_items[index] if index < len(step_items) else {}
-            item_title = _text(item.get("title") or item.get("label") or item.get("name"))
-            label = item_title or (f"{base_label} {index + 1}" if count > 1 else base_label)
-            if len(label) > 48:
-                label = label[:45] + "..."
-            item_prompt = _text(item.get("prompt") or item.get("description") or item.get("goal"))
-            final_prompt = _join_prompt_parts([executable_prompt, item_prompt])
-            data = {
-                "displayName": label,
-                "title": label,
-                "content": item_prompt or placeholder,
-                "prompt": item_prompt or placeholder,
-                "description": item_prompt or placeholder,
-                "workflowCatalog": {
-                    "skillId": skill_id,
-                    "templateId": template_id,
-                    "stepId": step_id,
-                    "stepInstance": index + 1,
-                    "stepInstanceCount": count,
-                    "operationType": operation_type,
-                    "recipeId": _text(recipe.get("id") if recipe else ""),
-                    "recipeVersion": _text(recipe.get("version") if recipe else ""),
-                    "promptStrategy": _text(_get(step, "promptStrategy", "prompt_strategy")),
-                    "inputStrategy": _get(step, "inputStrategy", "input_strategy") or {},
-                    "model": _text(step.get("model")),
-                    "needReview": bool(step.get("needReview")),
-                    "recipeSettings": recipe_settings,
-                    "promptBuilder": prompt_builder,
-                },
-            }
-            if item:
-                data["workflowCatalog"]["planItem"] = {
-                    key: value
-                    for key, value in item.items()
-                    if key not in {"step_id", "stepId"}
-                }
-            model = _text(step.get("model"))
-            if model:
-                data["model"] = model
-            aspect_ratio = _text(_get(step, "aspectRatio", "aspect_ratio"))
-            if aspect_ratio:
-                data["aspectRatio"] = aspect_ratio
-            if final_prompt:
-                if node_type == "audioNode":
-                    data["text"] = final_prompt
-                else:
-                    data["prompt"] = final_prompt
-            if node_type == "audioNode":
-                data.setdefault("text", item_prompt or placeholder)
-            nodes.append(
-                {
-                    "id": instance_id,
-                    "node_type": node_type,
-                    "label": label,
-                    "description": item_prompt or placeholder,
-                    "stage": _stage_for_step(step, node_type),
-                    "data": data,
-                }
-            )
-        for source in _dependency_sources(step, step_ids):
-            source_ids = [source] if source == "catalog_user_input" else expanded_step_ids.get(source, [])
-            edges.extend(_instance_dependencies(source_ids=source_ids, target_ids=instance_ids))
-        step_ids.append(step_id)
-
-    if len(nodes) > 1:
-        groups = [{"label": group_label, "node_ids": [node["id"] for node in nodes]}]
-    else:
-        groups = []
-    return {
-        "ok": True,
-        "schema_version": PLAN_SCHEMA_VERSION,
-        "workflow_type": _catalog_type(skill_id, template_id),
-        "mode": "analysis_only",
-        "summary": _text(template.get("description")) or _text(skill.get("description")),
-        "source_context": {"user_goal": user_goal, "canvas_context": [], "input_assets": []},
-        "analysis": {"entities": [], "production_units": [], "risks": []},
-        "phases": [group_label],
-        "assumptions": [
-            "该工作流由 Freezone 内置与当前用户 agent_config 的 skills/recipes JSON 生成。",
-            "节点创建后仍需用户确认运行；创建节点不会自动生成图片、视频或音频。",
-        ],
-        "missing_inputs": [],
-        "expansion_rules": {"step_counts": expanded_counts},
-        "inputs": args.get("inputs") if isinstance(args.get("inputs"), dict) else {},
-        "nodes": nodes,
-        "edges": edges,
-        "layout": {"direction": "left_to_right", "groups": groups},
-        "execution_policy": {
-            "requires_user_confirmation": True,
-            "auto_create_nodes": False,
-            "auto_generate_content": False,
-            "handoff_tool": "freezone_create_workflow_graph",
-        },
-    }
-
-
-def _compose_node_placeholder(
-    *,
-    skill: dict[str, Any],
-    template: dict[str, Any],
-    step: dict[str, Any],
-    recipe: dict[str, Any] | None,
-    node_type: str,
-) -> str:
-    goal = _text(_get(step, "goalTemplate", "goal_template")) or _text(step.get("id"))
-    recipe_name = _text(recipe.get("name") if recipe else "")
-    operation_type = _text(
-        _get(step, "operationType", "operation_type", "actionKey", "action_key")
-    )
-    target = goal or recipe_name or operation_type or "当前节点"
-    if node_type == "videoComposeNode":
-        return (
-            f"待合成：{target}\n"
-            "打开视频合成时间线后，将上游视频片段和音频轨道按顺序组合为最终视频。"
-        ).strip()
-    output_kind = (
-        _text(_get(recipe, "output_kind", "generationType", "generation_type"))
-        if recipe
-        else ""
-    )
-    if output_kind == "image":
-        action = "生成图片"
-    elif output_kind == "video":
-        action = "生成视频"
-    elif output_kind == "audio":
-        action = "生成音频"
-    else:
-        action = "生成内容"
-    return (
-        f"待{action}：{target}\n"
-        "运行节点时会根据 workflowCatalog.promptBuilder 中的 recipe 引用、用户目标和上游节点内容生成最终提示词。"
-    ).strip()
-
-
-def _compose_executable_prompt(
-    *,
-    step: dict[str, Any],
-    recipe: dict[str, Any] | None,
-    node_type: str,
-    user_goal: str,
-) -> str:
-    goal = _text(_get(step, "goalTemplate", "goal_template")) or _text(step.get("id"))
-    recipe_name = _text(recipe.get("name") if recipe else "")
-    target = goal or recipe_name
-    media_goal = _clean_media_user_goal(user_goal)
-    if node_type == "imageGenNode":
-        parts = [
-            media_goal,
-            _clean_media_prompt_part(target),
-            "根据上游节点的有效内容生成画面，保留主体、场景、构图、风格、光线、色彩和镜头信息。",
-            "只生成纯视觉画面，不要生成说明页、提示词页、脚本页、分镜说明板或带排版文字的广告稿。",
-            "画面中不要出现任何文字、数字、标题、字幕、标签、logo、水印、价格、促销文案、UI 文案或说明性文本。",
-        ]
-        return _join_prompt_parts(parts)
-    if node_type == "videoNode":
-        parts = [
-            media_goal,
-            _clean_media_prompt_part(target),
-            "根据上游图片或文本内容生成视频，重点描述画面起始状态、主体运动、镜头运动、环境动态、情绪和节奏。",
-            "不要生成字幕、标题、标签、水印、价格、促销字样或说明性文字，除非用户明确要求画面里出现文字。",
-        ]
-        return _join_prompt_parts(parts)
-    if node_type == "audioNode":
-        parts = [
-            media_goal,
-            _clean_media_prompt_part(target),
-            "根据广告脚本或用户需求生成音频内容，保持语气、情绪和用途一致。",
-        ]
-        return _join_prompt_parts(parts)
-    return ""
-
-
-def _join_prompt_parts(parts: list[str]) -> str:
-    cleaned = [part.strip(" 。") for part in parts if part and part.strip(" 。")]
-    if not cleaned:
-        return ""
-    return "。".join(cleaned) + "。"
-
-
-def _clean_media_user_goal(value: str) -> str:
-    text = _clean_media_prompt_part(value)
-    if not text:
-        return ""
-    if "工作流" in text:
-        return ""
-    return text
-
-
-def _clean_media_prompt_part(value: str) -> str:
-    text = _text(value)
-    if not text:
-        return ""
-    text = re.sub(r"【[^】]{1,24}】", "", text)
-    text = re.sub(r"\b(workflowCatalog|promptBuilder|recipeRef|recipeId)\b", "", text)
-    text = re.sub(r"\s+", " ", text).strip(" ：:;；")
-    return text
-
-
-def _recipe_settings(recipe: dict[str, Any] | None) -> dict[str, Any]:
-    if not recipe:
-        return {}
-    settings: dict[str, Any] = {}
-    for source_key, target_key in (
-        ("output_kind", "outputKind"),
-        ("generationType", "outputKind"),
-        ("generation_type", "outputKind"),
-        ("requires_source_media", "requiresSourceMedia"),
-        ("requiresSourceMedia", "requiresSourceMedia"),
-        ("force_enhancement", "forceEnhancement"),
-        ("forceEnhancement", "forceEnhancement"),
-        ("skip_detail_check", "skipDetailCheck"),
-        ("skipDetailCheck", "skipDetailCheck"),
-        ("enabled", "enabled"),
-        ("version", "version"),
-    ):
-        value = _get(recipe, source_key)
-        if value is not None and target_key not in settings:
-            settings[target_key] = value
-    action_keys = [
-        _text(item)
-        for field in ("actionKeys", "action_keys")
-        for item in recipe.get(field) or []
-        if _text(item)
-    ]
-    if action_keys:
-        settings["actionKeys"] = action_keys
-    return settings
-
-
-def _prompt_builder(
-    *,
-    step: dict[str, Any],
-    recipe: dict[str, Any] | None,
-    user_goal: str,
-) -> dict[str, Any]:
-    strategy = _text(_get(step, "promptStrategy", "prompt_strategy"))
-    if not strategy:
-        strategy = "llm_refine" if recipe else "template"
-    builder: dict[str, Any] = {
-        "mode": strategy,
-        "userGoal": user_goal,
-        "goalTemplate": _text(_get(step, "goalTemplate", "goal_template")),
-        "inputStrategy": _get(step, "inputStrategy", "input_strategy") or {},
-    }
-    if not recipe:
-        return builder
-    system_prompt = _text(_get(recipe, "system_prompt"))
-    builder.update(
-        {
-            "recipeId": _text(recipe.get("id")),
-            "recipeName": _text(recipe.get("name")),
-            "recipeRef": _recipe_ref(recipe),
-            "isPromptRecipe": _looks_like_prompt_recipe(system_prompt),
-        }
-    )
-    return builder
-
-
-def _looks_like_prompt_recipe(system_prompt: str) -> bool:
-    text = _text(system_prompt)
-    if not text:
-        return False
-    markers = (
-        "提示词/指令",
-        "提示词",
-        "原始提示词",
-        "生成指令",
-        "refined prompt",
-        "output only refined prompt",
-        "prompt generation",
-        "image generation ai",
-        "video generation ai",
-    )
-    lower = text.lower()
-    return any(marker.lower() in lower for marker in markers)
-
-
-def _dependency_sources(step: dict[str, Any], previous_step_ids: list[str]) -> list[str]:
-    input_strategy = _get(step, "inputStrategy", "input_strategy")
-    if not isinstance(input_strategy, dict):
-        return ["catalog_user_input"] if not previous_step_ids else [previous_step_ids[-1]]
-    strategy_type = _text(input_strategy.get("type"))
-    raw_step_id = _text(_get(input_strategy, "stepId", "step_id"))
-    if raw_step_id:
-        return [_safe_id(raw_step_id)]
-    raw_step_ids = _get(input_strategy, "stepIds", "step_ids")
-    if isinstance(raw_step_ids, list):
-        step_ids = [_safe_id(_text(item)) for item in raw_step_ids if _text(item)]
-        if step_ids:
-            return step_ids
-    if strategy_type == "none":
-        return []
-    if strategy_type == "user_assets":
-        return ["catalog_user_input"]
-    if strategy_type in {"previous_step", "previous_step_and_user_assets"}:
-        return previous_step_ids[-1:] or ["catalog_user_input"]
-    if strategy_type in {"previous_steps", "previous_steps_and_user_assets"}:
-        return previous_step_ids or ["catalog_user_input"]
-    return previous_step_ids[-1:] or ["catalog_user_input"]
-
-
-def _node_type_for_step(step: dict[str, Any], recipe: dict[str, Any] | None) -> str:
-    node_type = _NODE_TYPE_BY_STEP.get(_text(_get(step, "nodeType", "node_type")))
-    if node_type:
-        return node_type
-    if recipe:
-        generation_type = _text(_get(recipe, "generationType", "generation_type", "output_kind"))
-        return _NODE_TYPE_BY_GENERATION.get(generation_type, "textAnnotationNode")
-    return "textAnnotationNode"
-
-
-def _stage_for_step(step: dict[str, Any], node_type: str) -> str:
-    if node_type == "videoComposeNode":
-        return "compose"
-    text = " ".join(
-        _text(value)
-        for value in (
-            step.get("id"),
-            _get(step, "goalTemplate", "goal_template"),
-            _get(step, "operationType", "operation_type", "actionKey", "action_key"),
-            _get(step, "nodeType", "node_type"),
-        )
-    ).lower()
-    for key in ("input", "story", "character", "scene", "prop", "asset", "shot", "frame", "image", "video", "audio", "compose"):
-        if key in text:
-            return "asset" if key == "prop" else key
-    return _STAGE_BY_NODE_TYPE.get(node_type, "story")
-
-
-def _choose_template(
-    skill: dict[str, Any],
-    template_id: str | None,
-    args: dict[str, Any],
-) -> dict[str, Any] | None:
-    templates = _templates(skill)
-    requested = _text(
-        template_id
-        or args.get("template_id")
-        or args.get("templateId")
-        or args.get("workflow_template")
-        or args.get("workflowTemplate")
-    )
-    if requested:
-        normalized = _alias_key(requested)
-        for template in templates:
-            if _alias_key(_text(template.get("id"))) == normalized:
-                return template
-    if not templates:
-        return None
-    message = _workflow_goal_text(args)
-    if message:
-        scored = [
-            (_template_score(template, message), index, template)
-            for index, template in enumerate(templates)
-        ]
-        scored.sort(key=lambda item: (-item[0], item[1]))
-        if scored[0][0] > 0:
-            return scored[0][2]
-    return templates[0]
-
-
-def _template_score(template: dict[str, Any], message: str) -> float:
-    condition = template.get("condition")
-    if not isinstance(condition, dict):
-        return 0
-    text = message.lower()
-    score = 0.0
-    for keyword in _get(condition, "messageKeywords", "message_keywords") or []:
-        keyword_text = _text(keyword).lower()
-        if keyword_text and keyword_text in text:
-            score += 1.0
-    return score
-
-
-def _skill_score(skill: dict[str, Any], message: str) -> tuple[float, list[str]]:
-    text = message.lower()
-    score = 0.0
-    reasons: list[str] = []
-    triggers = skill.get("triggers")
-    keywords = triggers.get("keywords") if isinstance(triggers, dict) else []
-    for keyword in keywords or []:
-        weight = 1.0
-        if isinstance(keyword, dict):
-            keyword_text = _text(keyword.get("keyword"))
-            weight = _float(keyword.get("weight"), 1.0)
-        else:
-            keyword_text = _text(keyword)
-        if keyword_text and keyword_text.lower() in text:
-            score += weight
-            reasons.append(f"命中 skill 关键词：{keyword_text}")
-    name_bits = [
-        _text(skill.get("id")),
-        _text(skill.get("name")),
-        _text(skill.get("label")),
-        _text(skill.get("category")),
-    ]
-    for bit in name_bits:
-        if bit and bit.lower() in text:
-            score += 0.75
-            reasons.append(f"命中 skill 标识：{bit}")
-    for alias in _string_list(skill.get("aliases")):
-        alias_text = alias.lower()
-        if not alias_text:
-            continue
-        if alias_text == text:
-            score += 3.0
-            reasons.append(f"精确命中 skill 别名：{alias}")
-        elif alias_text in text:
-            score += 1.5
-            reasons.append(f"命中 skill 别名：{alias}")
-    return score, reasons[:8]
-
-
-def _template_resolution_score(template: dict[str, Any], message: str) -> tuple[float, list[str]]:
-    text = message.lower()
-    score = 0.0
-    reasons: list[str] = []
-    condition = template.get("condition")
-    if isinstance(condition, dict):
-        for keyword in _get(condition, "messageKeywords", "message_keywords") or []:
-            keyword_text = _text(keyword)
-            if keyword_text and keyword_text.lower() in text:
-                score += 1.25
-                reasons.append(f"命中模板关键词：{keyword_text}")
-        if _get(condition, "textOnly", "text_only") and not _looks_like_asset_request(text):
-            score += 0.25
-            reasons.append("模板适合纯文本描述")
-        for input_type in _get(condition, "hasInputTypes", "has_input_types") or []:
-            input_text = _text(input_type).lower()
-            if input_text and input_text in text:
-                score += 0.5
-                reasons.append(f"命中输入类型：{input_text}")
-    template_id = _text(template.get("id"))
-    if template_id and template_id.lower().replace("-", " ") in text:
-        score += 0.75
-        reasons.append(f"命中模板标识：{template_id}")
-    for alias in _string_list(template.get("aliases")):
-        alias_text = alias.lower()
-        if not alias_text:
-            continue
-        if alias_text == text:
-            score += 3.0
-            reasons.append(f"精确命中模板别名：{alias}")
-        elif alias_text in text:
-            score += 1.5
-            reasons.append(f"命中模板别名：{alias}")
-    return score, reasons[:8]
-
-
-def _looks_like_asset_request(text: str) -> bool:
-    return any(keyword in text for keyword in ("图片", "图像", "素材", "image", "asset", "已有图"))
-
-
-def _requested_workflow_type(args: dict[str, Any]) -> str:
-    raw = args.get("workflow_type") or args.get("workflowType") or args.get("type")
-    if isinstance(raw, list):
-        raw = raw[0] if raw else ""
-    value = _text(raw)
-    alias_key = _alias_key(value)
-    if alias_key.startswith(CATALOG_PREFIX):
-        return alias_key
-    return catalog_workflow_aliases().get(alias_key, alias_key)
-
-
-def _parse_catalog_type(value: str) -> tuple[str, str | None] | None:
-    text = _alias_key(value)
-    if not text.startswith(CATALOG_PREFIX):
-        return None
-    body = text[len(CATALOG_PREFIX) :]
-    if not body:
-        return None
-    parts = [part for part in body.split(".") if part]
-    if not parts:
-        return None
-    skill_id = parts[0].replace("_", "-")
-    template_id = parts[1].replace("_", "-") if len(parts) > 1 else None
-    return skill_id, template_id
-
-
-def _catalog_type(skill_id: str, template_id: str | None = None) -> str:
-    base = f"{CATALOG_PREFIX}{_alias_key(skill_id).replace('-', '_')}"
-    if template_id:
-        return f"{base}.{_alias_key(template_id).replace('-', '_')}"
-    return base
-
-
-def _catalog_aliases(skill: dict[str, Any], template: dict[str, Any] | None = None) -> list[str]:
-    skill_id = _text(skill.get("id"))
-    label = _catalog_label(skill)
-    template_id = _text(template.get("id")) if template else ""
-    aliases = [
-        skill_id,
-        _alias_key(skill_id),
-        f"catalog_{skill_id}",
-        f"json_{skill_id}",
-        f"配置{label}",
-        f"{label}配置",
-    ]
-    aliases.extend(_string_list(skill.get("aliases")))
-    if template_id:
-        aliases.extend(
-            [
-                template_id,
-                _alias_key(template_id),
-                f"{skill_id}_{template_id}",
-                f"catalog_{skill_id}_{template_id}",
-                f"json_{skill_id}_{template_id}",
-            ]
-        )
-        aliases.extend(_string_list(template.get("aliases")))
-    return _unique_texts(aliases)
-
-
-def _string_list(value: Any) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [_text(item) for item in value if _text(item)]
-
-
-def _unique_texts(values: list[str]) -> list[str]:
-    seen: set[str] = set()
-    unique: list[str] = []
-    for value in values:
-        text = _text(value)
-        if not text:
-            continue
-        key = _alias_key(text)
-        if key in seen:
-            continue
-        seen.add(key)
-        unique.append(text)
-    return unique
 
 
 def _load_skill(skill_id: str) -> dict[str, Any] | None:
@@ -1563,21 +1494,7 @@ def _load_skill(skill_id: str) -> dict[str, Any] | None:
 
 
 def _load_skills() -> list[dict[str, Any]]:
-    return _load_agent_config_items("skills", _SKILLS_DIR)
-
-
-def _recipe_index() -> dict[str, dict[str, Any]]:
-    index: dict[str, dict[str, Any]] = {}
-    for recipe in _load_agent_config_items("recipes", _RECIPES_DIR):
-        if recipe.get("enabled") is False:
-            continue
-        keys = [_text(recipe.get("id"))]
-        for field in ("operationTypes", "operation_types", "actionKeys", "action_keys"):
-            keys.extend(_text(item) for item in recipe.get(field) or [])
-        for key in keys:
-            if key:
-                index.setdefault(key, recipe)
-    return index
+    return _load_agent_config_items("skills", _SKILLS_DIR, _PLUGIN_SKILLS_DIR)
 
 
 def _skill_capabilities(skill: dict[str, Any]) -> list[str]:
@@ -1612,7 +1529,12 @@ def _skill_capabilities(skill: dict[str, Any]) -> list[str]:
 def _skill_referenced_recipe_ids(skill: dict[str, Any]) -> set[str]:
     references = {
         _text(item)
-        for field in ("recipe_ids", "recipeIds", "allowed_recipe_ids", "allowedRecipeIds")
+        for field in (
+            "recipe_ids",
+            "recipeIds",
+            "allowed_recipe_ids",
+            "allowedRecipeIds",
+        )
         for item in (skill.get(field) if isinstance(skill.get(field), list) else [])
         if _text(item)
     }
@@ -1649,13 +1571,24 @@ def _workflow_skill_recipe_candidates(
         if capability in _OUTPUT_KIND_BY_CAPABILITY
     }
     references = _skill_referenced_recipe_ids(skill)
+    general_recipe_ids = {
+        f"general-{output_kind}"
+        for output_kind in output_kinds
+    }
     candidates: list[dict[str, Any]] = []
     for recipe in recipes:
         recipe_id = _text(recipe.get("id"))
         action_keys = {
             _text(item)
-            for field in ("actionKeys", "action_keys", "operationTypes", "operation_types")
-            for item in (recipe.get(field) if isinstance(recipe.get(field), list) else [])
+            for field in (
+                "actionKeys",
+                "action_keys",
+                "operationTypes",
+                "operation_types",
+            )
+            for item in (
+                recipe.get(field) if isinstance(recipe.get(field), list) else []
+            )
             if _text(item)
         }
         output_kind = _text(
@@ -1663,8 +1596,14 @@ def _workflow_skill_recipe_candidates(
             or recipe.get("generationType")
             or recipe.get("generation_type")
         )
-        explicitly_referenced = recipe_id in references or bool(action_keys & references)
-        if explicitly_referenced or not output_kinds or output_kind in output_kinds:
+        explicitly_referenced = recipe_id in references or bool(
+            action_keys & references
+        )
+        if (
+            explicitly_referenced
+            or recipe_id in general_recipe_ids
+            or (not references and (not output_kinds or output_kind in output_kinds))
+        ):
             candidates.append(recipe)
     candidates.sort(key=lambda item: _text(item.get("id")))
     return candidates
@@ -1692,12 +1631,23 @@ def _recipe_planning_summary(recipe: dict[str, Any]) -> dict[str, Any]:
         ),
         "action_keys": [
             _text(item)
-            for field in ("actionKeys", "action_keys", "operationTypes", "operation_types")
-            for item in (recipe.get(field) if isinstance(recipe.get(field), list) else [])
+            for field in (
+                "actionKeys",
+                "action_keys",
+                "operationTypes",
+                "operation_types",
+            )
+            for item in (
+                recipe.get(field) if isinstance(recipe.get(field), list) else []
+            )
             if _text(item)
         ],
-        "planning_prompt": _text(recipe.get("planning_prompt") or recipe.get("planningPrompt")),
-        "result_summary": _text(recipe.get("result_summary") or recipe.get("resultSummary")),
+        "planning_prompt": _text(
+            recipe.get("planning_prompt") or recipe.get("planningPrompt")
+        ),
+        "result_summary": _text(
+            recipe.get("result_summary") or recipe.get("resultSummary")
+        ),
         "requires_source_media": bool(
             recipe.get("requires_source_media") or recipe.get("requiresSourceMedia")
         ),
@@ -1716,43 +1666,48 @@ def _without_private_fields(value: Any) -> Any:
     return value
 
 
-def _load_agent_config_items(kind: str, fallback_dir: Path) -> list[dict[str, Any]]:
-    fallback_items = _merge_builtin_agent_config_items(
-        _fallback_agent_config_items(kind),
-        _validate_loaded_agent_config_items(kind, _load_json_dir(fallback_dir)),
-    )
+def _load_agent_config_items(
+    kind: str, fallback_dir: Path, project_dir: Path | None = None
+) -> list[dict[str, Any]]:
+    if project_dir is None:
+        project_dir = _PLUGIN_RECIPES_DIR if kind == "recipes" else _PLUGIN_SKILLS_DIR
+    fallback_items = _load_json_dir(fallback_dir)
+    if not fallback_items:
+        fallback_items = _fallback_agent_config_items(kind)
+    if project_dir is not None:
+        project_items = [
+            {**item, "_catalog_source": "builtin"}
+            for item in _load_json_dir(project_dir)
+        ]
+        if project_items:
+            fallback_items = _merge_agent_config_items(fallback_items, project_items)
     if list_user_agent_config_items is not None:
         username = _catalog_username()
         if username:
             try:
                 loaded_items = list_user_agent_config_items(username, kind)
                 if loaded_items:
-                    return _merge_agent_config_items(fallback_items, loaded_items)
+                    return _normalize_agent_config_items(
+                        kind,
+                        _merge_agent_config_items(fallback_items, loaded_items),
+                    )
             except Exception:
                 pass
-    return fallback_items
+    return _normalize_agent_config_items(kind, fallback_items)
 
 
-def _merge_builtin_agent_config_items(
-    fallback_items: list[dict[str, Any]],
-    builtin_items: list[dict[str, Any]],
+def _normalize_agent_config_items(
+    kind: str, items: list[dict[str, Any]]
 ) -> list[dict[str, Any]]:
-    """Merge code fallback builtins with JSON-backed builtin catalog items."""
-
-    by_id: dict[str, dict[str, Any]] = {
-        _text(item.get("id")): {**item, "_catalog_source": item.get("_catalog_source") or "builtin"}
-        for item in fallback_items
-        if _text(item.get("id"))
-    }
-    for item in builtin_items:
-        if not isinstance(item, dict):
-            continue
-        item_id = _text(item.get("id"))
-        if not item_id:
-            continue
-        base = by_id.get(item_id, {})
-        by_id[item_id] = {**base, **item, "_catalog_source": item.get("_catalog_source") or "builtin"}
-    return [by_id[key] for key in sorted(by_id)]
+    if kind != "recipes":
+        return items
+    normalized: list[dict[str, Any]] = []
+    for item in items:
+        if _text(item.get("id")) in _TEXT_FIRST_BUILTIN_RECIPE_IDS:
+            normalized.append({**item, "requires_source_media": False})
+        else:
+            normalized.append(item)
+    return normalized
 
 
 def _merge_agent_config_items(
@@ -1762,7 +1717,10 @@ def _merge_agent_config_items(
     """Merge code fallback builtins with user/config-store items."""
 
     by_id: dict[str, dict[str, Any]] = {
-        _text(item.get("id")): {**item, "_catalog_source": item.get("_catalog_source") or "builtin"}
+        _text(item.get("id")): {
+            **item,
+            "_catalog_source": item.get("_catalog_source") or "builtin",
+        }
         for item in builtin_items
         if _text(item.get("id"))
     }
@@ -1783,7 +1741,9 @@ def _merge_agent_config_items(
         merged.setdefault("_catalog_source", item.get("_catalog_source") or "user")
         ordered.append(merged)
         seen.add(item_id)
-    ordered.extend(item for item_id, item in sorted(by_id.items()) if item_id not in seen)
+    ordered.extend(
+        item for item_id, item in sorted(by_id.items()) if item_id not in seen
+    )
     return ordered
 
 
@@ -1891,24 +1851,8 @@ def _catalog_username() -> str:
     ).strip()
 
 
-def _recipe_ref(recipe: dict[str, Any]) -> str:
-    recipe_id = _text(recipe.get("id"))
-    if recipe.get("_catalog_source") == "user":
-        return f"output/{{user}}/_account/freezone/agent_config/recipes/{recipe_id}.json"
-    return f"agent_catalog/builtins/recipes/{recipe_id}.json"
-
-
 def _catalog_source(payload: dict[str, Any]) -> str:
     return _text(payload.get("_catalog_source")) or "builtin"
-
-
-def _catalog_source_label(payload: dict[str, Any]) -> str:
-    source = _catalog_source(payload)
-    if source == "user" and _text(payload.get("_catalog_base_source")) == "builtin":
-        return "用户覆盖内置"
-    if source == "user":
-        return "用户自定义"
-    return "内置"
 
 
 def _load_json_dir(path: Path) -> list[dict[str, Any]]:
@@ -1920,25 +1864,11 @@ def _load_json_dir(path: Path) -> list[dict[str, Any]]:
             payload = json.loads(file_path.read_text(encoding="utf-8"))
         except Exception:
             continue
-        if not isinstance(payload, dict):
-            continue
-        items.append(payload)
+        if isinstance(payload, dict):
+            items.append(payload)
+        elif isinstance(payload, list):
+            items.extend(item for item in payload if isinstance(item, dict))
     return items
-
-
-def _validate_loaded_agent_config_items(
-    kind: str,
-    items: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if validate_agent_config_item is None or kind not in {"skills", "recipes"}:
-        return items
-    validated_items: list[dict[str, Any]] = []
-    for payload in items:
-        try:
-            validated_items.append(validate_agent_config_item(kind, payload))
-        except ValueError:
-            continue
-    return validated_items
 
 
 def _templates(skill: dict[str, Any]) -> list[dict[str, Any]]:
@@ -1947,11 +1877,10 @@ def _templates(skill: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _catalog_label(skill: dict[str, Any]) -> str:
-    return _text(skill.get("name") or skill.get("label") or skill.get("id")) or "配置工作流"
-
-
-def _template_label(template: dict[str, Any]) -> str:
-    return _text(template.get("name") or template.get("label") or template.get("id")) or "默认模板"
+    return (
+        _text(skill.get("name") or skill.get("label") or skill.get("id"))
+        or "配置工作流"
+    )
 
 
 def _workflow_goal_text(args: dict[str, Any]) -> str:
@@ -2002,13 +1931,6 @@ def _get(payload: dict[str, Any], *keys: str) -> Any:
 def _int(value: Any, default: int) -> int:
     try:
         return int(value)
-    except (TypeError, ValueError):
-        return default
-
-
-def _float(value: Any, default: float) -> float:
-    try:
-        return float(value)
     except (TypeError, ValueError):
         return default
 

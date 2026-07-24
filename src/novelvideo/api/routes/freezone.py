@@ -81,18 +81,10 @@ from novelvideo.api.schemas import (
     PushRequest,
 )
 from novelvideo.config import IMAGE_GENERATION_SELECTIONS, image_generation_selection_options
+from novelvideo.chat.hermes_workspace import list_freezone_hermes_workflow_skills
 from novelvideo.director_world import DirectorWorldService
 from novelvideo.director_world.staging_prop_ai import generate_ai_staging_prop
 from novelvideo.freezone import canvas_store
-from novelvideo.freezone.agent_bundle_store import (
-    export_agent_bundle,
-    install_agent_bundle,
-    validate_agent_bundle,
-)
-from novelvideo.freezone.agent_community_catalog import (
-    install_community_bundle,
-    list_community_catalog,
-)
 from novelvideo.freezone.agent_config_store import (
     delete_user_agent_config_item,
     list_user_agent_config_items,
@@ -3940,76 +3932,6 @@ async def freezone_skills(user: dict = Depends(get_api_user)):
     return {"ok": True, "data": [skill.model_dump(mode="json") for skill in list_skills()]}
 
 
-@router.post("/freezone/agent-config/bundles:validate", tags=[TAG_FREEZONE_AGENT_CONFIG])
-async def validate_freezone_agent_bundle(
-    payload: Annotated[dict, Body()],
-    user: dict = Depends(get_api_user),
-):
-    username = str(user.get("username") or "")
-    try:
-        result = validate_agent_bundle(payload.get("bundle") or {}, username=username)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "data": {key: value for key, value in result.items() if key != "bundle"}}
-
-
-@router.post("/freezone/agent-config/bundles:install", tags=[TAG_FREEZONE_AGENT_CONFIG])
-async def install_freezone_agent_bundle(
-    payload: Annotated[dict, Body()],
-    user: dict = Depends(get_api_user),
-):
-    username = str(user.get("username") or "")
-    try:
-        result = install_agent_bundle(username=username, payload=payload.get("bundle") or {})
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "data": result}
-
-
-@router.post("/freezone/agent-config/bundles:export", tags=[TAG_FREEZONE_AGENT_CONFIG])
-async def export_freezone_agent_bundle(
-    payload: Annotated[dict, Body()],
-    user: dict = Depends(get_api_user),
-):
-    username = str(user.get("username") or "")
-    try:
-        bundle = export_agent_bundle(
-            username=username,
-            skill_id=str(payload.get("skill_id") or ""),
-            bundle_meta=payload.get("bundle") or {},
-            include_recipes=payload.get("include_recipes", True) is not False,
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "data": bundle}
-
-
-@router.get("/freezone/agent-config/community/catalog", tags=[TAG_FREEZONE_AGENT_CONFIG])
-async def list_freezone_community_catalog(user: dict = Depends(get_api_user)):
-    username = str(user.get("username") or "")
-    try:
-        catalog = list_community_catalog(username=username)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "data": catalog}
-
-
-@router.post("/freezone/agent-config/community/bundles:install", tags=[TAG_FREEZONE_AGENT_CONFIG])
-async def install_freezone_community_bundle(
-    payload: Annotated[dict, Body()],
-    user: dict = Depends(get_api_user),
-):
-    username = str(user.get("username") or "")
-    try:
-        result = install_community_bundle(
-            username=username,
-            bundle_url=str(payload.get("bundle_url") or ""),
-        )
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc)) from exc
-    return {"ok": True, "data": result}
-
-
 @router.get("/freezone/agent-config/{kind}", tags=[TAG_FREEZONE_AGENT_CONFIG])
 async def list_freezone_agent_config(kind: str, user: dict = Depends(get_api_user)):
     username = str(user.get("username") or "")
@@ -4018,6 +3940,15 @@ async def list_freezone_agent_config(kind: str, user: dict = Depends(get_api_use
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": items}
+
+
+@router.get("/freezone/hermes-workflow-skills", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def list_freezone_hermes_skills(user: dict = Depends(get_api_user)):
+    username = str(user.get("username") or "")
+    return {
+        "ok": True,
+        "data": list_freezone_hermes_workflow_skills(username),
+    }
 
 
 @router.post("/freezone/agent-config/{kind}", tags=[TAG_FREEZONE_AGENT_CONFIG])
@@ -6052,6 +5983,9 @@ def _start_freezone_audio_speech_task(
                 text=body.text,
                 emotion_prompt=body.emotion_prompt,
                 voice_ref=body.voice_ref.model_dump() if body.voice_ref else None,
+                speech_mode=body.speech_mode,
+                preset_model=body.preset_model,
+                preset_voice=body.preset_voice,
             )
             rel = result.audio_path.relative_to(project_dir).as_posix()
             audio_url = project_static_url(project_id, rel, local_path=result.audio_path)
@@ -7699,6 +7633,9 @@ async def freezone_audio_speech(
                     "text": body.text,
                     "emotion_prompt": body.emotion_prompt,
                     "voice_ref": body.voice_ref.model_dump() if body.voice_ref else None,
+                    "speech_mode": body.speech_mode,
+                    "preset_model": body.preset_model,
+                    "preset_voice": body.preset_voice,
                     "account_voice_username": account_voice_username,
                     "target_episode": body.target_episode,
                     "target_beat": body.target_beat,
@@ -10336,9 +10273,9 @@ async def get_canvas_workflow_runs(
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     try:
-        stale_after_seconds = max(int(os.getenv("ST_WORKFLOW_RUN_STALE_SECONDS", "60")), 15)
+        stale_after_seconds = max(int(os.getenv("ST_WORKFLOW_RUN_STALE_SECONDS", "300")), 60)
     except ValueError:
-        stale_after_seconds = 60
+        stale_after_seconds = 300
     try:
         interrupt_stale_workflow_runs(
             project_dir=canvas_project_dir,
@@ -10346,6 +10283,22 @@ async def get_canvas_workflow_runs(
             stale_after_seconds=stale_after_seconds,
         )
     except CanvasLockBusy:
+        pass
+    try:
+        canvas_payload = canvas_store.read_canvas(canvas_project_dir, canvas_id)
+        reconcile_workflow_runs_with_canvas_nodes(
+            project_dir=canvas_project_dir,
+            canvas_id=canvas_id,
+            existing_node_ids={
+                str(node.get("id") or "")
+                for node in (canvas_payload or {}).get("nodes") or []
+                if isinstance(node, dict) and str(node.get("id") or "")
+            },
+            run_statuses={"failed", "interrupted"},
+        )
+    except (canvas_store.CanvasStoreError, CanvasLockBusy):
+        # Recovery records are optional. A transient canvas read/lock failure
+        # must not make the canvas itself unavailable.
         pass
     runs = list_workflow_runs(
         project_dir=canvas_project_dir, canvas_id=canvas_id, limit=limit

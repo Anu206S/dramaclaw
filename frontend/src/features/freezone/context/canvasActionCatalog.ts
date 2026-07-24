@@ -294,6 +294,7 @@ export const BASE_CANVAS_ACTION_CAPABILITIES: CanvasActionCapability[] = [
       modes: ["speech", "music"],
       data_fields: {
         audioKind: "speech | music",
+        speechMode: "preset | clone",
         text: "string",
         emotionPrompt: "string",
         musicLengthMs: "number",
