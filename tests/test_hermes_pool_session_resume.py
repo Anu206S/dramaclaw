@@ -63,6 +63,21 @@ def _write_fake_hermes_cli(path: Path) -> None:
     path.chmod(0o755)
 
 
+def test_required_hermes_version_comes_from_pinned_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+
+    repo_root = tmp_path / "repo"
+    repo_root.mkdir()
+    (repo_root / ".hermes-version").write_text("0.19.0\n", encoding="utf-8")
+    monkeypatch.setattr(hermes_pool, "DRAMACLAW_ROOT", repo_root)
+    monkeypatch.setenv("DRAMACLAW_HERMES_VERSION", "9.9.9")
+
+    assert hermes_pool._required_hermes_version() == ("0.19.0", (0, 19, 0))
+
+
 def _patch_fake_hermes_pool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

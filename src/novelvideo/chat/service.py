@@ -546,7 +546,14 @@ def _prompt_with_user_context(
     surface_context: dict[str, Any] | None = None,
     route_prompt: str | None = None,
 ) -> str:
-    preferences = load_user_preferences(username)
+    is_freezone_canvas = tool_mode == "freezone_canvas"
+    preferences = "" if is_freezone_canvas else load_user_preferences(username)
+    preferences_context = (
+        "[USER_PREFERENCES]\n"
+        f"{preferences}\n\n"
+        if not is_freezone_canvas
+        else ""
+    )
     scope = f"project:{project}" if project else "home"
     canvas_id = _freezone_canvas_id_from_context(surface_context)
     canvas_context = (
@@ -554,14 +561,14 @@ def _prompt_with_user_context(
         f"canvas_id: {canvas_id}\n"
         "Use this canvas_id for Freezone canvas tools unless the user explicitly names another canvas.\n"
         "[/FREEZONE_CANVAS_CONTEXT]"
-        if tool_mode == "freezone_canvas"
+        if is_freezone_canvas
         else ""
     )
     surface_instructions = (
         f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}"
         f"{_freezone_skill_studio_context(username, route_prompt if route_prompt is not None else prompt)}"
         f"{canvas_context}"
-        if tool_mode == "freezone_canvas"
+        if is_freezone_canvas
         else ""
     )
     return (
@@ -570,8 +577,7 @@ def _prompt_with_user_context(
         f"scope: {scope}\n"
         "Project-scoped facts must stay in the project scope. "
         "Only stable user preferences should be reused across projects.\n\n"
-        "[USER_PREFERENCES]\n"
-        f"{preferences}\n\n"
+        f"{preferences_context}"
         f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
         f"{surface_instructions}\n\n"
         "[USER_MESSAGE]\n"
