@@ -358,6 +358,49 @@ async def test_freezone_audio_speech_drama_first_person_uses_project_narrator(
 
 
 @pytest.mark.asyncio
+async def test_freezone_audio_preset_speech_does_not_require_reference_voice(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    calls: list[dict] = []
+
+    async def fake_write_edge_tts_speech(**kwargs):
+        calls.append(kwargs)
+        output_path = Path(kwargs["output_path"])
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        output_path.write_bytes(b"preset-speech")
+
+    monkeypatch.setattr(audio_node, "_write_edge_tts_speech", fake_write_edge_tts_speech)
+    monkeypatch.setattr(audio_node, "_duration_ms", lambda _path: 1234)
+
+    result = await audio_node.generate_freezone_audio_speech(
+        store=SimpleNamespace(),
+        username="alice",
+        project="demo",
+        project_dir=tmp_path,
+        job_id="speech-preset-1",
+        text="欢迎使用运动相机。",
+        emotion_prompt="自然、有活力",
+        speech_mode="preset",
+        # Previously generated workflows may still carry this retired default.
+        preset_model="qwen3-tts-flash",
+        preset_voice="Serena",
+    )
+
+    assert result.model == "edge-tts"
+    assert result.voice_source == "preset:Serena"
+    assert result.voice_sha256 == ""
+    assert result.duration_ms == 1234
+    assert calls == [
+        {
+            "output_path": freezone_audio_speech_output_path(tmp_path, "speech-preset-1"),
+            "input_text": "欢迎使用运动相机。",
+            "voice": "zh-CN-XiaoxiaoNeural",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_freezone_audio_eleven_music_uses_newapi_music_metadata(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

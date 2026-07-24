@@ -178,17 +178,31 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             ) : null}
             <button
               type="button"
-              aria-current={page === "freezone-skills" || page === "freezone-recipes" ? "page" : undefined}
+              aria-current={page === "freezone-skills" ? "page" : undefined}
               onClick={() => setPage("freezone-skills")}
               className={cn(
                 "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
-                page === "freezone-skills" || page === "freezone-recipes"
+                page === "freezone-skills"
                   ? "bg-white/[0.09] text-foreground"
                   : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
               )}
             >
               <Package className="size-4" aria-hidden />
               <span className="hidden sm:inline">{t("settings.pages.freezoneSkills")}</span>
+            </button>
+            <button
+              type="button"
+              aria-current={page === "freezone-recipes" ? "page" : undefined}
+              onClick={() => setPage("freezone-recipes")}
+              className={cn(
+                "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
+                page === "freezone-recipes"
+                  ? "bg-white/[0.09] text-foreground"
+                  : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+              )}
+            >
+              <Package className="size-4" aria-hidden />
+              <span className="hidden sm:inline">{t("settings.pages.freezoneRecipes")}</span>
             </button>
           </nav>
 
@@ -210,8 +224,6 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               <ScrollArea className="h-full [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0">
                 <FreezoneSkillRecipeSettings
                   kind={page === "freezone-skills" ? "skills" : "recipes"}
-                  onBackToSkills={() => setPage("freezone-skills")}
-                  onOpenRecipes={() => setPage("freezone-recipes")}
                   open={open && (page === "freezone-skills" || page === "freezone-recipes")}
                 />
               </ScrollArea>

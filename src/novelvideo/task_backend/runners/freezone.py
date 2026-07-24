@@ -950,6 +950,9 @@ async def _run_freezone_audio_speech_async(
             text=str(payload.get("text") or ""),
             emotion_prompt=str(payload.get("emotion_prompt") or ""),
             voice_ref=payload.get("voice_ref"),
+            speech_mode=str(payload.get("speech_mode") or "clone"),
+            preset_model=str(payload.get("preset_model") or "edge-tts"),
+            preset_voice=str(payload.get("preset_voice") or "Serena"),
         )
     finally:
         close = getattr(store, "close", None)

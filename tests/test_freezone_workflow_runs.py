@@ -194,6 +194,29 @@ def test_reconcile_keeps_run_when_an_unfinished_node_still_exists(tmp_path: Path
     assert preserved["status"] == "running"
 
 
+def test_reconcile_can_exclude_active_runs_during_read_cleanup(tmp_path: Path) -> None:
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "pending", "action": "generate_image"}],
+    )
+
+    cancelled = reconcile_workflow_runs_with_canvas_nodes(
+        project_dir=tmp_path,
+        canvas_id="default",
+        existing_node_ids=set(),
+        run_statuses={"failed", "interrupted"},
+    )
+
+    assert cancelled == []
+    preserved = read_workflow_run(
+        project_dir=tmp_path, canvas_id="default", run_id=run["run_id"]
+    )
+    assert preserved is not None
+    assert preserved["status"] == "running"
+
+
 def test_stale_running_workflow_is_marked_interrupted(tmp_path: Path) -> None:
     now = datetime(2026, 7, 22, 12, 0, tzinfo=timezone.utc)
     run = create_workflow_run(

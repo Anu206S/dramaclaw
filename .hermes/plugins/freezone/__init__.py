@@ -55,13 +55,6 @@ _SKILL_STUDIO_NODE_SCOPE_VALUES = [
     "audioGeneration",
 ]
 
-_SKILL_STUDIO_WORKFLOW_NODE_TYPE_VALUES = [
-    *_SKILL_STUDIO_NODE_SCOPE_VALUES,
-    "videoCompose",
-]
-_SKILL_STUDIO_DEFAULT_SKILL_SCHEMA_VERSION = "dramaclaw.workflow-skill.v1"
-_SKILL_STUDIO_DEFAULT_SKILL_VERSION = "1.0.0"
-
 _PLUGIN_DIR = Path(__file__).resolve().parent
 if str(_PLUGIN_DIR) not in sys.path:
     sys.path.insert(0, str(_PLUGIN_DIR))
@@ -72,30 +65,41 @@ if _REPO_SRC.exists() and str(_REPO_SRC) not in sys.path:
 
 _WORKFLOW_GRAPH_IMPORT_ERROR: Exception | None = None
 try:
-    from workflow_graph import (
-        REGISTERED_WORKFLOWS,
-        build_workflow_graph_commands,
-        build_workflow_plan,
-    )
+    from workflow_graph import build_workflow_graph_commands
 except Exception as exc:
     _WORKFLOW_GRAPH_IMPORT_ERROR = exc
-    REGISTERED_WORKFLOWS = []
     build_workflow_graph_commands = None
-    build_workflow_plan = None
+
+_WORKFLOW_DRAFT_IMPORT_ERROR: Exception | None = None
+try:
+    from workflow_drafts import (
+        claim_workflow_draft_confirmation,
+        create_workflow_draft,
+        finish_workflow_draft_confirmation,
+        patch_workflow_draft,
+        public_workflow_draft,
+        read_workflow_draft,
+    )
+except Exception as exc:
+    _WORKFLOW_DRAFT_IMPORT_ERROR = exc
+    claim_workflow_draft_confirmation = None
+    create_workflow_draft = None
+    finish_workflow_draft_confirmation = None
+    patch_workflow_draft = None
+    public_workflow_draft = None
+    read_workflow_draft = None
 
 _JSON_WORKFLOW_CATALOG_IMPORT_ERROR: Exception | None = None
 try:
     from json_workflow_catalog import (
+        compile_workflow_intent,
         get_workflow_skill,
-        registered_catalog_workflows,
-        resolve_catalog_workflow,
         validate_agent_workflow_plan,
     )
 except Exception as exc:
     _JSON_WORKFLOW_CATALOG_IMPORT_ERROR = exc
+    compile_workflow_intent = None
     get_workflow_skill = None
-    registered_catalog_workflows = None
-    resolve_catalog_workflow = None
     validate_agent_workflow_plan = None
 
 _CANVAS_COMMAND_BRIDGE_IMPORT_ERROR: Exception | None = None
@@ -131,7 +135,11 @@ except Exception as exc:
 
 TOOLSET = "freezone"
 FREEZONE_ACP_TOOLSET = "freezone-acp"
-REGISTER_TOOLSETS = (FREEZONE_ACP_TOOLSET,)
+# Hermes 0.18 ACP constructs sessions with the hermes-acp toolset regardless
+# of config.yaml enabled_toolsets. The Freezone plugin is only installed in the
+# isolated Freezone workspace, so registering here exposes canvas tools without
+# leaking them into director sessions.
+REGISTER_TOOLSETS = ("hermes-acp",)
 API_PREFIX = "/api/v1/"
 try:
     DEFAULT_TIMEOUT_SECONDS = max(30, int(os.environ.get("DRAMACLAW_API_TIMEOUT_SECONDS", "120")))
@@ -735,10 +743,6 @@ def _skill_studio_missing_session_result() -> str:
     )
 
 
-def _skill_studio_meta_text(value: Any) -> str:
-    return value.strip() if isinstance(value, str) else ""
-
-
 def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     project, canvas = _skill_studio_scope_from_args(args)
     session_id = _skill_studio_session_id_from_args(args)
@@ -775,19 +779,6 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     )
 
 
-def _normalize_skill_studio_skill(skill: dict[str, Any], *, existing: dict[str, Any] | None = None) -> dict[str, Any]:
-    normalized = dict(skill)
-    normalized["schema_version"] = (
-        _skill_studio_meta_text((existing or {}).get("schema_version"))
-        or _SKILL_STUDIO_DEFAULT_SKILL_SCHEMA_VERSION
-    )
-    normalized["version"] = (
-        _skill_studio_meta_text((existing or {}).get("version"))
-        or _SKILL_STUDIO_DEFAULT_SKILL_VERSION
-    )
-    return normalized
-
-
 def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
     project, canvas = _skill_studio_scope_from_args(args)
     session_id = _skill_studio_session_id_from_args(args)
@@ -818,7 +809,7 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
         )
     draft["project_id"] = project or draft.get("project_id")
     draft["canvas_id"] = canvas or draft.get("canvas_id")
-    draft["skill"] = _normalize_skill_studio_skill(skill, existing=draft.get("skill"))
+    draft["skill"] = skill
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
         canvas or draft.get("canvas_id"),
@@ -1569,7 +1560,7 @@ _WORKFLOW_LIKE_NODE_TYPES = {
     "storyboardGenNode",
 }
 
-_REGISTERED_WORKFLOW_HINTS = (
+_WORKFLOW_HINTS = (
     "工作流",
     "workflow",
     "广告",
@@ -1614,7 +1605,7 @@ def _command_text(command: dict[str, Any]) -> str:
     return "\n".join(values).lower()
 
 
-def _looks_like_manual_registered_workflow_batch(commands: list[Any]) -> bool:
+def _looks_like_handwritten_workflow_batch(commands: list[Any]) -> bool:
     object_commands = [command for command in commands if isinstance(command, dict)]
     create_commands = [
         command
@@ -1633,8 +1624,8 @@ def _looks_like_manual_registered_workflow_batch(commands: list[Any]) -> bool:
         for command in object_commands
     )
     haystack = "\n".join(_command_text(command) for command in object_commands)
-    has_registered_hint = any(hint in haystack for hint in _REGISTERED_WORKFLOW_HINTS)
-    return (not has_dependency_shape) or has_registered_hint
+    has_workflow_hint = any(hint in haystack for hint in _WORKFLOW_HINTS)
+    return (not has_dependency_shape) or has_workflow_hint
 
 
 def _validate_write_commands_shape(
@@ -2569,7 +2560,7 @@ def _emit_canvas_commands(
     canvas: str | None,
     commands: list[Any],
     *,
-    allow_registered_workflow_batch: bool = False,
+    allow_dynamic_workflow_batch: bool = False,
     slim_result: bool = False,
 ) -> str:
     if not isinstance(commands, list) or not commands:
@@ -2577,19 +2568,19 @@ def _emit_canvas_commands(
             project, canvas, "empty_commands", "commands must be a non-empty array"
         )
     if (
-        not allow_registered_workflow_batch
-        and _looks_like_manual_registered_workflow_batch(commands)
+        not allow_dynamic_workflow_batch
+        and _looks_like_handwritten_workflow_batch(commands)
     ):
         return _emit_command_error(
             project,
             canvas,
-            "wrong_tool_registered_workflow",
+            "wrong_tool_dynamic_workflow",
             (
-                "This looks like a registered workflow being hand-written as canvas commands. "
-                "Do not infer workflow nodes, edges, groups, or layout yourself. First call "
-                "freezone_list_workflows to identify the workflow_type; if the user's request "
-                "matches exactly one registered workflow, call freezone_create_workflow_graph "
-                "with workflow_type/workflow_types. If it is ambiguous, ask the user to choose."
+                "This looks like a workflow being hand-written as canvas commands. "
+                "Do not use canvas commands to bypass dynamic WorkflowPlan validation. Select "
+                "one native Hermes Skill, load it with freezone_get_workflow_skill(compact=true), "
+                "author a complete freezone_workflow_plan.v1 with explicit Recipe ids, then call "
+                "freezone_create_workflow_graph(plan=...)."
             ),
         )
     project, canvas, scope_error = _resolve_canvas_scope_for_write(project, canvas)
@@ -2711,63 +2702,6 @@ def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
     return _emit_canvas_commands(project, canvas, commands, slim_result=True)
 
 
-def _handle_build_workflow_plan(args: dict[str, Any], **_: Any) -> str:
-    if build_workflow_plan is None:
-        return tool_error(
-            "Freezone workflow plan builder is unavailable. "
-            f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
-        )
-    return tool_result(build_workflow_plan(args))
-
-
-def _handle_list_workflows(args: dict[str, Any], **_: Any) -> str:
-    workflow_by_type: dict[str, dict[str, Any]] = {}
-    for item in REGISTERED_WORKFLOWS:
-        workflow_type = str(item.get("workflow_type") or "")
-        if workflow_type:
-            workflow_by_type[workflow_type] = item
-    if registered_catalog_workflows is not None:
-        try:
-            for item in registered_catalog_workflows():
-                workflow_type = str(item.get("workflow_type") or "")
-                if workflow_type:
-                    workflow_by_type[workflow_type] = item
-        except Exception:
-            pass
-    workflows = [
-        {
-            "workflow_type": str(item.get("workflow_type") or ""),
-            "label": str(item.get("label") or item.get("workflow_type") or ""),
-            "aliases": item.get("aliases") if isinstance(item.get("aliases"), list) else [],
-            "template_kind": item.get("template_kind") or item.get("builder") or "",
-            "source": item.get("source") or "",
-            "catalog_source": item.get("catalog_source") or "",
-            "type": item.get("catalog_source_label") or (
-                "内置" if item.get("source") == "workflow_json" else ""
-            ),
-        }
-        for item in workflow_by_type.values()
-        if item.get("workflow_type")
-    ]
-    workflows.sort(key=lambda item: item["workflow_type"])
-    return _structured_tool_result(
-        {"ok": True, "count": len(workflows), "workflows": workflows},
-        tool_name="freezone_list_workflows",
-    )
-
-
-def _handle_resolve_catalog_workflow(args: dict[str, Any], **_: Any) -> str:
-    if resolve_catalog_workflow is None:
-        return tool_error(
-            "Freezone JSON workflow resolver is unavailable. "
-            f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
-        )
-    return _structured_tool_result(
-        resolve_catalog_workflow(args),
-        tool_name="freezone_resolve_catalog_workflow",
-    )
-
-
 def _handle_get_workflow_skill(args: dict[str, Any], **_: Any) -> str:
     if get_workflow_skill is None:
         return tool_error(
@@ -2780,100 +2714,36 @@ def _handle_get_workflow_skill(args: dict[str, Any], **_: Any) -> str:
     )
 
 
-def _has_explicit_workflow_type(args: dict[str, Any]) -> bool:
-    for key in ("workflow_type", "workflowType", "workflow_types", "workflowTypes", "type", "types"):
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return True
-        if isinstance(value, list) and any(str(item or "").strip() for item in value):
-            return True
-    return False
-
-
-def _workflow_goal_for_resolution(args: dict[str, Any]) -> str:
-    for key in ("user_goal", "userGoal", "message", "prompt", "title", "name"):
-        value = args.get(key)
-        if isinstance(value, str) and value.strip():
-            return value.strip()
-    return ""
-
-
-def _workflow_selection_required(resolved: dict[str, Any], *, reason: str) -> str:
-    candidates = [
-        candidate
-        for candidate in resolved.get("candidates") or []
-        if isinstance(candidate, dict)
-    ]
-    return tool_result(
-        {
-            "ok": False,
-            "status": "workflow_selection_required",
-            "code": "workflow_selection_required",
-            "reason": reason,
-            "user_goal": resolved.get("user_goal"),
-            "recommended": resolved.get("recommended"),
-            "candidate_count": len(candidates),
-            "candidates": candidates[:10],
-            "message": "命中多个或不够明确的工作流，请让用户选择一个 workflow_type 后再创建。",
-            "agent_instruction": (
-                "Do not create a workflow yet. Present the candidates to the user with numbers, "
-                "including workflow_type, skill/template name, type/source, and description. "
-                "After the user picks one, call freezone_create_workflow_graph with that workflow_type."
-            ),
-        }
-    )
-
-
-def _resolve_workflow_creation_args(args: dict[str, Any]) -> tuple[dict[str, Any], str | None]:
-    if _has_explicit_workflow_type(args) or isinstance(args.get("plan"), dict):
-        return args, None
-    if resolve_catalog_workflow is None:
-        return args, None
-    user_goal = _workflow_goal_for_resolution(args)
-    if not user_goal:
-        return args, None
-    resolved = resolve_catalog_workflow({"user_goal": user_goal, "limit": 8})
-    if not resolved.get("ok"):
-        return args, None
-    candidates = [
-        candidate
-        for candidate in resolved.get("candidates") or []
-        if isinstance(candidate, dict)
-    ]
-    recommended = resolved.get("recommended") if isinstance(resolved.get("recommended"), dict) else None
-    exact = bool(
-        recommended
-        and float(recommended.get("score") or 0) >= 90
-        and not resolved.get("ambiguous")
-    )
-    if exact:
-        return {**args, "workflow_type": recommended.get("workflow_type"), "user_goal": user_goal}, None
-    if candidates:
-        return args, _workflow_selection_required(
-            resolved,
-            reason="workflow_type was not explicit and the natural-language goal is ambiguous",
-        )
-    return args, None
-
-
 def _handle_create_workflow_graph(args: dict[str, Any], **_: Any) -> str:
     if build_workflow_graph_commands is None:
         return tool_error(
             "Freezone workflow graph builder is unavailable. "
             f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
         )
-    args, selection_error = _resolve_workflow_creation_args(args)
-    if selection_error:
-        return selection_error
-    if isinstance(args.get("plan"), dict):
-        if validate_agent_workflow_plan is None:
-            return tool_error(
-                "Freezone dynamic WorkflowPlan validation is unavailable. "
-                f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
-            )
-        validated = validate_agent_workflow_plan(args["plan"])
-        if not validated.get("ok"):
-            return tool_result(validated)
+    if not isinstance(args.get("plan"), dict):
+        return tool_result(
+            {
+                "ok": False,
+                "status": "dynamic_workflow_plan_required",
+                "code": "dynamic_workflow_plan_required",
+                "error": "plan must be a complete freezone_workflow_plan.v1 object",
+                "message": "当前仅支持动态工作流，请先基于 Skill 和 Recipe 生成完整 WorkflowPlan。",
+                "agent_instruction": (
+                    "Load the selected Skill with freezone_get_workflow_skill(compact=true), "
+                    "author one complete freezone_workflow_plan.v1 with explicit Recipe ids, "
+                    "then call freezone_create_workflow_graph(plan=...). Do not retry with "
+                    "workflow_type, count, items, or handwritten canvas commands."
+                ),
+            }
+        )
+    if validate_agent_workflow_plan is None:
+        return tool_error(
+            "Freezone dynamic WorkflowPlan validation is unavailable. "
+            f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
+        )
+    validated = validate_agent_workflow_plan(args["plan"])
+    if not validated.get("ok"):
+        return tool_result(validated)
     built = build_workflow_graph_commands(args)
     if not built.get("ok"):
         return tool_result(built)
@@ -2888,7 +2758,268 @@ def _handle_create_workflow_graph(args: dict[str, Any], **_: Any) -> str:
         project,
         canvas,
         commands,
-        allow_registered_workflow_batch=True,
+        allow_dynamic_workflow_batch=True,
+        slim_result=True,
+    )
+
+
+def _workflow_draft_dependencies_available() -> bool:
+    return bool(
+        compile_workflow_intent is not None
+        and build_workflow_graph_commands is not None
+        and claim_workflow_draft_confirmation is not None
+        and create_workflow_draft is not None
+        and finish_workflow_draft_confirmation is not None
+        and patch_workflow_draft is not None
+        and public_workflow_draft is not None
+        and read_workflow_draft is not None
+    )
+
+
+def _workflow_draft_unavailable() -> str:
+    return tool_error(
+        "Freezone workflow drafts are unavailable. "
+        f"Draft import error: {_WORKFLOW_DRAFT_IMPORT_ERROR}; "
+        f"catalog import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}; "
+        f"graph import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
+    )
+
+
+def _run_after_create_arg(args: dict[str, Any]) -> bool | None:
+    if "run_after_create" in args:
+        return bool(args.get("run_after_create"))
+    if "runAfterCreate" in args:
+        return bool(args.get("runAfterCreate"))
+    return None
+
+
+def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
+    if not _workflow_draft_dependencies_available():
+        return _workflow_draft_unavailable()
+    intent = args.get("intent")
+    compiled = compile_workflow_intent(intent)
+    if not compiled.get("ok"):
+        return tool_result(compiled)
+    run_after_create = _run_after_create_arg(args)
+    payload = create_workflow_draft(
+        intent=intent,
+        compiled=compiled,
+        project_id=str(
+            args.get("project_id") or args.get("project") or _default_project_id()
+        ).strip(),
+        canvas_id=str(
+            args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
+        ).strip(),
+        run_after_create=bool(run_after_create),
+    )
+    result = public_workflow_draft(payload)
+    result["agent_instruction"] = (
+        "Present the exact preview in product language and wait for user confirmation. "
+        "For adjustments, patch this draft instead of rebuilding the intent. "
+        "After confirmation, call freezone_confirm_workflow_draft with draft_id and revision."
+    )
+    return tool_result(result)
+
+
+def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
+    if not _workflow_draft_dependencies_available():
+        return _workflow_draft_unavailable()
+    draft_id = str(args.get("draft_id") or args.get("draftId") or "").strip()
+    if not draft_id:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_id_required",
+                "error": "draft_id is required",
+            }
+        )
+    changes = args.get("changes")
+    if not isinstance(changes, dict):
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_changes_required",
+                "error": "changes must be an object",
+            }
+        )
+    raw_revision = args.get("expected_revision", args.get("expectedRevision"))
+    if raw_revision is None:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_revision_required",
+                "error": "expected_revision is required",
+            }
+        )
+    try:
+        expected_revision = int(raw_revision)
+    except (TypeError, ValueError):
+        return tool_result(
+            {
+                "ok": False,
+                "status": "invalid_workflow_draft_revision",
+                "error": "expected_revision must be an integer",
+            }
+        )
+    payload, error = patch_workflow_draft(
+        draft_id=draft_id,
+        changes=changes,
+        compile_intent=compile_workflow_intent,
+        expected_revision=expected_revision,
+        run_after_create=_run_after_create_arg(args),
+    )
+    if payload is None:
+        return tool_result(error)
+    result = public_workflow_draft(payload)
+    result["status"] = "workflow_draft_updated"
+    result["agent_instruction"] = (
+        "Present only the resulting product-level changes and updated preview. "
+        "Keep using this draft_id and revision for further adjustments or confirmation."
+    )
+    return tool_result(result)
+
+
+def _tool_result_payload(value: Any) -> dict[str, Any] | None:
+    if isinstance(value, dict):
+        return value
+    if not isinstance(value, str):
+        return None
+    try:
+        parsed = json.loads(value)
+    except json.JSONDecodeError:
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
+    if not _workflow_draft_dependencies_available():
+        return _workflow_draft_unavailable()
+    draft_id = str(args.get("draft_id") or args.get("draftId") or "").strip()
+    if not draft_id:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_id_required",
+                "error": "draft_id is required",
+            }
+        )
+    raw_revision = args.get("revision")
+    if raw_revision is None:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_revision_required",
+                "error": "revision is required",
+            }
+        )
+    try:
+        revision = int(raw_revision)
+    except (TypeError, ValueError):
+        return tool_result(
+            {
+                "ok": False,
+                "status": "invalid_workflow_draft_revision",
+                "error": "revision must be an integer",
+            }
+        )
+    payload, claim_result = claim_workflow_draft_confirmation(
+        draft_id,
+        revision=revision,
+    )
+    if payload is None:
+        return tool_result(claim_result)
+    explicit_project = str(args.get("project_id") or args.get("project") or "").strip()
+    explicit_canvas = str(args.get("canvas_id") or args.get("canvasId") or "").strip()
+    stored_project = str(payload.get("project_id") or "").strip()
+    stored_canvas = str(payload.get("canvas_id") or "").strip()
+    if explicit_project and stored_project and explicit_project != stored_project:
+        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_scope_mismatch",
+                "error": "workflow draft belongs to a different project",
+            }
+        )
+    if explicit_canvas and stored_canvas and explicit_canvas != stored_canvas:
+        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_scope_mismatch",
+                "error": "workflow draft belongs to a different canvas",
+            }
+        )
+    run_after_create = _run_after_create_arg(args)
+    if run_after_create is None:
+        run_after_create = bool(payload.get("run_after_create"))
+    compiled = payload.get("compiled") if isinstance(payload.get("compiled"), dict) else {}
+    plan = compiled.get("plan")
+    built = build_workflow_graph_commands(
+        {
+            "plan": plan,
+            "run_after_create": run_after_create,
+            "workflow_instance_id": draft_id,
+        }
+    )
+    if not built.get("ok"):
+        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        return tool_result(built)
+    try:
+        result = _emit_canvas_commands(
+            explicit_project or stored_project or _default_project_id() or None,
+            explicit_canvas or stored_canvas or _default_canvas_id() or None,
+            built.get("commands"),
+            allow_dynamic_workflow_batch=True,
+            slim_result=True,
+        )
+    except Exception:
+        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        raise
+    result_payload = _tool_result_payload(result)
+    if result_payload and result_payload.get("ok"):
+        outcome = (
+            "submitted"
+            if result_payload.get("canvas_apply_status") == "timeout"
+            else "confirmed"
+        )
+        finish_workflow_draft_confirmation(draft_id, outcome=outcome)
+    else:
+        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+    return result
+
+
+def _handle_create_workflow_from_intent(args: dict[str, Any], **_: Any) -> str:
+    if compile_workflow_intent is None:
+        return tool_error(
+            "Freezone workflow intent compiler is unavailable. "
+            f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
+        )
+    if build_workflow_graph_commands is None:
+        return tool_error(
+            "Freezone workflow graph builder is unavailable. "
+            f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
+        )
+    compiled = compile_workflow_intent(args.get("intent"))
+    if not compiled.get("ok"):
+        return tool_result(compiled)
+    plan = compiled.get("plan")
+    built = build_workflow_graph_commands({**args, "plan": plan})
+    if not built.get("ok"):
+        return tool_result(built)
+    project = (
+        str(args.get("project_id") or args.get("project") or _default_project_id()).strip()
+        or None
+    )
+    canvas = (
+        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip()
+        or None
+    )
+    return _emit_canvas_commands(
+        project,
+        canvas,
+        built.get("commands"),
+        allow_dynamic_workflow_batch=True,
         slim_result=True,
     )
 
@@ -3009,12 +3140,63 @@ def _handle_create_edge(args: dict[str, Any], **_: Any) -> str:
 
 def _handle_delete_nodes(args: dict[str, Any], **_: Any) -> str:
     node_ids = args.get("node_ids") or args.get("nodeIds")
+    scope = str(args.get("scope") or "").strip().lower()
+    if scope == "canvas":
+        project = (
+            str(args.get("project_id") or args.get("project") or _default_project_id()).strip()
+            or None
+        )
+        canvas = (
+            str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip()
+            or None
+        )
+        project, canvas, scope_error = _resolve_canvas_scope_for_write(project, canvas)
+        if scope_error:
+            return scope_error
+        response = _request(
+            "GET",
+            f"/api/v1/projects/{quote(project, safe='')}/freezone/canvases/{quote(canvas, safe='')}",
+        )
+        if not response.get("ok", True):
+            return tool_result(
+                {
+                    "ok": False,
+                    "status": "canvas_read_failed",
+                    "error": response.get("error") or "failed to read canvas",
+                }
+            )
+        current = response.get("data") if isinstance(response.get("data"), dict) else {}
+        node_ids = [
+            str(node.get("id") or "").strip()
+            for node in current.get("nodes") or []
+            if isinstance(node, dict) and str(node.get("id") or "").strip()
+        ]
+        if not node_ids:
+            return tool_result(
+                {
+                    "ok": True,
+                    "tool_call_status": "completed",
+                    "canvas_apply_status": "already_empty",
+                    "applied": True,
+                    "project_id": project,
+                    "canvas_id": canvas,
+                    "deleted_node_count": 0,
+                    "message": "Canvas is already empty.",
+                    "agent_instruction": "Report briefly that the canvas is already empty.",
+                }
+            )
+        return _emit_canvas_commands(
+            project,
+            canvas,
+            [{"type": "delete_nodes", "node_ids": node_ids}],
+            slim_result=True,
+        )
     if not isinstance(node_ids, list) or not node_ids:
         return tool_result(
             {
                 "ok": False,
                 "status": "node_ids_required",
-                "error": "node_ids must be a non-empty array",
+                "error": "node_ids must be a non-empty array, or scope must be canvas",
             }
         )
     return _single_write_command(args, {"type": "delete_nodes", "node_ids": node_ids})
@@ -3312,6 +3494,83 @@ _SCOPE_PROPS = {
     "canvasId": {"type": "string", "description": "Alias of canvas_id."},
 }
 
+_WORKFLOW_INTENT_OBJECT_SCHEMA = {
+    "type": "object",
+    "description": "Compact dynamic workflow decision. Do not send a full nodes/edges plan.",
+    "properties": {
+        "schema_version": {
+            "type": "string",
+            "enum": ["freezone_workflow_intent.v1"],
+        },
+        "skill_id": {"type": "string"},
+        "template_id": {"type": "string"},
+        "user_goal": {"type": "string"},
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "inputs": {"type": "object"},
+        "items": {
+            "type": "array",
+            "description": (
+                "Short creative item or shot decisions. Strings are accepted; objects may "
+                "contain title, prompt, and optional step_id."
+            ),
+            "maxItems": 24,
+            "items": {
+                "oneOf": [
+                    {"type": "string"},
+                    {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "step_id": {"type": "string"},
+                        },
+                    },
+                ]
+            },
+        },
+        "step_counts": {
+            "type": "object",
+            "description": "Optional per-step count overrides keyed by Skill step id.",
+        },
+        "exclude_steps": {
+            "type": "array",
+            "items": {"type": "string"},
+        },
+        "include_audio": {"type": "boolean"},
+        "include_compose": {"type": "boolean"},
+        "source_anchor": {
+            "oneOf": [
+                {"type": "boolean"},
+                {
+                    "type": "object",
+                    "properties": {
+                        "enabled": {"type": "boolean"},
+                        "title": {"type": "string"},
+                        "prompt": {"type": "string"},
+                    },
+                },
+            ],
+            "description": (
+                "Use true or a short object when missing source media should be generated first."
+            ),
+        },
+        "assumptions": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["skill_id", "user_goal"],
+}
+
+_WORKFLOW_RUN_AFTER_CREATE_PROPS = {
+    "run_after_create": {
+        "type": "boolean",
+        "description": "Append deterministic workflow execution after graph creation.",
+    },
+    "runAfterCreate": {
+        "type": "boolean",
+        "description": "Alias of run_after_create.",
+    },
+}
+
 _SKILL_STUDIO_OPTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -3369,6 +3628,28 @@ _SKILL_STUDIO_QUESTION_SCHEMA = {
     "required": ["id", "title", "options"],
 }
 
+_SKILL_STUDIO_ASPECT_RATIO_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Default canvas aspect ratio by catalog task type. Only imageGeneration and "
+        "videoGeneration keys are allowed. For imageGeneration choose one of 1:1, 9:16, "
+        "16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, 21:9. For videoGeneration choose one of "
+        "16:9, 4:3, 1:1, 3:4, 9:16, 21:9. Do not use auto, textGeneration, "
+        "audioGeneration, model names, or arbitrary keys for saved Skill defaults."
+    ),
+    "properties": {
+        "imageGeneration": {
+            "type": "string",
+            "enum": ["1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "4:5", "5:4", "21:9"],
+        },
+        "videoGeneration": {
+            "type": "string",
+            "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
+        },
+    },
+    "additionalProperties": False,
+}
+
 _SKILL_STUDIO_RATING_BAND_SCHEMA = {
     "type": "object",
     "properties": {
@@ -3388,114 +3669,6 @@ _SKILL_STUDIO_REVIEW_ITEM_SCHEMA = {
     "required": ["name", "weight", "description"],
 }
 
-_SKILL_STUDIO_WORKFLOW_STEP_SCHEMA = {
-    "type": "object",
-    "description": "One executable step in a Xi画 Skill workflow template.",
-    "properties": {
-        "id": {
-            "type": "string",
-            "description": "Stable step id inside this workflow template.",
-        },
-        "step_number": {
-            "type": "number",
-            "description": "1-based execution order.",
-        },
-        "goal_template": {
-            "type": "string",
-            "description": "Human-readable goal for this step.",
-        },
-        "node_type": {
-            "type": "string",
-            "enum": _SKILL_STUDIO_WORKFLOW_NODE_TYPE_VALUES,
-            "description": (
-                "Catalog task type this step creates or updates. Must choose from "
-                "textGeneration, imageGeneration, videoGeneration, audioGeneration, or "
-                "videoCompose. videoCompose is a workflow terminal composer step for "
-                "already-generated video/audio assets and manual timeline composition. "
-                "Do not create a Recipe for videoCompose; use it only as the final "
-                "workflow step that opens/configures the compose surface. "
-                "Do not use internal canvas node types such as textAnnotationNode, "
-                "imageGenNode, videoNode, audioNode, or videoComposeNode."
-            ),
-        },
-        "action_key": {
-            "type": "string",
-            "description": (
-                "Recipe/action key used by this step. For videoCompose steps, action_key is a "
-                "workflow label, not a Recipe reference; do not create or require a matching "
-                "videoCompose Recipe."
-            ),
-        },
-        "model": {
-            "type": "string",
-            "description": "Optional preferred model for this step.",
-        },
-        "prompt_strategy": {
-            "type": "string",
-            "description": "How the prompt should be produced, such as user_message, llm_refine, or previous_output.",
-        },
-        "input_strategy": {
-            "type": "object",
-            "description": (
-                "Use explicit structured input routing. Prefer {\"type\":\"none\"}, "
-                "{\"type\":\"user_message\"}, {\"type\":\"user_assets\",\"filter\":\"image\"}, "
-                "or {\"type\":\"previous_step\",\"step_id\":\"<step id>\"}. Do not use vague "
-                "source/steps fields when a single upstream step is known."
-            ),
-        },
-        "aspect_ratio": {
-            "type": "string",
-            "description": (
-                "Optional explicit aspect ratio for imageGeneration/videoGeneration steps, "
-                "such as 9:16, 1:1, 16:9, 3:4, or 4:3. Use this on ratio-specific "
-                "fixed-template steps only; dynamic workflow Skills should expose ratio choices "
-                "through input_parameters instead of Skill-level defaults."
-            ),
-        },
-        "need_review": {
-            "type": "boolean",
-            "description": "Whether the user should review this step before continuing.",
-        },
-        "multiplicity": {
-            "type": "string",
-            "description": "How many outputs to create, such as single, fixed_count, or per_input.",
-        },
-    },
-    "required": ["id", "step_number", "goal_template", "node_type", "action_key"],
-}
-
-_SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA = {
-    "type": "object",
-    "description": "Reusable canvas workflow template for this Xi画 Skill.",
-    "properties": {
-        "id": {
-            "type": "string",
-            "description": "Stable workflow template id.",
-        },
-        "name": {
-            "type": "string",
-            "description": "User-facing workflow template name.",
-        },
-        "description": {
-            "type": "string",
-            "description": "What this workflow template builds.",
-        },
-        "condition": {
-            "type": "object",
-            "description": (
-                "Machine-readable routing condition for selecting this workflow template, such as "
-                "text_only, hasInputTypes, or message_keywords. Avoid description-only conditions."
-            ),
-        },
-        "steps": {
-            "type": "array",
-            "description": "Ordered workflow steps.",
-            "items": _SKILL_STUDIO_WORKFLOW_STEP_SCHEMA,
-        },
-    },
-    "required": ["id", "description", "steps"],
-}
-
 _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA = {
     "type": "object",
     "description": (
@@ -3513,11 +3686,14 @@ _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA = {
         "default": {},
         "options": {
             "type": "array",
-            "description": (
-                "Selectable values shown to the user. Use one human-readable string per option; "
-                "do not split options into internal value and display label."
-            ),
-            "items": {"type": "string"},
+            "items": {
+                "type": "object",
+                "properties": {
+                    "value": {"type": "string"},
+                    "label": {"type": "string"},
+                },
+                "required": ["value", "label"],
+            },
         },
     },
     "required": ["id", "label", "type", "required"],
@@ -3533,10 +3709,6 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
         "id": {
             "type": "string",
             "description": "Lowercase id using letters, numbers, underscores, or hyphens.",
-        },
-        "name": {
-            "type": "string",
-            "description": "User-facing skill name.",
         },
         "description": {
             "type": "string",
@@ -3575,8 +3747,7 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                     "description": (
                         "Planner-facing executable path summary for this skill. Start with ordered "
                         "steps, task types, action_keys, upstream dependencies, review/wait behavior, "
-                        "and any aspect ratio choices represented by input_parameters; put visual or "
-                        "style guidance after the execution path."
+                        "and aspect ratio policy; put visual or style guidance after the execution path."
                     ),
                 },
                 "prompt_guide": {
@@ -3588,16 +3759,17 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                     "description": (
                         "hard execution rules the agent should follow in this domain, not only style "
                         "principles. Include step order, one-node-per-step constraints, input source "
-                        "rules, review gates, user-selectable output controls, and forbidden premature "
-                        "downstream execution."
+                        "rules, review gates, aspect ratios, and forbidden premature downstream execution."
                     ),
                     "items": {"type": "string"},
                 },
+                "default_aspect_ratios": _SKILL_STUDIO_ASPECT_RATIO_SCHEMA,
             },
             "required": [
                 "planning_notes",
                 "prompt_guide",
                 "conduct_rules",
+                "default_aspect_ratios",
             ],
         },
         "evaluation": {
@@ -3640,27 +3812,10 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
         "input_parameters": {
             "type": "array",
             "description": (
-                "Structured inputs for deterministic planning. New workflow Skills should include "
-                "the user-varying choices here instead of hard-coding them in workflow templates."
+                "Optional structured inputs for deterministic planning. Keep the list short and "
+                "use defaults where safe; the Agent asks only unresolved required values."
             ),
             "items": _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA,
-        },
-        "allowed_recipe_ids": {
-            "type": "array",
-            "description": (
-                "Strict Recipe id whitelist for dynamic WorkflowPlan generation. New workflow "
-                "Skills should list every Recipe they may use here."
-            ),
-            "items": {"type": "string"},
-        },
-        "workflow_templates": {
-            "type": "array",
-            "description": (
-                "Legacy or compatibility executable canvas workflow templates. New workflow Skills "
-                "should prefer allowed_recipe_ids plus input_parameters; include templates only when "
-                "the user explicitly wants a fixed template or old fixed-workflow compatibility."
-            ),
-            "items": _SKILL_STUDIO_WORKFLOW_TEMPLATE_SCHEMA,
         },
     },
     "required": ["id", "description", "category", "triggers", "planning", "evaluation"],
@@ -4299,89 +4454,10 @@ TOOLS = (
         _handle_mainline_projection_assets,
     ),
     (
-        "freezone_list_workflows",
-        _schema(
-            "freezone_list_workflows",
-            "List registered Freezone workflow templates. Use this before choosing a workflow_type when the user asks what workflows are available or asks to create an ambiguous workflow.",
-            {},
-        ),
-        _handle_list_workflows,
-    ),
-    (
-        "freezone_build_workflow_plan",
-        _schema(
-            "freezone_build_workflow_plan",
-            "Build a deterministic freezone_workflow_plan.v1 for one or more registered workflow_type values. This is read-only and does not change the canvas.",
-            {
-                "workflow_type": {
-                    "type": "string",
-                    "description": "Registered workflow type, e.g. text_to_image, image_to_video, text_to_video, image_to_text, text_to_audio, short_drama, ad_video, product_video, mv.",
-                },
-                "workflow_types": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Multiple registered workflow types to plan together.",
-                },
-                "title": {"type": "string", "description": "Optional workflow title."},
-                "user_goal": {
-                    "type": "string",
-                    "description": "Optional user goal or brief to seed text nodes.",
-                },
-                "beat_count": {
-                    "type": "integer",
-                    "description": "Optional beat count for short drama style workflows.",
-                },
-                "count": {
-                    "type": "integer",
-                    "description": "Optional output count used by user-overridable multiplicity rules.",
-                },
-                "inputs": {
-                    "type": "object",
-                    "description": "Confirmed structured Skill inputs used by deterministic expansion.",
-                },
-                "items": {
-                    "type": "array",
-                    "description": "Compact creative decisions. The tool expands these into nodes, edges, layout, and groups.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "step_id": {"type": "string"},
-                            "title": {"type": "string"},
-                            "prompt": {"type": "string"},
-                        },
-                    },
-                },
-            },
-        ),
-        _handle_build_workflow_plan,
-    ),
-    (
-        "freezone_resolve_catalog_workflow",
-        _schema(
-            "freezone_resolve_catalog_workflow",
-            "Read-only first step for JSON-backed workflows. Resolve a user goal to Freezone built-in plus current-user agent_config skills and recipes catalog skill/template candidates without changing the canvas. Use this when the user asks to follow the skills/recipes JSON flow step by step.",
-            {
-                "user_goal": {
-                    "type": "string",
-                    "description": "User's natural-language request, brief, or chat message to match against agent_catalog skills triggers and template conditions.",
-                },
-                "message": {
-                    "type": "string",
-                    "description": "Alias of user_goal.",
-                },
-                "limit": {
-                    "type": "integer",
-                    "description": "Maximum candidate count to return. Default 5.",
-                },
-            },
-        ),
-        _handle_resolve_catalog_workflow,
-    ),
-    (
         "freezone_get_workflow_skill",
         _schema(
             "freezone_get_workflow_skill",
-            "Load the complete planning package for one explicitly selected Workflow Skill, including its full rules, templates, compatible Recipes, capabilities, and strict freezone_workflow_plan.v1 contract. This is read-only. Prefer a user-provided skill_id; only use catalog resolution when no Skill was selected.",
+            "Load the complete planning package for one explicitly selected native Hermes Workflow Skill, including its rules, compatible Recipes, capabilities, and strict workflow contract. This is read-only and always requires the selected skill_id.",
             {
                 "skill_id": {"type": "string", "description": "Explicit selected Skill id."},
                 "skillId": {"type": "string", "description": "Alias of skill_id."},
@@ -4411,24 +4487,109 @@ TOOLS = (
         _handle_get_workflow_skill,
     ),
     (
+        "freezone_prepare_workflow_draft",
+        _schema(
+            "freezone_prepare_workflow_draft",
+            (
+                "Compile and persist one compact workflow intent before user confirmation. "
+                "Returns the exact deterministic preview, draft_id, and revision without writing "
+                "the canvas. Use this instead of manually describing an uncompiled plan."
+            ),
+            {
+                **_SCOPE_PROPS,
+                "intent": _WORKFLOW_INTENT_OBJECT_SCHEMA,
+                **_WORKFLOW_RUN_AFTER_CREATE_PROPS,
+            },
+            ["intent"],
+        ),
+        _handle_prepare_workflow_draft,
+    ),
+    (
+        "freezone_patch_workflow_draft",
+        _schema(
+            "freezone_patch_workflow_draft",
+            (
+                "Apply a small user-requested change to an existing workflow draft, recompile it, "
+                "and return the exact updated preview. Keep the selected skill_id unchanged and "
+                "send only changed intent fields."
+            ),
+            {
+                "draft_id": {"type": "string"},
+                "draftId": {"type": "string", "description": "Alias of draft_id."},
+                "expected_revision": {
+                    "type": "integer",
+                    "description": "Last revision shown to the user; rejects stale updates.",
+                },
+                "expectedRevision": {
+                    "type": "integer",
+                    "description": "Alias of expected_revision.",
+                },
+                "changes": {
+                    "type": "object",
+                    "description": (
+                        "Changed compact-intent fields only. Supported fields: user_goal, title, "
+                        "summary, inputs, items, step_counts, exclude_steps, include_audio, "
+                        "include_compose, source_anchor, template_id, assumptions. Null removes "
+                        "an optional field; inputs and step_counts are merged."
+                    ),
+                },
+                **_WORKFLOW_RUN_AFTER_CREATE_PROPS,
+            },
+            ["draft_id", "expected_revision", "changes"],
+        ),
+        _handle_patch_workflow_draft,
+    ),
+    (
+        "freezone_confirm_workflow_draft",
+        _schema(
+            "freezone_confirm_workflow_draft",
+            (
+                "Create the exact persisted workflow draft after the user confirms its preview. "
+                "Requires the shown revision, prevents duplicate confirmation, and delegates "
+                "node creation, approval, and optional execution to the deterministic canvas path."
+            ),
+            {
+                **_SCOPE_PROPS,
+                "draft_id": {"type": "string"},
+                "draftId": {"type": "string", "description": "Alias of draft_id."},
+                "revision": {
+                    "type": "integer",
+                    "description": "Exact draft revision confirmed by the user.",
+                },
+                **_WORKFLOW_RUN_AFTER_CREATE_PROPS,
+            },
+            ["draft_id", "revision"],
+        ),
+        _handle_confirm_workflow_draft,
+    ),
+    (
+        "freezone_create_workflow_from_intent",
+        _schema(
+            "freezone_create_workflow_from_intent",
+            (
+                "Compatibility path for direct creation from a compact workflow intent. New "
+                "interactive flows should prepare, patch, and confirm a persisted workflow draft "
+                "so the reviewed preview cannot drift before creation."
+            ),
+            {
+                **_SCOPE_PROPS,
+                "intent": _WORKFLOW_INTENT_OBJECT_SCHEMA,
+                **_WORKFLOW_RUN_AFTER_CREATE_PROPS,
+            },
+            ["intent"],
+        ),
+        _handle_create_workflow_from_intent,
+    ),
+    (
         "freezone_create_workflow_graph",
         _schema(
             "freezone_create_workflow_graph",
-            "Create a registered or agent-authored dynamic Freezone WorkflowPlan in one frontend approval. Direct plan payloads are strictly validated; invalid nodes, edges, Skill refs, or Recipe refs fail the whole request.",
+            "Create one agent-authored dynamic Freezone WorkflowPlan in one frontend approval. A complete plan is required and strictly validated; fixed workflow_type/count/items template creation is disabled.",
             {
                 **_SCOPE_PROPS,
-                "workflow_type": {
-                    "type": "string",
-                    "description": "Registered workflow type to create.",
-                },
-                "workflow_types": {
-                    "type": "array",
-                    "items": {"type": "string"},
-                    "description": "Multiple registered workflow types to create in one approval.",
-                },
                 "plan": {
                     "type": "object",
-                    "description": "Optional agent-authored freezone_workflow_plan.v1. Must reference exactly one valid Skill and explicit Recipes for executable nodes.",
+                    "description": "Required complete freezone_workflow_plan.v1. It must reference exactly one valid Skill and explicit Recipes for executable nodes.",
                 },
                 "run_after_create": {
                     "type": "boolean",
@@ -4441,36 +4602,16 @@ TOOLS = (
                     "type": "boolean",
                     "description": "Alias of run_after_create.",
                 },
-                "title": {"type": "string", "description": "Optional workflow title."},
-                "user_goal": {
+                "workflow_instance_id": {
                     "type": "string",
-                    "description": "Optional user goal or brief to seed text nodes.",
-                },
-                "beat_count": {
-                    "type": "integer",
-                    "description": "Optional beat count for short drama style workflows.",
-                },
-                "count": {
-                    "type": "integer",
-                    "description": "Optional output count used by user-overridable multiplicity rules.",
-                },
-                "inputs": {
-                    "type": "object",
-                    "description": "Confirmed structured Skill inputs used by deterministic expansion.",
-                },
-                "items": {
-                    "type": "array",
-                    "description": "Compact creative decisions. Do not send complete nodes or edges.",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "step_id": {"type": "string"},
-                            "title": {"type": "string"},
-                            "prompt": {"type": "string"},
-                        },
-                    },
+                    "description": (
+                        "Optional stable idempotency key for an advanced direct Plan submission. "
+                        "Reuse it when retrying the same submission. Omit it for normal draft "
+                        "confirmation, which supplies the draft id automatically."
+                    ),
                 },
             },
+            ["plan"],
         ),
         _handle_create_workflow_graph,
     ),
@@ -4509,7 +4650,7 @@ TOOLS = (
                 **_SCOPE_PROPS,
                 "commands": {
                     "type": "array",
-                    "description": "Complete canvas_chat_commands.v1 commands array for ordinary non-workflow edits. For registered workflows, do not build this array manually; call freezone_create_workflow_graph with workflow_type/workflow_types. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc.",
+                    "description": "Complete canvas_chat_commands.v1 commands array for ordinary non-workflow edits. For workflows, do not build this array manually; call freezone_create_workflow_graph with a complete dynamic plan. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc.",
                     "items": _CANVAS_COMMAND_ITEM_SCHEMA,
                 },
                 "body": {
@@ -4650,9 +4791,14 @@ TOOLS = (
         "freezone_delete_nodes",
         _schema(
             "freezone_delete_nodes",
-            "Single-operation tool only: delete nodes as one pure delete operation when the user explicitly asks only to delete nodes. For mixed delete/update/layout/link workflows, use one freezone_emit_canvas_command batch. Use this for node deletion, not for disconnecting edges.",
+            "Single-operation tool only: delete nodes as one pure delete operation. When the user asks to delete every node or clear the canvas, pass scope=canvas and omit node_ids; do not inspect or read nodes first. For selected nodes, pass node_ids. For mixed delete/update/layout/link workflows, use one freezone_emit_canvas_command batch. Use this for node deletion, not for disconnecting edges.",
             {
                 **_SCOPE_PROPS,
+                "scope": {
+                    "type": "string",
+                    "enum": ["canvas"],
+                    "description": "Use canvas to delete every node without listing node ids.",
+                },
                 "node_ids": {
                     "type": "array",
                     "description": "Existing node ids to delete.",
@@ -4664,7 +4810,7 @@ TOOLS = (
                     "items": {"type": "string"},
                 },
             },
-            ["node_ids"],
+            [],
         ),
         _handle_delete_nodes,
     ),

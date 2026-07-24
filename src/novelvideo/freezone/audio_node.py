@@ -29,6 +29,11 @@ from novelvideo.freezone.paths import outputs_dir
 
 USER_VOICE_EXTENSIONS = {".mp3", ".wav", ".m4a", ".aac", ".ogg", ".webm"}
 USER_VOICE_SCOPE = "user_custom"
+DEFAULT_PRESET_TTS_MODEL = "edge-tts"
+LEGACY_PRESET_TTS_MODELS = {"qwen3-tts-flash", "LingShan-TTS-2"}
+EDGE_PRESET_VOICE_ALIASES = {
+    "Serena": "zh-CN-XiaoxiaoNeural",
+}
 
 
 @dataclass
@@ -386,11 +391,52 @@ async def generate_freezone_audio_speech(
     text: str,
     emotion_prompt: str = "",
     voice_ref: dict | None = None,
+    speech_mode: str = "clone",
+    preset_model: str = DEFAULT_PRESET_TTS_MODEL,
+    preset_voice: str = "Serena",
 ) -> FreezoneAudioSpeechResult:
-    """Generate standalone Freezone speech using the project narrator reference."""
+    """Generate speech with either a zero-config preset or a cloned reference voice."""
     clean_text = str(text or "").strip()
     if not clean_text:
         raise ValueError("text is required")
+
+    mode = str(speech_mode or "clone").strip().lower()
+    output_path = freezone_audio_speech_output_path(project_dir, job_id)
+    if mode == "preset":
+        model_name = str(preset_model or DEFAULT_PRESET_TTS_MODEL).strip()
+        if not model_name or model_name in LEGACY_PRESET_TTS_MODELS:
+            model_name = DEFAULT_PRESET_TTS_MODEL
+        voice_name = str(preset_voice or "Serena").strip() or "Serena"
+        if model_name == DEFAULT_PRESET_TTS_MODEL:
+            await _write_edge_tts_speech(
+                output_path=output_path,
+                input_text=clean_text,
+                voice=EDGE_PRESET_VOICE_ALIASES.get(voice_name, voice_name),
+            )
+        else:
+            await _write_newapi_audio_speech(
+                output_path=output_path,
+                model=model_name,
+                input_text=clean_text,
+                response_format="mp3",
+                voice=voice_name,
+                metadata={
+                    "speech_mode": "preset",
+                    "emotion_prompt": str(emotion_prompt or "").strip(),
+                },
+            )
+        if not output_path.exists() or output_path.stat().st_size <= 0:
+            raise RuntimeError("NewAPI preset speech audio file was not created")
+        return FreezoneAudioSpeechResult(
+            audio_path=output_path,
+            duration_ms=_duration_ms(output_path),
+            mime_type="audio/mpeg",
+            model=model_name,
+            voice_source=f"preset:{voice_name}",
+            voice_sha256="",
+        )
+    if mode != "clone":
+        raise ValueError(f"unsupported speech_mode: {speech_mode}")
 
     narration_style = load_effective_narration_style_for_voice(username, project)
     selected_voice = await _resolve_voice_ref(
@@ -417,7 +463,6 @@ async def generate_freezone_audio_speech(
             voice.source or "project_narrator",
         )
 
-    output_path = freezone_audio_speech_output_path(project_dir, job_id)
     generator = IndexTTS2FalClient()
     result = await generator.generate(
         prompt=clean_text,
@@ -437,6 +482,23 @@ async def generate_freezone_audio_speech(
         voice_source=selected_voice.source,
         voice_sha256=selected_voice.sha256,
     )
+
+
+async def _write_edge_tts_speech(
+    *,
+    output_path: Path,
+    input_text: str,
+    voice: str,
+) -> None:
+    from novelvideo.generators.tts_generator import EdgeTTSGenerator
+
+    result = await EdgeTTSGenerator(voice=voice).generate(
+        text=input_text,
+        output_path=str(output_path),
+        generate_subtitle=False,
+    )
+    if not result.success:
+        raise RuntimeError(result.error or "Edge TTS generation failed")
 
 
 def _newapi_audio_endpoint(base_url: str | None = None) -> str:

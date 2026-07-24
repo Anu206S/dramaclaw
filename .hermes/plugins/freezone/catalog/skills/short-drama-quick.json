@@ -1,0 +1,89 @@
+{
+  "id": "short-drama-quick",
+  "name": "短剧（快速测试）",
+  "enabled": true,
+  "version": 1,
+  "description": "用于快速验证动态短剧工作流：故事规划、角色锚点、分镜、视频、配音和自动合成。",
+  "category": "drama",
+  "aliases": ["短剧快速测试", "快速短剧", "一键短剧", "short drama quick"],
+  "triggers": {
+    "keywords": ["短剧快速测试", "快速短剧", "一键短剧"],
+    "node_scopes": ["textGeneration", "imageGeneration", "videoGeneration", "audioGeneration"]
+  },
+  "planning": {
+    "planning_notes": "这是轻量测试流程；正式复杂短剧继续使用原有 short-drama Skill。每个镜头 item 必须提供 title、prompt 和非空 narration，narration 是该镜头实际朗读的一句旁白或对白。",
+    "prompt_guide": "保持角色身份、服装、场景和叙事连续，每个计划项对应一个剧情镜头。prompt 只描述画面，narration 只写该镜头实际朗读的旁白或对白，不要包含时间码、时长、情绪标签、环境音、音效或配乐说明。"
+  },
+  "workflow_templates": [
+    {
+      "id": "short-drama-quick-dynamic",
+      "name": "动态短剧快速流程",
+      "steps": [
+        {
+          "id": "story-plan",
+          "step_number": 1,
+          "goal_template": "生成故事梗概、角色设定和逐镜头剧情计划",
+          "node_type": "textGeneration",
+          "action_key": "drama-plot-outline",
+          "prompt_strategy": "user_message",
+          "input_strategy": {"type": "none"},
+          "multiplicity": "single"
+        },
+        {
+          "id": "character-anchor",
+          "step_number": 2,
+          "goal_template": "生成主要角色统一视觉锚点",
+          "node_type": "imageGeneration",
+          "action_key": "drama-character-turnaround",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "story-plan"},
+          "multiplicity": "single"
+        },
+        {
+          "id": "storyboards",
+          "step_number": 3,
+          "goal_template": "逐镜头生成短剧分镜画面",
+          "node_type": "imageGeneration",
+          "action_key": "drama-shot-group-storyboard",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "character-anchor"},
+          "multiplicity": "per_plan_item"
+        },
+        {
+          "id": "drama-clips",
+          "step_number": 4,
+          "goal_template": "逐镜头生成短剧视频片段",
+          "node_type": "videoGeneration",
+          "action_key": "general-video",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "storyboards"},
+          "multiplicity": "per_input"
+        },
+        {
+          "id": "drama-voice",
+          "step_number": 5,
+          "goal_template": "逐镜头生成旁白或对白",
+          "node_type": "audioGeneration",
+          "action_key": "drama-shot-voice",
+          "prompt_strategy": "template",
+          "input_strategy": {"type": "previous_step", "step_id": "drama-clips"},
+          "multiplicity": "per_input",
+          "model": "edge-tts",
+          "timeline_role": "shot_voice"
+        },
+        {
+          "id": "drama-bgm",
+          "step_number": 6,
+          "goal_template": "生成覆盖全片的纯背景音乐",
+          "node_type": "audioGeneration",
+          "action_key": "drama-background-music",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "story-plan"},
+          "multiplicity": "single",
+          "model": "suno_music",
+          "timeline_role": "background_music"
+        }
+      ]
+    }
+  ]
+}

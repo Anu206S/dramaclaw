@@ -10,7 +10,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 
 - 这个 skill 是虾画/Freezone 的总入口，负责判断当前是不是画布场景、用户意图属于咨询还是画布操作，以及用户可见回复应该怎么说。
 - 具体节点职责、连线语义、视频节点和合成节点的产品建模，读取 `references/canvas-modeling-guide.md`。
-- 具体前端命令格式、注入块读取、批量/单步工具、校验、`client_id` 和 JSON 示例，读取 `references/canvas-command-guide.md`。
+- 只有复杂批量命令的字段不明确时，才读取 `references/canvas-command-guide.md`。删除、选择、布局等参数已经明确的单步操作禁止先读取该指南。
 
 ## 意图判断
 
@@ -21,10 +21,13 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 - **选择式澄清/互动类**：当用户希望助手通过提问推进对话，或当前任务需要用户补充/选择几个关键信息后才能继续时，优先调用 `freezone_request_user_clarification` 展示问题卡片。适用场景包括：帮用户理清想法、做偏好选择、做小测验/问答互动、确认方向、收集必要条件。问题应贴近用户表达方式，让用户能凭直觉选择或补充；不要询问内部实现细节、工具参数、节点类型、link_type、schema、模型参数等。若只是普通闲聊、简单知识问答、单个自然追问，或用户已经给出明确指令，则直接自然语言回复，不要强行发卡片。
 - **全局画布请求**：用户说"看看画布""整理当前画布"时，优先使用当前注入的画布上下文；不足时再读取。
 - **运行已有工作流**：复用已有节点、内容和连线，优先运行已有工作流；不要重新规划一套重复节点，除非用户明确要求新增、重写或替换。
-- **注册工作流**：用户询问支持哪些工作流时，使用 `freezone_list_workflows`。用户明确要求创建已注册工作流时，交给 `workflows` skill 并调用 `freezone_create_workflow_graph`；不要手写节点、连线或分组命令。用户只要求规划/预览时，使用 `freezone_build_workflow_plan`。
+- **动态工作流**：工作流选择只使用 Hermes 原生 Skill 机制。用户可在输入框键入 `/` 选择 Workflow Skill；未显式选择且存在多个候选时，使用 `skills_list` 展示并让用户选择。加载后生成精简 `freezone_workflow_intent.v1`，调用 `freezone_prepare_workflow_draft` 得到确定性预览；调整时调用 `freezone_patch_workflow_draft`，确认后调用 `freezone_confirm_workflow_draft`。不要使用固定 `workflow_type`，不要手写画布命令，也不要调用旧的模板 Plan Builder。
 - **Skill Studio 配置类**：用户明确要求创建、编辑、保存、沉淀 Skill / Recipe / 技能 / 配方时，这是 catalog 配置草稿流程，不是画布写入，也不是纯文本完成。不要调用画布写入工具，不要声称已保存；需要澄清方向时调用 `freezone_request_user_clarification`，生成或修改草稿时调用 `freezone_present_agent_catalog_draft`，由 Freezone bridge 触发前端卡片展示。
 - **编写或沉淀 Skill / Recipe**：用户要求创建、编写、编辑、总结、抽成、沉淀或保存 Skill / Recipe 时，必须读取 `references/skill-studio-authoring-guide.md`。先判定来源模式再做能力建模：从用户一句话新建时，不要把当前画布当来源；只有用户明确说当前画布/流程/选中节点时，才做画布工作流分析；不要只按 tool schema 字段或节点类型摘要。
 - **全画布理解**：用户要求总结、理解或沉淀整张画布时，优先使用 canvas ontology / canvas summary；不要为了全局理解逐个读取所有节点详情。只有缺少关键字段时，才少量补读关键节点。
+- **清空画布**：用户明确要求删除全部节点时，直接调用 `freezone_delete_nodes(scope="canvas")`。不要先总结画布，不要逐个读取节点详情，也不要用 Python 整理节点 ID。
+- **删除选中节点**：用户要求删除当前/选中节点，且 `[SUPERTALE_CANVAS_NODE_REFERENCES]` 已提供目标时，直接把其中的 `nodeId` 作为 `freezone_delete_nodes(node_ids=[...])` 参数。禁止先调用 `skill_view`、canvas summary、ontology、selection detail 或 node detail；不要重复加载任何参考文档。
+- **简单删除快速路径优先级最高**：上述两种删除请求必须以删除写工具作为本轮第一次工具调用。不要为了遵循一般画布流程而加载指南；一般规则不能覆盖此快速路径。
 
 ### 开放意图的默认响应
 
@@ -49,7 +52,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 
 - `[SUPERTALE_CANVAS_ONTOLOGY_CONTEXT]` 是当前画布的只读 overview，用来理解已有 nodes、links、slots、actions 和 current selection；不要把它当执行结果。
 - `[SUPERTALE_CANVAS_NODE_REFERENCES]` 是本轮明确目标节点。若 overview 和 node references 同时存在，优先以 node references 作为操作目标。
-- `[SUPERTALE_CANVAS_CHAT_COMMANDS]` 表示前端已经注入画布命令规则。需要真实修改画布时，按 `references/canvas-command-guide.md` 使用 Freezone 工具。
+- `[SUPERTALE_CANVAS_CHAT_COMMANDS]` 表示前端已经注入画布命令规则。优先使用注入规则；只有复杂命令字段仍不明确时才读取完整指南。
 
 ## 落画布决策顺序
 
@@ -93,13 +96,13 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 - 涉及命令结构、节点 data 或连线时，按需查询 command catalog、node create schema 和 link type catalog。
 - 用户要求创建、添加、删除、更新、连接、移动、布局、选择、打开、运行、应用或执行任何画布对象时，**必须先调用 Freezone 写入工具**。没有写入工具成功结果，就不能说画布已变化。
 - 单个明确操作可以用对应单步写入工具，也可以用 `freezone_emit_canvas_command`；工具选择可以灵活，但“必须调用写入工具并等待结果”不可省略。
-- **多节点/连线/分组/布局请求必须用一次批量命令提交**（普通非注册工作流使用 `freezone_emit_canvas_command`；已注册工作流使用 `freezone_create_workflow_graph`），不要连续调用多个单步工具。
+- **多节点/连线/分组/布局请求必须用一次批量命令提交**（普通非工作流编辑使用 `freezone_emit_canvas_command`；动态工作流使用草稿准备、修改和确认工具），不要连续调用多个单步工具。
 - 同一个批量命令里，如果后续命令会引用本轮新建节点（连线、分组、布局、选择、移动、运行等），创建该节点时必须显式声明 `client_id`，后续只引用这个 `client_id`。禁止用 `node_0`、`node_1`、`new_node`、`auto:*` 或任何未声明占位符表示“第几个刚创建的节点”。
 - 主题性批量工作默认组织成一个工作组：例如同一个短片方案、广告创意、分镜包、工作流、素材准备包、同一目标的一组规划/生成/合成节点。批量命令里显式加入 `group_nodes`，用清晰业务 label 命名。单独加一个节点、零散修改、删除、移动、选择、运行，或只是临时补一个不成套的节点时，不要为了“批量”而强行建组。
 - 延续已有主题时，优先复用该主题组：如果当前引用节点属于某个组，且用户是在继续这个主题补节点，优先从组内合适节点 `add_next_node` 生成真实下游；这类新增节点会自然落在同组语境里。若新增内容只是相关材料而非真实下游，创建在组附近并保持同一主题布局，不要为了把节点塞进组而伪造输入连线。
 - 多步骤、批量修改或包含连线的命令，写入前必须先 `validate`。
 - 校验返回 `Allowed link_type values: none` 时，不要枚举重试；改用分组或保留未连接。
-- 完整命令规则读取 `references/canvas-command-guide.md`。
+- 复杂批量命令字段不明确时才读取完整命令指南；参数明确的单步工具不要加载指南。
 
 ## 常见错误速查
 

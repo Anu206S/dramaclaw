@@ -310,6 +310,63 @@ describe("canvas chat commands", () => {
     ]);
   });
 
+  it("does not apply the same workflow instance twice", () => {
+    const envelopes = extractCanvasChatCommandEnvelopes([
+      {
+        schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        commands: [
+          {
+            type: "create_node",
+            client_id: "brief",
+            node_type: CANVAS_NODE_TYPES.textAnnotation,
+            data: {
+              displayName: "广告需求",
+              workflowInstanceId: "workflow-draft-a",
+              workflowPlanNodeId: "brief",
+            },
+          },
+          {
+            type: "create_node",
+            client_id: "image",
+            node_type: CANVAS_NODE_TYPES.imageGen,
+            data: {
+              displayName: "广告画面",
+              workflowInstanceId: "workflow-draft-a",
+              workflowPlanNodeId: "image",
+            },
+          },
+          {
+            type: "create_edge",
+            source: "brief",
+            target: "image",
+            link_type: "prompt_for",
+          },
+        ],
+      },
+    ]);
+
+    const first = applyCanvasChatCommands(envelopes);
+    const second = applyCanvasChatCommands(envelopes);
+
+    expect(first.errors).toEqual([]);
+    expect(first.createdNodeIds).toHaveLength(2);
+    expect(second.errors).toEqual([]);
+    expect(second.createdNodeIds).toEqual([]);
+    expect(useCanvasStore.getState().nodes).toHaveLength(2);
+    expect(useCanvasStore.getState().edges).toHaveLength(1);
+    expect(second.commandResults).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          status: "success",
+          output: {
+            skipped: true,
+            reason: "workflow_instance_already_applied",
+          },
+        }),
+      ]),
+    );
+  });
+
   it("does not create internal or derived node types from assistant create commands", () => {
     const envelopes = extractCanvasChatCommandEnvelopes([
       {
@@ -573,7 +630,7 @@ describe("canvas chat commands", () => {
     expect(edge?.data ?? {}).not.toHaveProperty("edgeKind");
   });
 
-  it("does not block single node command dispatch when a node action handler throws", async () => {
+  it("reports a single node command error when its action handler throws", async () => {
     const videoId = useCanvasStore
       .getState()
       .addNode(
@@ -605,8 +662,9 @@ describe("canvas chat commands", () => {
       expect(result.commandResults).toEqual([
         expect.objectContaining({
           type: "run_node_action",
-          status: "success",
+          status: "error",
           action: "generate_video",
+          error: expect.stringContaining("handler exploded"),
         }),
       ]);
     } finally {
@@ -968,7 +1026,9 @@ describe("canvas chat commands", () => {
       { actionAcceptTimeoutMs: 500 },
     );
 
-    await Promise.resolve();
+    await vi.waitFor(() => {
+      expect(useCanvasStore.getState().pendingFocusNodeId).toBe(imageNodeId);
+    });
 
     unsubscribe = subscribeNodeAction((payload) => {
       if (payload.nodeId !== imageNodeId || payload.action !== "generate_image")
@@ -5341,9 +5401,9 @@ describe("canvas chat commands", () => {
     }
   });
 
-  it("queues multiple video actions one at a time", async () => {
+  it("runs up to three independent video actions in parallel", async () => {
     const store = useCanvasStore.getState();
-    const nodeIds = Array.from({ length: 2 }, (_, index) => store.addNode(
+    const nodeIds = Array.from({ length: 4 }, (_, index) => store.addNode(
       CANVAS_NODE_TYPES.video,
       { x: index * 360, y: 0 },
       { prompt: `广告镜头 ${index + 1}` },
@@ -5376,17 +5436,17 @@ describe("canvas chat commands", () => {
             action: "generate_video",
           })),
         }]),
-        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+        { canvasId: "canvas-a", actionTimeoutMs: 1_000 },
       );
 
-      await vi.waitFor(() => expect(events).toHaveLength(1));
+      await vi.waitFor(() => expect(events).toHaveLength(3));
       await Promise.resolve();
-      expect(events[0].nodeId).toBe(nodeIds[0]);
+      expect(events.map(({ nodeId }) => nodeId)).toEqual(nodeIds.slice(0, 3));
 
       completeAction(events[0]);
-      await vi.waitFor(() => expect(events).toHaveLength(2));
-      expect(events[1].nodeId).toBe(nodeIds[1]);
-      completeAction(events[1]);
+      await vi.waitFor(() => expect(events).toHaveLength(4));
+      expect(events[3].nodeId).toBe(nodeIds[3]);
+      for (const event of events.slice(1)) completeAction(event);
 
       const result = await resultPromise;
       expect(result.errors).toEqual([]);
@@ -7000,6 +7060,99 @@ describe("canvas chat commands", () => {
 
       expect(result.errors).toEqual([]);
       expect(events).toEqual([
+        { nodeId: composeNodeId, action: "auto_compose_video" },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("runs explicitly requested missing audio before an already satisfiable compose node", async () => {
+    const store = useCanvasStore.getState();
+    const videoNodeId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        prompt: "商品视频",
+        videoUrl: "/static/project/video.mp4",
+      },
+    );
+    const existingAudioNodeId = store.addNode(
+      CANVAS_NODE_TYPES.audio,
+      { x: 360, y: 260 },
+      {
+        text: "已有口播",
+        audioUrl: "/static/project/existing-audio.wav",
+      },
+    );
+    const missingAudioNodeId = store.addNode(
+      CANVAS_NODE_TYPES.audio,
+      { x: 360, y: 520 },
+      {
+        text: "需要生成的旁白",
+      },
+    );
+    const composeNodeId = store.addNode(
+      CANVAS_NODE_TYPES.videoCompose,
+      { x: 720, y: 0 },
+      {
+        title: "成片合成",
+      },
+    );
+    store.addEdge(videoNodeId, composeNodeId);
+    store.addEdge(existingAudioNodeId, composeNodeId);
+    store.addEdge(missingAudioNodeId, composeNodeId);
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId) return;
+        if (payload.nodeId === missingAudioNodeId) {
+          useCanvasStore.getState().updateNodeData(missingAudioNodeId, {
+            audioUrl: "/static/project/generated-audio.wav",
+          });
+          canvasEventBus.publish("freezone/node-action-result", {
+            requestId: payload.requestId,
+            nodeId: payload.nodeId,
+            action: payload.action,
+            status: "success",
+            output: { audioUrl: "/static/project/generated-audio.wav" },
+          });
+          return;
+        }
+        useCanvasStore.getState().updateNodeData(composeNodeId, {
+          resultVideoUrl: "/static/project/final.mp4",
+        });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+          output: { videoUrl: "/static/project/final.mp4" },
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [{
+              type: "run_workflow",
+              node_ids: [missingAudioNodeId],
+              direction: "connected",
+            }],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: missingAudioNodeId, action: "generate_audio" },
         { nodeId: composeNodeId, action: "auto_compose_video" },
       ]);
     } finally {

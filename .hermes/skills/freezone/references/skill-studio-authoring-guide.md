@@ -64,7 +64,7 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 
 - Do not treat tool schemas as authoring guidance.
 - schema fields are final serialization constraints, not the creative plan.
-- 不要把 schema 字段逐项问用户，例如 id、category、action_keys、system_prompt、node_type、workflow_templates、requires_source_media。
+- 不要把 schema 字段逐项问用户，例如 id、category、action_keys、system_prompt、node_type、requires_source_media。
 - 不要把 tool schema 里的参数名搬进用户可见问题。
 - 不要把 Recipe 写成字段说明书。
 - 不要因为 schema 里有某个字段，就强行生成空泛内容填进去。
@@ -80,7 +80,7 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 
 - “Skill 名称是什么？”
 - “Skill 分类是什么？”
-- “是否包含工作流模板？”
+- “是否保存固定节点拓扑？”
 - “请提供 action_keys。”
 - “你是一位专业设计师，负责生成高质量内容。”
 
@@ -133,7 +133,7 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 `distill_from_canvas` 的推荐问题：
 
 - **保留具体案例还是抽象模板**：保留当前品牌、角色和剧情，还是抽象成可替换品牌广告模板？
-- **Recipe 拆分粒度**：拆成角色/道具/分镜/视频片段/音频生成/合成计划等多个 Recipe，还是合并为更少的端到端 Recipe；最终 `videoCompose` 只作为工作流终端步骤，不计入 Recipe 数量。
+- **Recipe 拆分粒度**：拆成角色/道具/分镜/视频片段/音频生成/合成计划等多个 Recipe，还是合并为更少的端到端 Recipe；最终 `videoCompose` 只作为动态计划终端节点，不计入 Recipe 数量。
 - **强约束保留范围**：哪些规则必须成为硬闸门，例如角色一致性、道具单视角、分镜黑白线稿、视频片段时长、最终合成音频层级？
 - **输入来源范围**：只使用用户文字，还是允许读取当前画布、选中节点和上游媒体？
 
@@ -141,7 +141,7 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 
 - 不要先问 Skill 名称。
 - 不要先问 Skill 分类。
-- 不要先问是否包含工作流模板。
+- 不要先问固定拓扑；具体节点数量和依赖由每次运行的动态计划决定。
 - 不要问 id、action_keys、system_prompt、node_type、schema、link_type、模型参数。
 
 这些字段应由 Agent 从画布和用户选择中推断。只有用户明确要求改名称或分类时才询问。
@@ -152,15 +152,12 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 
 - **Skill 描述**：说明可复用能力，而不是复述当前案例。
 - **Skill 身份**：名称、ID、description 和 triggers.keywords 必须来自 `skill_identity_analysis`，不能只由工作流方法或节点类型决定。
-- **planning.planning_notes**：从可执行路径开始，写清步骤顺序、任务类型、action_keys、上游依赖、审核/等待行为、比例策略。
+- **planning.planning_notes**：从动态规划规则开始，写清阶段顺序、任务类型、action_keys、依赖约束、可并行规则、审核/等待行为和比例策略。
 - **planning.conduct_rules**：写硬执行规则，例如先锁角色再做道具，分镜审批后才能生成视频，合成前必须有视频/音频输入。
 - **evaluation.domain_constraints**：写从画布事实提炼出的硬约束，不写空泛评价。
-- **domain_contract / creative_contract**：把当前场景最影响质量的复用协议写入 planning / conduct_rules / evaluation / workflow step 说明和 Recipe 质量标准。不要新增 schema 字段，也不要只塞进某个 Recipe prompt。
-- **2.0 Workflow 字段**：多节点 Workflow Skill 默认包含 `input_parameters` 和 `allowed_recipe_ids`。`input_parameters` 承接每次会变的用户选择；`allowed_recipe_ids` 是动态规划时可用 Recipe 的严格白名单。`schema_version` 和 `version` 是系统元数据，由 Skill Studio 工具层自动补齐，不让 Agent 填写。
-- **workflow_templates**：只在用户明确选择“固定工作流模板”或需要旧固定模板兼容时生成。新 2.0 动态 Skill 不要求 `workflow_templates`。
+- **domain_contract / creative_contract**：把当前场景最影响质量的复用协议写入 planning / conduct_rules / evaluation 和 Recipe 质量标准。不要新增 schema 字段，也不要只塞进某个 Recipe prompt。
+- **动态拓扑约束**：说明本 Skill 在运行时如何决定节点数量、依赖、并行分支、审核闸门与终端合成，不保存固定工作流模板。
 - **Recipes**：按能力边界拆分，而不是机械按节点类型拆分。
-
-如果用户选择或已经提交了“包含工作流模板”，最终草稿里必须包含 `workflow_templates`。不能只在 planning_notes 里描述步骤。否则，多节点 Skill 应优先用 `allowed_recipe_ids + input_parameters + planning` 表达可动态规划的流程。
 
 ## 6. Skill Identity 与抽象边界
 
@@ -208,7 +205,7 @@ Recipe 的边界应对应可复用能力模块。
 - **分镜/场景拆解**：把叙事框架扩展成面板、镜头、台词和行动号召。
 - **视频片段生成**：按分镜段落生成多个短片段，并保持节点引用链完整。
 - **音频/音乐生成**：生成音效、旁白、BGM 或音乐规格。
-- **合成计划**：如需 AI 辅助剪辑决策，用文本 Recipe 生成片段顺序、音频层级、转场、时长和输出比例计划；真正的最终合成在动态 Plan 或兼容 `workflow_templates` 中作为 terminal `videoCompose` 步骤。
+- **合成计划**：如需 AI 辅助剪辑决策，用文本 Recipe 生成片段顺序、音频层级、转场、时长和输出比例计划；真正的最终合成由运行时动态计划创建终端 `videoComposeNode`。
 
 不要把 `videoCompose`、最终媒体合成、最终成片组装作为 Recipe 拆分选项，也不要把终端合成步骤计入 Recipe 数量。正确表达是“3 个 Recipe + 最终 videoCompose 工作流步骤”，不是“包含合成的 4 个 Recipe”。
 
@@ -223,7 +220,7 @@ Recipe 的边界应对应可复用能力模块。
 - `planning.planning_notes`：说明协议如何影响执行路径和阶段顺序。
 - `planning.conduct_rules`：写成硬执行规则。
 - `evaluation.domain_constraints`：写成可检查的质量约束。
-- 动态 Plan 的阶段说明或兼容 `workflow_templates.steps[]`：在相关步骤说明中写明继承、例外或禁止事项。
+- `planning.planning_notes` / `planning.conduct_rules`：写明阶段继承、例外、禁止事项与动态依赖规则。
 - Recipe `system_prompt` / `must_have_items`：写入该 Recipe 需要保留或转换的证据。
 
 不同领域的 contract 可能不同：
@@ -282,56 +279,30 @@ Recipe `system_prompt` 不是角色扮演套话，也不是最终下游 prompt �
 你将把上游分镜表、角色锚点和道具锚点，转换成单段 videoGeneration 节点可执行的视频提示词。输出必须包含角色一致性、引用来源、镜头动作、音效、时长、比例和负向约束。重要：你的输出是一条提示词/指令，将被送入下游 videoGeneration 节点执行；不要自己生成最终视频内容。
 ```
 
-## 10. 2.0 动态 Workflow Skill 要求
+## 10. 动态工作流规划要求
 
-新的多节点 Workflow Skill 默认不把拓扑写死进 `workflow_templates`。Agent 必须生成：
+Skill 不保存固定节点拓扑。每次运行时，Agent 根据用户本次目标、输入素材、Skill 规则和可用 Recipe，生成完整的 `freezone_workflow_plan.v1`。
 
-- `input_parameters`：只放每次任务会变化、需要默认值或确认的选择，例如时长、比例、数量、执行方式、是否生成音频。
-  - `single_select` / `multi_select` 的 `options` 使用字符串数组，直接写用户会看到并选择的选项值，例如 `["每阶段确认后继续", "只创建规划草稿"]`。不要拆成内部值和显示文案两列。
-- `allowed_recipe_ids`：列出这个 Skill 可使用的 Recipe id；动态 WorkflowPlan 只能使用这里的 Recipe。
-- `planning.planning_notes`：开头写动态执行路径，说明如何根据输入、已有画布素材和用户目标选择/跳过阶段。
-- `planning.conduct_rules`：写硬规则，例如哪些阶段要等待确认、哪些资产可复用、哪些生成阶段不能提前跑。
+Skill 草稿必须提供足够明确的规划约束：
 
-`schema_version` 和 `version` 不属于 Agent 的创作决策，不要问用户，也不要写进 tool payload；工具层会在组装草稿时补齐。
+- 阶段顺序和允许并行的阶段。
+- 每个阶段允许使用的 Recipe `action_keys`。
+- 上游输入、素材继承和引用规则。
+- 节点数量如何由本次需求决定。
+- 图片、视频等媒体的默认比例与阶段例外。
+- 审批、等待、质量闸门和局部返工边界。
+- 需要最终合成时，终端 `videoComposeNode` 的输入条件。
 
-不要把所有分支都塞进固定 step 列表。已有合格素材可以跳过前置阶段；缺少素材时可以先生成锚点；需要人工审核的图片、视频、音频生成节点应在确认后执行。
+`videoCompose` 不是 Recipe：
 
-## 11. 工作流模板要求
-
-`workflow_templates` 要描述可执行路径，而不是一句自然语言说明。
-
-每个 step 应包含：
-
-- `step_id`：稳定短 id。
-- `node_type`：只能使用 catalog task type：`textGeneration`、`imageGeneration`、`videoGeneration`、`audioGeneration`。
-- `action_keys`：对应 Recipe 的能力入口。
-- `input_strategy`：优先引用前一步或明确的上游步骤。
-- `aspect_ratio`：已知时必须写，尤其 imageGeneration / videoGeneration。
-- 审核或等待规则：需要用户确认的阶段写入 conduct_rules 或 step 说明。
-
-允许的 `node_type`：
-
-- `textGeneration`：生成文案、规划、脚本、分镜表、合成计划等文本。
-- `imageGeneration`：生成角色、道具、场景、分镜图、关键帧等图片。
-- `videoGeneration`：生成单段视频或镜头片段。
-- `audioGeneration`：生成旁白、对白、音效或音乐。
-- `videoCompose`：最终时间线/合成步骤，用于接收已经生成的视频和音频资产。
-
-`videoCompose` 是 workflow terminal composer step，不是 prompt Recipe：
-
-- 可以作为 `workflow_templates.steps[]` 的最后一步。
 - 不要为 `videoCompose` 创建 Recipe。
-- 不要写“生成合成提示词并送入 videoComposeNode”。
-- 如果需要 AI 辅助剪辑决策，创建一个 `textGeneration` Recipe 产出“合成计划/时间线规划”；随后 workflow 里用 `videoCompose` 步骤打开或配置合成组件。
-- `videoCompose` 的输入应来自前面的视频片段和音频步骤，不能直接消费策划文本、分镜说明或普通 prompt。
+- 不要声称 Recipe 会直接驱动 `videoComposeNode` 生成内容。
+- 如需 AI 辅助剪辑决策，创建 `textGeneration` Recipe 生成合成计划，再由动态 WorkflowPlan 添加终端合成节点。
+- 终端合成只能消费已生成的视频和音频资产，不能把策划文本或普通 prompt 当作媒体输入。
 
-多节点流程的模板必须体现依赖关系：
+动态计划必须显式携带每个可执行节点的 `recipeId`，并通过 Skill 的 Recipe 白名单和 WorkflowPlan 契约校验后才能创建画布节点。
 
-```text
-brand_brief -> character_anchor + product_prop_anchor -> style_lock_card -> storyboard -> video_segments + music -> final_compose
-```
-
-## 12. 从提示词抽硬约束
+## 11. 从提示词抽硬约束
 
 画布 prompt 中重复出现的短语通常比节点名更重要。必须提炼成可执行规则。
 
@@ -346,16 +317,16 @@ brand_brief -> character_anchor + product_prop_anchor -> style_lock_card -> stor
 
 不要把这些压缩成“保持风格一致”。那不是可执行规则。
 
-## 13. 比例和媒体事实
+## 12. 比例和媒体事实
 
 比例要从节点字段和媒体宽高一起判断。
 
 - 角色/产品道具常见是 1:1。
 - 分镜可能是 16:9。
 - 视频节点的字段和实际宽高可能不一致；如果宽高是 720x1280，应识别为竖屏事实，并在 planning 里写清“字段默认”和“实际输出”差异。
-- 如果 workflow 有多种比例，不要写 Skill 级默认画幅；把画幅作为 `input_parameters` 的开始前选项，固定模板中的特定步骤才可以写自己的 `aspect_ratio`。
+- 如果 workflow 有多种比例，不要把所有 task type 都写成同一个默认比例；主比例写入 `planning.default_aspect_ratios`，变体写入 workflow step。
 
-## 14. 输出时避免低质量模式
+## 13. 输出时避免低质量模式
 
 不要输出这些模式：
 
@@ -363,8 +334,7 @@ brand_brief -> character_anchor + product_prop_anchor -> style_lock_card -> stor
 - Skill 名称、ID 或关键词只按 workflow_method_terms 生成，缺少可复用协议、产物形态和使用场景。
 - Recipe system_prompt 只是角色扮演套话：“你是一位专业导演/设计师”。
 - 评价标准只有“风格一致”“质量良好”“广告感强”。
-- 新 2.0 Skill 缺少 `allowed_recipe_ids` / `input_parameters`，却只在 planning_notes 里写了工作流。
-- 旧固定模板兼容场景中，用户明确要 `workflow_templates`，但最终草稿缺失模板。
+- planning_notes 只罗列阶段名称，没有说明动态节点数量、依赖、并行和审核规则。
 - 把皮克斯、赛博朋克、水墨、黏土动画等强风格只写成“光影风格”字段，没有形成可执行的 creative_contract。
 - 把当前品牌和角色硬编码到所有字段，导致无法复用。
 - 把所有 Recipe 都写成同一种 prompt compiler，没有区分输入、输出和质量闸门。

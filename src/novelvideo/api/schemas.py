@@ -1480,6 +1480,21 @@ class FreezoneAudioVoiceRef(BaseModel):
 class FreezoneAudioSpeechRequest(BaseModel):
     """Freezone 音频节点：文本生成语音请求。"""
 
+    speech_mode: Literal["preset", "clone"] = Field(
+        default="clone",
+        description=(
+            "语音生成模式。preset 使用系统预设音色且不需要参考音频；"
+            "clone 使用项目、角色或账号级参考声线。"
+        ),
+    )
+    preset_model: str = Field(
+        default="edge-tts",
+        description="speech_mode=preset 时使用的预设语音模型。",
+    )
+    preset_voice: str = Field(
+        default="Serena",
+        description="speech_mode=preset 时使用的系统音色。",
+    )
     text: str = Field(
         description=("要合成的台词/旁白文本。"),
         examples=["她低声说：终于等到这一天了。"],
