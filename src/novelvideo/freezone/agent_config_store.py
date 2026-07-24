@@ -18,6 +18,7 @@ AgentConfigKind = Literal["skills", "recipes"]
 
 BUILTIN_AGENT_CATALOG_DIR = Path(__file__).with_name("agent_catalog") / "builtins"
 _CATALOG_CACHE: dict[tuple[str, str, tuple, tuple], list[dict]] = {}
+_STORED_METADATA_PREFIXES = ("_catalog_bundle_",)
 
 
 def builtin_agent_catalog_dir(kind: AgentConfigKind | str) -> Path:
@@ -90,10 +91,13 @@ def save_user_agent_config_item(
     item_id = _validate_item_id(str(payload.get("id") or ""))
     root = user_agent_config_dir(username, checked_kind)
     root.mkdir(parents=True, exist_ok=True)
+    stored_metadata = _stored_metadata(payload)
+    payload_without_response_metadata = _strip_response_metadata(payload)
     stored_payload = validate_agent_config_item(
         checked_kind,
-        _strip_response_metadata(payload),
+        _strip_stored_metadata(payload_without_response_metadata),
     )
+    stored_payload.update(stored_metadata)
 
     target = root / f"{item_id}.json"
     tmp = target.with_suffix(".json.tmp")
@@ -162,7 +166,12 @@ def _read_agent_config_items(root: Path) -> list[dict]:
         if not isinstance(item_id, str) or not SAFE_AGENT_CONFIG_ID.fullmatch(item_id):
             continue
         try:
-            payload = validate_agent_config_item(_kind_from_dir(root), payload)
+            stored_metadata = _stored_metadata(payload)
+            payload = validate_agent_config_item(
+                _kind_from_dir(root),
+                _strip_stored_metadata(payload),
+            )
+            payload.update(stored_metadata)
         except ValueError:
             continue
         try:
@@ -198,6 +207,22 @@ def _builtin_agent_config_exists(kind: AgentConfigKind, item_id: str) -> bool:
 
 def _strip_response_metadata(payload: dict) -> dict:
     return {key: value for key, value in payload.items() if not key.startswith("_catalog_")}
+
+
+def _stored_metadata(payload: dict) -> dict:
+    return {
+        key: value
+        for key, value in payload.items()
+        if any(key.startswith(prefix) for prefix in _STORED_METADATA_PREFIXES)
+    }
+
+
+def _strip_stored_metadata(payload: dict) -> dict:
+    return {
+        key: value
+        for key, value in payload.items()
+        if not any(key.startswith(prefix) for prefix in _STORED_METADATA_PREFIXES)
+    }
 
 
 def _user_agent_config_sort_key(payload: dict) -> tuple[int, float, str]:

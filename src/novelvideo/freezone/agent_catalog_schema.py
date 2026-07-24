@@ -7,6 +7,10 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
 
+from novelvideo.freezone.agent_catalog_security import (
+    scan_agent_catalog_payload_for_unsafe_content,
+)
+
 AgentConfigKind = Literal["skills", "recipes"]
 CatalogNodeScope = Literal[
     "textGeneration",
@@ -298,6 +302,7 @@ def validate_agent_config_item(kind: AgentConfigKind | str, payload: dict[str, A
     """Validate and normalize one agent catalog Skill or Recipe item."""
 
     try:
+        scan_agent_catalog_payload_for_unsafe_content(payload)
         if payload.get("hidden") is True:
             return AgentCatalogHiddenOverlay.model_validate(payload).model_dump(mode="json")
         if kind == "skills":
