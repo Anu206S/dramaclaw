@@ -84,6 +84,11 @@ from novelvideo.config import IMAGE_GENERATION_SELECTIONS, image_generation_sele
 from novelvideo.director_world import DirectorWorldService
 from novelvideo.director_world.staging_prop_ai import generate_ai_staging_prop
 from novelvideo.freezone import canvas_store
+from novelvideo.freezone.agent_bundle_store import (
+    export_agent_bundle,
+    install_agent_bundle,
+    validate_agent_bundle,
+)
 from novelvideo.freezone.agent_config_store import (
     delete_user_agent_config_item,
     list_user_agent_config_items,
@@ -3929,6 +3934,50 @@ async def _review_frame_text(
 @router.get("/freezone/skills", tags=[TAG_FREEZONE_SKILLS])
 async def freezone_skills(user: dict = Depends(get_api_user)):
     return {"ok": True, "data": [skill.model_dump(mode="json") for skill in list_skills()]}
+
+
+@router.post("/freezone/agent-config/bundles:validate", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def validate_freezone_agent_bundle(
+    payload: Annotated[dict, Body()],
+    user: dict = Depends(get_api_user),
+):
+    username = str(user.get("username") or "")
+    try:
+        result = validate_agent_bundle(payload.get("bundle") or {}, username=username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": {key: value for key, value in result.items() if key != "bundle"}}
+
+
+@router.post("/freezone/agent-config/bundles:install", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def install_freezone_agent_bundle(
+    payload: Annotated[dict, Body()],
+    user: dict = Depends(get_api_user),
+):
+    username = str(user.get("username") or "")
+    try:
+        result = install_agent_bundle(username=username, payload=payload.get("bundle") or {})
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": result}
+
+
+@router.post("/freezone/agent-config/bundles:export", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def export_freezone_agent_bundle(
+    payload: Annotated[dict, Body()],
+    user: dict = Depends(get_api_user),
+):
+    username = str(user.get("username") or "")
+    try:
+        bundle = export_agent_bundle(
+            username=username,
+            skill_id=str(payload.get("skill_id") or ""),
+            bundle_meta=payload.get("bundle") or {},
+            include_recipes=payload.get("include_recipes", True) is not False,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": bundle}
 
 
 @router.get("/freezone/agent-config/{kind}", tags=[TAG_FREEZONE_AGENT_CONFIG])
