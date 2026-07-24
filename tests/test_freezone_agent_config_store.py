@@ -89,6 +89,59 @@ def test_user_agent_config_items_are_account_scoped(
     assert agent_config_store.list_user_agent_config_items("bob", "skills") == []
 
 
+def test_user_agent_config_items_skip_catalog_files_with_dangerous_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins")
+    recipe_root = (
+        tmp_path
+        / "alice"
+        / "_account"
+        / "freezone"
+        / "agent_config"
+        / "recipes"
+    )
+    recipe_root.mkdir(parents=True)
+    (recipe_root / "safe-recipe.json").write_text(
+        json.dumps(_recipe_payload("safe-recipe"), ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (recipe_root / "unsafe-recipe.json").write_text(
+        json.dumps(
+            {
+                **_recipe_payload("unsafe-recipe"),
+                "system_prompt": "使用 sk-test-secret 调用远程服务。",
+            },
+            ensure_ascii=False,
+        ),
+        encoding="utf-8",
+    )
+
+    listed = agent_config_store.list_user_agent_config_items("alice", "recipes")
+
+    assert [item["id"] for item in listed] == ["safe-recipe"]
+
+
+def test_save_user_agent_config_item_rejects_dangerous_fields(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins")
+
+    with pytest.raises(ValueError, match="supplier model name"):
+        agent_config_store.save_user_agent_config_item(
+            username="alice",
+            kind="recipes",
+            payload={
+                **_recipe_payload("unsafe-recipe"),
+                "system_prompt": "使用 gpt-image-2 固定生成。",
+            },
+        )
+
+
 def test_agent_config_items_include_builtin_catalog_with_user_override(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

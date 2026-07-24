@@ -33,8 +33,11 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   useDeleteFreezoneAgentConfigItem,
+  useExportFreezoneAgentBundle,
   useFreezoneAgentConfigItems,
+  useInstallFreezoneAgentBundle,
   useSaveFreezoneAgentConfigItem,
+  type FreezoneAgentBundlePayload,
   type FreezoneAgentConfigPayload,
 } from "@/lib/queries/freezone-agent-config";
 import { validateFreezoneAgentConfigPayload } from "@/lib/freezone-agent-config-schema";
@@ -145,8 +148,11 @@ export function FreezoneSkillRecipeSettings({
   } | null>(null);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const bundleImportInputRef = useRef<HTMLInputElement | null>(null);
   const catalogQuery = useFreezoneAgentConfigItems(kind);
   const recipesCatalogQuery = useFreezoneAgentConfigItems("recipes");
+  const exportBundle = useExportFreezoneAgentBundle();
+  const installBundle = useInstallFreezoneAgentBundle();
   const saveCatalogItem = useSaveFreezoneAgentConfigItem();
   const deleteCatalogItem = useDeleteFreezoneAgentConfigItem();
   const isSkills = kind === "skills";
@@ -281,6 +287,33 @@ export function FreezoneSkillRecipeSettings({
     toast.success(t("settings.freezoneCatalog.exported"));
   };
 
+  const exportSelectedSkillBundle = async () => {
+    if (!isSkills) {
+      exportItems();
+      return;
+    }
+    if (selectedItems.length !== 1) {
+      toast.error(
+        selectedItems.length === 0
+          ? t("settings.freezoneCatalog.bundleExportSelectOne")
+          : t("settings.freezoneCatalog.bundleExportOnlyOne"),
+      );
+      return;
+    }
+    const item = selectedItems[0];
+    try {
+      const bundle = await exportBundle.mutateAsync({
+        skillId: item.id,
+        bundle: createSkillBundleExportMeta(item),
+      });
+      downloadJson(bundle, `${item.id}-bundle.json`);
+      toast.success(t("settings.freezoneCatalog.bundleExported"));
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.bundleExportFailed")}${message}`);
+    }
+  };
+
   const toggleAllSelected = (checked: boolean) => {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -339,6 +372,30 @@ export function FreezoneSkillRecipeSettings({
     }
   };
 
+  const handleBundleImportFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as unknown;
+      if (!isFreezoneBundlePayload(parsed)) {
+        throw new Error(t("settings.freezoneCatalog.bundleInvalidShape"));
+      }
+      const result = await installBundle.mutateAsync({ bundle: parsed });
+      toast.success(
+        t("settings.freezoneCatalog.bundleImported", {
+          recipeCount: result.installed_recipes.length,
+          skill: result.installed_skill,
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.bundleImportFailed")}${message}`);
+    } finally {
+      if (bundleImportInputRef.current) {
+        bundleImportInputRef.current.value = "";
+      }
+    }
+  };
+
   return (
     <>
       <section className="px-5 py-5">
@@ -388,14 +445,35 @@ export function FreezoneSkillRecipeSettings({
                 void handleImportFile(event.target.files?.[0]);
               }}
             />
+            <input
+              ref={bundleImportInputRef}
+              type="file"
+              accept=".json,application/json"
+              aria-label={t("settings.freezoneCatalog.importBundle")}
+              className="hidden"
+              onChange={(event) => {
+                void handleBundleImportFile(event.target.files?.[0]);
+              }}
+            />
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => importInputRef.current?.click()}
+              onClick={() => {
+                if (isSkills) {
+                  bundleImportInputRef.current?.click();
+                  return;
+                }
+                importInputRef.current?.click();
+              }}
+              disabled={installBundle.isPending}
             >
               <Download className="size-3.5" />
-              {t("settings.freezoneCatalog.import")}
+              {t(
+                isSkills
+                  ? "settings.freezoneCatalog.importBundle"
+                  : "settings.freezoneCatalog.import",
+              )}
             </Button>
             <Button
               type="button"
@@ -446,8 +524,13 @@ export function FreezoneSkillRecipeSettings({
           selectedCount={selectedCount}
           label={t("settings.freezoneCatalog.selectAll")}
           onDeleteSelected={() => void deleteSelectedItems()}
-          onExport={exportItems}
+          onExport={() => void exportSelectedSkillBundle()}
           onToggleAll={toggleAllSelected}
+          exportLabel={t(
+            isSkills
+              ? "settings.freezoneCatalog.exportBundle"
+              : "settings.freezoneCatalog.export",
+          )}
         />
         <CatalogList
           kind={kind}
@@ -2267,6 +2350,30 @@ interface ManagedCatalogItem {
   tags: string[];
 }
 
+function createSkillBundleExportMeta(item: ManagedCatalogItem): Record<string, unknown> {
+  const payload = stripCatalogMetadata(item.payload);
+  return {
+    id: item.id,
+    name: item.title || item.id,
+    version: getString(payload.version) || "1.0.0",
+    description: item.description || item.title || item.id,
+    author: "",
+    license: "",
+    min_dramaclaw_version: "1.0.0",
+    tags: item.tags,
+  };
+}
+
+function isFreezoneBundlePayload(value: unknown): value is FreezoneAgentBundlePayload {
+  if (!isPlainObject(value)) return false;
+  return (
+    value.schema_version === "dramaclaw.skill-bundle.v1" &&
+    typeof value.id === "string" &&
+    isPlainObject(value.skill) &&
+    Array.isArray(value.recipes)
+  );
+}
+
 function downloadJson(payload: unknown, filename: string) {
   const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
     type: "application/json",
@@ -2284,6 +2391,7 @@ function downloadJson(payload: unknown, filename: string) {
 function CatalogSelectionBar({
   allSelected,
   count,
+  exportLabel,
   label,
   onDeleteSelected,
   onExport,
@@ -2292,6 +2400,7 @@ function CatalogSelectionBar({
 }: {
   allSelected: boolean;
   count: number;
+  exportLabel: string;
   label: string;
   onDeleteSelected: () => void;
   onExport: () => void;
@@ -2335,7 +2444,7 @@ function CatalogSelectionBar({
           onClick={onExport}
         >
           <Upload className="size-3.5" />
-          {t("settings.freezoneCatalog.export")}
+          {exportLabel}
         </Button>
       </div>
     </div>
