@@ -150,6 +150,7 @@ export function FreezoneSkillRecipeSettings({
     recipes: ManagedCatalogItem[];
   } | null>(null);
   const [communityCatalogOpen, setCommunityCatalogOpen] = useState(false);
+  const [communityCatalogMode, setCommunityCatalogMode] = useState<"community" | "mine">("community");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const bundleImportInputRef = useRef<HTMLInputElement | null>(null);
@@ -173,6 +174,19 @@ export function FreezoneSkillRecipeSettings({
   const recipeItems = useMemo(
     () => (recipesCatalogQuery.data ?? []).map((item) => toManagedCatalogItem(item, "recipes")),
     [recipesCatalogQuery.data],
+  );
+  const dialogLocalSkillItems = useMemo(
+    () =>
+      (catalogQuery.data ?? [])
+        .map((item) => toManagedCatalogItem(item, "skills"))
+        .filter((item) => item.enabled)
+        .map((item) => ({
+          id: item.id,
+          label: item.title,
+          category: item.tags[0],
+          description: item.description,
+        })),
+    [catalogQuery.data],
   );
   const itemCount = catalogItems.length;
   const selectedItems = catalogItems.filter((item) => selectedIds.has(item.id));
@@ -440,7 +454,10 @@ export function FreezoneSkillRecipeSettings({
                 variant="outline"
                 size="sm"
                 className="border-white/[0.08] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
-                onClick={() => setCommunityCatalogOpen(true)}
+                onClick={() => {
+                  setCommunityCatalogMode("community");
+                  setCommunityCatalogOpen(true);
+                }}
               >
                 {t("settings.freezoneCatalog.community.open")}
               </Button>
@@ -612,16 +629,26 @@ export function FreezoneSkillRecipeSettings({
         onConfirm={(deleteRecipes) => void deleteSkillCandidate(deleteRecipes)}
       />
       <CommunitySkillDialog
+        mode={communityCatalogMode}
         open={communityCatalogOpen}
         items={communityCatalogQuery.data?.items ?? []}
+        localItems={dialogLocalSkillItems}
         installedSkillIds={new Set((catalogQuery.data ?? []).map((item) => getString(item.id)))}
-        loading={communityCatalogQuery.isLoading}
-        error={communityCatalogQuery.isError}
+        loading={communityCatalogMode === "community" ? communityCatalogQuery.isLoading : catalogQuery.isLoading}
+        error={communityCatalogMode === "community" ? communityCatalogQuery.isError : catalogQuery.isError}
         installingBundleUrl={installCommunityBundle.variables?.bundleUrl}
         installing={installCommunityBundle.isPending}
+        onModeChange={setCommunityCatalogMode}
         onOpenChange={setCommunityCatalogOpen}
-        onRetry={() => void communityCatalogQuery.refetch()}
+        onRetry={() => {
+          if (communityCatalogMode === "mine") {
+            void catalogQuery.refetch();
+          } else {
+            void communityCatalogQuery.refetch();
+          }
+        }}
         onInstall={(item) => void installCommunityCatalogItem(item)}
+        onSelectLocalSkill={() => setCommunityCatalogOpen(false)}
       />
     </>
   );
@@ -2418,16 +2445,27 @@ function isFreezoneBundlePayload(value: unknown): value is FreezoneAgentBundlePa
   );
 }
 
-function CommunitySkillDialog({
+export interface SkillDialogLocalItem {
+  id: string;
+  label: string;
+  category?: string;
+  description?: string;
+}
+
+export function CommunitySkillDialog({
   error,
   installedSkillIds,
   installing,
   installingBundleUrl,
   items,
+  localItems = [],
   loading,
+  mode = "community",
   onInstall,
+  onModeChange,
   onOpenChange,
   onRetry,
+  onSelectLocalSkill,
   open,
 }: {
   error: boolean;
@@ -2435,13 +2473,19 @@ function CommunitySkillDialog({
   installing: boolean;
   installingBundleUrl?: string;
   items: FreezoneCommunityCatalogItem[];
+  localItems?: SkillDialogLocalItem[];
   loading: boolean;
+  mode?: "community" | "mine";
   onInstall: (item: FreezoneCommunityCatalogItem) => void;
+  onModeChange?: (mode: "community" | "mine") => void;
   onOpenChange: (open: boolean) => void;
   onRetry: () => void;
+  onSelectLocalSkill?: (skillId: string) => void;
   open: boolean;
 }) {
   const { t } = useTranslation();
+  const isMine = mode === "mine";
+  const showMineTab = typeof onModeChange === "function";
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
@@ -2452,12 +2496,41 @@ function CommunitySkillDialog({
         <DialogHeader className="border-b border-border/45 px-5 py-4">
           <div className="flex items-center gap-4">
             <div className="flex min-w-0 items-center gap-4">
-              <DialogTitle className="text-base leading-8">
-                {t("settings.freezoneCatalog.community.title")}
-              </DialogTitle>
-              <span className="text-sm text-muted-foreground">
-                {t("settings.freezoneCatalog.community.featured")}
-              </span>
+              {showMineTab ? (
+                <div className="flex items-center gap-2">
+                  <DialogTitle className="text-base leading-8">
+                    <button
+                      type="button"
+                      className={cn(
+                        "rounded-md px-1.5 py-1 text-base leading-6 transition hover:bg-white/[0.055]",
+                        !isMine ? "text-foreground" : "text-muted-foreground",
+                      )}
+                      onClick={() => onModeChange?.("community")}
+                    >
+                      Skill
+                    </button>
+                  </DialogTitle>
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-1.5 py-1 text-sm leading-5 transition hover:bg-white/[0.055]",
+                      isMine ? "text-foreground" : "text-muted-foreground",
+                    )}
+                    onClick={() => onModeChange?.("mine")}
+                  >
+                    我的
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <DialogTitle className="text-base leading-8">
+                    {t("settings.freezoneCatalog.community.title")}
+                  </DialogTitle>
+                  <span className="text-sm text-muted-foreground">
+                    {t("settings.freezoneCatalog.community.featured")}
+                  </span>
+                </>
+              )}
             </div>
             <div className="ml-auto flex items-center gap-1">
               <button
@@ -2523,6 +2596,58 @@ function CommunitySkillDialog({
                 </Button>
               </div>
             </div>
+          ) : isMine ? (
+            localItems.length === 0 ? (
+              <div className="grid h-full min-h-80 place-items-center text-center">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    这里暂时没有 Skill
+                  </p>
+                  <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-muted-foreground">
+                    可以先让虾导总结当前画布，或描述工作流来创建自己的 Skill。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-3 lg:grid-cols-2">
+                {localItems.map((item) => (
+                  <article
+                    key={item.id}
+                    className="flex min-h-[104px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3"
+                  >
+                    <div className="grid size-14 shrink-0 place-items-center rounded-md border border-white/[0.08] bg-white/[0.04] text-xs text-muted-foreground">
+                      Skill
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <h4 className="truncate text-[13px] font-semibold text-foreground">
+                          {item.label || item.id}
+                        </h4>
+                        {item.category ? (
+                          <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/75">
+                            {item.category}
+                          </span>
+                        ) : null}
+                      </div>
+                      {item.description ? (
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                          {item.description}
+                        </p>
+                      ) : null}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0"
+                      onClick={() => onSelectLocalSkill?.(item.id)}
+                    >
+                      使用
+                    </Button>
+                  </article>
+                ))}
+              </div>
+            )
           ) : items.length === 0 ? (
             <div className="grid h-full min-h-80 place-items-center text-center">
               <div>
