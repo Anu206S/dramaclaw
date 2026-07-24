@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -35,8 +35,11 @@ import {
   useDeleteFreezoneAgentConfigItem,
   useExportFreezoneAgentBundle,
   useFreezoneAgentConfigItems,
+  useFreezoneCommunityCatalog,
   useInstallFreezoneAgentBundle,
+  useInstallFreezoneCommunityBundle,
   useSaveFreezoneAgentConfigItem,
+  type FreezoneCommunityCatalogItem,
   type FreezoneAgentBundlePayload,
   type FreezoneAgentConfigPayload,
 } from "@/lib/queries/freezone-agent-config";
@@ -146,16 +149,19 @@ export function FreezoneSkillRecipeSettings({
     item: ManagedCatalogItem;
     recipes: ManagedCatalogItem[];
   } | null>(null);
+  const [communityCatalogOpen, setCommunityCatalogOpen] = useState(false);
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const bundleImportInputRef = useRef<HTMLInputElement | null>(null);
   const catalogQuery = useFreezoneAgentConfigItems(kind);
   const recipesCatalogQuery = useFreezoneAgentConfigItems("recipes");
+  const isSkills = kind === "skills";
   const exportBundle = useExportFreezoneAgentBundle();
   const installBundle = useInstallFreezoneAgentBundle();
+  const communityCatalogQuery = useFreezoneCommunityCatalog(isSkills && communityCatalogOpen);
+  const installCommunityBundle = useInstallFreezoneCommunityBundle();
   const saveCatalogItem = useSaveFreezoneAgentConfigItem();
   const deleteCatalogItem = useDeleteFreezoneAgentConfigItem();
-  const isSkills = kind === "skills";
   const catalogItems = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const items = (catalogQuery.data ?? []).map((item) => toManagedCatalogItem(item, kind));
@@ -396,6 +402,21 @@ export function FreezoneSkillRecipeSettings({
     }
   };
 
+  const installCommunityCatalogItem = async (item: FreezoneCommunityCatalogItem) => {
+    try {
+      const result = await installCommunityBundle.mutateAsync({ bundleUrl: item.bundle_url });
+      toast.success(
+        t("settings.freezoneCatalog.community.installed", {
+          skill: result.installed_skill,
+          recipeCount: result.installed_recipes.length,
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.community.installFailed")}${message}`);
+    }
+  };
+
   return (
     <>
       <section className="px-5 py-5">
@@ -413,6 +434,17 @@ export function FreezoneSkillRecipeSettings({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {isSkills ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-white/[0.08] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+                onClick={() => setCommunityCatalogOpen(true)}
+              >
+                {t("settings.freezoneCatalog.community.open")}
+              </Button>
+            ) : null}
             {isSkills && onOpenRecipes ? (
               <Button
                 type="button"
@@ -578,6 +610,18 @@ export function FreezoneSkillRecipeSettings({
         deleting={deleteCatalogItem.isPending}
         onCancel={() => setSkillDeleteCandidate(null)}
         onConfirm={(deleteRecipes) => void deleteSkillCandidate(deleteRecipes)}
+      />
+      <CommunitySkillDialog
+        open={communityCatalogOpen}
+        items={communityCatalogQuery.data?.items ?? []}
+        installedSkillIds={new Set((catalogQuery.data ?? []).map((item) => getString(item.id)))}
+        loading={communityCatalogQuery.isLoading}
+        error={communityCatalogQuery.isError}
+        installingBundleUrl={installCommunityBundle.variables?.bundleUrl}
+        installing={installCommunityBundle.isPending}
+        onOpenChange={setCommunityCatalogOpen}
+        onRetry={() => void communityCatalogQuery.refetch()}
+        onInstall={(item) => void installCommunityCatalogItem(item)}
       />
     </>
   );
@@ -2371,6 +2415,194 @@ function isFreezoneBundlePayload(value: unknown): value is FreezoneAgentBundlePa
     typeof value.id === "string" &&
     isPlainObject(value.skill) &&
     Array.isArray(value.recipes)
+  );
+}
+
+function CommunitySkillDialog({
+  error,
+  installedSkillIds,
+  installing,
+  installingBundleUrl,
+  items,
+  loading,
+  onInstall,
+  onOpenChange,
+  onRetry,
+  open,
+}: {
+  error: boolean;
+  installedSkillIds: Set<string>;
+  installing: boolean;
+  installingBundleUrl?: string;
+  items: FreezoneCommunityCatalogItem[];
+  loading: boolean;
+  onInstall: (item: FreezoneCommunityCatalogItem) => void;
+  onOpenChange: (open: boolean) => void;
+  onRetry: () => void;
+  open: boolean;
+}) {
+  const { t } = useTranslation();
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="h-[min(760px,86vh)] !w-[min(1120px,calc(100vw-40px))] !max-w-[min(1120px,calc(100vw-40px))] gap-0 overflow-hidden rounded-lg border-border/75 bg-[#070808] p-0 shadow-2xl sm:!max-w-[min(1120px,calc(100vw-40px))]"
+        showCloseButton={false}
+      >
+        <DialogHeader className="border-b border-border/45 px-5 py-4">
+          <div className="flex items-center gap-4">
+            <div className="flex min-w-0 items-center gap-4">
+              <DialogTitle className="text-base leading-8">
+                {t("settings.freezoneCatalog.community.title")}
+              </DialogTitle>
+              <span className="text-sm text-muted-foreground">
+                {t("settings.freezoneCatalog.community.featured")}
+              </span>
+            </div>
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                aria-label={t("settings.freezoneCatalog.refresh")}
+                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.055] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={onRetry}
+                disabled={loading}
+              >
+                <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+              </button>
+              <button
+                type="button"
+                aria-label={t("settings.freezoneCatalog.community.close")}
+                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.055] hover:text-foreground"
+                onClick={() => onOpenChange(false)}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center gap-2">
+            {["recommended", "video", "image", "workflow", "general"].map((key) => (
+              <span
+                key={key}
+                className={cn(
+                  "rounded-md border px-3 py-1.5 text-xs",
+                  key === "recommended"
+                    ? "border-border bg-white/[0.08] text-foreground"
+                    : "border-border/60 bg-white/[0.02] text-muted-foreground",
+                )}
+              >
+                {t(`settings.freezoneCatalog.community.filters.${key}`)}
+              </span>
+            ))}
+            <div className="relative ml-auto w-[min(340px,36vw)]">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <div className="h-9 rounded-full border border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs leading-9 text-muted-foreground">
+                {t("settings.freezoneCatalog.community.searchPlaceholder")}
+              </div>
+            </div>
+          </div>
+        </DialogHeader>
+        <div className="h-[calc(100%-96px)] overflow-y-auto px-5 py-4">
+          {loading ? (
+            <div className="grid h-full min-h-80 place-items-center text-sm text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="size-3.5 animate-spin" />
+                {t("settings.freezoneCatalog.community.loading")}
+              </div>
+            </div>
+          ) : error ? (
+            <div className="grid h-full min-h-80 place-items-center text-center">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {t("settings.freezoneCatalog.community.loadFailed")}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("settings.freezoneCatalog.community.loadFailedHint")}
+                </p>
+                <Button type="button" variant="outline" size="sm" className="mt-4 h-8" onClick={onRetry}>
+                  {t("settings.freezoneCatalog.retry")}
+                </Button>
+              </div>
+            </div>
+          ) : items.length === 0 ? (
+            <div className="grid h-full min-h-80 place-items-center text-center">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {t("settings.freezoneCatalog.community.empty")}
+                </p>
+                <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-muted-foreground">
+                  {t("settings.freezoneCatalog.community.emptyDescription")}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {items.map((item) => {
+                const installed = installedSkillIds.has(item.id);
+                const itemInstalling = installing && installingBundleUrl === item.bundle_url;
+                return (
+                  <article
+                    key={item.id}
+                    className="flex min-h-[128px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3"
+                  >
+                    {item.cover_url ? (
+                      <img
+                        src={item.cover_url}
+                        alt=""
+                        className="h-24 w-40 shrink-0 rounded-md object-cover"
+                      />
+                    ) : (
+                      <div className="grid h-24 w-40 shrink-0 place-items-center rounded-md bg-white/[0.04] text-xs text-muted-foreground">
+                        Skill
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <h4 className="truncate text-[13px] font-semibold text-foreground">
+                          {item.name || item.id}
+                        </h4>
+                        <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/75">
+                          v{item.version}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                        {item.description}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground/75">
+                        <span>{item.author}</span>
+                        <span>·</span>
+                        <span>{item.license}</span>
+                        {item.tags.slice(0, 3).map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded bg-white/[0.035] px-1.5 py-0.5"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={installed ? "outline" : "default"}
+                      className="shrink-0"
+                      disabled={installed || installing}
+                      onClick={() => onInstall(item)}
+                    >
+                      {installed
+                        ? t("settings.freezoneCatalog.community.installedState")
+                        : itemInstalling
+                          ? t("settings.freezoneCatalog.community.installing")
+                          : t("settings.freezoneCatalog.community.install")}
+                    </Button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
   );
 }
 

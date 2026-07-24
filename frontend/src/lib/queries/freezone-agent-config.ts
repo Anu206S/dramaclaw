@@ -25,6 +25,24 @@ export interface FreezoneAgentBundleInstallResult {
   installed_recipes: string[];
 }
 
+export interface FreezoneCommunityCatalogItem {
+  id: string;
+  name: string;
+  version: string;
+  description: string;
+  author: string;
+  license: string;
+  min_dramaclaw_version: string;
+  tags: string[];
+  bundle_url: string;
+  cover_url?: string;
+}
+
+export interface FreezoneCommunityCatalog {
+  schema_version: string;
+  items: FreezoneCommunityCatalogItem[];
+}
+
 export const freezoneAgentConfigQueryKey = (kind: FreezoneAgentConfigKind) => [
   "freezone-agent-config",
   kind,
@@ -35,6 +53,15 @@ export function useFreezoneAgentConfigItems(kind: FreezoneAgentConfigKind) {
     queryKey: freezoneAgentConfigQueryKey(kind),
     queryFn: () =>
       apiCall<FreezoneAgentConfigPayload[]>(`freezone/agent-config/${kind}`),
+  });
+}
+
+export function useFreezoneCommunityCatalog(enabled: boolean) {
+  return useQuery({
+    queryKey: ["freezone-community-catalog"],
+    queryFn: () =>
+      apiCall<FreezoneCommunityCatalog>("freezone/agent-config/community/catalog"),
+    enabled,
   });
 }
 
@@ -104,6 +131,28 @@ export function useInstallFreezoneAgentBundle() {
         {
           method: "POST",
           json: { bundle },
+        },
+      ),
+    onSuccess: () => {
+      void queryClient.invalidateQueries({
+        queryKey: freezoneAgentConfigQueryKey("skills"),
+      });
+      void queryClient.invalidateQueries({
+        queryKey: freezoneAgentConfigQueryKey("recipes"),
+      });
+    },
+  });
+}
+
+export function useInstallFreezoneCommunityBundle() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({ bundleUrl }: { bundleUrl: string }) =>
+      apiCall<FreezoneAgentBundleInstallResult>(
+        "freezone/agent-config/community/bundles:install",
+        {
+          method: "POST",
+          json: { bundle_url: bundleUrl },
         },
       ),
     onSuccess: () => {
