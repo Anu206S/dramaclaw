@@ -1444,6 +1444,10 @@ export const VideoNode = memo(
         const state = useCanvasStore.getState();
         const self = state.nodes.find((n) => n.id === id);
         if (!self) return;
+        // 垂直居中要按视频节点的真实高度算，优先用测量值，未测量时回退设定高度/默认值。
+        const selfHeight =
+          self.measured?.height ??
+          (typeof self.height === "number" ? self.height : DEFAULT_HEIGHT);
         // 全能参考 / 图片参考都只铺一个图片节点；首尾帧要铺首帧 + 尾帧两个上传节点。
         const isSingleImage =
           mode === "allReference" || mode === "imageReference";
@@ -1520,9 +1524,11 @@ export const VideoNode = memo(
           return y;
         };
         if (isSingleImage) {
-          const baseY = resolveAvailableY(
-            self.position.y + ((self.height ?? DEFAULT_HEIGHT) - FRAME_HEIGHT) / 2,
-          );
+          // 参考图整体在视频节点左侧（有 GAP_X 间隔），x 上永远不与视频重叠；空态 CTA
+          // 也只在无上游时出现，左列必定为空。所以直接按视频高度垂直居中，不做向下避让
+          // ——避让只会在拥挤画布上把它往下顶一行、破坏与视频的对齐（见「全能参考 vs
+          // 图片参考」对不齐的问题）。
+          const baseY = self.position.y + (selfHeight - FRAME_HEIGHT) / 2;
           const newId = addNode(
             CANVAS_NODE_TYPES.imageGen,
             { x: baseX, y: baseY },
@@ -1541,8 +1547,7 @@ export const VideoNode = memo(
           return;
         }
         const totalH = FRAME_HEIGHT * 2 + GAP_Y;
-        const startY =
-          self.position.y + ((self.height ?? DEFAULT_HEIGHT) - totalH) / 2;
+        const startY = self.position.y + (selfHeight - totalH) / 2;
         const firstY = resolveAvailableY(startY);
         const lastY = resolveAvailableY(firstY + stepY);
         const firstId = addNode(
