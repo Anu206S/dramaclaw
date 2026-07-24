@@ -1201,7 +1201,8 @@ def test_freezone_prompt_requires_summary_confirmation_for_canvas_workflow_skill
     assert "current canvas, current flow, selected nodes, this project, this workflow, or existing workflow" in prompt
     assert "ask 1-2 high-level confirmation questions first" in prompt
     assert "preserve project-specific details or abstract them into a reusable Skill" in prompt
-    assert "split key generator/planner capabilities into Recipes or merge them into fewer Recipes" in prompt
+    assert "whether the reusable workflow should be fine-grained or simplified" in prompt
+    assert "do not expose internal terms such as Recipe, Recipes, 配方" in prompt
     assert "freezone_request_user_clarification" in prompt
 
 
@@ -1227,14 +1228,15 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
     assert "schema fields are final serialization constraints" in prompt
     assert "Do not ask for Skill name, category, or whether to include workflow templates" in prompt
     assert "concrete case vs reusable template" in prompt
-    assert "recipe granularity" in prompt
+    assert "user-facing reuse mode" in prompt
+    assert "Use product language such as" in prompt
     assert "New multi-node workflow Skills should use the 2.0 dynamic format by default" in prompt
     assert "Do not require workflow_templates for new dynamic Skills" in prompt
     assert "workflow_templates" in prompt
     assert "node_type=videoCompose" in prompt
     assert "Do not create a Recipe for videoCompose" in prompt
-    assert "Do not present videoCompose, final media composition, or final synthesis as a Recipe granularity option" in prompt
-    assert "do not count the videoCompose terminal step in the Recipe count" in prompt
+    assert "Do not present videoCompose, final media composition, or final synthesis as a user-facing granularity option" in prompt
+    assert "do not count the terminal composition step in the user-facing step count" in prompt
     assert "textGeneration Recipe for a compose/timeline plan" in prompt
     assert "Extract hard constraints from repeated prompt text" in prompt
     assert "perform prompt_evidence_analysis before topology summarization" in prompt

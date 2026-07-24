@@ -59,6 +59,13 @@ src/novelvideo/freezone/agent_catalog/builtins/recipes/*
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/retro-kungfu-shot-video.json
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/retro-kungfu-story-outline.json
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/retro-kungfu-video-spec.json
+!src/novelvideo/freezone/agent_catalog/builtins/skills/pixar-ip-ad-video.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/pixar-ip-audio-layers.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/pixar-ip-character-design.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/pixar-ip-compose-plan.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/pixar-ip-prop-anchor.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/pixar-ip-shot-video.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/pixar-ip-storyboard-sketch.json
 !src/novelvideo/freezone/agent_catalog/builtins/skills/lego-minifigure-animation-video.json
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/lego-minifig-input-analysis.json
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/lego-minifig-script-outline.json
