@@ -201,7 +201,7 @@ def test_freezone_profile_materializes_native_workflow_skills(
             "description": "动态生成电商广告工作流。",
             "category": "ecommerce",
             "triggers": {"keywords": ["商品广告", "带货视频"]},
-            "workflow_templates": [{"id": "dynamic"}],
+            "allowed_recipe_ids": ["ecommerce-ad-image"],
         }
     ]
     monkeypatch.setattr(hw, "_freezone_workflow_skill_items", lambda _username: items)
@@ -224,7 +224,7 @@ def test_freezone_profile_materializes_native_workflow_skills(
             "description": "动态生成电商广告工作流。 适用于：商品广告、带货视频。 选择后使用虾画确定性工具生成动态工作流。",
             "category": "ecommerce",
             "source": "hermes_native_workflow_skill",
-            "workflow_templates": [{"id": "hermes-native"}],
+            "allowed_recipe_ids": ["ecommerce-ad-image"],
         }
     ]
 

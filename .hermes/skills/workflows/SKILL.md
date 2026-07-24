@@ -12,7 +12,7 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 
 用户从输入框选择 `/skill-id` 后，Hermes 会原生加载对应 Workflow Skill。必须使用该 Skill 固定的 `skill_id` 直接调用 `freezone_get_workflow_skill(skill_id=..., inputs=..., compact=true)`，不得再次语义路由。`inputs` 只填写用户已经明确提供的结构化参数。正常规划只使用 `available_recipes` 摘要，不读取完整 Recipe `system_prompt`。
 
-读取 Skill 规划包后，Agent 只决定用户目标、结构化输入、作品/镜头 items、是否生成素材锚点、可选步骤和是否自动执行。调用 `freezone_prepare_workflow_draft` 后，Recipe 选择、重复节点、稳定 ID、真实输入依赖、分组、布局和成片合成由工具确定性完成。用户调整方案时调用 `freezone_patch_workflow_draft`，确认后调用 `freezone_confirm_workflow_draft`。不得调用 `freezone_build_workflow_plan`，也不得用通用画布命令手写工作流。
+读取 Skill 规划包后，Agent 只决定用户目标、结构化输入、作品/镜头 PlanItems、每项使用的允许 Recipe、真实输入依赖、是否生成素材锚点和是否自动执行。调用 `freezone_prepare_workflow_draft` 后，节点数据、稳定 ID、连线类型、分组、布局和成片合成由工具确定性完成。用户调整方案时调用 `freezone_patch_workflow_draft`，确认后调用 `freezone_confirm_workflow_draft`。不得调用 `freezone_build_workflow_plan`，也不得用通用画布命令手写工作流。
 
 如果用户只是咨询或分析，只展示一般性说明，不创建草稿或写画布。用户提出具体创建需求后，先调用一次 `freezone_prepare_workflow_draft(intent=...)`，使用工具返回的精确预览向用户确认；不要根据 Intent 自己推算节点清单。只有用户明确要求 Skill 蓝图无法表达的自定义拓扑时，才使用完整 `freezone_create_workflow_graph(plan=...)` 兼容入口。
 
@@ -31,8 +31,8 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 1. 使用 Hermes 本轮已经加载的原生 Workflow Skill；没有唯一 Skill 时让用户通过输入框 `/` 选择。
 2. 调用 `freezone_get_workflow_skill(compact=true)` 读取 Skill、Recipe 规划摘要、能力约束和 `input_contract`。
 3. 使用 `input_contract.resolved` 展示用户值、工具从原话确定性提取的值和默认值；`fields[].source=inferred` 表示工具已从时长、画幅、执行模式等明确措辞中提取，不要再次分析或追问。只追问 `missing_required` 或修正 `errors`，已有素材和明确参数不要重复询问。`requires_confirmation=true` 时，在方案确认中一并确认这些值，不创建 Skill Session。
-4. 生成精简 `freezone_workflow_intent.v1`：只写 `skill_id`、`user_goal`、当前 `inputs`、简短 `items` 和必要选项。视频/短剧的每个 item 使用 `title`、画面 `prompt`，需要配音时再提供只含实际朗读正文的 `narration`；不要把时间码、时长、语气、环境音、音效或配乐说明写入 `narration`。调用 `freezone_prepare_workflow_draft` 编译并保存，记录返回的 `draft_id` 和 `revision`。不要生成 nodes、edges、Recipe ID、布局或分组。
-5. 缺少素材但允许从文字创建时设置 `source_anchor=true` 或提供简短的 `source_anchor.title/prompt`；Recipe 由工具选择，Agent 不填写。
+4. 生成精简 `freezone_workflow_intent.v1`：只写 `skill_id`、`user_goal`、当前 `inputs`、PlanItems 和必要选项。每个 item 使用语义化 `id`、`title`、`prompt`、一个来自 `available_recipes` 的 `recipe_id`，并用 `depends_on` 声明真实输入依赖；需要配音时再提供只含实际朗读正文的 `narration`。不要把时间码、时长、语气、环境音、音效或配乐说明写入 `narration`。调用 `freezone_prepare_workflow_draft` 编译并保存，记录返回的 `draft_id` 和 `revision`。不要生成画布 nodes/edges、UUID、连线类型、布局或分组。
+5. 缺少素材但允许从文字创建时，把素材锚点作为第一个 PlanItem，选择同一 Skill 允许的、`requires_source_media=false` 且输出类型匹配的 Recipe；后续依赖项通过 `depends_on` 引用该语义 item id。
 6. 严格按草稿工具返回的 `preview` 展示节点数量、作品清单、阶段和执行方式，不展示内部 JSON、`draft_id` 或 `revision`。
 7. 用户调整方案时，只把发生变化的字段传给 `freezone_patch_workflow_draft(draft_id=..., expected_revision=..., changes=...)`；不要重建 Intent 或创建新草稿。按新预览展示结果并记录新 revision。
 8. 用户确认后调用一次 `freezone_confirm_workflow_draft(draft_id=..., revision=...)`。执行方式默认使用草稿中已经确认的 `run_after_create`。
@@ -80,8 +80,8 @@ Plan 中的边只表示真实输入依赖，不表示时间顺序。节点 ID �
 
 ## 边界
 
-- 模型只负责查询、分类、创意决策和精简 Intent，不生成完整 WorkflowPlan。
-- 不输出或手写 `canvas_chat_commands.v1`、节点 ID、Recipe ID、连线、分组和布局。
+- 模型只负责查询、分类、Recipe/依赖决策和精简 Intent，不生成完整 WorkflowPlan。
+- 不输出或手写 `canvas_chat_commands.v1`、画布 UUID、连线类型、分组和布局。
 - 准备或修改草稿不会写画布；只有用户确认后才调用草稿确认工具创建节点。
 - 普通节点删除、移动、连接或属性修改交给 Freezone 节点操作工具，不混入工作流规划。
 - 用户未要求自动执行时，不自动运行图片、视频、音频生成。

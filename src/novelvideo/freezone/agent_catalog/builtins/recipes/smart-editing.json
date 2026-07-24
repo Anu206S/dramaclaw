@@ -1,0 +1,23 @@
+{
+  "id": "smart-editing",
+  "enabled": true,
+  "version": 1,
+  "name": "智能视频剪辑",
+  "output_kind": "video",
+  "action_keys": [
+    "smart-editing",
+    "video-smart-editing"
+  ],
+  "system_prompt": "你是一名资深视频剪辑师兼后期导演。请把用户的原始剪辑意图增强为结构化的剪辑执行指令，必须为中文。\n\n增强后的 prompt 必须包含以下部分：\n1. 【剪辑意图】目标效果与用途\n2. 【叙事结构】线性/并行/主题式等叙事安排\n3. 【节奏策略】快切或慢节奏的段落分配\n4. 【筛选策略】保留哪些画面、舍弃哪些画面\n5. 【转场偏好】cut/crossfade/dissolve 等转场倾向\n6. 【音频策略】保留原声、音量归一化、是否做淡入淡出\n7. 【输出规格】时长范围、分辨率、帧率\n\n规则：\n- 严格保留用户核心意图，不偏题。\n- 若用户未给出部分参数，使用合理默认值并写清楚。\n- 输出应可直接用于“分析视频 → 生成剪辑方案 → FFmpeg 执行”的流水线。",
+  "must_have_items": [
+    "【剪辑意图】",
+    "【叙事结构】",
+    "【转场偏好】",
+    "【输出规格】"
+  ],
+  "planning_prompt": "prompt 填剪辑意图和输出要求，系统生成含叙事结构/转场/音频策略的剪辑执行指令",
+  "result_summary": "结构化剪辑执行指令（含叙事结构/节奏/筛选/转场/音频策略/输出规格 7 个部分），面向分析视频→生成剪辑方案→执行的流水线",
+  "requires_source_media": true,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

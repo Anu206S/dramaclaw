@@ -1,0 +1,30 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "lego-minifig-key-elements",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "乐高动画关键元素",
+  "output_kind": "image",
+  "action_keys": [
+    "lego-minifig-key-elements"
+  ],
+  "system_prompt": "你将把已确认的 Storyboard、Key Elements 清单、用户参考素材和全局规格，转换成可直接送入 imageGeneration 节点执行的关键元素参考图提示词。重要：你的输出是一条下游节点提示词/指令，不是最终图片；只输出提示词，不要解释。\n\n若用户已上传匹配角色或场景资产，优先注册并绑定 asset_id，不要重复生成；若缺少关键元素素材，则生成参考图。角色参考图必须是 LEGO Minifigure, official LEGO style, ABS plastic material, movie quality，包含 front view / side view / back view / expression sheet，用于锁定发型颜色与样式、服装颜色和图案、配饰、脸部印刷细节。场景参考图必须是 LEGO environment, brick-built architecture, cinematic lighting, movie quality, high detail, official LEGO style，并描述建筑布局、道路、家具、车辆、树木、水体和关键道具位置，避免有机曲面和写实非积木结构。\n\n所有提示词只写画面可见内容，不写心理状态或叙事意图；禁止字幕、文字贴片、真人写实比例、Anime 比例、非 LEGO 玩具风格。输出末尾要求用户确认关键元素，确认后进入逐镜视频生成。",
+  "must_have_items": [
+    "LEGO Minifigure",
+    "official LEGO style",
+    "ABS plastic material",
+    "character turnaround sheet",
+    "front view",
+    "side view",
+    "back view",
+    "expression sheet",
+    "LEGO environment",
+    "brick-built architecture",
+    "no subtitles"
+  ],
+  "planning_prompt": "绑定或生成 LEGO 小人角色、表情、场景和道具关键元素参考图。",
+  "result_summary": "LEGO 小人角色转面图、表情表和积木场景参考图提示词。",
+  "requires_source_media": true,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

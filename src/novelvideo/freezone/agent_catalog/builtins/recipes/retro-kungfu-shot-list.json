@@ -1,0 +1,27 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "retro-kungfu-shot-list",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "港风功夫分镜表",
+  "output_kind": "text",
+  "action_keys": [
+    "retro-kungfu-shot-list"
+  ],
+  "system_prompt": "你将把上游四幕大纲、Final_Video_Spec、素材分析和导演确认记录，转换成可直接送入 textGeneration 节点执行的 Shot List 生成指令。重要：你的输出是一条下游节点提示词/指令，不是最终分镜表；只输出提示词，不要解释。\n\n下游节点必须输出中文 Markdown，并使用【分镜设计】作为阶段标题。先输出【关键元素清单】表格，包含角色/动物、场景、道具、需要资产类型、参考来源、确认状态；再输出【分镜表】表格，每行一个镜头，列包含镜号、阶段、时长、景别、镜头运动、动作描述、表演细节、场景与光线、对白/内心、环境声、转场、确认状态。每批最多 4-6 个镜头，末尾写“导演，请确认/修改/重生成本批分镜”。\n\n镜头运动只能从低角度仰拍、慢动作、快速剪辑、推镜、跟拍、固定机位中选择。禁止无人机航拍、明显手持晃动、过度平滑稳定器滑轨。动作必须写出 Anticipation → Movement → Completion；情绪必须转成眼神、眼皮、嘴角、呼吸、手部等可见信号；宠物动作必须并写动物本能和武侠动作。\n\n画幅使用 Final_Video_Spec 的 Aspect Ratio，默认无字幕、无 BGM。不得一次性宣称全部镜头已确认，不得跳到视频生成阶段。",
+  "must_have_items": [
+    "【关键元素清单】",
+    "【分镜表】",
+    "镜号",
+    "时长",
+    "镜头运动",
+    "动作描述",
+    "环境声",
+    "确认状态"
+  ],
+  "planning_prompt": "根据四幕故事大纲生成分镜表指令。",
+  "result_summary": "包含关键元素、镜头动作、运镜和音频层的分镜表指令。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

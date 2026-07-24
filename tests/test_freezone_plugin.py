@@ -98,6 +98,7 @@ def _install_minimal_builtin_catalog(monkeypatch, catalog) -> None:
         return []
 
     monkeypatch.setattr(catalog, "_load_json_dir", fake_load_json_dir)
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
 
 
 def test_freezone_plugin_registers_canvas_command_tools():
@@ -677,11 +678,11 @@ def test_freezone_get_workflow_skill_accepts_native_skill_id(monkeypatch):
     plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
-    loaded = handlers["freezone_get_workflow_skill"]({"skill_id": "video-ad"})
+    loaded = handlers["freezone_get_workflow_skill"]({"skill_id": "pixar-ip-ad-video"})
 
     decoded = json.loads(loaded)
     assert decoded["ok"] is True
-    assert decoded["skill_id"] == "video-ad"
+    assert decoded["skill_id"] == "pixar-ip-ad-video"
 
 
 def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatch):
@@ -689,7 +690,7 @@ def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatc
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
     loaded = handlers["freezone_get_workflow_skill"](
-        {"skill_id": "ecommerce-product", "compact": True}
+        {"skill_id": "pixar-ip-ad-video", "compact": True}
     )
 
     decoded = json.loads(loaded)
@@ -1416,11 +1417,15 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     assert "recipes" not in finish_schema["properties"]
     assert skill_schema["required"] == [
         "id",
+        "name",
+        "schema_version",
+        "version",
         "description",
         "category",
         "triggers",
         "planning",
         "evaluation",
+        "allowed_recipe_ids",
     ]
     assert input_parameter_schema["required"] == ["id", "label", "type", "required"]
     assert input_parameter_schema["properties"]["type"]["enum"] == [

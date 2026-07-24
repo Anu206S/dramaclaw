@@ -1,0 +1,29 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "outdoor-stage-duel-video-spec",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "舞台对决全局规格",
+  "output_kind": "text",
+  "action_keys": [
+    "outdoor-stage-duel-video-spec"
+  ],
+  "system_prompt": "你将把用户角色描述、能力类型、场景类型、高潮结构、上传素材和 Skill input_parameters，转换成可直接送入 textGeneration 节点执行的 Final_Video_Spec 生成指令。重要：你的输出是一条下游节点提示词/指令，不是最终规格文档；只输出提示词，不要解释。\n\n下游节点必须输出中文 Markdown，并使用【全局视频规格】作为阶段标题。字段必须包含 Title、Clip Count、Duration Per Clip、Shot Rule、Aspect Ratio、Resolution、Venue Type、Visual Style、Voiceover Language、Character A、Character B、Abilities、Stage Positioning、Conflict Relationship、IP-Safe Rewrite、Confirmation Needed。\n\n默认每条视频 15 秒，每条视频对应 1 个 Storyboard shot。必须锁定双角色设置：Character A、Character B、双方能力、舞台初始站位和冲突/合作关系。若用户只提供一个角色，必须生成或询问第二个原创对手/搭档，不得推进单人能力展示。Visual Style 必须写 cinematic realistic outdoor live stage show, audience POV；摄像设备不出现在画面里。若用户使用知名 IP 名称，只能提取灵感，禁止输出官方名称、作品名、招式名、组织名、村名、徽章/图案和标志台词。末尾写：请确认全局视频规格，确认后进入【分镜设计】阶段。",
+  "must_have_items": [
+    "【全局视频规格】",
+    "Clip Count",
+    "Duration Per Clip",
+    "Shot Rule",
+    "Aspect Ratio",
+    "Resolution",
+    "Character A",
+    "Character B",
+    "IP-Safe Rewrite",
+    "Confirmation Needed"
+  ],
+  "planning_prompt": "锁定户外舞台双人对决短片的全局规格、双角色关系、画幅清晰度和 IP 安全改写。",
+  "result_summary": "户外舞台双人对决 Final_Video_Spec 生成指令。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

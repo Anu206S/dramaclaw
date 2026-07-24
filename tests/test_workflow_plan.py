@@ -69,6 +69,7 @@ def _install_minimal_builtin_catalog(monkeypatch, catalog) -> None:
         return []
 
     monkeypatch.setattr(catalog, "_load_json_dir", fake_load_json_dir)
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
 
 
 def _dynamic_plan(*, image_count: int = 1) -> dict:
@@ -118,6 +119,7 @@ def _use_parameterized_catalog(monkeypatch, catalog):
                 {
                     "id": "cinematic-short",
                     "triggers": {"node_scopes": ["textGeneration"]},
+                    "allowed_recipe_ids": ["general-text"],
                     "input_parameters": [
                         {
                             "id": "duration",
@@ -184,6 +186,7 @@ def test_workflow_skill_package_supports_skill_without_template(monkeypatch):
                     "description": "没有固定模板的导演方法",
                     "triggers": {"node_scopes": ["imageGeneration"]},
                     "planning": {"planning_notes": "根据用户要求动态规划镜头"},
+                    "allowed_recipe_ids": ["director-frame"],
                 }
             ]
         if kind == "recipes":
@@ -226,6 +229,7 @@ def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
                     "id": "director-method",
                     "description": "用户自定义导演方法",
                     "triggers": {"node_scopes": ["imageGeneration"]},
+                    "allowed_recipe_ids": ["director-frame"],
                 }
             ]
         if kind == "recipes":
@@ -248,7 +252,7 @@ def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
     builtin_package = catalog.get_workflow_skill({"skill_id": "ecommerce-product"})
 
     assert custom_package["ok"] is True
-    assert builtin_package["ok"] is True
+    assert builtin_package["ok"] is False
 
 
 def test_workflow_skill_limits_recipes_and_identifies_source_anchor(monkeypatch):
@@ -268,61 +272,94 @@ def test_workflow_skill_limits_recipes_and_identifies_source_anchor(monkeypatch)
     ] == {"image": ["general-image"]}
 
 
-def test_compact_video_ad_intent_expands_to_valid_dynamic_plan(monkeypatch):
+def test_compact_dynamic_intent_compiles_recipe_items_to_valid_plan(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
 
     compiled = catalog.compile_workflow_intent(
         {
             "schema_version": "freezone_workflow_intent.v1",
-            "skill_id": "video-ad",
+            "skill_id": "pixar-ip-ad-video",
             "user_goal": "为黑色运动相机制作 15 秒 9:16 竖屏广告",
             "inputs": {"aspect_ratio": "9:16", "duration": "15"},
             "items": [
-                "震撼开场",
-                "防水卖点",
-                "运动防抖",
-                "户外场景",
-                "品牌收尾",
+                {
+                    "id": "character_anchor",
+                    "title": "角色锚点",
+                    "prompt": "设计品牌动画角色",
+                    "recipe_id": "pixar-ip-character-design",
+                },
+                {
+                    "id": "storyboard",
+                    "title": "广告分镜",
+                    "prompt": "生成五镜头广告分镜",
+                    "recipe_id": "pixar-ip-storyboard-sketch",
+                    "depends_on": ["character_anchor"],
+                },
+                {
+                    "id": "video_clip",
+                    "title": "广告视频",
+                    "prompt": "生成品牌广告视频",
+                    "recipe_id": "pixar-ip-shot-video",
+                    "depends_on": ["storyboard"],
+                },
             ],
-            "source_anchor": {
-                "title": "产品基准图",
-                "prompt": "生成黑色运动相机的中性背景产品基准图",
-            },
         }
     )
 
     assert compiled["ok"] is True
-    assert compiled["node_count"] == 18
-    assert compiled["step_counts"]["storyboard-upscaled-images"] == 5
-    assert compiled["step_counts"]["video-clips"] == 5
+    assert compiled["node_count"] == 5
+    assert compiled["step_counts"] == {}
     plan = compiled["plan"]
     assert plan["mode"] == "tool_compiled_dynamic"
-    assert plan["nodes"][1]["data"]["workflowCatalog"]["recipeId"] == "general-image"
+    assert plan["nodes"][1]["data"]["workflowCatalog"]["recipeId"] == "pixar-ip-character-design"
     assert plan["nodes"][-1]["node_type"] == "videoComposeNode"
     assert catalog.validate_agent_workflow_plan(plan)["ok"] is True
 
 
-def test_compiler_adds_required_media_anchor_and_skips_audio_only_compose(monkeypatch):
+def test_compiler_uses_explicit_anchor_and_skips_audio_only_compose(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
 
     ecommerce = catalog.compile_workflow_intent(
         {
-            "skill_id": "ecommerce-product",
-            "user_goal": "为一款新产品制作三张电商图",
-            "items": ["首图", "细节图", "场景图"],
+            "skill_id": "pixar-ip-ad-video",
+            "user_goal": "为一款新产品制作动画广告",
+            "items": [
+                {
+                    "id": "anchor",
+                    "title": "角色锚点",
+                    "prompt": "生成品牌角色",
+                    "recipe_id": "pixar-ip-character-design",
+                },
+                {
+                    "id": "video",
+                    "title": "广告视频",
+                    "prompt": "生成品牌广告视频",
+                    "recipe_id": "pixar-ip-shot-video",
+                    "depends_on": ["anchor"],
+                },
+            ],
         }
     )
     audio = catalog.compile_workflow_intent(
         {
-            "skill_id": "text-to-audio",
+            "skill_id": "pixar-ip-brand-ad-short-film",
             "user_goal": "把欢迎使用转换成中文语音",
+            "items": [
+                {
+                    "id": "audio",
+                    "title": "广告音频",
+                    "prompt": "欢迎使用",
+                    "narration": "欢迎使用",
+                    "recipe_id": "ad-audio-production",
+                }
+            ],
         }
     )
 
     assert ecommerce["ok"] is True
-    assert ecommerce["plan"]["nodes"][1]["id"] == "source_anchor"
+    assert ecommerce["plan"]["nodes"][1]["id"] == "anchor"
     assert audio["ok"] is True
     assert all(
         node["node_type"] != "videoComposeNode" for node in audio["plan"]["nodes"]
@@ -330,7 +367,7 @@ def test_compiler_adds_required_media_anchor_and_skips_audio_only_compose(monkey
     audio_node = next(
         node for node in audio["plan"]["nodes"] if node["node_type"] == "audioNode"
     )
-    assert audio_node["data"]["workflowCatalog"]["recipeId"] == "general-audio"
+    assert audio_node["data"]["workflowCatalog"]["recipeId"] == "ad-audio-production"
 
 
 def test_parameterized_skill_uses_stateless_input_contract(monkeypatch):
@@ -587,21 +624,42 @@ def test_project_catalog_loads_imported_skill_and_recipe_bundle(monkeypatch):
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
-    skill_ids = [
-        "ecommerce-ad",
-        "video-tutorial",
-        "text-to-image-video",
-        "short-drama-quick",
-        "pixar-ip-brand-ad-short-film",
-    ]
+    skill_recipes = {
+        "ecommerce-ad": ("video-clip-generation", "general-image"),
+        "video-tutorial": ("general-video", None),
+        "text-to-image-video": ("general-video", None),
+        "short-drama-quick": ("general-video", None),
+        "pixar-ip-brand-ad-short-film": ("pixar-shot-video-clip", "ip-character-anchor"),
+    }
 
-    for skill_id in skill_ids:
+    for skill_id, (recipe_id, anchor_recipe_id) in skill_recipes.items():
+        anchor_items = (
+            [
+                {
+                    "id": "anchor",
+                    "title": "素材锚点",
+                    "prompt": "生成一致性素材锚点",
+                    "recipe_id": anchor_recipe_id,
+                }
+            ]
+            if anchor_recipe_id
+            else []
+        )
         compiled = catalog.compile_workflow_intent(
             {
                 "schema_version": "freezone_workflow_intent.v1",
                 "skill_id": skill_id,
                 "user_goal": f"测试 {skill_id}",
-                "items": ["镜头一", "镜头二", "镜头三"],
+                "items": anchor_items + [
+                    {
+                        "id": f"shot_{index}",
+                        "title": f"镜头 {index}",
+                        "prompt": f"测试镜头 {index}",
+                        "recipe_id": recipe_id,
+                        **({"depends_on": ["anchor"]} if anchor_recipe_id else {}),
+                    }
+                    for index in range(1, 4)
+                ],
             }
         )
 
@@ -621,14 +679,41 @@ def test_short_drama_quick_expands_shot_voice_and_background_music(monkeypatch):
             "user_goal": "制作两镜头悬疑短剧",
             "items": [
                 {
+                    "id": "clip_1",
                     "title": "镜头一",
                     "prompt": "便利店外景",
-                    "narration": "深夜的便利店，只有他一个人。",
+                    "recipe_id": "general-video",
                 },
                 {
+                    "id": "clip_2",
                     "title": "镜头二",
                     "prompt": "店员看向监控",
+                    "recipe_id": "general-video",
+                },
+                {
+                    "id": "voice_1",
+                    "title": "镜头一旁白",
+                    "prompt": "深夜的便利店，只有他一个人。",
+                    "narration": "深夜的便利店，只有他一个人。",
+                    "recipe_id": "drama-shot-voice",
+                    "depends_on": ["clip_1"],
+                    "timeline_role": "shot_voice",
+                },
+                {
+                    "id": "voice_2",
+                    "title": "镜头二旁白",
+                    "prompt": "监控里的自己，为什么没有同步动作？",
                     "narration": "监控里的自己，为什么没有同步动作？",
+                    "recipe_id": "drama-shot-voice",
+                    "depends_on": ["clip_2"],
+                    "timeline_role": "shot_voice",
+                },
+                {
+                    "id": "background_music",
+                    "title": "背景音乐",
+                    "prompt": "悬疑氛围纯音乐",
+                    "recipe_id": "drama-background-music",
+                    "timeline_role": "background_music",
                 },
             ],
         }
@@ -639,12 +724,12 @@ def test_short_drama_quick_expands_shot_voice_and_background_music(monkeypatch):
     voice_nodes = [
         node
         for node in plan["nodes"]
-        if node["data"].get("workflowCatalog", {}).get("stepId") == "drama-voice"
+        if node["data"].get("workflowCatalog", {}).get("timelineRole") == "shot_voice"
     ]
     bgm_nodes = [
         node
         for node in plan["nodes"]
-        if node["data"].get("workflowCatalog", {}).get("stepId") == "drama-bgm"
+        if node["data"].get("workflowCatalog", {}).get("timelineRole") == "background_music"
     ]
     assert [node["data"]["text"] for node in voice_nodes] == [
         "深夜的便利店，只有他一个人。",
@@ -661,8 +746,8 @@ def test_short_drama_quick_expands_shot_voice_and_background_music(monkeypatch):
     assert {
         (edge["source"], edge["target"])
         for edge in plan["edges"]
-        if edge["target"].startswith("drama-voice_")
+        if edge["target"].startswith("voice_")
     } == {
-        ("drama-clips_1", "drama-voice_1"),
-        ("drama-clips_2", "drama-voice_2"),
+        ("clip_1", "voice_1"),
+        ("clip_2", "voice_2"),
     }
