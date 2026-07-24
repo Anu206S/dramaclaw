@@ -26,6 +26,7 @@ import {
   ChevronUp,
   Download,
   Film,
+  Images,
   Languages,
   Layers,
   Library,
@@ -220,11 +221,9 @@ const MAX_WIDTH = 1100;
 const MAX_HEIGHT = 1000;
 
 // 图片节点的默认落位尺寸（与 ImageGenNode 的 DEFAULT_WIDTH/HEIGHT 对齐）。
-// 「首帧生成视频」会在视频节点左侧新建一个图片节点，排版要按它的真实尺寸算。
+// 「全能参考 / 图片参考」会在视频节点左侧新建一个图片节点，排版要按它的真实尺寸算。
 const IMAGE_GEN_NODE_WIDTH = 580;
 const IMAGE_GEN_NODE_HEIGHT = 360;
-/** 「首帧生成视频」预填的提示词，用户可以直接改。 */
-const FIRST_FRAME_PROMPT = "以当前图为首帧生成视频";
 
 const OPERATIONS_PANEL_HEIGHT = 280;
 const OPERATIONS_PANEL_GAP = 12;
@@ -1436,19 +1435,22 @@ export const VideoNode = memo(
       inputRef.current?.click();
     }, []);
 
-    // Spawn the frame source node(s) to the left of this video node and wire
-    // them as inputs. Used by the empty-state "首帧/首尾帧 生成视频" CTAs.
-    // 首帧走图片节点（可上传也可直接生图）+ 全能参考；首尾帧仍走上传节点 + 关键帧。
+    // Spawn the source node(s) to the left of this video node and wire them as
+    // inputs. Used by the empty-state 全能参考 / 图片参考 / 首尾帧 CTAs.
+    // 全能参考 / 图片参考走图片节点（可上传也可直接生图）+ 对应参考模式；
+    // 首尾帧走两个上传节点 + firstLastFrame 关键帧。
     const spawnFrameUploads = useCallback(
-      (mode: "firstFrame" | "firstLastFrame") => {
+      (mode: "allReference" | "imageReference" | "firstLastFrame") => {
         const state = useCanvasStore.getState();
         const self = state.nodes.find((n) => n.id === id);
         if (!self) return;
-        const isFirstFrame = mode === "firstFrame";
+        // 全能参考 / 图片参考都只铺一个图片节点；首尾帧要铺首帧 + 尾帧两个上传节点。
+        const isSingleImage =
+          mode === "allReference" || mode === "imageReference";
         // 两种源节点的默认尺寸不同（图片节点 580×360 / 上传节点 320×350），
         // 左列的定位与避让都得按实际尺寸算，否则图片节点会压到视频节点身上。
-        const FRAME_WIDTH = isFirstFrame ? IMAGE_GEN_NODE_WIDTH : 320;
-        const FRAME_HEIGHT = isFirstFrame ? IMAGE_GEN_NODE_HEIGHT : 350;
+        const FRAME_WIDTH = isSingleImage ? IMAGE_GEN_NODE_WIDTH : 320;
+        const FRAME_HEIGHT = isSingleImage ? IMAGE_GEN_NODE_HEIGHT : 350;
         const GAP_X = 40;
         const GAP_Y = 24;
         const baseX = self.position.x - FRAME_WIDTH - GAP_X;
@@ -1517,7 +1519,7 @@ export const VideoNode = memo(
           occupiedRects.push({ x: baseX, y, width: FRAME_WIDTH, height: FRAME_HEIGHT });
           return y;
         };
-        if (isFirstFrame) {
+        if (isSingleImage) {
           const baseY = resolveAvailableY(
             self.position.y + ((self.height ?? DEFAULT_HEIGHT) - FRAME_HEIGHT) / 2,
           );
@@ -1525,17 +1527,17 @@ export const VideoNode = memo(
             CANVAS_NODE_TYPES.imageGen,
             { x: baseX, y: baseY },
             {
-              displayName: "首帧",
+              displayName: "参考图",
             },
           );
           addEdge(newId, id);
-          state.autoGroupSpawn(id, [newId], { label: '首帧生成视频组' });
-          // 首帧走全能参考（把上游图当参考图喂给全能生成端点），并把提示词直接
-          // 写好；用户已经写过提示词就别覆盖他的内容。
-          updateNodeData(id, {
-            genMode: "allReference",
-            ...(prompt.trim() ? {} : { prompt: FIRST_FRAME_PROMPT }),
+          state.autoGroupSpawn(id, [newId], {
+            label: mode === "imageReference" ? "图片参考组" : "全能参考组",
           });
+          // 上游图片直接作为参考素材喂给对应端点；模式切到用户点的那一个，不预填
+          // 提示词（尊重用户已写内容）。非 HappyHorse 下 data.genMode 一旦非空，
+          // 默认推断 effect 就不再覆盖它（见下方 genMode 默认 effect）。
+          updateNodeData(id, { genMode: mode });
           return;
         }
         const totalH = FRAME_HEIGHT * 2 + GAP_Y;
@@ -1558,7 +1560,7 @@ export const VideoNode = memo(
         state.autoGroupSpawn(id, [firstId, lastId], { label: '首尾帧生成视频组' });
         updateNodeData(id, { genMode: "firstLastFrame" });
       },
-      [addEdge, addNode, id, prompt, updateNodeData],
+      [addEdge, addNode, id, updateNodeData],
     );
 
     // Spawn reference nodes from selected asset-library entries — one per
@@ -2832,12 +2834,34 @@ export const VideoNode = memo(
             </div>
           ) : (
             <div className="flex h-full w-full items-center px-8">
-              {/* 上游含视频时只能走全能参考，首尾帧/首帧这两个 CTA 会引导到被禁用的
-                  firstLastFrame 模式，所以此时隐藏。 */}
+              {/* 上游含视频时只有全能参考能消费视频，这三个 CTA 都以图片素材起步、
+                  会引导到不接受视频的模式，所以此时隐藏。 */}
               {upstreamCounts.videos === 0 && (
                 <div className="flex min-h-0 flex-col justify-center gap-2 py-4">
                   <div className="text-xs text-[var(--canvas-node-input-helper)]">试试：</div>
                   <div className="flex flex-col gap-0.5">
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        spawnFrameUploads("allReference");
+                      }}
+                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                    >
+                      <Sparkles className="h-4 w-4 text-text-muted/90" />
+                      <span>全能参考</span>
+                    </button>
+                    <button
+                      type="button"
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        spawnFrameUploads("imageReference");
+                      }}
+                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                    >
+                      <Images className="h-4 w-4 text-text-muted/90" />
+                      <span>图片参考</span>
+                    </button>
                     <button
                       type="button"
                       onClick={(event) => {
@@ -2848,17 +2872,6 @@ export const VideoNode = memo(
                     >
                       <Layers className="h-4 w-4 text-text-muted/90" />
                       <span>首尾帧生成视频</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        spawnFrameUploads("firstFrame");
-                      }}
-                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
-                    >
-                      <Sparkles className="h-4 w-4 text-text-muted/90" />
-                      <span>首帧生成视频</span>
                     </button>
                   </div>
                 </div>
