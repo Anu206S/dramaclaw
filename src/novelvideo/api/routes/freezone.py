@@ -89,6 +89,10 @@ from novelvideo.freezone.agent_bundle_store import (
     install_agent_bundle,
     validate_agent_bundle,
 )
+from novelvideo.freezone.agent_community_catalog import (
+    install_community_bundle,
+    list_community_catalog,
+)
 from novelvideo.freezone.agent_config_store import (
     delete_user_agent_config_item,
     list_user_agent_config_items,
@@ -3978,6 +3982,32 @@ async def export_freezone_agent_bundle(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": bundle}
+
+
+@router.get("/freezone/agent-config/community/catalog", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def list_freezone_community_catalog(user: dict = Depends(get_api_user)):
+    username = str(user.get("username") or "")
+    try:
+        catalog = list_community_catalog(username=username)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": catalog}
+
+
+@router.post("/freezone/agent-config/community/bundles:install", tags=[TAG_FREEZONE_AGENT_CONFIG])
+async def install_freezone_community_bundle(
+    payload: Annotated[dict, Body()],
+    user: dict = Depends(get_api_user),
+):
+    username = str(user.get("username") or "")
+    try:
+        result = install_community_bundle(
+            username=username,
+            bundle_url=str(payload.get("bundle_url") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"ok": True, "data": result}
 
 
 @router.get("/freezone/agent-config/{kind}", tags=[TAG_FREEZONE_AGENT_CONFIG])
