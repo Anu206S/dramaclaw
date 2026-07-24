@@ -170,6 +170,9 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
     soul = (home / "SOUL.md").read_text(encoding="utf-8")
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "你是虾导" in soul
+    assert "我是虾导" in soul
+    assert "虾画助手" not in soul
     assert "创意咨询、找思路、风格建议" in soul
     assert "搭建可继续工作的画布框架" in soul
     assert "不要在普通回复开头自报身份" in soul
@@ -177,6 +180,9 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "node create schema" in soul
     assert "link type catalog" in soul
     assert "生成完整短片" in soul
+    assert "虾导处理虾画画布上下文" in memory
+    assert "我是虾导" in memory
+    assert "虾画助手" not in memory
     assert "创意咨询、找思路、风格建议" in memory
     assert "搭建可继续工作的画布框架" in memory
     assert "不要在普通回复开头自报身份" in memory
@@ -199,6 +205,27 @@ def test_freezone_profile_preserves_existing_memory(
     hw.ensure_user_hermes_workspace("admin", profile="freezone")
 
     assert memory_file.read_text(encoding="utf-8") == existing_memory
+
+
+def test_freezone_profile_migrates_old_default_memory_identity(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+):
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    memory_file = home / "memories" / "MEMORY.md"
+    old_default_memory = """虾画助手处理虾画画布上下文中的节点、连接、资源查看和工作流操作。用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形。画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog。虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成。不要在普通回复开头自报身份；用户问身份时，回答“我是虾画助手”。
+§
+虾画会话应优先使用 `freezone-acp` 工具集中的 Freezone 画布工具。不要使用 DramaClaw 主线写入工具改动画布。
+"""
+    memory_file.write_text(old_default_memory, encoding="utf-8")
+
+    hw.ensure_user_hermes_workspace("admin", profile="freezone")
+
+    migrated = memory_file.read_text(encoding="utf-8")
+    assert "虾导处理虾画画布上下文" in migrated
+    assert "我是虾导" in migrated
+    assert "虾画助手" not in migrated
 
 
 def test_freezone_profile_refreshes_stale_repo_symlinks(
