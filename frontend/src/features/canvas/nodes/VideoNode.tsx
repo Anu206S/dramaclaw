@@ -1440,7 +1440,13 @@ export const VideoNode = memo(
     // 全能参考 / 图片参考走图片节点（可上传也可直接生图）+ 对应参考模式；
     // 首尾帧走两个上传节点 + firstLastFrame 关键帧。
     const spawnFrameUploads = useCallback(
-      (mode: "allReference" | "imageReference" | "firstLastFrame") => {
+      (
+        mode:
+          | "allReference"
+          | "imageReference"
+          | "imageToVideo"
+          | "firstLastFrame",
+      ) => {
         const state = useCanvasStore.getState();
         const self = state.nodes.find((n) => n.id === id);
         if (!self) return;
@@ -1448,9 +1454,12 @@ export const VideoNode = memo(
         const selfHeight =
           self.measured?.height ??
           (typeof self.height === "number" ? self.height : DEFAULT_HEIGHT);
-        // 全能参考 / 图片参考都只铺一个图片节点；首尾帧要铺首帧 + 尾帧两个上传节点。
+        // 全能参考 / 图片参考 / 首帧生成视频都只铺一个图片节点；首尾帧要铺首帧 + 尾帧
+        // 两个上传节点。
         const isSingleImage =
-          mode === "allReference" || mode === "imageReference";
+          mode === "allReference" ||
+          mode === "imageReference" ||
+          mode === "imageToVideo";
         // 两种源节点的默认尺寸不同（图片节点 580×360 / 上传节点 320×350），
         // 左列的定位与避让都得按实际尺寸算，否则图片节点会压到视频节点身上。
         const FRAME_WIDTH = isSingleImage ? IMAGE_GEN_NODE_WIDTH : 320;
@@ -1524,25 +1533,31 @@ export const VideoNode = memo(
           return y;
         };
         if (isSingleImage) {
-          // 参考图整体在视频节点左侧（有 GAP_X 间隔），x 上永远不与视频重叠；空态 CTA
-          // 也只在无上游时出现，左列必定为空。所以直接按视频高度垂直居中，不做向下避让
-          // ——避让只会在拥挤画布上把它往下顶一行、破坏与视频的对齐（见「全能参考 vs
-          // 图片参考」对不齐的问题）。
+          // 直接按视频高度垂直居中，不做向下避让。resolveAvailableY 只会向下顶，
+          // 左侧空间一旦被别的节点占用就把参考图挤下一行、破坏与视频的对齐（正是
+          // 「全能参考 vs 图片参考」对不齐的成因）。这里优先保证对齐：参考图恒在视频
+          // 左侧（有 GAP_X 间隔）不会压到视频本身；万一撞上左侧的无关节点，宁可让
+          // 用户手动挪开，也不牺牲与视频的对齐。
           const baseY = self.position.y + (selfHeight - FRAME_HEIGHT) / 2;
           const newId = addNode(
             CANVAS_NODE_TYPES.imageGen,
             { x: baseX, y: baseY },
             {
-              displayName: "参考图",
+              displayName: mode === "imageToVideo" ? "首帧" : "参考图",
             },
           );
           addEdge(newId, id);
-          state.autoGroupSpawn(id, [newId], {
-            label: mode === "imageReference" ? "图片参考组" : "全能参考组",
-          });
-          // 上游图片直接作为参考素材喂给对应端点；模式切到用户点的那一个，不预填
-          // 提示词（尊重用户已写内容）。非 HappyHorse 下 data.genMode 一旦非空，
-          // 默认推断 effect 就不再覆盖它（见下方 genMode 默认 effect）。
+          const groupLabel =
+            mode === "imageReference"
+              ? "图片参考组"
+              : mode === "imageToVideo"
+                ? "首帧生成视频组"
+                : "全能参考组";
+          state.autoGroupSpawn(id, [newId], { label: groupLabel });
+          // 上游图片直接作为素材喂给对应端点；模式切到用户点的那一个，不预填提示词
+          // （尊重用户已写内容）。HappyHorse 下由统一状态机确认（imageToVideo /
+          // imageReference 都与「1 张上游图」匹配，不会被改写）；非 HappyHorse 下
+          // data.genMode 一旦非空，默认推断 effect 就不再覆盖它。
           updateNodeData(id, { genMode: mode });
           return;
         }
@@ -2839,48 +2854,77 @@ export const VideoNode = memo(
             </div>
           ) : (
             <div className="flex h-full w-full items-center px-8">
-              {/* 上游含视频时只有全能参考能消费视频，这三个 CTA 都以图片素材起步、
-                  会引导到不接受视频的模式，所以此时隐藏。 */}
-              {upstreamCounts.videos === 0 && (
-                <div className="flex min-h-0 flex-col justify-center gap-2 py-4">
-                  <div className="text-xs text-[var(--canvas-node-input-helper)]">试试：</div>
-                  <div className="flex flex-col gap-0.5">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        spawnFrameUploads("allReference");
-                      }}
-                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
-                    >
-                      <Sparkles className="h-4 w-4 text-text-muted/90" />
-                      <span>全能参考</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        spawnFrameUploads("imageReference");
-                      }}
-                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
-                    >
-                      <Images className="h-4 w-4 text-text-muted/90" />
-                      <span>图片参考</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        spawnFrameUploads("firstLastFrame");
-                      }}
-                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
-                    >
-                      <Layers className="h-4 w-4 text-text-muted/90" />
-                      <span>首尾帧生成视频</span>
-                    </button>
-                  </div>
+              {/* 空态（无入边）才走到这里，一定没有上游视频，所以直接展示三档 CTA。 */}
+              <div className="flex min-h-0 flex-col justify-center gap-2 py-4">
+                <div className="text-xs text-[var(--canvas-node-input-helper)]">试试：</div>
+                <div className="flex flex-col gap-0.5">
+                  {isHappyHorseModel ? (
+                    <>
+                      {/* HappyHorse 只支持首帧 / 图片参考起步：全能参考它压根不支持
+                          （submit 会直接报错），首尾帧也不是它的模式，都不给入口，
+                          免得点了被统一状态机静默改写成别的模式。 */}
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          spawnFrameUploads("imageToVideo");
+                        }}
+                        className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                      >
+                        <Film className="h-4 w-4 text-text-muted/90" />
+                        <span>首帧生成视频</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          spawnFrameUploads("imageReference");
+                        }}
+                        className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                      >
+                        <Images className="h-4 w-4 text-text-muted/90" />
+                        <span>图片参考</span>
+                      </button>
+                    </>
+                  ) : (
+                    <>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          spawnFrameUploads("allReference");
+                        }}
+                        className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                      >
+                        <Sparkles className="h-4 w-4 text-text-muted/90" />
+                        <span>全能参考</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          spawnFrameUploads("imageReference");
+                        }}
+                        className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                      >
+                        <Images className="h-4 w-4 text-text-muted/90" />
+                        <span>图片参考</span>
+                      </button>
+                      <button
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          spawnFrameUploads("firstLastFrame");
+                        }}
+                        className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                      >
+                        <Layers className="h-4 w-4 text-text-muted/90" />
+                        <span>首尾帧生成视频</span>
+                      </button>
+                    </>
+                  )}
                 </div>
-              )}
+              </div>
               <Play className="ml-auto mr-20 h-9 w-9 text-text-muted/46" />
             </div>
           )}
