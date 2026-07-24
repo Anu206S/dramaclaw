@@ -1008,6 +1008,22 @@ def test_prompt_injects_json_render_contract(monkeypatch, tmp_path):
     assert prompt.rstrip().endswith("查看肖像图片，用 json-render 显示")
 
 
+def test_freezone_prompt_does_not_use_legacy_preferences(monkeypatch, tmp_path):
+    state_dir = tmp_path / "state"
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(state_dir))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "帮我整理当前画布",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "[USER_PREFERENCES]" not in prompt
+    assert not (state_dir / "admin" / "preferences.md").exists()
+
+
 def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainline_generation(
     monkeypatch, tmp_path
 ):

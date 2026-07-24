@@ -186,6 +186,21 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "生成完整短片" in memory
 
 
+def test_freezone_profile_preserves_existing_memory(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+):
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    memory_file = home / "memories" / "MEMORY.md"
+    existing_memory = "用户已经教过虾画助手：这个项目要保持低饱和赛博风格。\n"
+    memory_file.write_text(existing_memory, encoding="utf-8")
+
+    hw.ensure_user_hermes_workspace("admin", profile="freezone")
+
+    assert memory_file.read_text(encoding="utf-8") == existing_memory
+
+
 def test_freezone_profile_refreshes_stale_repo_symlinks(
     isolated_workspace,
     repo_skills,

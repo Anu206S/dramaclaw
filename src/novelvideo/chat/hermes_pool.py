@@ -107,12 +107,10 @@ def _parse_hermes_version(output: str) -> tuple[int, int, int] | None:
 
 
 def _required_hermes_version() -> tuple[str, tuple[int, int, int]]:
-    raw = os.environ.get("DRAMACLAW_HERMES_VERSION", "").strip()
-    if not raw:
-        try:
-            raw = (DRAMACLAW_ROOT / ".hermes-version").read_text(encoding="utf-8").strip()
-        except OSError:
-            raw = DEFAULT_HERMES_VERSION
+    try:
+        raw = (DRAMACLAW_ROOT / ".hermes-version").read_text(encoding="utf-8").strip()
+    except OSError:
+        raw = DEFAULT_HERMES_VERSION
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", raw)
     if not match:
         raise RuntimeError(f"invalid DramaClaw Hermes version requirement: {raw!r}")
