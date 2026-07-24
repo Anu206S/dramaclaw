@@ -16,34 +16,18 @@ import {
   toFreezoneSkillSuggestions,
 } from "@/features/superchat/freezone-skill-suggestions";
 
-function validSkill(overrides: Record<string, unknown> = {}) {
-  return {
-    id: "poster_design",
-    name: "海报设计",
-    enabled: true,
-    allowed_recipe_ids: ["poster-recipe"],
-    category: "visual",
-    description: "海报视觉风格",
-    triggers: { keywords: ["海报", { keyword: "视觉" }] },
-    planning: {
-      planning_notes: "动态规划海报。",
-      conduct_rules: ["保持视觉重点。"],
-    },
-    evaluation: {
-      rating_bands: [{ score: 5, description: "视觉清晰" }],
-      quality_threshold: 4,
-      domain_constraints: ["不得偏离海报主题。"],
-    },
-    ...overrides,
-  };
-}
-
 describe("freezone skill slash suggestions", () => {
   it("builds suggestions only from enabled skills with ids", () => {
     const suggestions = toFreezoneSkillSuggestions([
-      validSkill({
+      {
+        id: "poster_design",
+        name: "海报设计",
+        enabled: true,
         workflow_templates: [{ id: "poster" }],
-      }),
+        category: "visual",
+        description: "海报视觉风格",
+        triggers: { keywords: ["海报", { keyword: "视觉" }] },
+      },
       { id: "general", enabled: true, description: "没有工作流模板" },
       { id: "disabled_skill", enabled: false, description: "不展示" },
       { enabled: true, description: "没有 id" },
@@ -60,73 +44,22 @@ describe("freezone skill slash suggestions", () => {
     ]);
   });
 
-  it("builds suggestions from workflow skills with allowed recipes", () => {
-    const suggestions = toFreezoneSkillSuggestions([
-      {
-        id: "lego-minifigure-animation-video",
-        name: "乐高小人动画短片",
-        enabled: true,
-        allowed_recipe_ids: ["lego-minifig-video-spec"],
-        category: "video",
-        description: "把主题发展成 LEGO Minifigure 风格动画短片",
-        triggers: { keywords: ["乐高动画"] },
-        planning: {
-          planning_notes: "动态规划乐高短片。",
-          conduct_rules: ["保持乐高小人风格。"],
-        },
-        evaluation: {
-          rating_bands: [{ score: 5, description: "风格明确" }],
-          quality_threshold: 4,
-          domain_constraints: ["不得偏离乐高小人风格。"],
-        },
-      },
-    ]);
-
-    expect(suggestions).toEqual([
-      {
-        id: "lego-minifigure-animation-video",
-        label: "乐高小人动画短片",
-        category: "video",
-        description: "把主题发展成 LEGO Minifigure 风格动画短片",
-        keywords: ["乐高动画"],
-      },
-    ]);
-  });
-
-  it("does not show enabled workflow skills that are missing required schema fields", () => {
-    const suggestions = toFreezoneSkillSuggestions([
-      {
-        id: "loose-skill",
-        name: "半截 Skill",
-        enabled: true,
-        allowed_recipe_ids: ["loose-recipe"],
-        category: "video",
-        description: "缺少规划和评估字段",
-        triggers: { keywords: ["半截"] },
-      },
-    ]);
-
-    expect(suggestions).toEqual([]);
-  });
-
   it("opens only for the current slash token and filters by id, category, description, or keywords", () => {
     const suggestions = toFreezoneSkillSuggestions([
-      validSkill({
+      {
         id: "poster_design",
         workflow_templates: [{ id: "poster" }],
         category: "visual",
         description: "海报视觉风格",
         triggers: { keywords: ["海报"] },
-      }),
-      validSkill({
+      },
+      {
         id: "copy_plan",
-        name: "文案计划",
         workflow_templates: [{ id: "copy" }],
-        allowed_recipe_ids: ["copy-recipe"],
         category: "text",
         description: "详情页文案",
         triggers: { keywords: ["文案"] },
-      }),
+      },
     ]);
 
     expect(getFreezoneSkillSlashQuery("/")).toBe("");

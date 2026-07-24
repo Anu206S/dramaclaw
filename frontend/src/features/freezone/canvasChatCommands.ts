@@ -363,58 +363,17 @@ export function canvasCommandEnvelopesRunInBackground(
   ));
 }
 
+export async function waitForImmediateCanvasCommandResult(
+  execution: Promise<CanvasChatCommandApplyResult>,
+): Promise<CanvasChatCommandApplyResult | null> {
+  return Promise.race([
+    execution,
+    new Promise<null>((resolve) => window.setTimeout(() => resolve(null), 0)),
+  ]);
+}
+
 const UI_OPEN_NODE_ACTIONS = new Set([
   "open_video_compose_modal",
-]);
-
-const CURRENT_MEDIA_NODE_ACTIONS = new Set([
-  "open_crop_tool",
-  "open_annotate_tool",
-  "open_redraw_tool",
-  "open_erase_tool",
-  "open_upscale_tool",
-  "open_outpaint_tool",
-  "open_scene360_tool",
-  "open_multi_angle_tool",
-  "open_light_tool",
-  "open_rotate_tool",
-  "run_matting_tool",
-  "run_upscale_tool",
-  "run_outpaint_tool",
-  "run_scene360_tool",
-  "run_grid_multi_camera",
-  "run_grid_plot_four",
-  "run_grid_face_three_view",
-  "run_grid_product_three_view",
-  "run_grid_serial_storyboard_25",
-  "run_grid_cinematic_light_correction",
-  "run_grid_character_three_view",
-  "run_grid_frame_projection_3s_later",
-  "run_grid_frame_projection_5s_earlier",
-  "open_grid_multi_camera",
-  "open_grid_plot_four",
-  "open_grid_face_three_view",
-  "open_grid_product_three_view",
-  "open_grid_serial_storyboard_25",
-  "open_grid_cinematic_light_correction",
-  "open_grid_character_three_view",
-  "open_grid_frame_projection_3s_later",
-  "open_grid_frame_projection_5s_earlier",
-  "download_image",
-  "open_video_viewer",
-  "download_video",
-  "open_video_clip_tool",
-  "open_video_upscale_tool",
-  "run_video_analyze_story",
-  "run_audio_separate",
-  "download_audio",
-  "open_video_subtitle_erase_smart",
-  "open_video_subtitle_erase_box",
-  "capture_pano_current_view",
-  "capture_pano_2x2_views",
-  "capture_pano_4x3_views",
-  "set_pano_current_view_as_background",
-  "reset_pano_view",
 ]);
 
 const RESULT_SPAWNING_NODE_ACTIONS = new Set([
@@ -435,10 +394,11 @@ const DEFAULT_NODE_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS = 3 * 1000;
 const DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS = 3 * 1000;
 const canvasNodeActionQueues = new Map<string, Promise<void>>();
+let nodeActionMountQueue: Promise<void> = Promise.resolve();
 const WORKFLOW_ACTION_CONCURRENCY = 3;
 const WORKFLOW_ACTION_LANE_LIMITS = {
   default: 3,
-  video: 1,
+  video: 3,
   world: 1,
   ffmpeg: 1,
 } as const;
@@ -1310,30 +1270,6 @@ function defaultWorkflowActionForNode(node: CanvasNode): string | null {
   return null;
 }
 
-function upstreamWorkflowActionDependencies(nodeId: string): PendingNodeAction[] {
-  const state = useCanvasStore.getState();
-  const actionNode = nodeById(nodeId);
-  if (!actionNode) return [];
-  if (actionNode.type === CANVAS_NODE_TYPES.videoCompose && hasVideoComposeMinimumInputs(nodeId)) {
-    return [];
-  }
-  const expandedNodeIds = expandWorkflowNodeIds([nodeId], ["upstream"]).filter((id) => id !== nodeId);
-  const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
-  return expandedNodeIds.flatMap((upstreamId) => {
-    const node = nodeByIdMap.get(upstreamId);
-    if (!node || node.type === CANVAS_NODE_TYPES.group) return [];
-    const action = defaultWorkflowActionForNode(node);
-    if (!action || hasGeneratedResult(upstreamId, action)) return [];
-    return [{
-      commandIndex: -1,
-      nodeId: upstreamId,
-      action,
-      executionMode: "workflow",
-      label: commandLabel({ type: "run_node_action", node_id: upstreamId, action }),
-    }];
-  });
-}
-
 function hasVideoComposeMinimumInputs(nodeId: string, allowedSourceNodeIds?: Set<string>): boolean {
   const state = useCanvasStore.getState();
   const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
@@ -1366,16 +1302,26 @@ function hasVideoComposeMinimumInputs(nodeId: string, allowedSourceNodeIds?: Set
   );
 }
 
-function satisfiedVideoComposeUpstreamNodeIds(nodeIds: string[]): Set<string> {
+function satisfiedVideoComposeUpstreamNodeIds(
+  nodeIds: string[],
+  explicitlyRequestedNodeIds: Iterable<string>,
+): Set<string> {
   const state = useCanvasStore.getState();
   const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
   const scopedNodeIds = new Set(nodeIds);
+  const explicitlyRequested = new Set(explicitlyRequestedNodeIds);
   const protectedNodeIds = new Set<string>();
   for (const nodeId of relatedSatisfiedVideoComposeNodeIds(nodeIds, scopedNodeIds)) {
     const node = nodeByIdMap.get(nodeId);
     if (node?.type !== CANVAS_NODE_TYPES.videoCompose) continue;
     for (const upstreamId of expandWorkflowNodeIds([nodeId], ["upstream"])) {
-      if (upstreamId !== nodeId && scopedNodeIds.has(upstreamId)) protectedNodeIds.add(upstreamId);
+      if (
+        upstreamId !== nodeId
+        && scopedNodeIds.has(upstreamId)
+        && !explicitlyRequested.has(upstreamId)
+      ) {
+        protectedNodeIds.add(upstreamId);
+      }
     }
   }
   return protectedNodeIds;
@@ -1431,7 +1377,10 @@ function workflowNodeActions(
   const expandedNodeIds = expandWorkflowNodeIds(initialNodeIds, directions);
   const nodeByIdMap = new Map(useCanvasStore.getState().nodes.map((node) => [node.id, node] as const));
   const scopedNodeIds = new Set(expandedNodeIds);
-  const protectedUpstreamNodeIds = satisfiedVideoComposeUpstreamNodeIds(expandedNodeIds);
+  const protectedUpstreamNodeIds = satisfiedVideoComposeUpstreamNodeIds(
+    expandedNodeIds,
+    initialNodeIds,
+  );
   const composeNodeIdsToOpen = relatedSatisfiedVideoComposeNodeIds(expandedNodeIds, scopedNodeIds)
     .filter((nodeId) => !expandedNodeIds.includes(nodeId));
 
@@ -1470,6 +1419,64 @@ function workflowNodeActions(
   });
 }
 
+function directNodeActionQueue(
+  nodeId: string,
+  action: string,
+  commandIndex: number,
+  parameters?: JsonRecord,
+): PendingNodeAction[] {
+  const state = useCanvasStore.getState();
+  const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
+  const includeUpstream = (
+    GENERATION_NODE_ACTIONS.has(action)
+    || (
+      action === "open_video_compose_modal"
+      && !hasVideoComposeMinimumInputs(nodeId)
+    )
+  );
+  const upstreamActions = (includeUpstream
+    ? expandWorkflowNodeIds([nodeId], ["upstream"])
+    : [nodeId])
+    .filter((upstreamId) => upstreamId !== nodeId)
+    .flatMap((upstreamId): PendingNodeAction[] => {
+      const node = nodeByIdMap.get(upstreamId);
+      if (!node || node.type === CANVAS_NODE_TYPES.group) return [];
+      const upstreamAction = defaultWorkflowActionForNode(node);
+      if (!upstreamAction || hasGeneratedResult(upstreamId, upstreamAction)) return [];
+      return [{
+        commandIndex,
+        nodeId: upstreamId,
+        action: upstreamAction,
+        executionMode: "workflow",
+        parameters: undefined,
+        label: commandLabel({
+          type: "run_node_action",
+          node_id: upstreamId,
+          action: upstreamAction,
+        }),
+      }];
+    });
+  return [
+    ...upstreamActions,
+    {
+      commandIndex,
+      nodeId,
+      action,
+      executionMode: "single",
+      parameters,
+      label: commandLabel({ type: "run_node_action", node_id: nodeId, action }),
+    },
+  ];
+}
+
+export function workflowVideoNodeIdsForPreflight(
+  command: Extract<CanvasChatCommand, { type: "run_workflow" }>,
+): string[] {
+  return workflowNodeActions(command, -1, { skipCompleted: true })
+    .filter((action) => action.action === "generate_video")
+    .map((action) => action.nodeId);
+}
+
 function requestAnimationFrameOrTimeout(): Promise<void> {
   if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
     return new Promise((resolve) => {
@@ -1479,6 +1486,16 @@ function requestAnimationFrameOrTimeout(): Promise<void> {
   return new Promise((resolve) => {
     setTimeout(resolve, 0);
   });
+}
+
+function mountNodeForPendingAction(nodeId: string): Promise<void> {
+  const next = nodeActionMountQueue.catch(() => undefined).then(async () => {
+    selectAndFocusNode(nodeId);
+    await requestAnimationFrameOrTimeout();
+    await requestAnimationFrameOrTimeout();
+  });
+  nodeActionMountQueue = next.catch(() => undefined);
+  return next;
 }
 
 function errorMessage(error: unknown): string {
@@ -1540,7 +1557,7 @@ function waitForNodeActionAccepted(
   });
 }
 
-function hasGeneratedResult(nodeId: string, action: string): boolean {
+export function hasGeneratedResult(nodeId: string, action: string): boolean {
   const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
   if (!data) return false;
   if (action === "generate_text") {
@@ -1580,7 +1597,7 @@ function hasGeneratedResult(nodeId: string, action: string): boolean {
 
 function hasActiveGenerationHandle(nodeId: string): boolean {
   const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
-  if (!data) return false;
+  if (!data || data.isGenerating !== true) return false;
   return Boolean(
     nonEmptyString(data.generationTaskKey) ??
     nonEmptyString(data.generationTaskJobId) ??
@@ -1590,6 +1607,15 @@ function hasActiveGenerationHandle(nodeId: string): boolean {
     nonEmptyString(data.job_id) ??
     nonEmptyString(data.jobId) ??
     nonEmptyString(data.skillRunId)
+  );
+}
+
+export function isNodeActionGenerationPending(nodeId: string, action: string): boolean {
+  return (
+    GENERATION_NODE_ACTIONS.has(action) &&
+    !hasGeneratedResult(nodeId, action) &&
+    hasActiveGenerationHandle(nodeId) &&
+    nodeGenerationError(nodeId) === null
   );
 }
 
@@ -2024,12 +2050,14 @@ async function executeQueuedNodeActions(
             : Promise.resolve(true);
           try {
             handlerCount = publishNodeAction();
+            if (handlerCount === 0 && requiresAcceptedSignal) {
+              // React Flow virtualizes off-screen nodes. Focusing mounts the target,
+              // whose subscription replays the already-pending action.
+              await mountNodeForPendingAction(action.nodeId);
+            }
           } catch (error) {
             clearPendingNodeAction(requestId);
             clearNodeActionRunning(action.nodeId, action.action);
-            if (action.executionMode === "single") {
-              return { action, failed: null };
-            }
             return {
               action,
               failed: `节点动作执行异常：${errorMessage(error)}`,
@@ -2403,6 +2431,39 @@ export function normalizeCanvasChatCommandEnvelopesForValidation(
   });
 }
 
+function workflowNodeIdentity(
+  data: Partial<CanvasNodeData> | undefined,
+): { instanceId: string; planNodeId: string } | null {
+  const instanceId = nonEmptyString(data?.workflowInstanceId);
+  const planNodeId = nonEmptyString(data?.workflowPlanNodeId);
+  return instanceId && planNodeId ? { instanceId, planNodeId } : null;
+}
+
+function existingWorkflowNodeForCommand(
+  command: Extract<CanvasChatCommand, { type: "create_node" }>,
+): CanvasNode | null {
+  const identity = workflowNodeIdentity(command.data);
+  if (!identity) return null;
+  return useCanvasStore.getState().nodes.find((node) => {
+    const current = workflowNodeIdentity(node.data);
+    return (
+      current?.instanceId === identity.instanceId &&
+      current.planNodeId === identity.planNodeId
+    );
+  }) ?? null;
+}
+
+function workflowEnvelopeAlreadyApplied(envelope: CanvasChatCommandEnvelope): boolean {
+  const createCommands = envelope.commands.filter(
+    (command): command is Extract<CanvasChatCommand, { type: "create_node" }> =>
+      command.type === "create_node" && workflowNodeIdentity(command.data) !== null,
+  );
+  return (
+    createCommands.length > 0 &&
+    createCommands.every((command) => existingWorkflowNodeForCommand(command) !== null)
+  );
+}
+
 function applyCanvasChatCommandsInternal(
   envelopes: CanvasChatCommandEnvelope[],
   options: ApplyCanvasChatCommandsOptions & { queueNodeActions: boolean },
@@ -2418,14 +2479,6 @@ function applyCanvasChatCommandsInternal(
   const pendingMainlineProjections: PendingMainlineProjection[] = [];
   const queuedNodeActionKeys = new Set<string>();
   const normalizedEnvelopes = normalizeCanvasChatCommandEnvelopesForValidation(envelopes);
-  const requestedNodeActionKeys = new Set(
-    normalizedEnvelopes.flatMap((envelope) =>
-      envelope.commands.flatMap((command) => {
-        if (command.type !== "run_node_action") return [];
-        return [`${command.node_id}:${command.action}`];
-      }),
-    ),
-  );
   const validation = validateCanvasChatCommandEnvelopes(
     normalizedEnvelopes,
     useCanvasStore.getState().nodes,
@@ -2446,6 +2499,24 @@ function applyCanvasChatCommandsInternal(
   let commandIndex = 0;
 
   for (const envelope of normalizedEnvelopes) {
+    if (workflowEnvelopeAlreadyApplied(envelope)) {
+      for (const command of envelope.commands) {
+        result.applied += 1;
+        result.commandResults.push({
+          commandIndex,
+          type: command.type,
+          status: "success",
+          label: "工作流已存在，跳过重复创建",
+          nodeId: commandPrimaryNodeId(command),
+          output: {
+            skipped: true,
+            reason: "workflow_instance_already_applied",
+          },
+        });
+        commandIndex += 1;
+      }
+      continue;
+    }
     const envelopeCreatedNodeIds: string[] = [];
     const envelopeSourceNodeIds = new Set<string>();
     const envelopeErrorStart = result.errors.length;
@@ -2460,6 +2531,26 @@ function applyCanvasChatCommandsInternal(
       try {
         switch (command.type) {
           case "create_node": {
+            const existingWorkflowNode = existingWorkflowNodeForCommand(command);
+            if (existingWorkflowNode) {
+              if (command.client_id) {
+                clientIdMap.set(command.client_id, existingWorkflowNode.id);
+              }
+              result.applied += 1;
+              result.commandResults.push({
+                commandIndex: currentCommandIndex,
+                type: command.type,
+                status: "success",
+                label: "复用已有工作流节点",
+                nodeId: command.client_id,
+                createdNodeId: existingWorkflowNode.id,
+                output: {
+                  skipped: true,
+                  reason: "workflow_node_already_applied",
+                },
+              });
+              break;
+            }
             const data = normalizeCanvasCommandNodeData(command.node_type, command.data);
             const nodeId = useCanvasStore.getState().addNode(
               command.node_type,
@@ -2662,51 +2753,34 @@ function applyCanvasChatCommandsInternal(
           }
           case "run_node_action": {
             const targetId = resolveNodeId(command.node_id, clientIdMap);
-            if (options.queueNodeActions) {
-              assertNodeActionAvailable(targetId, command.action);
-              if (CURRENT_MEDIA_NODE_ACTIONS.has(command.action)) {
-                runNodeAction(targetId, command.action, command.parameters);
-                result.openedUiActions += 1;
-                result.commandResults.push({
-                  commandIndex: currentCommandIndex,
-                  type: command.type,
-                  status: "success",
-                  label: commandLabel(command),
-                  nodeId: targetId,
-                  action: command.action,
-                });
-                if (!RESULT_SPAWNING_NODE_ACTIONS.has(command.action)) {
-                  selectAndFocusNode(targetId);
-                }
-                break;
+            assertNodeActionAvailable(targetId, command.action);
+            if (!RESULT_SPAWNING_NODE_ACTIONS.has(command.action)) {
+              selectAndFocusNode(targetId);
+            }
+            const queuedActions = options.queueNodeActions
+              ? directNodeActionQueue(
+                targetId,
+                command.action,
+                currentCommandIndex,
+                command.parameters,
+              )
+              : [];
+            const shouldQueue = (
+              options.queueNodeActions
+              && (
+                GENERATION_NODE_ACTIONS.has(command.action)
+                || queuedActions.length > 1
+              )
+            );
+            if (shouldQueue) {
+              for (const queuedAction of queuedActions) {
+                const actionKey = `${queuedAction.nodeId}:${queuedAction.action}`;
+                if (queuedNodeActionKeys.has(actionKey)) continue;
+                assertNodeActionAvailable(queuedAction.nodeId, queuedAction.action);
+                queuedNodeActionKeys.add(actionKey);
+                pendingNodeActions.push(queuedAction);
               }
-              const shouldRunUpstreamDependencies = !CURRENT_MEDIA_NODE_ACTIONS.has(command.action);
-              if (shouldRunUpstreamDependencies) {
-                const incompleteDependencies = upstreamWorkflowActionDependencies(targetId)
-                  .filter((dependency) => !requestedNodeActionKeys.has(`${dependency.nodeId}:${dependency.action}`));
-                for (const dependency of incompleteDependencies) {
-                  const dependencyKey = `${dependency.nodeId}:${dependency.action}`;
-                  if (queuedNodeActionKeys.has(dependencyKey)) continue;
-                  assertNodeActionAvailable(dependency.nodeId, dependency.action);
-                  queuedNodeActionKeys.add(dependencyKey);
-                  pendingNodeActions.push({
-                    ...dependency,
-                    commandIndex: currentCommandIndex,
-                  });
-                }
-              }
-              const targetKey = `${targetId}:${command.action}`;
-              if (!queuedNodeActionKeys.has(targetKey)) {
-                queuedNodeActionKeys.add(targetKey);
-                pendingNodeActions.push({
-                  commandIndex: currentCommandIndex,
-                  nodeId: targetId,
-                  action: command.action,
-                  executionMode: "single",
-                  parameters: command.parameters,
-                  label: commandLabel(command),
-                });
-              }
+              result.applied += 1;
             } else {
               runNodeAction(targetId, command.action, command.parameters);
               result.openedUiActions += 1;
@@ -2718,9 +2792,6 @@ function applyCanvasChatCommandsInternal(
                 nodeId: targetId,
                 action: command.action,
               });
-            }
-            if (!RESULT_SPAWNING_NODE_ACTIONS.has(command.action)) {
-              selectAndFocusNode(targetId);
             }
             break;
           }

@@ -1,7 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import type { FreezoneAgentConfigPayload } from "@/lib/queries/freezone-agent-config";
-import { isValidFreezoneSkillPayload } from "@/lib/freezone-agent-config-schema";
 
 export type FreezoneSkillSuggestion = {
   id: string;
@@ -61,6 +60,10 @@ function readKeywords(value: unknown): string[] {
   return keywords;
 }
 
+function hasWorkflowTemplates(value: unknown): boolean {
+  return Array.isArray(value) && value.length > 0;
+}
+
 export function toFreezoneSkillSuggestions(
   items: FreezoneAgentConfigPayload[] | undefined,
 ): FreezoneSkillSuggestion[] {
@@ -68,7 +71,7 @@ export function toFreezoneSkillSuggestions(
   return items.flatMap((item) => {
     const id = readString(item.id);
     if (!id || item.enabled === false) return [];
-    if (!isValidFreezoneSkillPayload(item)) return [];
+    if (!hasWorkflowTemplates(item.workflow_templates)) return [];
     const triggers = item.triggers && typeof item.triggers === "object"
       ? item.triggers as Record<string, unknown>
       : {};

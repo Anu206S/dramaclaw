@@ -69,6 +69,7 @@ def isolated_workspace(tmp_path, monkeypatch):
     state_root = repo_root / "state"
     state_root.mkdir(parents=True)
     monkeypatch.setattr(hw, "DRAMACLAW_ROOT", repo_root)
+    monkeypatch.setattr(hw, "_freezone_workflow_skill_items", lambda _username: [])
     monkeypatch.setattr(app_config, "STATE_DIR", str(state_root))
     monkeypatch.setenv("ST_EDITION", "ce")
     monkeypatch.delenv("ST_CONTROL_PLANE_DSN", raising=False)
@@ -166,13 +167,11 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
 
     parsed = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
     assert parsed["enabled_toolsets"] == ["hermes-acp", "freezone-acp", "memory"]
+    assert parsed["tools"]["tool_search"]["enabled"] == "off"
     assert parsed["plugins"]["enabled"] == ["freezone"]
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
     soul = (home / "SOUL.md").read_text(encoding="utf-8")
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
-    assert "你是虾导" in soul
-    assert "我是虾导" in soul
-    assert "虾画助手" not in soul
     assert "创意咨询、找思路、风格建议" in soul
     assert "搭建可继续工作的画布框架" in soul
     assert "不要在普通回复开头自报身份" in soul
@@ -180,9 +179,6 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "node create schema" in soul
     assert "link type catalog" in soul
     assert "生成完整短片" in soul
-    assert "虾导处理虾画画布上下文" in memory
-    assert "我是虾导" in memory
-    assert "虾画助手" not in memory
     assert "创意咨询、找思路、风格建议" in memory
     assert "搭建可继续工作的画布框架" in memory
     assert "不要在普通回复开头自报身份" in memory
@@ -192,40 +188,55 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "生成完整短片" in memory
 
 
-def test_freezone_profile_preserves_existing_memory(
+def test_freezone_profile_materializes_native_workflow_skills(
     isolated_workspace,
     repo_skills,
     repo_plugins,
+    monkeypatch,
 ):
+    items = [
+        {
+            "id": "ecommerce-ad",
+            "name": "电商广告",
+            "description": "动态生成电商广告工作流。",
+            "category": "ecommerce",
+            "triggers": {"keywords": ["商品广告", "带货视频"]},
+            "workflow_templates": [{"id": "dynamic"}],
+        }
+    ]
+    monkeypatch.setattr(hw, "_freezone_workflow_skill_items", lambda _username: items)
+
     home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
-    memory_file = home / "memories" / "MEMORY.md"
-    existing_memory = "用户已经教过虾画助手：这个项目要保持低饱和赛博风格。\n"
-    memory_file.write_text(existing_memory, encoding="utf-8")
+    skill_dir = home / "skills" / "ecommerce-ad"
+    content = (skill_dir / "SKILL.md").read_text(encoding="utf-8")
+    summaries = hw.list_freezone_hermes_workflow_skills("admin")
+
+    assert "name: ecommerce-ad" in content
+    assert "skill_id=\"ecommerce-ad\"" in content
+    assert "freezone_prepare_workflow_draft" in content
+    assert "freezone_patch_workflow_draft" in content
+    assert "freezone_confirm_workflow_draft" in content
+    assert "freezone_create_workflow_from_intent" not in content
+    assert summaries == [
+        {
+            "id": "ecommerce-ad",
+            "name": "电商广告",
+            "description": "动态生成电商广告工作流。 适用于：商品广告、带货视频。 选择后使用虾画确定性工具生成动态工作流。",
+            "category": "ecommerce",
+            "source": "hermes_native_workflow_skill",
+            "workflow_templates": [{"id": "hermes-native"}],
+        }
+    ]
+
+    manual_skill = home / "skills" / "manual-skill"
+    manual_skill.mkdir()
+    (manual_skill / "SKILL.md").write_text("# Manual\n", encoding="utf-8")
+    monkeypatch.setattr(hw, "_freezone_workflow_skill_items", lambda _username: [])
 
     hw.ensure_user_hermes_workspace("admin", profile="freezone")
 
-    assert memory_file.read_text(encoding="utf-8") == existing_memory
-
-
-def test_freezone_profile_migrates_old_default_memory_identity(
-    isolated_workspace,
-    repo_skills,
-    repo_plugins,
-):
-    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
-    memory_file = home / "memories" / "MEMORY.md"
-    old_default_memory = """虾画助手处理虾画画布上下文中的节点、连接、资源查看和工作流操作。用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形。画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog。虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成。不要在普通回复开头自报身份；用户问身份时，回答“我是虾画助手”。
-§
-虾画会话应优先使用 `freezone-acp` 工具集中的 Freezone 画布工具。不要使用 DramaClaw 主线写入工具改动画布。
-"""
-    memory_file.write_text(old_default_memory, encoding="utf-8")
-
-    hw.ensure_user_hermes_workspace("admin", profile="freezone")
-
-    migrated = memory_file.read_text(encoding="utf-8")
-    assert "虾导处理虾画画布上下文" in migrated
-    assert "我是虾导" in migrated
-    assert "虾画助手" not in migrated
+    assert not skill_dir.exists()
+    assert manual_skill.exists()
 
 
 def test_freezone_profile_refreshes_stale_repo_symlinks(

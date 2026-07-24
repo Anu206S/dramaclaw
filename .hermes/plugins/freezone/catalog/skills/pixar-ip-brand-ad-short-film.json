@@ -1,0 +1,213 @@
+{
+  "category": "brand-advertising",
+  "description": "基于皮克斯3D卡通渲染风格的品牌IP角色广告短片制作工作流。从角色锚定、道具锚定、分镜草图到逐镜视频片段、音频生成和最终合成，支持任意品牌/IP/产品替换复用。核心协议：角色造型全程锁定、道具单视角锚定、分镜黑白铅笔线稿阶段例外、引用链完整、视频角色不分身、暖色调柔和光影。",
+  "evaluation": {
+    "domain_constraints": [
+      "角色造型从立绘到视频全程锁定，不得改变外观、配色、配件",
+      "道具只展示指定视角（如正面单面），与锚点图一致",
+      "分镜草图必须使用黑白铅笔线稿，不上色不上灰度",
+      "每段视频必须引用角色立绘+分镜草图+道具锚点，引用链不可断裂",
+      "视频中主角只出现一次，不得出现重复角色或分身",
+      "全局光影风格：皮克斯3D卡通渲染，C4D+Octane质感，柔和暖色调，圆润造型，无尖锐边缘",
+      "最终合成不生成新创意内容，只组装已生成的视频和音频资产"
+    ],
+    "quality_threshold": 7.5,
+    "rating_bands": [
+      {
+        "description": "角色一致、道具视角正确、分镜线稿纯净、视频无分身、光影风格统一、引用链完整",
+        "score": 9
+      },
+      {
+        "description": "基本一致但存在轻微风格偏差或引用缺失",
+        "score": 7
+      },
+      {
+        "description": "角色变形、道具视角错误、分镜上色、视频出现分身或引用断裂",
+        "score": 4
+      }
+    ],
+    "text_review_items": [
+      {
+        "description": "视频提示词是否包含角色锁定、道具引用、分镜参考和负向约束",
+        "name": "提示词完整性",
+        "weight": 0.3
+      },
+      {
+        "description": "音频文案是否与画面剧情匹配、情绪一致",
+        "name": "文案剧情匹配",
+        "weight": 0.2
+      }
+    ],
+    "visual_review_items": [
+      {
+        "description": "角色从立绘到视频全程外观一致",
+        "name": "角色一致性",
+        "weight": 0.3
+      },
+      {
+        "description": "皮克斯3D卡通渲染、暖色调柔和光影、圆润造型",
+        "name": "光影风格还原",
+        "weight": 0.25
+      },
+      {
+        "description": "道具只展示指定视角，与锚点图一致",
+        "name": "道具视角准确",
+        "weight": 0.15
+      },
+      {
+        "description": "分镜为黑白铅笔线稿，无上色无灰度",
+        "name": "分镜线稿纯净",
+        "weight": 0.15
+      },
+      {
+        "description": "视频中主角只出现一次，无分身",
+        "name": "视频无分身",
+        "weight": 0.15
+      }
+    ]
+  },
+  "id": "pixar-ip-brand-ad-short-film",
+  "name": "皮克斯 IP 品牌广告短片",
+  "aliases": [
+    "皮克斯IP广告",
+    "品牌IP动画广告",
+    "Pixar IP ad"
+  ],
+  "planning": {
+    "conduct_rules": [
+      "先完成角色立绘锚定，审批通过后才可开始道具锚定和分镜草图",
+      "道具锚定必须引用角色立绘作为风格参考，每个道具只展示指定视角（如正面单面）",
+      "分镜草图必须引用角色立绘和道具锚点，且必须使用黑白铅笔线稿风格，不上色不上灰度",
+      "分镜草图审批通过后才能开始逐镜视频生成",
+      "每段视频必须同时引用角色立绘、分镜草图和道具锚点，引用链不可断裂",
+      "视频提示词必须包含角色造型锁定声明和不分身约束",
+      "音频生成在视频片段完成后进行，情绪和节奏匹配对应段落",
+      "最终合成只接收视频和音频产物，不接收文本/简报/prompt",
+      "默认图片比例1:1（角色/道具），分镜16:9，视频16:9"
+    ],
+    "default_aspect_ratios": {
+      "imageGeneration": "1:1",
+      "videoGeneration": "16:9"
+    },
+    "planning_notes": "执行路径：1) ip-character-anchor (imageGeneration) 生成品牌IP角色立绘，锁定角色外观 → 2) brand-prop-anchor (imageGeneration) 生成品牌道具锚点图，引用角色立绘保持风格一致 → 3) pixar-storyboard-sketch (imageGeneration) 生成分镜草图，引用角色+道具，黑白铅笔线稿 → 用户审核分镜 → 4) pixar-shot-video-clip (videoGeneration) 按分镜逐段生成视频片段，每段引用角色+分镜+道具 → 5) ad-audio-production (audioGeneration) 生成配音/旁白/音乐 → 6) videoCompose 最终合成所有视频和音频资产。上游依赖：道具依赖角色，分镜依赖角色+道具，视频依赖角色+道具+分镜，音频依赖视频段落，合成依赖全部视频+音频。审核闸门：角色立绘审批后继续道具，分镜草图审批后继续视频。比例策略：角色/道具1:1，分镜16:9，视频16:9。",
+    "prompt_guide": "所有提示词必须包含皮克斯3D卡通渲染风格声明、角色造型锁定声明、道具引用声明和负向约束。分镜阶段额外声明黑白铅笔线稿风格例外。视频阶段额外声明角色不分身约束和引用链完整性。"
+  },
+  "triggers": {
+    "keywords": [
+      "皮克斯广告",
+      "IP角色短片",
+      "品牌动画广告",
+      "卡通角色广告",
+      "Pixar brand ad",
+      "IP character short film",
+      "3D cartoon ad",
+      "角色锚定广告",
+      "分镜广告短片",
+      "皮克斯风格短片",
+      "品牌IP广告"
+    ],
+    "node_scopes": [
+      "imageGeneration",
+      "videoGeneration",
+      "audioGeneration"
+    ]
+  },
+  "workflow_templates": [
+    {
+      "condition": {
+        "message_keywords": [
+          "广告",
+          "短片",
+          "品牌",
+          "IP",
+          "角色",
+          "产品"
+        ]
+      },
+      "description": "从品牌IP角色锚定到最终合成成片的完整皮克斯风格广告短片工作流",
+      "id": "pixar-brand-ad-full",
+      "name": "皮克斯品牌IP广告短片全流程",
+      "steps": [
+        {
+          "action_key": "ip-character-anchor",
+          "aspect_ratio": "1:1",
+          "goal_template": "生成品牌IP角色立绘，锁定角色外观、配色、配件和整体风格",
+          "id": "step_character",
+          "input_strategy": {
+            "type": "user_message"
+          },
+          "multiplicity": "single",
+          "need_review": true,
+          "node_type": "imageGeneration",
+          "prompt_strategy": "llm_refine",
+          "step_number": 1
+        },
+        {
+          "action_key": "brand-prop-anchor",
+          "aspect_ratio": "1:1",
+          "goal_template": "生成品牌道具锚点图，引用角色立绘保持风格一致，只展示指定视角",
+          "id": "step_prop",
+          "input_strategy": {
+            "step_id": "step_character",
+            "type": "previous_step"
+          },
+          "multiplicity": "per_input",
+          "need_review": true,
+          "node_type": "imageGeneration",
+          "prompt_strategy": "llm_refine",
+          "step_number": 2
+        },
+        {
+          "action_key": "pixar-storyboard-sketch",
+          "aspect_ratio": "16:9",
+          "goal_template": "生成黑白铅笔线稿分镜草图，引用角色立绘和道具锚点，规划剧情段落",
+          "id": "step_storyboard",
+          "input_strategy": {
+            "step_id": "step_prop",
+            "type": "previous_step"
+          },
+          "multiplicity": "single",
+          "need_review": true,
+          "node_type": "imageGeneration",
+          "prompt_strategy": "llm_refine",
+          "step_number": 3
+        },
+        {
+          "action_key": "pixar-shot-video-clip",
+          "aspect_ratio": "16:9",
+          "goal_template": "按分镜逐段生成视频片段，每段引用角色立绘、分镜草图和道具锚点",
+          "id": "step_video",
+          "input_strategy": {
+            "step_id": "step_storyboard",
+            "type": "previous_step"
+          },
+          "multiplicity": {
+            "type": "fixed_count",
+            "default_count": 4,
+            "user_overridable": true,
+            "min": 1,
+            "max": 12
+          },
+          "need_review": true,
+          "node_type": "videoGeneration",
+          "prompt_strategy": "llm_refine",
+          "step_number": 4
+        },
+        {
+          "action_key": "ad-audio-production",
+          "goal_template": "生成配音、旁白或背景音乐，情绪节奏匹配对应视频段落",
+          "id": "step_audio",
+          "input_strategy": {
+            "step_id": "step_video",
+            "type": "previous_step"
+          },
+          "multiplicity": "single",
+          "need_review": false,
+          "node_type": "audioGeneration",
+          "prompt_strategy": "llm_refine",
+          "step_number": 5
+        }
+      ]
+    }
+  ]
+}

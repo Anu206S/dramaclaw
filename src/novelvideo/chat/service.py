@@ -335,7 +335,7 @@ Routing:
 - Use canvas ontology or canvas summary first for whole-canvas Skill distillation. Do not read every node detail one by one; only fetch individual node detail for a small number of key nodes when ontology/summary is missing fields needed for the draft.
 - Summary-flow confirmation questions should focus on user-facing abstraction choices, especially whether to preserve project-specific details or abstract them into a reusable Skill, and whether to split key generator/planner capabilities into Recipes or merge them into fewer Recipes.
 - Do not present videoCompose, final media composition, or final synthesis as a Recipe granularity option, and do not count the videoCompose terminal step in the Recipe count. Phrase choices as "3 Recipes + final videoCompose workflow step" rather than "4 Recipes including composition".
-- Do not ask for Skill name, category, or whether to include workflow templates as the first summary-flow questions. Prefer concrete case vs reusable template, recipe granularity, and hard constraint preservation.
+- Do not ask for Skill name, category, or fixed topology as the first summary-flow questions. Prefer concrete case vs reusable Skill, recipe granularity, and hard constraint preservation.
 - Skip those summary-flow questions only when the user explicitly says to skip confirmation, use recommended/default settings, or already gives equivalent preferences.
 
 Output contract:
@@ -380,25 +380,21 @@ Draft revision:
 Draft rules:
 - Generate complete Skill / Recipe drafts, not partial fields.
 - For every new Skill, derive the draft from capability modeling: target user, input sources, output artifacts, execution path, quality gates, and failure/refinement strategy.
-- New multi-node workflow Skills should use the 2.0 dynamic format by default: include input_parameters, allowed_recipe_ids, planning, and evaluation. Do not require workflow_templates for new dynamic Skills. Do not write schema_version or version in the tool payload; the Skill Studio tool layer fills system metadata automatically.
-- Put user-varying choices in input_parameters. Put every Recipe the Skill may use in allowed_recipe_ids. Treat allowed_recipe_ids as the dynamic planner's strict whitelist.
-- For single_select and multi_select input_parameters, write options as a simple list of user-facing strings. Do not create separate internal values and display labels; the option text is the value.
-- Include workflow_templates only when the user explicitly asks for a fixed template or legacy fixed-workflow compatibility. If included, templates are compatibility examples; planning_notes alone is not enough for that fixed-template path.
-- workflow_templates may use node_type=videoCompose only as a terminal composer step for existing video/audio assets. Do not create a Recipe for videoCompose and do not claim a Recipe prompt will drive videoComposeNode directly. If AI planning is needed for editing, create a textGeneration Recipe for a compose/timeline plan, then use a videoCompose workflow step.
+- Do not include workflow_templates. Skills store reusable planning rules and Recipe boundaries; each run authors a complete dynamic freezone_workflow_plan.v1 from the confirmed user goal.
+- For multi-node canvas processes, planning.planning_notes must describe the ordered phases, dependency rules, parallelism, review gates, aspect-ratio policy, and the Recipe action_keys available to dynamic planning.
+- videoCompose may appear only as a terminal node in the runtime dynamic plan for existing video/audio assets. Do not create a Recipe for videoCompose and do not claim a Recipe prompt will drive videoComposeNode directly. If AI planning is needed for editing, create a textGeneration Recipe for a compose/timeline plan, then let the dynamic plan add the terminal videoCompose node.
 - For canvas workflow distillation, perform prompt_evidence_analysis before topology summarization: first extract repeated prompt phrases, media facts, source filenames, references, and edges, then summarize the graph. Infer the domain_contract or creative_contract from that evidence, not from displayName or node type alone.
 - For canvas workflow distillation, perform skill_identity_analysis after prompt_evidence_analysis. Classify evidence terms into case_variables, reusable_protocol_terms, output_format_terms, use_case_terms, and workflow_method_terms. Skill name, id, description, and triggers.keywords must remove case_variables but preserve reusable_protocol_terms. Do not let workflow_method_terms alone dominate the Skill identity; keywords must cover protocol, output format, use case, and workflow method.
 - For canvas workflow distillation, infer Recipe boundaries from reusable capabilities and graph dependencies. Do not derive Recipes only from node types.
-- Extract hard constraints from repeated prompt text, references, and edges; turn them into conduct_rules, evaluation.domain_constraints, workflow step dependencies, and Recipe quality standards. Do not collapse them into vague "style consistency" language.
-- Write the domain_contract or creative_contract into existing fields: planning_notes, conduct_rules, evaluation.domain_constraints, workflow step descriptions, and Recipe quality standards. Do not add schema fields for the contract. Visual projects may need global visual language, stage-specific style exceptions, and style inheritance rules; for example Pixar 3D cartoon, C4D + Octane, soft studio lighting, rounded forms, and no harsh edges can be the visual language, storyboard may require black-and-white pencil sketch instead of inheriting rendered 3D color, and videoCompose does not generate new creative content. For non-visual domains, the same contract may capture metric definitions, legal jurisdiction, teaching level, voice persona, or gameplay rules.
+- Extract hard constraints from repeated prompt text, references, and edges; turn them into conduct_rules, evaluation.domain_constraints, dynamic dependency rules, and Recipe quality standards. Do not collapse them into vague "style consistency" language.
+- Write the domain_contract or creative_contract into existing fields: planning_notes, conduct_rules, evaluation.domain_constraints, and Recipe quality standards. Do not add schema fields for the contract. Visual projects may need global visual language, stage-specific style exceptions, and style inheritance rules; for example Pixar 3D cartoon, C4D + Octane, soft studio lighting, rounded forms, and no harsh edges can be the visual language, storyboard may require black-and-white pencil sketch instead of inheriting rendered 3D color, and videoCompose does not generate new creative content. For non-visual domains, the same contract may capture metric definitions, legal jurisdiction, teaching level, voice persona, or gameplay rules.
 - Keep ids lowercase and limited to letters, numbers, underscores, and hyphens.
 - Use Skill triggers.node_scopes only for catalog node scopes: textGeneration, imageGeneration, videoGeneration, audioGeneration. Do not use canvas node types such as imageGenNode, textAnnotationNode, videoNode, or audioNode in Skill triggers.
-- Use workflow_templates.steps[].node_type only for catalog task types: textGeneration, imageGeneration, videoGeneration, audioGeneration, videoCompose. Do not use internal canvas node types such as textAnnotationNode, imageGenNode, videoNode, audioNode, or videoComposeNode in workflow templates.
-- Do not write planning.default_aspect_ratios, planning.model_preferences, or fixed model ids. Put user-controllable output choices such as aspect ratio, duration, quantity, audio mode, and execution mode in input_parameters instead.
-- planning.planning_notes must start with a dynamic executable path summary: how to choose stages from input_parameters and current canvas assets, task types, Recipe ids, upstream dependencies, review/wait behavior, and aspect ratio policy. Put visual/style guidance after the execution path.
+- Use planning.default_aspect_ratios for task-type aspect defaults, for example {"imageGeneration": "16:9", "videoGeneration": "16:9"}. imageGeneration may use 1:1, 9:16, 16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, or 21:9. videoGeneration may use 16:9, 4:3, 1:1, 3:4, 9:16, or 21:9. Do not use auto for saved defaults. Do not write model_preferences or fixed model ids; image and video model options are fetched by the frontend from their separate model endpoints.
+- If planning.default_aspect_ratios defines a task-type default but a run produces multiple ratios, keep the Skill default as the primary ratio and put explicit aspectRatio values on the relevant dynamic plan nodes.
+- planning.planning_notes must start with an executable path summary: ordered steps, task types, action_keys, upstream dependencies, review/wait behavior, and aspect ratio policy. Put visual/style guidance after the execution path.
 - planning.conduct_rules must include hard execution rules, not only style principles: step order, one-node-per-step constraints, input source rules, review gates, aspect ratios, and forbidden premature downstream execution.
-- workflow_templates[].condition should be machine-readable when possible, e.g. message_keywords, text_only, hasInputTypes. Do not use only {"description": "..."}.
-- workflow_templates[].steps[].input_strategy should prefer {"type":"previous_step","step_id":"..."} over vague {"source":"previous_steps","steps":[...]}.
-- workflow_templates[].steps[] should include aspect_ratio when the step creates imageGeneration or videoGeneration output with a known ratio.
+- planning_notes and conduct_rules must be precise enough for the runtime Agent to author node types, dependencies, parallel branches, and review gates without a fixed template.
 - Use snake_case Recipe fields directly: system_prompt, must_have_items, planning_prompt, result_summary, requires_source_media.
 - Do not ask the user for low-level fields such as id, category, action_keys, or system_prompt; infer them.
 - Recipe system_prompt is a prompt/instruction generator: it guides the current Agent/LLM to write
@@ -546,14 +542,7 @@ def _prompt_with_user_context(
     surface_context: dict[str, Any] | None = None,
     route_prompt: str | None = None,
 ) -> str:
-    is_freezone_canvas = tool_mode == "freezone_canvas"
-    preferences = "" if is_freezone_canvas else load_user_preferences(username)
-    preferences_context = (
-        "[USER_PREFERENCES]\n"
-        f"{preferences}\n\n"
-        if not is_freezone_canvas
-        else ""
-    )
+    preferences = load_user_preferences(username)
     scope = f"project:{project}" if project else "home"
     canvas_id = _freezone_canvas_id_from_context(surface_context)
     canvas_context = (
@@ -561,14 +550,14 @@ def _prompt_with_user_context(
         f"canvas_id: {canvas_id}\n"
         "Use this canvas_id for Freezone canvas tools unless the user explicitly names another canvas.\n"
         "[/FREEZONE_CANVAS_CONTEXT]"
-        if is_freezone_canvas
+        if tool_mode == "freezone_canvas"
         else ""
     )
     surface_instructions = (
         f"\n\n{_FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS}"
         f"{_freezone_skill_studio_context(username, route_prompt if route_prompt is not None else prompt)}"
         f"{canvas_context}"
-        if is_freezone_canvas
+        if tool_mode == "freezone_canvas"
         else ""
     )
     return (
@@ -577,7 +566,8 @@ def _prompt_with_user_context(
         f"scope: {scope}\n"
         "Project-scoped facts must stay in the project scope. "
         "Only stable user preferences should be reused across projects.\n\n"
-        f"{preferences_context}"
+        "[USER_PREFERENCES]\n"
+        f"{preferences}\n\n"
         f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
         f"{surface_instructions}\n\n"
         "[USER_MESSAGE]\n"

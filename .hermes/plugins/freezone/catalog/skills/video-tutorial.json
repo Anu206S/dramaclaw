@@ -1,0 +1,75 @@
+{
+  "id": "video-tutorial",
+  "name": "视频解说教程",
+  "enabled": true,
+  "version": 1,
+  "description": "把知识点、操作步骤或产品使用方法转换为分段解说教程视频。",
+  "category": "education",
+  "aliases": ["视频解说教程", "解说教程", "教程视频", "how-to video"],
+  "triggers": {
+    "keywords": ["视频解说教程", "教程视频", "操作教程", "知识讲解", "步骤演示"],
+    "node_scopes": ["textGeneration", "imageGeneration", "videoGeneration", "audioGeneration"]
+  },
+  "planning": {
+    "planning_notes": "按照用户提供的步骤或主题动态展开教学段落，每个段落对应画面和视频片段。",
+    "prompt_guide": "内容准确、步骤清晰、画面与解说一一对应，避免虚构未提供的产品功能。"
+  },
+  "workflow_templates": [
+    {
+      "id": "video-tutorial-dynamic",
+      "name": "动态解说教程",
+      "steps": [
+        {
+          "id": "tutorial-outline",
+          "step_number": 1,
+          "goal_template": "整理教程目标、受众、前置条件和操作步骤",
+          "node_type": "textGeneration",
+          "action_key": "general-text",
+          "prompt_strategy": "user_message",
+          "input_strategy": {"type": "none"},
+          "multiplicity": "single"
+        },
+        {
+          "id": "tutorial-script",
+          "step_number": 2,
+          "goal_template": "生成分段画面说明与口播稿",
+          "node_type": "textGeneration",
+          "action_key": "general-text",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "tutorial-outline"},
+          "multiplicity": "single"
+        },
+        {
+          "id": "tutorial-frames",
+          "step_number": 3,
+          "goal_template": "为每个教程步骤生成演示关键画面",
+          "node_type": "imageGeneration",
+          "action_key": "general-image",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step_and_user_assets", "step_id": "tutorial-script"},
+          "multiplicity": "per_plan_item"
+        },
+        {
+          "id": "tutorial-clips",
+          "step_number": 4,
+          "goal_template": "为每个教程步骤生成演示视频片段",
+          "node_type": "videoGeneration",
+          "action_key": "general-video",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "tutorial-frames"},
+          "multiplicity": "per_input"
+        },
+        {
+          "id": "tutorial-narration",
+          "step_number": 5,
+          "goal_template": "生成完整教程解说音频",
+          "node_type": "audioGeneration",
+          "action_key": "general-audio",
+          "prompt_strategy": "llm_refine",
+          "input_strategy": {"type": "previous_step", "step_id": "tutorial-script"},
+          "multiplicity": "single"
+        }
+      ]
+    }
+  ]
+}

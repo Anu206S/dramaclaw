@@ -1981,6 +1981,10 @@ export async function fetchFreezoneAudioReferences(
 export interface FreezoneAudioSpeechPayload {
   /** 要合成的台词 / 旁白文本。 */
   text: string;
+  /** preset 无需参考音频；clone 使用 voiceRef 克隆声音。 */
+  speechMode?: "preset" | "clone";
+  presetModel?: string;
+  presetVoice?: string;
   /** 情绪提示词，留空则用项目解说风格。例："紧张、压低声音、带一点恐惧感"。 */
   emotionPrompt?: string;
   /** 声线引用；不传则用项目默认解说人。 */
@@ -2009,6 +2013,9 @@ export async function submitFreezoneAudioSpeech(
       method: "POST",
       json: {
         text: payload.text,
+        speech_mode: payload.speechMode ?? "clone",
+        preset_model: payload.presetModel ?? "edge-tts",
+        preset_voice: payload.presetVoice ?? "Serena",
         emotion_prompt: payload.emotionPrompt ?? "",
         voice_ref: voiceRefBody,
         target_episode: payload.targetEpisode,

@@ -10,13 +10,8 @@ import { SettingsDialog } from "@/components/settings/settings-dialog";
 const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const freezoneAgentConfigMocks = vi.hoisted(() => ({
   delete: vi.fn(),
-  exportBundle: vi.fn(),
-  installBundle: vi.fn(),
-  installCommunityBundle: vi.fn(),
   items: [] as Array<Record<string, unknown>>,
-  itemsByKind: {} as Record<string, Array<Record<string, unknown>>>,
   refetch: vi.fn(),
-  refetchCommunityCatalog: vi.fn(),
   save: vi.fn(),
 }));
 
@@ -25,16 +20,13 @@ vi.mock("@/lib/runtime-config", () => ({
 }));
 
 vi.mock("@/lib/queries/freezone-agent-config", () => ({
-  useFreezoneAgentConfigItems: (kind: string) => {
-    const scopedItems = freezoneAgentConfigMocks.itemsByKind[kind];
-    return {
-      data: scopedItems ?? freezoneAgentConfigMocks.items,
-      isLoading: false,
-      isError: false,
-      isFetching: false,
-      refetch: freezoneAgentConfigMocks.refetch,
-    };
-  },
+  useFreezoneAgentConfigItems: () => ({
+    data: freezoneAgentConfigMocks.items,
+    isLoading: false,
+    isError: false,
+    isFetching: false,
+    refetch: freezoneAgentConfigMocks.refetch,
+  }),
   useSaveFreezoneAgentConfigItem: () => ({
     mutateAsync: freezoneAgentConfigMocks.save,
     isPending: false,
@@ -42,25 +34,6 @@ vi.mock("@/lib/queries/freezone-agent-config", () => ({
   useDeleteFreezoneAgentConfigItem: () => ({
     mutateAsync: freezoneAgentConfigMocks.delete,
     isPending: false,
-  }),
-  useInstallFreezoneAgentBundle: () => ({
-    mutateAsync: freezoneAgentConfigMocks.installBundle,
-    isPending: false,
-  }),
-  useExportFreezoneAgentBundle: () => ({
-    mutateAsync: freezoneAgentConfigMocks.exportBundle,
-    isPending: false,
-  }),
-  useFreezoneCommunityCatalog: () => ({
-    data: { schema_version: "dramaclaw.community-catalog.v1", items: [] },
-    isLoading: false,
-    isError: false,
-    refetch: freezoneAgentConfigMocks.refetchCommunityCatalog,
-  }),
-  useInstallFreezoneCommunityBundle: () => ({
-    mutateAsync: freezoneAgentConfigMocks.installCommunityBundle,
-    isPending: false,
-    variables: undefined,
   }),
 }));
 
@@ -121,8 +94,8 @@ vi.mock("react-i18next", () => ({
         "settings.modelConfig.fields.apiKey": "API Key",
         "settings.mediaStorage.title": "图床 / 媒体存储",
         "settings.mediaStorage.description": "媒体存储说明",
-        "settings.freezoneCatalog.skills.description": "管理 Agent 可直接使用的技能。",
-        "settings.freezoneCatalog.recipes.description": "维护 Skill 可调用的底层 Recipes，通常用于调试或内置能力管理。",
+        "settings.freezoneCatalog.skills.description": "Skills 控制虾画 Agent 的领域行为和评估规则",
+        "settings.freezoneCatalog.recipes.description": "Recipes 控制虾画生成节点的提示词策略",
         "settings.freezoneCatalog.searchSkills": "搜索 Skill",
         "settings.freezoneCatalog.searchRecipes": "搜索 Recipe",
         "settings.freezoneCatalog.emptySkills": "暂无虾画 Skills",
@@ -135,12 +108,6 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.deleted": "虾画配置已删除",
         "settings.freezoneCatalog.deleteFailed": "删除失败，请重试",
         "settings.freezoneCatalog.deleteSelected": "删除选中",
-        "settings.freezoneCatalog.deleteSkillDialog.title": "删除 Skill",
-        "settings.freezoneCatalog.deleteSkillDialog.description": `确定要删除「${options?.id ?? ""}」吗？`,
-        "settings.freezoneCatalog.deleteSkillDialog.recipeHint": `这个 Skill 当前关联 ${options?.count ?? 0} 个 Recipes。`,
-        "settings.freezoneCatalog.deleteSkillDialog.cancel": "取消",
-        "settings.freezoneCatalog.deleteSkillDialog.deleteSkillOnly": "只删除 Skill",
-        "settings.freezoneCatalog.deleteSkillDialog.deleteWithRecipes": "同时删除 Recipes",
         "settings.freezoneCatalog.exported": "虾画配置已导出",
         "settings.freezoneCatalog.imported": "虾画配置已导入",
         "settings.freezoneCatalog.importFailed": "导入失败，请选择有效的 JSON 文件",
@@ -148,13 +115,8 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.editItem": `编辑 ${options?.id ?? ""}`,
         "settings.freezoneCatalog.deleteItem": `删除 ${options?.id ?? ""}`,
         "settings.freezoneCatalog.refresh": "刷新",
-        "settings.freezoneCatalog.advancedManagement": "高级管理",
-        "settings.freezoneCatalog.backToSkills": "返回 Skills",
         "settings.freezoneCatalog.import": "导入",
-        "settings.freezoneCatalog.importBundle": "导入 Skill",
         "settings.freezoneCatalog.export": "导出",
-        "settings.freezoneCatalog.exportBundle": "导出 Skill",
-        "settings.freezoneCatalog.community.open": "社区 Skill",
         "settings.freezoneCatalog.new": "新增",
         "settings.freezoneCatalog.selectAll": "全选",
         "settings.freezoneCatalog.readOnly": "只读",
@@ -173,8 +135,6 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newSkill.save": "保存",
         "settings.freezoneCatalog.newSkill.id": "ID",
         "settings.freezoneCatalog.newSkill.idHint": "仅允许 a-z、0-9、-、_",
-        "settings.freezoneCatalog.newSkill.name": "名称",
-        "settings.freezoneCatalog.newSkill.namePlaceholder": "如：品牌视频 Skill",
         "settings.freezoneCatalog.newSkill.category": "分类",
         "settings.freezoneCatalog.newSkill.description": "适用说明",
         "settings.freezoneCatalog.newSkill.descriptionPlaceholder": "适用场景描述",
@@ -185,34 +145,6 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.newSkill.keywordsHint": "支持权重",
         "settings.freezoneCatalog.newSkill.nodeScopes": "节点类型",
         "settings.freezoneCatalog.newSkill.nodeScopesPlaceholder": "textGeneration / imageGeneration / videoGeneration / audioGeneration",
-        "settings.freezoneCatalog.newSkill.workflow2Title": "工作流设置",
-        "settings.freezoneCatalog.newSkill.workflow2Description": "工作流字段",
-        "settings.freezoneCatalog.newSkill.schemaVersion": "Schema 版本",
-        "settings.freezoneCatalog.newSkill.version": "版本",
-        "settings.freezoneCatalog.newSkill.allowedRecipeIds": "关联 Recipes",
-        "settings.freezoneCatalog.newSkill.allowedRecipeIdsPlaceholder": "输入 Recipe ID",
-        "settings.freezoneCatalog.newSkill.allowedRecipeIdsHint": "动态规划时使用",
-        "settings.freezoneCatalog.newSkill.inputParameters": "开始前选项",
-        "settings.freezoneCatalog.newSkill.inputParametersEmpty": "没有选项",
-        "settings.freezoneCatalog.newSkill.inputParameterRequired": "必填",
-        "settings.freezoneCatalog.newSkill.inputParameterDefault": "默认",
-        "settings.freezoneCatalog.newSkill.inputParameterOptions": `${options?.count ?? 0} 个选项`,
-        "settings.freezoneCatalog.newSkill.inputParameterOptionList": "选项列表",
-        "settings.freezoneCatalog.newSkill.addInputParameter": "新增选项",
-        "settings.freezoneCatalog.newSkill.deleteInputParameter": "删除选项",
-        "settings.freezoneCatalog.newSkill.inputParameterId": "参数 ID",
-        "settings.freezoneCatalog.newSkill.inputParameterIdPlaceholder": "如 total_duration",
-        "settings.freezoneCatalog.newSkill.inputParameterLabel": "显示名称",
-        "settings.freezoneCatalog.newSkill.inputParameterLabelPlaceholder": "如 目标时长",
-        "settings.freezoneCatalog.newSkill.inputParameterType": "类型",
-        "settings.freezoneCatalog.newSkill.inputParameterDefaultPlaceholder": "如 15s",
-        "settings.freezoneCatalog.newSkill.inputParameterOptionsPlaceholder": "一行一个选项",
-        "settings.freezoneCatalog.newSkill.inputParameterTypes.single_select": "单选",
-        "settings.freezoneCatalog.newSkill.inputParameterTypes.multi_select": "多选",
-        "settings.freezoneCatalog.newSkill.inputParameterTypes.text": "文本",
-        "settings.freezoneCatalog.newSkill.inputParameterTypes.number": "数字",
-        "settings.freezoneCatalog.newSkill.inputParameterTypes.boolean": "开关",
-        "settings.freezoneCatalog.newSkill.inputParametersPlaceholder": "[]",
         "settings.freezoneCatalog.newSkill.planningTitle": "规则配置",
         "settings.freezoneCatalog.newSkill.planningDescription": "规则策略",
         "settings.freezoneCatalog.newSkill.planningNotes": "规划器提示词",
@@ -308,35 +240,12 @@ function renderSettingsDialog() {
   );
 }
 
-function openRecipesManagement() {
-  fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
-  fireEvent.click(screen.getByRole("button", { name: "高级管理" }));
-}
-
 beforeEach(() => {
   runtimeState.isCeRuntime = true;
   freezoneAgentConfigMocks.delete.mockReset();
-  freezoneAgentConfigMocks.exportBundle.mockReset();
-  freezoneAgentConfigMocks.installBundle.mockReset();
-  freezoneAgentConfigMocks.installCommunityBundle.mockReset();
   freezoneAgentConfigMocks.items = [];
-  freezoneAgentConfigMocks.itemsByKind = {};
   freezoneAgentConfigMocks.refetch.mockReset();
-  freezoneAgentConfigMocks.refetchCommunityCatalog.mockReset();
   freezoneAgentConfigMocks.save.mockReset();
-  freezoneAgentConfigMocks.exportBundle.mockImplementation(
-    async ({ bundle }: { bundle: Record<string, unknown> }) => bundle,
-  );
-  freezoneAgentConfigMocks.installBundle.mockResolvedValue({
-    bundle_id: "test-bundle",
-    installed_skill: "test-skill",
-    installed_recipes: [],
-  });
-  freezoneAgentConfigMocks.installCommunityBundle.mockResolvedValue({
-    bundle_id: "community-bundle",
-    installed_skill: "community-skill",
-    installed_recipes: [],
-  });
 });
 
 describe("SettingsDialog pages", () => {
@@ -350,7 +259,7 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByText("选择模型网关渠道")).toBeInTheDocument();
   });
 
-  it("limits EE settings to Freezone Skills with Recipes under advanced management", () => {
+  it("limits EE settings to Freezone Skills and Recipes", () => {
     runtimeState.isCeRuntime = false;
 
     renderSettingsDialog();
@@ -362,25 +271,22 @@ describe("SettingsDialog pages", () => {
       "page",
     );
     expect(screen.getByText("暂无虾画 Skills")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "虾画 Recipes" })).not.toBeInTheDocument();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
 
     expect(screen.getByText("暂无虾画 Recipes")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "返回 Skills" })).toBeInTheDocument();
   });
 
-  it("opens Recipes from the Skills advanced management entry", () => {
+  it("switches to Freezone Skills and Recipes without replacing the original settings", () => {
     renderSettingsDialog();
 
     fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
 
     expect(screen.getByText("暂无虾画 Skills")).toBeInTheDocument();
-    expect(screen.getByText("导入 Skill")).toBeInTheDocument();
+    expect(screen.getByText("导入")).toBeInTheDocument();
     expect(screen.queryByText("freezone_demo")).not.toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "虾画 Recipes" })).not.toBeInTheDocument();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
 
     expect(screen.getByText("暂无虾画 Recipes")).toBeInTheDocument();
   });
@@ -392,11 +298,11 @@ describe("SettingsDialog pages", () => {
     renderSettingsDialog();
 
     fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
-    fireEvent.click(screen.getByRole("button", { name: "导入 Skill" }));
+    fireEvent.click(screen.getByRole("button", { name: "导入" }));
 
     expect(clickSpy).toHaveBeenCalledTimes(1);
-    expect(screen.getByLabelText("导入 Skill")).toHaveAttribute("type", "file");
-    expect(screen.getByLabelText("导入 Skill")).toHaveAttribute("accept", ".json,application/json");
+    expect(screen.getByLabelText("导入")).toHaveAttribute("type", "file");
+    expect(screen.getByLabelText("导入")).toHaveAttribute("accept", ".json,application/json");
 
     clickSpy.mockRestore();
   });
@@ -419,10 +325,10 @@ describe("SettingsDialog pages", () => {
     expect(screen.queryByText("新增 Skill")).not.toBeInTheDocument();
   });
 
-  it("opens the new Recipe editor shell from advanced management", () => {
+  it("opens the new Recipe editor shell from the Recipes tab", () => {
     renderSettingsDialog();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
 
     expect(screen.getByText("新增 Recipe")).toBeInTheDocument();
@@ -437,7 +343,7 @@ describe("SettingsDialog pages", () => {
   it("shows raw JSON that maps to the current new Recipe form fields", () => {
     renderSettingsDialog();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
     fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
       target: { value: "digital-product-text-plan" },
@@ -493,7 +399,7 @@ describe("SettingsDialog pages", () => {
     });
     renderSettingsDialog();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
     fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
       target: { value: "copyable-recipe" },
@@ -517,7 +423,7 @@ describe("SettingsDialog pages", () => {
   it("does not save a Freezone Recipe until all required fields are present", () => {
     renderSettingsDialog();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
     fireEvent.click(screen.getByRole("button", { name: "新增" }));
     fireEvent.change(screen.getByPlaceholderText("my-recipe"), {
       target: { value: "story-recipe" },
@@ -649,8 +555,34 @@ describe("SettingsDialog pages", () => {
       key: "Enter",
       code: "Enter",
     });
-    expect(screen.queryByText("默认画幅")).not.toBeInTheDocument();
-    expect(screen.queryByText("模型偏好")).not.toBeInTheDocument();
+    expect(screen.getByLabelText("默认画幅 任务类型")).toHaveValue("");
+    expect(screen.getByLabelText("默认画幅 比例")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("默认画幅 任务类型"), {
+      target: { value: "imageGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("默认画幅 比例"), { target: { value: "16:9" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加 默认画幅" }));
+    fireEvent.change(screen.getByLabelText("默认画幅 任务类型"), {
+      target: { value: "videoGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("默认画幅 比例"), { target: { value: "16:9" } });
+    fireEvent.click(screen.getByRole("button", { name: "添加 默认画幅" }));
+    expect(screen.getByLabelText("模型偏好 任务类型")).toHaveValue("");
+    expect(screen.getByLabelText("模型偏好 模型名称")).toBeDisabled();
+    fireEvent.change(screen.getByLabelText("模型偏好 任务类型"), {
+      target: { value: "imageGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("模型偏好 模型名称"), {
+      target: { value: "newapi_gpt_image2" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加 模型偏好" }));
+    fireEvent.change(screen.getByLabelText("模型偏好 任务类型"), {
+      target: { value: "videoGeneration" },
+    });
+    fireEvent.change(screen.getByLabelText("模型偏好 模型名称"), {
+      target: { value: "newapi_seedance-2.0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "添加 模型偏好" }));
     fireEvent.change(screen.getByPlaceholderText("如：7"), { target: { value: "7" } });
     fireEvent.change(screen.getByPlaceholderText("输入规则"), {
       target: { value: "domainrules" },
@@ -704,6 +636,14 @@ describe("SettingsDialog pages", () => {
         planning_notes: "planhints",
         prompt_guide: "sytleguide",
         conduct_rules: ["behaviorrules"],
+        default_aspect_ratios: {
+          imageGeneration: "16:9",
+          videoGeneration: "16:9",
+        },
+        model_preferences: {
+          imageGeneration: "newapi_gpt_image2",
+          videoGeneration: "newapi_seedance-2.0",
+        },
       },
       evaluation: {
         rating_bands: [
@@ -730,8 +670,6 @@ describe("SettingsDialog pages", () => {
         domain_constraints: ["domainrules"],
       },
     });
-    expect(rawJson.planning.default_aspect_ratios).toBeUndefined();
-    expect(rawJson.planning.model_preferences).toBeUndefined();
   });
 
   it("copies the generated Skill raw JSON from the raw JSON header", async () => {
@@ -791,26 +729,6 @@ describe("SettingsDialog pages", () => {
       target: { value: "故事" },
     });
     fireEvent.keyDown(screen.getByPlaceholderText("输入关键词"), { key: "Enter" });
-    fireEvent.change(screen.getByPlaceholderText("输入 Recipe ID"), {
-      target: { value: "story-recipe" },
-    });
-    fireEvent.keyDown(screen.getByPlaceholderText("输入 Recipe ID"), { key: "Enter" });
-    fireEvent.change(screen.getByPlaceholderText("规划提示..."), {
-      target: { value: "根据故事需求动态规划。" },
-    });
-    fireEvent.change(screen.getByPlaceholderText("行为规则..."), {
-      target: { value: "保持故事一致性" },
-    });
-    fireEvent.keyDown(screen.getByPlaceholderText("行为规则..."), { key: "Enter" });
-    fireEvent.change(screen.getByPlaceholderText("如：7"), { target: { value: "7" } });
-    fireEvent.change(screen.getByPlaceholderText("输入规则"), {
-      target: { value: "不得偏离故事主题" },
-    });
-    fireEvent.click(screen.getByRole("button", { name: "添加锚点" }));
-    fireEvent.change(screen.getByPlaceholderText("0"), { target: { value: "5" } });
-    fireEvent.change(screen.getByPlaceholderText("该分数段的描述"), {
-      target: { value: "故事完整" },
-    });
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
 
     await waitFor(() => {
@@ -820,7 +738,6 @@ describe("SettingsDialog pages", () => {
           id: "story-skill",
           description: "故事规则",
           category: "general",
-          allowed_recipe_ids: ["story-recipe"],
         }),
       });
     });
@@ -876,11 +793,11 @@ describe("SettingsDialog pages", () => {
     ];
     renderSettingsDialog();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
 
-    expect(screen.getByText("公益宣传海报生成").closest("article")).toHaveTextContent("图片");
-    expect(screen.getByText("公益宣传文案").closest("article")).toHaveTextContent("文本");
-    expect(screen.getByText("公益宣传文案").closest("article")).toHaveTextContent("定制");
+    expect(screen.getByText("public-welfare-poster-9-16").closest("article")).toHaveTextContent("图片");
+    expect(screen.getByText("public-welfare-copy").closest("article")).toHaveTextContent("文本");
+    expect(screen.getByText("public-welfare-copy").closest("article")).toHaveTextContent("定制");
     expect(screen.queryByText("已定制")).not.toBeInTheDocument();
     expect(screen.queryByText("image")).not.toBeInTheDocument();
     expect(screen.queryByText("text")).not.toBeInTheDocument();
@@ -915,38 +832,15 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByText("user-skill").closest("article")).not.toHaveTextContent("内置");
   });
 
-  it("marks customized built-in items and toggles pure built-ins with the full payload", async () => {
+  it("marks customized built-in items and toggles pure built-ins with a minimal overlay", async () => {
     freezoneAgentConfigMocks.items = [
       {
         id: "builtin-skill",
-        schema_version: "dramaclaw.workflow-skill.v1",
-        name: "内置 Skill",
-        version: "1.0.0",
         _catalog_source: "builtin",
         enabled: true,
         category: "general",
         description: "内置规则",
         triggers: { keywords: ["builtin"] },
-        allowed_recipe_ids: ["builtin-recipe"],
-        input_parameters: [
-          {
-            id: "aspect_ratio",
-            label: "画幅",
-            type: "single_select",
-            required: true,
-            default: "16:9",
-            options: ["16:9", "1:1"],
-          },
-        ],
-        planning: {
-          planning_notes: "根据用户目标动态规划。",
-          conduct_rules: ["保持主体一致。"],
-        },
-        evaluation: {
-          rating_bands: [{ score: 5, description: "结果清晰" }],
-          quality_threshold: 4,
-          domain_constraints: ["不得改变主体。"],
-        },
       },
       {
         id: "customized-skill",
@@ -963,44 +857,18 @@ describe("SettingsDialog pages", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
 
-    expect(screen.getByText("内置 Skill").closest("article")).toHaveTextContent("内置");
+    expect(screen.getByText("builtin-skill").closest("article")).toHaveTextContent("内置");
     expect(screen.getByText("customized-skill").closest("article")).toHaveTextContent("定制");
     expect(screen.queryByText("已定制")).not.toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("switch", { name: "切换 内置 Skill 启用状态" }));
+    fireEvent.click(screen.getByRole("switch", { name: "切换 builtin-skill 启用状态" }));
 
     await waitFor(() => {
       expect(freezoneAgentConfigMocks.save).toHaveBeenCalledWith({
         kind: "skills",
         payload: {
           id: "builtin-skill",
-          schema_version: "dramaclaw.workflow-skill.v1",
-          name: "内置 Skill",
-          version: "1.0.0",
           enabled: false,
-          category: "general",
-          description: "内置规则",
-          triggers: { keywords: ["builtin"] },
-          allowed_recipe_ids: ["builtin-recipe"],
-          input_parameters: [
-            {
-              id: "aspect_ratio",
-              label: "画幅",
-              type: "single_select",
-              required: true,
-              default: "16:9",
-              options: ["16:9", "1:1"],
-            },
-          ],
-          planning: {
-            planning_notes: "根据用户目标动态规划。",
-            conduct_rules: ["保持主体一致。"],
-          },
-          evaluation: {
-            rating_bands: [{ score: 5, description: "结果清晰" }],
-            quality_threshold: 4,
-            domain_constraints: ["不得改变主体。"],
-          },
         },
       });
     });
@@ -1032,7 +900,7 @@ describe("SettingsDialog pages", () => {
   it("rejects imported Freezone Recipes that miss required fields", async () => {
     renderSettingsDialog();
 
-    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Recipes" }));
     const importInput = screen.getByLabelText("导入");
     const file = new File(
       [
@@ -1050,34 +918,6 @@ describe("SettingsDialog pages", () => {
 
     await waitFor(() => {
       expect(freezoneAgentConfigMocks.save).not.toHaveBeenCalled();
-    });
-  });
-
-  it("rejects imported Freezone Skills that miss required schema fields", async () => {
-    renderSettingsDialog();
-
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
-    const importInput = screen.getByLabelText("导入");
-    const file = new File(
-      [
-        JSON.stringify({
-          id: "loose-skill",
-          name: "半截 Skill",
-          enabled: true,
-          allowed_recipe_ids: ["loose-recipe"],
-          category: "video",
-          description: "缺少规划和评估字段",
-          triggers: { keywords: ["半截"] },
-        }),
-      ],
-      "skill.json",
-      { type: "application/json" },
-    );
-    fireEvent.change(importInput, { target: { files: [file] } });
-
-    await waitFor(() => {
-      expect(freezoneAgentConfigMocks.save).not.toHaveBeenCalled();
-      expect(toast.error).toHaveBeenCalledWith(expect.stringContaining("planning.planning_notes"));
     });
   });
 
@@ -1118,11 +958,9 @@ describe("SettingsDialog pages", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
       fireEvent.click(screen.getAllByRole("checkbox")[1]);
-      fireEvent.click(screen.getByRole("button", { name: "导出 Skill" }));
+      fireEvent.click(screen.getByRole("button", { name: "导出" }));
 
-      await waitFor(() => {
-        expect(anchorClick).toHaveBeenCalledTimes(1);
-      });
+      expect(anchorClick).toHaveBeenCalledTimes(1);
       expect(revokeObjectURL).toHaveBeenCalledWith("blob:freezone-config");
       const exportedBlob = createObjectURL.mock.calls[0]?.[0];
       if (!(exportedBlob instanceof Blob)) {
@@ -1204,60 +1042,11 @@ describe("SettingsDialog pages", () => {
     });
 
     fireEvent.click(screen.getByRole("button", { name: "删除 story-skill" }));
-    expect(screen.getByText("删除 Skill")).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "只删除 Skill" }));
 
     await waitFor(() => {
       expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
         kind: "skills",
         id: "story-skill",
-      });
-    });
-  });
-
-  it("can delete a Skill with its linked Recipes", async () => {
-    freezoneAgentConfigMocks.itemsByKind = {
-      skills: [
-        {
-          id: "story-skill",
-          description: "故事规则",
-          allowed_recipe_ids: ["recipe-a", "recipe-b"],
-        },
-      ],
-      recipes: [
-        { id: "recipe-a", output_kind: "text", result_summary: "A" },
-        { id: "recipe-b", output_kind: "image", result_summary: "B" },
-        { id: "recipe-c", output_kind: "video", result_summary: "C" },
-      ],
-    };
-    freezoneAgentConfigMocks.delete.mockResolvedValue({ deleted: true });
-    renderSettingsDialog();
-
-    fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
-    fireEvent.click(screen.getByRole("button", { name: "删除 story-skill" }));
-
-    expect(screen.getByText("recipe-a")).toBeInTheDocument();
-    expect(screen.getByText("recipe-b")).toBeInTheDocument();
-    expect(screen.queryByText("recipe-c")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: "同时删除 Recipes" }));
-
-    await waitFor(() => {
-      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
-        kind: "skills",
-        id: "story-skill",
-      });
-      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
-        kind: "recipes",
-        id: "recipe-a",
-      });
-      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
-        kind: "recipes",
-        id: "recipe-b",
-      });
-      expect(freezoneAgentConfigMocks.delete).not.toHaveBeenCalledWith({
-        kind: "recipes",
-        id: "recipe-c",
       });
     });
   });
@@ -1291,7 +1080,8 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByRole("checkbox", { name: "图片生成 imageGeneration" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "查看 / 编辑原始 JSON（高级）" }));
     const rawJson = JSON.parse(screen.getByLabelText("原始 JSON").textContent ?? "{}");
-    expect(rawJson.planning.default_aspect_ratios).toBeUndefined();
-    expect(rawJson.planning.model_preferences).toBeUndefined();
+    expect(rawJson.planning.default_aspect_ratios).toEqual({
+      imageGeneration: "9:16",
+    });
   });
 });

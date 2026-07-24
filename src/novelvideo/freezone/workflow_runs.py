@@ -141,16 +141,18 @@ def reconcile_workflow_runs_with_canvas_nodes(
     project_dir: Path,
     canvas_id: str,
     existing_node_ids: set[str],
+    run_statuses: set[str] | None = None,
 ) -> list[str]:
     """Cancel resumable runs after all of their unfinished nodes are deleted."""
     now = _now()
     cancelled: list[str] = []
+    eligible_statuses = run_statuses or RESUMABLE_RUN_STATUSES
     with canvas_write_lock(project_dir, canvas_id):
         directory = workflow_runs_dir(project_dir, canvas_id)
         paths = directory.glob("*.json") if directory.is_dir() else []
         for path in paths:
             payload = _read(path)
-            if payload is None or payload.get("status") not in RESUMABLE_RUN_STATUSES:
+            if payload is None or payload.get("status") not in eligible_statuses:
                 continue
             actions = payload.get("actions")
             actions = actions if isinstance(actions, list) else []

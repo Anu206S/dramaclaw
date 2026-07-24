@@ -99,7 +99,11 @@ import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
 import type { CanvasOntologyContext } from "@/features/canvas/ontology/canvasOntology";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import { useCanvasStore, type CanvasNode } from "@/stores/canvasStore";
-import type { CanvasNodeType, VideoGenQuality } from "@/features/canvas/domain/canvasNodes";
+import type {
+  CanvasEdge,
+  CanvasNodeType,
+  VideoGenQuality,
+} from "@/features/canvas/domain/canvasNodes";
 import { VIDEO_GENERATION_ASPECT_RATIOS } from "@/features/canvas/application/imageData";
 import { useFreezoneImageModels } from "@/features/canvas/hooks/useFreezoneImageModels";
 import { useFreezoneVideoModels } from "@/features/canvas/hooks/useFreezoneVideoModels";
@@ -117,6 +121,8 @@ import {
   FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT,
   FREEZONE_CANVAS_COMMAND_RESULT_EVENT,
   subscribeCanvasCommandApprovals,
+  waitForImmediateCanvasCommandResult,
+  workflowVideoNodeIdsForPreflight,
 } from "@/features/freezone/canvasChatCommands";
 import { FREEZONE_CANVAS_WRITE_TOOL_NAME_SET } from "@/features/freezone/canvasCommandTools";
 import { canvasCommandUserMessageFromResult } from "@/features/freezone/canvasCommandUserMessages";
@@ -401,7 +407,6 @@ const FREEZONE_TOOL_DISPLAY: Record<string, { title: string; description: string
 };
 
 const AGENT_TOOL_TITLE_OVERRIDES: Record<string, string> = {
-  freezone_list_workflows: "读取可用工作流",
   list_workflows: "读取可用工作流",
   "list workflows": "读取可用工作流",
   freezone_get_workflow_skill: "加载 Workflow Skill",
@@ -2176,9 +2181,104 @@ function isCanvasApprovalVideoCount(value: unknown): value is CanvasApprovalVide
   );
 }
 
+function approvalNodeData(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  nodeId: string,
+): Record<string, unknown> {
+  const existing = canvasNodes.find((node) => node.id === nodeId)?.data;
+  const data: Record<string, unknown> = existing && typeof existing === "object"
+    ? { ...existing as Record<string, unknown> }
+    : {};
+  for (const envelope of approval.envelopes) {
+    for (const command of envelope.commands) {
+      if (
+        command.type === "create_node"
+        && command.client_id === nodeId
+        && command.data
+      ) {
+        Object.assign(data, command.data);
+      }
+      if (command.type === "update_node_data" && command.node_id === nodeId) {
+        Object.assign(data, command.data);
+      }
+    }
+  }
+  return data;
+}
+
+function approvalNodeType(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  nodeId: string,
+): string {
+  const existingType = canvasNodes.find((node) => node.id === nodeId)?.type;
+  if (existingType) return existingType;
+  for (const envelope of approval.envelopes) {
+    const createCommand = envelope.commands.find(
+      (command) => command.type === "create_node" && command.client_id === nodeId,
+    );
+    if (createCommand?.type === "create_node") return createCommand.node_type;
+  }
+  return "";
+}
+
+function isImageSourceNode(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  nodeId: string,
+): boolean {
+  const nodeType = approvalNodeType(approval, canvasNodes, nodeId).toLowerCase();
+  if (nodeType.includes("image")) return true;
+  const data = approvalNodeData(approval, canvasNodes, nodeId);
+  return Boolean(
+    (typeof data.imageUrl === "string" && data.imageUrl.trim())
+    || (typeof data.image_url === "string" && data.image_url.trim()),
+  );
+}
+
+function approvalVideoHasImageInput(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  canvasEdges: CanvasEdge[],
+  nodeId: string,
+  nodeData: Record<string, unknown>,
+): boolean {
+  if (
+    typeof nodeData.genMode === "string"
+    && ["imageToVideo", "firstLastFrame", "imageReference", "allReference"].includes(
+      nodeData.genMode,
+    )
+  ) {
+    return true;
+  }
+  if (
+    canvasEdges.some(
+      (edge) =>
+        edge.target === nodeId
+        && isImageSourceNode(approval, canvasNodes, edge.source),
+    )
+  ) {
+    return true;
+  }
+  return approval.envelopes.some((envelope) =>
+    envelope.commands.some(
+      (command) =>
+        command.type === "create_edge"
+        && command.target === nodeId
+        && isImageSourceNode(approval, canvasNodes, command.source),
+    ),
+  );
+}
+
+function isSeedance20ApprovalModel(model: string): boolean {
+  return /(?:seedance2|omniflash)/i.test(model.replace(/[\s._-]/g, ""));
+}
+
 function videoApprovalInitialParams(
   approval: PendingCanvasCommandApproval,
   canvasNodes: CanvasNode[],
+  canvasEdges: CanvasEdge[],
   models: Array<{
     id: string;
     label?: string;
@@ -2191,7 +2291,7 @@ function videoApprovalInitialParams(
   const nodeIds = videoGenerateCommandNodeIds(approval.envelopes);
   if (nodeIds.length !== 1) return null;
   const nodeId = nodeIds[0];
-  const nodeData = canvasNodes.find((node) => node.id === nodeId)?.data as Record<string, unknown> | undefined;
+  const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
   const textValue = (value: unknown, fallback: string) =>
     typeof value === "string" && value.trim() ? value.trim() : fallback;
   const rawModel = textValue(nodeData?.model, fallbackModel);
@@ -2206,6 +2306,11 @@ function videoApprovalInitialParams(
   const countValue = isCanvasApprovalVideoCount(nodeData?.count)
     ? nodeData.count
     : 1;
+  const requiresHumanReviewConfirmation = (
+    isSeedance20ApprovalModel(model)
+    && approvalVideoHasImageInput(approval, canvasNodes, canvasEdges, nodeId, nodeData)
+    && nodeData.humanReview !== true
+  );
   return {
     nodeId,
     model,
@@ -2213,8 +2318,60 @@ function videoApprovalInitialParams(
     quality: normalizeVideoQualityForApproval(nodeData?.quality, qualityOptions),
     durationSec: clampVideoDurationForApproval(nodeData?.durationSec, durationBounds),
     generateAudio: Boolean(nodeData?.generateAudio),
+    humanReview: requiresHumanReviewConfirmation || Boolean(nodeData?.humanReview),
+    requiresHumanReviewConfirmation,
     count: countValue,
   };
+}
+
+function canvasApprovalVideoCandidateNodeIds(
+  approval: PendingCanvasCommandApproval,
+): string[] {
+  const nodeIds = new Set(videoGenerateCommandNodeIds(approval.envelopes));
+  for (const envelope of approval.envelopes) {
+    const runWorkflowCommands = envelope.commands.filter(
+      (command): command is Extract<CanvasChatCommand, { type: "run_workflow" }> =>
+        command.type === "run_workflow",
+    );
+    if (runWorkflowCommands.length === 0) continue;
+    for (const command of envelope.commands) {
+      if (command.type === "create_node" && command.client_id && command.node_type === "videoNode") {
+        nodeIds.add(command.client_id);
+      }
+    }
+    for (const command of runWorkflowCommands) {
+      try {
+        workflowVideoNodeIdsForPreflight(command).forEach((nodeId) => nodeIds.add(nodeId));
+      } catch {
+        // Newly created workflow nodes do not exist in the canvas store yet.
+      }
+    }
+  }
+  return [...nodeIds];
+}
+
+function canvasApprovalHumanReviewNodeIds(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  canvasEdges: CanvasEdge[],
+): string[] {
+  return canvasApprovalVideoCandidateNodeIds(approval).filter((nodeId) => {
+    const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
+    const model = typeof nodeData.model === "string" ? nodeData.model : "";
+    return (
+      (!model.trim() || isSeedance20ApprovalModel(model))
+      && nodeData.humanReview !== true
+      && approvalVideoHasImageInput(approval, canvasNodes, canvasEdges, nodeId, nodeData)
+    );
+  });
+}
+
+function canvasApprovalRequiresHumanReviewConfirmation(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  canvasEdges: CanvasEdge[],
+): boolean {
+  return canvasApprovalHumanReviewNodeIds(approval, canvasNodes, canvasEdges).length > 0;
 }
 
 function amendCanvasApprovalWithImageParams(
@@ -2269,6 +2426,7 @@ function amendCanvasApprovalWithVideoParams(
     quality: params.quality,
     durationSec: params.durationSec,
     generateAudio: params.generateAudio,
+    humanReview: params.humanReview,
     count: params.count,
   };
   return {
@@ -2298,8 +2456,42 @@ function amendCanvasApprovalWithVideoParams(
   };
 }
 
+function amendCanvasApprovalWithHumanReview(
+  approval: PendingCanvasCommandApproval,
+  nodeIds: string[],
+  enabled: boolean,
+): PendingCanvasCommandApproval {
+  if (nodeIds.length === 0) return approval;
+  let inserted = false;
+  return {
+    ...approval,
+    envelopes: approval.envelopes.map((envelope) => ({
+      ...envelope,
+      commands: envelope.commands.flatMap((command) => {
+        const isExecutionCommand = (
+          command.type === "run_workflow"
+          || (command.type === "run_node_action" && command.action === "generate_video")
+        );
+        if (inserted || !isExecutionCommand) return [command];
+        inserted = true;
+        return [
+          ...nodeIds.map((nodeId) => ({
+            type: "update_node_data" as const,
+            node_id: nodeId,
+            data: { humanReview: enabled },
+          })),
+          command,
+        ];
+      }),
+    })),
+  };
+}
+
 export const amendCanvasApprovalWithImageParamsForTest = amendCanvasApprovalWithImageParams;
 export const amendCanvasApprovalWithVideoParamsForTest = amendCanvasApprovalWithVideoParams;
+export const amendCanvasApprovalWithHumanReviewForTest = amendCanvasApprovalWithHumanReview;
+export const canvasApprovalRequiresHumanReviewConfirmationForTest =
+  canvasApprovalRequiresHumanReviewConfirmation;
 
 function CanvasApprovalImageParamSelect({
   ariaLabel,
@@ -2523,6 +2715,7 @@ function CanvasCommandApprovalCard({
   const imageModels = useFreezoneImageModels(params.project);
   const videoModels = useFreezoneVideoModels(params.project);
   const canvasNodes = useCanvasStore((state) => state.nodes);
+  const canvasEdges = useCanvasStore((state) => state.edges);
   const fallbackImageModel = imageModels.models[0]?.id ?? "";
   const fallbackVideoModel = videoModels.models[0]?.id ?? "";
   const initialImageParams = useMemo(
@@ -2530,11 +2723,23 @@ function CanvasCommandApprovalCard({
     [approval, canvasNodes, fallbackImageModel],
   );
   const initialVideoParams = useMemo(
-    () => videoApprovalInitialParams(approval, canvasNodes, videoModels.models, fallbackVideoModel),
-    [approval, canvasNodes, fallbackVideoModel, videoModels.models],
+    () => videoApprovalInitialParams(
+      approval,
+      canvasNodes,
+      canvasEdges,
+      videoModels.models,
+      fallbackVideoModel,
+    ),
+    [approval, canvasEdges, canvasNodes, fallbackVideoModel, videoModels.models],
   );
   const [imageParams, setImageParams] = useState<CanvasApprovalImageParams | null>(() => initialImageParams);
   const [videoParams, setVideoParams] = useState<CanvasApprovalVideoParams | null>(() => initialVideoParams);
+  const humanReviewNodeIds = useMemo(
+    () => canvasApprovalHumanReviewNodeIds(approval, canvasNodes, canvasEdges),
+    [approval, canvasEdges, canvasNodes],
+  );
+  const humanReviewNodeIdsKey = humanReviewNodeIds.join("\n");
+  const [humanReviewEnabled, setHumanReviewEnabled] = useState(true);
   const remaining = approval.expiresAt
     ? Math.max(0, Math.ceil((approval.expiresAt - now) / 1000))
     : null;
@@ -2548,18 +2753,24 @@ function CanvasCommandApprovalCard({
   }, [initialVideoParams]);
 
   useEffect(() => {
+    setHumanReviewEnabled(true);
+  }, [approval.id, humanReviewNodeIdsKey]);
+
+  useEffect(() => {
     if (!approval.expiresAt || isExecuting) return;
     const tick = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(tick);
   }, [approval.expiresAt, isExecuting]);
 
-  const amendedApproval = useMemo(
-    () => amendCanvasApprovalWithVideoParams(
-      amendCanvasApprovalWithImageParams(approval, imageParams),
-      videoParams,
-    ),
-    [approval, imageParams, videoParams],
-  );
+  const amendedApproval = useMemo(() => {
+    const withImageParams = amendCanvasApprovalWithImageParams(approval, imageParams);
+    const withVideoParams = amendCanvasApprovalWithVideoParams(withImageParams, videoParams);
+    return amendCanvasApprovalWithHumanReview(
+      withVideoParams,
+      humanReviewNodeIds,
+      humanReviewEnabled,
+    );
+  }, [approval, humanReviewEnabled, humanReviewNodeIds, imageParams, videoParams]);
   const imageModelOptions = useMemo(() => {
     const options = imageModels.models.map((model) => ({ value: model.id, label: model.label ?? model.id }));
     if (imageParams?.model && !options.some((option) => option.value === imageParams.model)) {
@@ -2615,6 +2826,35 @@ function CanvasCommandApprovalCard({
         <Badge variant="outline" className="rounded-md uppercase">{isExecuting ? "执行中" : "确认"}</Badge>
       </div>
       <CanvasCommandPlanList plans={approval.plans} />
+      {humanReviewNodeIds.length > 0 && (
+        <div className="flex items-center justify-between gap-3 border-t border-amber-400/10 bg-amber-400/10 px-3 py-2">
+          <div className="min-w-0">
+            <div className="text-xs font-medium text-foreground">输入图片可能包含真人</div>
+            <div className="mt-0.5 text-[11px] leading-4 text-muted-foreground">
+              检测到 {humanReviewNodeIds.length} 个图片转视频节点，确认后将在模型支持时开启真人审核。
+            </div>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            aria-checked={humanReviewEnabled}
+            aria-label="真人审核"
+            disabled={isExecuting}
+            onClick={() => setHumanReviewEnabled((enabled) => !enabled)}
+            className={cn(
+              "relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:opacity-60",
+              humanReviewEnabled ? "bg-amber-500" : "bg-white/15",
+            )}
+          >
+            <span
+              className={cn(
+                "absolute left-0.5 top-0.5 size-4 rounded-full bg-white transition-transform",
+                humanReviewEnabled ? "translate-x-4" : "translate-x-0",
+              )}
+            />
+          </button>
+        </div>
+      )}
       {imageParams && (
         <div className="border-t border-amber-400/10 px-3 py-1.5">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -3772,7 +4012,6 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
   );
   const payload: FreezoneAgentConfigPayload = {
     id: textField(skill.id),
-    name: textField(skill.name),
     enabled: skill.enabled !== false,
     description: textField(skill.description),
     category: firstNonEmptyText(skill.category, "general"),
@@ -3807,22 +4046,6 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
   };
   if (workflowTemplates.length > 0) {
     payload.workflow_templates = workflowTemplates;
-  }
-  const inputParameters = getRecordArray(skill.input_parameters ?? skill.inputParameters).map((item) => ({ ...item }));
-  if (inputParameters.length > 0) {
-    payload.input_parameters = inputParameters;
-  }
-  const allowedRecipeIds = cleanStringArray(skill.allowed_recipe_ids ?? skill.allowedRecipeIds);
-  if (allowedRecipeIds.length > 0) {
-    payload.allowed_recipe_ids = allowedRecipeIds;
-  }
-  const schemaVersion = textField(skill.schema_version ?? skill.schemaVersion);
-  if (schemaVersion) {
-    payload.schema_version = schemaVersion;
-  }
-  const version = textField(skill.version);
-  if (version) {
-    payload.version = version;
   }
   return payload;
 }
@@ -8634,6 +8857,8 @@ type CanvasApprovalVideoParams = {
   quality: VideoGenQuality;
   durationSec: number;
   generateAudio: boolean;
+  humanReview: boolean;
+  requiresHumanReviewConfirmation: boolean;
   count: 1 | 2 | 4;
 };
 
@@ -9965,7 +10190,7 @@ export function SuperChatPanel({
       || (freezoneSkillSlashQuery === null && !freezoneSkillMentionCandidate && !freezoneSkillMenuExplicitOpen)
     ) return;
     let cancelled = false;
-    void apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills")
+    void apiCall<FreezoneAgentConfigPayload[]>("freezone/hermes-workflow-skills")
       .then((items) => {
         if (cancelled) return;
         setFreezoneSkillCatalog(items);
@@ -10769,18 +10994,25 @@ export function SuperChatPanel({
             canvasId: effectiveFreezoneCanvasId,
           });
           if (canvasCommandEnvelopesRunInBackground(approval.envelopes)) {
-            backgroundAccepted = true;
-            reportCanvasCommandToolResult({
-              bridgeKey: approval.bridgeKey,
-              turnId: approval.turnId,
-              anchorTextPrefix: approval.anchorTextPrefix,
-              projectId: params.project,
-              canvasId: effectiveFreezoneCanvasId,
-              agentId: approval.agentId ?? effectiveFreezoneAgentId,
-              accepted: true,
-            });
+            const immediateResult = await waitForImmediateCanvasCommandResult(execution);
+            if (immediateResult) {
+              result = immediateResult;
+            } else {
+              backgroundAccepted = true;
+              reportCanvasCommandToolResult({
+                bridgeKey: approval.bridgeKey,
+                turnId: approval.turnId,
+                anchorTextPrefix: approval.anchorTextPrefix,
+                projectId: params.project,
+                canvasId: effectiveFreezoneCanvasId,
+                agentId: approval.agentId ?? effectiveFreezoneAgentId,
+                accepted: true,
+              });
+              result = await execution;
+            }
+          } else {
+            result = await execution;
           }
-          result = await execution;
         } catch (error) {
           const message = error instanceof Error ? error.message : String(error);
           const errorMessage = `画布命令执行异常：${message}`;
@@ -10989,9 +11221,25 @@ export function SuperChatPanel({
   useEffect(() => {
     if (canvasCommandExecutionMode !== "auto_execute") return;
     for (const approval of pendingCanvasCommandApprovals) {
+      if (
+        canvasApprovalRequiresHumanReviewConfirmation(
+          approval,
+          canvasNodes,
+          canvasEdges,
+        )
+      ) {
+        continue;
+      }
       if (!executingCanvasCommandApprovalIds.has(approval.id)) handleApplyCanvasCommandApproval(approval);
     }
-  }, [canvasCommandExecutionMode, executingCanvasCommandApprovalIds, handleApplyCanvasCommandApproval, pendingCanvasCommandApprovals]);
+  }, [
+    canvasCommandExecutionMode,
+    canvasEdges,
+    canvasNodes,
+    executingCanvasCommandApprovalIds,
+    handleApplyCanvasCommandApproval,
+    pendingCanvasCommandApprovals,
+  ]);
 
   useEffect(() => {
     if (pendingCanvasCommandApprovals.length === 0) return;
@@ -12010,7 +12258,7 @@ export function SuperChatPanel({
         });
       }
       if (savedKinds.has("skills")) {
-        void apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills")
+        void apiCall<FreezoneAgentConfigPayload[]>("freezone/hermes-workflow-skills")
           .then((skills) => {
             setFreezoneSkillCatalog(skills);
             setFreezoneSkillCatalogLoaded(true);
@@ -12921,9 +13169,9 @@ export function SuperChatPanel({
                           ref={freezoneSkillMenuButtonRef}
                           type="button"
                           variant="ghost"
-                          size="icon"
+                          size="sm"
                           className={cn(
-                            "size-8 rounded-full text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+                            "h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
                             showFreezoneSkillSuggestions && freezoneSkillMenuExplicitOpen && "bg-white/[0.08] text-foreground",
                           )}
                           onMouseDown={(event) => {
@@ -12943,6 +13191,7 @@ export function SuperChatPanel({
                           aria-expanded={showFreezoneSkillSuggestions}
                         >
                           <Package className="size-4" />
+                          <span>Skill</span>
                         </Button>
                       </>
                     )}
@@ -13105,6 +13354,9 @@ export function SuperChatPanel({
                     <span className="flex min-w-0 items-center gap-2">
                       <span className="truncate text-[13px] font-semibold leading-5 text-foreground/92">
                         {skill.label}
+                      </span>
+                      <span className="shrink-0 rounded-md bg-white/[0.07] px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
+                        /{skill.id}
                       </span>
                     </span>
                     {skill.description && (

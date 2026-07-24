@@ -13,10 +13,17 @@ import {
   type AudioTextSegment,
 } from '@/features/canvas/domain/canvasNodes';
 import { joinUpstreamText } from '@/features/canvas/application/graphContentResolver';
-import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
+import {
+  CLEARED_GENERATION_TASK_FIELDS,
+  generationTaskDescriptor,
+} from '@/features/canvas/application/resumeGeneration';
+import { extractSpeakableAudioText } from '@/features/canvas/application/audioSpeechText';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
-import { compileWorkflowNodePrompt } from '@/features/canvas/application/workflowRecipeRuntime';
+import {
+  compileWorkflowNodePrompt,
+  selectWorkflowUpstreamText,
+} from '@/features/canvas/application/workflowRecipeRuntime';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 
@@ -55,6 +62,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     .filter((segment) => segment.length > 0)
     .join('\n\n');
   const emotionPrompt = data.emotionPrompt ?? '';
+  const speechMode = data.speechMode ?? (data.voiceRef ? 'clone' : 'preset');
 
   const generate = useCallback(async (): Promise<{ audioUrl?: string }> => {
     if (isGenerating) return {};
@@ -71,14 +79,22 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
       generationError: null,
     });
     try {
-      const trimmed = await compileWorkflowNodePrompt({
-        nodeData: data,
-        nodeKind: 'audio',
-        nodePrompt: ownText,
-        upstreamText: upstreamTextJoined,
-        upstreamContents,
-        fallbackPrompt,
-      });
+      const trimmed = isMusic
+        ? await compileWorkflowNodePrompt({
+            nodeData: data,
+            nodeKind: 'audio',
+            nodePrompt: ownText,
+            upstreamText: upstreamTextJoined,
+            upstreamContents,
+            fallbackPrompt,
+          })
+        : extractSpeakableAudioText(
+            ownText.trim()
+            || selectWorkflowUpstreamText(data, upstreamContents, upstreamTextJoined),
+          );
+      if (!trimmed) {
+        throw new Error('没有可朗读的旁白或对白');
+      }
       const ref = isMusic
         ? await submitFreezoneAudioMusic(project, {
             prompt: trimmed,
@@ -89,8 +105,13 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
           })
         : await submitFreezoneAudioSpeech(project, {
             text: trimmed,
+            speechMode,
+            presetModel: data.presetModel ?? 'edge-tts',
+            presetVoice: data.presetVoice ?? 'Serena',
             emotionPrompt: emotionPrompt.trim() || undefined,
-            voiceRef: data.voiceRef ?? { scope: 'project_narrator' },
+            voiceRef: speechMode === 'clone'
+              ? data.voiceRef ?? { scope: 'project_narrator' }
+              : null,
           });
       // Persist the task handle so a page refresh can resume this job.
       updateNodeData(nodeId, generationTaskDescriptor(ref));
@@ -101,7 +122,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
         ref.job_id,
       );
       updateNodeData(nodeId, {
-        isGenerating: false,
+        ...CLEARED_GENERATION_TASK_FIELDS,
         audioUrl: result.url,
         durationMs: null,
         generationError: null,
@@ -113,7 +134,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
         error,
       );
       updateNodeData(nodeId, {
-        isGenerating: false,
+        ...CLEARED_GENERATION_TASK_FIELDS,
         generationError: error instanceof Error ? error.message : '生成失败',
       });
       throw error;
@@ -126,8 +147,11 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     data.forceInstrumental,
     data.respectSectionsDurations,
     data.voiceRef,
+    data.presetModel,
+    data.presetVoice,
     effectivePrompt,
     emotionPrompt,
+    speechMode,
     nodeId,
     ownText,
     updateNodeData,

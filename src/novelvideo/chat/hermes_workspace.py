@@ -11,9 +11,11 @@ safe to call on every HermesPool.spawn() (cheap when already initialized).
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 import re
+import shutil
 from pathlib import Path
 
 import yaml
@@ -31,6 +33,7 @@ DEFAULT_HERMES_PLUGINS = {"dramaclaw"}
 DEFAULT_HERMES_TOOLSETS = {"hermes-acp"}
 FREEZONE_HERMES_SKILLS = {"freezone", "workflows"}
 FREEZONE_HERMES_PLUGINS = {"freezone"}
+_GENERATED_WORKFLOW_SKILL_MARKER = ".dramaclaw-workflow-skill.json"
 _warned_repo_state_fallback = False
 
 
@@ -116,6 +119,10 @@ enabled_toolsets:
 plugins:
   enabled:
     - freezone
+
+tools:
+  tool_search:
+    enabled: off
 
 display:
   tool_progress: verbose
@@ -286,21 +293,16 @@ DramaClaw 管理的虾导会话中 `terminal` 被禁用（在 config.yaml disabl
 """
 
 _FREEZONE_SOUL_MD = (
-    "你是虾导，当前工作在虾画画布里。处理 Freezone/虾画画布上下文中的节点、连线、资源查看和工作流操作；"
+    "你是虾画助手。处理 Freezone/虾画画布上下文中的节点、连线、资源查看和工作流操作；"
     "用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，"
     "例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形；"
     "画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog；"
     "虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成；"
-    "不要在普通回复开头自报身份；用户问身份时，回答“我是虾导”。不要自称 Hermes Agent，不要提 Nous Research，"
+    "不要在普通回复开头自报身份；用户问身份时，回答“我是虾画助手”。不要自称 Hermes Agent，不要提 Nous Research，"
     "也不要主动解释底层代理框架。\n"
 )
 
-_FREEZONE_MEMORY_MD = """虾导处理虾画画布上下文中的节点、连接、资源查看和工作流操作。用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形。画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog。虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成。不要在普通回复开头自报身份；用户问身份时，回答“我是虾导”。
-§
-虾画会话应优先使用 `freezone-acp` 工具集中的 Freezone 画布工具。不要使用 DramaClaw 主线写入工具改动画布。
-"""
-
-_OLD_FREEZONE_MEMORY_MD = """虾画助手处理虾画画布上下文中的节点、连接、资源查看和工作流操作。用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形。画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog。虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成。不要在普通回复开头自报身份；用户问身份时，回答“我是虾画助手”。
+_FREEZONE_MEMORY_MD = """虾画助手处理虾画画布上下文中的节点、连接、资源查看和工作流操作。用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形。画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog。虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成。不要在普通回复开头自报身份；用户问身份时，回答“我是虾画助手”。
 §
 虾画会话应优先使用 `freezone-acp` 工具集中的 Freezone 画布工具。不要使用 DramaClaw 主线写入工具改动画布。
 """
@@ -382,6 +384,8 @@ def ensure_user_hermes_workspace(username: str, *, profile: str = "director") ->
     skills_dir.mkdir(exist_ok=True)
     (skills_dir / "_user").mkdir(exist_ok=True)
     _materialize_skill_links(skills_dir, profile=normalized_profile)
+    if normalized_profile == "freezone":
+        _sync_freezone_workflow_skills(skills_dir, username)
 
     # plugins layout
     plugins_dir = home / "plugins"
@@ -419,6 +423,23 @@ def ensure_user_hermes_workspace(username: str, *, profile: str = "director") ->
     _ensure_gateway_env_file(env_file)
 
     return home
+
+
+def list_freezone_hermes_workflow_skills(username: str) -> list[dict[str, object]]:
+    """Return Workflow Skills materialized in the user's native Hermes profile."""
+    home = ensure_user_hermes_workspace(username, profile="freezone")
+    summaries: list[dict[str, object]] = []
+    for skill_dir in sorted((home / "skills").iterdir(), key=lambda item: item.name):
+        marker = skill_dir / _GENERATED_WORKFLOW_SKILL_MARKER
+        if not skill_dir.is_dir() or not marker.is_file():
+            continue
+        try:
+            payload = json.loads(marker.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if isinstance(payload, dict) and payload.get("id"):
+            summaries.append(payload)
+    return summaries
 
 
 def _parse_env_assignments(text: str) -> dict[str, str]:
@@ -542,13 +563,127 @@ def _ensure_freezone_identity_context(home: Path) -> None:
     memories_dir = home / "memories"
     try:
         memories_dir.mkdir(exist_ok=True)
-        memory_file = memories_dir / "MEMORY.md"
-        if not memory_file.exists():
-            memory_file.write_text(_FREEZONE_MEMORY_MD, encoding="utf-8")
-        elif memory_file.read_text(encoding="utf-8").strip() == _OLD_FREEZONE_MEMORY_MD.strip():
-            memory_file.write_text(_FREEZONE_MEMORY_MD, encoding="utf-8")
+        (memories_dir / "MEMORY.md").write_text(_FREEZONE_MEMORY_MD, encoding="utf-8")
     except OSError:
         _log.warning("failed to ensure freezone hermes MEMORY.md under %s", memories_dir)
+
+
+def _freezone_workflow_skill_items(username: str) -> list[dict]:
+    try:
+        from novelvideo.freezone.agent_config_store import list_user_agent_config_items
+
+        items = list_user_agent_config_items(username, "skills")
+    except Exception as exc:
+        _log.warning("failed to load Freezone Workflow Skills for %s: %s", username, exc)
+        return []
+    return [
+        item
+        for item in items
+        if item.get("enabled") is not False
+        and item.get("hidden") is not True
+        and isinstance(
+            item.get("workflow_templates") or item.get("workflowTemplates"),
+            list,
+        )
+        and bool(item.get("workflow_templates") or item.get("workflowTemplates"))
+    ]
+
+
+def _workflow_skill_description(item: dict) -> str:
+    description = str(item.get("description") or "").strip()
+    triggers = item.get("triggers") if isinstance(item.get("triggers"), dict) else {}
+    keywords = triggers.get("keywords") if isinstance(triggers, dict) else []
+    keyword_text = "、".join(
+        str(value).strip()
+        for value in keywords[:10]
+        if str(value).strip()
+    ) if isinstance(keywords, list) else ""
+    parts = [description]
+    if keyword_text:
+        parts.append(f"适用于：{keyword_text}。")
+    parts.append("选择后使用虾画确定性工具生成动态工作流。")
+    return " ".join(part for part in parts if part)[:1024]
+
+
+def _render_workflow_skill(item: dict) -> tuple[str, dict[str, object]]:
+    skill_id = str(item.get("id") or "").strip()
+    display_name = str(
+        item.get("name")
+        or item.get("display_name")
+        or item.get("displayName")
+        or item.get("title")
+        or skill_id
+    ).strip()
+    description = _workflow_skill_description(item)
+    frontmatter = yaml.safe_dump(
+        {"name": skill_id, "description": description},
+        allow_unicode=True,
+        sort_keys=False,
+    ).strip()
+    content = f"""---
+{frontmatter}
+---
+
+# {display_name}
+
+这是虾画 Workflow Skill `{skill_id}` 的 Hermes 原生选择入口。
+
+## 执行规则
+
+1. 本 Skill 已由用户明确选择。直接调用 `freezone_get_workflow_skill`，固定传入 `skill_id=\"{skill_id}\"` 和 `compact=true`；不要再次选择或替换 Skill。
+2. 只补充 `input_contract.missing_required`，不要重复询问已经推断或有默认值的参数。
+3. 生成精简 `freezone_workflow_intent.v1`，调用 `freezone_prepare_workflow_draft`，严格按返回的预览向用户确认。
+4. 用户调整方案时调用 `freezone_patch_workflow_draft`，只提交发生变化的字段；不要重新规划整份方案。
+5. 用户确认后调用 `freezone_confirm_workflow_draft`，使用已确认的 draft_id 和 revision。
+6. Recipe 选择、节点展开、稳定 ID、连线、布局和合成全部交给工具；不要手写 WorkflowPlan 或逐节点创建。
+
+## 业务说明
+
+{description}
+"""
+    summary: dict[str, object] = {
+        "id": skill_id,
+        "name": display_name,
+        "description": description,
+        "category": str(item.get("category") or "").strip(),
+        "source": "hermes_native_workflow_skill",
+        "workflow_templates": [{"id": "hermes-native"}],
+    }
+    return content, summary
+
+
+def _sync_freezone_workflow_skills(skills_dir: Path, username: str) -> None:
+    desired: dict[str, tuple[str, dict[str, object]]] = {}
+    for item in _freezone_workflow_skill_items(username):
+        skill_id = str(item.get("id") or "").strip()
+        if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,127}", skill_id):
+            continue
+        desired[skill_id] = _render_workflow_skill(item)
+
+    for entry in skills_dir.iterdir():
+        marker = entry / _GENERATED_WORKFLOW_SKILL_MARKER
+        if entry.is_dir() and marker.is_file() and entry.name not in desired:
+            try:
+                shutil.rmtree(entry)
+            except OSError:
+                _log.warning("failed to remove stale generated Hermes Skill %s", entry)
+
+    for skill_id, (content, summary) in desired.items():
+        target = skills_dir / skill_id
+        marker = target / _GENERATED_WORKFLOW_SKILL_MARKER
+        if target.is_symlink() or (target.exists() and not marker.is_file()):
+            _log.warning("native Hermes Skill collision at %s; skipping generated wrapper", target)
+            continue
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+            skill_file = target / "SKILL.md"
+            marker_text = json.dumps(summary, ensure_ascii=False, indent=2) + "\n"
+            if not skill_file.exists() or skill_file.read_text(encoding="utf-8") != content:
+                skill_file.write_text(content, encoding="utf-8")
+            if not marker.exists() or marker.read_text(encoding="utf-8") != marker_text:
+                marker.write_text(marker_text, encoding="utf-8")
+        except OSError as exc:
+            _log.warning("failed to materialize Hermes Workflow Skill %s: %s", skill_id, exc)
 
 
 def _materialize_skill_links(skills_dir: Path, *, profile: str = "director") -> None:
@@ -674,6 +809,19 @@ def _ensure_freezone_config_policy(config_yaml: Path) -> None:
         plugins = {}
     plugins["enabled"] = ["freezone"]
     config["plugins"] = plugins
+
+    tools = config.get("tools")
+    if not isinstance(tools, dict):
+        tools = {}
+    tool_search = tools.get("tool_search")
+    if not isinstance(tool_search, dict):
+        tool_search = {}
+    # Freezone commands are the primary ACP surface. Deferring every plugin
+    # tool behind tool_search leaves only generic file tools visible and makes
+    # simple canvas edits route incorrectly.
+    tool_search["enabled"] = "off"
+    tools["tool_search"] = tool_search
+    config["tools"] = tools
 
     disabled_toolsets = config.get("disabled_toolsets")
     if not isinstance(disabled_toolsets, list):
@@ -973,4 +1121,5 @@ __all__ = [
     "effective_gateway_credentials",
     "effective_gateway_fingerprint",
     "ensure_user_hermes_workspace",
+    "list_freezone_hermes_workflow_skills",
 ]

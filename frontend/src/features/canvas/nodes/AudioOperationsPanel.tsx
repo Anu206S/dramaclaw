@@ -92,7 +92,7 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
   const [showVoiceSettings, setShowVoiceSettings] = useState(false);
   // music 模式：高级设置（音乐时长等）默认收起，点底部设置按钮展开。
   const [showMusicSettings, setShowMusicSettings] = useState(false);
-  // 'music'：文字生成音乐(走 /freezone/audio/eleven-music)；缺省/'speech'：克隆音频(TTS)。
+  // 'music'：文字生成音乐；缺省/'speech'：系统音色或显式选择的克隆音色。
   const isMusic = data.audioKind === 'music';
   const musicLengthMs =
     typeof data.musicLengthMs === 'number' ? data.musicLengthMs : DEFAULT_MUSIC_LENGTH_MS;
@@ -529,10 +529,11 @@ function AudioMusicSettingsPanel({
 
 function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps) {
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
-  // 默认音色的拉取放在 AudioNode 里完成（音频节点一挂载就会触发）；这里只负责展示。
-  // 显示兜底改为「加载中…」而不是「项目解说人」——避免在 references 落地前误导用户。
-  const voiceLabel = data.voiceLabel ?? '加载中…';
-  const voiceLanguage = data.voiceLanguage ?? '';
+  const speechMode = data.speechMode ?? (data.voiceRef ? 'clone' : 'preset');
+  const voiceLabel =
+    speechMode === 'preset' ? '系统女声' : data.voiceLabel ?? '选择克隆音色';
+  const voiceLanguage =
+    speechMode === 'preset' ? '普通话' : data.voiceLanguage ?? '';
   const currentRef: AudioVoiceRef = data.voiceRef ?? { scope: 'project_narrator' };
   const [modalOpen, setModalOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'success' | 'error'>('idle');
@@ -573,28 +574,54 @@ function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps)
       <div className="flex items-center justify-between py-2">
         <span className="text-[12px] font-semibold text-text-muted">音色设置</span>
       </div>
+      <div className="mb-2 grid grid-cols-2 rounded-[6px] bg-white/[0.04] p-0.5">
+        <button
+          type="button"
+          onClick={() => updateNodeData(nodeId, { speechMode: 'preset' })}
+          className={`h-7 rounded-[5px] text-[12px] transition-colors ${
+            speechMode === 'preset'
+              ? 'bg-white/10 text-text-dark'
+              : 'text-text-muted hover:text-text-dark'
+          }`}
+        >
+          系统音色
+        </button>
+        <button
+          type="button"
+          onClick={() => setModalOpen(true)}
+          className={`h-7 rounded-[5px] text-[12px] transition-colors ${
+            speechMode === 'clone'
+              ? 'bg-white/10 text-text-dark'
+              : 'text-text-muted hover:text-text-dark'
+          }`}
+        >
+          克隆音色
+        </button>
+      </div>
       <div className="flex min-h-[55px] w-full items-center gap-3 rounded-[10px] border border-white/[0.08] bg-transparent px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-[14px] font-medium text-text-dark">{voiceLabel}</span>
-            <button
-              type="button"
-              title={copyState === 'success' ? '已复制' : copyState === 'error' ? '复制失败' : '复制声线引用'}
-              onClick={handleCopyVoiceId}
-              className={`flex h-4 w-4 shrink-0 items-center justify-center transition-colors ${
-                copyState === 'success'
-                  ? 'text-[rgb(var(--accent-rgb))]'
-                  : copyState === 'error'
-                    ? 'text-rose-300'
-                    : 'text-text-muted hover:text-text-dark'
-              }`}
-            >
-              {copyState === 'success' ? (
-                <Check className="h-3 w-3" />
-              ) : (
-                <Copy className="h-3 w-3" />
-              )}
-            </button>
+            {speechMode === 'clone' && (
+              <button
+                type="button"
+                title={copyState === 'success' ? '已复制' : copyState === 'error' ? '复制失败' : '复制声线引用'}
+                onClick={handleCopyVoiceId}
+                className={`flex h-4 w-4 shrink-0 items-center justify-center transition-colors ${
+                  copyState === 'success'
+                    ? 'text-[rgb(var(--accent-rgb))]'
+                    : copyState === 'error'
+                      ? 'text-rose-300'
+                      : 'text-text-muted hover:text-text-dark'
+                }`}
+              >
+                {copyState === 'success' ? (
+                  <Check className="h-3 w-3" />
+                ) : (
+                  <Copy className="h-3 w-3" />
+                )}
+              </button>
+            )}
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -619,6 +646,7 @@ function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps)
         currentRef={currentRef}
         onPick={({ ref, label, language }) => {
           updateNodeData(nodeId, {
+            speechMode: 'clone',
             voiceRef: ref,
             voiceLabel: label,
             voiceLanguage: language ?? '',

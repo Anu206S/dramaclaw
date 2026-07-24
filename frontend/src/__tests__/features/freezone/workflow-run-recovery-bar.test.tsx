@@ -113,6 +113,97 @@ describe("WorkflowRunRecoveryBar", () => {
     expect(staleResumableWorkflowRunIds([failedRun], new Set())).toEqual(["run-failed"]);
   });
 
+  it("cancels a stale recovery record after its nodes later produce outputs", async () => {
+    useCanvasStore.getState().setCanvasData([
+      {
+        id: "image-1",
+        type: CANVAS_NODE_TYPES.imageGen,
+        position: { x: 0, y: 0 },
+        data: {},
+      },
+      {
+        id: "video-1",
+        type: CANVAS_NODE_TYPES.video,
+        position: { x: 400, y: 0 },
+        data: { videoUrl: "/outputs/video.mp4" },
+      },
+      {
+        id: "compose-1",
+        type: CANVAS_NODE_TYPES.videoCompose,
+        position: { x: 800, y: 0 },
+        data: { resultVideoUrl: "/outputs/final.mp4" },
+      },
+    ], []);
+
+    render(<WorkflowRunRecoveryBar projectId="project-a" canvasId="canvas-a" />);
+
+    await waitFor(() => expect(listFreezoneWorkflowRuns).toHaveBeenCalled());
+    expect(screen.queryByText("发现未完成的工作流")).not.toBeInTheDocument();
+    await waitFor(() => expect(updateFreezoneWorkflowRun).toHaveBeenCalledWith(
+      "project-a",
+      "canvas-a",
+      "run-failed",
+      { status: "cancelled" },
+    ));
+  });
+
+  it("recovers a node when only a stale task handle remains", async () => {
+    useCanvasStore.getState().setCanvasData([
+      {
+        id: "image-1",
+        type: CANVAS_NODE_TYPES.imageGen,
+        position: { x: 0, y: 0 },
+        data: {},
+      },
+      {
+        id: "video-1",
+        type: CANVAS_NODE_TYPES.video,
+        position: { x: 400, y: 0 },
+        data: { isGenerating: false, generationTaskKey: "task-video-1" },
+      },
+      {
+        id: "compose-1",
+        type: CANVAS_NODE_TYPES.videoCompose,
+        position: { x: 800, y: 0 },
+        data: {},
+      },
+    ], []);
+
+    render(<WorkflowRunRecoveryBar projectId="project-a" canvasId="canvas-a" />);
+
+    await waitFor(() => expect(listFreezoneWorkflowRuns).toHaveBeenCalled());
+    expect(await screen.findByText("发现未完成的工作流")).toBeInTheDocument();
+  });
+
+  it("hides but preserves a run while its generation task is active", async () => {
+    useCanvasStore.getState().setCanvasData([
+      {
+        id: "image-1",
+        type: CANVAS_NODE_TYPES.imageGen,
+        position: { x: 0, y: 0 },
+        data: {},
+      },
+      {
+        id: "video-1",
+        type: CANVAS_NODE_TYPES.video,
+        position: { x: 400, y: 0 },
+        data: { isGenerating: true, generationTaskKey: "task-video-1" },
+      },
+      {
+        id: "compose-1",
+        type: CANVAS_NODE_TYPES.videoCompose,
+        position: { x: 800, y: 0 },
+        data: {},
+      },
+    ], []);
+
+    render(<WorkflowRunRecoveryBar projectId="project-a" canvasId="canvas-a" />);
+
+    await waitFor(() => expect(listFreezoneWorkflowRuns).toHaveBeenCalled());
+    expect(screen.queryByText("发现未完成的工作流")).not.toBeInTheDocument();
+    expect(updateFreezoneWorkflowRun).not.toHaveBeenCalled();
+  });
+
   it("does not present a healthy running workflow as recoverable", async () => {
     vi.mocked(listFreezoneWorkflowRuns).mockResolvedValueOnce({
       runs: [{ ...failedRun, status: "running" }],
@@ -143,7 +234,7 @@ describe("WorkflowRunRecoveryBar", () => {
         [expect.objectContaining({
           commands: [{
             type: "run_workflow",
-            node_ids: ["video-1", "compose-1"],
+            node_ids: ["video-1"],
             direction: "downstream",
             regenerate: false,
           }],

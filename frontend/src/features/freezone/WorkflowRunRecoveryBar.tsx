@@ -11,6 +11,8 @@ import {
   applyCanvasChatCommandsAsync,
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
   FREEZONE_WORKFLOW_RUN_UPDATED_EVENT,
+  hasGeneratedResult,
+  isNodeActionGenerationPending,
 } from "@/features/freezone/canvasChatCommands";
 import { useCanvasStore } from "@/stores/canvasStore";
 
@@ -34,9 +36,29 @@ export function staleResumableWorkflowRunIds(
       run.resumable &&
       ["running", "failed", "interrupted"].includes(run.status) &&
       resumableWorkflowNodeIds(run).length > 0 &&
-      resumableWorkflowNodeIds(run).every((nodeId) => !existingNodeIds.has(nodeId))
+      unresolvedWorkflowActions(run, existingNodeIds).length === 0
     )
     .map((run) => run.run_id);
+}
+
+function unresolvedWorkflowActions(
+  run: FreezoneWorkflowRun,
+  existingNodeIds: ReadonlySet<string>,
+) {
+  return run.actions.filter((action) =>
+    RESUMABLE_ACTION_STATUSES.has(action.status) &&
+    existingNodeIds.has(action.node_id) &&
+    !hasGeneratedResult(action.node_id, action.action)
+  );
+}
+
+function recoverableWorkflowActions(
+  run: FreezoneWorkflowRun,
+  existingNodeIds: ReadonlySet<string>,
+) {
+  return unresolvedWorkflowActions(run, existingNodeIds).filter(
+    (action) => !isNodeActionGenerationPending(action.node_id, action.action),
+  );
 }
 
 function latestResumableRun(
@@ -46,7 +68,7 @@ function latestResumableRun(
   return runs.find((run) =>
     run.resumable &&
     ["failed", "interrupted"].includes(run.status) &&
-    resumableWorkflowNodeIds(run).some((nodeId) => existingNodeIds.has(nodeId))
+    recoverableWorkflowActions(run, existingNodeIds).length > 0
   ) ?? null;
 }
 
@@ -117,19 +139,21 @@ export function WorkflowRunRecoveryBar({
   );
   const nodeIds = useMemo(
     () => run
-      ? resumableWorkflowNodeIds(run).filter((nodeId) => existingNodeIds.has(nodeId))
+      ? [...new Set(
+        recoverableWorkflowActions(run, existingNodeIds).map((action) => action.node_id),
+      )]
       : [],
-    [existingNodeIds, run],
+    [canvasNodes, existingNodeIds, run],
   );
   const failedNodeIds = useMemo(
     () => run
       ? [...new Set(
-        run.actions
+        recoverableWorkflowActions(run, existingNodeIds)
           .filter((action) => action.status === "failed" && existingNodeIds.has(action.node_id))
           .map((action) => action.node_id),
       )]
       : [],
-    [existingNodeIds, run],
+    [canvasNodes, existingNodeIds, run],
   );
   if (!run || run.run_id === dismissedRunId || nodeIds.length === 0) return null;
 
@@ -201,7 +225,7 @@ export function WorkflowRunRecoveryBar({
     }
   };
 
-  const completedCount = run.actions.filter((action) => action.status === "completed").length;
+  const completedCount = Math.max(0, run.actions.length - nodeIds.length);
   return (
     <div className="pointer-events-auto absolute left-1/2 top-4 z-30 flex max-w-[calc(100%-32px)] -translate-x-1/2 items-center gap-3 rounded-md border border-border/70 bg-background/95 px-3 py-2 shadow-lg backdrop-blur">
       <div className="min-w-0 text-sm">

@@ -48,7 +48,7 @@
 ```json
 {
   "schema_version": "freezone_workflow_plan.v1",
-  "workflow_type": "short_drama",
+  "workflow_type": "dynamic.short-drama",
   "mode": "analysis_only",
   "summary": "",
   "source_context": {

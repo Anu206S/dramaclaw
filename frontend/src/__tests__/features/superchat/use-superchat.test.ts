@@ -42,7 +42,9 @@ import {
   collapseRepeatedCanvasStatusFlowItemsForTest,
   collapseRepeatedCanvasStatusPartsForTest,
   amendCanvasApprovalWithImageParamsForTest,
+  amendCanvasApprovalWithHumanReviewForTest,
   amendCanvasApprovalWithVideoParamsForTest,
+  canvasApprovalRequiresHumanReviewConfirmationForTest,
   buildSkillStudioCatalogSaveItemsForTest,
   buildSkillStudioDraftCancelToolResultForTest,
   buildSkillStudioDraftRevisionToolResultForTest,
@@ -2685,6 +2687,8 @@ describe("Canvas command approval video params", () => {
       quality: "1080P",
       durationSec: 10,
       generateAudio: true,
+      humanReview: true,
+      requiresHumanReviewConfirmation: true,
       count: 2,
     });
 
@@ -2698,10 +2702,162 @@ describe("Canvas command approval video params", () => {
           quality: "1080P",
           durationSec: 10,
           generateAudio: true,
+          humanReview: true,
           count: 2,
         },
       },
       { type: "run_node_action", node_id: "video-a", action: "generate_video" },
+    ]);
+  });
+
+  it("requires confirmation for a Seedance image-to-video command", () => {
+    const approval = {
+      id: "approval-real-person",
+      key: "approval-real-person",
+      messageId: "assistant-real-person",
+      receivedAt: 1,
+      commandCount: 4,
+      plans: [],
+      envelopes: [
+        {
+          schema_version: "canvas_chat_commands.v1" as const,
+          commands: [
+            {
+              type: "create_node" as const,
+              client_id: "image-a",
+              node_type: "imageGenNode" as const,
+              data: { imageUrl: "/static/reference.png" },
+            },
+            {
+              type: "create_node" as const,
+              client_id: "video-a",
+              node_type: "videoNode" as const,
+              data: { model: "newapi_seedance-2.0-fast", genMode: "imageToVideo" },
+            },
+            {
+              type: "create_edge" as const,
+              source: "image-a",
+              target: "video-a",
+              link_type: "reference" as const,
+            },
+            { type: "run_node_action" as const, node_id: "video-a", action: "generate_video" },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      canvasApprovalRequiresHumanReviewConfirmationForTest(
+        approval as never,
+        [],
+        [],
+      ),
+    ).toBe(true);
+  });
+
+  it("does not require confirmation after human review is enabled", () => {
+    const approval = {
+      id: "approval-reviewed",
+      key: "approval-reviewed",
+      messageId: "assistant-reviewed",
+      receivedAt: 1,
+      commandCount: 1,
+      plans: [],
+      envelopes: [
+        {
+          schema_version: "canvas_chat_commands.v1" as const,
+          commands: [
+            { type: "run_node_action" as const, node_id: "video-a", action: "generate_video" },
+          ],
+        },
+      ],
+    };
+    const nodes = [
+      {
+        id: "video-a",
+        type: "videoNode",
+        position: { x: 0, y: 0 },
+        data: {
+          model: "newapi_seedance-2.0-fast",
+          genMode: "imageToVideo",
+          humanReview: true,
+        },
+      },
+    ];
+
+    expect(
+      canvasApprovalRequiresHumanReviewConfirmationForTest(
+        approval as never,
+        nodes as never,
+        [],
+      ),
+    ).toBe(false);
+  });
+
+  it("requires confirmation and enables review before running a dynamic workflow", () => {
+    const approval = {
+      id: "approval-workflow",
+      key: "approval-workflow",
+      messageId: "assistant-workflow",
+      receivedAt: 1,
+      commandCount: 4,
+      plans: [],
+      envelopes: [
+        {
+          schema_version: "canvas_chat_commands.v1" as const,
+          commands: [
+            {
+              type: "create_node" as const,
+              client_id: "image-a",
+              node_type: "imageGenNode" as const,
+              data: { imageUrl: "/static/reference.png" },
+            },
+            {
+              type: "create_node" as const,
+              client_id: "video-a",
+              node_type: "videoNode" as const,
+              data: { genMode: "imageToVideo" },
+            },
+            {
+              type: "create_edge" as const,
+              source: "image-a",
+              target: "video-a",
+              link_type: "reference" as const,
+            },
+            {
+              type: "run_workflow" as const,
+              node_ids: ["image-a", "video-a"],
+              scope: "selection" as const,
+            },
+          ],
+        },
+      ],
+    };
+
+    expect(
+      canvasApprovalRequiresHumanReviewConfirmationForTest(
+        approval as never,
+        [],
+        [],
+      ),
+    ).toBe(true);
+
+    const amended = amendCanvasApprovalWithHumanReviewForTest(
+      approval as never,
+      ["video-a"],
+      true,
+    );
+    expect(amended.envelopes[0].commands.slice(-2)).toEqual([
+      {
+        type: "update_node_data",
+        node_id: "video-a",
+        data: { humanReview: true },
+      },
+      {
+        type: "run_workflow",
+        node_ids: ["image-a", "video-a"],
+        scope: "selection",
+      },
     ]);
   });
 });

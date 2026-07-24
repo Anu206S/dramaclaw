@@ -580,7 +580,7 @@ function audioVoiceRefSchema(node: CanvasNode): CanvasEditableFieldSchema {
     },
     current_value: data.voiceRef ?? null,
     description:
-      "音频节点真实使用 voiceRef 对象选择音色，不使用 voiceId 字符串。更换音色前必须先返回 context_request 指定的 canvas_context_request.v1；拿到 options 后，把选项里的 data 原样用于 update_node_data。不要用 run_node_action 获取音色选项。",
+      "音频节点在 speechMode=clone 时使用 voiceRef 对象选择音色，不使用 voiceId 字符串。更换音色前必须先返回 context_request 指定的 canvas_context_request.v1；拿到 options 后，把选项里的 data 原样用于 update_node_data，并同时设置 speechMode=clone。不要用 run_node_action 获取音色选项。",
   };
 }
 
@@ -731,6 +731,12 @@ function editableSchemaForNode(node: CanvasNode): Record<string, CanvasEditableF
           label: "生成音频",
           current_value: (node.data as { generateAudio?: unknown }).generateAudio ?? false,
         },
+        humanReview: {
+          type: "boolean",
+          label: "真人审核",
+          current_value: (node.data as { humanReview?: unknown }).humanReview ?? false,
+          description: "图生视频时在模型支持的情况下启用真人内容审核。",
+        },
         count: {
           type: "enum",
           label: "生成数量",
@@ -745,7 +751,14 @@ function editableSchemaForNode(node: CanvasNode): Record<string, CanvasEditableF
           type: "enum",
           label: "音频类型",
           options: ["speech", "music"],
-          description: "speech 表示文本转语音/克隆音频；music 表示文字生成音乐。",
+          description: "speech 表示文本转语音；music 表示文字生成音乐。",
+        },
+        speechMode: {
+          type: "enum",
+          label: "语音模式",
+          options: ["preset", "clone"],
+          description:
+            "仅 audioKind=speech 时生效。默认 preset 使用系统音色且无需上传；只有用户明确要求克隆或指定声线时才使用 clone。",
         },
         text: { type: "string", label: "文本" },
         emotionPrompt: { type: "string", label: "情绪提示" },
@@ -1203,7 +1216,7 @@ function addFrontendNodeActions(
       action: "generate_audio",
       execution: "frontend_node",
       command_type: "run_node_action",
-      description: "Submit this audio node using its current text/upstream text and audioKind. speech uses the TTS flow; music uses the text-to-music flow. If the node already has uploaded or generated audio, the new result replaces it.",
+      description: "Submit this audio node using its current text/upstream text and audioKind. speech defaults to a preset system voice with no upload required; an explicitly selected voice uses cloning. music uses the text-to-music flow. If the node already has uploaded or generated audio, the new result replaces it.",
       parameters: { node_id: node.id },
     });
     if ((node.data as { audioKind?: unknown }).audioKind !== "music") {

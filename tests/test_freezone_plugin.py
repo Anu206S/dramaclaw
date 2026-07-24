@@ -4,7 +4,9 @@ import copy
 import importlib.util
 import json
 import sys
+import threading
 import types
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 _MINIMAL_ECOMMERCE_SKILL = {
@@ -13,21 +15,8 @@ _MINIMAL_ECOMMERCE_SKILL = {
     "version": 6,
     "description": "测试用电商产品图 Skill",
     "enabled": True,
-    "category": "image",
-    "triggers": {
-        "keywords": ["电商产品图"],
-        "node_scopes": ["imageGeneration"],
-    },
+    "triggers": {"node_scopes": ["imageGeneration"]},
     "allowed_recipe_ids": ["ecommerce-ad-image", "general-image"],
-    "planning": {
-        "planning_notes": "根据商品素材动态规划电商图。",
-        "conduct_rules": ["保留商品主体。"],
-    },
-    "evaluation": {
-        "rating_bands": [{"score": 5, "description": "商品表达清晰。"}],
-        "quality_threshold": 4,
-        "domain_constraints": ["不得改变商品关键外观。"],
-    },
 }
 
 _MINIMAL_ECOMMERCE_RECIPES = [
@@ -37,10 +26,6 @@ _MINIMAL_ECOMMERCE_RECIPES = [
         "version": 5,
         "enabled": True,
         "output_kind": "image",
-        "action_keys": ["ecommerce-ad-image"],
-        "system_prompt": "输出电商广告图提示词。",
-        "planning_prompt": "规划电商广告图。",
-        "result_summary": "电商广告图已生成。",
         "requires_source_media": True,
     },
     {
@@ -49,10 +34,6 @@ _MINIMAL_ECOMMERCE_RECIPES = [
         "version": 1,
         "enabled": True,
         "output_kind": "image",
-        "action_keys": ["general-image"],
-        "system_prompt": "输出通用图片提示词。",
-        "planning_prompt": "规划通用图片。",
-        "result_summary": "通用图片已生成。",
         "requires_source_media": False,
     },
 ]
@@ -123,6 +104,7 @@ def test_freezone_plugin_registers_canvas_command_tools():
     plugin = _load_plugin_module()
 
     names = {name for name, _schema, _handler in plugin.TOOLS}
+    schemas = {name: schema for name, schema, _handler in plugin.TOOLS}
 
     assert "freezone_request_user_clarification" in names
     assert "freezone_emit_canvas_command" in names
@@ -131,11 +113,15 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_run_node_action" in names
     assert "freezone_run_workflow" in names
     assert "freezone_get_mainline_projection_assets" in names
-    assert "freezone_list_workflows" in names
-    assert "freezone_build_workflow_plan" in names
-    assert "freezone_resolve_catalog_workflow" in names
+    assert "freezone_list_workflows" not in names
+    assert "freezone_build_workflow_plan" not in names
+    assert "freezone_resolve_catalog_workflow" not in names
     assert "freezone_get_workflow_skill" in names
     assert not any(name.startswith("freezone_skill_") for name in names)
+    assert "freezone_prepare_workflow_draft" in names
+    assert "freezone_patch_workflow_draft" in names
+    assert "freezone_confirm_workflow_draft" in names
+    assert "freezone_create_workflow_from_intent" in names
     assert "freezone_create_workflow_graph" in names
     assert "freezone_present_agent_catalog_draft" in names
     assert "freezone_begin_agent_catalog_draft" in names
@@ -145,6 +131,24 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_finish_agent_catalog_draft" in names
     assert "freezone_get_saved_skill" in names
     assert "freezone_get_saved_recipe" in names
+    create_schema = schemas["freezone_create_workflow_graph"]["parameters"]
+    assert create_schema["required"] == ["plan"]
+    assert "workflow_type" not in create_schema["properties"]
+    assert "items" not in create_schema["properties"]
+    intent_schema = schemas["freezone_create_workflow_from_intent"]["parameters"]
+    assert intent_schema["required"] == ["intent"]
+    assert intent_schema["properties"]["intent"]["required"] == [
+        "skill_id",
+        "user_goal",
+    ]
+    draft_schema = schemas["freezone_confirm_workflow_draft"]["parameters"]
+    assert draft_schema["required"] == ["draft_id", "revision"]
+    patch_draft_schema = schemas["freezone_patch_workflow_draft"]["parameters"]
+    assert patch_draft_schema["required"] == [
+        "draft_id",
+        "expected_revision",
+        "changes",
+    ]
 
 
 def test_freezone_run_workflow_emits_one_deterministic_runner_command(monkeypatch):
@@ -207,6 +211,387 @@ def test_dynamic_workflow_plan_is_rejected_before_canvas_bridge():
     assert result["errors"][0]["path"] == "nodes[0].node_type"
 
 
+def test_fixed_workflow_creation_is_rejected_before_canvas_bridge():
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    result = handlers["freezone_create_workflow_graph"](
+        {"workflow_type": "catalog.ecommerce_product.ecommerce_scene_images", "count": 3}
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "dynamic_workflow_plan_required"
+
+
+def test_handwritten_workflow_batch_cannot_bypass_dynamic_plan():
+    plugin = _load_plugin_module()
+
+    result = plugin._handle_emit_canvas_command(
+        {
+            "commands": [
+                {
+                    "type": "create_node",
+                    "node_type": "textAnnotationNode",
+                    "data": {"displayName": "广告视频工作流"},
+                },
+                {"type": "create_node", "node_type": "imageGenNode"},
+                {"type": "create_node", "node_type": "videoNode"},
+            ]
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "wrong_tool_dynamic_workflow"
+
+
+def test_dynamic_workflow_creation_reaches_canvas_bridge(monkeypatch):
+    plugin = _load_plugin_module()
+    plan = {
+        "schema_version": "freezone_workflow_plan.v1",
+        "workflow_type": "dynamic.ecommerce-product",
+        "skill": {"id": "ecommerce-product"},
+        "nodes": [],
+        "edges": [],
+    }
+    commands = [{"type": "create_node", "node_type": "textAnnotationNode"}]
+    captured = {}
+
+    monkeypatch.setattr(plugin, "validate_agent_workflow_plan", lambda value: {"ok": value is plan})
+    monkeypatch.setattr(
+        plugin,
+        "build_workflow_graph_commands",
+        lambda args: {"ok": True, "commands": commands, "plan": args["plan"]},
+    )
+
+    def fake_emit(project, canvas, emitted, **kwargs):
+        captured.update(
+            {"project": project, "canvas": canvas, "commands": emitted, "kwargs": kwargs}
+        )
+        return "created"
+
+    monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
+
+    result = plugin._handle_create_workflow_graph(
+        {"project_id": "project-a", "canvas_id": "canvas-a", "plan": plan}
+    )
+
+    assert result == "created"
+    assert captured["commands"] == commands
+    assert captured["kwargs"]["allow_dynamic_workflow_batch"] is True
+
+
+def test_compact_workflow_intent_compiles_before_canvas_bridge(monkeypatch):
+    plugin = _load_plugin_module()
+    intent = {"skill_id": "video-ad", "user_goal": "制作五镜广告"}
+    plan = {"schema_version": "freezone_workflow_plan.v1", "nodes": []}
+    commands = [{"type": "create_node", "node_type": "textAnnotationNode"}]
+    captured = {}
+
+    monkeypatch.setattr(
+        plugin,
+        "compile_workflow_intent",
+        lambda value: {"ok": value is intent, "plan": plan},
+    )
+    monkeypatch.setattr(
+        plugin,
+        "build_workflow_graph_commands",
+        lambda args: {"ok": args["plan"] is plan, "commands": commands},
+    )
+
+    def fake_emit(project, canvas, emitted, **kwargs):
+        captured.update(
+            {"project": project, "canvas": canvas, "commands": emitted, "kwargs": kwargs}
+        )
+        return "created-from-intent"
+
+    monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
+
+    result = plugin._handle_create_workflow_from_intent(
+        {"project_id": "project-a", "canvas_id": "canvas-a", "intent": intent}
+    )
+
+    assert result == "created-from-intent"
+    assert captured["commands"] == commands
+    assert captured["kwargs"]["allow_dynamic_workflow_batch"] is True
+
+
+def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, tmp_path):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    emitted = []
+
+    def fake_compile(intent):
+        items = list(intent.get("items") or [])
+        nodes = [
+            {
+                "id": "workflow_input",
+                "name": "用户需求",
+                "node_type": "textAnnotationNode",
+                "stage": "input",
+            },
+            *[
+                {
+                    "id": f"shot_{index + 1}",
+                    "name": str(item),
+                    "node_type": "videoNode",
+                    "stage": "video",
+                }
+                for index, item in enumerate(items)
+            ],
+        ]
+        return {
+            "ok": True,
+            "skill_id": intent["skill_id"],
+            "template_id": "dynamic",
+            "node_count": len(nodes),
+            "edge_count": max(0, len(nodes) - 1),
+            "step_counts": {"shots": len(items)},
+            "plan": {
+                "summary": intent["user_goal"],
+                "inputs": dict(intent.get("inputs") or {}),
+                "phases": ["脚本", "视频"],
+                "nodes": nodes,
+                "edges": [],
+            },
+        }
+
+    monkeypatch.setattr(plugin, "compile_workflow_intent", fake_compile)
+    monkeypatch.setattr(
+        plugin,
+        "build_workflow_graph_commands",
+        lambda args: {
+            "ok": True,
+            "commands": [
+                {
+                    "type": "create_node",
+                    "node_type": "textAnnotationNode",
+                    "data": {"displayName": "用户需求"},
+                }
+            ],
+        },
+    )
+
+    def fake_emit(project, canvas, commands, **kwargs):
+        emitted.append((project, canvas, commands, kwargs))
+        return {
+            "ok": True,
+            "canvas_apply_status": "applied",
+            "applied": True,
+        }
+
+    monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
+    prepared = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "intent": {
+                "skill_id": "video-ad",
+                "user_goal": "制作广告",
+                "items": ["开场", "卖点"],
+            },
+            "run_after_create": True,
+        }
+    )
+
+    assert prepared["ok"] is True
+    assert prepared["revision"] == 1
+    assert prepared["preview"]["node_count"] == 3
+    assert prepared["run_after_create"] is True
+
+    patched = plugin._handle_patch_workflow_draft(
+        {
+            "draft_id": prepared["draft_id"],
+            "expected_revision": 1,
+            "changes": {"items": ["开场", "卖点", "收尾"]},
+        }
+    )
+
+    assert patched["ok"] is True
+    assert patched["revision"] == 2
+    assert patched["preview"]["node_count"] == 4
+
+    stale_patch = plugin._handle_patch_workflow_draft(
+        {
+            "draft_id": prepared["draft_id"],
+            "expected_revision": 1,
+            "changes": {"include_audio": False},
+        }
+    )
+    confirmed = plugin._handle_confirm_workflow_draft(
+        {"draft_id": prepared["draft_id"], "revision": 2}
+    )
+    repeated = plugin._handle_confirm_workflow_draft(
+        {"draft_id": prepared["draft_id"], "revision": 2}
+    )
+
+    assert stale_patch["status"] == "workflow_draft_revision_conflict"
+    assert confirmed["ok"] is True
+    assert len(emitted) == 1
+    assert emitted[0][0:2] == ("project-a", "canvas-a")
+    assert repeated["status"] == "workflow_draft_already_confirmed"
+
+
+def test_workflow_draft_concurrent_confirmation_emits_once(monkeypatch, tmp_path):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "template_id": "dynamic",
+        "edge_count": 0,
+        "step_counts": {},
+        "plan": {
+            "summary": "广告",
+            "inputs": {},
+            "phases": [],
+            "nodes": [
+                {
+                    "id": "input",
+                    "name": "输入",
+                    "node_type": "textAnnotationNode",
+                    "stage": "input",
+                }
+            ],
+            "edges": [],
+        },
+    }
+    monkeypatch.setattr(plugin, "compile_workflow_intent", lambda _intent: compiled)
+    monkeypatch.setattr(
+        plugin,
+        "build_workflow_graph_commands",
+        lambda args: {
+            "ok": True,
+            "commands": [{"type": "create_node", "node_type": "textAnnotationNode"}],
+            "workflow_instance_id": args["workflow_instance_id"],
+        },
+    )
+    started = threading.Event()
+    release = threading.Event()
+    emitted = []
+
+    def fake_emit(*args, **kwargs):
+        emitted.append((args, kwargs))
+        started.set()
+        assert release.wait(timeout=5)
+        return {"ok": True, "canvas_apply_status": "applied", "applied": True}
+
+    monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
+    prepared = plugin._handle_prepare_workflow_draft(
+        {"intent": {"skill_id": "video-ad", "user_goal": "广告"}}
+    )
+    confirm_args = {"draft_id": prepared["draft_id"], "revision": 1}
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        first = executor.submit(plugin._handle_confirm_workflow_draft, confirm_args)
+        assert started.wait(timeout=5)
+        second = executor.submit(plugin._handle_confirm_workflow_draft, confirm_args)
+        second_result = second.result(timeout=5)
+        release.set()
+        first_result = first.result(timeout=5)
+
+    assert first_result["ok"] is True
+    assert second_result["status"] == "workflow_draft_confirmation_in_progress"
+    assert len(emitted) == 1
+
+
+def test_workflow_draft_timeout_retry_reuses_instance_id(monkeypatch, tmp_path):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "template_id": "dynamic",
+        "edge_count": 0,
+        "step_counts": {},
+        "plan": {
+            "summary": "广告",
+            "inputs": {},
+            "phases": [],
+            "nodes": [
+                {
+                    "id": "input",
+                    "name": "输入",
+                    "node_type": "textAnnotationNode",
+                    "stage": "input",
+                }
+            ],
+            "edges": [],
+        },
+    }
+    monkeypatch.setattr(plugin, "compile_workflow_intent", lambda _intent: compiled)
+    built_instance_ids = []
+
+    def fake_build(args):
+        built_instance_ids.append(args["workflow_instance_id"])
+        return {
+            "ok": True,
+            "commands": [{"type": "create_node", "node_type": "textAnnotationNode"}],
+        }
+
+    monkeypatch.setattr(plugin, "build_workflow_graph_commands", fake_build)
+    emitted = []
+
+    def fake_emit(*args, **kwargs):
+        emitted.append((args, kwargs))
+        return {"ok": True, "canvas_apply_status": "timeout", "applied": False}
+
+    monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
+    prepared = plugin._handle_prepare_workflow_draft(
+        {"intent": {"skill_id": "video-ad", "user_goal": "广告"}}
+    )
+    confirm_args = {"draft_id": prepared["draft_id"], "revision": 1}
+
+    first = plugin._handle_confirm_workflow_draft(confirm_args)
+    repeated = plugin._handle_confirm_workflow_draft(confirm_args)
+
+    assert first["canvas_apply_status"] == "timeout"
+    assert repeated["canvas_apply_status"] == "timeout"
+    assert len(emitted) == 2
+    assert built_instance_ids == [prepared["draft_id"], prepared["draft_id"]]
+
+
+def test_workflow_draft_patch_rejects_skill_replacement(monkeypatch, tmp_path):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "template_id": "dynamic",
+        "edge_count": 0,
+        "step_counts": {},
+        "plan": {
+            "summary": "广告",
+            "inputs": {},
+            "phases": [],
+            "nodes": [
+                {
+                    "id": "input",
+                    "name": "输入",
+                    "node_type": "textAnnotationNode",
+                    "stage": "input",
+                }
+            ],
+            "edges": [],
+        },
+    }
+    monkeypatch.setattr(plugin, "compile_workflow_intent", lambda _intent: compiled)
+    prepared = plugin._handle_prepare_workflow_draft(
+        {"intent": {"skill_id": "video-ad", "user_goal": "广告"}}
+    )
+
+    result = plugin._handle_patch_workflow_draft(
+        {
+            "draft_id": prepared["draft_id"],
+            "expected_revision": 1,
+            "changes": {"skill_id": "short-drama"},
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "invalid_workflow_draft_patch"
+    assert result["unsupported_fields"] == ["skill_id"]
+
+
 def test_workflow_graph_can_run_validated_nodes_after_create():
     plugin = _load_plugin_module()
     built = plugin.build_workflow_graph_commands(
@@ -227,11 +612,50 @@ def test_workflow_graph_can_run_validated_nodes_after_create():
     )
 
     assert built["ok"] is True
+    assert built["workflow_instance_id"].startswith("workflow_plan_")
+    create_commands = [
+        command for command in built["commands"] if command["type"] == "create_node"
+    ]
+    assert [command["data"]["workflowPlanNodeId"] for command in create_commands] == [
+        "brief",
+        "image",
+    ]
+    assert {
+        command["data"]["workflowInstanceId"] for command in create_commands
+    } == {built["workflow_instance_id"]}
     assert built["commands"][-1] == {
         "type": "run_workflow",
         "node_ids": ["brief", "image"],
         "scope": "selection",
     }
+
+
+def test_workflow_graph_defaults_speech_audio_to_preset_voice():
+    plugin = _load_plugin_module()
+    built = plugin.build_workflow_graph_commands(
+        {
+            "plan": {
+                "schema_version": "freezone_workflow_plan.v1",
+                "workflow_type": "dynamic.audio",
+                "nodes": [
+                    {
+                        "id": "narration",
+                        "node_type": "audioNode",
+                        "data": {"text": "欢迎观看"},
+                    }
+                ],
+                "edges": [],
+            }
+        }
+    )
+
+    create_command = next(
+        command for command in built["commands"] if command["type"] == "create_node"
+    )
+    assert create_command["data"]["audioKind"] == "speech"
+    assert create_command["data"]["speechMode"] == "preset"
+    assert create_command["data"]["presetModel"] == "edge-tts"
+    assert create_command["data"]["presetVoice"] == "Serena"
 
 
 def test_freezone_get_workflow_skill_returns_json_when_registry_summarizes(monkeypatch):
@@ -249,13 +673,11 @@ def test_freezone_get_workflow_skill_returns_json_when_registry_summarizes(monke
     assert isinstance(decoded["available_recipes"], list)
 
 
-def test_freezone_get_workflow_skill_accepts_catalog_workflow_type(monkeypatch):
+def test_freezone_get_workflow_skill_accepts_native_skill_id(monkeypatch):
     plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
-    loaded = handlers["freezone_get_workflow_skill"](
-        {"skill_id": "catalog.video_ad"}
-    )
+    loaded = handlers["freezone_get_workflow_skill"]({"skill_id": "video-ad"})
 
     decoded = json.loads(loaded)
     assert decoded["ok"] is True
@@ -275,6 +697,9 @@ def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatc
     assert decoded["recipes"] == []
     assert decoded["recipe_definitions_omitted"] is True
     assert decoded["available_recipes"]
+    assert "workflow_templates" not in decoded["skill"]
+    assert decoded["planning_contract"]["mode"] == "dynamic_only"
+    assert decoded["planning_contract"]["fixed_templates_enabled"] is False
 
 
 def test_freezone_get_workflow_skill_records_structured_result_side_channel(monkeypatch, tmp_path):
@@ -965,10 +1390,6 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     finish_description = schemas["freezone_finish_agent_catalog_draft"]["description"]
     skill_schema = draft_schema["properties"]["skill"]
     recipe_item = draft_schema["properties"]["recipes"]["items"]
-    workflow_step_schema = skill_schema["properties"]["workflow_templates"]["items"]["properties"][
-        "steps"
-    ]["items"]
-    workflow_template_schema = skill_schema["properties"]["workflow_templates"]["items"]
     input_parameter_schema = skill_schema["properties"]["input_parameters"]["items"]
 
     assert "including Skill Studio setup questions" in clarification_description
@@ -1016,43 +1437,13 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "videoGeneration",
         "audioGeneration",
     ]
-    assert workflow_step_schema["properties"]["node_type"]["enum"] == [
-        "textGeneration",
-        "imageGeneration",
-        "videoGeneration",
-        "audioGeneration",
-        "videoCompose",
-    ]
+    assert "workflow_templates" not in skill_schema["properties"]
     assert "videoCompose" not in skill_schema["properties"]["triggers"]["properties"]["node_scopes"]["items"]["enum"]
-    assert "textAnnotationNode" not in workflow_step_schema["properties"]["node_type"]["enum"]
-    assert "imageGenNode" not in workflow_step_schema["properties"]["node_type"]["enum"]
-    assert "Do not use internal canvas node types" in workflow_step_schema["properties"][
-        "node_type"
-    ]["description"]
-    assert "videoCompose is a workflow terminal composer step" in workflow_step_schema["properties"][
-        "node_type"
-    ]["description"]
-    assert "Do not create a Recipe for videoCompose" in workflow_step_schema["properties"][
-        "node_type"
-    ]["description"]
-    assert "For videoCompose steps, action_key is a workflow label, not a Recipe reference" in workflow_step_schema[
-        "properties"
-    ]["action_key"]["description"]
-    assert "aspect_ratio" in workflow_step_schema["properties"]
-    assert "imageGeneration/videoGeneration" in workflow_step_schema["properties"]["aspect_ratio"][
-        "description"
-    ]
-    assert "previous_step" in workflow_step_schema["properties"]["input_strategy"]["description"]
-    assert "step_id" in workflow_step_schema["properties"]["input_strategy"]["description"]
-    assert "source/steps" in workflow_step_schema["properties"]["input_strategy"]["description"]
-    assert "message_keywords" in workflow_template_schema["properties"]["condition"]["description"]
-    assert "Avoid description-only conditions" in workflow_template_schema["properties"][
-        "condition"
-    ]["description"]
     assert skill_schema["properties"]["planning"]["required"] == [
         "planning_notes",
         "prompt_guide",
         "conduct_rules",
+        "default_aspect_ratios",
     ]
     assert "executable path summary" in skill_schema["properties"]["planning"]["properties"][
         "planning_notes"
@@ -1061,7 +1452,19 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "conduct_rules"
     ]["description"]
     assert "model_preferences" not in skill_schema["properties"]["planning"]["properties"]
-    assert "default_aspect_ratios" not in skill_schema["properties"]["planning"]["properties"]
+    aspect_schema_description = skill_schema["properties"]["planning"]["properties"][
+        "default_aspect_ratios"
+    ]["description"]
+    aspect_schema = skill_schema["properties"]["planning"]["properties"]["default_aspect_ratios"]
+    assert "imageGeneration" in aspect_schema_description
+    assert "videoGeneration" in aspect_schema_description
+    assert "16:9" in aspect_schema_description
+    assert "5:4" in aspect_schema_description
+    assert "Do not use auto" in aspect_schema_description
+    assert aspect_schema["additionalProperties"] is False
+    assert set(aspect_schema["properties"]) == {"imageGeneration", "videoGeneration"}
+    assert "textGeneration" not in aspect_schema["properties"]
+    assert "auto" not in aspect_schema["properties"]["imageGeneration"]["enum"]
     assert skill_schema["properties"]["evaluation"]["required"] == [
         "rating_bands",
         "quality_threshold",
@@ -1113,7 +1516,7 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     assert "Do not mention downstream execution" in result_summary_description
 
 
-def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
+def test_freezone_get_workflow_skill_includes_current_user_agent_config(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setenv("DRAMACLAW_USER", "alice")
 
@@ -1127,19 +1530,14 @@ def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
                     "description": "用户导入的水果广告工作流",
                     "_catalog_source": "user",
                     "triggers": {"keywords": ["水果广告"]},
-                    "workflowTemplates": [
+                    "workflow_templates": [
                         {
-                            "id": "fruit-ad-full",
-                            "name": "水果广告完整流程",
-                            "condition": {"messageKeywords": ["水果", "广告"]},
+                            "id": "fruit-ad",
                             "steps": [
                                 {
-                                    "id": "creative",
-                                    "stepNumber": 1,
-                                    "operationType": "custom-fruit-outline",
-                                    "goalTemplate": "生成水果广告创意",
-                                    "promptStrategy": "llm_refine",
-                                    "inputStrategy": {"type": "none"},
+                                    "id": "outline",
+                                    "node_type": "textGeneration",
+                                    "action_key": "custom-fruit-outline",
                                 }
                             ],
                         }
@@ -1160,207 +1558,11 @@ def test_freezone_catalog_includes_current_user_agent_config(monkeypatch):
 
     monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
 
-    resolved = catalog.resolve_catalog_workflow({"user_goal": "创建一个水果广告工作流"})
-    assert resolved["matched"] is True
-    assert resolved["recommended"]["workflow_type"] == "catalog.custom_fruit_ad.fruit_ad_full"
+    package = catalog.get_workflow_skill({"skill_id": "custom-fruit-ad"})
 
-    plan = catalog.build_catalog_workflow_plan(
-        {
-            "workflow_type": "catalog.custom_fruit_ad.fruit_ad_full",
-            "user_goal": "创建一个水果广告工作流",
-        }
-    )
-    assert plan["ok"] is True
-    assert plan["nodes"][1]["data"]["workflowCatalog"]["promptBuilder"]["recipeRef"] == (
-        "output/{user}/_account/freezone/agent_config/recipes/custom-fruit-outline.json"
-    )
-
-
-def test_freezone_catalog_workflow_maps_video_compose_step_to_compose_node(monkeypatch):
-    catalog = _load_catalog_module()
-
-    def fake_list_user_agent_config_items(_username, kind):
-        if kind == "skills":
-            return [
-                {
-                    "id": "brand-video",
-                    "name": "品牌视频",
-                    "_catalog_source": "user",
-                    "triggers": {"keywords": ["品牌视频"]},
-                    "workflow_templates": [
-                        {
-                            "id": "full",
-                            "name": "完整流程",
-                            "condition": {"message_keywords": ["品牌视频"]},
-                            "steps": [
-                                {
-                                    "id": "clip",
-                                    "step_number": 1,
-                                    "action_key": "video-clip",
-                                    "goal_template": "生成视频片段",
-                                    "node_type": "videoGeneration",
-                                    "input_strategy": {"type": "user_message"},
-                                },
-                                {
-                                    "id": "compose",
-                                    "step_number": 2,
-                                    "action_key": "final-compose",
-                                    "goal_template": "合成最终短片",
-                                    "node_type": "videoCompose",
-                                    "input_strategy": {
-                                        "type": "previous_step",
-                                        "step_id": "clip",
-                                    },
-                                },
-                            ],
-                        }
-                    ],
-                }
-            ]
-        if kind == "recipes":
-            return [
-                {
-                    "id": "video-clip",
-                    "name": "视频片段",
-                    "_catalog_source": "user",
-                    "generationType": "video",
-                    "system_prompt": "输出一条提示词/指令。",
-                }
-            ]
-        raise AssertionError(kind)
-
-    monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
-
-    plan = catalog.build_catalog_workflow_plan(
-        {
-            "workflow_type": "catalog.brand_video.full",
-            "user_goal": "创建品牌视频",
-        }
-    )
-
-    assert plan["ok"] is True
-    compose_node = next(node for node in plan["nodes"] if node["id"] == "compose")
-    assert compose_node["node_type"] == "videoComposeNode"
-    assert compose_node["stage"] == "compose"
-    assert "打开视频合成时间线" in compose_node["data"]["content"]
-    assert "生成最终提示词" not in compose_node["data"]["content"]
-
-
-def test_catalog_fixed_count_expands_nodes_and_pairs_equal_sized_steps():
-    catalog = _load_catalog_module()
-
-    plan = catalog.build_catalog_workflow_plan(
-        {
-            "workflow_type": "catalog.video_ad.video_ad_full",
-            "user_goal": "生成 3 个广告镜头",
-            "count": 3,
-        }
-    )
-
-    assert plan["ok"] is True
-    assert plan["expansion_rules"]["step_counts"]["storyboard-upscaled-images"] == 3
-    assert plan["expansion_rules"]["step_counts"]["video-clips"] == 3
-    clip_edges = [
-        edge
-        for edge in plan["edges"]
-        if edge["target"].startswith("video-clips_")
-    ]
-    assert clip_edges == [
-        {"source": "storyboard-upscaled-images_1", "target": "video-clips_1"},
-        {"source": "storyboard-upscaled-images_2", "target": "video-clips_2"},
-        {"source": "storyboard-upscaled-images_3", "target": "video-clips_3"},
-    ]
-
-
-def test_catalog_plan_items_expand_without_agent_authored_graph():
-    catalog = _load_catalog_module()
-
-    plan = catalog.build_catalog_workflow_plan(
-        {
-            "workflow_type": "catalog.ecommerce_product.ecommerce_scene_images",
-            "user_goal": "为咖啡机生成场景图",
-            "items": [
-                {"step_id": "scene-images", "title": "厨房晨光", "prompt": "现代厨房晨光"},
-                {"step_id": "scene-images", "title": "办公桌面", "prompt": "极简办公室"},
-            ],
-        }
-    )
-
-    assert plan["ok"] is True
-    scene_nodes = [node for node in plan["nodes"] if node["id"].startswith("scene-images_")]
-    assert [node["label"] for node in scene_nodes] == ["厨房晨光", "办公桌面"]
-    assert all("workflowCatalog" in node["data"] for node in scene_nodes)
-    assert [node["data"]["workflowCatalog"]["planItem"]["prompt"] for node in scene_nodes] == [
-        "现代厨房晨光",
-        "极简办公室",
-    ]
-
-
-def test_catalog_downstream_fixed_count_inherits_planned_upstream_items():
-    catalog = _load_catalog_module()
-
-    plan = catalog.build_catalog_workflow_plan(
-        {
-            "workflow_type": "catalog.video_ad.video_ad_full",
-            "user_goal": "制作品牌广告",
-            "items": [
-                {"step_id": "storyboard-upscaled-images", "prompt": f"镜头 {index}"}
-                for index in range(1, 4)
-            ],
-        }
-    )
-
-    assert plan["expansion_rules"]["step_counts"]["storyboard-upscaled-images"] == 3
-    assert plan["expansion_rules"]["step_counts"]["video-clips"] == 3
-
-
-def test_catalog_code_fallback_matches_core_builtin_workflow_shapes(monkeypatch):
-    catalog = _load_catalog_module()
-    monkeypatch.setattr(catalog, "_load_json_dir", lambda _path: [])
-    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
-
-    skill = catalog.get_workflow_skill({"skill_id": "ecommerce-product", "compact": True})
-    assert skill["ok"] is True
-    assert skill["available_recipes"]
-
-    video_plan = catalog.build_catalog_workflow_plan(
-        {
-            "workflow_type": "catalog.video_ad.video_ad_full",
-            "user_goal": "生成 3 个广告镜头",
-            "count": 3,
-        }
-    )
-    assert video_plan["ok"] is True
-    assert video_plan["expansion_rules"]["step_counts"]["storyboard-upscaled-images"] == 3
-    assert video_plan["expansion_rules"]["step_counts"]["video-clips"] == 3
-
-    scene_plan = catalog.build_catalog_workflow_plan(
-        {
-            "workflow_type": "catalog.ecommerce_product.ecommerce_scene_images",
-            "user_goal": "为咖啡机生成场景图",
-            "items": [
-                {"step_id": "scene-images", "title": "厨房晨光", "prompt": "现代厨房晨光"},
-                {"step_id": "scene-images", "title": "办公桌面", "prompt": "极简办公室"},
-            ],
-        }
-    )
-    assert scene_plan["ok"] is True
-    scene_nodes = [
-        node for node in scene_plan["nodes"] if node["id"].startswith("scene-images_")
-    ]
-    assert [node["label"] for node in scene_nodes] == ["厨房晨光", "办公桌面"]
-
-
-def test_freezone_list_workflows_exposes_catalog_source_type(monkeypatch):
-    plugin = _load_plugin_module()
-    monkeypatch.setenv("DRAMACLAW_USER", "local")
-    monkeypatch.setenv("ST_EDITION", "ce")
-
-    result = plugin._handle_list_workflows({})
-    by_type = {item["workflow_type"]: item for item in result["workflows"]}
-
-    assert by_type["catalog.text_to_image.text_to_image"]["type"] == "内置"
-    assert by_type["catalog.text_to_image.text_to_image"]["catalog_source"] == "builtin"
+    assert package["ok"] is True
+    assert package["skill_id"] == "custom-fruit-ad"
+    assert package["source"] == "user"
 
 
 def test_freezone_catalog_username_uses_local_for_ce(monkeypatch):
@@ -1380,144 +1582,6 @@ def test_freezone_catalog_username_uses_login_user_for_supertale(monkeypatch):
     monkeypatch.setenv("USER", "tao")
 
     assert catalog._catalog_username() == "dengyuxuan"
-
-
-def test_freezone_catalog_requires_user_selection_for_multiple_matched_skills(monkeypatch):
-    catalog = _load_catalog_module()
-
-    def fake_list_user_agent_config_items(_username, kind):
-        if kind != "skills":
-            return []
-        return [
-            {
-                "id": "fruit-ad",
-                "name": "水果广告",
-                "triggers": {"keywords": ["广告"]},
-                "workflowTemplates": [
-                    {
-                        "id": "detail",
-                        "condition": {"messageKeywords": ["水果"]},
-                        "steps": [],
-                    }
-                ],
-            },
-            {
-                "id": "digital-ad",
-                "name": "数码广告",
-                "triggers": {"keywords": ["广告"]},
-                "workflowTemplates": [
-                    {
-                        "id": "detail",
-                        "condition": {"messageKeywords": ["详情页"]},
-                        "steps": [],
-                    }
-                ],
-            },
-        ]
-
-    monkeypatch.setattr(catalog, "list_user_agent_config_items", fake_list_user_agent_config_items)
-
-    resolved = catalog.resolve_catalog_workflow({"user_goal": "创建一个水果广告详情页"})
-
-    assert resolved["matched"] is True
-    assert resolved["ambiguous"] is True
-    assert resolved["matched_skill_count"] == 2
-    assert resolved["next_step"]["requires_user_selection"] is True
-    assert "tool" not in resolved["next_step"]
-    assert set(resolved["next_step"]["candidate_workflow_types"]) == {
-        "catalog.fruit_ad.detail",
-        "catalog.digital_ad.detail",
-    }
-
-
-def test_freezone_catalog_resolver_exact_alias_skips_ambiguous_scoring():
-    catalog = _load_catalog_module()
-
-    resolved = catalog.resolve_catalog_workflow({"workflow_type": "text_to_video"})
-
-    assert resolved["matched"] is True
-    assert resolved["ambiguous"] is False
-    assert resolved["recommended"]["workflow_type"] == "catalog.text_to_video.text_to_video"
-    assert resolved["recommended"]["score"] == 99.0
-    assert resolved["next_step"]["tool"] == "freezone_build_workflow_plan"
-
-
-def test_freezone_plugin_resolves_catalog_workflow_without_canvas_write():
-    plugin = _load_plugin_module()
-
-    result = plugin._handle_resolve_catalog_workflow(
-        {"user_goal": "我有一个女总裁复仇短剧创意，想按 skills recipes 配置生成工作流"}
-    )
-
-    assert result["ok"] is True
-    assert result["matched"] is True
-    assert result["recommended"]["workflow_type"].startswith("catalog.short_drama")
-    assert result["ambiguous"] is True
-    assert result["matched_skill_count"] > 1
-    assert result["next_step"]["requires_user_selection"] is True
-    assert "tool" not in result["next_step"]
-
-
-def test_freezone_catalog_recipe_fields_are_separated_from_node_prompt():
-    plugin = _load_plugin_module()
-
-    plan = plugin.build_workflow_plan(
-        {
-            "workflow_type": "catalog.video_ad.video_ad_full",
-            "user_goal": "创建一个电商产品广告视频工作流",
-        }
-    )
-
-    assert plan["ok"] is True
-    node = next(
-        item
-        for item in plan["nodes"]
-        if item["data"].get("workflowCatalog", {}).get("operationType")
-        == "video-ad-creative-outline"
-    )
-    data = node["data"]
-    catalog = data["workflowCatalog"]
-
-    assert "【Recipe Prompt】" not in data["prompt"]
-    assert "【建议模型】" not in data["prompt"]
-    assert "【输入依赖】" not in data["prompt"]
-    assert "【用户需求】" not in data["prompt"]
-    assert "【规划提示】" not in data["prompt"]
-    assert "【期望输出】" not in data["prompt"]
-    assert "创建一个电商产品广告视频工作流" not in data["prompt"]
-    assert data["prompt"].startswith("待生成内容：生成广告创意大纲")
-    assert "workflowCatalog.promptBuilder" in data["prompt"]
-    assert catalog["recipeSettings"]["outputKind"] == "text"
-    assert catalog["recipeSettings"]["requiresSourceMedia"] is True
-    assert catalog["promptBuilder"]["recipeId"] == "video-ad-creative-outline"
-    assert catalog["promptBuilder"]["isPromptRecipe"] is True
-    assert (
-        catalog["promptBuilder"]["recipeRef"]
-        == "agent_catalog/builtins/recipes/video-ad-creative-outline.json"
-    )
-    assert set(catalog["promptBuilder"]) == {
-        "mode",
-        "userGoal",
-        "goalTemplate",
-        "inputStrategy",
-        "recipeId",
-        "recipeName",
-        "recipeRef",
-        "isPromptRecipe",
-    }
-
-    image_node = next(
-        item
-        for item in plan["nodes"]
-        if item["data"].get("workflowCatalog", {}).get("operationType")
-        == "video-storyboard-grid"
-    )
-    assert "创建一个电商产品广告视频工作流" not in image_node["data"]["prompt"]
-    assert "待生成图片" not in image_node["data"]["prompt"]
-    assert "workflowCatalog.promptBuilder" not in image_node["data"]["prompt"]
-    assert "提示词页" in image_node["data"]["prompt"]
-    assert "画面中不要出现任何文字" in image_node["data"]["prompt"]
-    assert "将广告脚本中的所有 Shot 合成为多宫格分镜图" in image_node["data"]["prompt"]
 
 
 def test_freezone_canvas_command_slim_result_omits_large_details():
@@ -1694,78 +1758,66 @@ def test_freezone_single_write_commands_request_slim_result(monkeypatch):
     assert captured["kwargs"]["slim_result"] is True
 
 
-def test_freezone_plugin_routes_registered_workflows_through_builder():
+def test_freezone_delete_nodes_can_clear_canvas_without_agent_listing_ids(monkeypatch):
     plugin = _load_plugin_module()
+    captured: dict[str, object] = {}
 
-    built = plugin.build_workflow_graph_commands({"workflow_type": "ad_video"})
-
-    assert built["ok"] is True
-    assert any(command["type"] == "create_node" for command in built["commands"])
-    assert any(command["type"] == "group_nodes" for command in built["commands"])
-
-    manual_result = plugin._handle_emit_canvas_command(
-        {
-            "commands": [
-                {
-                    "type": "create_node",
-                    "node_type": "textAnnotationNode",
-                    "data": {"displayName": "广告视频工作流"},
-                },
-                {"type": "create_node", "node_type": "imageGenNode"},
-                {"type": "create_node", "node_type": "videoNode"},
-            ]
-        }
+    monkeypatch.setattr(
+        plugin,
+        "_resolve_canvas_scope_for_write",
+        lambda project, canvas: ("project-a", "canvas-a", None),
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_request",
+        lambda method, path, **kwargs: {
+            "ok": True,
+            "data": {"nodes": [{"id": "node-a"}, {"id": "node-b"}]},
+        },
     )
 
-    assert manual_result["ok"] is False
-    assert manual_result["status"] == "wrong_tool_registered_workflow"
-
-
-def test_freezone_workflow_graph_normalizes_legacy_catalog_model_ids():
-    plugin = _load_plugin_module()
-
-    built = plugin.build_workflow_graph_commands({"workflow_type": "catalog.video_ad"})
-
-    assert built["ok"] is True
-    create_nodes = [
-        command
-        for command in built["commands"]
-        if command.get("type") == "create_node" and isinstance(command.get("data"), dict)
-    ]
-    models = [command["data"].get("model") for command in create_nodes]
-    assert "nano-banana-2" not in models
-    assert "omni-flash" not in models
-    assert "newapi_nanobanana2" in models
-    assert "newapi_seedance-2.0-fast" in models
-
-
-def test_freezone_legacy_workflow_types_route_to_json_catalog():
-    plugin = _load_plugin_module()
-
-    expected = {
-        "text_to_image": "catalog.text_to_image.text_to_image",
-        "image_to_video": "catalog.image_to_video.image_to_video",
-        "text_to_video": "catalog.text_to_video.text_to_video",
-        "image_to_text": "catalog.image_to_text.image_to_text",
-        "text_to_audio": "catalog.text_to_audio.text_to_audio",
-        "product_video": "catalog.product_video.product_video",
-        "mv": "catalog.music_video.music_video",
-        "short_drama": "catalog.short_drama.short_drama_from_script",
-        "ad_video": "catalog.video_ad.video_ad_full",
-    }
-
-    for workflow_type, expected_type in expected.items():
-        plan = plugin.build_workflow_plan(
+    def fake_emit_canvas_commands(project, canvas, commands, **kwargs):
+        captured.update(
             {
-                "workflow_type": workflow_type,
-                "user_goal": "测试工作流",
+                "project": project,
+                "canvas": canvas,
+                "commands": commands,
+                "kwargs": kwargs,
             }
         )
+        return {"ok": True}
 
-        assert plan["ok"] is True
-        assert plan["workflow_type"] == expected_type
-        assert plan["nodes"]
-        assert plan["edges"]
+    monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit_canvas_commands)
+
+    result = plugin._handle_delete_nodes({"scope": "canvas"})
+
+    assert result == {"ok": True}
+    assert captured == {
+        "project": "project-a",
+        "canvas": "canvas-a",
+        "commands": [{"type": "delete_nodes", "node_ids": ["node-a", "node-b"]}],
+        "kwargs": {"slim_result": True},
+    }
+
+
+def test_freezone_delete_nodes_clear_canvas_is_idempotent(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setattr(
+        plugin,
+        "_resolve_canvas_scope_for_write",
+        lambda project, canvas: ("project-a", "canvas-a", None),
+    )
+    monkeypatch.setattr(
+        plugin,
+        "_request",
+        lambda method, path, **kwargs: {"ok": True, "data": {"nodes": []}},
+    )
+
+    result = plugin._handle_delete_nodes({"scope": "canvas"})
+
+    assert result["ok"] is True
+    assert result["canvas_apply_status"] == "already_empty"
+    assert result["deleted_node_count"] == 0
 
 
 def test_freezone_plugin_create_node_schema_hides_internal_node_types():
@@ -1978,7 +2030,7 @@ def test_freezone_plugin_mainline_projection_assets_normalizes_people_to_charact
 def test_freezone_plugin_registers_with_hermes_acp_toolset():
     plugin = _load_plugin_module()
 
-    assert plugin.REGISTER_TOOLSETS == ("freezone-acp",)
+    assert plugin.REGISTER_TOOLSETS == ("hermes-acp",)
 
 
 def test_freezone_plugin_register_call_exposes_node_tools_on_hermes_acp():
@@ -1992,6 +2044,6 @@ def test_freezone_plugin_register_call_exposes_node_tools_on_hermes_acp():
     plugin.register(FakeContext())
 
     by_name = {call["name"]: call for call in calls}
-    assert by_name["freezone_create_node"]["toolset"] == "freezone-acp"
-    assert by_name["freezone_emit_canvas_command"]["toolset"] == "freezone-acp"
+    assert by_name["freezone_create_node"]["toolset"] == "hermes-acp"
+    assert by_name["freezone_emit_canvas_command"]["toolset"] == "hermes-acp"
     assert len(calls) == len(plugin.TOOLS)

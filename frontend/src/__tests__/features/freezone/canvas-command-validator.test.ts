@@ -74,6 +74,35 @@ describe("canvas command validator", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("accepts human review updates for a newly created video workflow node", () => {
+    const envelope: CanvasChatCommandEnvelope = {
+      schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+      commands: [
+        {
+          type: "create_node",
+          client_id: "video-a",
+          node_type: CANVAS_NODE_TYPES.video,
+          data: { genMode: "imageToVideo" },
+        },
+        {
+          type: "update_node_data",
+          node_id: "video-a",
+          data: { humanReview: true },
+        },
+        {
+          type: "run_workflow",
+          node_ids: ["video-a"],
+          scope: "selection",
+        },
+      ],
+    };
+
+    const result = validateCanvasChatCommandEnvelopes([envelope], [], []);
+
+    expect(result.ok).toBe(true);
+    expect(result.issues).toEqual([]);
+  });
+
   it("accepts unreferenced new nodes without client ids", () => {
     const source = node({
       id: "source-image",
