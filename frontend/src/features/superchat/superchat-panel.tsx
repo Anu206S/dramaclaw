@@ -27,6 +27,7 @@ import {
   RefreshCw,
   Search,
   ShieldAlert,
+  SlidersHorizontal,
   Wrench,
   X,
   Volume2,
@@ -75,6 +76,7 @@ import { resolveMediaUrl } from "@/lib/media-url";
 import { api } from "@/lib/api";
 import { backendErrorToastMessage, jsonWithBackendError } from "@/lib/api-errors";
 import { p } from "@/lib/api-path";
+import { validateFreezoneAgentConfigPayload } from "@/lib/freezone-agent-config-schema";
 import {
   SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT,
   useSuperChat,
@@ -82,6 +84,7 @@ import {
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
+import { CommunitySkillDialog } from "@/components/settings/freezone-skill-recipe-settings";
 import { calculateTimelineContextDelta } from "@/features/superchat/timeline-scroll";
 import { useEventBus } from "@/task-center/event-bus-context";
 import {
@@ -185,6 +188,9 @@ import {
   freezoneAgentConfigQueryKey,
   type FreezoneAgentConfigKind,
   type FreezoneAgentConfigPayload,
+  type FreezoneCommunityCatalogItem,
+  useFreezoneCommunityCatalog,
+  useInstallFreezoneCommunityBundle,
 } from "@/lib/queries/freezone-agent-config";
 
 type SpecMediaDetailSection = {
@@ -3301,6 +3307,15 @@ function isRealSkillStudioProgressStatus(event: unknown): boolean {
   return skillStudioStatusPriority(event) >= 2;
 }
 
+function isTransientSkillStudioStatus(event: unknown): boolean {
+  return Boolean(
+    event
+    && typeof event === "object"
+    && !Array.isArray(event)
+    && (event as Record<string, unknown>).type === "skill_studio.status",
+  );
+}
+
 function filterStaleSkillStudioStatus(events: SkillStudioUiEvent[]): SkillStudioUiEvent[] {
   return events.filter((event) => event.type !== "skill_studio.status" || isRealSkillStudioProgressStatus(event));
 }
@@ -3391,7 +3406,7 @@ function visibleSkillStudioEventsForMessage(message: ChatMessage): SkillStudioUi
     !(event.type === "skill_studio.questions" && event.submitted !== true),
   );
   if (message.text.trim()) {
-    return visibleEvents.filter((event) => event.type !== "skill_studio.status");
+    return visibleEvents.filter((event) => !isTransientSkillStudioStatus(event));
   }
   const hasClarificationCard = assistantClarificationEventsFromUiEvents(messageUiEvents(message)).length > 0;
   if (hasClarificationCard) return filterStaleSkillStudioStatus(visibleEvents);
@@ -3408,20 +3423,109 @@ export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEvent
 function visibleAssistantOrderedPartsForMessage(message: ChatMessage): ChatMessagePart[] {
   if (!message.parts?.some((part) => part.type !== "text")) return [];
   const parts = hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? [];
-  if (!message.text.trim()) return parts;
-  return parts.filter((part) => {
+  const visibleParts = !message.text.trim() ? parts : parts.filter((part) => {
     if (part.type !== "skill_studio") return true;
     const event = part.event;
-    return !(
-      event
-      && typeof event === "object"
-      && !Array.isArray(event)
-      && (event as Record<string, unknown>).type === "skill_studio.status"
-    );
+    return !isTransientSkillStudioStatus(event);
   });
+  return reorderAssistantInteractionParts(visibleParts, message.text);
 }
 
 export const visibleAssistantOrderedPartsForMessageForTest = visibleAssistantOrderedPartsForMessage;
+
+function reorderAssistantInteractionParts(parts: ChatMessagePart[], text: string): ChatMessagePart[] {
+  if (!text.trim()) return parts;
+  const interactionParts = parts.filter((part) => part.type === "skill_studio" || part.type === "clarification");
+  const textParts = parts.filter((part) => part.type === "text");
+  if (interactionParts.length === 0 || textParts.length === 0) return parts;
+  const skillStudioParts = interactionParts.filter((part): part is ChatMessagePart & { type: "skill_studio" } =>
+    part.type === "skill_studio",
+  );
+  const clarificationParts = interactionParts.filter((part): part is ChatMessagePart & { type: "clarification" } =>
+    part.type === "clarification",
+  );
+  const flowItems = buildCanvasCommandFlowItems(
+    text,
+    [],
+    [],
+    [],
+    skillStudioParts.map((part) => {
+      const event = part.event as SkillStudioUiEvent;
+      return event.type === "skill_studio.draft"
+        ? { ...event, anchor_text_prefix: text }
+        : event;
+    }),
+    clarificationParts.map((part) => part.event as AssistantClarificationUiEvent),
+  );
+  if (flowItems.length === 0) return parts;
+  const remainingSkillParts = [...skillStudioParts];
+  const remainingClarificationParts = [...clarificationParts];
+  const reorderedContentParts: ChatMessagePart[] = [];
+  let textIndex = 0;
+
+  const appendFlowItem = (item: CanvasCommandFlowItem): void => {
+    if (item.kind === "text") {
+      reorderedContentParts.push({
+        id: `anchored-text-${textIndex}`,
+        type: "text",
+        text: item.text,
+      });
+      textIndex += 1;
+      return;
+    }
+    if (item.kind === "skill_studio") {
+      const itemKey = uiEventStableKey(item.event);
+      const partIndex = remainingSkillParts.findIndex((part) =>
+        part.event === item.event || (itemKey && uiEventStableKey(part.event) === itemKey),
+      );
+      const [part] = partIndex >= 0 ? remainingSkillParts.splice(partIndex, 1) : [];
+      if (part) reorderedContentParts.push(part);
+      return;
+    }
+    if (item.kind === "clarification") {
+      const partIndex = remainingClarificationParts.findIndex((part) => part.event === item.event);
+      const [part] = partIndex >= 0 ? remainingClarificationParts.splice(partIndex, 1) : [];
+      if (part) reorderedContentParts.push(part);
+    }
+  };
+
+  const contentIds = new Set([...interactionParts, ...textParts].map((part) => part.id));
+  const output: ChatMessagePart[] = [];
+  let flowCursor = 0;
+  const flushThroughInteractionPart = (part: ChatMessagePart): void => {
+    const key = part.type === "text" ? null : uiEventStableKey(part.event);
+    while (flowCursor < flowItems.length) {
+      const item = flowItems[flowCursor];
+      flowCursor += 1;
+      appendFlowItem(item);
+      if (
+        key
+        && (item.kind === "skill_studio" || item.kind === "clarification")
+        && uiEventStableKey(item.event) === key
+      ) {
+        break;
+      }
+    }
+  };
+
+  for (const part of parts) {
+    if (part.type === "text") continue;
+    if (contentIds.has(part.id)) {
+      flushThroughInteractionPart(part);
+      while (reorderedContentParts.length > 0) {
+        const nextPart = reorderedContentParts.shift();
+        if (nextPart) output.push(nextPart);
+      }
+      continue;
+    }
+    output.push(part);
+  }
+  while (flowCursor < flowItems.length) {
+    appendFlowItem(flowItems[flowCursor]);
+    flowCursor += 1;
+  }
+  return [...output, ...reorderedContentParts];
+}
 
 function uiEventsAfterLatestSkillStudioDraft(events: unknown[] | undefined): unknown[] | undefined {
   if (!events?.length) return events;
@@ -3631,6 +3735,7 @@ const skillStudioDraftFieldLabels = {
     category: "Category",
     description: "Description",
     keywords: "触发关键词",
+    inputParameters: "开始前选项",
     node_scopes: "节点类型",
     metaPlanningHints: "规划器提示词",
     promptStyleGuide: "风格指引",
@@ -3876,6 +3981,32 @@ function listText(value: unknown): string {
   return "";
 }
 
+function skillStudioInputParameterTypeLabel(value: unknown): string {
+  switch (value) {
+    case "single_select":
+      return "单选";
+    case "multi_select":
+      return "多选";
+    case "number":
+      return "数字";
+    case "boolean":
+      return "开关";
+    case "text":
+      return "文本";
+    default:
+      return textField(value) || "参数";
+  }
+}
+
+function skillStudioInputParameterValueLabel(value: unknown): string {
+  if (value === true) return "true";
+  if (value === false) return "false";
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  if (typeof value === "string") return value.trim();
+  if (Array.isArray(value)) return value.map((item) => String(item ?? "").trim()).filter(Boolean).join("、");
+  return "";
+}
+
 function stringListField(...values: unknown[]): string[] {
   for (const value of values) {
     if (Array.isArray(value)) return cleanStringArray(value);
@@ -4001,55 +4132,6 @@ function numberOrRawText(value: string): number | string {
   return Number.isFinite(parsed) ? parsed : value;
 }
 
-function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): FreezoneAgentConfigPayload {
-  const triggers = getRecord(skill.triggers);
-  const planning = getRecord(skill.planning);
-  const evaluation = getRecord(skill.evaluation);
-  const visual = getRecord(evaluation.visual);
-  const text = getRecord(evaluation.text);
-  const workflowTemplates = normalizedSkillStudioWorkflowTemplates(
-    skill.workflow_templates ?? skill.workflowTemplates,
-  );
-  const payload: FreezoneAgentConfigPayload = {
-    id: textField(skill.id),
-    enabled: skill.enabled !== false,
-    description: textField(skill.description),
-    category: firstNonEmptyText(skill.category, "general"),
-    triggers: {
-      keywords: cleanStringArray(triggers.keywords),
-      node_scopes: cleanStringArray(
-        triggers.node_scopes ?? triggers.nodeTypes ?? triggers.node_types,
-      ),
-    },
-    planning: {
-      planning_notes: firstNonEmptyText(planning.planning_notes, planning.metaPlanningHints),
-      prompt_guide: firstNonEmptyText(planning.prompt_guide, planning.promptStyleGuide),
-      conduct_rules: cleanStringArray(planning.conduct_rules ?? planning.behaviorRules),
-      default_aspect_ratios: normalizedSkillStudioDefaultAspectRatios(
-        planning.default_aspect_ratios ?? planning.defaultAspectRatios,
-      ),
-    },
-    evaluation: {
-      rating_bands: getRecordArray(evaluation.rating_bands ?? evaluation.scoreAnchors).map((item) => ({
-        score: optionalFiniteNumber(item.score) ?? 0,
-        description: textField(item.description),
-      })),
-      quality_threshold: optionalFiniteNumber(evaluation.quality_threshold ?? evaluation.passingScore),
-      domain_constraints: cleanStringArray(evaluation.domain_constraints ?? evaluation.domainRules),
-      visual_review_items: getRecordArray(
-        evaluation.visual_review_items ?? visual.dimensions,
-      ).map(normalizedSkillStudioReviewItem),
-      text_review_items: getRecordArray(
-        evaluation.text_review_items ?? text.dimensions,
-      ).map(normalizedSkillStudioReviewItem),
-    },
-  };
-  if (workflowTemplates.length > 0) {
-    payload.workflow_templates = workflowTemplates;
-  }
-  return payload;
-}
-
 const SKILL_STUDIO_IMAGE_ASPECT_RATIOS = new Set([
   "1:1",
   "9:16",
@@ -4086,42 +4168,64 @@ function normalizedSkillStudioDefaultAspectRatios(value: unknown): Record<string
   return next;
 }
 
+function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): FreezoneAgentConfigPayload {
+  const triggers = getRecord(skill.triggers);
+  const planning = getRecord(skill.planning);
+  const evaluation = getRecord(skill.evaluation);
+  const visual = getRecord(evaluation.visual);
+  const text = getRecord(evaluation.text);
+  const payload: FreezoneAgentConfigPayload = {
+    id: textField(skill.id),
+    name: firstNonEmptyText(skill.name, skill.id),
+    schema_version: firstNonEmptyText(skill.schema_version, skill.schemaVersion, "dramaclaw.workflow-skill.v1"),
+    version: skill.version ?? "1.0.0",
+    enabled: skill.enabled !== false,
+    description: textField(skill.description),
+    category: firstNonEmptyText(skill.category, "general"),
+    triggers: {
+      keywords: cleanStringArray(triggers.keywords),
+      node_scopes: cleanStringArray(
+        triggers.node_scopes ?? triggers.nodeTypes ?? triggers.node_types,
+      ),
+    },
+    allowed_recipe_ids: cleanStringArray(
+      skill.allowed_recipe_ids ?? skill.allowedRecipeIds,
+    ),
+    input_parameters: getRecordArray(
+      skill.input_parameters ?? skill.inputParameters,
+    ),
+    planning: {
+      planning_notes: firstNonEmptyText(planning.planning_notes, planning.metaPlanningHints),
+      prompt_guide: firstNonEmptyText(planning.prompt_guide, planning.promptStyleGuide),
+      conduct_rules: cleanStringArray(planning.conduct_rules ?? planning.behaviorRules),
+      default_aspect_ratios: normalizedSkillStudioDefaultAspectRatios(
+        planning.default_aspect_ratios ?? planning.defaultAspectRatios,
+      ),
+    },
+    evaluation: {
+      rating_bands: getRecordArray(evaluation.rating_bands ?? evaluation.scoreAnchors).map((item) => ({
+        score: optionalFiniteNumber(item.score) ?? 0,
+        description: textField(item.description),
+      })),
+      quality_threshold: optionalFiniteNumber(evaluation.quality_threshold ?? evaluation.passingScore),
+      domain_constraints: cleanStringArray(evaluation.domain_constraints ?? evaluation.domainRules),
+      visual_review_items: getRecordArray(
+        evaluation.visual_review_items ?? visual.dimensions,
+      ).map(normalizedSkillStudioReviewItem),
+      text_review_items: getRecordArray(
+        evaluation.text_review_items ?? text.dimensions,
+      ).map(normalizedSkillStudioReviewItem),
+    },
+  };
+  return payload;
+}
+
 function normalizedSkillStudioReviewItem(item: Record<string, unknown>) {
   return {
     name: textField(item.name),
     weight: optionalFiniteNumber(item.weight) ?? 1,
     description: textField(item.description),
   };
-}
-
-function normalizedSkillStudioWorkflowTemplates(value: unknown): Array<Record<string, unknown>> {
-  return getRecordArray(value).map((template) => {
-    const steps = getRecordArray(template.steps);
-    return {
-      ...template,
-      steps: steps.map((step) => ({
-        ...step,
-        node_type: normalizedSkillStudioWorkflowNodeType(step.node_type),
-      })),
-    };
-  });
-}
-
-function normalizedSkillStudioWorkflowNodeType(value: unknown): string {
-  const nodeType = textField(value);
-  if (
-    nodeType === "textGeneration" ||
-    nodeType === "imageGeneration" ||
-    nodeType === "videoGeneration" ||
-    nodeType === "audioGeneration"
-  ) {
-    return nodeType;
-  }
-  if (nodeType === "textAnnotationNode" || nodeType === "scriptNode") return "textGeneration";
-  if (nodeType === "imageGenNode" || nodeType === "storyboardGenNode") return "imageGeneration";
-  if (nodeType === "videoNode") return "videoGeneration";
-  if (nodeType === "audioNode") return "audioGeneration";
-  return nodeType;
 }
 
 function normalizedSkillStudioRecipePayload(recipe: Record<string, unknown>): FreezoneAgentConfigPayload {
@@ -4274,28 +4378,9 @@ function SkillStudioListField({
 }
 
 function assertSkillStudioCatalogPayload(kind: FreezoneAgentConfigKind, payload: FreezoneAgentConfigPayload) {
-  if (kind === "skills") {
-    const triggers = getRecord(payload.triggers);
-    if (
-      !textField(payload.id)
-      || !textField(payload.category)
-      || !textField(payload.description)
-      || cleanStringArray(triggers.keywords).length === 0
-    ) {
-      throw new Error("invalid skill catalog payload");
-    }
-    return;
-  }
-  if (
-    !textField(payload.id)
-    || !textField(payload.name)
-    || !isSkillStudioRecipeOutputKind(payload.output_kind)
-    || cleanStringArray(payload.action_keys).length === 0
-    || !textField(payload.system_prompt)
-    || !textField(payload.planning_prompt)
-    || !textField(payload.result_summary)
-  ) {
-    throw new Error("invalid recipe catalog payload");
+  const result = validateFreezoneAgentConfigPayload(kind, payload);
+  if (!result.ok) {
+    throw new Error(result.message);
   }
 }
 
@@ -4661,16 +4746,68 @@ function draftPayloadFromEvent(event: Extract<SkillStudioUiEvent, { type: "skill
   };
 }
 
+function normalizeSkillStudioDraftForCatalog(draft: Record<string, unknown>): Record<string, unknown> {
+  const skill = draft.skill && typeof draft.skill === "object" && !Array.isArray(draft.skill)
+    ? { ...(draft.skill as Record<string, unknown>) }
+    : {};
+  const inputParameters = Array.isArray(skill.input_parameters)
+    ? skill.input_parameters
+    : Array.isArray(skill.inputParameters)
+      ? skill.inputParameters
+      : null;
+  if (inputParameters) {
+    skill.input_parameters = inputParameters.flatMap((parameter) => {
+      if (!parameter || typeof parameter !== "object" || Array.isArray(parameter)) return [];
+      const source = parameter as Record<string, unknown>;
+      const normalized: Record<string, unknown> = {};
+      for (const key of ["id", "label", "type", "required", "default"] as const) {
+        if (source[key] !== undefined) normalized[key] = source[key];
+      }
+      const options = Array.isArray(source.options)
+        ? source.options.map((option) => String(option ?? "").trim()).filter(Boolean)
+        : [];
+      if (options.length > 0) {
+        normalized.options = options;
+      }
+      if (
+        normalized.type === "single_select" &&
+        typeof normalized.default === "string" &&
+        options.length > 0 &&
+        !options.includes(normalized.default)
+      ) {
+        const defaultValue = normalized.default.trim();
+        const matchingOption = options.find((option) =>
+          option === defaultValue ||
+          option.startsWith(`${defaultValue} `) ||
+          option.startsWith(`${defaultValue}　`),
+        );
+        if (matchingOption) {
+          normalized.default = matchingOption;
+        }
+      }
+      return [normalized];
+    });
+    delete skill.inputParameters;
+  }
+  return {
+    ...draft,
+    skill,
+  };
+}
+
+export const normalizeSkillStudioDraftForCatalogForTest = normalizeSkillStudioDraftForCatalog;
+
 export function buildSkillStudioDraftToolResultForTest(
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
   draft: Record<string, unknown>,
 ) {
-  const skill = draft.skill && typeof draft.skill === "object" && !Array.isArray(draft.skill)
-    ? draft.skill as Record<string, unknown>
+  const normalizedDraft = normalizeSkillStudioDraftForCatalog(draft);
+  const skill = normalizedDraft.skill && typeof normalizedDraft.skill === "object" && !Array.isArray(normalizedDraft.skill)
+    ? normalizedDraft.skill as Record<string, unknown>
     : {};
-  const recipes = Array.isArray(draft.recipes) ? draft.recipes : [];
-  const summary = typeof draft.summary === "string" ? draft.summary : event.summary || "";
-  const warnings = Array.isArray(draft.warnings) ? draft.warnings : [];
+  const recipes = Array.isArray(normalizedDraft.recipes) ? normalizedDraft.recipes : [];
+  const summary = typeof normalizedDraft.summary === "string" ? normalizedDraft.summary : event.summary || "";
+  const warnings = Array.isArray(normalizedDraft.warnings) ? normalizedDraft.warnings : [];
   const savedSkillIds = textField(skill.id) ? [textField(skill.id)] : [];
   const savedRecipeIds = recipes
     .map((recipe) => textField((recipe as Record<string, unknown>).id))
@@ -4697,6 +4834,15 @@ export function buildSkillStudioDraftToolResultForTest(
       "该 Skill / Recipe 已写入虾画配置，可立即使用。请不要再要求用户保存为正式能力。",
     ].filter(Boolean).join("\n"),
   };
+}
+
+interface SkillStudioToolResultResponse {
+  ok?: boolean;
+  saved_to_catalog?: boolean;
+  saved_skill_ids?: string[];
+  saved_recipe_ids?: string[];
+  errors?: string[];
+  message?: string;
 }
 
 export function buildSkillStudioDraftCancelToolResultForTest(
@@ -5461,7 +5607,7 @@ function SkillStudioDraftCard({
   const planning = getRecord(skill.planning);
   const evaluation = getRecord(skill.evaluation);
   const evaluationFields = skillStudioEvaluationDraftFields(evaluation);
-  const workflowTemplates = getRecordArray(skill.workflow_templates ?? skill.workflowTemplates);
+  const inputParameters = getRecordArray(skill.input_parameters ?? skill.inputParameters);
   const syncDraftObject = useCallback((updater: (current: Record<string, unknown>) => Record<string, unknown>) => {
     setDraftObject((current) => {
       const next = updater(current);
@@ -5670,49 +5816,62 @@ function SkillStudioDraftCard({
 	          </div>
 	        </details>
 
-        {workflowTemplates.length > 0 && (
+        {inputParameters.length > 0 && (
           <details className="group border-t border-white/[0.07]">
             <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
               <span className="flex min-w-0 items-center gap-2 text-foreground/85">
                 <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
-                <ListTree className="size-3.5 shrink-0 text-muted-foreground" />
-                <span>工作流模板</span>
+                <SlidersHorizontal className="size-3.5 shrink-0 text-muted-foreground" />
+                <span>{skillStudioDraftFieldLabels.skill.inputParameters}</span>
               </span>
               <span className="rounded-full border border-cyan-300/20 bg-cyan-300/[0.08] px-2 py-0.5 text-[10px] text-cyan-100/80">
-                {workflowTemplates.length} 个模板
+                {inputParameters.length} 个选项
               </span>
             </summary>
             <div className="space-y-2 border-t border-white/[0.06] px-3 pb-3 pt-2">
-              {workflowTemplates.map((template, templateIndex) => {
-                const steps = getRecordArray(template.steps);
+              {inputParameters.map((parameter, parameterIndex) => {
+                const parameterId = textField(parameter.id);
+                const label = textField(parameter.label) || parameterId || `选项 ${parameterIndex + 1}`;
+                const options = cleanStringArray(parameter.options);
+                const defaultValue = skillStudioInputParameterValueLabel(parameter.default);
                 return (
-                  <div key={textField(template.id) || templateIndex} className="rounded-lg border border-white/[0.07] bg-black/15 p-2">
-                    <div className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-xs font-medium text-foreground/90">
-                        {textField(template.name) || textField(template.id) || `模板 ${templateIndex + 1}`}
-                      </span>
-                      <span className="shrink-0 rounded-full bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
-                        {steps.length} 步
-                      </span>
+                  <div key={parameterId || parameterIndex} className="rounded-lg border border-white/[0.07] bg-black/15 px-2.5 py-2">
+                    <div className="flex min-w-0 items-start justify-between gap-3">
+                      <div className="min-w-0">
+                        <div className="truncate text-xs font-medium text-foreground/90">{label}</div>
+                        {parameterId && (
+                          <div className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{parameterId}</div>
+                        )}
+                      </div>
+                      <div className="flex shrink-0 flex-wrap justify-end gap-1">
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {skillStudioInputParameterTypeLabel(parameter.type)}
+                        </span>
+                        {defaultValue && (
+                          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            默认 {defaultValue}
+                          </span>
+                        )}
+                        {options.length > 0 && (
+                          <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {options.length} 个选项
+                          </span>
+                        )}
+                        {parameter.required === true && (
+                          <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] text-cyan-200">
+                            必填
+                          </span>
+                        )}
+                      </div>
                     </div>
-                    {textField(template.description) && (
-                      <p className="mt-1 whitespace-pre-wrap break-words text-[11px] leading-4 text-muted-foreground">
-                        {textField(template.description)}
-                      </p>
-                    )}
-                    {steps.length > 0 && (
-                      <ol className="mt-2 space-y-1">
-                        {steps.map((step, stepIndex) => (
-                          <li key={textField(step.id) || stepIndex} className="flex min-w-0 gap-2 text-[11px] text-muted-foreground">
-                            <span className="shrink-0 tabular-nums text-foreground/60">
-                              {Number(step.step_number) || stepIndex + 1}.
-                            </span>
-                            <span className="min-w-0 flex-1 whitespace-pre-wrap break-words leading-4">
-                              {textField(step.goal_template) || textField(step.action_key) || textField(step.node_type) || "未命名步骤"}
-                            </span>
-                          </li>
+                    {options.length > 0 && (
+                      <div className="mt-2 flex flex-wrap gap-1">
+                        {options.map((option) => (
+                          <span key={option} className="rounded-md bg-white/[0.055] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                            {option}
+                          </span>
                         ))}
-                      </ol>
+                      </div>
                     )}
                   </div>
                 );
@@ -5720,6 +5879,7 @@ function SkillStudioDraftCard({
             </div>
           </details>
         )}
+
 
         <details className="group border-t border-white/[0.07]">
           <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
@@ -10018,6 +10178,7 @@ export function SuperChatPanel({
   const params = useParams({ strict: false }) as { project?: string };
   const queryClient = useQueryClient();
   const username = useAuthStore((s) => s.username);
+  const isFreezoneLayout = variant === "freezone";
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
@@ -10044,6 +10205,9 @@ export function SuperChatPanel({
   const [freezoneSkillCatalog, setFreezoneSkillCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
   const [freezoneSkillCatalogLoaded, setFreezoneSkillCatalogLoaded] = useState(false);
   const [freezoneSkillMenuExplicitOpen, setFreezoneSkillMenuExplicitOpen] = useState(false);
+  const [freezoneSkillCreateMenuOpen, setFreezoneSkillCreateMenuOpen] = useState(false);
+  const [freezoneCommunitySkillDialogOpen, setFreezoneCommunitySkillDialogOpen] = useState(false);
+  const [freezoneSkillDialogMode, setFreezoneSkillDialogMode] = useState<"community" | "mine">("community");
   const [freezoneSkillMenuSearch, setFreezoneSkillMenuSearch] = useState("");
   const [freezoneSkillMenuPosition, setFreezoneSkillMenuPosition] = useState<{
     left: number;
@@ -10054,6 +10218,10 @@ export function SuperChatPanel({
   const [nodeSuggestionVisibleCount, setNodeSuggestionVisibleCount] = useState(FREEZONE_NODE_SUGGESTION_PAGE);
   const freezoneSkillSuggestionRefs = useRef<Array<HTMLButtonElement | null>>([]);
   const freezoneSkillMenuButtonRef = useRef<HTMLButtonElement | null>(null);
+  const freezoneCommunityCatalogQuery = useFreezoneCommunityCatalog(
+    isFreezoneLayout && freezoneCommunitySkillDialogOpen && freezoneSkillDialogMode === "community",
+  );
+  const installFreezoneCommunityBundle = useInstallFreezoneCommunityBundle();
   const fileInputRef = useRef<HTMLInputElement | null>(null);
   const draftInputRef = useRef<HTMLElement | null>(null);
   const restoreDraftFocusRef = useRef(false);
@@ -10110,7 +10278,6 @@ export function SuperChatPanel({
     });
   }, [chat.busy, chat.connected, chat.connecting, onConnectionStateChange]);
 
-  const isFreezoneLayout = variant === "freezone";
   const setDraftInputElement = useCallback((element: HTMLElement | null) => {
     draftInputRef.current = element;
   }, []);
@@ -10146,6 +10313,7 @@ export function SuperChatPanel({
   const insertFreezoneSkillSuggestion = useCallback((skillId: string) => {
     setDraft((current) => insertFreezoneSkillMention(current, skillId));
     setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillCreateMenuOpen(false);
     setFreezoneSkillMenuSearch("");
     setActiveFreezoneSkillSuggestionIndex(0);
     restoreDraftFocusRef.current = true;
@@ -10153,10 +10321,40 @@ export function SuperChatPanel({
   const insertFreezoneSkillEmptyAction = useCallback((prompt: string) => {
     setDraft((current) => insertFreezoneSkillEmptyActionPrompt(current, prompt));
     setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillCreateMenuOpen(false);
     setFreezoneSkillMenuSearch("");
     setActiveFreezoneSkillSuggestionIndex(0);
     restoreDraftFocusRef.current = true;
   }, []);
+  const openFreezoneCommunitySkillDialog = useCallback(() => {
+    setFreezoneSkillMenuExplicitOpen(false);
+    setFreezoneSkillCreateMenuOpen(false);
+    setFreezoneSkillDialogMode("community");
+    setFreezoneCommunitySkillDialogOpen(true);
+  }, []);
+  const selectFreezoneSkillFromDialog = useCallback((skillId: string) => {
+    insertFreezoneSkillSuggestion(skillId);
+    setFreezoneCommunitySkillDialogOpen(false);
+  }, [insertFreezoneSkillSuggestion]);
+  const reloadFreezoneSkillCatalog = useCallback(() => {
+    setFreezoneSkillCatalogLoaded(false);
+  }, []);
+  const installFreezoneCommunitySkill = useCallback(async (item: FreezoneCommunityCatalogItem) => {
+    try {
+      const result = await installFreezoneCommunityBundle.mutateAsync({ bundleUrl: item.bundle_url });
+      toast.success(
+        `已安装 ${result.installed_skill}${result.installed_recipes.length > 0 ? `，包含 ${result.installed_recipes.length} 个 Recipes` : ""}`,
+      );
+      void queryClient.invalidateQueries({ queryKey: freezoneAgentConfigQueryKey("skills") });
+      void queryClient.invalidateQueries({ queryKey: freezoneAgentConfigQueryKey("recipes") });
+      const skills = await apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills");
+      setFreezoneSkillCatalog(skills);
+      setFreezoneSkillCatalogLoaded(true);
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`安装 Skill 失败${message}`);
+    }
+  }, [installFreezoneCommunityBundle, queryClient]);
 
   const nodeAtQuery = isFreezoneLayout ? getFreezoneNodeAtQuery(draft) : null;
   const showNodeSuggestions = isFreezoneLayout && nodeAtQuery !== null;
@@ -10187,7 +10385,12 @@ export function SuperChatPanel({
     if (
       !isFreezoneLayout
       || freezoneSkillCatalogLoaded
-      || (freezoneSkillSlashQuery === null && !freezoneSkillMentionCandidate && !freezoneSkillMenuExplicitOpen)
+      || (
+        freezoneSkillSlashQuery === null
+        && !freezoneSkillMentionCandidate
+        && !freezoneSkillMenuExplicitOpen
+        && !freezoneCommunitySkillDialogOpen
+      )
     ) return;
     let cancelled = false;
     void apiCall<FreezoneAgentConfigPayload[]>("freezone/hermes-workflow-skills")
@@ -10209,6 +10412,7 @@ export function SuperChatPanel({
   }, [
     freezoneSkillCatalogLoaded,
     freezoneSkillMentionCandidate,
+    freezoneCommunitySkillDialogOpen,
     freezoneSkillMenuExplicitOpen,
     freezoneSkillSlashQuery,
     isFreezoneLayout,
@@ -10251,6 +10455,7 @@ export function SuperChatPanel({
   useLayoutEffect(() => {
     if (!freezoneSkillMenuExplicitOpen) {
       setFreezoneSkillMenuPosition(null);
+      setFreezoneSkillCreateMenuOpen(false);
       return;
     }
     const updatePosition = () => {
@@ -12244,10 +12449,17 @@ export function SuperChatPanel({
     }
     try {
       const payload = buildSkillStudioDraftToolResultForTest(event, draftPayload);
-      if (!chat.submitSkillStudioResult(payload)) {
-        toast.error("Skill Studio 连接未就绪，请重试");
+      const result = await apiCall<SkillStudioToolResultResponse>("chat/skill-studio-tool-result", {
+        method: "POST",
+        json: payload,
+      });
+      if (!result.ok || !result.saved_to_catalog) {
+        const errorText = result.errors?.find(Boolean) || result.message || "后端没有确认保存成功";
+        toast.error(`添加 Skill / Recipe 失败：${errorText}`);
         return false;
       }
+      payload.saved_skill_ids = result.saved_skill_ids ?? payload.saved_skill_ids;
+      payload.saved_recipe_ids = result.saved_recipe_ids ?? payload.saved_recipe_ids;
       const savedKinds = new Set<FreezoneAgentConfigKind>([
         ...(payload.saved_skill_ids.length > 0 ? ["skills" as const] : []),
         ...(payload.saved_recipe_ids.length > 0 ? ["recipes" as const] : []),
@@ -12307,7 +12519,7 @@ export function SuperChatPanel({
       toast.error("添加 Skill / Recipe 失败，请检查必填字段后重试");
       return false;
     }
-  }, [chat, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
+  }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
 
   const handleSkillStudioDraftChange = useCallback((
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
@@ -13181,6 +13393,7 @@ export function SuperChatPanel({
                             setSelectedHistoryMessageIndex(null);
                             if (!freezoneSkillMenuExplicitOpen) {
                               setFreezoneSkillMenuSearch("");
+                              setFreezoneSkillCreateMenuOpen(false);
                             }
                             setFreezoneSkillMenuExplicitOpen((open) => !open);
                             setActiveFreezoneSkillSuggestionIndex(0);
@@ -13282,15 +13495,64 @@ export function SuperChatPanel({
             <div className="text-sm font-semibold leading-6 text-foreground/95">
               Skill
             </div>
-            <button
-              type="button"
-              className="inline-flex h-7 items-center gap-1 rounded-full border border-white/[0.10] bg-white/[0.08] px-2.5 text-xs font-medium text-foreground/88 shadow-[0_8px_18px_rgba(0,0,0,0.28)] transition hover:border-white/[0.16] hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25"
-              onClick={() => insertFreezoneSkillEmptyAction("帮我创建一个 Skill：")}
-            >
-              <Plus className="size-3.5" />
-              创建
-              <ChevronDown className="size-3" />
-            </button>
+            <div className="flex items-center gap-1.5">
+              <div className="relative">
+                <button
+                  type="button"
+                  className={cn(
+                    "inline-flex h-7 items-center gap-1 rounded-full border border-white/[0.10] bg-white/[0.08] px-2.5 text-xs font-medium text-foreground/88 shadow-[0_8px_18px_rgba(0,0,0,0.28)] transition hover:border-white/[0.16] hover:bg-white/[0.12] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25",
+                    freezoneSkillCreateMenuOpen && "border-white/[0.18] bg-white/[0.12] text-foreground",
+                  )}
+                  onMouseDown={(event) => {
+                    event.preventDefault();
+                  }}
+                  onClick={() => setFreezoneSkillCreateMenuOpen((open) => !open)}
+                  aria-haspopup="menu"
+                  aria-expanded={freezoneSkillCreateMenuOpen}
+                >
+                  <Plus className="size-3.5" />
+                  创建
+                  <ChevronDown className={cn("size-3 transition", freezoneSkillCreateMenuOpen && "rotate-180")} />
+                </button>
+                {freezoneSkillCreateMenuOpen && (
+                  <div
+                    role="menu"
+                    className="absolute right-0 top-[calc(100%+8px)] z-10 w-[218px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#202126]/98 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+                  >
+                    {FREEZONE_SKILL_EMPTY_ACTIONS.map((action) => (
+                      <button
+                        key={action.id}
+                        type="button"
+                        role="menuitem"
+                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] leading-5 text-foreground/88 transition hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none"
+                        onMouseDown={(event) => {
+                          event.preventDefault();
+                        }}
+                        onClick={() => insertFreezoneSkillEmptyAction(action.prompt)}
+                      >
+                        {action.id === "summarize-canvas" ? (
+                          <ListTree className="size-4 shrink-0 text-muted-foreground/80" />
+                        ) : (
+                          <Plus className="size-4 shrink-0 text-muted-foreground/80" />
+                        )}
+                        <span>{action.label}</span>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button
+                type="button"
+                className="inline-flex h-7 items-center gap-0.5 rounded-full px-2 text-xs font-medium text-muted-foreground transition hover:bg-white/[0.07] hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-white/25"
+                onMouseDown={(event) => {
+                  event.preventDefault();
+                }}
+                onClick={openFreezoneCommunitySkillDialog}
+              >
+                更多
+                <ChevronRight className="size-3" />
+              </button>
+            </div>
           </div>
           <label className="relative mb-3 block">
             <Search className="pointer-events-none absolute left-2.5 top-1/2 size-3.5 -translate-y-1/2 text-white/35" />
@@ -13396,6 +13658,30 @@ export function SuperChatPanel({
           </div>
         </div>,
         document.body,
+      )}
+      {isFreezoneLayout && (
+        <CommunitySkillDialog
+          mode={freezoneSkillDialogMode}
+          open={freezoneCommunitySkillDialogOpen}
+          items={freezoneCommunityCatalogQuery.data?.items ?? []}
+          localItems={freezoneSkillSuggestions}
+          installedSkillIds={new Set(freezoneSkillSuggestions.map((skill) => skill.id))}
+          loading={freezoneSkillDialogMode === "mine" ? !freezoneSkillCatalogLoaded : freezoneCommunityCatalogQuery.isLoading}
+          error={freezoneSkillDialogMode === "community" && freezoneCommunityCatalogQuery.isError}
+          installing={installFreezoneCommunityBundle.isPending}
+          installingBundleUrl={installFreezoneCommunityBundle.variables?.bundleUrl}
+          onModeChange={setFreezoneSkillDialogMode}
+          onOpenChange={setFreezoneCommunitySkillDialogOpen}
+          onRetry={() => {
+            if (freezoneSkillDialogMode === "mine") {
+              reloadFreezoneSkillCatalog();
+            } else {
+              void freezoneCommunityCatalogQuery.refetch();
+            }
+          }}
+          onInstall={(item) => void installFreezoneCommunitySkill(item)}
+          onSelectLocalSkill={selectFreezoneSkillFromDialog}
+        />
       )}
       {isFreezoneLayout && canvasCommandModeMenuOpen && canvasCommandModeMenuPosition && createPortal(
         <div

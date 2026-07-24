@@ -9,6 +9,51 @@ import pytest
 from novelvideo.freezone import agent_config_store
 
 
+def _skill_payload(
+    item_id: str,
+    *,
+    description: str | None = None,
+    category: str = "general",
+    enabled: bool = True,
+) -> dict:
+    return {
+        "schema_version": "dramaclaw.workflow-skill.v1",
+        "id": item_id,
+        "name": item_id,
+        "version": "1.0.0",
+        "enabled": enabled,
+        "description": description or item_id,
+        "category": category,
+        "triggers": {"keywords": [item_id], "node_scopes": ["textGeneration"]},
+        "allowed_recipe_ids": ["test-recipe"],
+        "planning": {
+            "planning_notes": "根据用户目标动态规划。",
+            "prompt_guide": "",
+            "conduct_rules": ["仅创建本次计划需要的节点。"],
+        },
+        "evaluation": {
+            "rating_bands": [{"score": 10, "description": "结果完整可用"}],
+            "quality_threshold": 7,
+            "domain_constraints": ["遵循用户目标"],
+        },
+        "workflow_templates": [],
+    }
+
+
+def _recipe_payload(item_id: str, *, name: str | None = None) -> dict:
+    return {
+        "schema_version": "dramaclaw.recipe.v1",
+        "id": item_id,
+        "name": name or item_id,
+        "version": "1.0.0",
+        "output_kind": "text",
+        "action_keys": [item_id],
+        "system_prompt": "把输入转换成下游文本节点提示词。",
+        "planning_prompt": "根据用户目标生成文本提示词。",
+        "result_summary": "文本提示词。",
+    }
+
+
 @pytest.fixture(autouse=True)
 def isolated_project_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
@@ -31,11 +76,7 @@ def test_user_agent_config_items_are_account_scoped(
     saved = agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
-        payload={
-            "id": "story-skill",
-            "description": "故事类规则",
-            "category": "general",
-        },
+        payload=_skill_payload("story-skill", description="故事类规则"),
     )
 
     assert saved["id"] == "story-skill"
@@ -67,23 +108,14 @@ def test_agent_config_items_include_builtin_catalog_with_user_override(
     skill_root.mkdir(parents=True)
     (skill_root / "story-skill.json").write_text(
         json.dumps(
-            {
-                "id": "story-skill",
-                "description": "内置故事规则",
-                "category": "general",
-            },
+            _skill_payload("story-skill", description="内置故事规则"),
             ensure_ascii=False,
         ),
         encoding="utf-8",
     )
     (skill_root / "image-skill.json").write_text(
         json.dumps(
-            {
-                "id": "image-skill",
-                "description": "内置图像规则",
-                "category": "image",
-                "enabled": True,
-            },
+            _skill_payload("image-skill", description="内置图像规则", category="image"),
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -91,11 +123,11 @@ def test_agent_config_items_include_builtin_catalog_with_user_override(
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
-        payload={
-            "id": "story-skill",
-            "description": "用户故事规则",
-            "category": "custom",
-        },
+        payload=_skill_payload(
+            "story-skill",
+            description="用户故事规则",
+            category="custom",
+        ),
     )
 
     listed = agent_config_store.list_user_agent_config_items("alice", "skills")
@@ -120,15 +152,18 @@ def test_project_catalog_overrides_builtin_and_supports_array_files(
     (project_root / "skills").mkdir(parents=True)
     (project_root / "recipes").mkdir(parents=True)
     (builtin_root / "skills" / "video-skill.json").write_text(
-        json.dumps({"id": "video-skill", "name": "旧名称"}),
+        json.dumps(_skill_payload("video-skill", description="旧名称")),
         encoding="utf-8",
     )
     (project_root / "skills" / "video-skill.json").write_text(
-        json.dumps({"id": "video-skill", "name": "项目名称"}, ensure_ascii=False),
+        json.dumps(
+            {**_skill_payload("video-skill", description="项目名称"), "name": "项目名称"},
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
     (project_root / "recipes" / "bundle.json").write_text(
-        json.dumps([{"id": "recipe-a"}, {"id": "recipe-b"}]),
+        json.dumps([_recipe_payload("recipe-a"), _recipe_payload("recipe-b")]),
         encoding="utf-8",
     )
 
@@ -150,7 +185,7 @@ def test_agent_config_cache_invalidates_when_catalog_file_changes(
     skill_root.mkdir(parents=True)
     target = skill_root / "story-skill.json"
     target.write_text(
-        json.dumps({"id": "story-skill", "description": "第一版"}, ensure_ascii=False),
+        json.dumps(_skill_payload("story-skill", description="第一版"), ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -159,7 +194,7 @@ def test_agent_config_cache_invalidates_when_catalog_file_changes(
     first[0]["description"] = "调用方不应污染缓存"
 
     target.write_text(
-        json.dumps({"id": "story-skill", "description": "第二版更长"}, ensure_ascii=False),
+        json.dumps(_skill_payload("story-skill", description="第二版更长"), ensure_ascii=False),
         encoding="utf-8",
     )
 
@@ -177,7 +212,10 @@ def test_builtin_agent_config_item_can_be_hidden_by_user_overlay(
     skill_root = builtin_root / "skills"
     skill_root.mkdir(parents=True)
     (skill_root / "story-skill.json").write_text(
-        json.dumps({"id": "story-skill", "description": "内置故事规则"}, ensure_ascii=False),
+        json.dumps(
+            _skill_payload("story-skill", description="内置故事规则"),
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -215,12 +253,7 @@ def test_builtin_agent_config_item_merges_partial_user_overlay(
     skill_root.mkdir(parents=True)
     (skill_root / "story-skill.json").write_text(
         json.dumps(
-            {
-                "id": "story-skill",
-                "description": "内置故事规则",
-                "category": "general",
-                "enabled": True,
-            },
+            _skill_payload("story-skill", description="内置故事规则"),
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -228,21 +261,21 @@ def test_builtin_agent_config_item_merges_partial_user_overlay(
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
-        payload={"id": "story-skill", "enabled": False},
+        payload=_skill_payload(
+            "story-skill",
+            description="内置故事规则",
+            enabled=False,
+        ),
     )
 
     listed = agent_config_store.list_user_agent_config_items("alice", "skills")
 
     assert len(listed) == 1
-    assert listed[0] == {
-        "id": "story-skill",
-        "description": "内置故事规则",
-        "category": "general",
-        "enabled": False,
-        "_catalog_source": "user",
-        "_catalog_base_source": "builtin",
-        "_catalog_updated_at": listed[0]["_catalog_updated_at"],
-    }
+    assert listed[0]["id"] == "story-skill"
+    assert listed[0]["description"] == "内置故事规则"
+    assert listed[0]["enabled"] is False
+    assert listed[0]["_catalog_source"] == "user"
+    assert listed[0]["_catalog_base_source"] == "builtin"
 
 
 def test_agent_config_items_sort_user_then_customized_then_builtin_by_mtime(
@@ -256,29 +289,29 @@ def test_agent_config_items_sort_user_then_customized_then_builtin_by_mtime(
     skill_root.mkdir(parents=True)
     for item_id in ["builtin-a", "custom-a", "custom-b"]:
         (skill_root / f"{item_id}.json").write_text(
-            json.dumps({"id": item_id, "description": item_id}, ensure_ascii=False),
+            json.dumps(_skill_payload(item_id), ensure_ascii=False),
             encoding="utf-8",
         )
 
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
-        payload={"id": "custom-a", "description": "定制旧"},
+        payload=_skill_payload("custom-a", description="定制旧"),
     )
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
-        payload={"id": "user-old", "description": "用户旧"},
+        payload=_skill_payload("user-old", description="用户旧"),
     )
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
-        payload={"id": "custom-b", "description": "定制新"},
+        payload=_skill_payload("custom-b", description="定制新"),
     )
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
-        payload={"id": "user-new", "description": "用户新"},
+        payload=_skill_payload("user-new", description="用户新"),
     )
     user_root = agent_config_store.user_agent_config_dir("alice", "skills")
     mtimes = {
@@ -317,7 +350,10 @@ def test_invalid_builtin_catalog_files_are_ignored(
     (recipe_root / "bad.json").write_text('{"id": "../bad"}', encoding="utf-8")
     (recipe_root / "not-json.json").write_text("{", encoding="utf-8")
     (recipe_root / "valid-recipe.json").write_text(
-        json.dumps({"id": "valid-recipe", "name": "内置 Recipe"}, ensure_ascii=False),
+        json.dumps(
+            _recipe_payload("valid-recipe", name="内置 Recipe"),
+            ensure_ascii=False,
+        ),
         encoding="utf-8",
     )
 
@@ -351,7 +387,7 @@ def test_user_agent_config_item_can_be_deleted(
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="recipes",
-        payload={"id": "ad-recipe", "name": "广告 Recipe"},
+        payload=_recipe_payload("ad-recipe", name="广告 Recipe"),
     )
 
     deleted = agent_config_store.delete_user_agent_config_item(

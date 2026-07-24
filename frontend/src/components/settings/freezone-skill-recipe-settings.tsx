@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ChevronDown, Copy, Download, Pencil, Plus, Search, Trash2, Upload, X } from "lucide-react";
+import { ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -33,17 +33,30 @@ import {
 import { Textarea } from "@/components/ui/textarea";
 import {
   useDeleteFreezoneAgentConfigItem,
+  useExportFreezoneAgentBundle,
   useFreezoneAgentConfigItems,
+  useFreezoneCommunityCatalog,
+  useInstallFreezoneAgentBundle,
+  useInstallFreezoneCommunityBundle,
   useSaveFreezoneAgentConfigItem,
+  type FreezoneCommunityCatalogItem,
+  type FreezoneAgentBundlePayload,
   type FreezoneAgentConfigPayload,
 } from "@/lib/queries/freezone-agent-config";
-import { useFreezoneImageModels } from "@/features/canvas/hooks/useFreezoneImageModels";
-import { useFreezoneVideoModels } from "@/features/canvas/hooks/useFreezoneVideoModels";
-import type { ModelOption } from "@/features/canvas/ui/ProviderModelPicker";
+import { validateFreezoneAgentConfigPayload } from "@/lib/freezone-agent-config-schema";
 import { cn } from "@/lib/utils";
 
 type FreezoneCatalogKind = "skills" | "recipes";
 type RecipeGenerationType = "image" | "video" | "audio" | "text";
+type SkillInputParameterType = "single_select" | "multi_select" | "text" | "number" | "boolean";
+
+const SKILL_INPUT_PARAMETER_TYPES: SkillInputParameterType[] = [
+  "single_select",
+  "multi_select",
+  "text",
+  "number",
+  "boolean",
+];
 
 const NODE_SCOPE_OPTIONS = [
   "textGeneration",
@@ -59,45 +72,34 @@ const NODE_SCOPE_LABELS: Record<(typeof NODE_SCOPE_OPTIONS)[number], string> = {
   audioGeneration: "音频生成",
 };
 
-const MODEL_PREFERENCE_TASK_OPTIONS = ["imageGeneration", "videoGeneration"] as const;
-
-const MODEL_PREFERENCE_TASK_LABELS: Record<
-  (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number],
-  string
-> = {
-  imageGeneration: "图片生成",
-  videoGeneration: "视频生成",
-};
-
-const ASPECT_RATIO_OPTIONS_BY_TASK: Record<
-  (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number],
-  string[]
-> = {
-  imageGeneration: ["1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "4:5", "5:4", "21:9"],
-  videoGeneration: ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
-};
-
-const ASPECT_RATIO_OPTION_SETS: Record<
-  (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number],
-  Set<string>
-> = {
-  imageGeneration: new Set(ASPECT_RATIO_OPTIONS_BY_TASK.imageGeneration),
-  videoGeneration: new Set(ASPECT_RATIO_OPTIONS_BY_TASK.videoGeneration),
-};
-
 interface SkillDraft {
   id: string;
+  name: string;
+  schemaVersion: string;
+  version: string;
   category: string;
   description: string;
   keywords: string[];
   nodeScopes: string[];
+  allowedRecipeIds: string[];
+  inputParameters: SkillInputParameterDraft[];
+  defaultAspectRatios: Record<string, string>;
   planningNotes: string;
   promptGuide: string;
   conductRules: string[];
-  defaultAspectRatios: Record<string, string>;
-  modelPreferences: Record<string, string>;
   qualityThreshold: string;
   domainConstraints: string;
+}
+
+interface SkillInputParameterDraft {
+  id: number;
+  parameterId: string;
+  label: string;
+  type: SkillInputParameterType;
+  required: boolean;
+  defaultValue: string;
+  optionsText: string;
+  expanded: boolean;
 }
 
 interface RecipeDraft {
@@ -128,11 +130,15 @@ interface DimensionDraft {
 
 interface FreezoneSkillRecipeSettingsProps {
   kind: FreezoneCatalogKind;
+  onBackToSkills?: () => void;
+  onOpenRecipes?: () => void;
   open: boolean;
 }
 
 export function FreezoneSkillRecipeSettings({
   kind,
+  onBackToSkills,
+  onOpenRecipes,
 }: FreezoneSkillRecipeSettingsProps) {
   const { t } = useTranslation();
   const [query, setQuery] = useState("");
@@ -140,12 +146,24 @@ export function FreezoneSkillRecipeSettings({
   const [addingRecipe, setAddingRecipe] = useState(false);
   const [editingSkill, setEditingSkill] = useState<FreezoneAgentConfigPayload | null>(null);
   const [editingRecipe, setEditingRecipe] = useState<FreezoneAgentConfigPayload | null>(null);
+  const [skillDeleteCandidate, setSkillDeleteCandidate] = useState<{
+    item: ManagedCatalogItem;
+    recipes: ManagedCatalogItem[];
+  } | null>(null);
+  const [communityCatalogOpen, setCommunityCatalogOpen] = useState(false);
+  const [communityCatalogMode, setCommunityCatalogMode] = useState<"community" | "mine">("community");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
   const importInputRef = useRef<HTMLInputElement | null>(null);
+  const bundleImportInputRef = useRef<HTMLInputElement | null>(null);
   const catalogQuery = useFreezoneAgentConfigItems(kind);
+  const recipesCatalogQuery = useFreezoneAgentConfigItems("recipes");
+  const isSkills = kind === "skills";
+  const exportBundle = useExportFreezoneAgentBundle();
+  const installBundle = useInstallFreezoneAgentBundle();
+  const communityCatalogQuery = useFreezoneCommunityCatalog(isSkills && communityCatalogOpen);
+  const installCommunityBundle = useInstallFreezoneCommunityBundle();
   const saveCatalogItem = useSaveFreezoneAgentConfigItem();
   const deleteCatalogItem = useDeleteFreezoneAgentConfigItem();
-  const isSkills = kind === "skills";
   const catalogItems = useMemo(() => {
     const needle = query.trim().toLowerCase();
     const items = (catalogQuery.data ?? []).map((item) => toManagedCatalogItem(item, kind));
@@ -154,6 +172,23 @@ export function FreezoneSkillRecipeSettings({
       [item.id, item.title, item.description, ...item.tags].join(" ").toLowerCase().includes(needle),
     );
   }, [catalogQuery.data, query, kind]);
+  const recipeItems = useMemo(
+    () => (recipesCatalogQuery.data ?? []).map((item) => toManagedCatalogItem(item, "recipes")),
+    [recipesCatalogQuery.data],
+  );
+  const dialogLocalSkillItems = useMemo(
+    () =>
+      (catalogQuery.data ?? [])
+        .map((item) => toManagedCatalogItem(item, "skills"))
+        .filter((item) => item.enabled)
+        .map((item) => ({
+          id: item.id,
+          label: item.title,
+          category: item.tags[0],
+          description: item.description,
+        })),
+    [catalogQuery.data],
+  );
   const itemCount = catalogItems.length;
   const selectedItems = catalogItems.filter((item) => selectedIds.has(item.id));
   const selectedCount = selectedItems.length;
@@ -165,8 +200,9 @@ export function FreezoneSkillRecipeSettings({
 
   const saveItem = async (payload: FreezoneAgentConfigPayload) => {
     const cleanPayload = stripCatalogMetadata(payload);
-    if (!validateCatalogPayload(kind, cleanPayload)) {
-      toast.error(t("settings.freezoneCatalog.saveFailed"));
+    const validation = validateFreezoneAgentConfigPayload(kind, cleanPayload);
+    if (!validation.ok) {
+      toast.error(`${t("settings.freezoneCatalog.saveFailed")}：${validation.message}`);
       return;
     }
     try {
@@ -186,10 +222,7 @@ export function FreezoneSkillRecipeSettings({
 
   const toggleItemEnabled = async (item: ManagedCatalogItem, enabled: boolean) => {
     try {
-      const payload =
-        item.builtin && !item.customized
-          ? { id: item.id, enabled }
-          : { ...stripCatalogMetadata(item.payload), enabled };
+      const payload = { ...stripCatalogMetadata(item.payload), enabled };
       await saveCatalogItem.mutateAsync({
         kind,
         payload,
@@ -200,6 +233,12 @@ export function FreezoneSkillRecipeSettings({
   };
 
   const deleteItem = async (item: ManagedCatalogItem) => {
+    if (kind === "skills") {
+      const allowedRecipeIds = getSkillAllowedRecipeIds(item.payload);
+      const associatedRecipes = recipeItems.filter((recipe) => allowedRecipeIds.includes(recipe.id));
+      setSkillDeleteCandidate({ item, recipes: associatedRecipes });
+      return;
+    }
     try {
       await deleteCatalogItem.mutateAsync({ kind, id: item.id });
       setSelectedIds((current) => {
@@ -207,6 +246,30 @@ export function FreezoneSkillRecipeSettings({
         next.delete(item.id);
         return next;
       });
+      toast.success(t("settings.freezoneCatalog.deleted"));
+    } catch {
+      toast.error(t("settings.freezoneCatalog.deleteFailed"));
+    }
+  };
+
+  const deleteSkillCandidate = async (deleteRecipes: boolean) => {
+    if (!skillDeleteCandidate) return;
+    const { item, recipes } = skillDeleteCandidate;
+    try {
+      await deleteCatalogItem.mutateAsync({ kind: "skills", id: item.id });
+      if (deleteRecipes && recipes.length > 0) {
+        await Promise.all(
+          recipes.map((recipe) =>
+            deleteCatalogItem.mutateAsync({ kind: "recipes", id: recipe.id }),
+          ),
+        );
+      }
+      setSelectedIds((current) => {
+        const next = new Set(current);
+        next.delete(item.id);
+        return next;
+      });
+      setSkillDeleteCandidate(null);
       toast.success(t("settings.freezoneCatalog.deleted"));
     } catch {
       toast.error(t("settings.freezoneCatalog.deleteFailed"));
@@ -245,6 +308,33 @@ export function FreezoneSkillRecipeSettings({
     toast.success(t("settings.freezoneCatalog.exported"));
   };
 
+  const exportSelectedSkillBundle = async () => {
+    if (!isSkills) {
+      exportItems();
+      return;
+    }
+    if (selectedItems.length !== 1) {
+      toast.error(
+        selectedItems.length === 0
+          ? t("settings.freezoneCatalog.bundleExportSelectOne")
+          : t("settings.freezoneCatalog.bundleExportOnlyOne"),
+      );
+      return;
+    }
+    const item = selectedItems[0];
+    try {
+      const bundle = await exportBundle.mutateAsync({
+        skillId: item.id,
+        bundle: createSkillBundleExportMeta(item),
+      });
+      downloadJson(bundle, `${item.id}-bundle.json`);
+      toast.success(t("settings.freezoneCatalog.bundleExported"));
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.bundleExportFailed")}${message}`);
+    }
+  };
+
   const toggleAllSelected = (checked: boolean) => {
     setSelectedIds((current) => {
       const next = new Set(current);
@@ -280,8 +370,11 @@ export function FreezoneSkillRecipeSettings({
         if (!isPlainObject(payload)) throw new Error("invalid json");
         return payload as FreezoneAgentConfigPayload;
       });
-      if (!normalizedPayloads.every((payload) => validateCatalogPayload(kind, payload))) {
-        throw new Error("invalid catalog payload");
+      for (const payload of normalizedPayloads) {
+        const validation = validateFreezoneAgentConfigPayload(kind, payload);
+        if (!validation.ok) {
+          throw new Error(validation.message);
+        }
       }
       for (const payload of normalizedPayloads) {
         await saveCatalogItem.mutateAsync({
@@ -290,12 +383,52 @@ export function FreezoneSkillRecipeSettings({
         });
       }
       toast.success(t("settings.freezoneCatalog.imported"));
-    } catch {
-      toast.error(t("settings.freezoneCatalog.importFailed"));
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.importFailed")}${message}`);
     } finally {
       if (importInputRef.current) {
         importInputRef.current.value = "";
       }
+    }
+  };
+
+  const handleBundleImportFile = async (file: File | undefined) => {
+    if (!file) return;
+    try {
+      const parsed = JSON.parse(await file.text()) as unknown;
+      if (!isFreezoneBundlePayload(parsed)) {
+        throw new Error(t("settings.freezoneCatalog.bundleInvalidShape"));
+      }
+      const result = await installBundle.mutateAsync({ bundle: parsed });
+      toast.success(
+        t("settings.freezoneCatalog.bundleImported", {
+          recipeCount: result.installed_recipes.length,
+          skill: result.installed_skill,
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.bundleImportFailed")}${message}`);
+    } finally {
+      if (bundleImportInputRef.current) {
+        bundleImportInputRef.current.value = "";
+      }
+    }
+  };
+
+  const installCommunityCatalogItem = async (item: FreezoneCommunityCatalogItem) => {
+    try {
+      const result = await installCommunityBundle.mutateAsync({ bundleUrl: item.bundle_url });
+      toast.success(
+        t("settings.freezoneCatalog.community.installed", {
+          skill: result.installed_skill,
+          recipeCount: result.installed_recipes.length,
+        }),
+      );
+    } catch (error) {
+      const message = error instanceof Error && error.message ? `：${error.message}` : "";
+      toast.error(`${t("settings.freezoneCatalog.community.installFailed")}${message}`);
     }
   };
 
@@ -305,7 +438,7 @@ export function FreezoneSkillRecipeSettings({
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="font-heading text-sm font-medium text-foreground">
-              {t(isSkills ? "settings.tabs.freezoneSkills" : "settings.tabs.freezoneRecipes")}
+              {t(isSkills ? "settings.pages.freezoneSkills" : "settings.pages.freezoneRecipes")}
             </h3>
             <p className="mt-1.5 text-xs leading-relaxed text-muted-foreground">
               {t(
@@ -316,6 +449,42 @@ export function FreezoneSkillRecipeSettings({
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {isSkills ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-white/[0.08] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+                onClick={() => {
+                  setCommunityCatalogMode("community");
+                  setCommunityCatalogOpen(true);
+                }}
+              >
+                {t("settings.freezoneCatalog.community.open")}
+              </Button>
+            ) : null}
+            {isSkills && onOpenRecipes ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-white/[0.08] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+                onClick={onOpenRecipes}
+              >
+                {t("settings.freezoneCatalog.advancedManagement")}
+              </Button>
+            ) : null}
+            {!isSkills && onBackToSkills ? (
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                className="border-white/[0.08] bg-white/[0.02] text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+                onClick={onBackToSkills}
+              >
+                {t("settings.freezoneCatalog.backToSkills")}
+              </Button>
+            ) : null}
             <input
               ref={importInputRef}
               type="file"
@@ -326,14 +495,35 @@ export function FreezoneSkillRecipeSettings({
                 void handleImportFile(event.target.files?.[0]);
               }}
             />
+            <input
+              ref={bundleImportInputRef}
+              type="file"
+              accept=".json,application/json"
+              aria-label={t("settings.freezoneCatalog.importBundle")}
+              className="hidden"
+              onChange={(event) => {
+                void handleBundleImportFile(event.target.files?.[0]);
+              }}
+            />
             <Button
               type="button"
               variant="outline"
               size="sm"
-              onClick={() => importInputRef.current?.click()}
+              onClick={() => {
+                if (isSkills) {
+                  bundleImportInputRef.current?.click();
+                  return;
+                }
+                importInputRef.current?.click();
+              }}
+              disabled={installBundle.isPending}
             >
               <Download className="size-3.5" />
-              {t("settings.freezoneCatalog.import")}
+              {t(
+                isSkills
+                  ? "settings.freezoneCatalog.importBundle"
+                  : "settings.freezoneCatalog.import",
+              )}
             </Button>
             <Button
               type="button"
@@ -384,8 +574,13 @@ export function FreezoneSkillRecipeSettings({
           selectedCount={selectedCount}
           label={t("settings.freezoneCatalog.selectAll")}
           onDeleteSelected={() => void deleteSelectedItems()}
-          onExport={exportItems}
+          onExport={() => void exportSelectedSkillBundle()}
           onToggleAll={toggleAllSelected}
+          exportLabel={t(
+            isSkills
+              ? "settings.freezoneCatalog.exportBundle"
+              : "settings.freezoneCatalog.export",
+          )}
         />
         <CatalogList
           kind={kind}
@@ -427,6 +622,34 @@ export function FreezoneSkillRecipeSettings({
         }}
         onSave={saveItem}
         saving={saveCatalogItem.isPending}
+      />
+      <SkillDeleteDialog
+        candidate={skillDeleteCandidate}
+        deleting={deleteCatalogItem.isPending}
+        onCancel={() => setSkillDeleteCandidate(null)}
+        onConfirm={(deleteRecipes) => void deleteSkillCandidate(deleteRecipes)}
+      />
+      <CommunitySkillDialog
+        mode={communityCatalogMode}
+        open={communityCatalogOpen}
+        items={communityCatalogQuery.data?.items ?? []}
+        localItems={dialogLocalSkillItems}
+        installedSkillIds={new Set((catalogQuery.data ?? []).map((item) => getString(item.id)))}
+        loading={communityCatalogMode === "community" ? communityCatalogQuery.isLoading : catalogQuery.isLoading}
+        error={communityCatalogMode === "community" ? communityCatalogQuery.isError : catalogQuery.isError}
+        installingBundleUrl={installCommunityBundle.variables?.bundleUrl}
+        installing={installCommunityBundle.isPending}
+        onModeChange={setCommunityCatalogMode}
+        onOpenChange={setCommunityCatalogOpen}
+        onRetry={() => {
+          if (communityCatalogMode === "mine") {
+            void catalogQuery.refetch();
+          } else {
+            void communityCatalogQuery.refetch();
+          }
+        }}
+        onInstall={(item) => void installCommunityCatalogItem(item)}
+        onSelectLocalSkill={() => setCommunityCatalogOpen(false)}
       />
     </>
   );
@@ -679,15 +902,19 @@ function NewSkillEditor({
   const { t } = useTranslation();
   const [skillDraft, setSkillDraft] = useState<SkillDraft>({
     id: "",
+    name: "",
+    schemaVersion: "",
+    version: "",
     category: "general",
     description: "",
     keywords: [],
     nodeScopes: [],
+    allowedRecipeIds: [],
+    inputParameters: [],
+    defaultAspectRatios: {},
     planningNotes: "",
     promptGuide: "",
     conductRules: [],
-    defaultAspectRatios: {},
-    modelPreferences: {},
     qualityThreshold: "",
     domainConstraints: "",
   });
@@ -695,8 +922,6 @@ function NewSkillEditor({
   const [visualReviewItems, setVisualDimensions] = useState<DimensionDraft[]>([]);
   const [textReviewItems, setTextDimensions] = useState<DimensionDraft[]>([]);
   const [rawJsonOpen, setRawJsonOpen] = useState(false);
-  const imageModels = useFreezoneImageModels();
-  const videoModels = useFreezoneVideoModels();
 
   useEffect(() => {
     if (!open) return;
@@ -712,15 +937,19 @@ function NewSkillEditor({
     if (!nextOpen) {
       setSkillDraft({
         id: "",
+        name: "",
+        schemaVersion: "",
+        version: "",
         category: "general",
         description: "",
         keywords: [],
         nodeScopes: [],
+        allowedRecipeIds: [],
+        inputParameters: [],
+        defaultAspectRatios: {},
         planningNotes: "",
         promptGuide: "",
         conductRules: [],
-        defaultAspectRatios: {},
-        modelPreferences: {},
         qualityThreshold: "",
         domainConstraints: "",
       });
@@ -766,29 +995,40 @@ function NewSkillEditor({
       );
     };
 
+  const inputParameters = useMemo(
+    () => inputParametersPayloadFromDrafts(skillDraft.inputParameters),
+    [skillDraft.inputParameters],
+  );
   const rawSkillJson = useMemo(
     () => {
-      const workflowTemplates = getRecordArray(
-        initialPayload?.workflow_templates ?? initialPayload?.workflowTemplates,
-      ).map((template) => ({
-        ...template,
-        steps: getRecordArray(template.steps).map((step) => ({ ...step })),
-      }));
+      const basePayload = { ...(initialPayload ?? {}) };
+      delete basePayload.workflow_templates;
+      delete basePayload.workflowTemplates;
       return {
-        ...(initialPayload ?? {}),
+        ...basePayload,
         id: skillDraft.id,
+        name: skillDraft.name.trim() || skillDraft.id,
+        schema_version: skillDraft.schemaVersion || "dramaclaw.workflow-skill.v1",
+        version: skillDraft.version || "1.0.0",
         description: skillDraft.description,
         category: skillDraft.category || "general",
         triggers: {
           keywords: skillDraft.keywords,
           node_scopes: skillDraft.nodeScopes,
         },
+        ...(skillDraft.allowedRecipeIds.length > 0
+          ? { allowed_recipe_ids: skillDraft.allowedRecipeIds }
+          : {}),
+        ...(inputParameters.length > 0
+          ? { input_parameters: inputParameters }
+          : {}),
         planning: {
           planning_notes: skillDraft.planningNotes,
           prompt_guide: skillDraft.promptGuide,
           conduct_rules: skillDraft.conductRules,
-          default_aspect_ratios: skillDraft.defaultAspectRatios,
-          model_preferences: skillDraft.modelPreferences,
+          ...(Object.keys(skillDraft.defaultAspectRatios).length > 0
+            ? { default_aspect_ratios: skillDraft.defaultAspectRatios }
+            : {}),
         },
         evaluation: {
           rating_bands: ratingBands.map((anchor) => ({
@@ -808,10 +1048,9 @@ function NewSkillEditor({
           quality_threshold: parseOptionalNumericDraft(skillDraft.qualityThreshold),
           domain_constraints: splitDraftList(skillDraft.domainConstraints),
         },
-        ...(workflowTemplates.length > 0 ? { workflow_templates: workflowTemplates } : {}),
       };
     },
-    [initialPayload, ratingBands, skillDraft, textReviewItems, visualReviewItems],
+    [initialPayload, inputParameters, ratingBands, skillDraft, textReviewItems, visualReviewItems],
   );
   const rawSkillJsonText = useMemo(() => JSON.stringify(rawSkillJson, null, 2), [rawSkillJson]);
   const canSave = isValidSkillDraft(skillDraft) && !saving;
@@ -843,7 +1082,7 @@ function NewSkillEditor({
         </DialogHeader>
 
         <div className="min-h-0 overflow-y-auto px-6 py-5">
-          <div className="grid gap-3 md:grid-cols-3">
+          <div className="grid gap-3 md:grid-cols-4">
             <EditorField
               required
               label={t("settings.freezoneCatalog.newSkill.id")}
@@ -851,6 +1090,12 @@ function NewSkillEditor({
               value={skillDraft.id}
               onChange={(value) => updateSkillDraft({ id: value })}
               hint={t("settings.freezoneCatalog.newSkill.idHint")}
+            />
+            <EditorField
+              label={t("settings.freezoneCatalog.newSkill.name")}
+              placeholder={t("settings.freezoneCatalog.newSkill.namePlaceholder")}
+              value={skillDraft.name}
+              onChange={(value) => updateSkillDraft({ name: value })}
             />
             <EditorField
               required
@@ -867,6 +1112,81 @@ function NewSkillEditor({
               onChange={(value) => updateSkillDraft({ description: value })}
             />
           </div>
+
+          <EditorSection
+            title={t("settings.freezoneCatalog.newSkill.workflow2Title")}
+            description={t("settings.freezoneCatalog.newSkill.workflow2Description")}
+          >
+            <TagInputField
+              label={t("settings.freezoneCatalog.newSkill.allowedRecipeIds")}
+              placeholder={t("settings.freezoneCatalog.newSkill.allowedRecipeIdsPlaceholder")}
+              value={skillDraft.allowedRecipeIds}
+              onChange={(value) => updateSkillDraft({ allowedRecipeIds: value })}
+              hint={t("settings.freezoneCatalog.newSkill.allowedRecipeIdsHint")}
+            />
+            <InputParametersEditor
+              label={t("settings.freezoneCatalog.newSkill.inputParameters")}
+              hint={t("settings.freezoneCatalog.newSkill.inputParametersHint")}
+              emptyLabel={t("settings.freezoneCatalog.newSkill.inputParametersEmpty")}
+              parameters={skillDraft.inputParameters}
+              onAdd={() =>
+                updateSkillDraft({
+                  inputParameters: [
+                    ...skillDraft.inputParameters,
+                    createInputParameterDraft(skillDraft.inputParameters),
+                  ],
+                })
+              }
+              onChange={(id, patch) =>
+                updateSkillDraft({
+                  inputParameters: skillDraft.inputParameters.map((parameter) =>
+                    parameter.id === id ? { ...parameter, ...patch } : parameter,
+                  ),
+                })
+              }
+              onRemove={(id) =>
+                updateSkillDraft({
+                  inputParameters: skillDraft.inputParameters.filter((parameter) => parameter.id !== id),
+                })
+              }
+              addLabel={t("settings.freezoneCatalog.newSkill.addInputParameter")}
+              defaultLabel={t("settings.freezoneCatalog.newSkill.inputParameterDefault")}
+              defaultPlaceholder={t("settings.freezoneCatalog.newSkill.inputParameterDefaultPlaceholder")}
+              deleteLabel={t("settings.freezoneCatalog.newSkill.deleteInputParameter")}
+              idLabel={t("settings.freezoneCatalog.newSkill.inputParameterId")}
+              idPlaceholder={t("settings.freezoneCatalog.newSkill.inputParameterIdPlaceholder")}
+              parameterLabel={t("settings.freezoneCatalog.newSkill.inputParameterLabel")}
+              labelPlaceholder={t("settings.freezoneCatalog.newSkill.inputParameterLabelPlaceholder")}
+              optionsLabel={t("settings.freezoneCatalog.newSkill.inputParameterOptionList")}
+              optionsCountLabel={(count) =>
+                t("settings.freezoneCatalog.newSkill.inputParameterOptions", { count })}
+              optionValueLabel={t("settings.freezoneCatalog.newSkill.inputParameterOptionValue")}
+              optionValuePlaceholder={t("settings.freezoneCatalog.newSkill.inputParameterOptionValuePlaceholder")}
+              addOptionLabel={t("settings.freezoneCatalog.newSkill.addInputParameterOption")}
+              deleteOptionLabel={t("settings.freezoneCatalog.newSkill.deleteInputParameterOption")}
+              requiredLabel={t("settings.freezoneCatalog.newSkill.inputParameterRequired")}
+              typeFieldLabel={t("settings.freezoneCatalog.newSkill.inputParameterType")}
+              expandLabel={t("settings.freezoneCatalog.newSkill.expandInputParameter")}
+              collapseLabel={t("settings.freezoneCatalog.newSkill.collapseInputParameter")}
+              typeLabel={(type) =>
+                t(`settings.freezoneCatalog.newSkill.inputParameterTypes.${type}`, {
+                  defaultValue: type || "text",
+                })
+              }
+            />
+            <div className="flex flex-wrap gap-2 text-[10px] text-muted-foreground">
+              <span>
+                {t("settings.freezoneCatalog.newSkill.schemaVersion")}
+                {": "}
+                {skillDraft.schemaVersion || "dramaclaw.workflow-skill.v1"}
+              </span>
+              <span>
+                {t("settings.freezoneCatalog.newSkill.version")}
+                {": "}
+                {skillDraft.version || "1.0.0"}
+              </span>
+            </div>
+          </EditorSection>
 
           <EditorSection
             title={t("settings.freezoneCatalog.newSkill.triggerTitle")}
@@ -909,20 +1229,6 @@ function NewSkillEditor({
               placeholder={t("settings.freezoneCatalog.newSkill.conductRulesPlaceholder")}
               value={skillDraft.conductRules}
               onChange={(value) => updateSkillDraft({ conductRules: value })}
-            />
-            <AspectRatioField
-              label={t("settings.freezoneCatalog.newSkill.aspectPresets")}
-              value={skillDraft.defaultAspectRatios}
-              onChange={(value) => updateSkillDraft({ defaultAspectRatios: value })}
-            />
-            <ModelPreferenceField
-              label={t("settings.freezoneCatalog.newSkill.modelHints")}
-              imageModels={imageModels.models}
-              imageModelsLoading={imageModels.isLoading}
-              videoModels={videoModels.models}
-              videoModelsLoading={videoModels.isLoading}
-              value={skillDraft.modelPreferences}
-              onChange={(value) => updateSkillDraft({ modelPreferences: value })}
             />
           </EditorSection>
 
@@ -1035,15 +1341,26 @@ function skillDraftFromPayload(payload: FreezoneAgentConfigPayload | null): {
   return {
     draft: {
       id: getString(payload?.id),
+      name: getString(payload?.name),
+      schemaVersion: getString(payload?.schema_version ?? payload?.schemaVersion),
+      version: getString(payload?.version),
       category: getString(payload?.category) || "general",
       description: getString(payload?.description),
       keywords: getStringArray(triggers.keywords),
       nodeScopes: getStringArray(triggers.node_scopes ?? triggers.nodeTypes ?? triggers.node_types),
+      allowedRecipeIds: getStringArray(payload?.allowed_recipe_ids ?? payload?.allowedRecipeIds),
+      inputParameters: inputParameterDraftsFromPayload(payload?.input_parameters ?? payload?.inputParameters),
+      defaultAspectRatios: Object.fromEntries(
+        Object.entries(getRecord(planning.default_aspect_ratios ?? planning.defaultAspectRatios))
+          .filter((entry): entry is [string, string] =>
+            typeof entry[1] === "string"
+            && entry[0] !== "textGeneration"
+            && entry[1] !== "auto",
+          ),
+      ),
       planningNotes: getString(planning.planning_notes),
       promptGuide: getString(planning.prompt_guide),
       conductRules: getStringArray(planning.conduct_rules),
-      defaultAspectRatios: getAspectRatioRecord(planning.default_aspect_ratios),
-      modelPreferences: getStringRecord(planning.model_preferences),
       qualityThreshold: optionalNumberText(evaluation.quality_threshold),
       domainConstraints: getStringArray(evaluation.domain_constraints).join("\n"),
     },
@@ -1092,27 +1409,120 @@ function isValidRecipeDraft(draft: RecipeDraft) {
   );
 }
 
-function validateCatalogPayload(kind: FreezoneCatalogKind, payload: FreezoneAgentConfigPayload) {
-  if (kind === "skills") {
-    const triggers = getRecord(payload.triggers);
-    return (
-      getString(payload.id).trim().length > 0 &&
-      getString(payload.category).trim().length > 0 &&
-      getString(payload.description).trim().length > 0 &&
-      getStringArray(triggers.keywords).some((keyword) => keyword.trim().length > 0)
-    );
-  }
-  return (
-    getString(payload.id).trim().length > 0 &&
-    getString(payload.name).trim().length > 0 &&
-    isRecipeGenerationType(payload.output_kind) &&
-    getStringArray(payload.action_keys).some((key) => key.trim().length > 0) &&
-    getString(payload.system_prompt).trim().length > 0
-  );
-}
-
 function optionalNumberText(value: unknown) {
   return typeof value === "number" && Number.isFinite(value) ? String(value) : "";
+}
+
+function isSkillInputParameterType(value: unknown): value is SkillInputParameterType {
+  return typeof value === "string"
+    && (SKILL_INPUT_PARAMETER_TYPES as string[]).includes(value);
+}
+
+function createInputParameterDraft(items: SkillInputParameterDraft[]): SkillInputParameterDraft {
+  return {
+    id: getNextDraftId(items),
+    parameterId: "",
+    label: "",
+    type: "text",
+    required: false,
+    defaultValue: "",
+    optionsText: "",
+    expanded: true,
+  };
+}
+
+function inputParameterDraftsFromPayload(value: unknown): SkillInputParameterDraft[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(isPlainObject)
+    .map((item, index) => {
+      const options = Array.isArray(item.options)
+        ? item.options
+          .map((option) => {
+            if (isPlainObject(option)) {
+              const optionValue = getString(option.value);
+              const optionLabel = getString(option.label);
+              return optionLabel && optionLabel !== optionValue
+                ? `${optionValue} | ${optionLabel}`
+                : optionValue;
+            }
+            return getString(option);
+          })
+          .filter(Boolean)
+        : [];
+      return {
+        id: index + 1,
+        parameterId: getString(item.id),
+        label: getString(item.label),
+        type: isSkillInputParameterType(item.type) ? item.type : "text",
+        required: item.required === true,
+        defaultValue: item.default === undefined ? "" : String(item.default),
+        optionsText: options.join("\n"),
+        expanded: false,
+      };
+    });
+}
+
+function inputParametersPayloadFromDrafts(items: SkillInputParameterDraft[]): Record<string, unknown>[] {
+  return items.flatMap((item) => {
+    const parameterId = item.parameterId.trim();
+    const label = item.label.trim();
+    if (!parameterId && !label) return [];
+    const generatedId = label.toLowerCase().replace(/[^a-z0-9_-]+/giu, "-").replace(/^-+|-+$/gu, "");
+    const payload: Record<string, unknown> = {
+      id: parameterId || generatedId || `parameter-${item.id}`,
+      label: label || parameterId,
+      type: item.type,
+      required: item.required,
+    };
+    if (item.defaultValue.trim()) {
+      payload.default = item.defaultValue.trim();
+    }
+    const options = item.optionsText
+      .split(/\r?\n/u)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [valuePart] = line.split("|");
+        return valuePart.trim();
+      })
+      .filter(Boolean);
+    if (options.length > 0) {
+      payload.options = options;
+    }
+    return [payload];
+  });
+}
+
+interface InputParameterOptionRow {
+  id: number;
+  value: string;
+}
+
+function optionRowsFromText(value: string): InputParameterOptionRow[] {
+  const rows = value
+    .split(/\r?\n/u)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line, index) => {
+      const [valuePart] = line.split("|");
+      const optionValue = valuePart.trim();
+      return {
+        id: index + 1,
+        value: optionValue,
+      };
+    });
+  return rows.length > 0 ? rows : [{ id: 1, value: "" }];
+}
+
+function optionRowsToText(rows: InputParameterOptionRow[]): string {
+  return rows
+    .map((row) => {
+      const value = row.value.trim();
+      return value;
+    })
+    .filter(Boolean)
+    .join("\n");
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
@@ -1121,27 +1531,6 @@ function isPlainObject(value: unknown): value is Record<string, unknown> {
 
 function getRecord(value: unknown): Record<string, unknown> {
   return isPlainObject(value) ? value : {};
-}
-
-function getStringRecord(value: unknown): Record<string, string> {
-  if (!isPlainObject(value)) return {};
-  return Object.fromEntries(
-    Object.entries(value)
-      .map(([key, item]) => [key.trim(), String(item ?? "").trim()] as const)
-      .filter(([key, item]) => key.length > 0 && item.length > 0),
-  );
-}
-
-function getAspectRatioRecord(value: unknown): Record<string, string> {
-  const record = getStringRecord(value);
-  const next: Record<string, string> = {};
-  for (const task of MODEL_PREFERENCE_TASK_OPTIONS) {
-    const ratio = record[task];
-    if (ratio && ASPECT_RATIO_OPTION_SETS[task].has(ratio)) {
-      next[task] = ratio;
-    }
-  }
-  return next;
 }
 
 function getRecordArray(value: unknown): Array<Record<string, unknown>> {
@@ -1208,6 +1597,7 @@ function EditorField({
   label,
   onChange,
   placeholder,
+  readOnly,
   required,
   value,
 }: {
@@ -1217,6 +1607,7 @@ function EditorField({
   label: string;
   onChange?: (value: string) => void;
   placeholder?: string;
+  readOnly?: boolean;
   required?: boolean;
   value?: string;
 }) {
@@ -1226,9 +1617,13 @@ function EditorField({
       <Input
         defaultValue={value === undefined ? defaultValue : undefined}
         value={value}
+        readOnly={readOnly}
         onChange={(event) => onChange?.(event.target.value)}
         placeholder={placeholder}
-        className="h-9 rounded-md border-input/80 bg-input/20 text-foreground placeholder:text-muted-foreground focus-visible:border-ring/70 focus-visible:ring-1 focus-visible:ring-ring/30"
+        className={cn(
+          "h-9 rounded-md border-input/80 bg-input/20 text-foreground placeholder:text-muted-foreground focus-visible:border-ring/70 focus-visible:ring-1 focus-visible:ring-ring/30",
+          readOnly ? "cursor-default text-muted-foreground" : "",
+        )}
       />
       {hint ? <span className="mt-1 block text-[10px] text-muted-foreground">{hint}</span> : null}
     </label>
@@ -1382,6 +1777,300 @@ function TagInputField({
         />
       </div>
       {hint ? <span className="mt-1 block text-[10px] text-muted-foreground">{hint}</span> : null}
+    </div>
+  );
+}
+
+function InputParametersEditor({
+  addLabel,
+  defaultLabel,
+  defaultPlaceholder,
+  deleteLabel,
+  emptyLabel,
+  expandLabel,
+  collapseLabel,
+  idLabel,
+  idPlaceholder,
+  label,
+  hint,
+  labelPlaceholder,
+  onAdd,
+  onChange,
+  onRemove,
+  addOptionLabel,
+  deleteOptionLabel,
+  optionsCountLabel,
+  optionsLabel,
+  optionValueLabel,
+  optionValuePlaceholder,
+  parameterLabel,
+  parameters,
+  requiredLabel,
+  typeFieldLabel,
+  typeLabel,
+}: {
+  addLabel: string;
+  defaultLabel: string;
+  defaultPlaceholder: string;
+  deleteLabel: string;
+  emptyLabel: string;
+  expandLabel: string;
+  collapseLabel: string;
+  idLabel: string;
+  idPlaceholder: string;
+  label: string;
+  hint: string;
+  labelPlaceholder: string;
+  onAdd: () => void;
+  onChange: (id: number, patch: Partial<Omit<SkillInputParameterDraft, "id">>) => void;
+  onRemove: (id: number) => void;
+  addOptionLabel: string;
+  deleteOptionLabel: string;
+  optionsCountLabel: (count: number) => string;
+  optionsLabel: string;
+  optionValueLabel: string;
+  optionValuePlaceholder: string;
+  parameterLabel: string;
+  parameters: SkillInputParameterDraft[];
+  requiredLabel: string;
+  typeFieldLabel: string;
+  typeLabel: (type: string) => string;
+}) {
+  return (
+    <div className="block">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <div>
+          <EditorLabel>{label}</EditorLabel>
+          <div className="mt-1 text-[10px] text-muted-foreground">{hint}</div>
+        </div>
+        <Button type="button" variant="outline" size="sm" onClick={onAdd}>
+          <Plus className="size-3.5" />
+          {addLabel}
+        </Button>
+      </div>
+      {parameters.length > 0 ? (
+        <div className="grid gap-2">
+          {parameters.map((parameter) => {
+            const optionCount = parameter.optionsText
+              .split(/\r?\n/u)
+              .map((line) => line.trim())
+              .filter(Boolean).length;
+            const title = parameter.label || parameter.parameterId || label;
+            return (
+              <div
+                key={parameter.id}
+                className="overflow-hidden rounded-md border border-input/80 bg-input/20"
+              >
+                <div className="flex items-center gap-2 px-3 py-2">
+                  <button
+                    type="button"
+                    aria-label={parameter.expanded ? collapseLabel : expandLabel}
+                    onClick={() => onChange(parameter.id, { expanded: !parameter.expanded })}
+                    className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                  >
+                    {parameter.expanded ? (
+                      <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0 flex-1">
+                      <span className="block truncate text-xs font-medium text-foreground">
+                        {title}
+                      </span>
+                      {parameter.parameterId ? (
+                        <span className="mt-0.5 block truncate font-mono text-[10px] text-muted-foreground">
+                          {parameter.parameterId}
+                        </span>
+                      ) : null}
+                    </span>
+                    <span className="hidden shrink-0 flex-wrap items-center gap-1 md:flex">
+                      <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                        {typeLabel(parameter.type)}
+                      </span>
+                      {parameter.defaultValue.trim() ? (
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {defaultLabel} {parameter.defaultValue.trim()}
+                        </span>
+                      ) : null}
+                      {optionCount > 0 ? (
+                        <span className="rounded bg-white/[0.06] px-1.5 py-0.5 text-[10px] text-muted-foreground">
+                          {optionsCountLabel(optionCount)}
+                        </span>
+                      ) : null}
+                      {parameter.required ? (
+                        <span className="rounded bg-cyan-500/15 px-1.5 py-0.5 text-[10px] text-cyan-200">
+                          {requiredLabel}
+                        </span>
+                      ) : null}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={deleteLabel}
+                    onClick={() => onRemove(parameter.id)}
+                    className="grid size-7 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-red-300"
+                  >
+                    <Trash2 className="size-3.5" />
+                  </button>
+                </div>
+                {parameter.expanded ? (
+                  <div className="border-t border-input/70 px-3 pb-3 pt-3">
+                    <div className="grid gap-3 md:grid-cols-2">
+                      <EditorField
+                        label={idLabel}
+                        placeholder={idPlaceholder}
+                        value={parameter.parameterId}
+                        onChange={(value) => onChange(parameter.id, { parameterId: value })}
+                      />
+                      <EditorField
+                        label={parameterLabel}
+                        placeholder={labelPlaceholder}
+                        value={parameter.label}
+                        onChange={(value) => onChange(parameter.id, { label: value })}
+                      />
+                      <label className="block">
+                        <EditorLabel>{typeFieldLabel}</EditorLabel>
+                        <Select
+                          value={parameter.type}
+                          onValueChange={(value) =>
+                            onChange(parameter.id, {
+                              type: isSkillInputParameterType(value) ? value : "text",
+                            })}
+                        >
+                          <SelectTrigger className="h-9 rounded-md border-input/80 bg-input/20 text-foreground">
+                            <SelectValue />
+                          </SelectTrigger>
+                          <SelectContent>
+                            {SKILL_INPUT_PARAMETER_TYPES.map((type) => (
+                              <SelectItem key={type} value={type}>
+                                {typeLabel(type)}
+                              </SelectItem>
+                            ))}
+                          </SelectContent>
+                        </Select>
+                      </label>
+                      <EditorField
+                        label={defaultLabel}
+                        placeholder={defaultPlaceholder}
+                        value={parameter.defaultValue}
+                        onChange={(value) => onChange(parameter.id, { defaultValue: value })}
+                      />
+                    </div>
+                    <div className="mt-3 grid gap-3 md:grid-cols-[minmax(0,1fr)_180px]">
+                      <InputParameterOptionsEditor
+                        label={optionsLabel}
+                        value={parameter.optionsText}
+                        onChange={(value) => onChange(parameter.id, { optionsText: value })}
+                        addLabel={addOptionLabel}
+                        deleteLabel={deleteOptionLabel}
+                        optionValueLabel={optionValueLabel}
+                        optionValuePlaceholder={optionValuePlaceholder}
+                      />
+                      <div className="self-start rounded-md border border-input/80 bg-black/20 p-3">
+                        <ToggleRow
+                          label={requiredLabel}
+                          checked={parameter.required}
+                          onChange={(checked) => onChange(parameter.id, { required: checked })}
+                        />
+                      </div>
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+            );
+          })}
+        </div>
+      ) : (
+        <div className="rounded-md border border-input/80 bg-input/20 px-3 py-2 text-xs text-muted-foreground">
+          {emptyLabel}
+        </div>
+      )}
+    </div>
+  );
+}
+
+function InputParameterOptionsEditor({
+  addLabel,
+  deleteLabel,
+  label,
+  onChange,
+  optionValueLabel,
+  optionValuePlaceholder,
+  value,
+}: {
+  addLabel: string;
+  deleteLabel: string;
+  label: string;
+  onChange: (value: string) => void;
+  optionValueLabel: string;
+  optionValuePlaceholder: string;
+  value: string;
+}) {
+  const [rows, setRows] = useState(() => optionRowsFromText(value));
+
+  useEffect(() => {
+    setRows(optionRowsFromText(value));
+  }, [value]);
+
+  const updateRows = (nextRows: InputParameterOptionRow[]) => {
+    setRows(nextRows);
+    onChange(optionRowsToText(nextRows));
+  };
+  const updateRow = (id: number, patch: Partial<Omit<InputParameterOptionRow, "id">>) => {
+    updateRows(rows.map((row) => (row.id === id ? { ...row, ...patch } : row)));
+  };
+  const removeRow = (id: number) => {
+    const nextRows = rows.filter((row) => row.id !== id);
+    updateRows(nextRows.length > 0 ? nextRows : [{ id: 1, value: "" }]);
+  };
+  const addRow = () => {
+    setRows([...rows, { id: getNextDraftId(rows), value: "" }]);
+  };
+
+  return (
+    <div className="block">
+      <div className="mb-1.5 flex items-center justify-between gap-2">
+        <EditorLabel>{label}</EditorLabel>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          className="h-7 px-2 text-xs"
+          onClick={addRow}
+        >
+          <Plus className="size-3.5" />
+          {addLabel}
+        </Button>
+      </div>
+      <div className="grid gap-2">
+        <div className="hidden grid-cols-[minmax(0,1fr)_28px] gap-2 sm:grid">
+          <span className="text-[10px] font-medium text-muted-foreground">{optionValueLabel}</span>
+          <span />
+        </div>
+        {rows.map((row) => (
+          <div key={row.id} className="grid gap-2 sm:grid-cols-[minmax(0,1fr)_28px]">
+            <Input
+              aria-label={optionValueLabel}
+              autoComplete="off"
+              autoCorrect="off"
+              name={`skill-input-parameter-option-${row.id}`}
+              placeholder={optionValuePlaceholder}
+              spellCheck={false}
+              value={row.value}
+              onChange={(event) => updateRow(row.id, { value: event.target.value })}
+              className="h-8 rounded-md border-input/80 bg-input/20 text-xs text-foreground"
+            />
+            <button
+              type="button"
+              aria-label={deleteLabel}
+              onClick={() => removeRow(row.id)}
+              className="grid size-7 place-items-center self-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-red-300"
+            >
+              <Trash2 className="size-3.5" />
+            </button>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -1590,263 +2279,6 @@ function RawJsonDisclosure({
   );
 }
 
-function AspectRatioField({
-  label,
-  onChange,
-  value,
-}: {
-  label: string;
-  onChange: (value: Record<string, string>) => void;
-  value: Record<string, string>;
-}) {
-  const { t } = useTranslation();
-  const [taskType, setTaskType] =
-    useState<(typeof MODEL_PREFERENCE_TASK_OPTIONS)[number] | "">("");
-  const [ratioDraft, setRatioDraft] = useState("");
-  const ratioOptions = taskType ? ASPECT_RATIO_OPTIONS_BY_TASK[taskType] : [];
-  const entries = MODEL_PREFERENCE_TASK_OPTIONS
-    .map((task) => [task, value?.[task] ?? ""] as const)
-    .filter(([, ratio]) => ratio.trim().length > 0);
-
-  useEffect(() => {
-    if (!ratioDraft) return;
-    if (!ratioOptions.includes(ratioDraft)) {
-      setRatioDraft("");
-    }
-  }, [ratioDraft, ratioOptions]);
-
-  const addAspectRatio = () => {
-    if (!taskType || !ratioDraft) return;
-    onChange({ ...(value ?? {}), [taskType]: ratioDraft });
-    setRatioDraft("");
-  };
-
-  const removeAspectRatio = (task: string) => {
-    const next = { ...(value ?? {}) };
-    delete next[task];
-    onChange(next);
-  };
-
-  return (
-    <div>
-      <EditorLabel>{label}</EditorLabel>
-      <div className="grid grid-cols-[minmax(132px,180px)_minmax(0,1fr)_28px] items-center gap-2">
-        <select
-          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.taskTypeLabel")}`}
-          value={taskType}
-          onChange={(event) => {
-            const nextTask = event.target.value as
-              | (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number]
-              | "";
-            setTaskType(nextTask);
-            setRatioDraft("");
-          }}
-          className="h-9 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30"
-        >
-          <option value="" className="bg-black text-muted-foreground">
-            {t("settings.freezoneCatalog.newSkill.taskTypePlaceholder")}
-          </option>
-          {MODEL_PREFERENCE_TASK_OPTIONS.map((task) => (
-            <option key={task} value={task} className="bg-black text-foreground">
-              {MODEL_PREFERENCE_TASK_LABELS[task]}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.ratioLabel")}`}
-          disabled={!taskType}
-          value={ratioDraft}
-          onChange={(event) => setRatioDraft(event.target.value)}
-          className="h-9 min-w-0 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30 disabled:opacity-50"
-        >
-          <option value="" className="bg-black text-muted-foreground">
-            {t("settings.freezoneCatalog.newSkill.ratioSelectPlaceholder")}
-          </option>
-          {ratioOptions.map((ratio) => (
-            <option key={ratio} value={ratio} className="bg-black text-foreground">
-              {ratio}
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          disabled={!ratioDraft}
-          aria-label={`添加 ${label}`}
-          onClick={addAspectRatio}
-          className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground disabled:opacity-40"
-        >
-          <Plus className="size-4" />
-        </button>
-      </div>
-      {entries.length ? (
-        <div className="mt-2 space-y-1.5">
-          {entries.map(([task, ratio]) => (
-            <div
-              key={task}
-              className="grid grid-cols-[minmax(104px,160px)_20px_minmax(0,1fr)_28px] items-center gap-2 rounded-md bg-white/[0.035] px-2 py-1 text-xs"
-            >
-              <span className="min-w-0 truncate text-foreground">
-                {MODEL_PREFERENCE_TASK_LABELS[task]}
-              </span>
-              <span className="text-center text-muted-foreground">→</span>
-              <span className="min-w-0 truncate font-mono text-foreground">{ratio}</span>
-              <button
-                type="button"
-                aria-label={`删除 ${label} ${task}`}
-                onClick={() => removeAspectRatio(task)}
-                className="grid size-6 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
-function ModelPreferenceField({
-  imageModels,
-  imageModelsLoading,
-  label,
-  onChange,
-  value,
-  videoModels,
-  videoModelsLoading,
-}: {
-  imageModels: ModelOption[];
-  imageModelsLoading: boolean;
-  label: string;
-  onChange: (value: Record<string, string>) => void;
-  value: Record<string, string>;
-  videoModels: ModelOption[];
-  videoModelsLoading: boolean;
-}) {
-  const { t } = useTranslation();
-  const [taskType, setTaskType] =
-    useState<(typeof MODEL_PREFERENCE_TASK_OPTIONS)[number] | "">("");
-  const [modelDraft, setModelDraft] = useState("");
-  const modelOptions =
-    taskType === "imageGeneration" ? imageModels : taskType === "videoGeneration" ? videoModels : [];
-  const isLoading =
-    taskType === "imageGeneration"
-      ? imageModelsLoading
-      : taskType === "videoGeneration"
-        ? videoModelsLoading
-        : false;
-  const entries = MODEL_PREFERENCE_TASK_OPTIONS
-    .map((task) => [task, value?.[task] ?? ""] as const)
-    .filter(([, modelId]) => modelId.trim().length > 0);
-
-  useEffect(() => {
-    if (!modelDraft) return;
-    if (!modelOptions.some((model) => model.id === modelDraft)) {
-      setModelDraft("");
-    }
-  }, [modelDraft, modelOptions]);
-
-  const addPreference = () => {
-    if (!taskType || !modelDraft) return;
-    onChange({ ...(value ?? {}), [taskType]: modelDraft });
-    setModelDraft("");
-  };
-
-  const removePreference = (task: string) => {
-    const next = { ...(value ?? {}) };
-    delete next[task];
-    onChange(next);
-  };
-
-  const getModelLabel = (task: string, modelId: string) => {
-    const source = task === "videoGeneration" ? videoModels : imageModels;
-    const option = source.find((model) => model.id === modelId);
-    return option ? `${option.label} (${option.id})` : modelId;
-  };
-
-  return (
-    <div>
-      <EditorLabel>{label}</EditorLabel>
-      <div className="grid grid-cols-[minmax(132px,180px)_minmax(0,1fr)_28px] items-center gap-2">
-        <select
-          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.taskTypeLabel")}`}
-          value={taskType}
-          onChange={(event) => {
-            const nextTask = event.target.value as
-              | (typeof MODEL_PREFERENCE_TASK_OPTIONS)[number]
-              | "";
-            setTaskType(nextTask);
-            setModelDraft("");
-          }}
-          className="h-9 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30"
-        >
-          <option value="" className="bg-black text-muted-foreground">
-            {t("settings.freezoneCatalog.newSkill.taskTypePlaceholder")}
-          </option>
-          {MODEL_PREFERENCE_TASK_OPTIONS.map((task) => (
-            <option key={task} value={task} className="bg-black text-foreground">
-              {MODEL_PREFERENCE_TASK_LABELS[task]}
-            </option>
-          ))}
-        </select>
-        <select
-          aria-label={`${label} ${t("settings.freezoneCatalog.newSkill.modelSelectLabel")}`}
-          disabled={!taskType || modelOptions.length === 0}
-          value={modelDraft}
-          onChange={(event) => setModelDraft(event.target.value)}
-          className="h-9 min-w-0 rounded-md border border-input/80 bg-input/20 px-3 text-sm text-foreground outline-none transition-colors focus:border-ring/70 focus:ring-1 focus:ring-ring/30 disabled:opacity-50"
-        >
-          <option value="" className="bg-black text-muted-foreground">
-            {isLoading
-              ? t("settings.freezoneCatalog.newSkill.modelLoading")
-              : t("settings.freezoneCatalog.newSkill.modelSelectPlaceholder")}
-          </option>
-          {modelOptions.map((model) => (
-            <option key={model.id} value={model.id} className="bg-black text-foreground">
-              {model.label} ({model.id})
-            </option>
-          ))}
-        </select>
-        <button
-          type="button"
-          disabled={!modelDraft}
-          aria-label={`添加 ${label}`}
-          onClick={addPreference}
-          className="grid size-8 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground disabled:opacity-40"
-        >
-          <Plus className="size-4" />
-        </button>
-      </div>
-      {entries.length ? (
-        <div className="mt-2 space-y-1.5">
-          {entries.map(([task, modelId]) => (
-            <div
-              key={task}
-              className="grid grid-cols-[minmax(104px,160px)_20px_minmax(0,1fr)_28px] items-center gap-2 rounded-md bg-white/[0.035] px-2 py-1 text-xs"
-            >
-              <span className="min-w-0 truncate text-foreground">
-                {MODEL_PREFERENCE_TASK_LABELS[task]}
-              </span>
-              <span className="text-center text-muted-foreground">→</span>
-              <span className="min-w-0 truncate font-mono text-foreground">
-                {getModelLabel(task, modelId)}
-              </span>
-              <button
-                type="button"
-                aria-label={`删除 ${label} ${task}`}
-                onClick={() => removePreference(task)}
-                className="grid size-6 place-items-center rounded text-muted-foreground transition-colors hover:text-foreground"
-              >
-                <X className="size-3.5" />
-              </button>
-            </div>
-          ))}
-        </div>
-      ) : null}
-    </div>
-  );
-}
-
 function DimensionListField({
   dimensions,
   label,
@@ -1999,6 +2431,316 @@ interface ManagedCatalogItem {
   tags: string[];
 }
 
+function createSkillBundleExportMeta(item: ManagedCatalogItem): Record<string, unknown> {
+  const payload = stripCatalogMetadata(item.payload);
+  return {
+    id: item.id,
+    name: item.title || item.id,
+    version: getString(payload.version) || "1.0.0",
+    description: item.description || item.title || item.id,
+    author: "",
+    license: "",
+    min_dramaclaw_version: "1.0.0",
+    tags: item.tags,
+  };
+}
+
+function isFreezoneBundlePayload(value: unknown): value is FreezoneAgentBundlePayload {
+  if (!isPlainObject(value)) return false;
+  return (
+    value.schema_version === "dramaclaw.skill-bundle.v1" &&
+    typeof value.id === "string" &&
+    isPlainObject(value.skill) &&
+    Array.isArray(value.recipes)
+  );
+}
+
+export interface SkillDialogLocalItem {
+  id: string;
+  label: string;
+  category?: string;
+  description?: string;
+}
+
+export function CommunitySkillDialog({
+  error,
+  installedSkillIds,
+  installing,
+  installingBundleUrl,
+  items,
+  localItems = [],
+  loading,
+  mode = "community",
+  onInstall,
+  onModeChange,
+  onOpenChange,
+  onRetry,
+  onSelectLocalSkill,
+  open,
+}: {
+  error: boolean;
+  installedSkillIds: Set<string>;
+  installing: boolean;
+  installingBundleUrl?: string;
+  items: FreezoneCommunityCatalogItem[];
+  localItems?: SkillDialogLocalItem[];
+  loading: boolean;
+  mode?: "community" | "mine";
+  onInstall: (item: FreezoneCommunityCatalogItem) => void;
+  onModeChange?: (mode: "community" | "mine") => void;
+  onOpenChange: (open: boolean) => void;
+  onRetry: () => void;
+  onSelectLocalSkill?: (skillId: string) => void;
+  open: boolean;
+}) {
+  const { t } = useTranslation();
+  const isMine = mode === "mine";
+  const showMineTab = typeof onModeChange === "function";
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      <DialogContent
+        className="h-[min(760px,86vh)] !w-[min(1120px,calc(100vw-40px))] !max-w-[min(1120px,calc(100vw-40px))] gap-0 overflow-hidden rounded-lg border-border/75 bg-[#070808] p-0 shadow-2xl sm:!max-w-[min(1120px,calc(100vw-40px))]"
+        showCloseButton={false}
+      >
+        <DialogHeader className="border-b border-border/45 px-5 py-4">
+          <div className="flex items-center gap-4">
+            <div className="flex min-w-0 items-center gap-4">
+              {showMineTab ? (
+                <div className="flex items-center gap-2">
+                  <DialogTitle className="text-base leading-8">
+                    <button
+                      type="button"
+                      className={cn(
+                        "rounded-md px-1.5 py-1 text-base leading-6 transition hover:bg-white/[0.055]",
+                        !isMine ? "text-foreground" : "text-muted-foreground",
+                      )}
+                      onClick={() => onModeChange?.("community")}
+                    >
+                      Skill
+                    </button>
+                  </DialogTitle>
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-1.5 py-1 text-sm leading-5 transition hover:bg-white/[0.055]",
+                      isMine ? "text-foreground" : "text-muted-foreground",
+                    )}
+                    onClick={() => onModeChange?.("mine")}
+                  >
+                    我的
+                  </button>
+                </div>
+              ) : (
+                <>
+                  <DialogTitle className="text-base leading-8">
+                    {t("settings.freezoneCatalog.community.title")}
+                  </DialogTitle>
+                  <span className="text-sm text-muted-foreground">
+                    {t("settings.freezoneCatalog.community.featured")}
+                  </span>
+                </>
+              )}
+            </div>
+            <div className="ml-auto flex items-center gap-1">
+              <button
+                type="button"
+                aria-label={t("settings.freezoneCatalog.refresh")}
+                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.055] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                onClick={onRetry}
+                disabled={loading}
+              >
+                <RefreshCw className={cn("size-3.5", loading && "animate-spin")} />
+              </button>
+              <button
+                type="button"
+                aria-label={t("settings.freezoneCatalog.community.close")}
+                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.055] hover:text-foreground"
+                onClick={() => onOpenChange(false)}
+              >
+                <X className="size-4" />
+              </button>
+            </div>
+          </div>
+          <div className="mt-4 flex items-center gap-2">
+            {["recommended", "video", "image", "workflow", "general"].map((key) => (
+              <span
+                key={key}
+                className={cn(
+                  "rounded-md border px-3 py-1.5 text-xs",
+                  key === "recommended"
+                    ? "border-border bg-white/[0.08] text-foreground"
+                    : "border-border/60 bg-white/[0.02] text-muted-foreground",
+                )}
+              >
+                {t(`settings.freezoneCatalog.community.filters.${key}`)}
+              </span>
+            ))}
+            <div className="relative ml-auto w-[min(340px,36vw)]">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
+              <div className="h-9 rounded-full border border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs leading-9 text-muted-foreground">
+                {t("settings.freezoneCatalog.community.searchPlaceholder")}
+              </div>
+            </div>
+          </div>
+        </DialogHeader>
+        <div className="h-[calc(100%-96px)] overflow-y-auto px-5 py-4">
+          {loading ? (
+            <div className="grid h-full min-h-80 place-items-center text-sm text-muted-foreground">
+              <div className="flex items-center gap-2">
+                <RefreshCw className="size-3.5 animate-spin" />
+                {t("settings.freezoneCatalog.community.loading")}
+              </div>
+            </div>
+          ) : error ? (
+            <div className="grid h-full min-h-80 place-items-center text-center">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {t("settings.freezoneCatalog.community.loadFailed")}
+                </p>
+                <p className="mt-1 text-xs text-muted-foreground">
+                  {t("settings.freezoneCatalog.community.loadFailedHint")}
+                </p>
+                <Button type="button" variant="outline" size="sm" className="mt-4 h-8" onClick={onRetry}>
+                  {t("settings.freezoneCatalog.retry")}
+                </Button>
+              </div>
+            </div>
+          ) : isMine ? (
+            localItems.length === 0 ? (
+              <div className="grid h-full min-h-80 place-items-center text-center">
+                <div>
+                  <p className="text-sm font-medium text-foreground">
+                    这里暂时没有 Skill
+                  </p>
+                  <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-muted-foreground">
+                    可以先让虾导总结当前画布，或描述工作流来创建自己的 Skill。
+                  </p>
+                </div>
+              </div>
+            ) : (
+              <div className="grid gap-3 lg:grid-cols-2">
+                {localItems.map((item) => (
+                  <article
+                    key={item.id}
+                    className="flex min-h-[104px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3"
+                  >
+                    <div className="grid size-14 shrink-0 place-items-center rounded-md border border-white/[0.08] bg-white/[0.04] text-xs text-muted-foreground">
+                      Skill
+                    </div>
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <h4 className="truncate text-[13px] font-semibold text-foreground">
+                          {item.label || item.id}
+                        </h4>
+                        {item.category ? (
+                          <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/75">
+                            {item.category}
+                          </span>
+                        ) : null}
+                      </div>
+                      {item.description ? (
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                          {item.description}
+                        </p>
+                      ) : null}
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant="outline"
+                      className="shrink-0"
+                      onClick={() => onSelectLocalSkill?.(item.id)}
+                    >
+                      使用
+                    </Button>
+                  </article>
+                ))}
+              </div>
+            )
+          ) : items.length === 0 ? (
+            <div className="grid h-full min-h-80 place-items-center text-center">
+              <div>
+                <p className="text-sm font-medium text-foreground">
+                  {t("settings.freezoneCatalog.community.empty")}
+                </p>
+                <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-muted-foreground">
+                  {t("settings.freezoneCatalog.community.emptyDescription")}
+                </p>
+              </div>
+            </div>
+          ) : (
+            <div className="grid gap-3 lg:grid-cols-2">
+              {items.map((item) => {
+                const installed = installedSkillIds.has(item.id);
+                const itemInstalling = installing && installingBundleUrl === item.bundle_url;
+                return (
+                  <article
+                    key={item.id}
+                    className="flex min-h-[128px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3"
+                  >
+                    {item.cover_url ? (
+                      <img
+                        src={item.cover_url}
+                        alt=""
+                        className="h-24 w-40 shrink-0 rounded-md object-cover"
+                      />
+                    ) : (
+                      <div className="grid h-24 w-40 shrink-0 place-items-center rounded-md bg-white/[0.04] text-xs text-muted-foreground">
+                        Skill
+                      </div>
+                    )}
+                    <div className="min-w-0 flex-1">
+                      <div className="flex min-w-0 items-center gap-2">
+                        <h4 className="truncate text-[13px] font-semibold text-foreground">
+                          {item.name || item.id}
+                        </h4>
+                        <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/75">
+                          v{item.version}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                        {item.description}
+                      </p>
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground/75">
+                        <span>{item.author}</span>
+                        <span>·</span>
+                        <span>{item.license}</span>
+                        {item.tags.slice(0, 3).map((tag) => (
+                          <span
+                            key={tag}
+                            className="rounded bg-white/[0.035] px-1.5 py-0.5"
+                          >
+                            {tag}
+                          </span>
+                        ))}
+                      </div>
+                    </div>
+                    <Button
+                      type="button"
+                      size="sm"
+                      variant={installed ? "outline" : "default"}
+                      className="shrink-0"
+                      disabled={installed || installing}
+                      onClick={() => onInstall(item)}
+                    >
+                      {installed
+                        ? t("settings.freezoneCatalog.community.installedState")
+                        : itemInstalling
+                          ? t("settings.freezoneCatalog.community.installing")
+                          : t("settings.freezoneCatalog.community.install")}
+                    </Button>
+                  </article>
+                );
+              })}
+            </div>
+          )}
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
+
 function downloadJson(payload: unknown, filename: string) {
   const blob = new Blob([`${JSON.stringify(payload, null, 2)}\n`], {
     type: "application/json",
@@ -2016,6 +2758,7 @@ function downloadJson(payload: unknown, filename: string) {
 function CatalogSelectionBar({
   allSelected,
   count,
+  exportLabel,
   label,
   onDeleteSelected,
   onExport,
@@ -2024,6 +2767,7 @@ function CatalogSelectionBar({
 }: {
   allSelected: boolean;
   count: number;
+  exportLabel: string;
   label: string;
   onDeleteSelected: () => void;
   onExport: () => void;
@@ -2067,10 +2811,88 @@ function CatalogSelectionBar({
           onClick={onExport}
         >
           <Upload className="size-3.5" />
-          {t("settings.freezoneCatalog.export")}
+          {exportLabel}
         </Button>
       </div>
     </div>
+  );
+}
+
+function SkillDeleteDialog({
+  candidate,
+  deleting,
+  onCancel,
+  onConfirm,
+}: {
+  candidate: { item: ManagedCatalogItem; recipes: ManagedCatalogItem[] } | null;
+  deleting: boolean;
+  onCancel: () => void;
+  onConfirm: (deleteRecipes: boolean) => void;
+}) {
+  const { t } = useTranslation();
+  const recipeCount = candidate?.recipes.length ?? 0;
+
+  return (
+    <Dialog
+      open={candidate !== null}
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+    >
+      <DialogContent className="max-w-[420px] gap-0 overflow-hidden rounded-lg border-border bg-black p-0">
+        <DialogHeader className="px-5 pt-5 pb-3">
+          <DialogTitle className="text-base">
+            {t("settings.freezoneCatalog.deleteSkillDialog.title")}
+          </DialogTitle>
+        </DialogHeader>
+        <div className="px-5 pb-4">
+          <p className="text-sm leading-relaxed text-foreground">
+            {t("settings.freezoneCatalog.deleteSkillDialog.description", {
+              id: candidate?.item.id ?? "",
+            })}
+          </p>
+          {recipeCount > 0 ? (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t("settings.freezoneCatalog.deleteSkillDialog.recipeHint", {
+                count: recipeCount,
+              })}
+            </p>
+          ) : (
+            <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
+              {t("settings.freezoneCatalog.deleteSkillDialog.noRecipeHint")}
+            </p>
+          )}
+          {recipeCount > 0 ? (
+            <div className="mt-3 max-h-28 overflow-y-auto rounded-md bg-white/[0.025] px-2 py-1.5">
+              {candidate?.recipes.map((recipe) => (
+                <div key={recipe.id} className="truncate py-0.5 font-mono text-[11px] text-muted-foreground">
+                  {recipe.id}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+        <DialogFooter className="px-5 pb-5">
+          <Button type="button" variant="ghost" onClick={onCancel} disabled={deleting}>
+            {t("settings.freezoneCatalog.deleteSkillDialog.cancel")}
+          </Button>
+          {recipeCount > 0 ? (
+            <Button
+              type="button"
+              variant="outline"
+              className="text-destructive hover:text-destructive"
+              onClick={() => onConfirm(true)}
+              disabled={deleting}
+            >
+              {t("settings.freezoneCatalog.deleteSkillDialog.deleteWithRecipes")}
+            </Button>
+          ) : null}
+          <Button type="button" onClick={() => onConfirm(false)} disabled={deleting}>
+            {t("settings.freezoneCatalog.deleteSkillDialog.deleteSkillOnly")}
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   );
 }
 
@@ -2153,8 +2975,8 @@ function CatalogList({
           />
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
-              <h4 className="truncate font-mono text-[13px] font-semibold text-foreground">
-                {item.id}
+              <h4 className="truncate text-[13px] font-semibold text-foreground">
+                {item.title}
               </h4>
               {item.generationType ? (
                 <span className={catalogGenerationTypeBadgeClass(item.generationType)}>
@@ -2179,7 +3001,7 @@ function CatalogList({
               type="button"
               role="switch"
               aria-checked={item.enabled}
-              aria-label={t("settings.freezoneCatalog.toggleEnabled", { id: item.id })}
+              aria-label={t("settings.freezoneCatalog.toggleEnabled", { id: item.title })}
               onClick={() => onToggleEnabled(item, !item.enabled)}
               className={cn(
                 "relative h-4 w-7 rounded-full border transition-colors",
@@ -2197,7 +3019,7 @@ function CatalogList({
             </button>
             <button
               type="button"
-              aria-label={t("settings.freezoneCatalog.editItem", { id: item.id })}
+              aria-label={t("settings.freezoneCatalog.editItem", { id: item.title })}
               onClick={() => onEdit(item)}
               className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
             >
@@ -2205,7 +3027,7 @@ function CatalogList({
             </button>
             <button
               type="button"
-              aria-label={t("settings.freezoneCatalog.deleteItem", { id: item.id })}
+              aria-label={t("settings.freezoneCatalog.deleteItem", { id: item.title })}
               onClick={() => onDelete(item)}
               className="grid size-7 place-items-center rounded-md text-destructive transition-colors hover:bg-destructive/10"
             >
@@ -2247,13 +3069,17 @@ function toManagedCatalogItem(
     enabled: item.enabled !== false,
     id,
     payload: item,
-    title: id,
+    title: getString(item.name) || id,
     description: getString(item.description),
     tags: [
       getString(item.category),
       ...getStringArray((triggers as Record<string, unknown>).keywords),
     ].filter(Boolean),
   };
+}
+
+function getSkillAllowedRecipeIds(payload: FreezoneAgentConfigPayload): string[] {
+  return getStringArray(payload.allowed_recipe_ids ?? payload.allowedRecipeIds);
 }
 
 function catalogGenerationTypeBadgeClass(type: RecipeGenerationType) {

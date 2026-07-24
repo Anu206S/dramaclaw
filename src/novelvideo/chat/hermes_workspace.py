@@ -582,10 +582,10 @@ def _freezone_workflow_skill_items(username: str) -> list[dict]:
         if item.get("enabled") is not False
         and item.get("hidden") is not True
         and isinstance(
-            item.get("workflow_templates") or item.get("workflowTemplates"),
+            item.get("allowed_recipe_ids") or item.get("allowedRecipeIds"),
             list,
         )
-        and bool(item.get("workflow_templates") or item.get("workflowTemplates"))
+        and bool(item.get("allowed_recipe_ids") or item.get("allowedRecipeIds"))
     ]
 
 
@@ -647,7 +647,9 @@ def _render_workflow_skill(item: dict) -> tuple[str, dict[str, object]]:
         "description": description,
         "category": str(item.get("category") or "").strip(),
         "source": "hermes_native_workflow_skill",
-        "workflow_templates": [{"id": "hermes-native"}],
+        "allowed_recipe_ids": list(
+            item.get("allowed_recipe_ids") or item.get("allowedRecipeIds") or []
+        ),
     }
     return content, summary
 

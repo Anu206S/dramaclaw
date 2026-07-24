@@ -581,13 +581,17 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
         allowed_capabilities=allowed_capabilities,
     )
     referenced_recipe_ids = _skill_referenced_recipe_ids(skill)
-    full_recipes = [
-        _without_private_fields(recipe)
+    selected_recipes = [
+        recipe
         for recipe in candidate_recipes
         if _recipe_matches_references(recipe, referenced_recipe_ids)
     ]
+    full_recipes = [
+        _without_private_fields(recipe)
+        for recipe in selected_recipes
+    ]
     recipe_summaries = [
-        _recipe_planning_summary(recipe) for recipe in candidate_recipes
+        _recipe_planning_summary(recipe) for recipe in selected_recipes
     ]
     recipes_by_output_kind: dict[str, list[str]] = {}
     source_anchor_recipe_ids: dict[str, list[str]] = {}
@@ -708,6 +712,14 @@ def compile_workflow_intent(intent: Any) -> dict[str, Any]:
             "error": errors[0]["message"],
             "errors": errors,
         }
+
+    if not _templates(skill):
+        return _compile_dynamic_recipe_items_intent(
+            intent=intent,
+            skill=skill,
+            user_goal=user_goal,
+            resolved_inputs=input_contract["resolved"],
+        )
 
     template = _select_intent_template(skill, intent)
     if template is None:
@@ -968,6 +980,258 @@ def compile_workflow_intent(intent: Any) -> dict[str, Any]:
     }
 
 
+def _compile_dynamic_recipe_items_intent(
+    *,
+    intent: dict[str, Any],
+    skill: dict[str, Any],
+    user_goal: str,
+    resolved_inputs: dict[str, Any],
+) -> dict[str, Any]:
+    items = _intent_items(intent)
+    if not items:
+        return _intent_error(
+            "dynamic workflow intent must include at least one recipe-backed item",
+            path="items",
+        )
+
+    recipes = _intent_recipe_index()
+    allowed_recipe_ids = {
+        _text(item) for item in skill.get("allowed_recipe_ids") or [] if _text(item)
+    }
+    nodes: list[dict[str, Any]] = [
+        {
+            "id": "workflow_input",
+            "node_type": "textAnnotationNode",
+            "name": "用户需求 / 输入素材",
+            "description": user_goal,
+            "stage": "input",
+            "data": {
+                "displayName": "用户需求 / 输入素材",
+                "title": "用户需求 / 输入素材",
+                "content": user_goal,
+                "prompt": user_goal,
+                "workflowCatalogRole": "user_input",
+            },
+        }
+    ]
+    node_types = {"workflow_input": "textAnnotationNode"}
+    node_recipes: dict[str, dict[str, Any] | None] = {"workflow_input": None}
+    item_by_id: dict[str, dict[str, Any]] = {}
+    phases: list[str] = []
+    include_audio = _intent_bool(intent, "include_audio", True)
+
+    for index, item in enumerate(items):
+        item_id = _safe_id(_text(item.get("id")) or f"item_{index + 1}")
+        if item_id == "workflow_input" or item_id in item_by_id:
+            return _intent_error(
+                f"duplicate or reserved dynamic item id: {item_id}",
+                path=f"items.{index}.id",
+            )
+        recipe_id = _text(item.get("recipe_id") or item.get("recipeId"))
+        recipe = recipes.get(recipe_id)
+        canonical_recipe_id = _text(recipe.get("id")) if recipe else ""
+        if not recipe_id or recipe is None:
+            return _intent_error(
+                f"unknown Recipe for dynamic item {item_id}: {recipe_id or '<missing>'}",
+                path=f"items.{index}.recipe_id",
+            )
+        if canonical_recipe_id not in allowed_recipe_ids:
+            return _intent_error(
+                f"Recipe {canonical_recipe_id} is not allowed by Skill {_text(skill.get('id'))}",
+                path=f"items.{index}.recipe_id",
+            )
+        if _text(recipe.get("output_kind")) == "audio" and not include_audio:
+            continue
+        node_type = _NODE_TYPE_BY_OUTPUT_KIND.get(_text(recipe.get("output_kind")))
+        if not node_type:
+            return _intent_error(
+                f"Recipe {canonical_recipe_id} has unsupported output_kind",
+                path=f"items.{index}.recipe_id",
+            )
+        model = _text(item.get("model")) or _dynamic_default_model(recipe)
+        step = {
+            "id": item_id,
+            "goal_template": _text(item.get("title") or item.get("prompt")) or item_id,
+            "recipe_id": canonical_recipe_id,
+            "action_key": next(
+                (
+                    _text(action_key)
+                    for action_key in recipe.get("action_keys") or []
+                    if _text(action_key)
+                ),
+                canonical_recipe_id,
+            ),
+            "prompt_strategy": "llm_refine",
+            **({"model": model} if model else {}),
+            **(
+                {"timeline_role": _text(item.get("timeline_role"))}
+                if _text(item.get("timeline_role"))
+                else {}
+            ),
+        }
+        node = _intent_step_node(
+            skill=skill,
+            template={"id": "dynamic"},
+            step=step,
+            recipe=recipe,
+            node_type=node_type,
+            instance_id=item_id,
+            instance_index=0,
+            instance_count=1,
+            item=item,
+            user_goal=user_goal,
+            resolved_inputs=resolved_inputs,
+        )
+        explicit_stage = _text(item.get("stage"))
+        if explicit_stage:
+            node["stage"] = explicit_stage
+        stage = _text(node.get("stage"))
+        if stage and stage not in phases:
+            phases.append(stage)
+        nodes.append(node)
+        node_types[item_id] = node_type
+        node_recipes[item_id] = recipe
+        item_by_id[item_id] = item
+
+    edges: list[dict[str, str]] = []
+    for item_id, item in item_by_id.items():
+        raw_dependencies = item.get("depends_on") or item.get("dependsOn") or []
+        dependencies = (
+            [_text(value) for value in raw_dependencies if _text(value)]
+            if isinstance(raw_dependencies, list)
+            else [_text(raw_dependencies)] if _text(raw_dependencies) else []
+        )
+        if not dependencies:
+            dependencies = ["workflow_input"]
+        for source_id in dependencies:
+            normalized_source = (
+                "workflow_input" if source_id == "workflow_input" else _safe_id(source_id)
+            )
+            if normalized_source not in node_types:
+                return _intent_error(
+                    f"unknown dependency {source_id} for dynamic item {item_id}",
+                    path=f"items.{item_id}.depends_on",
+                )
+            edges.extend(
+                _intent_dependency_edges(
+                    [normalized_source],
+                    [item_id],
+                    node_types=node_types,
+                )
+            )
+
+    include_compose = _intent_bool(intent, "include_compose", True)
+    if include_compose:
+        compose_sources = [
+            node_id
+            for node_id, node_type in node_types.items()
+            if node_type in {"videoNode", "audioNode"}
+        ]
+        if any(node_types.get(node_id) == "videoNode" for node_id in compose_sources):
+            compose_id = "final_compose"
+            nodes.append(
+                {
+                    "id": compose_id,
+                    "node_type": "videoComposeNode",
+                    "name": "成片合成",
+                    "description": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
+                    "stage": "compose",
+                    "data": {
+                        "displayName": "成片合成",
+                        "title": "成片合成",
+                        "content": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
+                        "prompt": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
+                        "workflowCatalog": {
+                            "skillId": _text(skill.get("id")),
+                            "stepId": compose_id,
+                            "promptBuilder": {"userGoal": user_goal},
+                        },
+                    },
+                }
+            )
+            node_types[compose_id] = "videoComposeNode"
+            node_recipes[compose_id] = None
+            edges.extend(
+                {
+                    "source": source_id,
+                    "target": compose_id,
+                    "link_type": "composition_input_for",
+                }
+                for source_id in compose_sources
+            )
+            phases.append("compose")
+
+    edges = _dedupe_intent_edges(edges)
+    skill_id = _text(skill.get("id"))
+    title = _text(intent.get("title")) or _catalog_label(skill)
+    plan = {
+        "schema_version": PLAN_SCHEMA_VERSION,
+        "workflow_type": f"dynamic.{skill_id}",
+        "mode": "tool_compiled_dynamic",
+        "skill": {"id": skill_id, "version": skill.get("version")},
+        "summary": _text(intent.get("summary")) or user_goal,
+        "source_context": {
+            "user_goal": user_goal,
+            "canvas_context": [],
+            "input_assets": [],
+        },
+        "analysis": {"entities": [], "production_units": [], "risks": []},
+        "phases": phases,
+        "assumptions": list(intent.get("assumptions") or []),
+        "missing_inputs": [],
+        "expansion_rules": {"item_count": len(items)},
+        "inputs": resolved_inputs,
+        "nodes": nodes,
+        "edges": edges,
+        "layout": {
+            "direction": "left_to_right",
+            "groups": [
+                {
+                    "label": title,
+                    "node_ids": [_text(node.get("id")) for node in nodes],
+                }
+            ],
+        },
+        "execution_policy": {
+            "requires_user_confirmation": True,
+            "auto_create_nodes": False,
+            "auto_generate_content": False,
+            "handoff_tool": "freezone_create_workflow_from_intent",
+        },
+    }
+    validated = validate_agent_workflow_plan(plan)
+    if not validated.get("ok"):
+        return {
+            **validated,
+            "status": "compiled_workflow_plan_invalid",
+            "compiled_plan": plan,
+        }
+    return {
+        "ok": True,
+        "status": "workflow_intent_compiled",
+        "schema_version": WORKFLOW_INTENT_SCHEMA_VERSION,
+        "skill_id": skill_id,
+        "template_id": "",
+        "node_count": len(nodes),
+        "edge_count": len(edges),
+        "step_counts": {},
+        "plan": plan,
+    }
+
+
+def _dynamic_default_model(recipe: dict[str, Any]) -> str:
+    if _text(recipe.get("output_kind")) != "audio":
+        return ""
+    searchable = " ".join(
+        [
+            _text(recipe.get("id")),
+            _text(recipe.get("name")),
+            *[_text(item) for item in recipe.get("action_keys") or []],
+        ]
+    ).lower()
+    return "suno_music" if any(token in searchable for token in ("music", "bgm", "音乐", "配乐")) else "edge-tts"
+
+
 def _intent_error(message: str, *, path: str) -> dict[str, Any]:
     return {
         "ok": False,
@@ -1055,10 +1319,43 @@ def _intent_items(intent: dict[str, Any]) -> list[dict[str, Any]]:
             if title or prompt or narration:
                 items.append(
                     {
+                        **(
+                            {"id": _safe_id(_text(raw_item.get("id")))}
+                            if _text(raw_item.get("id"))
+                            else {}
+                        ),
                         "title": title or prompt or narration,
                         "prompt": prompt or title or narration,
                         **({"narration": narration} if narration else {}),
                         **({"step_id": _safe_id(step_id)} if step_id else {}),
+                        **(
+                            {"recipe_id": _text(raw_item.get("recipe_id") or raw_item.get("recipeId"))}
+                            if _text(raw_item.get("recipe_id") or raw_item.get("recipeId"))
+                            else {}
+                        ),
+                        **(
+                            {"depends_on": list(raw_item.get("depends_on") or raw_item.get("dependsOn"))}
+                            if isinstance(
+                                raw_item.get("depends_on") or raw_item.get("dependsOn"),
+                                list,
+                            )
+                            else {}
+                        ),
+                        **(
+                            {"stage": _text(raw_item.get("stage"))}
+                            if _text(raw_item.get("stage"))
+                            else {}
+                        ),
+                        **(
+                            {"timeline_role": _text(raw_item.get("timeline_role") or raw_item.get("timelineRole"))}
+                            if _text(raw_item.get("timeline_role") or raw_item.get("timelineRole"))
+                            else {}
+                        ),
+                        **(
+                            {"model": _text(raw_item.get("model"))}
+                            if _text(raw_item.get("model"))
+                            else {}
+                        ),
                     }
                 )
     return items
@@ -1669,6 +1966,15 @@ def _without_private_fields(value: Any) -> Any:
 def _load_agent_config_items(
     kind: str, fallback_dir: Path, project_dir: Path | None = None
 ) -> list[dict[str, Any]]:
+    if list_user_agent_config_items is not None:
+        username = _catalog_username()
+        if username:
+            try:
+                loaded_items = list_user_agent_config_items(username, kind)
+                return _normalize_agent_config_items(kind, loaded_items)
+            except Exception:
+                pass
+
     if project_dir is None:
         project_dir = _PLUGIN_RECIPES_DIR if kind == "recipes" else _PLUGIN_SKILLS_DIR
     fallback_items = _load_json_dir(fallback_dir)
@@ -1681,18 +1987,13 @@ def _load_agent_config_items(
         ]
         if project_items:
             fallback_items = _merge_agent_config_items(fallback_items, project_items)
-    if list_user_agent_config_items is not None:
-        username = _catalog_username()
-        if username:
-            try:
-                loaded_items = list_user_agent_config_items(username, kind)
-                if loaded_items:
-                    return _normalize_agent_config_items(
-                        kind,
-                        _merge_agent_config_items(fallback_items, loaded_items),
-                    )
-            except Exception:
-                pass
+    if kind == "skills":
+        fallback_items = [
+            item
+            for item in fallback_items
+            if item.get("allowed_recipe_ids")
+            and not _templates(item)
+        ]
     return _normalize_agent_config_items(kind, fallback_items)
 
 
@@ -1748,10 +2049,8 @@ def _merge_agent_config_items(
 
 
 def _fallback_agent_config_items(kind: str) -> list[dict[str, Any]]:
-    if kind == "skills":
-        return [_fallback_skill(spec) for spec in _FALLBACK_WORKFLOW_SPECS]
-    if kind == "recipes":
-        return _fallback_recipes()
+    # Dynamic Skills and Recipes must come from the validated catalog. Do not
+    # silently resurrect legacy fixed workflow templates when the catalog is empty.
     return []
 
 

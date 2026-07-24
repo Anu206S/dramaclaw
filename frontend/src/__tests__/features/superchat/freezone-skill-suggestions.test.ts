@@ -23,12 +23,12 @@ describe("freezone skill slash suggestions", () => {
         id: "poster_design",
         name: "海报设计",
         enabled: true,
-        workflow_templates: [{ id: "poster" }],
+        allowed_recipe_ids: ["poster-image"],
         category: "visual",
         description: "海报视觉风格",
         triggers: { keywords: ["海报", { keyword: "视觉" }] },
       },
-      { id: "general", enabled: true, description: "没有工作流模板" },
+      { id: "general", enabled: true, description: "没有 Recipe 边界" },
       { id: "disabled_skill", enabled: false, description: "不展示" },
       { enabled: true, description: "没有 id" },
     ]);
@@ -48,14 +48,14 @@ describe("freezone skill slash suggestions", () => {
     const suggestions = toFreezoneSkillSuggestions([
       {
         id: "poster_design",
-        workflow_templates: [{ id: "poster" }],
+        allowed_recipe_ids: ["poster-image"],
         category: "visual",
         description: "海报视觉风格",
         triggers: { keywords: ["海报"] },
       },
       {
         id: "copy_plan",
-        workflow_templates: [{ id: "copy" }],
+        allowed_recipe_ids: ["copy-text"],
         category: "text",
         description: "详情页文案",
         triggers: { keywords: ["文案"] },

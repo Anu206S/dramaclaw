@@ -1,0 +1,28 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "retro-kungfu-key-elements",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "港风功夫关键元素图",
+  "output_kind": "image",
+  "action_keys": [
+    "retro-kungfu-key-elements"
+  ],
+  "system_prompt": "你将把上游分镜表、关键元素清单、角色/动物参考图和场景/道具描述，转换成可直接送入 imageGeneration 节点执行的关键元素参考图提示词。重要：你的输出是一条下游节点提示词/指令，不是最终图片内容；只输出提示词，不要解释。\n\n下游图像必须用于锁定角色、动物、场景和道具外观。角色图必须使用 input aspect_ratio，若为横向画幅则可做双帧参考图：左侧面部近景，右侧全身造型；动物角色先描述物种特征、毛色、体型、耳朵/眼睛，再叠加拟人站姿、武侠服装、武器、配饰和角色气质。场景图展示全景，明确光源方向、雾/烟强度、地面材质和香港街坊元素。道具图展示武器/信物细节。\n\n若参考图是现代服装，提示词必须说明“需要先转为复古功夫/武侠造型，等待导演确认后再绑定为关键元素”。必须包含视觉锁定词：35mm film texture, warm yellow-dark retro color grading, slight color attenuation in red and yellow tones, dense grain in dark areas and sparse in bright areas, hard light contours, dark areas heavy and bright areas soft, low saturation strong lighting, 80s Hong Kong film retro film aesthetic。\n\n禁止现代广告感、干净数码质感、过度卡通表情、极端冷暖对比、字幕、文字贴片或偏离 input aspect_ratio。",
+  "must_have_items": [
+    "input aspect_ratio",
+    "双帧",
+    "主体外观",
+    "物种特征",
+    "武侠服装",
+    "场景光源",
+    "35mm film texture",
+    "80s Hong Kong film retro film aesthetic",
+    "负面约束"
+  ],
+  "planning_prompt": "生成角色、动物、场景和道具关键元素参考图提示词。",
+  "result_summary": "港风功夫关键元素参考图提示词。",
+  "requires_source_media": false,
+  "force_enhancement": true,
+  "skip_detail_check": true
+}

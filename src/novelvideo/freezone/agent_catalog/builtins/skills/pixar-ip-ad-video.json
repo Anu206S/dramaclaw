@@ -1,0 +1,173 @@
+{
+  "schema_version": "dramaclaw.workflow-skill.v1",
+  "id": "pixar-ip-ad-video",
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "皮克斯3D卡通IP广告短片",
+  "description": "把 IP 角色描述、品牌/道具设定、广告剧情或参考素材发展成皮克斯 3D 卡通风格 IP 广告短片，按角色立绘、道具锚点、分镜草图、逐镜视频、音频层和合成规划分阶段推进。",
+  "category": "video",
+  "triggers": {
+    "keywords": [
+      "皮克斯广告",
+      "3D卡通IP短片",
+      "皮克斯风格广告",
+      "卡通IP角色广告",
+      "皮克斯产品广告",
+      "IP角色短片",
+      "卡通品牌广告"
+    ],
+    "node_scopes": [
+      "imageGeneration",
+      "videoGeneration",
+      "audioGeneration",
+      "textGeneration"
+    ]
+  },
+  "input_parameters": [
+    {
+      "id": "aspect_ratio",
+      "label": "画面比例",
+      "type": "single_select",
+      "required": false,
+      "default": "16:9",
+      "options": [
+        "16:9",
+        "9:16",
+        "1:1",
+        "3:4"
+      ]
+    },
+    {
+      "id": "shot_count",
+      "label": "分镜数量",
+      "type": "number",
+      "required": false,
+      "default": 4,
+      "options": [
+        "3",
+        "4",
+        "5",
+        "6"
+      ]
+    },
+    {
+      "id": "has_brand_logo",
+      "label": "是否包含品牌 Logo 收尾",
+      "type": "boolean",
+      "required": false,
+      "default": false,
+      "options": []
+    },
+    {
+      "id": "audio_mode",
+      "label": "音频模式",
+      "type": "single_select",
+      "required": false,
+      "default": "轻快欢乐背景音乐",
+      "options": [
+        "轻快欢乐背景音乐",
+        "温馨抒情背景音乐",
+        "动感节奏背景音乐",
+        "仅音效无配乐"
+      ]
+    }
+  ],
+  "allowed_recipe_ids": [
+    "pixar-ip-character-design",
+    "pixar-ip-prop-anchor",
+    "pixar-ip-storyboard-sketch",
+    "pixar-ip-shot-video",
+    "pixar-ip-audio-layers",
+    "pixar-ip-compose-plan"
+  ],
+  "planning": {
+    "planning_notes": "1. 从用户输入提取 IP 角色描述、品牌/道具设定、广告剧情概要；若缺少则询问补充。\n2. 按顺序执行：pixar-ip-character-design（角色立绘）→ pixar-ip-prop-anchor（道具锚点，可多个并行）→ pixar-ip-storyboard-sketch（分镜草图，需用户确认）→ pixar-ip-shot-video（逐镜视频，每镜独立，可并行）→ pixar-ip-audio-layers（音频层）→ pixar-ip-compose-plan（合成规划文本）→ videoCompose 终端合成。\n3. 角色立绘完成后，道具锚点引用角色立绘作为 media_input_for；分镜草图同时引用角色立绘。\n4. 逐镜视频引用分镜草图 + 角色立绘 + 道具锚点（按需）作为 media_input_for。\n5. 音频层在所有视频镜头完成后生成。\n6. 合成规划文本完成后进入 videoCompose 终端步骤。\n7. 画面比例由 input_parameters.aspect_ratio 决定，贯穿所有 image/video 节点。\n8. 分镜数量由 input_parameters.shot_count 决定。\n9. 视觉风格：皮克斯3D卡通渲染，C4D+Octane 质感，柔和暖色调光影，圆润人物建模，毛绒/光滑质感细腻，极简浅米色纯色背景（立绘/道具），场景镜头使用暖橙金色调自然光。",
+    "prompt_guide": "所有提示词使用中文撰写。角色描述须包含完整的视觉特征锁定语句（如「角色造型锁定：XXX，全程不得改变」）。分镜提示词须逐格描述动作、表情、镜头运动。视频提示词须引用分镜对应格并补充表演风格和运镜指令。",
+    "conduct_rules": [
+      "严格按 角色立绘 → 道具锚点 → 分镜草图 → 逐镜视频 → 音频层 → 合成规划 顺序执行，不得跳步",
+      "每步只创建一个节点，不得合并多步输出",
+      "道具锚点和分镜草图必须以角色立绘为参考输入（media_input_for）",
+      "逐镜视频必须以分镜草图为故事板指导，同时引用角色立绘和道具锚点",
+      "分镜草图阶段必须等待用户确认后再进入视频阶段",
+      "逐镜视频阶段每个镜头独立生成，不得合并多镜",
+      "音频层在所有视频镜头完成后生成",
+      "合成规划在音频层完成后生成，作为 videoCompose 步骤的前置文本规划",
+      "角色核心特征（毛色、体型、耳朵、表情等）在所有下游节点提示词中必须原文引用锁定",
+      "品牌名称和产品卖点在分镜和视频提示词中不得改写或省略"
+    ]
+  },
+  "evaluation": {
+    "rating_bands": [
+      {
+        "score": 9,
+        "description": "角色/道具/分镜/视频风格高度统一，品牌元素清晰，叙事流畅完整"
+      },
+      {
+        "score": 7,
+        "description": "风格基本统一，偶有细节偏差但不影响整体观感"
+      },
+      {
+        "score": 5,
+        "description": "风格出现明显不一致，角色/道具变形或品牌元素缺失"
+      },
+      {
+        "score": 3,
+        "description": "角色/道具严重偏离设定，分镜与视频不对应，无法使用"
+      }
+    ],
+    "visual_review_items": [
+      {
+        "name": "角色一致性",
+        "description": "角色在立绘、道具、分镜、视频中造型一致",
+        "weight": 0.3
+      },
+      {
+        "name": "道具一致性",
+        "description": "道具外观与锚点图一致，品牌文字清晰",
+        "weight": 0.2
+      },
+      {
+        "name": "风格统一性",
+        "description": "皮克斯3D卡通渲染、柔和暖色调、圆润建模风格统一",
+        "weight": 0.25
+      },
+      {
+        "name": "分镜质量",
+        "description": "分镜构图清晰、动作指示明确、镜头语言合理",
+        "weight": 0.25
+      }
+    ],
+    "text_review_items": [
+      {
+        "name": "叙事完整性",
+        "description": "分镜剧情是否覆盖广告叙事弧线（引入→发现→高潮→收尾）",
+        "weight": 0.3
+      },
+      {
+        "name": "品牌信息准确度",
+        "description": "品牌名称、Slogan、产品卖点是否准确嵌入",
+        "weight": 0.25
+      },
+      {
+        "name": "提示词结构质量",
+        "description": "逐镜提示词是否包含角色锁定、道具参考、场景与表演指令",
+        "weight": 0.25
+      },
+      {
+        "name": "音频与合成规划",
+        "description": "音频层与合成规划是否覆盖所有镜头且时间线合理",
+        "weight": 0.2
+      }
+    ],
+    "quality_threshold": 7,
+    "domain_constraints": [
+      "角色造型全程锁定，不得在分镜/视频/合成阶段改变核心特征",
+      "道具外观与道具锚点严格一致，不得变形或增加细节",
+      "分镜草图必须为纯铅笔线稿黑白风格，不上色不上灰度",
+      "逐镜视频必须参考分镜草图对应格的动作与构图",
+      "每个视频镜头中主角只出现一次，不得出现重复角色或分身",
+      "品牌 Logo 展示须与道具锚点一致，只展示正面单面"
+    ]
+  },
+  "workflow_templates": []
+}

@@ -68,11 +68,6 @@
   },
   "id": "pixar-ip-brand-ad-short-film",
   "name": "皮克斯 IP 品牌广告短片",
-  "aliases": [
-    "皮克斯IP广告",
-    "品牌IP动画广告",
-    "Pixar IP ad"
-  ],
   "planning": {
     "conduct_rules": [
       "先完成角色立绘锚定，审批通过后才可开始道具锚定和分镜草图",
@@ -85,10 +80,6 @@
       "最终合成只接收视频和音频产物，不接收文本/简报/prompt",
       "默认图片比例1:1（角色/道具），分镜16:9，视频16:9"
     ],
-    "default_aspect_ratios": {
-      "imageGeneration": "1:1",
-      "videoGeneration": "16:9"
-    },
     "planning_notes": "执行路径：1) ip-character-anchor (imageGeneration) 生成品牌IP角色立绘，锁定角色外观 → 2) brand-prop-anchor (imageGeneration) 生成品牌道具锚点图，引用角色立绘保持风格一致 → 3) pixar-storyboard-sketch (imageGeneration) 生成分镜草图，引用角色+道具，黑白铅笔线稿 → 用户审核分镜 → 4) pixar-shot-video-clip (videoGeneration) 按分镜逐段生成视频片段，每段引用角色+分镜+道具 → 5) ad-audio-production (audioGeneration) 生成配音/旁白/音乐 → 6) videoCompose 最终合成所有视频和音频资产。上游依赖：道具依赖角色，分镜依赖角色+道具，视频依赖角色+道具+分镜，音频依赖视频段落，合成依赖全部视频+音频。审核闸门：角色立绘审批后继续道具，分镜草图审批后继续视频。比例策略：角色/道具1:1，分镜16:9，视频16:9。",
     "prompt_guide": "所有提示词必须包含皮克斯3D卡通渲染风格声明、角色造型锁定声明、道具引用声明和负向约束。分镜阶段额外声明黑白铅笔线稿风格例外。视频阶段额外声明角色不分身约束和引用链完整性。"
   },
@@ -112,102 +103,13 @@
       "audioGeneration"
     ]
   },
-  "workflow_templates": [
-    {
-      "condition": {
-        "message_keywords": [
-          "广告",
-          "短片",
-          "品牌",
-          "IP",
-          "角色",
-          "产品"
-        ]
-      },
-      "description": "从品牌IP角色锚定到最终合成成片的完整皮克斯风格广告短片工作流",
-      "id": "pixar-brand-ad-full",
-      "name": "皮克斯品牌IP广告短片全流程",
-      "steps": [
-        {
-          "action_key": "ip-character-anchor",
-          "aspect_ratio": "1:1",
-          "goal_template": "生成品牌IP角色立绘，锁定角色外观、配色、配件和整体风格",
-          "id": "step_character",
-          "input_strategy": {
-            "type": "user_message"
-          },
-          "multiplicity": "single",
-          "need_review": true,
-          "node_type": "imageGeneration",
-          "prompt_strategy": "llm_refine",
-          "step_number": 1
-        },
-        {
-          "action_key": "brand-prop-anchor",
-          "aspect_ratio": "1:1",
-          "goal_template": "生成品牌道具锚点图，引用角色立绘保持风格一致，只展示指定视角",
-          "id": "step_prop",
-          "input_strategy": {
-            "step_id": "step_character",
-            "type": "previous_step"
-          },
-          "multiplicity": "per_input",
-          "need_review": true,
-          "node_type": "imageGeneration",
-          "prompt_strategy": "llm_refine",
-          "step_number": 2
-        },
-        {
-          "action_key": "pixar-storyboard-sketch",
-          "aspect_ratio": "16:9",
-          "goal_template": "生成黑白铅笔线稿分镜草图，引用角色立绘和道具锚点，规划剧情段落",
-          "id": "step_storyboard",
-          "input_strategy": {
-            "step_id": "step_prop",
-            "type": "previous_step"
-          },
-          "multiplicity": "single",
-          "need_review": true,
-          "node_type": "imageGeneration",
-          "prompt_strategy": "llm_refine",
-          "step_number": 3
-        },
-        {
-          "action_key": "pixar-shot-video-clip",
-          "aspect_ratio": "16:9",
-          "goal_template": "按分镜逐段生成视频片段，每段引用角色立绘、分镜草图和道具锚点",
-          "id": "step_video",
-          "input_strategy": {
-            "step_id": "step_storyboard",
-            "type": "previous_step"
-          },
-          "multiplicity": {
-            "type": "fixed_count",
-            "default_count": 4,
-            "user_overridable": true,
-            "min": 1,
-            "max": 12
-          },
-          "need_review": true,
-          "node_type": "videoGeneration",
-          "prompt_strategy": "llm_refine",
-          "step_number": 4
-        },
-        {
-          "action_key": "ad-audio-production",
-          "goal_template": "生成配音、旁白或背景音乐，情绪节奏匹配对应视频段落",
-          "id": "step_audio",
-          "input_strategy": {
-            "step_id": "step_video",
-            "type": "previous_step"
-          },
-          "multiplicity": "single",
-          "need_review": false,
-          "node_type": "audioGeneration",
-          "prompt_strategy": "llm_refine",
-          "step_number": 5
-        }
-      ]
-    }
-  ]
+  "schema_version": "dramaclaw.workflow-skill.v1",
+  "allowed_recipe_ids": [
+    "ip-character-anchor",
+    "brand-prop-anchor",
+    "pixar-storyboard-sketch",
+    "pixar-shot-video-clip",
+    "ad-audio-production"
+  ],
+  "input_parameters": []
 }
