@@ -5,51 +5,55 @@
   "version": 2,
   "description": "从文字创意动态展开多个镜头，先生成关键图，再逐镜头生成视频并自动合成。",
   "category": "creation",
-  "aliases": ["文生图生视频", "动态文生视频", "文字生成多镜头视频", "text to image to video"],
   "triggers": {
-    "keywords": ["文生图生视频", "文生视频", "文字生成视频", "文本生成视频"],
-    "node_scopes": ["textGeneration", "imageGeneration", "videoGeneration"]
+    "keywords": [
+      "文生图生视频",
+      "文生视频",
+      "文字生成视频",
+      "文本生成视频"
+    ],
+    "node_scopes": [
+      "textGeneration",
+      "imageGeneration",
+      "videoGeneration"
+    ]
   },
   "planning": {
     "planning_notes": "根据用户描述和时长动态确定镜头数；每个计划项对应一张关键图和一段视频。",
-    "prompt_guide": "镜头之间保持主体、场景和视觉风格连续，单个计划项只描述一个镜头。"
+    "prompt_guide": "镜头之间保持主体、场景和视觉风格连续，单个计划项只描述一个镜头。",
+    "conduct_rules": [
+      "根据用户目标动态决定节点数量和依赖关系",
+      "仅使用 allowed_recipe_ids 中声明的能力",
+      "创建画布节点前先生成并确认动态计划"
+    ]
   },
-  "workflow_templates": [
-    {
-      "id": "text-to-video-dynamic",
-      "name": "动态文生图生视频",
-      "steps": [
-        {
-          "id": "visual-plan",
-          "step_number": 1,
-          "goal_template": "整理视觉设定并生成逐镜头计划",
-          "node_type": "textGeneration",
-          "action_key": "general-text",
-          "prompt_strategy": "user_message",
-          "input_strategy": {"type": "none"},
-          "multiplicity": "single"
-        },
-        {
-          "id": "keyframes",
-          "step_number": 2,
-          "goal_template": "逐镜头生成关键画面",
-          "node_type": "imageGeneration",
-          "action_key": "general-image",
-          "prompt_strategy": "llm_refine",
-          "input_strategy": {"type": "previous_step", "step_id": "visual-plan"},
-          "multiplicity": "per_plan_item"
-        },
-        {
-          "id": "video-clips",
-          "step_number": 3,
-          "goal_template": "根据关键画面逐镜头生成视频",
-          "node_type": "videoGeneration",
-          "action_key": "general-video",
-          "prompt_strategy": "llm_refine",
-          "input_strategy": {"type": "previous_step", "step_id": "keyframes"},
-          "multiplicity": "per_input"
-        }
-      ]
-    }
-  ]
+  "schema_version": "dramaclaw.workflow-skill.v1",
+  "allowed_recipe_ids": [
+    "general-text",
+    "general-image",
+    "general-video"
+  ],
+  "input_parameters": [],
+  "evaluation": {
+    "rating_bands": [
+      {
+        "score": 10,
+        "description": "完整满足用户目标且工作流可以执行"
+      },
+      {
+        "score": 7,
+        "description": "核心流程完整，允许少量非关键调整"
+      },
+      {
+        "score": 4,
+        "description": "缺少关键阶段或依赖关系不完整"
+      }
+    ],
+    "visual_review_items": [],
+    "text_review_items": [],
+    "quality_threshold": 7,
+    "domain_constraints": [
+      "工作流必须符合用户目标并保持输入素材一致性"
+    ]
+  }
 }

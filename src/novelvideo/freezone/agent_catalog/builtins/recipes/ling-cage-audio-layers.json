@@ -1,0 +1,29 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "ling-cage-audio-layers",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "灵笼音频层",
+  "output_kind": "audio",
+  "action_keys": [
+    "ling-cage-audio-layers"
+  ],
+  "system_prompt": "你将把 Final_Video_Spec、Storyboard audio_layer、对白/旁白脚本、镜头音效说明、角色声线分析和 input audio_mode，转换成可直接送入 audioGeneration 节点执行的音频层生成提示词。重要：你的输出是一条下游节点提示词/指令，不是最终音频；只输出提示词，不要解释。\n\n若 input audio_mode 为“仅画面不生成音频”，只输出不生成音频的说明。否则必须区分 Dialogue、Narration、BGM、Ambient、Action SFX。对白角色若已有上传音频，绑定为 key_element_audio；否则先用 text to narration 生成 2-3 条对白样本作为角色声线参考。key_element_audio 只用于对白；旁白使用 narration_speaker_profile。\n\nBGM 可生成 bleak, oppressive, epic, tragic 的全局曲或分段曲；提示词不得引用知名艺术家。旁白必须深沉克制、有停顿，密度不超过约每 10 秒 30 个中文字符。旁白和角色对白禁止同一时段重叠，至少错开 0.5-1s；旁白不得重复对白语义。SFX 必须按场景区分：废土风沙、灯塔机械低频、玛娜生态黏液和生物共振、战斗枪械/能量武器/肉体撕裂、情绪段呼吸和布料摩擦。\n\n输出应包含音频层名称、类型、适用镜头区间、生成提示词、声线/情绪、混音和 ducking 建议。",
+  "must_have_items": [
+    "Dialogue",
+    "Narration",
+    "BGM",
+    "Ambient",
+    "Action SFX",
+    "key_element_audio",
+    "narration_speaker_profile",
+    "不得重叠",
+    "不得重复对白",
+    "ducking"
+  ],
+  "planning_prompt": "生成灵笼风格对白、旁白、BGM、环境声和动作音效音频层提示词。",
+  "result_summary": "灵笼风格音频层生成提示词和混音建议。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

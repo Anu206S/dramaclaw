@@ -20,19 +20,15 @@ SCHEMA_VERSION = "freezone_workflow_draft.v1"
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
 PATCHABLE_FIELDS = {
     "assumptions",
-    "exclude_steps",
     "include_audio",
     "include_compose",
     "inputs",
     "items",
-    "source_anchor",
-    "step_counts",
     "summary",
-    "template_id",
     "title",
     "user_goal",
 }
-MERGED_OBJECT_FIELDS = {"inputs", "step_counts"}
+MERGED_OBJECT_FIELDS = {"inputs"}
 
 
 def _draft_dir() -> Path:
@@ -139,13 +135,11 @@ def _plan_preview(compiled: dict[str, Any]) -> dict[str, Any]:
     return {
         "title": str(plan.get("summary") or "").strip(),
         "skill_id": str(compiled.get("skill_id") or "").strip(),
-        "template_id": str(compiled.get("template_id") or "").strip(),
         "inputs": deepcopy(plan.get("inputs") or {}),
         "phases": [str(item).strip() for item in phases if str(item).strip()],
         "nodes": preview_nodes,
         "node_count": len(preview_nodes),
         "edge_count": int(compiled.get("edge_count") or 0),
-        "step_counts": deepcopy(compiled.get("step_counts") or {}),
     }
 
 

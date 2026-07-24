@@ -60,8 +60,8 @@ function readKeywords(value: unknown): string[] {
   return keywords;
 }
 
-function hasWorkflowTemplates(value: unknown): boolean {
-  return Array.isArray(value) && value.length > 0;
+function hasRecipeBoundary(value: unknown): boolean {
+  return Array.isArray(value) && value.some((item) => readString(item));
 }
 
 export function toFreezoneSkillSuggestions(
@@ -71,7 +71,7 @@ export function toFreezoneSkillSuggestions(
   return items.flatMap((item) => {
     const id = readString(item.id);
     if (!id || item.enabled === false) return [];
-    if (!hasWorkflowTemplates(item.workflow_templates)) return [];
+    if (!hasRecipeBoundary(item.allowed_recipe_ids ?? item.allowedRecipeIds)) return [];
     const triggers = item.triggers && typeof item.triggers === "object"
       ? item.triggers as Record<string, unknown>
       : {};

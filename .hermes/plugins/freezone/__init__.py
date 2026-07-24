@@ -3503,7 +3503,6 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
             "enum": ["freezone_workflow_intent.v1"],
         },
         "skill_id": {"type": "string"},
-        "template_id": {"type": "string"},
         "user_goal": {"type": "string"},
         "title": {"type": "string"},
         "summary": {"type": "string"},
@@ -3511,50 +3510,30 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
         "items": {
             "type": "array",
             "description": (
-                "Short creative item or shot decisions. Strings are accepted; objects may "
-                "contain title, prompt, and optional step_id."
+                "Dynamic PlanItems. Each item selects one allowed Recipe and declares only "
+                "its real input dependencies; the tool creates nodes, edges, layout, and groups."
             ),
             "maxItems": 24,
             "items": {
-                "oneOf": [
-                    {"type": "string"},
-                    {
-                        "type": "object",
-                        "properties": {
-                            "title": {"type": "string"},
-                            "prompt": {"type": "string"},
-                            "step_id": {"type": "string"},
-                        },
+                "type": "object",
+                "properties": {
+                    "id": {"type": "string"},
+                    "title": {"type": "string"},
+                    "prompt": {"type": "string"},
+                    "narration": {"type": "string"},
+                    "recipe_id": {"type": "string"},
+                    "depends_on": {
+                        "type": "array",
+                        "items": {"type": "string"},
                     },
-                ]
+                    "stage": {"type": "string"},
+                    "timeline_role": {"type": "string"},
+                },
+                "required": ["id", "title", "recipe_id"],
             },
-        },
-        "step_counts": {
-            "type": "object",
-            "description": "Optional per-step count overrides keyed by Skill step id.",
-        },
-        "exclude_steps": {
-            "type": "array",
-            "items": {"type": "string"},
         },
         "include_audio": {"type": "boolean"},
         "include_compose": {"type": "boolean"},
-        "source_anchor": {
-            "oneOf": [
-                {"type": "boolean"},
-                {
-                    "type": "object",
-                    "properties": {
-                        "enabled": {"type": "boolean"},
-                        "title": {"type": "string"},
-                        "prompt": {"type": "string"},
-                    },
-                },
-            ],
-            "description": (
-                "Use true or a short object when missing source media should be generated first."
-            ),
-        },
         "assumptions": {"type": "array", "items": {"type": "string"}},
     },
     "required": ["skill_id", "user_goal"],
@@ -3686,14 +3665,7 @@ _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA = {
         "default": {},
         "options": {
             "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "value": {"type": "string"},
-                    "label": {"type": "string"},
-                },
-                "required": ["value", "label"],
-            },
+            "items": {"type": "string"},
         },
     },
     "required": ["id", "label", "type", "required"],
@@ -3709,6 +3681,17 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
         "id": {
             "type": "string",
             "description": "Lowercase id using letters, numbers, underscores, or hyphens.",
+        },
+        "name": {
+            "type": "string",
+            "description": "User-facing Skill name.",
+        },
+        "schema_version": {
+            "type": "string",
+            "enum": ["dramaclaw.workflow-skill.v1"],
+        },
+        "version": {
+            "oneOf": [{"type": "string"}, {"type": "number"}],
         },
         "description": {
             "type": "string",
@@ -3817,8 +3800,25 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
             ),
             "items": _SKILL_STUDIO_INPUT_PARAMETER_SCHEMA,
         },
+        "allowed_recipe_ids": {
+            "type": "array",
+            "description": "Recipe ids this dynamic Skill may select at runtime.",
+            "items": {"type": "string"},
+            "minItems": 1,
+        },
     },
-    "required": ["id", "description", "category", "triggers", "planning", "evaluation"],
+    "required": [
+        "id",
+        "name",
+        "schema_version",
+        "version",
+        "description",
+        "category",
+        "triggers",
+        "planning",
+        "evaluation",
+        "allowed_recipe_ids",
+    ],
 }
 
 _SKILL_STUDIO_RECIPE_SCHEMA = {
@@ -4528,9 +4528,8 @@ TOOLS = (
                     "type": "object",
                     "description": (
                         "Changed compact-intent fields only. Supported fields: user_goal, title, "
-                        "summary, inputs, items, step_counts, exclude_steps, include_audio, "
-                        "include_compose, source_anchor, template_id, assumptions. Null removes "
-                        "an optional field; inputs and step_counts are merged."
+                        "summary, inputs, items, include_audio, include_compose, assumptions. "
+                        "Null removes an optional field; inputs are merged."
                     ),
                 },
                 **_WORKFLOW_RUN_AFTER_CREATE_PROPS,

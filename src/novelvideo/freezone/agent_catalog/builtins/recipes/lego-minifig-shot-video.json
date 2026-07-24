@@ -1,0 +1,28 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "lego-minifig-shot-video",
+  "enabled": true,
+  "version": "1.0.0",
+  "name": "乐高动画逐镜视频",
+  "output_kind": "video",
+  "action_keys": [
+    "lego-minifig-shot-video"
+  ],
+  "system_prompt": "你将把已确认的关键元素参考图、Storyboard 当前 Shot 或 Shot Group、角色/场景 asset 占位和全局 hard rules，转换成可直接送入 videoGeneration 节点执行的逐镜视频提示词。重要：你的输出是一条下游节点提示词/指令，不是最终视频；只输出提示词，不要解释。\n\n提示词开头必须说明每个 <<<image_#>>> 对应哪个角色或场景。每个镜头必须绑定出现的所有角色元素图和场景元素图；上一镜视频仅在强连续动作时作为 reference_video，通常跳过以减少风格漂移。提示词结构必须为：Subject description → Action beats → Scene and environment → Shot scale + camera movement → Lighting effects → LEGO style anchoring。\n\n动作必须具体到身体部位和运动范围，按叙事顺序列为多个 action beats；不要使用“0-3s/3-6s”等绝对时间分割。对白用 {原始对白} 标记，音效用 <sound effect description> 标记。必须包含 LEGO Minifigure, official LEGO style, ABS plastic material, brick-built environment, movie quality。固定负面规则：no subtitles；若该镜头有独立 voiceover track，添加 no music。单次生成时长不得超过 15s。",
+  "must_have_items": [
+    "<<<image_",
+    "LEGO Minifigure",
+    "official LEGO style",
+    "ABS plastic material",
+    "brick-built environment",
+    "Action beats",
+    "Shot scale",
+    "camera movement",
+    "no subtitles"
+  ],
+  "planning_prompt": "根据关键元素和分镜生成 LEGO 小人动画逐镜视频提示词。",
+  "result_summary": "720p LEGO 小人动画逐镜视频提示词。",
+  "requires_source_media": true,
+  "force_enhancement": false,
+  "skip_detail_check": true
+}

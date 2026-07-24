@@ -2353,8 +2353,12 @@ describe("Skill Studio draft response", () => {
       summary: "草稿摘要",
       skill: {
         id: "home-culture-poster",
+        name: "家乡文化海报",
+        schema_version: 1,
+        version: "1.0.0",
         description: "家乡文化海报",
         category: "social",
+        allowed_recipe_ids: ["home-culture-poster-image"],
         planning: {
           metaPlanningHints: "先识别地域符号",
         },
@@ -2497,8 +2501,12 @@ describe("Skill Studio draft response", () => {
     const items = buildSkillStudioCatalogSaveItemsForTest({
       skill: {
         id: "home-culture-poster",
+        name: "家乡文化海报",
+        schema_version: "dramaclaw.workflow-skill.v1",
+        version: "1.0.0",
         description: "家乡文化海报",
         category: "social",
+        allowed_recipe_ids: ["home-culture-poster-image"],
         triggers: {
           keywords: ["家乡文化"],
           node_scopes: ["imageGeneration"],
@@ -2524,20 +2532,6 @@ describe("Skill Studio draft response", () => {
             dimensions: [{ name: "文案清晰度", weight: 0.4, description: "文案简洁" }],
           },
         },
-        workflow_templates: [
-          {
-            id: "home-culture-poster-flow",
-            description: "生成家乡文化海报工作流",
-            steps: [
-              {
-                id: "brief",
-                step_number: 1,
-                node_type: "textAnnotationNode",
-                action_key: "home-culture-poster-brief",
-              },
-            ],
-          },
-        ],
       },
       recipes: [
         {
@@ -2559,7 +2553,11 @@ describe("Skill Studio draft response", () => {
         kind: "skills",
         payload: expect.objectContaining({
           id: "home-culture-poster",
+          name: "家乡文化海报",
+          schema_version: "dramaclaw.workflow-skill.v1",
+          version: "1.0.0",
           enabled: true,
+          allowed_recipe_ids: ["home-culture-poster-image"],
           triggers: {
             keywords: ["家乡文化"],
             node_scopes: ["imageGeneration"],
@@ -2583,20 +2581,6 @@ describe("Skill Studio draft response", () => {
               { name: "文案清晰度", weight: 0.4, description: "文案简洁" },
             ],
           }),
-          workflow_templates: [
-            {
-              id: "home-culture-poster-flow",
-              description: "生成家乡文化海报工作流",
-              steps: [
-                {
-                  id: "brief",
-                  step_number: 1,
-                  node_type: "textGeneration",
-                  action_key: "home-culture-poster-brief",
-                },
-              ],
-            },
-          ],
         }),
       }),
       expect.objectContaining({
