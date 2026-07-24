@@ -511,7 +511,10 @@ def test_resolve_saved_skill_studio_tool_result_tells_agent_catalog_is_formal(mo
     assert resolved["saved_skill_ids"] == ["home-culture-poster"]
     assert resolved["saved_recipe_ids"] == ["home-culture-poster-image"]
     assert "saved" in resolved["agent_instruction"]
+    assert "not the user saying 'ok'" in resolved["agent_instruction"]
+    assert "Do not apply user-profile rules for short 'ok' replies" in resolved["agent_instruction"]
     assert "Do not ask the user to save it again" in resolved["agent_instruction"]
+    assert "Reply briefly in Chinese only" in resolved["agent_instruction"]
     assert saved_items == [
         ("skills", {"id": "home-culture-poster"}),
         ("recipes", {"id": "home-culture-poster-image"}),
