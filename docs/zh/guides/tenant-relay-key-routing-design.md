@@ -2,7 +2,7 @@
 
 > 状态：实施方案
 >
-> 代码基线：DramaClaw `freezone-canvas`；虾驿 = `claymore-llm-gateway`（QuantumNous/new-api fork）
+> 代码基线：DramaClaw `freezone-canvas`；虾驿 = `claymore-llm-gateway`（QuantumNous/new-api fork）；EE = `SuperTale_main`（积分实现在 `src/novelvideo_ee/ports_bootstrap.py`）
 >
 > 适用范围：起步与试用客户的共享实例。大客户走独立部署，不在本方案内。
 
@@ -15,18 +15,21 @@
 | 未配置 | **部署级** key（SaaS 运营方配的） | 运营方 | **扣积分**（运营方靠此回收成本） |
 | 配了自己的 | **用户级** key（BYOK） | 用户自己 | **不扣**（否则双重收费） |
 
-要做的四件事：
+要做的五件事：
 
 | 序 | 做什么 | 主要文件 | 实测规模 |
 | --- | --- | --- | --- |
 | 1 | Agent 单例按 key 分桶 | `freezone/text_node.py`、`agents/global_video_optimizer.py`、`model_gateway_runtime.py` | 3 处同一模式，**getter 共 6 个调用点** |
 | 2 | `tenant_relay_key` 表 + admin 接口 | `model_gateway_settings.py`、`api/routes/model_gateway.py` | ~120 行机械活，`settings.db` 与 `save_*` 模式现成 |
-| 3 | `get_effective_newapi_config(username=...)`；同一结果驱动积分跳过 | `model_gateway_settings.py:499`、`ports/usage.py`、`ports/local/usage.py` | **仅 4 个调用点**；预留已包了一层，加判断有现成落点 |
-| 4 | 虾驿侧配置（用户 / token / 渠道 / `auto` 分组） | 虾驿后台或 admin API | **零代码**，纯后台配置 |
+| 3 | `get_effective_newapi_config(username=...)`；BYOK 标记进 contextvars | `model_gateway_settings.py:499`、`llm_instrumentation.py`、`task_backend/run_core.py:196` | key 解析**仅 4 个调用点**；标记有**两个设置点**（请求入口 + 任务侧） |
+| 4 | EE 的 `EEUsageMeter` 加 BYOK 判断 | `SuperTale_main/src/novelvideo_ee/ports_bootstrap.py:170` | **一个类里加 6 个 `if`**；业务代码 37 处一行不改（§3.2） |
+| 5 | 虾驿侧配置（用户 / token / 渠道 / `auto` 分组） | 虾驿后台或 admin API | **零代码**，纯后台配置 |
 
-**合计约 250 行加测试。** 规模不大，原因是三处关键收口都很窄：`get_effective_newapi_config` 只有 4 个调用点、三个 Agent getter 合计只有 6 个调用点、`usage_meter` 有本地实现（`ports/local/usage.py`）不必等外部组件。
+**合计约 250 行加测试。** 规模不大，原因是每处收口都很窄：`get_effective_newapi_config` 只有 4 个调用点、三个 Agent getter 合计 6 个调用点、扣费靠 EE 薄壳层 6 个 `if` 收口、虾驿侧零代码。
 
-**第 1 项必须先做，而且它是唯一的结构性障碍。** 不是「小心别写错」，而是现有的三个 `if is None` 让功能根本不成立——key 解析逻辑再正确，请求到那三处都会被第一个创建者的 key 覆盖（§3.4）。其余三项都属于照着改即可。
+**扣费正确性只依赖三处**：一个判断函数（读 contextvar）、两个标记设置点（HTTP 请求入口与 `task_backend/run_core.py:196`）。验收覆盖这三处即可，不必逐个审查 37 个积分调用点（§3.2）。
+
+**第 1 项必须先做，而且它是唯一的结构性障碍。** 不是「小心别写错」，而是现有的三个 `if is None` 让功能根本不成立——key 解析逻辑再正确，请求到那三处都会被第一个创建者的 key 覆盖（§3.4）。其余各项都属于照着改即可。
 
 第 1 项还可以**独立于 BYOK 先落地**：改成按 key 分桶后，只有一个桶时行为与现在完全一致，等于一次无风险的结构清理，同时把这条路的唯一障碍拆掉。之后 BYOK 何时做都不再受它阻塞。
 
@@ -317,6 +320,107 @@ def get_effective_newapi_config(
 
 这个边界比「跳过扣减」这种描述可执行得多：**凡是带 `reservation` 语义的一组跳过，凡是 `bump_*` / `record_*` / `log_*` 的一组不动。**
 
+##### 这份清单是给实现层的，不要在业务代码里逐处判断
+
+积分侧这几个函数在业务代码中的调用面不小，实测：
+
+```text
+reserve_current_model_call_credit       10 处
+refund_feature_credit_reservation       10 处
+refund_model_call_credit_reservation     9 处
+confirm_feature_credit_reservation       5 处
+reserve_feature_start_credits            2 处
+require_feature_credit_balance           1 处
+                                    合计 37 处
+```
+
+**在 37 处各自加 `if source == "tenant"` 必然漏，而且漏掉的每一处都是一笔静默错账。**
+
+正确做法是**单点收口**，业务代码那 37 处一行不改。收口点已确认，见下。
+
+##### 收口点在 EE 的 `EEUsageMeter`（已确认）
+
+先说清一件容易走错的事：**本仓 `src/novelvideo/ports/local/usage.py` 是 `NoOpUsageMeter`，所有积分方法都是空操作**：
+
+```python
+class NoOpUsageMeter:
+    async def reserve_current_model_call_credit(...) -> str:
+        return ""
+    async def refund_model_call_credit_reservation(...) -> None:
+        return None
+    async def reserve_feature_start_credits(...) -> dict:
+        return {"id": "", "cost": 0, "reserved": False, ...}
+```
+
+**CE 根本不扣积分**，在这个文件里加判断毫无意义。真实实现在 EE：
+
+```text
+SuperTale_main/src/novelvideo_ee/ports_bootstrap.py:170   class EEUsageMeter
+SuperTale_main/src/novelvideo_ee/ports_bootstrap.py:478   register_port("usage_meter", EEUsageMeter())
+```
+
+而 `EEUsageMeter` 是**一层纯转发的薄壳**，积分核心逻辑在 `metrics_emit` 与 `credit_ledger` 里：
+
+```python
+class EEUsageMeter:
+    async def reserve_current_model_call_credit(self, *, model, ...) -> str:
+        return await metrics_emit.reserve_current_model_call_credit(...)      # 转发
+
+    async def reserve_feature_start_credits(self, *, user_id, ...) -> dict:
+        return await credit_ledger.reserve_feature_start_credits(...)         # 转发
+```
+
+**这层薄壳就是理想收口点**——在 6 个积分方法开头各加一句判断，不转发即返回空值：
+
+```python
+async def reserve_current_model_call_credit(self, *, model, ...) -> str:
+    if _current_request_is_byok():
+        return ""            # 返回值形状照抄 NoOpUsageMeter
+    return await metrics_emit.reserve_current_model_call_credit(...)
+```
+
+返回值形状**照抄 `NoOpUsageMeter`**（`""` / `None` / `{"id": "", "cost": 0, "reserved": False, ...}`）——那是本仓现成、且已被 CE 长期运行验证过的空操作契约，不要自己设计。
+
+由此得到三个结论：
+
+- **不改 `metrics_emit` / `credit_ledger`**，积分核心逻辑一行不碰；
+- **不需要包代理或替换 port 实例**，用量侧方法（`bump_model_call` / `record_llm_tokens` 等）原样不动，天然满足「不扣但要记」；
+- **业务代码 37 处一行不改**。
+
+EE 侧的实际工作量就是**在一个类里加 6 个 `if`**。
+
+##### BYOK 标记走 contextvars，且任务侧会重建（已确认）
+
+`EEUsageMeter` 的方法签名里没有 username，所以判断依据必须走请求级上下文。机制已确认可用：
+
+`src/novelvideo/llm_instrumentation.py` 用的是 `contextvars.ContextVar`，且已有两个可直接照抄的先例：
+
+```python
+_USER_CTX: ContextVar[Optional[str]]                    # 用户 id 已在上下文里
+_CREDIT_RESERVATION_STACK: ContextVar[tuple[str, ...]]
+_AGENT_CREDIT_RESERVATION_ACTIVE: ContextVar[bool]      # 布尔标记的现成范式
+```
+
+新增一个 `_BYOK_ACTIVE: ContextVar[bool]`，在 `set_llm_usage_context()` 里一并设置即可——它已经是集中设置各个 contextvar 的地方。
+
+**contextvars 的已知陷阱是跨线程与跨进程不传播**，而生成任务走 `task_backend`。这一点已确认不成问题：
+
+```python
+# src/novelvideo/task_backend/run_core.py:196
+get_usage_meter().set_llm_usage_context(
+    billing_user_id,
+    project_id=...,
+    resource_kind=_resource_kind_for_task(task_type),
+    billing_metadata={...},
+)
+```
+
+**任务侧会在任务开始处重新调用 `set_llm_usage_context`**，上下文是重建的，不依赖跨线程传播。所以只要在这一处也把 BYOK 标记一起设上，任务路径与请求路径行为一致。
+
+这一处是实施时唯一需要小心的地方：**`run_core.py:196` 与 HTTP 请求入口两处都要设标记，漏掉任一处，对应路径的 BYOK 用户就会被误扣积分。** 验收里要分别覆盖同步请求与后台任务两条路径。
+
+这样扣费的正确性只依赖「一个判断函数 + 两个设置点」，测试也只需覆盖这三处。**「扣费各自扣各自的」这件事由收口保证，不由 37 处的自觉保证。**
+
 #### `credit_reservation_id` 天然就是路径标记
 
 `bump_model_call` 的签名里有 `credit_reservation_id` 参数：
@@ -563,6 +667,7 @@ channel.ChannelInfo.MultiKeyPollingIndex = (idx + 1) % len(keys)
 - 不传 `username` 时 `get_effective_newapi_config()` 输出与改造前逐字节一致（回归）；
 - 两个用户并发发起文本生成，**各自实际使用的 api_key 与其配置一致**——这条是 §3.4 的核心，必须测并发，只测「能取到正确 key」不够；
 - 配了自己 key 的用户：请求走他的 key，**且不扣积分**，但 `bump_model_call` / `record_llm_tokens` / 三个 usage db **仍有完整记录**，其中 `credit_reservation_id` 为空（§3.2）；
+- **同步请求路径与后台任务路径分别验证不扣积分**——BYOK 标记有两个设置点（HTTP 入口、`task_backend/run_core.py:196`），漏掉任一处该路径的用户就会被误扣（§3.2）；
 - 未配置的用户：请求走部署级 key，**且正常扣积分与拦截**（回归）；
 - `enabled = 0` 后该用户切回部署级 key，并**恢复扣积分**（§2.4 的语义）；
 - 他上游渠道 `Models` 里有的模型落在他自己的渠道上；不在其中的落到 `default` 共享渠道；
