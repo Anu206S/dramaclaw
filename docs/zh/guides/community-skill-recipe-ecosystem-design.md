@@ -16,7 +16,7 @@
 
 | 序 | 做什么 | 主要文件 | 性质 | 依赖 |
 | --- | --- | --- | --- | --- |
-| 1 | 给 Skill 加 `asset_policy.anchors` + Validator 锚点绑定不变量 + 规划包渲染指令 | `agent_catalog_schema.py`、`agent_bundle_schema.py`、`workflow_plan.py`、`json_workflow_catalog.py`、前端 `validateFreezoneAgentConfigPayload()`、`.hermes/plugins/freezone/__init__.py`、`.hermes/skills/workflows/SKILL.md` | **加**（唯一新增字段） | — |
+| 1 | 把锚点要求写进规划包与 Agent 规则（**零 Schema 改动**） | `json_workflow_catalog.py`、`.hermes/skills/workflows/SKILL.md`、`skill-studio-authoring-guide.md`、`src/novelvideo/chat/service.py` | 提示词 + 测试 | — |
 | 2 | 修 Skill Studio 保存契约（删非法字段 + 复用已有 validator） | `frontend/src/features/superchat/superchat-panel.tsx:3920` | 减 | 与 1 合并做 |
 | 3 | 把 Skill 已有约束送进 Recipe Compiler，并修优先级 | `recipe_runtime.py`（含第 33 行系统提示）、`workflowRecipeRuntime.ts`、Recipe 编译 API 模型、四类节点编译入口 | 减 + 接线 | 1 |
 | 4 | `allowed_recipe_ids` 改真白名单 | `json_workflow_catalog.py:1667` | 减（一个布尔分支） | — |
@@ -25,7 +25,7 @@
 
 **第 1 和第 2 项必须同一人做**——都改 `buildSkillStudioCatalogSaveItems()`，分开会改两遍同一函数。第 4、6 项与其余无依赖，可并行。第 5 项是纯内容工作，需要懂工艺的人，可能不是同一个工程师。
 
-一句话概括这次改造：**删掉 44KB 散在 30 个 Recipe 文件里的隐式规则，换成 1 个 Schema 字段加 1 条确定性校验，再把本来就写在 Skill 里却到不了执行层的约束接通。** 代码净增几百行，规则总量下降，约束强度上升。
+一句话概括这次改造：**Schema 零改动，全部靠提示词驱动。** 六项做的是三件事——把本来就写在 Skill 里却到不了执行层的提示词接通（第 3 项，核心）、把散在 30 份 Recipe 里重复的工艺提示词收敛成 10 份更厚的（第 5 项）、清掉三处挡路的规则漂移（第 4、6 项）与一个既有 bug（第 2 项）。**不是加机制，是清掉挡在提示词和执行层之间的障碍。**
 
 ### 0.2 按角色的阅读路径
 
@@ -55,9 +55,9 @@
 
 ### 0.3 三条最容易踩的坑
 
-1. **`asset_policy.anchors` 光有字段不工作。** Validator 只能拒绝错的 Plan，不会替你产出对的 Plan。必须同时把 `anchors` 在规划包里渲染成明确指令（“必须创建 X 锚点节点并向每个 Y 连出引用边”），否则 Agent 只看到一段 JSON，不会落成拓扑，然后每次被 Validator 打回——很容易误判成 Validator 写错了。见 §6.1、§8.2 第 1 项。
+1. **锚点要求要作为规划指令下发，不能混在散文里。** Skill 的 `planning_notes` 里写了要求不等于 Agent 会照做——规划包必须把它作为明确指令呈现（“必须创建 X 锚点节点并向每个 Y 连出引用边”）。见 §6.1、§8.2 第 1 项。
 2. **第 5 项删 Recipe 里的阶段推进指令时要给去处**，不是简单删掉。阶段顺序上移 `planning.conduct_rules`，何时暂停折成 `input_parameters` 的 `execution_mode`。删了不给去处，下一个作者会写回 Recipe。
-3. **不要顺手加字段。** §6.1 里有一张“曾考虑过但砍掉”的表，记录了新增字段的门槛：能否机器校验、错了是否静默、代价是否昂贵——三者不同时成立就交给 Agent。四个候选字段都是按这个判据砍的，不要再加回来。
+3. **不要顺手加字段。** §6.1 有一张“曾考虑过但没加”的表，门槛是三条同时成立：能否机器确定性校验、错了是否静默、代价是否昂贵。**总原则是尽量用提示词驱动——结构化字段只用在提示词已被证明不够的地方，不用在可能不够的地方。** 本轮连锚点绑定字段都推迟到标杆跑出数据后再决定。
 4. **第 5 项收敛的是重复，不是厚度。** 厚 Skill 是被验证过的优秀 Agent 设计范式——竞品能出好片正因为它们的方法写得足够厚。收敛后那 10 份通用 Recipe **应当比现在任何一份都厚**，因为要吸收五种风格里共通的工艺精华。**如果收敛后总字数大幅下降，说明做成了删内容，输出质量会跟着掉**——这是第 5 项唯一的失败方式。判断标准不是体积变小，而是同一条工艺在整个 Catalog 里只出现一次。
 
 ### 0.4 测试落点
@@ -126,7 +126,7 @@ DramaClaw 不需要重新开发一套 Agent 平台，也不需要重新开发动
 
 因此 2.0 主链需要完成的是六项，按依赖顺序：
 
-1. 给 Skill 补 `asset_policy.anchors` 数组，并给 Validator 增加锚点绑定不变量（§6.1）；
+1. 把锚点要求写进规划包与 Agent 规则，零 Schema 改动（§6.1）；
 2. 修复 Skill Studio 与后端 Schema 的保存契约不一致（与第 1 项合并实施）；
 3. 把已确认输入和 Skill 强约束传入 Recipe Runtime；
 4. 让 `allowed_recipe_ids` 成为真正的严格白名单；
@@ -423,7 +423,7 @@ Recipe：决定某个阶段的提示词怎样写好
 
 **六项不是在修一直坏着的 bug，是在补人退出建图环节后空出来的那个位置。** 所以迁移的动作是“把人原先做的可复现判断编码进 Skill 字段”，而不是“修前人写错的 Recipe”。主观判断（镜头数量、节奏）不搬进 Skill，按 §3.1 交给单修路线。
 
-对应的改造是 §8.2 第 3 项（把已有字段真正送到执行层）和第 5 项（工艺收敛），外加 §6.1 唯一新增的 `asset_policy.anchors`。
+对应的改造是 §8.2 第 3 项（把已有字段真正送到执行层）和第 5 项（工艺收敛）。都不需要新增 Schema 字段。
 
 ## 3. 2.0 中四个概念的准确边界
 
@@ -478,9 +478,9 @@ Skill 的重点不是告诉 Agent“永远按这六步执行”，而是告诉 A
 | 决策 | 换个作者会不一样吗 | 归属 |
 | --- | --- | --- |
 | 这个 Skill 是什么风格（半写实 3D CG / 皮克斯卡通） | 不会——这是 Skill 的身份 | `planning.prompt_guide` |
-| 角色造型是否跨镜头一致 | 不会——不一致就是错 | `asset_policy.anchors`（拓扑保证 + Validator 校验，见 §6.1） |
+| 角色造型是否跨镜头一致 | 不会——不一致就是错 | 提示词声明锚点要求，Agent 落成拓扑（§6.1） |
 | 能不能出字幕 | 不会——硬禁项 | `planning.conduct_rules` |
-| 产品图该绑到哪个语义角色 | 不会——客观对应 | `asset_policy.anchors` |
+| 产品图该绑到哪个语义角色 | 不会——客观对应 | `planning.planning_notes` 里的锚点要求 |
 | 生成前必须先确认哪些素材 | 不会——有客观依赖顺序 | `planning.conduct_rules`（顺序交给 Agent 理解，不加字段） |
 | **这个故事该拍几个镜头** | **会** | **不进 Skill** |
 | **节奏快慢、某个镜头怎么构图** | **会** | **不进 Skill** |
@@ -522,7 +522,7 @@ Recipe 持有：给定已确定的输入、目标和强约束后，这一个节�
 
 第三行值得单独说明，因为它看起来像一致性要求，实际不是。这条 Recipe 生成的是**角色立绘本身**，也就是锚点图。生成锚点的时刻还不存在任何参考图，所以“把标志性配饰写清楚”是一条**提示词完备性要求**——不写全，产出的锚点自己就不可复现。而且这条要求与风格无关：任何风格的角色立绘都该枚举辨识特征。因此它是通用工艺，留在 Recipe。
 
-真正的一致性要求是另一件事：**后续每个镜头都必须复用这张锚点图**。它靠 `asset_policy.anchors` 的拓扑保证实现（锚点节点 + 引用边 + `character` 角色标记），不靠提示词（§6.1）。
+真正的一致性要求是另一件事：**后续每个镜头都必须复用这张锚点图**。它靠拓扑保证实现（锚点节点 + 引用边 + `character` 角色标记），由提示词要求 Agent 落成（§6.1）。
 
 同一段文字里混着这两件事，是散文式 Skill 最常见的陷阱：生成锚点时的提示词完备性 vs 使用锚点时的拓扑绑定。迁移时必须分开处理。
 
@@ -576,7 +576,7 @@ Skill.input_parameters
 
 - 本节结论不变：**不新增 `freezone_project_spec.v1`**，§9 的对应条目也保留；
 - 但 §8.2 第 3 项必须把这些已有字段真正送到执行层，否则作者会继续用运行时文本节点模拟它；
-- 【全局视频规格】文本节点作为用户确认卡**保留**（第 302 行的投影仍然成立），但内容改为由前端或 Graph Builder 从 `planning.prompt_guide` + `conduct_rules` + `asset_policy` + `confirmed_inputs` 直接渲染，不再经 LLM 生成——省掉一次 Recipe 编译加一次 LLM 生成，且字段不会漏写；
+- 【全局视频规格】文本节点作为用户确认卡**保留**（第 302 行的投影仍然成立），但内容改为由前端或 Graph Builder 从 `planning.prompt_guide` + `conduct_rules` + `confirmed_inputs` 直接渲染，不再经 LLM 生成——省掉一次 Recipe 编译加一次 LLM 生成，且字段不会漏写；
 - `*-video-spec` 那 4 份 Recipe 随之删除（§8.2 第 5 项）。
 
 判据可以概括为一句话：**每次任务都可能变的值走 `input_parameters`；Skill 作者一次写定、跨任务复用的规则走 Skill 新增区块；两者都不需要新的 Plan Schema。**
@@ -714,7 +714,7 @@ LibTV 在本文档中的角色是**竞品**，不是参考对象。它是 Liblib
 
 | 维度 | LibTV | DramaClaw |
 | --- | --- | --- |
-| **Skill 形态** | MD 散文文件，引导式创建，无机器校验 | 结构化 JSON + `extra="forbid"` 三路径校验 + 锚点绑定不变量 |
+| **Skill 形态** | MD 散文文件，引导式创建，无机器校验 | 结构化 JSON + `extra="forbid"` 三路径校验 |
 | **工艺复用层** | 无。每个 Skill 自包含 | Recipe（主张三，待兑现） |
 | **对外开放什么** | 只开放遥控。公开的 `libtv-labs/libtv-skills` 是 API 客户端，其 `SKILL.md` 明确要求外部 Agent “**你的职责是搬运工，不是创作者**……不要自行拆解任务步骤……不要自行编排镜头描述”，创作方法留在云端 Skill Hub | 开放方法本身。Skill Bundle 就是创作方法，可读、可改、可 review、可自部署 |
 | 执行位置 | 云服务，需 ACCESS_KEY | 本地 Graph + 本地 Runner |
@@ -749,7 +749,7 @@ LibTV 在本文档中的角色是**竞品**，不是参考对象。它是 Liblib
 
 注意这个措辞。在缺少工艺复用层的架构里，“分镜方法”只能作为一个**完整 Skill** 存在。于是作者面对的是二选一：用自己的分镜方法，就得放弃平台的导演美学 Skill；用美学 Skill，就得放弃自己的分镜方法。两者都要，只能复制整份 Skill 再手工缝合。
 
-在 Skill + Recipe 分层下这不是问题：分镜工艺作为通用 Recipe，观感由各 Skill 的 `planning.prompt_guide` 注入，锚点绑定由 `asset_policy.anchors` 声明——同一份分镜 Recipe 可以同时服务多种导演风格。
+在 Skill + Recipe 分层下这不是问题：分镜工艺作为通用 Recipe，观感由各 Skill 的 `planning.prompt_guide` 注入，锚点要求由各 Skill 的 `planning_notes` 声明——同一份分镜 Recipe 可以同时服务多种导演风格。
 
 从三个实测案例里能直接列出的通用工艺，全部与题材风格无关，却必须在每个 Skill 里重写一遍：
 
@@ -770,7 +770,7 @@ LibTV 在本文档中的角色是**竞品**，不是参考对象。它是 Liblib
 
 **这套机制没有任何校验。** 表里写了引用 A2、实际连线漏了 A2，不会有任何东西报错——一致性完全依赖模型自觉照表执行。而漏连的后果要等镜头生成出来、人眼看出角色漂了才发现。
 
-我们的 `asset_policy.anchors[].bind_to` 加 §8.2 第 1 项的锚点绑定不变量做的是同一件事，但漏一条引用边**在写入画布前就被 Validator 拒绝**。同一个需求，一个靠模型自觉，一个靠代码拦截。这是主张三“结构化可校验”的具体价值，不是审美偏好。
+我们本轮同样靠提示词要求 Agent 连线（§6.1），因此**这个失败模式我们也可能有**——区别在于我们把它当成一个待测量的假设：§8.2 第 1 项的三条回归测试就是在标杆上量它的实际失败率，真会漏再升级成 Schema 字段加 Validator 不变量。写在这里是为了记住这个风险存在，而不是宣称我们已经解决了它。
 
 顺带注意那份锚点清单的形态：**又是用运行时 markdown 文件承载本该结构化的映射关系**，与 §2.8 里 `Final_Video_Spec` 完全同一个模式。缺字段的地方，作者一定会用运行时文本补上。
 
@@ -853,36 +853,8 @@ LibTV 通过 OpenClaw 规范发布客户端包，使任意兼容 Agent 都能遥
     "product-element-image",
     "product-video-shot"
   ],
-  "asset_policy": {
-    "anchors": [
-      {
-        "id": "product",
-        "label": "产品主体",
-        "kind": "image",
-        "reference_role": "character",
-        "required": true,
-        "bind_to": ["imageGenNode", "videoNode"]
-      },
-      {
-        "id": "logo",
-        "label": "品牌 Logo",
-        "kind": "image",
-        "reference_role": "generic",
-        "required": false,
-        "bind_to": ["imageGenNode"]
-      },
-      {
-        "id": "narrator_voice",
-        "label": "旁白音色",
-        "kind": "audio",
-        "source": "clone_or_generate",
-        "required": true,
-        "bind_to": ["videoNode"]
-      }
-    ]
-  },
   "planning": {
-    "planning_notes": "根据素材、目标时长、模型能力和已有节点动态决定阶段、数量、依赖和执行范围。先确认并绑定素材，再提取外观锚点，缺少场景参考时创建锚点而非凭空生成。",
+    "planning_notes": "根据素材、目标时长、模型能力和已有节点动态决定阶段、数量、依赖和执行范围。先确认并绑定素材，再提取外观锚点，缺少场景参考时创建锚点而非凭空生成。必须为产品主体建立锚点图节点，并把它连到每个元素图与镜头视频节点作为参考；有旁白时同样建立音色锚点并连到每个相关视频节点。",
     "prompt_guide": "商业广告质感，干净影棚光，高饱和产品色；突出真实卖点、使用场景和品牌调性。避免手绘插画风、低分辨率、变形产品外观，不要字幕。",
     "conduct_rules": [
       "已有合格素材时复用，不重复生成",
@@ -904,7 +876,7 @@ LibTV 通过 OpenClaw 规范发布客户端包，使任意兼容 Agent 都能遥
 }
 ```
 
-除 `asset_policy` 外，其余字段都已是当前后端与设置页在用的契约，不是待新增项。`options` 当前是字符串数组；如果需要单独的用户显示标签，应以后统一扩展前后端 Schema，不能只在文档中使用 `{value,label}`。
+上面所有字段都已是当前后端与设置页在用的契约，**本轮不新增任何字段**。`options` 当前是字符串数组；如果需要单独的用户显示标签，应以后统一扩展前后端 Schema，不能只在文档中使用 `{value,label}`。
 
 画幅、时长和语言等每次任务可变值继续放在 `input_parameters`。不要恢复已经从 Agent Tool Schema 中移除的 `planning.default_aspect_ratios` 或真实供应商模型偏好。
 
@@ -933,26 +905,61 @@ LibTV 通过 OpenClaw 规范发布客户端包，使任意兼容 Agent 都能遥
 
 **判据一句话：能用拓扑保证的，绝不要写成提示词。**
 
-角色一致性是最典型的例子。写成提示词（“角色造型必须跨镜头一致”）只是在请模型配合，产出一句话；靠拓扑保证（生成角色身份图节点 → 连到每个镜头的 videoNode → 标记为 `character` → 排在首位）则是物理锚定，而且 Validator 能确定性检查。**因此一致性属于 `asset_policy.anchors`，不属于提示词层。**
+角色一致性是最典型的例子。写成提示词（“角色造型必须跨镜头一致”）只是在请模型配合，产出一句话；靠拓扑保证（生成角色身份图节点 → 连到每个镜头的 videoNode → 标记为 `character` → 排在首位）则是物理锚定。**因此一致性的实现层是拓扑，提示词的作用是要求 Agent 去落成它，而不是请模型在画面里“保持一致”。** 本轮不为此加字段，但这个层次区分必须守住（§6.1 下一节）。
 
 观感需要两条腿走，Skill 应同时表达：首次生成时还没有任何参考图可用，风格只能靠 `planning.prompt_guide` 的文本锚定；一旦风格锚点图产出，后续节点就应通过 `[ref:n=style]` 物理锚定，并由 `anchors` 声明该绑定。只写文本会导致后续镜头风格漂移，只连参考会导致第一张图没有风格依据。
 
-#### 唯一新增字段的依据与边界
+#### 锚点用提示词声明，本轮不加字段
 
-新增字段只有一个数组：`asset_policy.anchors`。加它的门槛是——**这件事交给 Agent 做已经被观察到会静默失败**。不满足这一条的，一律用现有字段承载，交给 Agent 判断。
+**Schema 本轮零改动。** 跨镜头一致性（角色不漂、声音不漂）通过**提示词声明 + Agent 落成拓扑**实现，不新增结构化字段。
 
-| 新字段 | 实现层 | 为什么必须结构化 |
-| --- | --- | --- |
-| `asset_policy.anchors` | **拓扑层** | 把跨镜头一致性从“请模型配合”变成可校验的图不变量。锚定的物理手段代码里已经齐了（见上），缺的只是声明位与校验点 |
+写法是在 `planning.planning_notes` 或 `conduct_rules` 里明确要求锚点节点与引用关系，例如：
 
-失败模式是具体的，不是假想（§5.3）：同类产品的做法正是交给 Agent——Agent 生成一份锚点清单和一份分镜表，表里某列标明该镜引用哪几条锚点，然后 Agent 照表连线。9 个镜头乘 4 条锚点是 36 条引用边，**漏一条不报错**，要等镜头生成出来、人眼看出角色漂了才发现，而钱已经花了。
+```text
+必须为产品主体建立锚点图节点，并把它连到每个元素图与镜头视频节点作为参考；
+有旁白或角色对白时，同样建立音色锚点并连到每个相关视频节点。
+```
 
-这类错误的特征是「静默 + 昂贵 + 事后才发现」，正好是该用确定性校验兜住的。而 `bind_to` 校验的是 Agent 的**记账**，不是它的创作决策——不构成对创作力的约束。
+物理机制代码里已经齐了，Agent 只需要照要求落成拓扑：
 
-对照一下被砍掉的候选字段，它们都不具备这个特征，所以都不加：
+- `REFERENCE_CAPS_BY_MODE.allReference` 支持图 9 + 视 3 + **音 3** 多参考，`firstLastFrame` 支持首尾帧锁定；
+- `referenceRoles.ts` 定义 `ReferenceRole = "character" | "style" | "pose" | "generic"`，用 `[ref:n=role]` 标记；
+- `reorderReferencesByRole()` 把 character anchor 排到最前，因为多数供应商对靠前的参考权重更高；
+- `VideoNodeData.referenceOrder` 让引用顺序可拖拽并决定实际提交顺序；
+- 音色锚点走 `seedance2_i2v.voice_clone`，`ReferenceMediaItem` 有 `kind: "audio"` 分支。
+
+**声音一致性和长相一致性是同一个问题、同一个解法**：建一个锚点，连到每个用到它的镜头。漫剧类 Skill 必须同时声明两种，否则 30 个镜头里同一角色的声音会漂。
+
+同一角色的多套外观（换装、不同年龄）就在提示词里分别描述并说明各自用于哪些镜头，不需要任何嵌套结构。
+
+#### 为什么暂不加 `asset_policy.anchors` 字段
+
+曾考虑把锚点绑定做成结构化字段 `asset_policy.anchors`，配 Validator 的绑定不变量——声明了 `required` 的锚点，Plan 里缺节点或缺引用边就拒绝。理由是竞品的同类机制没有校验：Agent 生成一份锚点清单和一份分镜表，表里某列标明该镜引用哪几条锚点，然后 Agent 照表连线，漏一条不报错（§5.3）。
+
+**这个理由不够。** 它是从“对方没有校验”推出“会漏”，不是观察到实际漏了——我们没有任何数据说 Agent 连引用边的失败率是多少。为一个可能但未测量的失败提前加字段和校验，违反本文档自己在别处坚持的“跑过标杆再决定”。
+
+因此顺序改为：
+
+```text
+本轮   用提示词声明锚点要求（零 Schema 改动）
+        ↓
+       跑 §8.3 的三个标杆，测量 Agent 实际漏不漏引用边
+        ↓
+真漏   再加 asset_policy.anchors 字段 + Validator 不变量，那时有数据支撑
+不漏   省下一个字段、一套校验和四处 Schema 同步
+```
+
+标杆断言里本来就有“`required` 锚点是否连上、同一角色是否引用同一锚点”（§8.3 第 5 项），所以漏连**测试能抓住**，只是比 Validator 晚一步。而标杆跑一次就能给出真实失败率，那才是决定要不要加校验的依据。
+
+代价要写明：放弃校验就失去唯一一处确定性兜底，锚点漏连的后果是角色或声音漂移，事后才发现且钱已经花了。这个风险本轮由标杆测试承担，不由运行时承担。
+
+#### 新增字段的门槛
+
+这张表记录本轮考虑过但没有加的字段，以及它们各自的归宿。**它的作用是防止以后顺手扩 Schema**——判据是三条同时成立：能否被机器确定性校验、错了是否静默、代价是否昂贵。不同时成立，就用提示词交给 Agent。
 
 | 曾考虑过的字段 | 为什么不加 | 改用什么 |
 | --- | --- | --- |
+| `asset_policy.anchors` | 失败率未测量，属提前优化 | 提示词声明 + 标杆测试验证（见上一节）；实测证明会漏再加 |
 | `aesthetic.visual_style_lock` | 风格没进提示词，看一眼成片就知道，错误不静默 | 已有的 `planning.prompt_guide`——它的定义本来就是“提示词该怎么写”。真正的病根不是缺字段，是缺传递路径（§8.2 第 3 项） |
 | `aesthetic.global_negatives` | 同上 | `prompt_guide` 与 `conduct_rules` |
 | `preparation_steps` | 排顺序是 LLM 最擅长的事，写在散文里它就能照做 | `planning.planning_notes` 或 `conduct_rules` 里一句话 |
@@ -960,49 +967,7 @@ LibTV 通过 OpenClaw 规范发布客户端包，使任意兼容 Agent 都能遥
 | `confirmation_policy` | 不需要新区块 | `input_parameters` 里一条 `execution_mode`（见上方示例），零新增 Schema，走现有 `input_contract` 路径，且天然由用户本轮选择覆盖 |
 | `asset_policy.reuse_rule` / `missing_action` | 复用与缺失策略是判断题，散文足够 | `conduct_rules` |
 
-这张表要保留在文档里。它记录的不是删掉了什么，而是**新增字段的判据**：能不能被机器校验、错了是否静默、代价是否昂贵。三者不同时成立，就交给 Agent。
-
-锚点分图片与音频两种，**声音一致性和长相一致性是同一个问题、同一个解法**：建一个锚点，连到每个用到它的镜头。代码侧两者都已支持——`REFERENCE_CAPS_BY_MODE.allReference` 是图 9 + 视 3 + **音 3**，`ReferenceMediaItem` 有 `kind: "audio"` 分支，音色克隆走 `seedance2_i2v.voice_clone`。
-
-```text
-kind="image" 锚点：角色立绘 / 场景参考 / 道具锚点 / 产品主体
-                   → 连到 imageGenNode、videoNode，按 reference_role 标记与排序
-
-kind="audio" 锚点：角色音色 / 旁白音色
-                   → 连到每个有该角色对白的 videoNode，作为音频条件输入
-                   → 保证 30 个镜头里同一角色的声音不漂
-```
-
-漫剧类 Skill 必须声明音频锚点。缺了它，每个有对白的 Skill 都会在 Recipe 里用散文重新发明一次声音一致性——正是图片一致性要修掉的那个病。
-
-**同一角色的多套外观用多个锚点表达，不要给 `anchors` 加变体字段。** 同一角色在不同场次换装、不同年龄段，是这个品类的普遍需求（内置 `lego-minifig` 的 Recipe 里就写了 `Appearance 1 / Appearance 2`）。正确表达方式是拆成多个锚点条目，各自绑定到对应镜头：
-
-```json
-[
-  {"id": "li_suit",   "label": "李探长-西装", "kind": "image", "reference_role": "character",
-   "required": true,  "bind_to": ["videoNode"]},
-  {"id": "li_casual", "label": "李探长-便装", "kind": "image", "reference_role": "character",
-   "required": false, "bind_to": ["videoNode"]}
-]
-```
-
-同一角色的多个外观共用一条音频锚点即可——换装不换声音。不要为此给 `anchors` 增加 `variants` 一类嵌套结构，多条平铺的锚点已经够用，而且 Validator 的绑定校验逻辑不必变。
-
-字段取值约定：
-
-- `anchors[].kind` 枚举 `image` / `audio`；
-- `anchors[].reference_role` **仅 `kind="image"` 时有效**，复用 `referenceRoles.ts` 的既有枚举 `character` / `style` / `pose` / `generic`，不新造一套。音频引用没有权重排序概念，不设该字段；
-- `anchors[].source` **仅 `kind="audio"` 时有效**，枚举 `user_upload` / `clone_or_generate`；
-- `anchors[].bind_to` 是节点类型列表，声明该锚点必须被哪些下游节点类型引用；
-- `anchors[].required=true` 表示 Plan 缺该锚点节点或缺引用边时校验失败。
-
-三条边界必须写进 Schema 说明与 Agent 编写规则：
-
-1. **`anchors[].id` 是 Skill 内部标识，不是节点类型。** 它由 Agent 在规划时映射为具体的上传或图片节点，不进入 `ALLOWED_NODE_TYPES`；`bind_to` 里写的才是节点类型。
-2. **`anchors` 只声明锚点的存在与绑定关系，不声明锚点图长什么样。** 角色锚点用三视图（前/侧/后全身）还是头像加全身并排，是角色立绘 Recipe 的 `must_have_items` 该管的工艺，不要为此给 `anchors` 增加视图数量、布局方式一类字段。同类产品普遍采用三视图或多视图作为角色锚点形态，但那是工艺共识而非契约需求——按 §3.2 “标志性配饰”那个边界案例的同一判据处理：生成锚点时的构成要求属 Recipe，使用锚点时的绑定要求属 `anchors`。
-3. **`anchors` 不声明数量。** 需要几条锚点由本次任务决定，Skill 只声明哪些角色与场景必须被锚定。
-
-**向后兼容**：`asset_policy` 可选，缺省为空。旧 Skill 不填也能加载和运行，只是拿不到新的约束传递收益。`extra="forbid"` 下必须同时更新后端 `AgentCatalogSkillConfig`、前端 `validateFreezoneAgentConfigPayload()`、Skill Studio 保存路径和 Bundle Schema，四处缺一处就会出现 §8.2 第 2 项那种跨层拒收。
+**总原则：尽量用提示词驱动。** 结构化字段只用在“提示词已被证明不够”的地方，而不是用在“提示词可能不够”的地方。
 
 ### 6.2 Recipe
 
@@ -1083,12 +1048,12 @@ reference_media
 
 所有节点都同时传入 `confirmed_inputs` 中的画幅、时长和语言，用于让 Compiler 拒绝与已确认值冲突的 Recipe 指令。
 
-`asset_policy.anchors` **不传给 Compiler**——注意这不等于“不进任何 LLM 上下文”。它进的是**规划期**的上下文（§7.2 的“规划阶段：完整 Skill”），由 Hermes 消费成拓扑，再由 Validator 校验绑定不变量。
+**锚点要求不传给 Compiler**——注意这不等于“不进任何 LLM 上下文”。它进的是**规划期**的上下文（§7.2），由 Hermes 消费成拓扑。写进节点提示词只会让模型在画面里念一句“角色要一致”，起不到锚定作用。
 
 两者必须分清，否则实现时容易一刀切掉：
 
 ```text
-asset_policy.anchors                     → 规划 LLM 的上下文  ✅ 必须传，否则 Hermes 不知道要建锚点节点
+锚点要求（写在 planning_notes 里）        → 规划 LLM 的上下文  ✅ 必须作为规划指令下发
                                          → Recipe Compiler     ✗ 不传，写"角色要一致"只会得到一句话
 planning.prompt_guide / conduct_rules    → Recipe Compiler     ✅ 必须传，否则风格与约束进不了提示词
                                          → 规划 LLM 的上下文  ✅ 规划期也要，用于决定阶段与路径
@@ -1125,18 +1090,6 @@ planning.prompt_guide / conduct_rules    → Recipe Compiler     ✅ 必须传�
     },
     "input_parameters": [],
     "allowed_recipe_ids": ["product-brief"],
-    "asset_policy": {
-      "anchors": [
-        {
-          "id": "product",
-          "label": "产品主体",
-          "kind": "image",
-          "reference_role": "character",
-          "required": true,
-          "bind_to": ["imageGenNode", "videoNode"]
-        }
-      ]
-    },
     "planning": {
       "planning_notes": "根据产品素材和用户目标动态规划制作阶段；先绑定产品主体图再进入生成。",
       "prompt_guide": "商业广告质感；准确表达产品事实和卖点；不要字幕。",
@@ -1211,7 +1164,7 @@ Skill 与 Recipe 都是 Agent 的约束来源，必须定义稳定的冲突优�
 
 硬禁项（“绝不出现”）写在 `conduct_rules` 里，它比 `prompt_guide` 的风格倾向更硬，因此排位更高。
 
-`asset_policy.anchors` **不参与这条链**，因为它不是提示词内容。锚点属于拓扑层：它的“执行”是引用边确实连上、role 标记正确、排序正确，由 Validator 确定性校验而不是由 Compiler 权衡（§6.1 的两种实现层）。一条拓扑层约束如果需要靠提示词优先级来生效，说明它一开始就被写在了错误的层。
+**锚点要求不参与这条链**，因为它不是节点提示词的内容。锚点属于拓扑层：它的“执行”是引用边确实连上、role 标记正确、排序正确，发生在规划期而不是编译期（§6.1 的两种实现层）。
 
 社区 Skill 不写真实供应商模型名。当前 2.0 首发只使用现有节点能力、生成模式和系统模型配置，例如视觉理解、多参考图、首尾帧、目标比例和音频生成；实际模型仍由 DramaClaw 的内部模型名和 NewAPI 映射决定。
 
@@ -1275,9 +1228,9 @@ Recipe 应该产出**结构化标注的语义内容**（哪段是对白、哪段
 | --- | --- | --- |
 | 1 基本信息 | `name` / `description` / `category` / `triggers` | 直接对应 |
 | 2 工作流规划（执行顺序、工具调用、步骤依赖） | 全部落到 `planning.planning_notes` 与 `conduct_rules` 的散文里——顺序交给 Agent 理解，不要为它造字段 | **不要**转成 `workflow_templates`，那会退回模板化（§7.3） |
-| 3 媒体分析与处理 | 必须锚定的角色与场景 → `asset_policy.anchors`；复用与缺失策略 → `conduct_rules`；提取工艺 → 通用 `input-analysis` Recipe | 「哪些主体必须跨镜头保持一致」属拓扑层，写成 `anchors` 条目；其余判断题留散文 |
+| 3 媒体分析与处理 | 必须锚定的角色与场景、复用与缺失策略 → `planning_notes` / `conduct_rules`；提取工艺 → 通用 `input-analysis` Recipe | 「哪些主体必须跨镜头保持一致」要写成明确的锚点与引用要求，不要只写“保持一致” |
 | 4 分镜设计 | 分镜结构与必备项 → 通用 `storyboard` Recipe 的 `must_have_items`；景别/机位/运镜是否必写 → `conduct_rules` | 具体拍几个镜头属主观决策，**不迁移**（§3.1） |
-| 5 媒体生成 | 风格锁定 → `planning.prompt_guide`；跨镜头一致性（含声音）→ `asset_policy.anchors`；画幅/时长 → `input_parameters` | **模型名与分辨率丢弃**——媒体模型由 DramaClaw 媒体模型配置层决定，不是 BrainClaw（§6.4）；一致性务必进 `anchors`，不要写成风格散文（§6.1） |
+| 5 媒体生成 | 风格锁定 → `planning.prompt_guide`；跨镜头一致性（含声音）→ `planning_notes` 里的锚点与引用要求；画幅/时长 → `input_parameters` | **模型名与分辨率丢弃**——媒体模型由 DramaClaw 媒体模型配置层决定，不是 BrainClaw（§6.4）；一致性要落到锚点节点与引用边，不要写成“保持一致”这种空话（§6.1） |
 | 6 提示词写法 | 通用 Recipe 的 `system_prompt`；跨阶段的表达倾向 → `planning.prompt_guide` | 不要每个 Skill 复制一份 Recipe，否则重演复用率 0（§2.8） |
 | 7 视频剪辑 | **丢弃** | 理由见 §9 |
 | 「产出什么 / 最终交付什么」 | `description` 一句话说清即可 | 不为它加字段——漏了合成节点用户一句话就能补（§6.1） |
@@ -1320,12 +1273,12 @@ Skill 选定后，把所有不确定项**合并成一次问询**再开始执行�
 ```text
 Skill 列表：只加载 ID、名称、描述和触发词
 选定 Skill：freezone_get_workflow_skill(compact=true)
-规划阶段：完整 Skill（含 asset_policy.anchors）+ 白名单 Recipe 摘要
+规划阶段：完整 Skill（含 planning_notes 里的锚点要求）+ 白名单 Recipe 摘要
 执行节点：该 Recipe 完整 system_prompt + 按节点类型筛选后的 skill_constraints + confirmed_inputs
 创建节点：按需读取 node create schema
 ```
 
-不要把所有 Recipe、所有节点 Schema、全部生成历史或完整画布一次塞给 Hermes。执行节点时也不要传完整 Skill：`prompt_guide` 与 `conduct_rules` 按 §6.2 的节点类型表筛选，`asset_policy.anchors` 完全不进 Compiler 上下文。
+不要把所有 Recipe、所有节点 Schema、全部生成历史或完整画布一次塞给 Hermes。执行节点时也不要传完整 Skill：`prompt_guide` 与 `conduct_rules` 按 §6.2 的节点类型表筛选，其中的锚点与流程类要求完全不进 Compiler 上下文。
 
 ### 7.3 动态 Plan 是默认路径
 
@@ -1336,7 +1289,7 @@ Skill 列表：只加载 ID、名称、描述和触发词
 - Skill 规定生产边界和决策规则，不能把典型阶段误当成必须完整展开的固定模板；
 - 已有合格中间素材时允许从中间阶段开始；
 - 先完成前置资产决策——按 `planning_notes` 与 `conduct_rules` 描述的顺序确认素材、提取锚点、判断缺口，未就位不得进入生成阶段；
-- 用户上传素材按 `asset_policy.anchors[].id` 绑定为 Graph 输入，复用还是重制、缺失怎么处理按 `conduct_rules` 判断；
+- 用户上传素材按 Skill 声明的锚点角色绑定为 Graph 输入，复用还是重制、缺失怎么处理按 `conduct_rules` 判断；
 - 声明为 `required` 的锚点必须在 Plan 中存在对应节点，并向 `bind_to` 列出的每个下游节点连出引用边——一致性靠这条拓扑保证，不靠提示词（§6.1）；
 - 模型支持多参考图直接生成视频时可以省略关键帧；需要锁定首帧时再动态加入关键帧节点；
 - 缺少必需素材时先创建素材锚点或询问用户；
@@ -1438,47 +1391,29 @@ Ask/Auto 不需要设计成新的 Agent 模式。它可以直接映射为现有 
 
 | 序号 | 内容 | 依赖 |
 | --- | --- | --- |
-| 1 | 给 Skill 补 `asset_policy.anchors` + Validator 锚点绑定不变量 | — |
+| 1 | 把锚点要求写进规划包与 Agent 规则（零 Schema 改动） | — |
 | 2 | 修复 Skill Studio 保存契约 | 与 1 合并实施 |
 | 3 | 修正 Skill → Recipe Runtime 约束传递 | 1 |
 | 4 | Recipe 候选改严格白名单 | — |
 | 5 | 内置 Recipe 按工艺收敛 30 → 10 | 1、3 |
 | 6 | 默认策略改为动态 WorkflowPlan | — |
 
-#### 1. 给 Skill 补 `asset_policy.anchors`
+#### 1. 把锚点要求写进规划包与 Agent 规则（零 Schema 改动）
 
-字段定义、取值枚举和三条边界见 §6.1。需要同批修改的四处，缺一处就会出现第 2 项那种跨层拒收：
+本项**不改 Schema、不加 Validator 校验**，理由与后续升级条件见 §6.1「为什么暂不加 `asset_policy.anchors` 字段」。要做的是让 Agent 稳定地把锚点落成拓扑：
 
-- `src/novelvideo/freezone/agent_catalog_schema.py`：`AgentCatalogSkillConfig` 新增三个可选区块及其子模型，沿用 `_CatalogBaseModel` 的 `extra="forbid"`；
-- `src/novelvideo/freezone/agent_bundle_schema.py`：Bundle 内嵌 Skill 同步支持，示例见 §6.3；
-- 前端 `validateFreezoneAgentConfigPayload()`：补对应校验；
-- `.hermes/plugins/freezone/__init__.py` 的 Skill Studio 工具 Schema 与 `.hermes/skills/freezone/references/skill-studio-authoring-guide.md`：让 Agent 知道该写 `anchors`，并明确它不声明数量、不声明锚点图构成。
+- `.hermes/plugins/freezone/json_workflow_catalog.py`：规划包里明确下发锚点要求。Skill 的 `planning_notes` / `conduct_rules` 已经写了要求，规划包要把它作为**规划指令**呈现给 Hermes，而不是混在一大段散文里让模型自己挑；
+- `.hermes/skills/workflows/SKILL.md`：写明 Agent 生成 Plan 时应主动建立锚点节点并向下游连出引用边，且同一主体在所有相关镜头引用同一个锚点节点；
+- `.hermes/skills/freezone/references/skill-studio-authoring-guide.md`：让 Skill Studio 创建 Skill 时把锚点要求写进 `planning_notes`，包括图片锚点与音色锚点两类；
+- `src/novelvideo/chat/service.py`：Agent 编写规则同步，避免三处规则漂移。
 
-**规划包必须把 `anchors` 渲染成可执行的规划指令，这一步不能省。** Validator 只能拒绝错的 Plan，不会替你产出对的 Plan（§6.1）。修改 `.hermes/plugins/freezone/json_workflow_catalog.py` 的规划包生成：
+必须增加的回归测试（都不依赖新字段）：
 
-- 把每条 `anchors` 展开成明确指令，例如“必须创建 `product` 锚点图片节点，并向每个 `videoNode` 连出引用边，引用角色为 `character`”；
-- `required=true` 的锚点在指令里标为强制，缺失时按 `conduct_rules` 的处置方式一并说明；
-- 同时在 `.hermes/skills/workflows/SKILL.md` 写明这条规则，让 Agent 在生成 Plan 时主动落成锚点节点与引用边，而不是等 Validator 报错才补。
+- 给定一个声明了角色锚点要求的 Skill，生成的 Plan 中存在锚点节点，且每个镜头视频节点都有来自它的引用边；
+- 有对白的 Skill，Plan 中存在音色锚点节点并连到相关视频节点；
+- 同一主体在多个镜头中引用的是**同一个**锚点节点，而不是各镜头各生成一个。
 
-只把结构化 JSON 丢进上下文是不够的——模型不一定推得出“这段字段意味着要建节点和连线”。规划指令是拓扑层生效的前提，Validator 是它的兜底而非替代。
-
-本项的另一半是给 Validator 增加**锚点绑定不变量**——这是新增字段唯一的存在理由，也是一致性从提示词层搬到拓扑层的落点：
-
-修改 `src/novelvideo/freezone/workflow_plan.py` 的 `validate_agent_workflow_plan()`：
-
-- Skill 声明了 `asset_policy.anchors` 且某条 `required=true` 时，Plan 中必须存在对应的锚点节点，否则报精确字段错误；
-- 该锚点必须向 `bind_to` 列出的每个节点类型的实例连出引用边；缺边时报错并指明是哪个节点缺哪个锚点；
-- **`kind="image"` 与 `kind="audio"` 走同一套检查**，只是锚点节点类型不同（图片锚点是 imageGenNode / uploadImageNode，音频锚点是 audioNode）。音频锚点的绑定同样是硬要求：有对白的镜头缺音色锚点引用边时必须报错，否则声音一致性无从保证；
-- 校验只查结构，不查提示词内容——图片引用的 role 标记与排序由前端提交时处理（`referenceRoles.ts`），不在 Plan 层表达。
-
-`asset_policy` 可选、缺省为空，旧 Skill 不填照常加载运行。必须增加的回归测试：
-
-- 只填 `asset_policy` 的 Skill 能通过后端校验；
-- 完全不填 `asset_policy` 的旧 Skill 仍能加载（向后兼容）；
-- `anchors` 里出现分镜数量一类信息时被拒绝（防止借锚点写死拓扑）；
-- `prompt_guide` 或 `conduct_rules` 里出现真实供应商模型名时被拒绝（§6.4 模型中立）；
-- **声明了 `required` 锚点但 Plan 里缺少该节点或缺少引用边时，Validator 拒绝该 Plan**；
-- `anchors` 里出现锚点数量、视图构成一类信息时被拒绝（§6.1 边界 2、3）。
+这三条测试的作用不只是防回归，更是**测量**：它们在三个标杆 Skill 上的通过率就是 §6.1 里那个待测数据——Agent 到底会不会漏引用边。跑完再决定是否需要把它升级成 Schema 字段加 Validator 不变量。
 
 #### 2. 修复 Skill Studio 保存契约
 
@@ -1486,7 +1421,7 @@ Ask/Auto 不需要设计成新的 Agent 模式。它可以直接映射为现有 
 
 - 不再向 `planning` 写入后端不支持的 `default_aspect_ratios`（当前在 `superchat-panel.tsx:3920`，而 `AgentCatalogPlanning` 只接受 `planning_notes` / `prompt_guide` / `conduct_rules` 且启用 `extra="forbid"`，因此 Skill Studio 存出的 Skill 会被后端直接拒收）；
 - 画幅默认值由 `input_parameters` 表达；
-- `buildSkillStudioCatalogSaveItems()` 保存前复用 `validateFreezoneAgentConfigPayload()`，不再只检查少量字段；同时透传第 1 项的 `asset_policy`；
+- `buildSkillStudioCatalogSaveItems()` 保存前复用 `validateFreezoneAgentConfigPayload()`，不再只检查少量字段；
 - 增加“Skill Studio 产物可以被后端 `AgentCatalogSkillConfig` 直接接受”的跨层回归测试。
 
 `default_aspect_ratios` 这一项是当前代码 Bug，本身优先级最高，但因为与第 1 项改同一个保存路径，实施上合并处理。
@@ -1518,7 +1453,7 @@ reference_media
 
 - Graph 节点先保存 `skillId` 和本次 `confirmedInputs`；完成 8.3 的追溯项后再同时保存 `skillVersion`；
 - 后端根据 `skillId` 读取有效 Skill 及其当前版本，按 §6.2 的节点类型表提取相关的 `prompt_guide`、`conduct_rules` 和 `domain_constraints`，不信任客户端自行提交完整 Skill；
-- `asset_policy.anchors` 不进 Compiler 上下文，它由 Hermes 在规划期消费；
+- 锚点与流程类要求不进 Compiler 上下文，它们由 Hermes 在规划期消费；
 - 删除 `recipe_runtime.py` 系统提示第 33 行的 `Follow the Recipe instructions as the highest-priority creative method`，改为“用户要求 > 已确认输入 > Skill 强约束 > Recipe 工艺 > 默认值”（与 §6.4 一致）；
 - 不把完整 Graph、无关 Skill 内容或其他 Recipe 的完整提示词塞入上下文；
 - 缓存键覆盖 Skill 版本、确认输入和实际传入约束，避免规则变化后复用旧提示词；
@@ -1557,7 +1492,7 @@ reference_media
 
 ```text
 删除  *-video-spec ×4        → 【全局视频规格】节点改由前端 / Graph Builder 从
-                               prompt_guide + conduct_rules + asset_policy + confirmed_inputs
+                               prompt_guide + conduct_rules + confirmed_inputs
                                直接渲染，不经 LLM
 合并  script-outline / story-script / story-outline   → 剧本大纲 ×1
 合并  storyboard / shot-list / storyboard-sketch      → 分镜 ×1（image 变体保留为独立 Recipe）
@@ -1572,7 +1507,7 @@ reference_media
 - **12 份 Recipe 里的阶段推进指令（“确认后进入【某】阶段”）要有去处，不是简单删掉。** 阶段顺序上移 `planning.conduct_rules`，“该在哪些环节停下来问用户”折成 `input_parameters` 的 `execution_mode` 档位（§7.5）。删掉而不给去处，作者下次会写回 Recipe；
 - 移除 7 份里的硬编码分辨率、3 份里的硬编码画幅——改为消费 `confirmed_inputs`；
 - 移除对 `Final_Video_Spec` 的 prose 读取约定，改为消费第 3 项传入的 `skill_constraints`；
-- **移除 4 份里用散文声明的一致性要求，不要搬到 `prompt_guide`。** 这类内容选错了实现层：正确做法是在 Skill 的 `asset_policy.anchors` 里声明锚点及其 `bind_to`，由 Agent 在 Plan 中建立锚点节点与引用边、由 Validator 校验（§6.1）。散文删掉即可，效力由拓扑接管。
+- **4 份里那种“角色造型必须一致”的空话删掉，改写成 Skill 的锚点要求。** 光在 Recipe 里说“保持一致”没有效力；有效的写法是在 Skill 的 `planning_notes` 里要求建立锚点节点并连到每个相关镜头，由 Agent 落成拓扑（§6.1）。
 
 5 个内置 Skill 的 `allowed_recipe_ids` 随之改为指向通用 Recipe。
 
@@ -1613,7 +1548,7 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 | 节点数量、连线、分组、坐标 | **丢弃**。它们是这一次任务的结果，不是方法 |
 | 反复出现的风格描述 | 提炼进 `planning.prompt_guide` |
 | 全局排斥项（如禁字幕） | 提炼进 `planning.conduct_rules` |
-| 被多个下游引用的锚点节点及其引用关系 | 提炼进 `asset_policy.anchors`，`bind_to` 取实际被引用的节点类型 |
+| 被多个下游引用的锚点节点及其引用关系 | 提炼成 `planning_notes` 里的锚点要求，写明该锚点要连到哪些节点类型 |
 | 生成前必须先就位的判断顺序 | 写进 `planning.planning_notes` 的散文 |
 | 实际用到的 Recipe | 汇总进 `allowed_recipe_ids` |
 | 具体镜头数量、单镜时长、每个镜头的提示词 | **丢弃**。属主观决策（§3.1），不进 Skill |
@@ -1682,7 +1617,7 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 - 不自建 Memory 系统，继续依赖 Hermes Memory；
 - 不为了“专家团”默认拉起多个 Agent；
 - 不增加 CreativePlan、Skill Session 或第二个 WorkflowPlan；
-- 不增加独立 Project Spec Schema——§6.1 新增的 `asset_policy` 属于 Skill 自身字段，不是第二种 Plan，判据见 §4.1；
+- 不增加独立 Project Spec Schema——本轮 Skill Schema 零改动，相关内容由 `planning` 已有字段与 `input_parameters` 承载，判据见 §4.1 与 §6.1；
 - 不在 Skill 里声明转场、剪辑节奏或淡入淡出——两条自有理由：合成层 `run_freezone_video_compose()` 拒绝时间上重叠的视频片段，转场在执行层不存在，字段写了也无处生效；且剪辑合成是成熟工具已解决的领域，不是本项目的差异化方向（主张一：Graph 是创作真相源，合成层是它的下游消费者）。合成层具备重叠能力后再评估；
 - 不在引擎里做“导演水平评估”——观感属于 Skill 内容，由 `planning.prompt_guide` 声明并经 §8.2 第 3 项传达到每个节点；引擎负责让约束可靠抵达，不负责给作品打分；
 - 不在 Skill 里硬编码阶段暂停点。竞品样本把“每个关键阶段都停下确认”写进 Skill，我们按 §7.5 的风险驱动确认决定何时暂停——低成本可逆的文本规划自动推进，批量付费生成与不可逆操作才等确认。机械地每阶段暂停在成本可控时是体验负担；
@@ -1723,7 +1658,8 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 - Skill 和依赖 Recipes 能作为一个 Bundle 导入导出；
 - 无效、缺依赖或越权 Bundle 会在保存前整体拒绝；
 - 普通用户只需要理解 Skill，不需要管理 Recipe；
-- `asset_policy.anchors` 能被 Skill Studio 创建、设置页编辑、Bundle 导入导出，且不填时旧 Skill 仍可加载；
+- **Skill Schema 零改动**：本轮没有新增任何字段，锚点、交付物、确认档位分别由 `planning_notes` / `description` / `input_parameters.execution_mode` 承载（§6.1）；
+- Agent 能按 Skill 声明的锚点要求稳定落成拓扑——锚点节点存在、每个相关镜头都有来自它的引用边、同一主体在所有镜头引用同一锚点。**这三条在三个标杆上的通过率就是决定是否需要加 Validator 校验的数据**（§8.2 第 1 项）；
 - `input_parameters` 里的 `execution_mode` 真的影响执行行为，且用户本轮选择高于 Skill 声明的默认值；
 - 迁移后 Recipe 的 `system_prompt` 里不再出现任何阶段推进指令，该职责回到 `conduct_rules` 与 `execution_mode`；
 - **新增一个 Skill 不需要新增任何 Recipe**（§8.2 第 5 项的核心指标）；
@@ -1743,7 +1679,7 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 
 **待兑现的一条是主张三**——Skill 声明观感与边界、Recipe 提供可复用工艺。§2.8 的实测说明它今天不成立，而且原因很具体：**分层的方向对，切分线画错了。** 观感、流程顺序和资产决策被切进了 Recipe，于是 30 份 Recipe、0 份共用，同一批约束被 7~14 份各自重写，改一条要改十几个文件。Recipe 层现在是维护负债而不是复用资产。
 
-兑现条件是三件事同时完成，缺一不可：§6.1 的 `asset_policy.anchors`、§8.2 第 3 项的约束传递、§8.2 第 5 项的工艺收敛。三者缺一，Recipe 层就只是把重复从 5 个 Skill 挪到 30 个文件。
+兑现条件是两件事同时完成，缺一不可：§8.2 第 3 项的约束传递（让 Skill 里已写好的提示词真正到达执行层）、§8.2 第 5 项的工艺收敛（把重复的厚度换成共享的厚度）。两者缺一，Recipe 层就只是把重复从 5 个 Skill 挪到 30 个文件。
 
 **为什么值得为这一条投入**：§5.3 记录了一个真实作者的困境——他把自己的分镜方法开源成了“一套分镜 Skill”，于是在使用平台导演美学 Skill 时只能二选一。在没有工艺复用层的架构里，通用工艺与观感被迫塞进同一个单元，任何组合都要复制整份再改。分镜表的列结构、锚点清单的组织方式、三视图生成方法、并行分批策略、叙事节拍提取——这些与题材风格完全无关的工艺，每个 Skill 都得重写一遍。
 
