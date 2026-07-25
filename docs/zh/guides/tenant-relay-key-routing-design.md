@@ -119,6 +119,49 @@ BYOK 下每家客户拥有自己的上游账号，消耗以真实货币计价并
 
 这也解释了为什么它值得那 250 行：它不是一个技术让步，而是把「够格要求独立部署」的客户门槛往上抬了一档。
 
+### 0.3 这是 EE 功能，CE 下惰性存在
+
+**本功能的目标场景是 EE：一个部署服务多个付费用户，需要按用户区分 key 与计费。CE 不需要它。**
+
+CE 是单机版，部署方配置自己的虾驿 key 或其他上游——这件事现有的 `MODE_CUSTOM`（`custom_newapi_base_url` / `custom_newapi_api_key`）已经在做，**部署方的 key 本来就是他自己的 key**，不存在多用户区分的需求。而且 CE 用 `NoOpUsageMeter`，本来就不扣积分。
+
+因此工作项按仓库与版本拆开：
+
+| 工作项 | 代码在哪 | CE | EE |
+| --- | --- | --- | --- |
+| Agent 单例按 key 分桶 | dramaclaw | 惰性（只有一个桶） | ✅ 需要 |
+| `tenant_relay_key` 表 + admin 接口 | dramaclaw | 惰性（无记录） | ✅ 需要 |
+| `get_effective_newapi_config` 加 `username` | dramaclaw | 惰性（不传即旧行为） | ✅ 需要 |
+| BYOK 标记进 contextvars | dramaclaw | 惰性（无人读取） | ✅ 需要 |
+| `EEUsageMeter` 加 6 个 `if` | **SuperTale_main** | ➖ 不适用 | ✅ 需要 |
+
+前四项落在共享仓（dramaclaw），CE 会一并拿到，但**在 CE 下全部惰性**：没有 `tenant_relay_key` 记录 → 全部解析为部署级 key → Agent 分桶只有一个桶 → 行为与改造前完全一致。
+
+**CE 侧唯一需要的验收是一条回归**：无 `tenant_relay_key` 记录时，行为与改造前逐字节一致。
+
+#### 扣费验收归 EE 仓
+
+积分相关的两条验收在 CE 下无法验证——CE 用 `NoOpUsageMeter`，谁都不扣，测试会「通过」但毫无意义：
+
+- BYOK 用户不扣积分；
+- 非 BYOK 用户扣积分行为与改造前一致。
+
+这两条必须放在 EE 仓的测试里。两侧现有的测试布局正好对应这个分工：
+
+```text
+dramaclaw/tests/ports/          test_usage_noop.py                     ← 只有空操作实现
+SuperTale_main/tests/ports/     test_usage_noop.py
+                                test_usage_meter.py    ← 真实扣费，新增测试放这里
+                                test_record_parity.py
+```
+
+CE 侧能验的是 key 解析与用量记录：两用户并发各自用对自己的 key、`enabled` 开关切换后解析正确、用量记录完整且 `credit_reservation_id` 为空。
+
+#### 两个版本下 BYOK 的性质不同
+
+- **EE**：用户自带 key → 不消耗运营方额度 → 不扣其积分，是**完整的商业能力**（key 隔离 + 计费隔离）；
+- **CE**：无积分体系，若某个自部署方将来确实要区分用户 key，拿到的是**纯技术能力**（仅 key 隔离），如何向用户收费需在 CE 之外解决。
+
 ## 1. 现状与卡点
 
 ### 1.1 DramaClaw 现在是「一个部署一个 key」
@@ -658,11 +701,24 @@ channel.ChannelInfo.MultiKeyPollingIndex = (idx + 1) % len(keys)
 
 | 期 | 内容 | 触发条件 |
 | --- | --- | --- |
-| 一 | §3.4 Agent 单例分桶（含 Cognee 边界确认） | 立即，独立于其余项 |
+| 一 | §3.4 Agent 单例分桶（含 Cognee 边界确认） | 立即，独立于其余项；CE/EE 共享，CE 下只有一个桶、行为不变 |
 | 二 | §2 表 + §3.1 解析改造 + §3.2 积分跳过 + §3.3 错误翻译；虾驿侧手工配前两个用户 | 有第一个自配 key 的客户 |
 | 三 | §4.1 开通自动化（四步 API）；回落归因看板（§7.3） | 月开通量超 5 个，或客户要求自助轮换 key |
 
 ### 7.2 验收
+
+验收按仓库分开，**扣费相关两条只能在 EE 仓验证**（§0.3）：
+
+| 验收项 | 在哪个仓跑 |
+| --- | --- |
+| 无 `tenant_relay_key` 记录时行为与改造前一致 | dramaclaw（CE 唯一必需的回归） |
+| 两用户并发各自用对自己的 key | dramaclaw |
+| `enabled` 开关切换后 key 解析正确 | dramaclaw |
+| 用量记录完整、`credit_reservation_id` 为空 | dramaclaw |
+| BYOK 用户不扣积分 | **SuperTale_main**（`tests/ports/test_usage_meter.py`） |
+| 非 BYOK 用户扣积分行为与改造前一致 | **SuperTale_main**（同上） |
+
+具体条目：
 
 - 不传 `username` 时 `get_effective_newapi_config()` 输出与改造前逐字节一致（回归）；
 - 两个用户并发发起文本生成，**各自实际使用的 api_key 与其配置一致**——这条是 §3.4 的核心，必须测并发，只测「能取到正确 key」不够；
