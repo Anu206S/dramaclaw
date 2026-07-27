@@ -183,7 +183,8 @@ describe('故事板 · 功能 chip（点功能建节点 → 确认后生成）',
     for (const category of ['分镜叙事', '空间与机位', '设定图', '质感调节']) {
       expect(await screen.findByText(category)).toBeInTheDocument();
     }
-    await user.click(screen.getByRole('button', { name: '打光' }));
+    // 每行是「功能名 + 一句话说明」，所以按名字前缀匹配。
+    await user.click(screen.getByRole('button', { name: /^打光/ }));
 
     expect(nodeData(spawnedId).imageOpKey).toBe('relight');
     expect(nodeData(spawnedId).displayName).toBe('打光');
