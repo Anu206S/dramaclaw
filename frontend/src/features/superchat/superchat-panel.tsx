@@ -3312,7 +3312,8 @@ function isTransientSkillStudioStatus(event: unknown): boolean {
     event
     && typeof event === "object"
     && !Array.isArray(event)
-    && (event as Record<string, unknown>).type === "skill_studio.status",
+    && (event as Record<string, unknown>).type === "skill_studio.status"
+    && !isRealSkillStudioProgressStatus(event),
   );
 }
 
