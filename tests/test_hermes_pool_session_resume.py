@@ -204,6 +204,36 @@ def test_hermes_worker_receives_novelvideo_data_roots(tmp_path: Path, monkeypatc
     assert env["NOVELVIDEO_RUNTIME_DIR"] == str(hermes_pool.config.RUNTIME_DIR)
 
 
+def test_freezone_hermes_worker_disables_skill_manage(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+
+    monkeypatch.setattr(hermes_pool, "effective_gateway_credentials", lambda: ("", ""))
+    token = AgentSessionToken(
+        value="agent-token",
+        session_id="agent-session",
+        user="alice",
+        scopes=("projects:read",),
+        exp=int(time.time()) + 3600,
+        worker_id="worker-1",
+        agent_kind="hermes-freezone",
+    )
+
+    pool = hermes_pool.HermesPool(max_workers=1)
+    env = pool._build_env(
+        tmp_path,
+        "alice",
+        token,
+        agent_profile="freezone",
+        project_id=None,
+    )
+
+    assert env["DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE"] == "1"
+    assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path / ".dramaclaw-python")
+
+
 @pytest.mark.asyncio
 async def test_hermes_pool_uses_separate_sessions_per_project(
     tmp_path: Path,

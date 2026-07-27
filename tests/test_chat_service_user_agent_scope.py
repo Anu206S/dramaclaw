@@ -1124,6 +1124,8 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "freezone_finish_agent_catalog_draft" in prompt
     assert "For local edits, prefer freezone_patch_agent_catalog_draft" in prompt
     assert "Do not regenerate unchanged Recipes" in prompt
+    assert "The top-level parameter is patch, not operation, operations, or patches" in prompt
+    assert 'patch=[{"op":"remove","path":""}]' in prompt
     assert "expected_recipe_count" in prompt
     assert "Use 0 only when the draft intentionally has no Recipes" in prompt
     assert "Do not pass the full Skill/Recipe catalog in one tool call" in prompt
@@ -1144,6 +1146,8 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "终端生成型" not in prompt
     assert "不要把所有 Recipe 都写成 prompt compiler" not in prompt
     assert "must not emit Freezone canvas commands" in prompt
+    assert "All user-visible Skill Studio text must follow the user's current language" in prompt
+    assert "Do not mix languages casually" in prompt
 
 
 def test_freezone_prompt_separates_new_skill_from_current_canvas_context(
@@ -1183,9 +1187,27 @@ def test_freezone_prompt_requires_summary_confirmation_for_canvas_workflow_skill
     assert "[FREEZONE_SKILL_STUDIO]" in prompt
     assert "distill_from_canvas" in prompt
     assert "current canvas, current flow, selected nodes, this project, this workflow, or existing workflow" in prompt
-    assert "ask 1-2 high-level confirmation questions first" in prompt
-    assert "preserve project-specific details or abstract them into a reusable Skill" in prompt
-    assert "whether the reusable workflow should be fine-grained or simplified" in prompt
+    assert "call freezone_get_canvas_ontology before asking any question" in prompt
+    assert "Do not use canvas summary as the evidence source for Skill Studio questions" in prompt
+    assert "fetch only a few key node details with freezone_get_node_detail" in prompt
+    assert "ask 2-4 high-quality confirmation questions first" in prompt
+    assert "infer the reusable workflow and current production style" in prompt
+    assert "Each question should usually provide 3-5 user-facing options" in prompt
+    assert "decision matrix" in prompt
+    assert "Do not merge these layers into one question" in prompt
+    assert "Do not over-infer visual style from node names" in prompt
+    assert "Never present a vague phrase such as \"光影风格广告\"" in prompt
+    assert "The first question for canvas distillation should usually be about what workflow method to preserve" in prompt
+    assert "Each confirmation question must ask one decision only" in prompt
+    assert "what style or quality rules must stay" in prompt
+    assert "Before showing a clarification card, briefly state the canvas evidence in plain user language" in prompt
+    assert "Translate internal analysis labels into user-facing question titles" in prompt
+    assert "下次主要复用什么？" in prompt
+    assert "下次可以替换哪些内容？" in prompt
+    assert "哪些效果必须保持？" in prompt
+    assert "每次开始前要确认什么？" in prompt
+    assert "Option text should describe the effect of choosing it, not the implementation" in prompt
+    assert "Do not always ask the same two questions" in prompt
     assert "do not expose internal terms such as Recipe, Recipes, 配方" in prompt
     assert "freezone_request_user_clarification" in prompt
 
@@ -1205,7 +1227,18 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
 
     assert "skill-studio-authoring-guide.md" in prompt
     assert "canvas_workflow_analysis" in prompt
-    assert "Use canvas ontology or canvas summary first for whole-canvas Skill distillation" in prompt
+    assert "based on freezone_get_canvas_ontology evidence or key node detail evidence" in prompt
+    assert "Do not call freezone_request_user_clarification for canvas distillation until you have canvas evidence" in prompt
+    assert "production_method" in prompt
+    assert "visual_language" in prompt
+    assert "case_variables" in prompt
+    assert "reusable_protocol" in prompt
+    assert "hard_constraints" in prompt
+    assert "start_options" in prompt
+    assert "applicability_scope" in prompt
+    assert "皮克斯 3D 卡通广告片" in prompt
+    assert "柔和棚拍光影" in prompt
+    assert "not on the user's short request or canvas summary" in prompt
     assert "Do not read every node detail one by one" in prompt
     assert "Do not treat tool schemas as authoring guidance" in prompt
     assert "capability modeling" in prompt

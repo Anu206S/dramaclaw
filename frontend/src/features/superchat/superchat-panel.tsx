@@ -33,6 +33,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
@@ -63,6 +64,13 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { apiCall } from "@/api/client";
 import {
   Dialog,
@@ -3437,6 +3445,7 @@ export const visibleAssistantOrderedPartsForMessageForTest = visibleAssistantOrd
 
 function reorderAssistantInteractionParts(parts: ChatMessagePart[], text: string): ChatMessagePart[] {
   if (!text.trim()) return parts;
+  if (parts.some((part) => typeof part.seq === "number")) return parts;
   const interactionParts = parts.filter((part) => part.type === "skill_studio" || part.type === "clarification");
   const textParts = parts.filter((part) => part.type === "text");
   if (interactionParts.length === 0 || textParts.length === 0) return parts;
@@ -4134,42 +4143,6 @@ function numberOrRawText(value: string): number | string {
   return Number.isFinite(parsed) ? parsed : value;
 }
 
-const SKILL_STUDIO_IMAGE_ASPECT_RATIOS = new Set([
-  "1:1",
-  "9:16",
-  "16:9",
-  "3:4",
-  "4:3",
-  "3:2",
-  "2:3",
-  "4:5",
-  "5:4",
-  "21:9",
-]);
-
-const SKILL_STUDIO_VIDEO_ASPECT_RATIOS = new Set([
-  "16:9",
-  "4:3",
-  "1:1",
-  "3:4",
-  "9:16",
-  "21:9",
-]);
-
-function normalizedSkillStudioDefaultAspectRatios(value: unknown): Record<string, string> {
-  const ratios = getRecord(value);
-  const next: Record<string, string> = {};
-  const imageRatio = textField(ratios.imageGeneration);
-  if (SKILL_STUDIO_IMAGE_ASPECT_RATIOS.has(imageRatio)) {
-    next.imageGeneration = imageRatio;
-  }
-  const videoRatio = textField(ratios.videoGeneration);
-  if (SKILL_STUDIO_VIDEO_ASPECT_RATIOS.has(videoRatio)) {
-    next.videoGeneration = videoRatio;
-  }
-  return next;
-}
-
 function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): FreezoneAgentConfigPayload {
   const triggers = getRecord(skill.triggers);
   const planning = getRecord(skill.planning);
@@ -4200,9 +4173,6 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
       planning_notes: firstNonEmptyText(planning.planning_notes, planning.metaPlanningHints),
       prompt_guide: firstNonEmptyText(planning.prompt_guide, planning.promptStyleGuide),
       conduct_rules: cleanStringArray(planning.conduct_rules ?? planning.behaviorRules),
-      default_aspect_ratios: normalizedSkillStudioDefaultAspectRatios(
-        planning.default_aspect_ratios ?? planning.defaultAspectRatios,
-      ),
     },
     evaluation: {
       rating_bands: getRecordArray(evaluation.rating_bands ?? evaluation.scoreAnchors).map((item) => ({
@@ -4399,7 +4369,7 @@ function buildSkillStudioCatalogSaveItems(draft: Record<string, unknown>): Skill
         Boolean(recipe) && typeof recipe === "object" && !Array.isArray(recipe),
       )
     : [];
-  for (const recipe of recipes) {
+  for (const recipe of dedupeSkillStudioRecipesById(recipes)) {
     const payload = normalizedSkillStudioRecipePayload(recipe);
     assertSkillStudioCatalogPayload("recipes", payload);
     items.push({ kind: "recipes", payload });
@@ -4411,6 +4381,21 @@ function buildSkillStudioCatalogSaveItems(draft: Record<string, unknown>): Skill
 }
 
 export const buildSkillStudioCatalogSaveItemsForTest = buildSkillStudioCatalogSaveItems;
+
+function dedupeSkillStudioRecipesById(recipes: Record<string, unknown>[]): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  const deduped: Record<string, unknown>[] = [];
+  for (let index = recipes.length - 1; index >= 0; index -= 1) {
+    const recipe = recipes[index];
+    const recipeId = textField(recipe.id);
+    if (recipeId) {
+      if (seen.has(recipeId)) continue;
+      seen.add(recipeId);
+    }
+    deduped.unshift(recipe);
+  }
+  return deduped;
+}
 
 function skillStudioQuestionKey(question: SkillStudioQuestion, index: number): string {
   return question.id?.trim() || `question_${index + 1}`;
@@ -4653,7 +4638,7 @@ export function buildAssistantClarificationResponseForTest(
     ...lines,
     "回答如下：",
     ...answerLines,
-    "请基于以上补充信息继续。",
+    "请根据以上补充信息执行下一步。",
   ].join("\n");
 }
 
@@ -4668,7 +4653,15 @@ export function buildAssistantClarificationToolResultForTest(
   const message = [
     buildAssistantClarificationResponseForTest(event, safeAnswers),
     options.skillStudioRevision
-      ? "当前处于 Skill Studio 草稿修订流程。请根据这个回答决定下一步；如果还需要追问，请一次只提出一个问题，等用户回答后再决定是否继续追问。信息足够时直接输出完整更新后的 Skill / Recipe 草稿。"
+      ? [
+          "当前处于 Skill Studio 草稿修订流程。",
+          "只允许把本次回答中的明确选择或补充文本当作修改方向；不要从当前草稿内容、Recipe 结构或你自己的优化判断里推断用户想改什么。",
+          "如果本次回答只是选择了泛泛分类，例如基本信息、输入参数、能力模块内容、约束规则、质量标准、执行流程等，仍然不算具体修改方向；下一步必须继续调用 freezone_request_user_clarification 追问一个更具体的问题。",
+          "只有用户明确给出了具体目标和改法时，下一步才可以调用 freezone_patch_agent_catalog_draft 更新草稿，或用分片草稿工具替换较大的 Skill / Recipe 内容。",
+          "更新后必须调用 freezone_finish_agent_catalog_draft 展示新的可编辑草稿卡。",
+          "不要只回复普通文本，不要只总结修改意图，不要询问是否保存，也不要展示未修改的旧草稿。",
+          "只有修改方向仍不明确时，才再调用 freezone_request_user_clarification 追问一个问题。",
+        ].join("\n")
       : "",
   ].filter(Boolean).join("\n\n");
   return {
@@ -4729,6 +4722,27 @@ function buildPersistedAssistantClarificationEvent(
 }
 
 export const buildPersistedAssistantClarificationEventForTest = buildPersistedAssistantClarificationEvent;
+
+function skillStudioResultClientDebug(
+  event: SkillStudioUiEvent,
+  source: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const record = event as Record<string, unknown>;
+  return {
+    source,
+    event_type: event.type,
+    event_turn_id: event.turn_id ?? null,
+    bridge_key: typeof record.bridge_key === "string" ? record.bridge_key : null,
+    skill_studio_session_id: typeof record.skill_studio_session_id === "string" ? record.skill_studio_session_id : null,
+    project_id: typeof record.project_id === "string" ? record.project_id : null,
+    canvas_id: typeof record.canvas_id === "string" ? record.canvas_id : null,
+    agent_id: typeof record.agent_id === "string" ? record.agent_id : null,
+    page_url: typeof window !== "undefined" ? window.location.href : null,
+    sent_at: new Date().toISOString(),
+    ...extra,
+  };
+}
 
 function draftPayloadFromEvent(event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) {
   if (event.draft && typeof event.draft === "object" && !Array.isArray(event.draft)) {
@@ -4808,10 +4822,11 @@ export function buildSkillStudioDraftToolResultForTest(
     ? normalizedDraft.skill as Record<string, unknown>
     : {};
   const recipes = Array.isArray(normalizedDraft.recipes) ? normalizedDraft.recipes : [];
+  const dedupedRecipes = dedupeSkillStudioRecipesById(recipes as Record<string, unknown>[]);
   const summary = typeof normalizedDraft.summary === "string" ? normalizedDraft.summary : event.summary || "";
   const warnings = Array.isArray(normalizedDraft.warnings) ? normalizedDraft.warnings : [];
   const savedSkillIds = textField(skill.id) ? [textField(skill.id)] : [];
-  const savedRecipeIds = recipes
+  const savedRecipeIds = dedupedRecipes
     .map((recipe) => textField((recipe as Record<string, unknown>).id))
     .filter((id): id is string => Boolean(id));
   return {
@@ -4827,7 +4842,7 @@ export function buildSkillStudioDraftToolResultForTest(
     saved_to_catalog: true,
     saved_skill_ids: savedSkillIds,
     saved_recipe_ids: savedRecipeIds,
-    draft: { summary, skill, recipes, warnings },
+    draft: { summary, skill, recipes: dedupedRecipes, warnings },
     message: [
       "我已在 Skill Studio 草稿卡片中确认添加，已保存为正式 Skill / Recipe。",
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
@@ -4898,9 +4913,14 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
       "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
       "不要询问是否保存当前版本，也不要提供 save_now / save_current / confirm_save 这类选项；保存只由页面草稿卡的确认按钮处理。",
-      "如果需要追问，请直接询问具体修改方向、范围或偏好。",
-      "请基于当前完整草稿，一个问题一个问题地收集修改意图；信息足够后使用分片草稿工具输出更新草稿。",
-      "下一步只能调用 freezone_request_user_clarification，或按顺序调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
+      "这不是继续完成原草稿，也不是要求重新展示当前草稿。",
+      "返回的 draft 只是被修改对象，不是用户修改意图；禁止从 draft 内容里自行推断结构优化、拆分步骤、增删 Recipe 或调整引用关系。",
+      "用户还没有提供具体修改方向；下一步必须调用 freezone_request_user_clarification 追问修改方向、范围或偏好。",
+      "这次 clarification 的 questions 数组必须只有一个问题，问题要直接问用户想改哪里或怎么改。",
+      "在用户回答修改方向之前，禁止调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
+      "在用户回答修改方向之前，也禁止调用 freezone_patch_agent_catalog_draft。",
+      "禁止调用 freezone_finish_agent_catalog_draft 原样展示当前草稿。",
+      "用户回答修改方向后，如果回答仍是泛泛分类，继续追问；只有回答包含具体目标和改法时，才基于当前完整草稿进行局部 patch 或分片输出更新草稿。",
       "不要在单个 tool_call 里传完整 Skill / Recipe catalog。",
       "不要用普通文本总结修改结果；不要只说明改了什么；未输出更新草稿前不要让用户保存。",
     ].filter(Boolean).join("\n"),
@@ -5987,7 +6007,7 @@ function SkillStudioDraftCard({
             <span>Recipes ({recipes.length})</span>
           </div>
           {recipes.map((recipe, index) => (
-            <details key={textField(recipe.id) || index} className="group border-b border-white/[0.07] last:border-b-0">
+            <details key={`${textField(recipe.id) || "recipe"}-${index}`} className="group border-b border-white/[0.07] last:border-b-0">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
                 <span className="flex min-w-0 items-center gap-2">
                   <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
@@ -9074,6 +9094,27 @@ type CanvasCommandSurfaceEvent =
 const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
 const CANVAS_COMMAND_APPROVAL_TIMEOUT_MS = 60_000;
 
+/** 输入框左下角那颗「手动确认 / 自动生成」下拉里的两档。 */
+const CANVAS_COMMAND_EXECUTION_MODE_OPTIONS: ReadonlyArray<{
+  value: CanvasCommandExecutionMode;
+  icon: LucideIcon;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "manual_confirm",
+    icon: ShieldAlert,
+    label: "手动确认",
+    description: "Agent 在执行画布命令前都会请求确认",
+  },
+  {
+    value: "auto_execute",
+    icon: Wrench,
+    label: "自动生成",
+    description: "Agent 会自动执行安全命令并反馈结果",
+  },
+];
+
 function loadCanvasCommandExecutionMode(): CanvasCommandExecutionMode {
   if (typeof window === "undefined") return "manual_confirm";
   return window.localStorage.getItem(CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY) === "auto_execute"
@@ -10236,7 +10277,6 @@ export function SuperChatPanel({
   const historyScrollKeyRef = useRef<string | null>(null);
   const composerShellRef = useRef<HTMLDivElement | null>(null);
   const composerBeamRef = useRef<BorderBeamController | null>(null);
-  const canvasCommandModeButtonRef = useRef<HTMLButtonElement | null>(null);
   const skillStudioDraftPersistTimerRef = useRef<number | null>(null);
   const onFreezoneUserMessageRef = useRef(onFreezoneUserMessage);
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
@@ -10262,10 +10302,6 @@ export function SuperChatPanel({
   const resolvedCanvasCommandApprovalKeysRef = useRef<Set<string>>(new Set());
   const [canvasCommandExecutionMode, setCanvasCommandExecutionMode] = useState<CanvasCommandExecutionMode>(() => loadCanvasCommandExecutionMode());
   const [canvasCommandModeMenuOpen, setCanvasCommandModeMenuOpen] = useState(false);
-  const [canvasCommandModeMenuPosition, setCanvasCommandModeMenuPosition] = useState<{
-    left: number;
-    bottom: number;
-  } | null>(null);
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 
   useEffect(() => {
@@ -10655,45 +10691,6 @@ export function SuperChatPanel({
     saveCanvasCommandExecutionMode(mode);
     setCanvasCommandModeMenuOpen(false);
   }, []);
-
-  useLayoutEffect(() => {
-    if (!canvasCommandModeMenuOpen) {
-      setCanvasCommandModeMenuPosition(null);
-      return;
-    }
-    const updatePosition = () => {
-      const button = canvasCommandModeButtonRef.current;
-      if (!button) return;
-      const rect = button.getBoundingClientRect();
-      const menuWidth = 288;
-      setCanvasCommandModeMenuPosition({
-        left: Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8)),
-        bottom: Math.max(8, window.innerHeight - rect.top + 8),
-      });
-    };
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [canvasCommandModeMenuOpen]);
-
-  useEffect(() => {
-    if (!canvasCommandModeMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (canvasCommandModeButtonRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest("[data-canvas-command-mode-menu='true']")) return;
-      setCanvasCommandModeMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [canvasCommandModeMenuOpen]);
 
   const userMessageHistory = useMemo(
     () =>
@@ -12316,6 +12313,11 @@ export function SuperChatPanel({
         ...buildSkillStudioQuestionToolResultForTest(event, selections),
         action,
         skill_studio_status: action === "submit" ? "answered" : action,
+        client_debug: skillStudioResultClientDebug(event, "questions_card_ws", {
+          selected_action: action,
+          active_turn_id: chat.activeTurnId,
+          chat_busy: chat.busy,
+        }),
         message:
           action === "recommended"
             ? buildSkillStudioRecommendedResponse(event)
@@ -12450,7 +12452,23 @@ export function SuperChatPanel({
       return false;
     }
     try {
-      const payload = buildSkillStudioDraftToolResultForTest(event, draftPayload);
+      const payload = {
+        ...buildSkillStudioDraftToolResultForTest(event, draftPayload),
+        client_debug: skillStudioResultClientDebug(event, "draft_confirm_add_http", {
+          active_turn_id: chat.activeTurnId,
+          chat_busy: chat.busy,
+        }),
+      };
+      console.info("[superchat] submit skill_studio.result via http", {
+        turn_id: payload.turn_id,
+        bridge_key: payload.bridge_key,
+        action: payload.action,
+        skill_studio_status: payload.skill_studio_status,
+        saved_to_catalog: payload.saved_to_catalog,
+        saved_skill_ids: payload.saved_skill_ids,
+        saved_recipe_ids: payload.saved_recipe_ids,
+        client_debug: payload.client_debug,
+      });
       const result = await apiCall<SkillStudioToolResultResponse>("chat/skill-studio-tool-result", {
         method: "POST",
         json: payload,
@@ -12521,7 +12539,7 @@ export function SuperChatPanel({
       toast.error("添加 Skill / Recipe 失败，请检查必填字段后重试");
       return false;
     }
-  }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
+  }, [chat.activeTurnId, chat.busy, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
 
   const handleSkillStudioDraftChange = useCallback((
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
@@ -12563,7 +12581,13 @@ export function SuperChatPanel({
       return false;
     }
     try {
-      const payload = buildSkillStudioDraftRevisionToolResultForTest(event, draftPayload);
+      const payload = {
+        ...buildSkillStudioDraftRevisionToolResultForTest(event, draftPayload),
+        client_debug: skillStudioResultClientDebug(event, "draft_start_revision_button_ws", {
+          active_turn_id: chat.activeTurnId,
+          chat_busy: chat.busy,
+        }),
+      };
       if (!chat.submitSkillStudioResult(payload)) {
         toast.error("Skill Studio 连接未就绪，请重试");
         return false;
@@ -12614,7 +12638,13 @@ export function SuperChatPanel({
       toast.error("Skill Studio 桥接信息缺失，请重试");
       return;
     }
-    const payload = buildSkillStudioDraftCancelToolResultForTest(event, draftPayload);
+    const payload = {
+      ...buildSkillStudioDraftCancelToolResultForTest(event, draftPayload),
+      client_debug: skillStudioResultClientDebug(event, "draft_cancel_button_ws", {
+        active_turn_id: chat.activeTurnId,
+        chat_busy: chat.busy,
+      }),
+    };
     if (!chat.submitSkillStudioResult(payload)) {
       toast.error("Skill Studio 连接未就绪，请重试");
       return;
@@ -13362,26 +13392,79 @@ export function SuperChatPanel({
                   <div className="flex items-center gap-1">
                     {isFreezoneLayout && (
                       <>
-                        <Button
-                          ref={canvasCommandModeButtonRef}
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
-                          onClick={() => setCanvasCommandModeMenuOpen((open) => !open)}
+                        <DropdownMenu
+                          open={canvasCommandModeMenuOpen}
+                          onOpenChange={setCanvasCommandModeMenuOpen}
                         >
-                          {canvasCommandExecutionMode === "manual_confirm" ? (
-                            <>
-                              <ShieldAlert className="size-3.5" />
-                              手动确认
-                            </>
-                          ) : (
-                            <>
-                              <Wrench className="size-3.5" />
-                              自动生成
-                            </>
-                          )}
-                        </Button>
+                          <DropdownMenuTrigger
+                            render={
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                  "h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+                                  canvasCommandModeMenuOpen && "bg-white/[0.08] text-foreground",
+                                )}
+                              />
+                            }
+                          >
+                            {canvasCommandExecutionMode === "manual_confirm" ? (
+                              <>
+                                <ShieldAlert className="size-3.5" />
+                                手动确认
+                              </>
+                            ) : (
+                              <>
+                                <Wrench className="size-3.5" />
+                                自动生成
+                              </>
+                            )}
+                          </DropdownMenuTrigger>
+                          {/* 两档执行模式：语义上就是一组单选，交给 shadcn 的
+                              DropdownMenuRadioGroup —— 定位、外点关闭、Esc、方向键
+                              与选中标记都由组件给，不再手搓 portal + getBoundingClientRect。 */}
+                          <DropdownMenuContent
+                            side="top"
+                            align="start"
+                            sideOffset={8}
+                            // 圆角收到 rounded-md（用户要求「别太大」）；底色跟画布
+                            // 工具条一套中性灰，别用带蓝调的 popover token——抽屉是
+                            // 中性 #212121，蓝灰浮层压上去会发闷。
+                            // p-2 + 加宽：hover 高亮原来几乎顶满外框、两档还贴在一起，
+                            // 看着糊成一坨；外框放大留出 8px 内边距，高亮四周就有了呼吸位
+                            // （用户要求）。300px 是让两行说明各自一行放得下、不再吊出
+                            // 「确认」「果」这种一两个字的孤行。
+                            className="w-[300px] rounded-md bg-[#2a2a2c] p-2 shadow-lg ring-white/12"
+                          >
+                            {/* space-y-1：两档之间留 4px，hover 高亮不再首尾相接。 */}
+                            <DropdownMenuRadioGroup
+                              className="space-y-1"
+                              value={canvasCommandExecutionMode}
+                              onValueChange={(value) =>
+                                setCanvasExecutionMode(value as CanvasCommandExecutionMode)
+                              }
+                            >
+                              {CANVAS_COMMAND_EXECUTION_MODE_OPTIONS.map((option) => (
+                                <DropdownMenuRadioItem
+                                  key={option.value}
+                                  value={option.value}
+                                  // pr-8 得留着：选中标记是绝对定位在右侧的，收窄右
+                                  // 内边距会让它压到描述文字上。
+                                  className="items-start gap-2.5 rounded-md py-2 pl-2 pr-8 focus:bg-white/[0.075] data-checked:bg-white/[0.05] data-checked:focus:bg-white/[0.075]"
+                                >
+                                  <option.icon className="mt-0.5 shrink-0 text-muted-foreground" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block text-sm font-medium">{option.label}</span>
+                                    <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+                                      {option.description}
+                                    </span>
+                                  </span>
+                                </DropdownMenuRadioItem>
+                              ))}
+                            </DropdownMenuRadioGroup>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         <Button
                           ref={freezoneSkillMenuButtonRef}
                           type="button"
@@ -13490,7 +13573,9 @@ export function SuperChatPanel({
       {isFreezoneLayout && freezoneSkillMenuExplicitOpen && freezoneSkillMenuPosition && createPortal(
         <div
           data-freezone-skill-menu="true"
-          className="fixed z-[1000] w-[min(380px,calc(100vw-16px))] overflow-hidden rounded-2xl border border-white/[0.12] bg-[#18191d]/95 p-3 text-foreground shadow-[0_18px_48px_rgba(0,0,0,0.52)] backdrop-blur-xl"
+          // 圆角一律写死 px：本项目把 --radius 调到了 1rem，rounded-lg/xl 实际是
+          // 16/20px，比 tailwind 默认大一圈，用语义档位会不知不觉又变圆（用户要求收小）。
+          className="fixed z-[1000] w-[min(380px,calc(100vw-16px))] overflow-hidden rounded-[10px] border border-white/[0.12] bg-[#18191d]/95 p-3 text-foreground shadow-[0_18px_48px_rgba(0,0,0,0.52)] backdrop-blur-xl"
           style={{
             left: freezoneSkillMenuPosition.left,
             bottom: freezoneSkillMenuPosition.bottom,
@@ -13522,14 +13607,14 @@ export function SuperChatPanel({
                 {freezoneSkillCreateMenuOpen && (
                   <div
                     role="menu"
-                    className="absolute right-0 top-[calc(100%+8px)] z-10 w-[218px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#202126]/98 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+                    className="absolute right-0 top-[calc(100%+8px)] z-10 w-[218px] overflow-hidden rounded-[10px] border border-white/[0.12] bg-[#202126]/98 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl"
                   >
                     {FREEZONE_SKILL_EMPTY_ACTIONS.map((action) => (
                       <button
                         key={action.id}
                         type="button"
                         role="menuitem"
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] leading-5 text-foreground/88 transition hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none"
+                        className="flex w-full items-center gap-2 rounded-[6px] px-2.5 py-2 text-left text-[13px] leading-5 text-foreground/88 transition hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none"
                         onMouseDown={(event) => {
                           event.preventDefault();
                         }}
@@ -13595,7 +13680,7 @@ export function SuperChatPanel({
                 }
               }}
               placeholder="搜索 Skill"
-              className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.06] pl-8 pr-3 text-sm text-foreground outline-none placeholder:text-white/32 transition focus:border-white/[0.18] focus:bg-white/[0.08]"
+              className="h-9 w-full rounded-[8px] border border-white/[0.08] bg-white/[0.06] pl-8 pr-3 text-sm text-foreground outline-none placeholder:text-white/32 transition focus:border-white/[0.18] focus:bg-white/[0.08]"
             />
           </label>
           <div className="max-h-72 overflow-y-auto pr-1">
@@ -13608,23 +13693,18 @@ export function SuperChatPanel({
                   }}
                   type="button"
                   className={cn(
-                    "flex w-full items-start gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-white/[0.07] focus-visible:bg-white/[0.07] focus-visible:outline-none",
+                    "flex w-full items-start gap-2.5 rounded-[8px] px-2 py-2 text-left transition hover:bg-white/[0.07] focus-visible:bg-white/[0.07] focus-visible:outline-none",
                     activeFreezoneSkillSuggestionIndex === index && "bg-white/[0.08]",
                   )}
                   onMouseEnter={() => setActiveFreezoneSkillSuggestionIndex(index)}
                   onClick={() => insertFreezoneSkillSuggestion(skill.id)}
                 >
-                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-xl border border-white/[0.10] bg-white/[0.06] text-white/62">
+                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-white/[0.10] bg-white/[0.06] text-white/62">
                     <Wrench className="size-3.5" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-[13px] font-semibold leading-5 text-foreground/92">
-                        {skill.label}
-                      </span>
-                      <span className="shrink-0 rounded-md bg-white/[0.07] px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
-                        /{skill.id}
-                      </span>
+                    <span className="block truncate text-[13px] font-semibold leading-5 text-foreground/92">
+                      {skill.label}
                     </span>
                     {skill.description && (
                       <span className="mt-0.5 block truncate text-xs leading-4 text-muted-foreground/75">
@@ -13687,56 +13767,6 @@ export function SuperChatPanel({
           onInstall={(item) => void installFreezoneCommunitySkill(item)}
           onSelectLocalSkill={selectFreezoneSkillFromDialog}
         />
-      )}
-      {isFreezoneLayout && canvasCommandModeMenuOpen && canvasCommandModeMenuPosition && createPortal(
-        <div
-          data-canvas-command-mode-menu="true"
-          className="fixed z-[1000] w-72 overflow-hidden rounded-xl border border-white/10 bg-popover p-1.5 text-popover-foreground shadow-xl"
-          style={{
-            left: canvasCommandModeMenuPosition.left,
-            bottom: canvasCommandModeMenuPosition.bottom,
-          }}
-        >
-          <button
-            type="button"
-            className={cn(
-              "flex min-h-[58px] w-full items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-white/[0.06]",
-              canvasCommandExecutionMode === "manual_confirm" && "bg-white/[0.08]",
-            )}
-            onClick={() => setCanvasExecutionMode("manual_confirm")}
-          >
-            <ShieldAlert className="mt-0.5 size-4 shrink-0" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium">手动确认</span>
-              <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
-                Agent 在执行画布命令前都会请求确认
-              </span>
-            </span>
-            <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
-              {canvasCommandExecutionMode === "manual_confirm" && <CheckCircle2 className="size-4" />}
-            </span>
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "flex min-h-[58px] w-full items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-white/[0.06]",
-              canvasCommandExecutionMode === "auto_execute" && "bg-white/[0.08]",
-            )}
-            onClick={() => setCanvasExecutionMode("auto_execute")}
-          >
-            <Wrench className="mt-0.5 size-4 shrink-0" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium">自动生成</span>
-              <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
-                Agent 会自动执行安全命令并反馈结果
-              </span>
-            </span>
-            <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
-              {canvasCommandExecutionMode === "auto_execute" && <CheckCircle2 className="size-4" />}
-            </span>
-          </button>
-        </div>,
-        document.body,
       )}
       <FormatCheckDetailsDialog
         formatCheck={formatCheckDetails?.formatCheck ?? null}

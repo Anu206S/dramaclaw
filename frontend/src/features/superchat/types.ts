@@ -74,6 +74,7 @@ export type ClientFrame =
 	      saved_recipe_ids?: string[];
 	      errors?: string[];
 	      message?: string | null;
+	      client_debug?: Record<string, unknown>;
 	    }
 	  | {
 	      type: "assistant.clarification.result";

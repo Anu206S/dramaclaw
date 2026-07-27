@@ -60,6 +60,11 @@ import { CompareDialog } from "@/pipeline-import/CompareDialog";
 import { MaskEditor } from "@/pipeline-import/MaskEditor";
 import { AssetLibraryPanel } from "./AssetLibraryPanel";
 import { CanvasDebugPanel } from "./CanvasDebugPanel";
+import {
+  FREEZONE_DOCK_TRANSITION_VAR,
+  FREEZONE_DOCK_WIDTH_VAR,
+  freezoneDockOffsetCss,
+} from "./dockOffset";
 import type { PushResult, PushTarget, PushTargetKind } from "@/api/push";
 import { coerceSlotTarget } from "@/features/canvas/domain/mainlineNodeTypes";
 import { canvasEventBus } from "@/features/canvas/application/canvasServices";
@@ -2009,9 +2014,24 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
               components/nav/sliding-tabs.tsx 的 SlidingTabs，因此这里直接复刻同一套
               容器/选中/未选中类，而不是套用 shadcn Tabs 默认的深色选中态。
               容器底色沿用本任务前一步确定的硬编码 #262626（与故事板背景同色）。
-              top-1.5：与顶栏 虾画/虾集 的间距对齐虾集子菜单的紧凑距离（用户指定）。 */}
+              top-1.5：与顶栏 虾画/虾集 的间距对齐虾集子菜单的紧凑距离（用户指定）。
+
+              居中基准是**「抽屉左边还剩多少」**，不是这块内容区、也不是整个视口：
+              顶栏的 虾画/虾集 会被 --freezone-dock-width 挤到剩余宽度里居中（见
+              dockOffset），这里用同一个式子算，两颗胶囊才始终对齐——工作流态抽屉
+              浮在画布上（<main> 不变窄）、故事板态被挤窄，两种情况都成立，因为
+              <main> 左边缘恒在 x=0，这里的 left 就是绝对横坐标。
+              过渡与让位同步：抽屉开合时 300ms 缓着走，拖宽时那个变量是 0ms，跟手。 */}
           {!showBlockingLoading && (
-            <div className="absolute left-1/2 top-1.5 z-40 -translate-x-1/2">
+            <div
+              className="absolute top-1.5 z-40 -translate-x-1/2"
+              style={{
+                left: `calc((100vw - var(${FREEZONE_DOCK_WIDTH_VAR}, 0px)) / 2)`,
+                transitionProperty: "left",
+                transitionTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
+                transitionDuration: `var(${FREEZONE_DOCK_TRANSITION_VAR}, 300ms)`,
+              }}
+            >
               <nav aria-label="画布视图切换" className="relative flex h-8 items-center rounded-full bg-[#262626] shadow-lg">
                 <span
                   aria-hidden="true"
@@ -2340,6 +2360,11 @@ function FreezoneChatDock({
         aside.style.setProperty(AGENT_HISTORY_PANE_WIDTH_VAR, `${nextHistoryWidth}px`);
       }
       if (spacerRef.current) spacerRef.current.style.width = `${dockWidth}px`;
+      // 顶栏 / 底部状态条也在同一帧让位（过渡已被压成 0ms），否则它们会拖在手后面。
+      document.documentElement.style.setProperty(
+        FREEZONE_DOCK_WIDTH_VAR,
+        freezoneDockOffsetCss(dockWidth, minContentWidth),
+      );
     };
 
     const handlePointerMove = (moveEvent: PointerEvent) => {
@@ -2489,6 +2514,36 @@ function FreezoneChatDock({
     return () => window.clearTimeout(timeout);
   }, [isDesktop, open, shouldKeepPanelMounted]);
 
+  // 抽屉总宽（聊天 + 可选的历史 Agent 栏，中间 8px 分隔条）。占位块用同一个值，
+  // 保证被挤窄的左侧内容与抽屉严丝合缝。
+  const dockWidth = agentHistoryOpen ? chatWidth + agentHistoryWidth + 8 : chatWidth;
+  const resizing = resizingPane !== null;
+
+  // 抽屉是通高浮层（压在顶栏之上），挤不动任何人，只能广播「右边被我占了多少」，
+  // 让横贯整屏的顶栏 / 底部状态条 / 任务面板自己往左收——右上角那组入口就跟着
+  // 让位。协议与消费方见 ./dockOffset。
+  useEffect(() => {
+    const root = document.documentElement;
+    root.style.setProperty(
+      FREEZONE_DOCK_WIDTH_VAR,
+      isDesktop && panelVisible ? freezoneDockOffsetCss(dockWidth, minContentWidth) : "0px",
+    );
+    return () => {
+      root.style.removeProperty(FREEZONE_DOCK_WIDTH_VAR);
+    };
+  }, [dockWidth, isDesktop, minContentWidth, panelVisible]);
+
+  // 拖宽期间把让位动画压成 0ms：留着 300ms 缓动的话，每一帧都会重排一段新的缓动，
+  // 顶栏边缘会像橡皮筋一样吊在抽屉后面。
+  useEffect(() => {
+    if (!resizing) return;
+    const root = document.documentElement;
+    root.style.setProperty(FREEZONE_DOCK_TRANSITION_VAR, "0ms");
+    return () => {
+      root.style.removeProperty(FREEZONE_DOCK_TRANSITION_VAR);
+    };
+  }, [resizing]);
+
   if (!isDesktop) {
     return (
       <>
@@ -2498,7 +2553,10 @@ function FreezoneChatDock({
           onClick={() => onOpenChange(true)}
         />
         <Sheet open={open} onOpenChange={onOpenChange}>
-          <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:!max-w-[560px]">
+          <SheetContent
+            side="right"
+            className="flex w-full flex-col gap-0 bg-[#212121] p-0 sm:!max-w-[560px]"
+          >
             <SheetHeader className="sr-only">
               <SheetTitle>{title}</SheetTitle>
               <SheetDescription>{description}</SheetDescription>
@@ -2507,7 +2565,7 @@ function FreezoneChatDock({
               <div className="min-h-0 flex-1">{agentPanels}</div>
               <div
                 className={cn(
-                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-zinc-950/95 shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
+                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-[#212121] shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
                   agentHistoryOpen ? "translate-x-0" : "translate-x-full",
                 )}
               >
@@ -2530,13 +2588,9 @@ function FreezoneChatDock({
     );
   }
 
-  // 抽屉总宽（聊天 + 可选的历史 Agent 栏，中间 8px 分隔条）。占位块用同一个值，
-  // 保证被挤窄的左侧内容与抽屉严丝合缝。
-  const dockWidth = agentHistoryOpen ? chatWidth + agentHistoryWidth + 8 : chatWidth;
   // CSS 侧再兜一层：换窗口尺寸、或带着一个宽抽屉从工作流切到故事板时，存下来的
   // 宽度可能已经超额——这里直接压回去，而不是改写用户的宽度偏好。
   const dockMaxWidth = `calc(100vw - ${minContentWidth}px)`;
-  const resizing = resizingPane !== null;
   // 开合 / 收起历史栏时宽度平滑过渡；拖拽期必须整条关掉——拖的是同一个 width，
   // 留着过渡就等于给每一帧都排一段 300ms 缓动，手感变成「橡皮筋拖后腿」。
   const dockTransition = resizing
@@ -2577,13 +2631,18 @@ function FreezoneChatDock({
       <aside
         ref={asideRef}
         className={cn(
-          // 贴右边、通高（对标 liblib）：不留外边距、不圆角，只留一条左描边把
-          // 抽屉与画布/故事板分开。
-          "absolute inset-y-0 right-0 z-40 hidden flex-col overflow-hidden border-l border-white/[0.12] shadow-none lg:flex",
-          // 拖拽期换成近乎不透明的实底、关掉背景模糊：通高 backdrop-blur-2xl 每帧
-          // 都要把整屏高的大半径模糊重新光栅化一遍，是「拖不动、跟不上手」的主因。
-          // 拖的时候底下内容本就静止，换实底几乎看不出差别，松手再恢复毛玻璃。
-          resizing ? "bg-zinc-950/95" : "bg-zinc-950/55 backdrop-blur-2xl",
+          // 贴右边、通屏高（对标 liblib）：fixed 而不是 absolute——抽屉要从屏幕
+          // 最顶铺到最底，而不是只占内容区那一段。顶栏/任务面板/底部状态条不靠 z 压，
+          // 是靠 --freezone-dock-width 自己整条往左收（见 dockOffset），两边宽度用同一个
+          // clamp，稳态下压根不重叠。
+          // z 必须 <50：shadcn 的浮层（下拉/选择/气泡/提示/弹窗）都 portal 到 body 且
+          // 定位层是 isolate z-50，抽屉一旦到 50 以上，抽屉内所有菜单都会被自己的实底
+          // 盖住 —— 表现就是「点了没反应」。45 只要高过任务面板(z-40)与其遮罩(z-30)即可。
+          "fixed inset-y-0 right-0 z-[45] hidden flex-col overflow-hidden border-l border-white/[0.12] shadow-none lg:flex",
+          // 实底 #212121（用户指定）：比故事板面板的 #262626 再深一档，agent 抽屉不再是半透明
+          // 毛玻璃。顺带把 backdrop-blur-2xl 一起去掉——通高的大半径模糊每帧都要
+          // 重新光栅化，是拖宽「跟不上手」的主因，实底之后它也没有可模糊的东西了。
+          "bg-[#212121]",
           dockTransition,
           panelVisible ? "translate-x-0 opacity-100" : "translate-x-10 opacity-0",
           !panelVisible && "pointer-events-none",
@@ -2636,7 +2695,9 @@ function FreezoneChatDock({
           )}
           <div
             className={cn(
-              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-zinc-950/45",
+              // 与聊天区同底色：靠那条左描边分栏就够了。旧的 zinc-950/45 是叠在
+              // 半透明抽屉上的一层压暗，抽屉换实底后它会变成一块明显更黑的侧栏。
+              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-[#212121]",
               // 与外壳同一条时间线：收起/展开一起走 300ms，拖拽期一起关掉。
               resizing
                 ? "transition-none"

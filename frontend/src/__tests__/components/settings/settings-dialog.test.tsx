@@ -1293,9 +1293,7 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByRole("checkbox", { name: "图片生成 imageGeneration" })).toBeChecked();
     fireEvent.click(screen.getByRole("button", { name: "查看 / 编辑原始 JSON（高级）" }));
     const rawJson = JSON.parse(screen.getByLabelText("原始 JSON").textContent ?? "{}");
-    expect(rawJson.planning.default_aspect_ratios).toEqual({
-      imageGeneration: "9:16",
-    });
+    expect(rawJson.planning.default_aspect_ratios).toBeUndefined();
     expect(rawJson.planning.model_preferences).toBeUndefined();
   });
 

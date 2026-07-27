@@ -37,6 +37,7 @@ import {
   Lightbulb,
   Loader2,
   Maximize2,
+  Mountain,
   Package,
   Palette,
   PenLine,
@@ -126,11 +127,18 @@ import {
   NODE_TOOLBAR_OFFSET,
   NODE_TOOLBAR_POSITION,
 } from "./nodeToolbarConfig";
-import type {
-  GridActionKey,
-  GridActionRequest,
-} from "./GridActionConfirmOverlay";
+import type { GridActionKey } from "@/features/canvas/application/gridTemplateAction";
 import { AssetAnchorDialog } from "./AssetAnchorDialog";
+
+/**
+ * 「九宫格」下拉选中某一项时抛给宿主的请求。宿主据此在源节点下游建一个功能节点
+ * （空的图片生成节点，节点名 = 功能名），用户在那个节点的输入框里按 ↑ 才提交
+ * ——所以这里除了「哪个节点、哪个功能」之外不需要别的信息。
+ */
+export interface GridActionRequest {
+  nodeId: string;
+  key: GridActionKey;
+}
 
 interface NodeActionToolbarProps {
   node: CanvasNode;
@@ -139,7 +147,7 @@ interface NodeActionToolbarProps {
   onOpenScene360: (nodeId: string) => void;
   onOpenUpscale: (nodeId: string) => void;
   onOpenOutpaint: (nodeId: string) => void;
-  onOpenGridAction: (request: GridActionRequest) => void;
+  onSpawnGridActionNode: (request: GridActionRequest) => void;
   onOpenRedraw: (nodeId: string) => void;
   onOpenErase: (nodeId: string) => void;
   onOpenRotate: (nodeId: string) => void;
@@ -452,7 +460,7 @@ export const NodeActionToolbar = memo(
     onOpenScene360,
     onOpenUpscale,
     onOpenOutpaint,
-    onOpenGridAction,
+    onSpawnGridActionNode,
     onOpenRedraw,
     onOpenErase,
     onOpenRotate,
@@ -492,8 +500,6 @@ export const NodeActionToolbar = memo(
     const [activeEditAction, setActiveEditAction] = useState<
       "repaint" | "erase" | "matting" | "crop" | "hd" | "outpaint"
     >("matting");
-    const [activeGridAction, setActiveGridAction] =
-      useState<GridActionKey | null>(null);
     const [isCopySuccess, setIsCopySuccess] = useState(false);
     const [isCopyTextSuccess, setIsCopyTextSuccess] = useState(false);
     const [isCopyErrorSuccess, setIsCopyErrorSuccess] = useState(false);
@@ -1501,81 +1507,63 @@ export const NodeActionToolbar = memo(
             {!isImageEdit &&
               canHandleImage &&
               (() => {
+                // 点某一项 = 在源节点下游建一个「功能节点」（空的图片生成节点，
+                // 节点名 = 功能名），提示词/参考图/比例都在那个节点上改，按 ↑ 才
+                // 提交——与故事板详情工具条同一条交互。
                 const gridActions: Array<{
                   key: GridActionKey;
                   icon: typeof Crop;
                   label: string;
-                  prompt: string;
-                  cost: number;
                 }> = [
                   {
                     key: "multiCameraGrid",
                     icon: Grid3x3,
                     label: t("nodeToolbar.gridMenu.multiCameraGrid"),
-                    prompt: t("nodeToolbar.gridMenu.multiCameraGridPrompt"),
-                    cost: 14,
                   },
                   {
                     key: "plotFourGrid",
                     icon: Grid2x2,
                     label: t("nodeToolbar.gridMenu.plotFourGrid"),
-                    prompt: t("nodeToolbar.gridMenu.plotFourGridPrompt"),
-                    cost: 8,
                   },
                   {
                     key: "faceThreeView",
                     icon: User,
                     label: t("nodeToolbar.gridMenu.faceThreeView"),
-                    prompt: t("nodeToolbar.gridMenu.faceThreeViewPrompt"),
-                    cost: 6,
                   },
                   {
                     key: "productThreeView",
                     icon: Package,
                     label: t("nodeToolbar.gridMenu.productThreeView"),
-                    prompt: t("nodeToolbar.gridMenu.productThreeViewPrompt"),
-                    cost: 6,
                   },
                   {
                     key: "serialStoryboard25",
                     icon: LayoutDashboard,
                     label: t("nodeToolbar.gridMenu.serialStoryboard25"),
-                    prompt: t("nodeToolbar.gridMenu.serialStoryboard25Prompt"),
-                    cost: 32,
                   },
                   {
                     key: "cinematicLightCorrection",
                     icon: Film,
                     label: t("nodeToolbar.gridMenu.cinematicLightCorrection"),
-                    prompt: t(
-                      "nodeToolbar.gridMenu.cinematicLightCorrectionPrompt",
-                    ),
-                    cost: 4,
                   },
                   {
                     key: "characterThreeView",
                     icon: Users,
                     label: t("nodeToolbar.gridMenu.characterThreeView"),
-                    prompt: t("nodeToolbar.gridMenu.characterThreeViewPrompt"),
-                    cost: 6,
+                  },
+                  {
+                    key: "sceneSettingSheet",
+                    icon: Mountain,
+                    label: t("nodeToolbar.gridMenu.sceneSettingSheet"),
                   },
                   {
                     key: "frameProjection3sLater",
                     icon: FastForward,
                     label: t("nodeToolbar.gridMenu.frameProjection3sLater"),
-                    prompt: t(
-                      "nodeToolbar.gridMenu.frameProjection3sLaterPrompt",
-                    ),
-                    cost: 4,
                   },
                   {
                     key: "frameProjection5sEarlier",
                     icon: Rewind,
                     label: t("nodeToolbar.gridMenu.frameProjection5sEarlier"),
-                    prompt: t(
-                      "nodeToolbar.gridMenu.frameProjection5sEarlierPrompt",
-                    ),
-                    cost: 4,
                   },
                 ];
                 return (
@@ -1601,23 +1589,14 @@ export const NodeActionToolbar = memo(
                     >
                       {gridActions.map((action) => {
                         const Icon = action.icon;
-                        const isActive = action.key === activeGridAction;
                         return (
                           <DropdownMenuItem
                             key={action.key}
-                            className={
-                              isActive
-                                ? "gap-2 bg-[rgb(var(--accent-rgb)/0.18)] text-accent focus:bg-[rgb(var(--accent-rgb)/0.28)] focus:text-accent"
-                                : TOOLBAR_MENU_ITEM_CLASS
-                            }
+                            className={TOOLBAR_MENU_ITEM_CLASS}
                             onSelect={() => {
-                              setActiveGridAction(action.key);
-                              onOpenGridAction({
+                              onSpawnGridActionNode({
                                 nodeId: node.id,
                                 key: action.key,
-                                label: action.label,
-                                prompt: action.prompt,
-                                cost: action.cost,
                               });
                             }}
                           >
