@@ -132,8 +132,20 @@ def validate_workflow_plan(
         skill_id = str(top_level_skill.get("id") or "").strip()
         if skill_id:
             referenced_skill_ids.add(skill_id)
-            if skills_by_id is not None and skill_id not in skills_by_id:
+            skill = skills_by_id.get(skill_id) if skills_by_id is not None else None
+            if skills_by_id is not None and skill is None:
                 errors.append(_issue("skill.id", f"unknown skill: {skill_id}"))
+            elif skill is not None:
+                requested_version = str(top_level_skill.get("version") or "").strip()
+                actual_version = str(skill.get("version") or "").strip()
+                if requested_version and requested_version != actual_version:
+                    errors.append(
+                        _issue(
+                            "skill.version",
+                            f"skill version mismatch: requested {requested_version}, "
+                            f"found {actual_version or 'unversioned'}",
+                        )
+                    )
     if skills_by_id is not None and not referenced_skill_ids:
         errors.append(
             _issue(
@@ -237,10 +249,23 @@ def _validate_node_catalog_refs(
         errors.append(_issue(f"{path}.data.workflowCatalog", "must be an object"))
         return
     skill_id = str(catalog.get("skillId") or "").strip()
+    skill = None
     if skill_id:
         referenced_skill_ids.add(skill_id)
-        if skills_by_id is not None and skill_id not in skills_by_id:
+        skill = skills_by_id.get(skill_id) if skills_by_id is not None else None
+        if skills_by_id is not None and skill is None:
             errors.append(_issue(f"{path}.data.workflowCatalog.skillId", f"unknown skill: {skill_id}"))
+        elif skill is not None:
+            requested_skill_version = str(catalog.get("skillVersion") or "").strip()
+            actual_skill_version = str(skill.get("version") or "").strip()
+            if requested_skill_version and requested_skill_version != actual_skill_version:
+                errors.append(
+                    _issue(
+                        f"{path}.data.workflowCatalog.skillVersion",
+                        f"skill version mismatch: requested {requested_skill_version}, "
+                        f"found {actual_skill_version or 'unversioned'}",
+                    )
+                )
     recipe_id = str(catalog.get("recipeId") or "").strip()
     if not recipe_id:
         return
@@ -250,6 +275,19 @@ def _validate_node_catalog_refs(
     if recipe is None:
         errors.append(_issue(f"{path}.data.workflowCatalog.recipeId", f"unknown recipe: {recipe_id}"))
         return
+    if skill is not None:
+        allowed_recipe_ids = {
+            str(item).strip()
+            for item in skill.get("allowed_recipe_ids") or []
+            if str(item).strip()
+        }
+        if recipe_id not in allowed_recipe_ids:
+            errors.append(
+                _issue(
+                    f"{path}.data.workflowCatalog.recipeId",
+                    f"recipe {recipe_id} is not allowed by skill {skill_id}",
+                )
+            )
     if recipe.get("requires_source_media") or recipe.get("requiresSourceMedia"):
         source_required_nodes[str(node.get("id") or "")] = path
         direct_media = (

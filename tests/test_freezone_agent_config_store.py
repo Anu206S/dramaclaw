@@ -36,7 +36,6 @@ def _skill_payload(
             "quality_threshold": 7,
             "domain_constraints": ["遵循用户目标"],
         },
-        "workflow_templates": [],
     }
 
 

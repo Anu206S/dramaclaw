@@ -25,12 +25,66 @@ def test_build_recipe_compiler_task_contains_runtime_context():
         user_goal="生成三张咖啡机商品图",
         upstream_text="银色金属机身",
         reference_media=[{"kind": "image", "label": "产品锚点"}],
+        confirmed_inputs={"aspect_ratio": "9:16", "language": "zh"},
+        skill_constraints={
+            "hard_constraints": ["不得虚构产品功能", "不要字幕"],
+            "prompt_guide": "高端商业摄影",
+        },
+        skill_id="ecommerce",
+        skill_version="2.1.0",
     )
 
     assert "商业摄影" in task
     assert "北欧厨房" in task
     assert "银色金属机身" in task
     assert "产品锚点" in task
+    assert '"aspect_ratio": "9:16"' in task
+    assert "不得虚构产品功能" in task
+    assert "高端商业摄影" in task
+    assert '"version": "2.1.0"' in task
+
+
+def test_get_skill_for_runtime_enforces_version_and_recipe_whitelist(monkeypatch):
+    monkeypatch.setattr(
+        recipe_runtime,
+        "list_user_agent_config_items",
+        lambda _username, kind: [
+            {
+                "id": "ecommerce",
+                "version": "2.1.0",
+                "allowed_recipe_ids": ["product-image"],
+            }
+        ]
+        if kind == "skills"
+        else [],
+    )
+
+    skill = recipe_runtime.get_skill_for_runtime(
+        username="local",
+        skill_id="ecommerce",
+        skill_version="2.1.0",
+        recipe_id="product-image",
+    )
+    assert skill is not None
+
+    with pytest.raises(recipe_runtime.RecipeRuntimeError, match="version mismatch"):
+        recipe_runtime.get_skill_for_runtime(
+            username="local",
+            skill_id="ecommerce",
+            skill_version="1.0.0",
+            recipe_id="product-image",
+        )
+    with pytest.raises(recipe_runtime.RecipeRuntimeError, match="not allowed"):
+        recipe_runtime.get_skill_for_runtime(
+            username="local",
+            skill_id="ecommerce",
+            recipe_id="other-image",
+        )
+
+
+def test_recipe_compiler_priority_places_skill_before_recipe():
+    assert "confirmed inputs, Skill hard constraints" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
+    assert "Recipe method, then defaults" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
 
 
 def test_build_recipe_compiler_task_limits_large_upstream_context():

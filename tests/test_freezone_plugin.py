@@ -343,10 +343,8 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
         return {
             "ok": True,
             "skill_id": intent["skill_id"],
-            "template_id": "dynamic",
             "node_count": len(nodes),
             "edge_count": max(0, len(nodes) - 1),
-            "step_counts": {"shots": len(items)},
             "plan": {
                 "summary": intent["user_goal"],
                 "inputs": dict(intent.get("inputs") or {}),
@@ -438,9 +436,7 @@ def test_workflow_draft_concurrent_confirmation_emits_once(monkeypatch, tmp_path
     compiled = {
         "ok": True,
         "skill_id": "video-ad",
-        "template_id": "dynamic",
         "edge_count": 0,
-        "step_counts": {},
         "plan": {
             "summary": "广告",
             "inputs": {},
@@ -501,9 +497,7 @@ def test_workflow_draft_timeout_retry_reuses_instance_id(monkeypatch, tmp_path):
     compiled = {
         "ok": True,
         "skill_id": "video-ad",
-        "template_id": "dynamic",
         "edge_count": 0,
-        "step_counts": {},
         "plan": {
             "summary": "广告",
             "inputs": {},
@@ -557,9 +551,7 @@ def test_workflow_draft_patch_rejects_skill_replacement(monkeypatch, tmp_path):
     compiled = {
         "ok": True,
         "skill_id": "video-ad",
-        "template_id": "dynamic",
         "edge_count": 0,
-        "step_counts": {},
         "plan": {
             "summary": "广告",
             "inputs": {},
@@ -698,9 +690,7 @@ def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatc
     assert decoded["recipes"] == []
     assert decoded["recipe_definitions_omitted"] is True
     assert decoded["available_recipes"]
-    assert "workflow_templates" not in decoded["skill"]
     assert decoded["planning_contract"]["mode"] == "dynamic_only"
-    assert decoded["planning_contract"]["fixed_templates_enabled"] is False
 
 
 def test_freezone_get_workflow_skill_records_structured_result_side_channel(monkeypatch, tmp_path):
@@ -1535,18 +1525,7 @@ def test_freezone_get_workflow_skill_includes_current_user_agent_config(monkeypa
                     "description": "用户导入的水果广告工作流",
                     "_catalog_source": "user",
                     "triggers": {"keywords": ["水果广告"]},
-                    "workflow_templates": [
-                        {
-                            "id": "fruit-ad",
-                            "steps": [
-                                {
-                                    "id": "outline",
-                                    "node_type": "textGeneration",
-                                    "action_key": "custom-fruit-outline",
-                                }
-                            ],
-                        }
-                    ],
+                    "allowed_recipe_ids": ["custom-fruit-outline"],
                 }
             ]
         if kind == "recipes":

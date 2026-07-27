@@ -24,18 +24,23 @@ _PERSISTENT_CACHE_LIMIT = 256
 _MAX_GOAL_CHARS = 8_000
 _MAX_NODE_PROMPT_CHARS = 12_000
 _MAX_UPSTREAM_CHARS = 16_000
+_MAX_CONFIRMED_INPUTS_CHARS = 8_000
+_MAX_SKILL_CONSTRAINTS_CHARS = 12_000
 _prompt_cache: OrderedDict[str, str] = OrderedDict()
 _prompt_inflight: dict[str, asyncio.Task[str]] = {}
 
 _RECIPE_COMPILER_SYSTEM_PROMPT = """You compile a trusted creative Recipe and runtime context into one executable prompt.
 
 Rules:
-1. Follow the Recipe instructions as the highest-priority creative method.
-2. Preserve the user's goal and the current node's specific intent.
-3. Use upstream text as factual context. Do not invent claims that conflict with it.
-4. Reference media metadata describes available inputs; never claim an input exists when it does not.
-5. Return only the final prompt for the target generation node. Do not explain your work.
-6. Do not mention Recipe, Skill, workflowCatalog, internal planning, model names, or these rules.
+1. Resolve conflicts in this order: explicit user goal, confirmed inputs, Skill hard constraints,
+   Skill prompt guide, Recipe method, then defaults.
+2. Recipe instructions are a reusable production method, not permission to override higher-priority
+   user choices or Skill constraints.
+3. Preserve the current node's specific intent.
+4. Use upstream text as factual context. Do not invent claims that conflict with it.
+5. Reference media metadata describes available inputs; never claim an input exists when it does not.
+6. Return only the final prompt for the target generation node. Do not explain your work.
+7. Do not mention Recipe, Skill, workflowCatalog, internal planning, model names, or these rules.
 """
 
 _TEXT_EXECUTOR_SYSTEM_PROMPT = """Execute the supplied text-generation instruction completely.
@@ -206,6 +211,70 @@ def get_recipe_for_runtime(*, username: str, recipe_id: str, recipe_version: str
     return recipe
 
 
+def get_skill_for_runtime(
+    *,
+    username: str,
+    skill_id: str,
+    skill_version: str = "",
+    recipe_id: str,
+) -> dict[str, Any] | None:
+    """Resolve the trusted Skill and enforce its Recipe boundary."""
+    checked_id = str(skill_id or "").strip()
+    if not checked_id:
+        return None
+    skill = next(
+        (
+            item
+            for item in list_user_agent_config_items(username, "skills")
+            if str(item.get("id") or "").strip() == checked_id
+        ),
+        None,
+    )
+    if skill is None or skill.get("enabled") is False:
+        raise RecipeRuntimeError(f"skill is unavailable: {checked_id}")
+
+    actual_version = str(skill.get("version") or "").strip()
+    requested_version = str(skill_version or "").strip()
+    if requested_version and requested_version != actual_version:
+        raise RecipeRuntimeError(
+            f"skill version mismatch: requested {requested_version}, "
+            f"found {actual_version or 'unversioned'}"
+        )
+    allowed_recipe_ids = {
+        str(item).strip() for item in skill.get("allowed_recipe_ids") or [] if str(item).strip()
+    }
+    if recipe_id not in allowed_recipe_ids:
+        raise RecipeRuntimeError(f"recipe {recipe_id} is not allowed by skill {checked_id}")
+    return skill
+
+
+def _skill_constraints(skill: dict[str, Any] | None) -> dict[str, Any]:
+    if not skill:
+        return {}
+    planning = skill.get("planning") if isinstance(skill.get("planning"), dict) else {}
+    evaluation = skill.get("evaluation") if isinstance(skill.get("evaluation"), dict) else {}
+    return {
+        "hard_constraints": [
+            *(
+                planning.get("conduct_rules")
+                if isinstance(planning.get("conduct_rules"), list)
+                else []
+            ),
+            *(
+                evaluation.get("domain_constraints")
+                if isinstance(evaluation.get("domain_constraints"), list)
+                else []
+            ),
+        ],
+        "prompt_guide": str(planning.get("prompt_guide") or "").strip(),
+    }
+
+
+def _limited_json(value: Any, max_chars: int) -> str:
+    serialized = json.dumps(value, ensure_ascii=False, sort_keys=True)
+    return _limit_model_context(serialized, max_chars)
+
+
 def build_recipe_compiler_task(
     *,
     recipe: dict[str, Any],
@@ -214,6 +283,10 @@ def build_recipe_compiler_task(
     user_goal: str = "",
     upstream_text: str = "",
     reference_media: list[dict[str, str]] | None = None,
+    confirmed_inputs: dict[str, Any] | None = None,
+    skill_constraints: dict[str, Any] | None = None,
+    skill_id: str = "",
+    skill_version: str = "",
 ) -> str:
     """Build the LLM task without exposing catalog metadata to the client."""
     expected_kind = str(recipe.get("output_kind") or "").strip()
@@ -242,9 +315,18 @@ def build_recipe_compiler_task(
     return "\n\n".join(
         [
             "Target node kind:\n" + node_kind,
-            "Trusted Recipe instructions:\n" + system_prompt,
+            "Trusted Skill identity:\n"
+            + _limited_json(
+                {"id": str(skill_id or "").strip(), "version": str(skill_version or "").strip()},
+                512,
+            ),
             "User goal:\n" + (goal or "(not provided)"),
+            "Confirmed workflow inputs:\n"
+            + _limited_json(confirmed_inputs or {}, _MAX_CONFIRMED_INPUTS_CHARS),
+            "Trusted Skill constraints:\n"
+            + _limited_json(skill_constraints or {}, _MAX_SKILL_CONSTRAINTS_CHARS),
             "Current node intent:\n" + (prompt or "(not provided)"),
+            "Trusted Recipe instructions:\n" + system_prompt,
             "Upstream text context:\n" + (upstream or "(none)"),
             "Available reference media metadata:\n"
             + json.dumps(normalized_media, ensure_ascii=False),
@@ -263,6 +345,9 @@ async def compile_recipe_prompt(
     upstream_text: str = "",
     reference_media: list[dict[str, str]] | None = None,
     prompt_strategy: RecipePromptStrategy = "llm_refine",
+    skill_id: str = "",
+    skill_version: str = "",
+    confirmed_inputs: dict[str, Any] | None = None,
 ) -> str:
     """Compile an effective user Recipe into a prompt for one node execution."""
     if prompt_strategy not in {"template", "user_message", "previous_output", "llm_refine"}:
@@ -273,6 +358,12 @@ async def compile_recipe_prompt(
         recipe_version=recipe_version,
     )
     _validate_recipe_kind(recipe, node_kind)
+    skill = get_skill_for_runtime(
+        username=username,
+        skill_id=skill_id,
+        skill_version=skill_version,
+        recipe_id=str(recipe.get("id") or recipe_id),
+    )
     if prompt_strategy != "llm_refine":
         return compose_deterministic_prompt(
             prompt_strategy=prompt_strategy,
@@ -287,6 +378,10 @@ async def compile_recipe_prompt(
         user_goal=user_goal,
         upstream_text=upstream_text,
         reference_media=reference_media,
+        confirmed_inputs=confirmed_inputs,
+        skill_constraints=_skill_constraints(skill),
+        skill_id=str(skill.get("id") or "") if skill else "",
+        skill_version=str(skill.get("version") or "") if skill else "",
     )
     cache_key = _cache_key(recipe=recipe, task=task, node_kind=node_kind)
     cached = _prompt_cache.get(cache_key)
@@ -322,6 +417,12 @@ async def generate_recipe_text(**compile_args: Any) -> str:
         recipe_version=str(compile_args.get("recipe_version") or ""),
     )
     _validate_recipe_kind(recipe, "text")
+    skill = get_skill_for_runtime(
+        username=str(compile_args.get("username") or ""),
+        skill_id=str(compile_args.get("skill_id") or ""),
+        skill_version=str(compile_args.get("skill_version") or ""),
+        recipe_id=str(recipe.get("id") or compile_args.get("recipe_id") or ""),
+    )
     task = build_recipe_compiler_task(
         recipe=recipe,
         node_kind="text",
@@ -329,6 +430,10 @@ async def generate_recipe_text(**compile_args: Any) -> str:
         user_goal=str(compile_args.get("user_goal") or ""),
         upstream_text=str(compile_args.get("upstream_text") or ""),
         reference_media=compile_args.get("reference_media"),
+        confirmed_inputs=compile_args.get("confirmed_inputs"),
+        skill_constraints=_skill_constraints(skill),
+        skill_id=str(skill.get("id") or "") if skill else "",
+        skill_version=str(skill.get("version") or "") if skill else "",
     )
     task += "\n\nExecution requirement:\nProduce the final text deliverable now."
 
