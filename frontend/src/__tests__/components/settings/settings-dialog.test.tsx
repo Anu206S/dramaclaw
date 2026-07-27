@@ -1353,4 +1353,33 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByDisplayValue("product-node")).toBeInTheDocument();
     expect(screen.getByDisplayValue("hero-shot")).toBeInTheDocument();
   });
+
+  it("requires built-in AnchorSet templates to be bound before enabling", () => {
+    freezoneAgentConfigMocks.itemsByKind = {
+      anchor_sets: [
+        {
+          id: "brand-template",
+          name: "品牌视觉资产模板",
+          enabled: false,
+          anchors: [
+            {
+              node_id: "replace-with-brand-logo-node-id",
+              node_type: "imageGenNode",
+              label: "品牌 Logo",
+              target_item_ids: [],
+            },
+          ],
+          _catalog_source: "builtin",
+        },
+      ],
+    };
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "资产锚点" }));
+
+    expect(screen.getByText("请先编辑绑定")).toBeInTheDocument();
+    expect(screen.getByRole("checkbox", {
+      name: "切换 品牌视觉资产模板 启用状态",
+    })).toHaveAttribute("aria-disabled", "true");
+  });
 });
