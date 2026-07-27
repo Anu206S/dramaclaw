@@ -20,6 +20,7 @@ SCHEMA_VERSION = "freezone_workflow_draft.v1"
 DEFAULT_TTL_SECONDS = 24 * 60 * 60
 PATCHABLE_FIELDS = {
     "assumptions",
+    "creative_settings",
     "include_audio",
     "include_compose",
     "inputs",
@@ -28,7 +29,7 @@ PATCHABLE_FIELDS = {
     "title",
     "user_goal",
 }
-MERGED_OBJECT_FIELDS = {"inputs"}
+MERGED_OBJECT_FIELDS = {"creative_settings", "inputs"}
 
 
 def _draft_dir() -> Path:
@@ -118,6 +119,16 @@ def _plan_preview(compiled: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(node, dict):
             continue
         data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        catalog = (
+            data.get("workflowCatalog")
+            if isinstance(data.get("workflowCatalog"), dict)
+            else {}
+        )
+        pipeline = (
+            catalog.get("recipePipeline")
+            if isinstance(catalog.get("recipePipeline"), list)
+            else []
+        )
         preview_nodes.append(
             {
                 "id": str(node.get("id") or "").strip(),
@@ -130,8 +141,36 @@ def _plan_preview(compiled: dict[str, Any]) -> dict[str, Any]:
                 ).strip(),
                 "stage": str(node.get("stage") or "").strip(),
                 "node_type": str(node.get("node_type") or "").strip(),
+                "recipes": [
+                    recipe_id
+                    for recipe_id in [
+                        str(catalog.get("recipeId") or "").strip(),
+                        *[
+                            str(
+                                item.get("id") if isinstance(item, dict) else item or ""
+                            ).strip()
+                            for item in pipeline
+                        ],
+                    ]
+                    if recipe_id
+                ],
             }
         )
+    creative_settings = (
+        plan.get("creative_settings")
+        if isinstance(plan.get("creative_settings"), dict)
+        else {}
+    )
+    aesthetic = (
+        creative_settings.get("aesthetic")
+        if isinstance(creative_settings.get("aesthetic"), dict)
+        else {}
+    )
+    anchor_bindings = (
+        creative_settings.get("anchor_bindings")
+        if isinstance(creative_settings.get("anchor_bindings"), list)
+        else []
+    )
     return {
         "title": str(plan.get("summary") or "").strip(),
         "skill_id": str(compiled.get("skill_id") or "").strip(),
@@ -140,6 +179,30 @@ def _plan_preview(compiled: dict[str, Any]) -> dict[str, Any]:
         "nodes": preview_nodes,
         "node_count": len(preview_nodes),
         "edge_count": int(compiled.get("edge_count") or 0),
+        "creative_settings": {
+            "uses_skill_defaults": not bool(creative_settings),
+            "aesthetic": str(aesthetic.get("label") or "").strip() or "Skill 推荐",
+            **(
+                {"aesthetic_id": str(creative_settings.get("aesthetic_id") or "").strip()}
+                if creative_settings.get("aesthetic_id")
+                else {}
+            ),
+            "recipe_extensions": list(creative_settings.get("recipe_extensions") or []),
+            **(
+                {"anchor_set_ids": list(creative_settings.get("anchor_set_ids") or [])}
+                if creative_settings.get("anchor_set_ids")
+                else {}
+            ),
+            "anchors": [
+                {
+                    "label": str(item.get("label") or item.get("node_id") or "").strip(),
+                    "node_id": str(item.get("node_id") or "").strip(),
+                    "target_item_ids": list(item.get("target_item_ids") or []),
+                }
+                for item in anchor_bindings
+                if isinstance(item, dict)
+            ],
+        },
     }
 
 

@@ -200,6 +200,38 @@ def validate_workflow_plan(
             ):
                 source_satisfied_node_ids.add(target)
 
+    external_edges = payload.get("external_edges", [])
+    if not isinstance(external_edges, list):
+        errors.append(_issue("external_edges", "must be an array"))
+        external_edges = []
+    elif len(external_edges) > MAX_WORKFLOW_EDGES:
+        errors.append(
+            _issue("external_edges", f"must contain at most {MAX_WORKFLOW_EDGES} edges")
+        )
+    seen_external_edges: set[tuple[str, str]] = set()
+    for index, edge in enumerate(external_edges):
+        path = f"external_edges[{index}]"
+        if not isinstance(edge, dict):
+            errors.append(_issue(path, "must be an object"))
+            continue
+        source = str(edge.get("source") or "").strip()
+        target = str(edge.get("target") or "").strip()
+        link_type = str(edge.get("link_type") or "").strip()
+        if not source:
+            errors.append(_issue(f"{path}.source", "existing canvas node id is required"))
+        if target not in node_types:
+            errors.append(_issue(f"{path}.target", f"unknown node: {target}"))
+        if link_type != "media_input_for":
+            errors.append(
+                _issue(f"{path}.link_type", "external anchors require media_input_for")
+            )
+        edge_key = (source, target)
+        if edge_key in seen_external_edges:
+            errors.append(_issue(path, "duplicate external edge"))
+        seen_external_edges.add(edge_key)
+        if source and target in node_types and link_type == "media_input_for":
+            source_satisfied_node_ids.add(target)
+
     for node_id in sorted(set(source_required_nodes) - source_satisfied_node_ids):
         errors.append(
             _issue(
@@ -281,6 +313,13 @@ def _validate_node_catalog_refs(
             for item in skill.get("allowed_recipe_ids") or []
             if str(item).strip()
         }
+        creative_settings = catalog.get("creativeSettings")
+        if isinstance(creative_settings, dict):
+            allowed_recipe_ids.update(
+                str(item).strip()
+                for item in creative_settings.get("recipe_extensions") or []
+                if str(item).strip()
+            )
         if recipe_id not in allowed_recipe_ids:
             errors.append(
                 _issue(
@@ -319,6 +358,58 @@ def _validate_node_catalog_refs(
                 f"recipe output {output_kind} is incompatible with {node_type}",
             )
         )
+    pipeline = catalog.get("recipePipeline") or []
+    if not isinstance(pipeline, list):
+        errors.append(_issue(f"{path}.data.workflowCatalog.recipePipeline", "must be an array"))
+        return
+    seen_pipeline_ids = {recipe_id}
+    for pipeline_index, raw_pipeline_item in enumerate(pipeline):
+        pipeline_id = str(
+            raw_pipeline_item.get("id")
+            if isinstance(raw_pipeline_item, dict)
+            else raw_pipeline_item
+            or ""
+        ).strip()
+        pipeline_path = f"{path}.data.workflowCatalog.recipePipeline[{pipeline_index}]"
+        if not pipeline_id or pipeline_id in seen_pipeline_ids:
+            continue
+        seen_pipeline_ids.add(pipeline_id)
+        pipeline_recipe = recipes_by_id.get(pipeline_id)
+        if pipeline_recipe is None:
+            errors.append(_issue(pipeline_path, f"unknown recipe: {pipeline_id}"))
+            continue
+        if skill is not None and pipeline_id not in allowed_recipe_ids:
+            errors.append(
+                _issue(pipeline_path, f"recipe {pipeline_id} is not allowed by skill {skill_id}")
+            )
+        pipeline_kind = str(pipeline_recipe.get("output_kind") or "").strip()
+        if output_kind and pipeline_kind != output_kind:
+            errors.append(
+                _issue(
+                    pipeline_path,
+                    f"recipe output {pipeline_kind or 'unknown'} does not match {output_kind}",
+                )
+            )
+        if isinstance(raw_pipeline_item, dict):
+            requested_pipeline_version = str(
+                raw_pipeline_item.get("version") or ""
+            ).strip()
+            actual_pipeline_version = str(
+                pipeline_recipe.get("version") or ""
+            ).strip()
+            if (
+                requested_pipeline_version
+                and requested_pipeline_version != actual_pipeline_version
+            ):
+                errors.append(
+                    _issue(
+                        f"{pipeline_path}.version",
+                        f"recipe version mismatch: requested {requested_pipeline_version}, "
+                        f"found {actual_pipeline_version or 'unversioned'}",
+                    )
+                )
+        if pipeline_recipe.get("requires_source_media"):
+            source_required_nodes[str(node.get("id") or "")] = path
 
 
 def _validate_group_refs(

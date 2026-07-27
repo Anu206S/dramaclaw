@@ -1,0 +1,12 @@
+{
+  "schema_version": "dramaclaw.aesthetic.v1",
+  "id": "commercial-realism",
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "写实商业质感",
+  "description": "适合商品、电商和品牌内容的清晰写实表达。",
+  "prompt_guide": "使用可信材质、准确比例、干净布光和清晰层次，主体轮廓明确，视觉信息服务于卖点；保持品牌、文字和产品结构一致。",
+  "negative_prompt": "避免塑料质感、结构变形、虚构功能、过度景深、无关装饰和不可读文字。",
+  "tags": ["商业", "写实", "电商"],
+  "output_kinds": ["image", "video"]
+}

@@ -11,7 +11,9 @@ import {
   EyeOff,
   HardDrive,
   Loader2,
+  Link2,
   Package,
+  Palette,
   Plus,
   RotateCw,
   Trash2,
@@ -73,6 +75,7 @@ import {
 } from "@/stores/settingsStore";
 import { isCeRuntime } from "@/lib/runtime-config";
 import { FreezoneSkillRecipeSettings } from "./freezone-skill-recipe-settings";
+import { FreezoneCreativeLibrarySettings } from "./freezone-creative-library-settings";
 
 interface SettingsDialogProps {
   open: boolean;
@@ -87,9 +90,14 @@ const SHOW_CODEX_BRIDGE = false;
 export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
   const { t } = useTranslation();
   const ceRuntime = isCeRuntime();
-  const [page, setPage] = useState<"models" | "storage" | "freezone-skills" | "freezone-recipes">(
-    () => (ceRuntime ? "models" : "freezone-skills"),
-  );
+  const [page, setPage] = useState<
+    | "models"
+    | "storage"
+    | "freezone-skills"
+    | "freezone-recipes"
+    | "freezone-aesthetics"
+    | "freezone-anchor-sets"
+  >(() => (ceRuntime ? "models" : "freezone-skills"));
   const statusQuery = useModelGatewayConfig(open && ceRuntime);
   const settingsStatus = statusQuery.data?.data;
   const modelConfigured = Boolean(settingsStatus?.effective.configured);
@@ -190,6 +198,38 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
               <Package className="size-4" aria-hidden />
               <span className="hidden sm:inline">{t("settings.pages.freezoneSkills")}</span>
             </button>
+            <button
+              type="button"
+              aria-current={page === "freezone-aesthetics" ? "page" : undefined}
+              onClick={() => setPage("freezone-aesthetics")}
+              className={cn(
+                "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
+                page === "freezone-aesthetics"
+                  ? "bg-white/[0.09] text-foreground"
+                  : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+              )}
+            >
+              <Palette className="size-4" aria-hidden />
+              <span className="hidden sm:inline">
+                {t("settings.pages.freezoneAesthetics", { defaultValue: "审美风格" })}
+              </span>
+            </button>
+            <button
+              type="button"
+              aria-current={page === "freezone-anchor-sets" ? "page" : undefined}
+              onClick={() => setPage("freezone-anchor-sets")}
+              className={cn(
+                "relative flex h-10 items-center justify-center gap-2 rounded-md px-2 text-sm font-medium transition-colors sm:justify-start sm:px-3",
+                page === "freezone-anchor-sets"
+                  ? "bg-white/[0.09] text-foreground"
+                  : "text-muted-foreground hover:bg-white/[0.05] hover:text-foreground",
+              )}
+            >
+              <Link2 className="size-4" aria-hidden />
+              <span className="hidden sm:inline">
+                {t("settings.pages.freezoneAnchorSets", { defaultValue: "资产锚点" })}
+              </span>
+            </button>
           </nav>
 
           {page === "models" ? (
@@ -203,6 +243,14 @@ export function SettingsDialog({ open, onOpenChange }: SettingsDialogProps) {
             <div className="min-w-0 flex-1">
               <ScrollArea className="h-full [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0">
                 <MediaStorageSection />
+              </ScrollArea>
+            </div>
+          ) : page === "freezone-aesthetics" || page === "freezone-anchor-sets" ? (
+            <div className="min-w-0 flex-1">
+              <ScrollArea className="h-full [&_[data-slot=scroll-area-scrollbar]]:!w-1 [&_[data-slot=scroll-area-scrollbar]]:!border-l-0 [&_[data-slot=scroll-area-scrollbar]]:!p-0">
+                <FreezoneCreativeLibrarySettings
+                  kind={page === "freezone-aesthetics" ? "aesthetics" : "anchor_sets"}
+                />
               </ScrollArea>
             </div>
           ) : (

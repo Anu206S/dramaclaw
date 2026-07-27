@@ -45,6 +45,12 @@ describe('workflowRecipeRuntime', () => {
           skillId: 'ecommerce-product',
           skillVersion: '2.0.0',
           confirmedInputs: { aspect_ratio: '9:16', language: 'zh' },
+          creativeSettings: {
+            aesthetic: {
+              label: '王家卫电影感',
+              prompt_guide: '高饱和霓虹色与手持摄影',
+            },
+          },
           recipeId: 'ecommerce-scene-image',
           recipeVersion: '1',
           promptStrategy: 'previous_output',
@@ -65,6 +71,12 @@ describe('workflowRecipeRuntime', () => {
       skillId: 'ecommerce-product',
       skillVersion: '2.0.0',
       confirmedInputs: { aspect_ratio: '9:16', language: 'zh' },
+      creativeSettings: {
+        aesthetic: {
+          label: '王家卫电影感',
+          prompt_guide: '高饱和霓虹色与手持摄影',
+        },
+      },
       nodeKind: 'image',
       promptStrategy: 'previous_output',
       nodePrompt: '北欧厨房',
@@ -97,6 +109,33 @@ describe('workflowRecipeRuntime', () => {
       upstreamText: '银色金属机身',
       userGoal: '生成三屏详情页',
     });
+  });
+
+  it('passes an ordered supplemental Recipe pipeline to the compiler', async () => {
+    compileMock.mockResolvedValue('combined prompt');
+
+    await compileWorkflowNodePrompt({
+      nodeData: {
+        workflowCatalog: {
+          recipeId: 'shotlist',
+          recipePipeline: [
+            { id: 'cinematic-lighting', version: 2 },
+            'identity-continuity',
+          ],
+        },
+      },
+      nodeKind: 'image',
+      nodePrompt: '雨夜街道中的主角',
+      fallbackPrompt: 'fallback',
+    });
+
+    expect(compileMock).toHaveBeenCalledWith(expect.objectContaining({
+      recipeId: 'shotlist',
+      recipePipeline: [
+        { id: 'cinematic-lighting', version: '2' },
+        { id: 'identity-continuity' },
+      ],
+    }));
   });
 
   it('selects only upstream text declared by inputStrategy', () => {

@@ -281,6 +281,43 @@ def test_dynamic_workflow_creation_reaches_canvas_bridge(monkeypatch):
     assert captured["kwargs"]["allow_dynamic_workflow_batch"] is True
 
 
+def test_workflow_graph_connects_existing_canvas_anchor_to_new_node():
+    plugin = _load_plugin_module()
+    result = plugin.build_workflow_graph_commands(
+        {
+            "plan": {
+                "schema_version": "freezone_workflow_plan.v1",
+                "workflow_type": "dynamic.ecommerce-product",
+                "skill": {"id": "ecommerce-product"},
+                "nodes": [
+                    {
+                        "id": "hero-shot",
+                        "node_type": "imageGenNode",
+                        "stage": "image",
+                        "data": {"displayName": "商品英雄镜头"},
+                    }
+                ],
+                "edges": [],
+                "external_edges": [
+                    {
+                        "source": "existing-product-node",
+                        "target": "hero-shot",
+                        "link_type": "media_input_for",
+                    }
+                ],
+            }
+        }
+    )
+
+    assert result["ok"] is True
+    assert {
+        "type": "create_edge",
+        "source": "existing-product-node",
+        "target": "hero-shot",
+        "link_type": "media_input_for",
+    } in result["commands"]
+
+
 def test_compact_workflow_intent_compiles_before_canvas_bridge(monkeypatch):
     plugin = _load_plugin_module()
     intent = {"skill_id": "video-ad", "user_goal": "制作五镜广告"}
@@ -348,6 +385,7 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
             "plan": {
                 "summary": intent["user_goal"],
                 "inputs": dict(intent.get("inputs") or {}),
+                "creative_settings": dict(intent.get("creative_settings") or {}),
                 "phases": ["脚本", "视频"],
                 "nodes": nodes,
                 "edges": [],
@@ -387,6 +425,20 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
                 "skill_id": "video-ad",
                 "user_goal": "制作广告",
                 "items": ["开场", "卖点"],
+                "creative_settings": {
+                    "aesthetic": {
+                        "label": "王家卫电影感",
+                        "prompt_guide": "霓虹色与手持摄影",
+                    },
+                    "recipe_extensions": ["lengyi-shotlist"],
+                    "anchor_bindings": [
+                        {
+                            "node_id": "character-node",
+                            "label": "女主角",
+                            "target_item_ids": ["shot_1"],
+                        }
+                    ],
+                },
             },
             "run_after_create": True,
         }
@@ -395,6 +447,18 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
     assert prepared["ok"] is True
     assert prepared["revision"] == 1
     assert prepared["preview"]["node_count"] == 3
+    assert prepared["preview"]["creative_settings"] == {
+        "uses_skill_defaults": False,
+        "aesthetic": "王家卫电影感",
+        "recipe_extensions": ["lengyi-shotlist"],
+        "anchors": [
+            {
+                "label": "女主角",
+                "node_id": "character-node",
+                "target_item_ids": ["shot_1"],
+            }
+        ],
+    }
     assert prepared["run_after_create"] is True
 
     patched = plugin._handle_patch_workflow_draft(
