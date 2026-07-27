@@ -96,9 +96,9 @@ export function AssetBoardImageOpChip({
   const Icon = ASSET_BOARD_IMAGE_OP_ICONS[opKey];
 
   return (
-    // 位置：输入框内、chips 行（风格/调色盘/资产库）之下、提示词编辑器之上。上面
-    // 那行自带 pt-3，这里只补 pt-2 拉开间距；下方提示词编辑器自带 py-2，不再补。
-    <div className="flex shrink-0 flex-col gap-1 px-3 pt-2">
+    // 位置：**输入框边框内**、提示词行正上方（宿主经共用表单的 promptLeadingSlot
+    // 传入，表单会把 chip 和编辑器一起套进那个圆角框）。内边距对齐框内编辑器的 px-2.5。
+    <div className="flex shrink-0 flex-col gap-0.5 px-2.5 pb-0.5 pt-2">
       <div className="relative flex items-center gap-1.5">
         <button
           ref={triggerRef}
