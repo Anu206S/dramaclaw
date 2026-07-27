@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import {
@@ -14,6 +14,7 @@ import {
 } from "@/features/freezone/WorkflowRunRecoveryBar";
 import { CANVAS_NODE_TYPES } from "@/features/canvas/domain/canvasNodes";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { useTaskCenterStore } from "@/task-center/store";
 
 const failedRun: FreezoneWorkflowRun = {
   schema_version: "freezone_workflow_run.v1",
@@ -51,6 +52,7 @@ vi.mock("@/features/freezone/canvasChatCommands", async (importOriginal) => {
 
 describe("WorkflowRunRecoveryBar", () => {
   beforeEach(() => {
+    useTaskCenterStore.getState().reset();
     useCanvasStore.getState().setCanvasData([
       {
         id: "image-1",
@@ -213,6 +215,46 @@ describe("WorkflowRunRecoveryBar", () => {
 
     await waitFor(() => expect(listFreezoneWorkflowRuns).toHaveBeenCalled());
     expect(screen.queryByText("发现未完成的工作流")).not.toBeInTheDocument();
+  });
+
+  it("reconciles a workflow immediately when its task-center state changes", async () => {
+    const trackedRun: FreezoneWorkflowRun = {
+      ...failedRun,
+      actions: failedRun.actions.map((action) =>
+        action.node_id === "video-1"
+          ? { ...action, task_key: "task-video-1", status: "running" }
+          : action
+      ),
+    };
+    vi.mocked(listFreezoneWorkflowRuns).mockResolvedValue({ runs: [trackedRun] });
+    render(<WorkflowRunRecoveryBar projectId="project-a" canvasId="canvas-a" />);
+    await waitFor(() => expect(listFreezoneWorkflowRuns).toHaveBeenCalledTimes(1));
+    await screen.findByText("发现未完成的工作流");
+
+    act(() => {
+      useTaskCenterStore.getState().upsert({
+        task_key: "task-video-1",
+        task_id: "task-id-1",
+        task_type: "freezone_video",
+        username: "alice",
+        project: "demo",
+        project_id: "project-a",
+        episode: 0,
+        beat_num: null,
+        scope: "job-1",
+        status: "completed",
+        progress: 1,
+        current_task: "completed",
+        result: { video_url: "/outputs/video.mp4" },
+        error: null,
+        logs: [],
+        created_at: "2026-07-21T00:00:00Z",
+        updated_at: "2026-07-21T00:01:00Z",
+        completed_at: "2026-07-21T00:01:00Z",
+      });
+    });
+
+    await waitFor(() => expect(listFreezoneWorkflowRuns).toHaveBeenCalledTimes(2));
   });
 
   it("requires an explicit click before resuming unfinished nodes", async () => {
