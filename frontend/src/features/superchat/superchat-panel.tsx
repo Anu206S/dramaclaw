@@ -13427,9 +13427,15 @@ export function SuperChatPanel({
                             // 圆角收到 rounded-md（用户要求「别太大」）；底色跟画布
                             // 工具条一套中性灰，别用带蓝调的 popover token——抽屉是
                             // 中性 #212121，蓝灰浮层压上去会发闷。
-                            className="w-[260px] rounded-md bg-[#2a2a2c] p-1 shadow-lg ring-white/12"
+                            // p-2 + 加宽：hover 高亮原来几乎顶满外框、两档还贴在一起，
+                            // 看着糊成一坨；外框放大留出 8px 内边距，高亮四周就有了呼吸位
+                            // （用户要求）。300px 是让两行说明各自一行放得下、不再吊出
+                            // 「确认」「果」这种一两个字的孤行。
+                            className="w-[300px] rounded-md bg-[#2a2a2c] p-2 shadow-lg ring-white/12"
                           >
+                            {/* space-y-1：两档之间留 4px，hover 高亮不再首尾相接。 */}
                             <DropdownMenuRadioGroup
+                              className="space-y-1"
                               value={canvasCommandExecutionMode}
                               onValueChange={(value) =>
                                 setCanvasExecutionMode(value as CanvasCommandExecutionMode)
@@ -13563,7 +13569,9 @@ export function SuperChatPanel({
       {isFreezoneLayout && freezoneSkillMenuExplicitOpen && freezoneSkillMenuPosition && createPortal(
         <div
           data-freezone-skill-menu="true"
-          className="fixed z-[1000] w-[min(380px,calc(100vw-16px))] overflow-hidden rounded-2xl border border-white/[0.12] bg-[#18191d]/95 p-3 text-foreground shadow-[0_18px_48px_rgba(0,0,0,0.52)] backdrop-blur-xl"
+          // 圆角一律写死 px：本项目把 --radius 调到了 1rem，rounded-lg/xl 实际是
+          // 16/20px，比 tailwind 默认大一圈，用语义档位会不知不觉又变圆（用户要求收小）。
+          className="fixed z-[1000] w-[min(380px,calc(100vw-16px))] overflow-hidden rounded-[10px] border border-white/[0.12] bg-[#18191d]/95 p-3 text-foreground shadow-[0_18px_48px_rgba(0,0,0,0.52)] backdrop-blur-xl"
           style={{
             left: freezoneSkillMenuPosition.left,
             bottom: freezoneSkillMenuPosition.bottom,
@@ -13595,14 +13603,14 @@ export function SuperChatPanel({
                 {freezoneSkillCreateMenuOpen && (
                   <div
                     role="menu"
-                    className="absolute right-0 top-[calc(100%+8px)] z-10 w-[218px] overflow-hidden rounded-xl border border-white/[0.12] bg-[#202126]/98 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl"
+                    className="absolute right-0 top-[calc(100%+8px)] z-10 w-[218px] overflow-hidden rounded-[10px] border border-white/[0.12] bg-[#202126]/98 p-1.5 shadow-[0_18px_40px_rgba(0,0,0,0.45)] backdrop-blur-xl"
                   >
                     {FREEZONE_SKILL_EMPTY_ACTIONS.map((action) => (
                       <button
                         key={action.id}
                         type="button"
                         role="menuitem"
-                        className="flex w-full items-center gap-2 rounded-lg px-2.5 py-2 text-left text-[13px] leading-5 text-foreground/88 transition hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none"
+                        className="flex w-full items-center gap-2 rounded-[6px] px-2.5 py-2 text-left text-[13px] leading-5 text-foreground/88 transition hover:bg-white/[0.08] focus-visible:bg-white/[0.08] focus-visible:outline-none"
                         onMouseDown={(event) => {
                           event.preventDefault();
                         }}
@@ -13668,7 +13676,7 @@ export function SuperChatPanel({
                 }
               }}
               placeholder="搜索 Skill"
-              className="h-9 w-full rounded-full border border-white/[0.08] bg-white/[0.06] pl-8 pr-3 text-sm text-foreground outline-none placeholder:text-white/32 transition focus:border-white/[0.18] focus:bg-white/[0.08]"
+              className="h-9 w-full rounded-[8px] border border-white/[0.08] bg-white/[0.06] pl-8 pr-3 text-sm text-foreground outline-none placeholder:text-white/32 transition focus:border-white/[0.18] focus:bg-white/[0.08]"
             />
           </label>
           <div className="max-h-72 overflow-y-auto pr-1">
@@ -13681,13 +13689,13 @@ export function SuperChatPanel({
                   }}
                   type="button"
                   className={cn(
-                    "flex w-full items-start gap-2.5 rounded-xl px-2 py-2 text-left transition hover:bg-white/[0.07] focus-visible:bg-white/[0.07] focus-visible:outline-none",
+                    "flex w-full items-start gap-2.5 rounded-[8px] px-2 py-2 text-left transition hover:bg-white/[0.07] focus-visible:bg-white/[0.07] focus-visible:outline-none",
                     activeFreezoneSkillSuggestionIndex === index && "bg-white/[0.08]",
                   )}
                   onMouseEnter={() => setActiveFreezoneSkillSuggestionIndex(index)}
                   onClick={() => insertFreezoneSkillSuggestion(skill.id)}
                 >
-                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-xl border border-white/[0.10] bg-white/[0.06] text-white/62">
+                  <span className="mt-0.5 flex size-8 shrink-0 items-center justify-center rounded-[8px] border border-white/[0.10] bg-white/[0.06] text-white/62">
                     <Wrench className="size-3.5" />
                   </span>
                   <span className="min-w-0 flex-1">
