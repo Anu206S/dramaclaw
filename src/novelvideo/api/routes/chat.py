@@ -194,6 +194,7 @@ class SkillStudioToolResultIn(BaseModel):
     saved_recipe_ids: list[str] = Field(default_factory=list)
     errors: list[str] = []
     message: str | None = None
+    client_debug: dict[str, Any] = Field(default_factory=dict)
 
 
 class ClarificationToolResultIn(BaseModel):
@@ -674,32 +675,7 @@ def _resolve_skill_studio_tool_result_payload(
             )
             message = payload.message or "Frontend reported that the user cancelled saving the Skill/Recipe draft."
         elif revision_started:
-            agent_instruction = (
-                "Start a Skill Studio draft revision question flow. "
-                "Use the current draft from this tool result as the source of truth. "
-                "The user already asked to revise the current draft. "
-                "Do not ask whether revision is needed; ask directly about the concrete revision direction, scope, or preference. "
-                "Do not ask whether to save the current draft, and do not offer save_now/save_current/confirm_save as a question option; "
-                "saving is handled only by the existing draft card UI after an updated draft is presented. "
-                "When asking with freezone_request_user_clarification, send exactly one question object in the questions array, "
-                "then wait for the answer before deciding the next question. "
-                "When enough information is available, use chunked draft tools: "
-                "freezone_begin_agent_catalog_draft, freezone_put_agent_catalog_skill, "
-                "freezone_put_agent_catalog_recipe once per changed Recipe, or freezone_patch_agent_catalog_draft "
-                "for local field edits, then freezone_finish_agent_catalog_draft. "
-                "For local edits, prefer freezone_patch_agent_catalog_draft. Use put_skill / put_recipe only when "
-                "replacing an entire Skill or Recipe object. Do not regenerate unchanged Recipes. "
-                "For target=recipe, pass recipe_id and use patch paths relative to that Recipe object, "
-                "for example /system_prompt or /must_have_items; never use /recipes/<recipe_id>/... inside patch.path. "
-                "To remove the entire selected Recipe, use exactly one patch operation: "
-                '{"op":"remove","path":""}. '
-                "Before freezone_begin_agent_catalog_draft, decide the full planned Recipe count for the updated draft "
-                "and pass expected_recipe_count; use the full draft count, not only the changed Recipe count. "
-                "Do not pass the full Skill/Recipe catalog in one tool call. "
-                "Only use freezone_request_user_clarification or the Skill Studio chunked draft tools as the next Skill Studio step. "
-                "Do not answer with prose, do not only summarize the requested changes, and do not tell the user to save unless a draft tool call has produced the updated draft. "
-                "Do not save catalog content, do not emit canvas commands, and do not treat this as ordinary Freezone creation."
-            )
+            agent_instruction = "Continue the Skill Studio revision flow using the frontend response."
             message = payload.message or "Frontend reported that the user started revising the Skill/Recipe draft."
         else:
             agent_instruction = "Continue the Skill Studio flow using the frontend response."
@@ -723,6 +699,7 @@ def _resolve_skill_studio_tool_result_payload(
         "canvas_id": payload.canvas_id,
         "message": message,
         "agent_instruction": agent_instruction,
+        "client_debug": payload.client_debug,
     }
     return resolve_skill_studio_result(
         key,
@@ -734,6 +711,30 @@ def _resolve_skill_studio_tool_result_payload(
             else "director",
         ),
     )
+
+
+def _skill_studio_result_log_fields(
+    payload: SkillStudioToolResultIn,
+    *,
+    username: str,
+) -> dict[str, Any]:
+    return {
+        "username": username,
+        "turn_id": payload.turn_id,
+        "bridge_key": payload.bridge_key,
+        "project_id": payload.project_id,
+        "canvas_id": payload.canvas_id,
+        "agent_id": _freezone_agent_id_from_payload(payload),
+        "action": payload.action,
+        "skill_studio_status": payload.skill_studio_status,
+        "tool_call_status": payload.tool_call_status,
+        "ok": payload.ok,
+        "saved_to_catalog": payload.saved_to_catalog,
+        "saved_skill_ids": payload.saved_skill_ids,
+        "saved_recipe_ids": payload.saved_recipe_ids,
+        "errors": payload.errors,
+        "client_debug": payload.client_debug,
+    }
 
 
 def _resolve_clarification_tool_result_payload(
@@ -962,7 +963,19 @@ async def resolve_skill_studio_tool_result(
     user: dict = Depends(get_api_user),
 ) -> dict[str, Any]:
     username = str(user["username"])
+    logger.info(
+        "received skill_studio.result via http %s",
+        _skill_studio_result_log_fields(payload, username=username),
+    )
     resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
+    logger.info(
+        "resolved skill_studio.result via http bridge_key=%s action=%s status=%s ok=%s saved=%s",
+        payload.bridge_key,
+        payload.action,
+        resolved.get("skill_studio_status"),
+        resolved.get("ok"),
+        resolved.get("saved_to_catalog"),
+    )
     try:
         await _persist_skill_studio_result_ui_event(
             user=user,
@@ -2608,7 +2621,19 @@ async def chat_ws(websocket: WebSocket) -> None:
 
             if event_type == "skill_studio.result":
                 payload = SkillStudioToolResultIn.model_validate(raw)
+                logger.info(
+                    "received skill_studio.result via ws %s",
+                    _skill_studio_result_log_fields(payload, username=username),
+                )
                 resolved = _resolve_skill_studio_tool_result_payload(payload, username=username)
+                logger.info(
+                    "resolved skill_studio.result via ws bridge_key=%s action=%s status=%s ok=%s saved=%s",
+                    payload.bridge_key,
+                    payload.action,
+                    resolved.get("skill_studio_status"),
+                    resolved.get("ok"),
+                    resolved.get("saved_to_catalog"),
+                )
                 try:
                     await _persist_skill_studio_result_ui_event(
                         user=user,

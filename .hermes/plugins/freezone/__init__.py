@@ -148,6 +148,15 @@ except ValueError:
     DEFAULT_TIMEOUT_SECONDS = 120
 
 _PENDING_SKILL_STUDIO_DRAFTS: dict[str, dict[str, Any]] = {}
+_SKILL_STUDIO_DEFAULT_SKILL_SCHEMA_VERSION = "dramaclaw.workflow-skill.v1"
+_SKILL_STUDIO_DEFAULT_SKILL_VERSION = "1.0.0"
+
+_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION = (
+    "Do not answer with prose. "
+    "Do not write pseudo tool calls, XML tags, JSON snippets, markdown code blocks, "
+    "or parameter blocks in assistant text. "
+    "Call the actual tool directly."
+)
 
 
 def _available() -> bool:
@@ -567,12 +576,18 @@ def _emit_skill_studio_progress_event(
             "Skill Studio bridge is unavailable; cannot present the Freezone UI event. "
             f"Import error: {_CANVAS_COMMAND_BRIDGE_IMPORT_ERROR}"
         )
-    key = skill_studio_bridge_key(project_id=project, canvas_id=canvas, event=event)
+    frontend_event = dict(event)
+    if agent_instruction:
+        debug = frontend_event.get("debug")
+        debug_event = dict(debug) if isinstance(debug, dict) else {}
+        debug_event["agent_instruction"] = agent_instruction
+        frontend_event["debug"] = debug_event
+    key = skill_studio_bridge_key(project_id=project, canvas_id=canvas, event=frontend_event)
     put_pending_skill_studio_event(
         key=key,
         project_id=project,
         canvas_id=canvas,
-        event=event,
+        event=frontend_event,
     )
     return tool_result(
         {
@@ -583,9 +598,9 @@ def _emit_skill_studio_progress_event(
             "bridge_key": key,
             "project_id": project,
             "canvas_id": canvas,
-            "type": event.get("type"),
-            "skill_studio_session_id": event.get("skill_studio_session_id"),
-            "message": event.get("message") or "Skill Studio draft progress updated.",
+            "type": frontend_event.get("type"),
+            "skill_studio_session_id": frontend_event.get("skill_studio_session_id"),
+            "message": frontend_event.get("message") or "Skill Studio draft progress updated.",
             "agent_instruction": agent_instruction or (
                 "The Skill Studio progress event was delivered to the frontend. "
                 "Do not repeat tool fields to the user. Continue the draft flow and call "
@@ -655,14 +670,12 @@ def _handle_request_user_clarification(args: dict[str, Any], **_: Any) -> str:
     )
     clarification_id = str(args.get("clarification_id") or args.get("request_id") or "").strip()
     if not clarification_id:
-        return tool_result(
-            {
-                "ok": False,
-                "type": "assistant.clarification.request",
-                "status": "clarification_id_required",
-                "error": "clarification_id is required",
-            }
-        )
+        context_id = str(args.get("skill_studio_session_id") or canvas or "default").strip()
+        safe_context = "".join(
+            ch if ch.isalnum() or ch in ("-", "_") else "-"
+            for ch in context_id
+        ).strip("-")
+        clarification_id = f"clarify_{safe_context or 'default'}_{uuid.uuid4().hex[:8]}"
     questions = _safe_list(args.get("questions"))
     if not questions:
         return tool_result(
@@ -740,6 +753,10 @@ def _skill_studio_session_id_from_args(args: dict[str, Any]) -> str:
     return str(args.get("skill_studio_session_id") or args.get("session_id") or "").strip()
 
 
+def _skill_studio_meta_text(value: Any) -> str:
+    return value.strip() if isinstance(value, str) else ""
+
+
 def _skill_studio_missing_session_result() -> str:
     return tool_result(
         {
@@ -787,6 +804,21 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     )
 
 
+def _normalize_skill_studio_skill(
+    skill: dict[str, Any], *, existing: dict[str, Any] | None = None
+) -> dict[str, Any]:
+    normalized = dict(skill)
+    normalized["schema_version"] = (
+        _skill_studio_meta_text((existing or {}).get("schema_version"))
+        or _SKILL_STUDIO_DEFAULT_SKILL_SCHEMA_VERSION
+    )
+    normalized["version"] = (
+        _skill_studio_meta_text((existing or {}).get("version"))
+        or _SKILL_STUDIO_DEFAULT_SKILL_VERSION
+    )
+    return normalized
+
+
 def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
     project, canvas = _skill_studio_scope_from_args(args)
     session_id = _skill_studio_session_id_from_args(args)
@@ -817,7 +849,31 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
         )
     draft["project_id"] = project or draft.get("project_id")
     draft["canvas_id"] = canvas or draft.get("canvas_id")
-    draft["skill"] = skill
+    draft["skill"] = _normalize_skill_studio_skill(skill, existing=draft.get("skill"))
+    expected = int(draft.get("expected_recipe_count") or 0)
+    if expected > 0:
+        agent_instruction = (
+            "The Skill Studio Skill chunk was delivered to the frontend. "
+            f"Progress: Skill submitted; 0 of {expected} Recipe chunks submitted; "
+            f"remaining Recipe chunks: {expected}. "
+            f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
+            "Do not repeat tool fields to the user. "
+            "Do not call skill_view, skills_list, tool_search, or tool_describe. "
+            "Do not handle slash commands or internal status names. "
+            "Do not call freezone_finish_agent_catalog_draft yet. "
+            f"Next call MUST be freezone_put_agent_catalog_recipe with index=0 "
+            f"and skill_studio_session_id={session_id}."
+        )
+    else:
+        agent_instruction = (
+            "The Skill Studio Skill chunk was delivered to the frontend. "
+            "Progress: Skill submitted and no Recipe chunks are expected. "
+            f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
+            "Do not repeat tool fields to the user. "
+            "Do not call skill_view, skills_list, tool_search, or tool_describe. "
+            "Do not handle slash commands or internal status names. "
+            f"Next call MUST be freezone_finish_agent_catalog_draft with skill_studio_session_id={session_id}."
+        )
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
         canvas or draft.get("canvas_id"),
@@ -827,6 +883,7 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
             "status": "draft_skill_ready",
             "message": "已生成 Skill 基础配置",
         },
+        agent_instruction=agent_instruction,
     )
 
 
@@ -878,6 +935,7 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
                 "The Skill Studio Recipe chunk was delivered to the frontend. "
                 f"Progress: {len(recipes)} of {expected} Recipe chunks submitted; "
                 f"remaining Recipe chunks: {remaining}. "
+                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
                 "Do not repeat tool fields to the user. "
                 "Do not call skill_view, skills_list, tool_search, or tool_describe. "
                 "Do not handle slash commands or internal status names. "
@@ -889,6 +947,7 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
             agent_instruction = (
                 "All expected Skill Studio Recipe chunks have been delivered to the frontend. "
                 f"Progress: {len(recipes)} of {expected} Recipe chunks submitted. "
+                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
                 "Do not repeat tool fields to the user. "
                 "Do not call skill_view, skills_list, tool_search, or tool_describe. "
                 "Do not handle slash commands or internal status names. "
@@ -899,6 +958,7 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
         count_payload = {}
         agent_instruction = (
             "The Skill Studio Recipe chunk was delivered to the frontend. "
+            f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
             "Do not repeat tool fields to the user. Continue submitting any remaining Recipe chunks. "
             "When all planned Recipes are submitted, call freezone_finish_agent_catalog_draft. "
             "Do not call skill_view, skills_list, tool_search, or tool_describe. "
@@ -4256,7 +4316,11 @@ TOOLS = (
             {
                 "clarification_id": {
                     "type": "string",
-                    "description": "Stable id for this clarification request.",
+                    "description": "Optional stable id for this clarification request. Omit this unless you already have one; Freezone will generate it automatically.",
+                },
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Optional Skill Studio session id used only to generate a traceable clarification id.",
                 },
                 "title": {
                     "type": "string",
@@ -4281,7 +4345,7 @@ TOOLS = (
                 },
                 **_SCOPE_PROPS,
             },
-            ["clarification_id", "questions"],
+            ["questions"],
         ),
         _handle_request_user_clarification,
     ),
@@ -4403,12 +4467,14 @@ TOOLS = (
                 "patch": {
                     "type": "array",
                     "description": (
-                        "JSON Pointer patch operations for local edits. Supported ops: replace, add, remove. "
+                        "Top-level field name must be patch; do not use operation, operations, or patches. "
+                        "patch is an array of JSON Pointer patch entries for local edits. "
+                        "Supported entry ops: replace, add, remove. "
                         "Paths must start with '/', cannot modify /id, and must not rely on Recipe array indexes. "
                         "When target=recipe, recipe_id already selects the Recipe, so paths are relative to that "
                         "Recipe object, for example /system_prompt or /must_have_items; never use "
-                        "/recipes/<recipe_id>/system_prompt. To remove the entire selected Recipe, use exactly one "
-                        "operation: {\"op\":\"remove\",\"path\":\"\"}."
+                        "/recipes/<recipe_id>/system_prompt. To remove the selected Recipe, use "
+                        'patch=[{"op":"remove","path":""}].'
                     ),
                     "items": {
                         "type": "object",
@@ -4423,7 +4489,7 @@ TOOLS = (
                                     "only with target=recipe and op=remove to delete the entire selected Recipe."
                                 ),
                             },
-                            "value": {"description": "Value for replace/add operations."},
+                            "value": {"description": "Value for replace/add entries."},
                         },
                         "required": ["op", "path"],
                     },

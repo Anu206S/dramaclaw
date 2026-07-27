@@ -873,6 +873,56 @@ def test_freezone_plugin_clarification_tool_waits_for_frontend_result(monkeypatc
     assert pending_events[0]["event"]["questions"][0]["mode"] == "multiple"
 
 
+def test_freezone_plugin_clarification_tool_generates_missing_id(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):
+        assert project_id == "project-a"
+        assert canvas_id == "canvas-a"
+        assert event["clarification_id"].startswith("clarify_ss-distill-a_")
+        return "clarify-key-2"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    def fake_wait_result(key, timeout_seconds):
+        return {
+            "ok": True,
+            "status": "clarification_frontend_result",
+            "tool_call_status": "completed",
+            "clarification_status": "answered",
+            "bridge_key": key,
+            "answers": {},
+        }
+
+    monkeypatch.setattr(plugin, "clarification_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_clarification_event", fake_put_pending_event)
+    monkeypatch.setattr(plugin, "wait_clarification_result", fake_wait_result)
+
+    result = handlers["freezone_request_user_clarification"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "ss-distill-a",
+            "questions": [
+                {
+                    "id": "scope",
+                    "title": "主要做什么？",
+                    "options": [{"id": "workflow", "label": "工作流自动化"}],
+                }
+            ],
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["bridge_key"] == "clarify-key-2"
+    generated_id = pending_events[0]["event"]["clarification_id"]
+    assert generated_id.startswith("clarify_ss-distill-a_")
+    assert len(generated_id.rsplit("_", 1)[-1]) == 8
+
+
 def test_freezone_plugin_skill_studio_draft_tool_waits_for_frontend_result(monkeypatch):
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
@@ -1002,6 +1052,9 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
 
     assert begin["ok"] is True
     assert skill["ok"] is True
+    assert "remaining Recipe chunks: 2" in skill["agent_instruction"]
+    assert "Next call MUST be freezone_put_agent_catalog_recipe with index=0" in skill["agent_instruction"]
+    assert "Do not call freezone_finish_agent_catalog_draft yet" in skill["agent_instruction"]
     assert recipe_1["ok"] is True
     assert recipe_2["ok"] is True
     assert finished["ok"] is True
@@ -1016,11 +1069,96 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     ]
     assert pending_events[0]["event"]["status"] == "draft_begin"
     assert pending_events[1]["event"]["message"] == "已生成 Skill 基础配置"
+    assert "Next call MUST be freezone_put_agent_catalog_recipe" in (
+        pending_events[1]["event"]["debug"]["agent_instruction"]
+    )
     assert pending_events[2]["event"]["message"] == "已生成 Recipe 1 / 2"
+    assert "Do not write pseudo tool calls" in pending_events[2]["event"]["debug"]["agent_instruction"]
     assert pending_events[3]["event"]["message"] == "已生成 Recipe 2 / 2"
     draft_event = pending_events[-1]["event"]
     assert draft_event["skill"]["id"] == "public-service-video"
     assert [recipe["id"] for recipe in draft_event["recipes"]] == ["story-outline", "video-render"]
+
+
+def test_freezone_plugin_chunked_draft_skill_result_directs_first_recipe_before_finish(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+
+    handlers["freezone_begin_agent_catalog_draft"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+            "expected_recipe_count": 5,
+        }
+    )
+    result = handlers["freezone_put_agent_catalog_skill"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "skill": {"id": "public-service-video", "description": "公益短片 Skill"},
+        }
+    )
+
+    instruction = result["agent_instruction"]
+    assert "Skill chunk was delivered" in instruction
+    assert "0 of 5 Recipe chunks submitted" in instruction
+    assert "remaining Recipe chunks: 5" in instruction
+    assert "Next call MUST be freezone_put_agent_catalog_recipe with index=0" in instruction
+    assert "Do not answer with prose" in instruction
+    assert "Do not write pseudo tool calls" in instruction
+    assert "Call the actual tool directly" in instruction
+    assert "Do not call freezone_finish_agent_catalog_draft yet" in instruction
+
+
+def test_freezone_plugin_chunked_draft_skill_without_recipes_directs_finish(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+
+    handlers["freezone_begin_agent_catalog_draft"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+            "expected_recipe_count": 0,
+        }
+    )
+    result = handlers["freezone_put_agent_catalog_skill"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "skill": {"id": "public-service-video", "description": "公益短片 Skill"},
+        }
+    )
+
+    instruction = result["agent_instruction"]
+    assert "no Recipe chunks are expected" in instruction
+    assert "Next call MUST be freezone_finish_agent_catalog_draft" in instruction
+    assert "freezone_put_agent_catalog_recipe" not in instruction
 
 
 def test_freezone_plugin_chunked_draft_recipe_progress_without_expected_count_avoids_fake_total(monkeypatch):
@@ -1110,6 +1248,9 @@ def test_freezone_plugin_chunked_draft_recipe_result_directs_next_recipe_before_
     assert "remaining Recipe chunks: 1" in instruction
     assert "freezone_put_agent_catalog_recipe" in instruction
     assert "index=5" in instruction
+    assert "Do not answer with prose" in instruction
+    assert "Do not write pseudo tool calls" in instruction
+    assert "Call the actual tool directly" in instruction
     assert "Do not call skill_view" in instruction
     assert "Do not handle slash commands" in instruction
     assert "Do not call freezone_finish_agent_catalog_draft yet" in instruction
@@ -1504,10 +1645,16 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     assert "Ask only the questions needed for the next decision" in clarification_schema["properties"]["questions"]["description"]
     assert "exactly one question" not in clarification_schema["properties"]["questions"]["description"]
     assert "freezone_present_skill_studio_questions" not in schemas
-    assert clarification_schema["required"] == ["clarification_id", "questions"]
+    assert clarification_schema["required"] == ["questions"]
+    assert "Freezone will generate it automatically" in clarification_schema["properties"]["clarification_id"]["description"]
+    assert "skill_studio_session_id" in clarification_schema["properties"]
     assert clarification_question_item["required"] == ["id", "title", "options"]
     assert clarification_option_item["required"] == ["id", "label"]
     assert "Do not include Recipe drafts inside skill" in skill_schema["description"]
+    patch_field_description = patch_schema["properties"]["patch"]["description"]
+    assert "Top-level field name must be patch" in patch_field_description
+    assert "do not use operation, operations, or patches" in patch_field_description
+    assert 'patch=[{"op":"remove","path":""}]' in patch_field_description
     assert "top-level recipes parameter" in draft_schema["properties"]["recipes"]["description"]
     assert begin_schema["required"] == ["skill_studio_session_id", "mode", "expected_recipe_count"]
     assert put_recipe_schema["required"] == ["skill_studio_session_id", "recipe"]

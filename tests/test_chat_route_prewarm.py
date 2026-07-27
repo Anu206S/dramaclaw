@@ -586,22 +586,8 @@ def test_resolve_revision_skill_studio_tool_result_starts_question_flow(monkeypa
     assert resolved["skill_studio_status"] == "revision_started"
     assert resolved["saved_to_catalog"] is False
     assert resolved["draft"] == payload.draft
-    assert "Start a Skill Studio draft revision question flow" in resolved["agent_instruction"]
-    assert "current draft" in resolved["agent_instruction"]
-    assert "already asked to revise" in resolved["agent_instruction"]
-    assert "Do not ask whether revision is needed" in resolved["agent_instruction"]
-    assert "Do not ask whether to save the current draft" in resolved["agent_instruction"]
-    assert "save_now" in resolved["agent_instruction"]
-    assert "freezone_request_user_clarification" in resolved["agent_instruction"]
-    assert "exactly one question object" in resolved["agent_instruction"]
-    assert "wait for the answer before deciding the next question" in resolved["agent_instruction"]
-    assert "freezone_begin_agent_catalog_draft" in resolved["agent_instruction"]
-    assert "freezone_finish_agent_catalog_draft" in resolved["agent_instruction"]
-    assert "expected_recipe_count" in resolved["agent_instruction"]
-    assert "full draft count" in resolved["agent_instruction"]
-    assert "Do not pass the full Skill/Recipe catalog in one tool call" in resolved["agent_instruction"]
-    assert "Do not answer with prose" in resolved["agent_instruction"]
-    assert "Do not save" in resolved["agent_instruction"]
+    assert resolved["message"] == payload.message
+    assert resolved["agent_instruction"] == "Continue the Skill Studio revision flow using the frontend response."
     assert wait_skill_studio_result("skill-key-4", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
 
 

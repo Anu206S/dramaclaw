@@ -359,8 +359,8 @@ Output contract:
   freezone_finish_agent_catalog_draft. Do not regenerate unchanged Recipes.
   For target=recipe, pass recipe_id and use patch paths relative to that Recipe object,
   for example /system_prompt or /must_have_items. Never use /recipes/<recipe_id>/...
-  inside patch.path. To remove the entire selected Recipe, use exactly one patch operation:
-  {{"op":"remove","path":""}}.
+  inside patch.path. The top-level parameter is patch, not operation, operations, or patches.
+  To remove the selected Recipe, use patch=[{"op":"remove","path":""}].
 - Before calling freezone_begin_agent_catalog_draft, decide the planned Recipe list/count and pass
   expected_recipe_count. Use 0 only when the draft intentionally has no Recipes.
 - Do not pass the full Skill/Recipe catalog in one tool call.
