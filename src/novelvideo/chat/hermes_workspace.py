@@ -894,9 +894,9 @@ def _ensure_freezone_config_policy(config_yaml: Path) -> None:
     tool_search = tools.get("tool_search")
     if not isinstance(tool_search, dict):
         tool_search = {}
-    # Freezone commands are the primary ACP surface. Deferring every plugin
-    # tool behind tool_search leaves only generic file tools visible and makes
-    # simple canvas edits route incorrectly.
+    # Keep Tool Search disabled through config while preserving the native
+    # runtime skill selection path; only skill_manage is removed at registry
+    # level by sitecustomize so Hermes cannot self-create project skills.
     tool_search["enabled"] = "off"
     tools["tool_search"] = tool_search
     skill_manage = tools.get("skill_manage")

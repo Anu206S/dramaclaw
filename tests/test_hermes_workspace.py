@@ -174,7 +174,6 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert parsed["tools"]["tool_search"]["enabled"] == "off"
     assert parsed["plugins"]["enabled"] == ["freezone"]
     assert parsed["tools"]["skill_manage"]["enabled"] == "off"
-    assert "tool_search" not in parsed["tools"]
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
     soul = (home / "SOUL.md").read_text(encoding="utf-8")
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
@@ -285,7 +284,7 @@ def test_freezone_profile_materializes_native_workflow_skills(
     assert manual_skill.exists()
 
 
-def test_freezone_profile_removes_stale_tool_search_disable(
+def test_freezone_profile_preserves_tool_search_disable(
     isolated_workspace,
     repo_skills,
     repo_plugins,
@@ -299,7 +298,7 @@ def test_freezone_profile_removes_stale_tool_search_disable(
     hw.ensure_user_hermes_workspace("admin", profile="freezone")
 
     updated = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-    assert "tool_search" not in updated["tools"]
+    assert updated["tools"]["tool_search"]["enabled"] == "off"
     assert updated["tools"]["skill_manage"]["enabled"] == "off"
 
 
