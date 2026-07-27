@@ -6698,6 +6698,174 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("invalidates and reruns only the affected downstream branch", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "主分支商品图",
+        imageUrl: "/static/project/old-main.png",
+      },
+    );
+    const videoNodeId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        prompt: "主分支视频",
+        videoUrl: "/static/project/old-main.mp4",
+      },
+    );
+    const unrelatedImageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 360 },
+      {
+        prompt: "旁路商品图",
+        imageUrl: "/static/project/old-side.png",
+      },
+    );
+    const unrelatedVideoNodeId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 360 },
+      {
+        prompt: "旁路视频",
+        videoUrl: "/static/project/old-side.mp4",
+      },
+    );
+    store.addEdge(imageNodeId, videoNodeId);
+    store.addEdge(unrelatedImageNodeId, unrelatedVideoNodeId);
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    let invalidationSnapshot: Record<string, unknown> | null = null;
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push({ nodeId: payload.nodeId, action: payload.action });
+      if (!invalidationSnapshot) {
+        invalidationSnapshot = Object.fromEntries(
+          useCanvasStore.getState().nodes.map((node) => [
+            node.id,
+            (node.data as Record<string, unknown>).workflowResultStale,
+          ]),
+        );
+      }
+      if (!payload.requestId) return;
+      store.updateNodeData(
+        payload.nodeId,
+        payload.action === "generate_image"
+          ? { imageUrl: "/static/project/new-main.png" }
+          : { videoUrl: "/static/project/new-main.mp4" },
+      );
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: payload.requestId,
+        nodeId: payload.nodeId,
+        action: payload.action,
+        status: "success",
+      });
+    });
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{
+            type: "run_workflow",
+            node_ids: [imageNodeId],
+            direction: "downstream",
+            regenerate: true,
+          }],
+        }]),
+        {
+          projectId: "project-a",
+          canvasId: "canvas-a",
+          actionTimeoutMs: 100,
+        },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
+        { nodeId: videoNodeId, action: "generate_video" },
+      ]);
+      expect(invalidationSnapshot).toMatchObject({
+        [imageNodeId]: true,
+        [videoNodeId]: true,
+      });
+      expect(invalidationSnapshot).not.toMatchObject({
+        [unrelatedImageNodeId]: true,
+        [unrelatedVideoNodeId]: true,
+      });
+      const latestById = new Map(
+        useCanvasStore.getState().nodes.map((node) => [node.id, node.data]),
+      );
+      expect(latestById.get(imageNodeId)).toMatchObject({ workflowResultStale: false });
+      expect(latestById.get(videoNodeId)).toMatchObject({ workflowResultStale: false });
+      expect(latestById.get(unrelatedImageNodeId)).not.toMatchObject({
+        workflowResultStale: true,
+      });
+      expect(latestById.get(unrelatedVideoNodeId)).not.toMatchObject({
+        workflowResultStale: true,
+      });
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("marks only existing results on the edited node and its downstream as stale", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "旧提示词",
+        imageUrl: "/static/project/old-main.png",
+      },
+    );
+    const videoNodeId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        prompt: "主分支视频",
+        videoUrl: "/static/project/old-main.mp4",
+      },
+    );
+    const unrelatedNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 360 },
+      {
+        prompt: "旁路",
+        imageUrl: "/static/project/side.png",
+      },
+    );
+    store.addEdge(imageNodeId, videoNodeId);
+
+    const result = await applyCanvasChatCommandsAsync(
+      extractCanvasChatCommandEnvelopes([{
+        schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+        commands: [{
+          type: "update_node_data",
+          node_id: imageNodeId,
+          data: { prompt: "新提示词" },
+        }],
+      }]),
+      { projectId: "project-a", canvasId: "canvas-a" },
+    );
+
+    expect(result.errors).toEqual([]);
+    const latestById = new Map(
+      useCanvasStore.getState().nodes.map((node) => [node.id, node.data]),
+    );
+    expect(latestById.get(imageNodeId)).toMatchObject({
+      workflowResultStale: true,
+      workflowInvalidationReason: "node_input_changed",
+    });
+    expect(latestById.get(videoNodeId)).toMatchObject({
+      workflowResultStale: true,
+      workflowInvalidationReason: "upstream_input_changed",
+    });
+    expect(latestById.get(unrelatedNodeId)).not.toMatchObject({
+      workflowResultStale: true,
+    });
+  });
+
   it("runs upstream workflow actions when run_workflow targets a terminal compose node", async () => {
     const store = useCanvasStore.getState();
     const imageNodeId = store.addNode(

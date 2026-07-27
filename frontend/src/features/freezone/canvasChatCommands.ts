@@ -197,6 +197,7 @@ type PendingNodeAction = {
   executionMode?: "single" | "workflow";
   parameters?: JsonRecord;
   label: string;
+  invalidationReason?: "explicit_regeneration" | "upstream_regeneration";
 };
 
 type PendingMainlineProjection = {
@@ -1653,9 +1654,20 @@ function waitForNodeActionAccepted(
   });
 }
 
-export function hasGeneratedResult(nodeId: string, action: string): boolean {
+export function hasGeneratedResult(
+  nodeId: string,
+  action: string,
+  includeInvalidatedResult = false,
+): boolean {
   const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
   if (!data) return false;
+  if (
+    !includeInvalidatedResult &&
+    GENERATION_NODE_ACTIONS.has(action) &&
+    data.workflowResultStale === true
+  ) {
+    return false;
+  }
   if (action === "generate_text") {
     return data.workflowTextGenerated === true && Boolean(nonEmptyString(data.content));
   }
@@ -1861,18 +1873,20 @@ async function waitForGeneratedResultField(
 ): Promise<boolean> {
   if (!GENERATION_NODE_ACTIONS.has(action)) return true;
   if (hasGeneratedResultOutput(action, output)) return true;
-  if (hasGeneratedResult(nodeId, action)) return true;
+  if (hasGeneratedResult(nodeId, action, true)) return true;
   if (hasActiveGenerationHandle(nodeId)) return true;
   if (nodeGenerationError(nodeId)) return false;
   const startedAt = Date.now();
   while (Date.now() - startedAt < timeoutMs) {
     await new Promise((resolve) => setTimeout(resolve, 100));
     if (hasGeneratedResultOutput(action, output)) return true;
-    if (hasGeneratedResult(nodeId, action)) return true;
+    if (hasGeneratedResult(nodeId, action, true)) return true;
     if (hasActiveGenerationHandle(nodeId)) return true;
     if (nodeGenerationError(nodeId)) return false;
   }
-  return hasGeneratedResultOutput(action, output) || hasGeneratedResult(nodeId, action) || hasActiveGenerationHandle(nodeId);
+  return hasGeneratedResultOutput(action, output)
+    || hasGeneratedResult(nodeId, action, true)
+    || hasActiveGenerationHandle(nodeId);
 }
 
 function markNodeActionRunning(nodeId: string, action: string): void {
@@ -1883,6 +1897,88 @@ function markNodeActionRunning(nodeId: string, action: string): void {
     isGenerating: true,
     generationStartedAt: Date.now(),
     generationError: null,
+  });
+}
+
+function invalidateWorkflowActionResults(
+  actions: PendingNodeAction[],
+): void {
+  const timestamp = new Date().toISOString();
+  const store = useCanvasStore.getState();
+  for (const action of actions) {
+    if (!GENERATION_NODE_ACTIONS.has(action.action) || !action.invalidationReason) continue;
+    store.updateNodeData(action.nodeId, {
+      workflowResultStale: true,
+      workflowInvalidatedAt: timestamp,
+      workflowInvalidationReason: action.invalidationReason,
+    });
+  }
+}
+
+const WORKFLOW_OUTPUT_DATA_KEYS = new Set([
+  "audioUrl",
+  "audio_url",
+  "content",
+  "imageUrl",
+  "image_url",
+  "plyUrl",
+  "resultVideoUrl",
+  "scriptResult",
+  "sources",
+  "videoUrl",
+  "video_url",
+]);
+
+const WORKFLOW_PRESENTATION_DATA_KEYS = new Set([
+  "autoTitleIndex",
+  "displayName",
+  "height",
+  "isSizeManuallyAdjusted",
+  "previewImageUrl",
+  "selected",
+  "width",
+]);
+
+function invalidateWorkflowResultsAfterNodeUpdate(
+  nodeId: string,
+  changedData: Record<string, unknown>,
+): void {
+  const changedKeys = Object.keys(changedData).filter(
+    (key) =>
+      !WORKFLOW_PRESENTATION_DATA_KEYS.has(key) &&
+      !key.startsWith("workflow"),
+  );
+  if (changedKeys.length === 0) return;
+  const hasInputChange = changedKeys.some((key) => !WORKFLOW_OUTPUT_DATA_KEYS.has(key));
+  const affectedNodeIds = expandWorkflowNodeIds([nodeId], ["downstream"])
+    .filter((affectedNodeId) => hasInputChange || affectedNodeId !== nodeId);
+  const state = useCanvasStore.getState();
+  const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
+  const timestamp = new Date().toISOString();
+  for (const affectedNodeId of affectedNodeIds) {
+    const affectedNode = nodeByIdMap.get(affectedNodeId);
+    if (!affectedNode || affectedNode.type === CANVAS_NODE_TYPES.group) continue;
+    const action = affectedNode.type === CANVAS_NODE_TYPES.videoCompose
+      ? "auto_compose_video"
+      : defaultWorkflowActionForNode(affectedNode);
+    if (!action || !hasGeneratedResult(affectedNodeId, action, true)) continue;
+    state.updateNodeData(affectedNodeId, {
+      workflowResultStale: true,
+      workflowInvalidatedAt: timestamp,
+      workflowInvalidationReason: affectedNodeId === nodeId
+        ? "node_input_changed"
+        : "upstream_input_changed",
+    });
+  }
+}
+
+function markWorkflowActionResultCurrent(nodeId: string, action: string): void {
+  if (!GENERATION_NODE_ACTIONS.has(action)) return;
+  useCanvasStore.getState().updateNodeData(nodeId, {
+    workflowResultStale: false,
+    workflowInvalidatedAt: null,
+    workflowInvalidationReason: null,
+    workflowGeneratedAt: new Date().toISOString(),
   });
 }
 
@@ -2100,9 +2196,17 @@ async function executeQueuedNodeActions(
           ...(status ? { status } : {}),
           runner_id: workflowRunnerId,
         });
-        if (status && typeof window !== "undefined") {
+        if (
+          typeof window !== "undefined" &&
+          (Boolean(status) || updates.some((update) => Boolean(update.task_key)))
+        ) {
           window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
-            detail: { projectId, canvasId, runId: workflowRunId, status },
+            detail: {
+              projectId,
+              canvasId,
+              runId: workflowRunId,
+              ...(status ? { status } : {}),
+            },
           }));
         }
       } catch (error) {
@@ -2136,6 +2240,7 @@ async function executeQueuedNodeActions(
       stopWorkflowHeartbeat();
       return;
     }
+    invalidateWorkflowActionResults(pendingActions);
 
     const initialGraphSignature = workflowGraphSignature(pendingActions);
     const settledActionKeys = new Set<string>();
@@ -2398,6 +2503,7 @@ async function executeQueuedNodeActions(
         }
 
         selectAndFocusNode(action.nodeId);
+        markWorkflowActionResultCurrent(action.nodeId, action.action);
         result.openedUiActions += 1;
         result.commandResults.push({
           commandIndex: action.commandIndex,
@@ -2863,6 +2969,7 @@ function applyCanvasChatCommandsInternal(
             } else {
               useCanvasStore.getState().updateNodeData(targetId, data);
             }
+            invalidateWorkflowResultsAfterNodeUpdate(targetId, data);
             selectAndFocusNode(targetId);
             result.applied += 1;
             result.commandResults.push({
@@ -3103,12 +3210,24 @@ function applyCanvasChatCommandsInternal(
               break;
             }
             if (options.queueNodeActions) {
+              const regenerateSeedNodeIds = new Set(
+                resolvedCommand.node_ids ?? selectedWorkflowNodeIds(),
+              );
               for (const action of actions) {
                 const actionKey = `${action.nodeId}:${action.action}`;
                 if (queuedNodeActionKeys.has(actionKey)) continue;
                 assertNodeActionAvailable(action.nodeId, action.action);
                 queuedNodeActionKeys.add(actionKey);
-                pendingNodeActions.push(action);
+                pendingNodeActions.push({
+                  ...action,
+                  ...(command.regenerate === true
+                    ? {
+                      invalidationReason: regenerateSeedNodeIds.has(action.nodeId)
+                        ? "explicit_regeneration" as const
+                        : "upstream_regeneration" as const,
+                    }
+                    : {}),
+                });
               }
             } else {
               const { ordered, cycleError } = orderedNodeActionsByCanvasEdges(actions);
