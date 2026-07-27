@@ -376,6 +376,57 @@ const UI_OPEN_NODE_ACTIONS = new Set([
   "open_video_compose_modal",
 ]);
 
+const CURRENT_MEDIA_NODE_ACTIONS = new Set([
+  "open_crop_tool",
+  "open_annotate_tool",
+  "open_split_storyboard_tool",
+  "run_matting_tool",
+  "run_upscale_tool",
+  "open_redraw_tool",
+  "open_erase_tool",
+  "open_upscale_tool",
+  "run_outpaint_tool",
+  "open_outpaint_tool",
+  "run_scene360_tool",
+  "open_scene360_tool",
+  "open_multi_angle_tool",
+  "open_light_tool",
+  "open_rotate_tool",
+  "run_grid_multi_camera",
+  "open_grid_multi_camera",
+  "run_grid_plot_four",
+  "open_grid_plot_four",
+  "run_grid_face_three_view",
+  "open_grid_face_three_view",
+  "run_grid_product_three_view",
+  "open_grid_product_three_view",
+  "run_grid_serial_storyboard_25",
+  "open_grid_serial_storyboard_25",
+  "run_grid_cinematic_light_correction",
+  "open_grid_cinematic_light_correction",
+  "run_grid_character_three_view",
+  "open_grid_character_three_view",
+  "run_grid_frame_projection_3s_later",
+  "open_grid_frame_projection_3s_later",
+  "run_grid_frame_projection_5s_earlier",
+  "open_grid_frame_projection_5s_earlier",
+  "open_video_viewer",
+  "download_image",
+  "download_video",
+  "open_video_clip_tool",
+  "open_video_upscale_tool",
+  "run_video_analyze_story",
+  "run_audio_separate",
+  "download_audio",
+  "capture_pano_current_view",
+  "capture_pano_2x2_views",
+  "capture_pano_4x3_views",
+  "set_pano_current_view_as_background",
+  "reset_pano_view",
+  "open_video_subtitle_erase_smart",
+  "open_video_subtitle_erase_box",
+]);
+
 const RESULT_SPAWNING_NODE_ACTIONS = new Set([
   "run_outpaint_tool",
   "run_scene360_tool",
@@ -2756,6 +2807,25 @@ function applyCanvasChatCommandsInternal(
             assertNodeActionAvailable(targetId, command.action);
             if (!RESULT_SPAWNING_NODE_ACTIONS.has(command.action)) {
               selectAndFocusNode(targetId);
+            }
+            if (options.queueNodeActions && CURRENT_MEDIA_NODE_ACTIONS.has(command.action)) {
+              setTimeout(() => {
+                try {
+                  runNodeAction(targetId, command.action, command.parameters);
+                } catch (error) {
+                  console.error("[freezone] run node action failed", error);
+                }
+              }, 0);
+              result.openedUiActions += 1;
+              result.commandResults.push({
+                commandIndex: currentCommandIndex,
+                type: command.type,
+                status: "success",
+                label: commandLabel(command),
+                nodeId: targetId,
+                action: command.action,
+              });
+              break;
             }
             const queuedActions = options.queueNodeActions
               ? directNodeActionQueue(
