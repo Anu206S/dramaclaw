@@ -6449,7 +6449,7 @@ const MessageBubble = memo(function MessageBubble({
   const actions = (
     <div
       className={cn(
-        "pointer-events-none absolute bottom-2 z-10 flex items-center gap-0.5 whitespace-nowrap rounded-full border border-border/70 bg-background/85 px-1 py-0.5 text-foreground/75 opacity-0 shadow-sm backdrop-blur transition-opacity after:absolute after:-top-2 after:left-0 after:h-2 after:w-full after:content-[''] group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100",
+        "pointer-events-none absolute top-full z-10 mt-1 flex items-center gap-0.5 whitespace-nowrap rounded-full border border-border/70 bg-background/85 px-1 py-0.5 text-foreground/75 opacity-0 shadow-sm backdrop-blur transition-opacity after:absolute after:-top-2 after:left-0 after:h-2 after:w-full after:content-[''] group-hover/message-actions:pointer-events-auto group-hover/message-actions:opacity-100 group-focus-within/message-actions:pointer-events-auto group-focus-within/message-actions:opacity-100",
         isUser ? "right-0" : "left-0",
       )}
     >
@@ -6556,7 +6556,7 @@ const MessageBubble = memo(function MessageBubble({
       return (
         <div className="flex justify-end">
           <article className={cn("max-w-[72%]", isFreezoneLayout && "max-w-[82%]")}>
-            <div className="group/message-actions relative z-0 transition-[padding] duration-150 hover:z-30 hover:pb-10 focus-within:z-30 focus-within:pb-10">
+            <div className="group/message-actions relative z-0 hover:z-30 focus-within:z-30">
               <div className="rounded-[14px] border-0 bg-white/[0.12] px-3 py-2.5 text-sm leading-6 text-foreground shadow-none">
                 <AttachmentList attachments={message.attachments} align="start" compact />
                 {displayText && (
@@ -6578,7 +6578,7 @@ const MessageBubble = memo(function MessageBubble({
     return (
       <div className="flex justify-end">
         <article className={cn("max-w-[72%]", isFreezoneLayout && "max-w-[82%]")}>
-          <div className="group/message-actions relative z-0 transition-[padding] duration-150 hover:z-30 hover:pb-10 focus-within:z-30 focus-within:pb-10">
+          <div className="group/message-actions relative z-0 hover:z-30 focus-within:z-30">
             <div className="rounded-[14px] border-0 bg-white/[0.12] px-4 py-2.5 text-sm leading-6 text-foreground shadow-none">
               <AttachmentList attachments={message.attachments} align="end" />
               {displayText && (
@@ -6609,7 +6609,7 @@ const MessageBubble = memo(function MessageBubble({
       <div className={cn("flex min-w-0 flex-1", isUser ? "justify-end" : "justify-start")}>
         <div
           className={cn(
-            "group/message-actions relative z-0 transition-[padding] duration-150 hover:z-30 hover:pb-10 focus-within:z-30 focus-within:pb-10",
+            "group/message-actions relative z-0 hover:z-30 focus-within:z-30",
             (visibleBlocks.length > 0 || assistantPrefersWideLayout) && !isTool
               ? "w-full min-w-0"
               : "w-fit max-w-full",

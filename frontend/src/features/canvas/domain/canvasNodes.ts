@@ -365,6 +365,16 @@ export interface ImageGenNodeData extends NodeImageData {
   cameraSelection?: ImageGenCameraSelection | null;
   /** User-uploaded reference image, fed into the generation request. */
   referenceImageUrl?: string | null;
+  /**
+   * 故事板「功能」节点：在图片详情里点了某个一图流功能（宫格模板 / 全景 /
+   * 多角度 / 打光）后建出来的空节点带这个 key，输入框里显示成可关闭的功能 chip，
+   * ↑ 提交时走对应能力而不是常规文生图。值域见 application/assetBoardImageOps 的
+   * `AssetBoardImageOpKey`（这里不 import，domain 不依赖 application）。
+   * 清空（关掉 chip）后节点退化为普通图片生成节点。
+   */
+  imageOpKey?: string | null;
+  /** 功能节点的源图 URL（= 点功能时那张图），提交时作为 source_url 下发。 */
+  imageOpSourceUrl?: string | null;
   /** Present/mainline workflow nodes can auto-commit their generated image to slot_target. */
   autoCommitOnGenerate?: boolean;
   /** Local-only marks/annotations placed on upstream image. */
