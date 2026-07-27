@@ -73,6 +73,7 @@ describe('matteImage（抠图编排，从 NodeActionToolbar 抽出）', () => {
       state.edges.some((edge) => edge.source === 'src-1' && edge.target === resultId),
     ).toBe(true);
     expect(state.selectedNodeId).toBe(resultId);
+    expect(state.pendingFocusNodeId).toBe(resultId);
 
     // completion 在后台链（fetch → worker → 上传 → 回填）settle 后 resolve。
     await result?.completion;

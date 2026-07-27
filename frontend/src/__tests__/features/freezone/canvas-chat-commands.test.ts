@@ -4843,6 +4843,56 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("defers current media node action dispatch until after selection can mount node handlers", async () => {
+    const targetImageId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.exportImage,
+      { x: 0, y: 0 },
+      {
+        imageUrl: "/static/project/current-image.png",
+        previewImageUrl: "/static/project/current-image.png",
+      },
+    );
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push({
+        nodeId: payload.nodeId,
+        action: payload.action,
+      });
+    });
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: targetImageId,
+                action: "run_matting_tool",
+              },
+            ],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([]);
+
+      await new Promise((resolve) => setTimeout(resolve, 0));
+
+      expect(events).toEqual([
+        {
+          nodeId: targetImageId,
+          action: "run_matting_tool",
+        },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("submits grid node actions without queueing a canvas operation", async () => {
     const targetImageId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.exportImage,
