@@ -8,6 +8,16 @@ import { useImageGenerationForm } from '@/features/canvas/nodes/shared/useImageG
 import { spawnAssetLibraryReferences } from '@/features/canvas/nodes/shared/assetLibraryReferenceSpawn';
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import {
+  ASSET_BOARD_IMAGE_OP_MAP,
+  clearAssetBoardImageOp,
+  isAssetBoardImageOpKey,
+  isGridImageOpKey,
+  runAssetBoardImageOp,
+} from '@/features/canvas/application/assetBoardImageOps';
+import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
+import { imageModelSupportsQuality } from '@/features/canvas/ui/GridActionConfirmOverlay';
+import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
+import {
   AssetLibraryModal,
   type AssetLibrarySelection,
 } from '@/features/canvas/ui/AssetLibraryModal';
@@ -19,6 +29,7 @@ import {
 import { useCanvasStore } from '@/stores/canvasStore';
 import { readUrl } from '@/lib/url-params';
 
+import { AssetBoardImageOpChip } from './AssetBoardImageOpChip';
 import { AssetBoardReferenceDropZone } from './AssetBoardReferenceDropZone';
 
 /**
@@ -45,11 +56,52 @@ const FORM_HEIGHT_PX = 184;
  * 参考图就会从详情里消失——所以这里在表单顶部补一枚自带参考 chip（与上游 chip 紧邻、
  * 同款样式），只在宿主渲染、共用表单零改动。 */
 export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactElement {
-  const { formProps, referenceImageUrl } = useImageGenerationForm(nodeId);
+  const { formProps, isGenerating, referenceImageUrl } = useImageGenerationForm(nodeId);
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const [isAssetLibraryOpen, setIsAssetLibraryOpen] = useState(false);
 
+  // 功能节点（详情工具条点了某个一图流功能后建出来的那种）：输入框里、提示词
+  // 正上方多一枚可关可切的功能 chip，↑ 走对应能力而不是常规文生图。普通图片生成
+  // 节点没有这个字段，下面所有分支都退化成原来的行为。
+  const opKeyRaw = useCanvasStore((state) => {
+    const node = state.nodes.find((candidate) => candidate.id === nodeId);
+    return (node?.data as { imageOpKey?: unknown } | undefined)?.imageOpKey;
+  });
+  const opKey = isAssetBoardImageOpKey(opKeyRaw) ? opKeyRaw : null;
+
   const noopStylePickerOpenChange = useCallback(() => {}, []);
+  // 功能提交不要求提示词（模板本身就是「基于当前图像生成」，提示词是可选补充），
+  // 所以不能沿用共用表单那条 `submitDisabled = isGenerating || !hasEffectivePrompt`。
+  const handleOpSubmit = useCallback(() => {
+    void runAssetBoardImageOp(nodeId);
+  }, [nodeId]);
+  // 在输入框开头退格 = 删掉这枚 chip = 该节点退回普通图片生成。
+  const handleOpChipDelete = useCallback(() => {
+    clearAssetBoardImageOp(nodeId);
+  }, [nodeId]);
+
+  // 功能节点的算力：宫格按 image_selection 询价（与详情工具条那个下拉同一套查询，
+  // 两处显示同一个数）；询价没回来退回功能表里的硬编码 cost。全景/多角度/打光
+  // 没有对应口径，返回 null → CreditCostPill 自己不渲染。
+  const isGridOp = opKey !== null && isGridImageOpKey(opKey);
+  const { models: imageModels } = useFreezoneImageModels();
+  const opSelectedModel = imageModels[0];
+  // value 传 null 时 useGenerationCreditCost 自己 enabled:false（image_selection
+  // 属于 requiresValue 那档），非宫格功能不会白发一次询价请求。
+  const opCreditCost = useGenerationCreditCost(
+    'image_selection',
+    isGridOp ? (opSelectedModel?.apiModel ?? null) : null,
+    {
+      surface: 'canvas',
+      params: imageModelSupportsQuality(opSelectedModel?.apiModel)
+        ? { size: '2K', quality: 'medium' }
+        : { size: '2K' },
+    },
+  );
+  const opCreditDisplay =
+    opKey && isGridOp
+      ? (opCreditCost.data?.data.display ?? String(ASSET_BOARD_IMAGE_OP_MAP[opKey].cost))
+      : null;
   const handleAssetLibraryConfirm = useCallback(
     (selections: ReadonlyArray<AssetLibrarySelection>) => {
       spawnAssetLibraryReferences(nodeId, selections);
@@ -89,11 +141,34 @@ export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactEle
               </div>
             </div>
           )}
+          {/* 功能 chip 走共用表单的 `leadingChip` 通道，落在**提示词输入框内部**、
+              正文最前面（对标 liblib）：功能说明当占位文案接在它右边，退格能像删字符
+              一样把它删掉。工作流的 ImageGenNode 不传这些 prop，渲染与从前一致。 */}
           <ImageGenerationForm
             {...formProps}
             compact
             onStylePickerOpenChange={noopStylePickerOpenChange}
             onOpenAssetLibrary={() => setIsAssetLibraryOpen(true)}
+            {...(opKey
+              ? {
+                  promptLeadingChip: (
+                    <AssetBoardImageOpChip
+                      nodeId={nodeId}
+                      opKey={opKey}
+                      disabled={isGenerating}
+                    />
+                  ),
+                  onPromptLeadingChipDelete: handleOpChipDelete,
+                  promptPlaceholder: ASSET_BOARD_IMAGE_OP_MAP[opKey].description,
+                }
+              : {})}
+            {...(opKey
+              ? {
+                  onSubmit: handleOpSubmit,
+                  submitDisabled: isGenerating,
+                  totalCreditCostDisplay: opCreditDisplay,
+                }
+              : {})}
           />
         </div>
       </AssetBoardReferenceDropZone>
