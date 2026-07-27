@@ -4142,42 +4142,6 @@ function numberOrRawText(value: string): number | string {
   return Number.isFinite(parsed) ? parsed : value;
 }
 
-const SKILL_STUDIO_IMAGE_ASPECT_RATIOS = new Set([
-  "1:1",
-  "9:16",
-  "16:9",
-  "3:4",
-  "4:3",
-  "3:2",
-  "2:3",
-  "4:5",
-  "5:4",
-  "21:9",
-]);
-
-const SKILL_STUDIO_VIDEO_ASPECT_RATIOS = new Set([
-  "16:9",
-  "4:3",
-  "1:1",
-  "3:4",
-  "9:16",
-  "21:9",
-]);
-
-function normalizedSkillStudioDefaultAspectRatios(value: unknown): Record<string, string> {
-  const ratios = getRecord(value);
-  const next: Record<string, string> = {};
-  const imageRatio = textField(ratios.imageGeneration);
-  if (SKILL_STUDIO_IMAGE_ASPECT_RATIOS.has(imageRatio)) {
-    next.imageGeneration = imageRatio;
-  }
-  const videoRatio = textField(ratios.videoGeneration);
-  if (SKILL_STUDIO_VIDEO_ASPECT_RATIOS.has(videoRatio)) {
-    next.videoGeneration = videoRatio;
-  }
-  return next;
-}
-
 function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): FreezoneAgentConfigPayload {
   const triggers = getRecord(skill.triggers);
   const planning = getRecord(skill.planning);
@@ -4208,9 +4172,6 @@ function normalizedSkillStudioSkillPayload(skill: Record<string, unknown>): Free
       planning_notes: firstNonEmptyText(planning.planning_notes, planning.metaPlanningHints),
       prompt_guide: firstNonEmptyText(planning.prompt_guide, planning.promptStyleGuide),
       conduct_rules: cleanStringArray(planning.conduct_rules ?? planning.behaviorRules),
-      default_aspect_ratios: normalizedSkillStudioDefaultAspectRatios(
-        planning.default_aspect_ratios ?? planning.defaultAspectRatios,
-      ),
     },
     evaluation: {
       rating_bands: getRecordArray(evaluation.rating_bands ?? evaluation.scoreAnchors).map((item) => ({
@@ -4407,7 +4368,7 @@ function buildSkillStudioCatalogSaveItems(draft: Record<string, unknown>): Skill
         Boolean(recipe) && typeof recipe === "object" && !Array.isArray(recipe),
       )
     : [];
-  for (const recipe of recipes) {
+  for (const recipe of dedupeSkillStudioRecipesById(recipes)) {
     const payload = normalizedSkillStudioRecipePayload(recipe);
     assertSkillStudioCatalogPayload("recipes", payload);
     items.push({ kind: "recipes", payload });
@@ -4419,6 +4380,21 @@ function buildSkillStudioCatalogSaveItems(draft: Record<string, unknown>): Skill
 }
 
 export const buildSkillStudioCatalogSaveItemsForTest = buildSkillStudioCatalogSaveItems;
+
+function dedupeSkillStudioRecipesById(recipes: Record<string, unknown>[]): Record<string, unknown>[] {
+  const seen = new Set<string>();
+  const deduped: Record<string, unknown>[] = [];
+  for (let index = recipes.length - 1; index >= 0; index -= 1) {
+    const recipe = recipes[index];
+    const recipeId = textField(recipe.id);
+    if (recipeId) {
+      if (seen.has(recipeId)) continue;
+      seen.add(recipeId);
+    }
+    deduped.unshift(recipe);
+  }
+  return deduped;
+}
 
 function skillStudioQuestionKey(question: SkillStudioQuestion, index: number): string {
   return question.id?.trim() || `question_${index + 1}`;
@@ -4845,10 +4821,11 @@ export function buildSkillStudioDraftToolResultForTest(
     ? normalizedDraft.skill as Record<string, unknown>
     : {};
   const recipes = Array.isArray(normalizedDraft.recipes) ? normalizedDraft.recipes : [];
+  const dedupedRecipes = dedupeSkillStudioRecipesById(recipes as Record<string, unknown>[]);
   const summary = typeof normalizedDraft.summary === "string" ? normalizedDraft.summary : event.summary || "";
   const warnings = Array.isArray(normalizedDraft.warnings) ? normalizedDraft.warnings : [];
   const savedSkillIds = textField(skill.id) ? [textField(skill.id)] : [];
-  const savedRecipeIds = recipes
+  const savedRecipeIds = dedupedRecipes
     .map((recipe) => textField((recipe as Record<string, unknown>).id))
     .filter((id): id is string => Boolean(id));
   return {
@@ -4864,7 +4841,7 @@ export function buildSkillStudioDraftToolResultForTest(
     saved_to_catalog: true,
     saved_skill_ids: savedSkillIds,
     saved_recipe_ids: savedRecipeIds,
-    draft: { summary, skill, recipes, warnings },
+    draft: { summary, skill, recipes: dedupedRecipes, warnings },
     message: [
       "我已在 Skill Studio 草稿卡片中确认添加，已保存为正式 Skill / Recipe。",
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
@@ -6029,7 +6006,7 @@ function SkillStudioDraftCard({
             <span>Recipes ({recipes.length})</span>
           </div>
           {recipes.map((recipe, index) => (
-            <details key={textField(recipe.id) || index} className="group border-b border-white/[0.07] last:border-b-0">
+            <details key={`${textField(recipe.id) || "recipe"}-${index}`} className="group border-b border-white/[0.07] last:border-b-0">
               <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
                 <span className="flex min-w-0 items-center gap-2">
                   <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />

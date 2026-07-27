@@ -83,7 +83,6 @@ interface SkillDraft {
   nodeScopes: string[];
   allowedRecipeIds: string[];
   inputParameters: SkillInputParameterDraft[];
-  defaultAspectRatios: Record<string, string>;
   planningNotes: string;
   promptGuide: string;
   conductRules: string[];
@@ -911,7 +910,6 @@ function NewSkillEditor({
     nodeScopes: [],
     allowedRecipeIds: [],
     inputParameters: [],
-    defaultAspectRatios: {},
     planningNotes: "",
     promptGuide: "",
     conductRules: [],
@@ -946,7 +944,6 @@ function NewSkillEditor({
         nodeScopes: [],
         allowedRecipeIds: [],
         inputParameters: [],
-        defaultAspectRatios: {},
         planningNotes: "",
         promptGuide: "",
         conductRules: [],
@@ -1024,9 +1021,6 @@ function NewSkillEditor({
           planning_notes: skillDraft.planningNotes,
           prompt_guide: skillDraft.promptGuide,
           conduct_rules: skillDraft.conductRules,
-          ...(Object.keys(skillDraft.defaultAspectRatios).length > 0
-            ? { default_aspect_ratios: skillDraft.defaultAspectRatios }
-            : {}),
         },
         evaluation: {
           rating_bands: ratingBands.map((anchor) => ({
@@ -1348,14 +1342,6 @@ function skillDraftFromPayload(payload: FreezoneAgentConfigPayload | null): {
       nodeScopes: getStringArray(triggers.node_scopes ?? triggers.nodeTypes ?? triggers.node_types),
       allowedRecipeIds: getStringArray(payload?.allowed_recipe_ids ?? payload?.allowedRecipeIds),
       inputParameters: inputParameterDraftsFromPayload(payload?.input_parameters ?? payload?.inputParameters),
-      defaultAspectRatios: Object.fromEntries(
-        Object.entries(getRecord(planning.default_aspect_ratios ?? planning.defaultAspectRatios))
-          .filter((entry): entry is [string, string] =>
-            typeof entry[1] === "string"
-            && entry[0] !== "textGeneration"
-            && entry[1] !== "auto",
-          ),
-      ),
       planningNotes: getString(planning.planning_notes),
       promptGuide: getString(planning.prompt_guide),
       conductRules: getStringArray(planning.conduct_rules),

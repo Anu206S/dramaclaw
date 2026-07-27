@@ -359,7 +359,7 @@ Skill 草稿必须提供足够明确的规划约束：
 - 角色/产品道具常见是 1:1。
 - 分镜可能是 16:9。
 - 视频节点的字段和实际宽高可能不一致；如果宽高是 720x1280，应识别为竖屏事实，并在 planning 里写清“字段默认”和“实际输出”差异。
-- 如果 workflow 有多种比例，不要把所有 task type 都写成同一个默认比例；主比例写入 `planning.default_aspect_ratios`，变体写入 workflow step。
+- 如果 workflow 有多种比例，不要把所有 task type 都写成同一个默认比例；需要用户每次控制的主比例写成 `input_parameters` 的开始前选项，变体写入 workflow step。
 
 ## 13. 输出时避免低质量模式
 

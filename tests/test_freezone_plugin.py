@@ -734,11 +734,13 @@ def test_freezone_get_workflow_skill_accepts_native_skill_id(monkeypatch):
     plugin = _load_plugin_module_with_registry_result(lambda value: "summarized")
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
-    loaded = handlers["freezone_get_workflow_skill"]({"skill_id": "pixar-ip-ad-video"})
+    loaded = handlers["freezone_get_workflow_skill"](
+        {"skill_id": "pixar-ip-brand-ad-short-film"}
+    )
 
     decoded = json.loads(loaded)
     assert decoded["ok"] is True
-    assert decoded["skill_id"] == "pixar-ip-ad-video"
+    assert decoded["skill_id"] == "pixar-ip-brand-ad-short-film"
 
 
 def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatch):
@@ -746,7 +748,7 @@ def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatc
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
     loaded = handlers["freezone_get_workflow_skill"](
-        {"skill_id": "pixar-ip-ad-video", "compact": True}
+        {"skill_id": "pixar-ip-brand-ad-short-film", "compact": True}
     )
 
     decoded = json.loads(loaded)
@@ -1701,7 +1703,6 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "planning_notes",
         "prompt_guide",
         "conduct_rules",
-        "default_aspect_ratios",
     ]
     assert "executable path summary" in skill_schema["properties"]["planning"]["properties"][
         "planning_notes"
@@ -1710,19 +1711,7 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
         "conduct_rules"
     ]["description"]
     assert "model_preferences" not in skill_schema["properties"]["planning"]["properties"]
-    aspect_schema_description = skill_schema["properties"]["planning"]["properties"][
-        "default_aspect_ratios"
-    ]["description"]
-    aspect_schema = skill_schema["properties"]["planning"]["properties"]["default_aspect_ratios"]
-    assert "imageGeneration" in aspect_schema_description
-    assert "videoGeneration" in aspect_schema_description
-    assert "16:9" in aspect_schema_description
-    assert "5:4" in aspect_schema_description
-    assert "Do not use auto" in aspect_schema_description
-    assert aspect_schema["additionalProperties"] is False
-    assert set(aspect_schema["properties"]) == {"imageGeneration", "videoGeneration"}
-    assert "textGeneration" not in aspect_schema["properties"]
-    assert "auto" not in aspect_schema["properties"]["imageGeneration"]["enum"]
+    assert "default_aspect_ratios" not in skill_schema["properties"]["planning"]["properties"]
     assert skill_schema["properties"]["evaluation"]["required"] == [
         "rating_bands",
         "quality_threshold",
