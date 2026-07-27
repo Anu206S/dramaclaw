@@ -2123,7 +2123,7 @@ describe("Assistant clarification response", () => {
     );
 
     expect(payload.message).toContain("Skill Studio 草稿修订流程");
-    expect(payload.message).toContain("下一步必须调用 freezone_patch_agent_catalog_draft");
+    expect(payload.message).toContain("下一步必须继续调用 freezone_request_user_clarification");
     expect(payload.message).toContain("freezone_finish_agent_catalog_draft");
     expect(payload.message).toContain("不要只回复普通文本");
     expect(payload.message).not.toContain("请基于以上补充信息继续");
@@ -2808,9 +2808,6 @@ describe("Skill Studio draft response", () => {
             planning_notes: "先识别地域符号",
             prompt_guide: "水墨写意",
             conduct_rules: ["保持文化准确"],
-            default_aspect_ratios: {
-              imageGeneration: "9:16",
-            },
           }),
           evaluation: expect.objectContaining({
             quality_threshold: 7,
@@ -2839,6 +2836,7 @@ describe("Skill Studio draft response", () => {
         }),
       }),
     ]);
+    expect(items[0]?.payload.planning).not.toHaveProperty("default_aspect_ratios");
   });
 });
 
