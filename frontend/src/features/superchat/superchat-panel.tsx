@@ -4670,7 +4670,9 @@ export function buildAssistantClarificationToolResultForTest(
     options.skillStudioRevision
       ? [
           "当前处于 Skill Studio 草稿修订流程。",
-          "用户已经给出具体修改方向；如果信息足够，下一步必须调用 freezone_patch_agent_catalog_draft 更新草稿，或用分片草稿工具替换较大的 Skill / Recipe 内容。",
+          "只允许把本次回答中的明确选择或补充文本当作修改方向；不要从当前草稿内容、Recipe 结构或你自己的优化判断里推断用户想改什么。",
+          "如果本次回答只是选择了泛泛分类，例如基本信息、输入参数、能力模块内容、约束规则、质量标准、执行流程等，仍然不算具体修改方向；下一步必须继续调用 freezone_request_user_clarification 追问一个更具体的问题。",
+          "只有用户明确给出了具体目标和改法时，下一步才可以调用 freezone_patch_agent_catalog_draft 更新草稿，或用分片草稿工具替换较大的 Skill / Recipe 内容。",
           "更新后必须调用 freezone_finish_agent_catalog_draft 展示新的可编辑草稿卡。",
           "不要只回复普通文本，不要只总结修改意图，不要询问是否保存，也不要展示未修改的旧草稿。",
           "只有修改方向仍不明确时，才再调用 freezone_request_user_clarification 追问一个问题。",
@@ -4926,11 +4928,13 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
       "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
       "不要询问是否保存当前版本，也不要提供 save_now / save_current / confirm_save 这类选项；保存只由页面草稿卡的确认按钮处理。",
       "这不是继续完成原草稿，也不是要求重新展示当前草稿。",
+      "返回的 draft 只是被修改对象，不是用户修改意图；禁止从 draft 内容里自行推断结构优化、拆分步骤、增删 Recipe 或调整引用关系。",
       "用户还没有提供具体修改方向；下一步必须调用 freezone_request_user_clarification 追问修改方向、范围或偏好。",
       "这次 clarification 的 questions 数组必须只有一个问题，问题要直接问用户想改哪里或怎么改。",
       "在用户回答修改方向之前，禁止调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
+      "在用户回答修改方向之前，也禁止调用 freezone_patch_agent_catalog_draft。",
       "禁止调用 freezone_finish_agent_catalog_draft 原样展示当前草稿。",
-      "用户回答修改方向后，再基于当前完整草稿进行局部 patch 或分片输出更新草稿。",
+      "用户回答修改方向后，如果回答仍是泛泛分类，继续追问；只有回答包含具体目标和改法时，才基于当前完整草稿进行局部 patch 或分片输出更新草稿。",
       "不要在单个 tool_call 里传完整 Skill / Recipe catalog。",
       "不要用普通文本总结修改结果；不要只说明改了什么；未输出更新草稿前不要让用户保存。",
     ].filter(Boolean).join("\n"),
@@ -13678,13 +13682,8 @@ export function SuperChatPanel({
                     <Wrench className="size-3.5" />
                   </span>
                   <span className="min-w-0 flex-1">
-                    <span className="flex min-w-0 items-center gap-2">
-                      <span className="truncate text-[13px] font-semibold leading-5 text-foreground/92">
-                        {skill.label}
-                      </span>
-                      <span className="shrink-0 rounded-md bg-white/[0.07] px-1.5 py-0.5 text-[11px] leading-4 text-muted-foreground">
-                        /{skill.id}
-                      </span>
+                    <span className="block truncate text-[13px] font-semibold leading-5 text-foreground/92">
+                      {skill.label}
                     </span>
                     {skill.description && (
                       <span className="mt-0.5 block truncate text-xs leading-4 text-muted-foreground/75">

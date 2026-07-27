@@ -375,6 +375,12 @@ Draft revision:
   freezone_request_user_clarification for this revision flow, the questions array must contain
   exactly one question object. Wait for the user's answer before deciding the next question unless
   the requested change is already clear.
+- In revision flows, the returned draft is only the object being edited; it is not user intent. Do not
+  infer desired edits, structural improvements, Recipe splits/merges, Recipe additions/removals, or
+  dependency rewrites from the draft content alone.
+- A broad category answer such as "basic info", "input parameters", "module content", "constraints",
+  "quality standards", "execution flow", or similar is still not a concrete edit. Ask one more focused
+  clarification question. Only edit after the user provides a concrete target and concrete change.
 - A start_revision result means the user is dissatisfied and wants changes. Do not ask whether to
   save the current draft, and do not offer save_now/save_current/confirm_save as options. Saving is
   handled only by the draft card UI after you present an updated draft.
