@@ -1524,6 +1524,13 @@
       "openHint": "Click to open",
       "closeHint": "Click to collapse"
     },
+    "chatStatus": {
+      "running": "{{count}} generating",
+      "waiting": "{{count}} queued",
+      "completed": "{{count}} completed",
+      "failed": "{{count}} failed",
+      "locateNode": "Locate canvas node"
+    },
     "relative": {
       "justNow": "just now"
     },

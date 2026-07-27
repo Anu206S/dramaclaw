@@ -84,6 +84,7 @@ import {
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
+import { ChatTaskStatusBar } from "@/features/superchat/chat-task-status-bar";
 import { CommunitySkillDialog } from "@/components/settings/freezone-skill-recipe-settings";
 import { calculateTimelineContextDelta } from "@/features/superchat/timeline-scroll";
 import { useEventBus } from "@/task-center/event-bus-context";
@@ -13097,6 +13098,9 @@ export function SuperChatPanel({
               variant={isFreezoneLayout ? "freezone" : "default"}
             />
           </div>
+          {isFreezoneLayout ? (
+            <ChatTaskStatusBar canvasId={effectiveFreezoneCanvasId} />
+          ) : null}
           <div
             ref={composerShellRef}
             className={cn(
