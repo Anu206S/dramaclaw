@@ -2498,7 +2498,10 @@ function FreezoneChatDock({
           onClick={() => onOpenChange(true)}
         />
         <Sheet open={open} onOpenChange={onOpenChange}>
-          <SheetContent side="right" className="flex w-full flex-col gap-0 p-0 sm:!max-w-[560px]">
+          <SheetContent
+            side="right"
+            className="flex w-full flex-col gap-0 bg-[#262626] p-0 sm:!max-w-[560px]"
+          >
             <SheetHeader className="sr-only">
               <SheetTitle>{title}</SheetTitle>
               <SheetDescription>{description}</SheetDescription>
@@ -2507,7 +2510,7 @@ function FreezoneChatDock({
               <div className="min-h-0 flex-1">{agentPanels}</div>
               <div
                 className={cn(
-                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-zinc-950/95 shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
+                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-[#262626] shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
                   agentHistoryOpen ? "translate-x-0" : "translate-x-full",
                 )}
               >
@@ -2580,10 +2583,10 @@ function FreezoneChatDock({
           // 贴右边、通高（对标 liblib）：不留外边距、不圆角，只留一条左描边把
           // 抽屉与画布/故事板分开。
           "absolute inset-y-0 right-0 z-40 hidden flex-col overflow-hidden border-l border-white/[0.12] shadow-none lg:flex",
-          // 拖拽期换成近乎不透明的实底、关掉背景模糊：通高 backdrop-blur-2xl 每帧
-          // 都要把整屏高的大半径模糊重新光栅化一遍，是「拖不动、跟不上手」的主因。
-          // 拖的时候底下内容本就静止，换实底几乎看不出差别，松手再恢复毛玻璃。
-          resizing ? "bg-zinc-950/95" : "bg-zinc-950/55 backdrop-blur-2xl",
+          // 实底 #262626：与故事板三栏/视图切换胶囊同色，agent 抽屉不再是半透明
+          // 毛玻璃。顺带把 backdrop-blur-2xl 一起去掉——通高的大半径模糊每帧都要
+          // 重新光栅化，是拖宽「跟不上手」的主因，实底之后它也没有可模糊的东西了。
+          "bg-[#262626]",
           dockTransition,
           panelVisible ? "translate-x-0 opacity-100" : "translate-x-10 opacity-0",
           !panelVisible && "pointer-events-none",
@@ -2636,7 +2639,9 @@ function FreezoneChatDock({
           )}
           <div
             className={cn(
-              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-zinc-950/45",
+              // 与聊天区同底色：靠那条左描边分栏就够了。旧的 zinc-950/45 是叠在
+              // 半透明抽屉上的一层压暗，抽屉换实底后它会变成一块明显更黑的侧栏。
+              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-[#262626]",
               // 与外壳同一条时间线：收起/展开一起走 300ms，拖拽期一起关掉。
               resizing
                 ? "transition-none"
