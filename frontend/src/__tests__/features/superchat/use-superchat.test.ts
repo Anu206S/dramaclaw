@@ -2123,7 +2123,10 @@ describe("Assistant clarification response", () => {
     );
 
     expect(payload.message).toContain("Skill Studio 草稿修订流程");
-    expect(payload.message).toContain("一次只提出一个问题");
+    expect(payload.message).toContain("下一步必须调用 freezone_patch_agent_catalog_draft");
+    expect(payload.message).toContain("freezone_finish_agent_catalog_draft");
+    expect(payload.message).toContain("不要只回复普通文本");
+    expect(payload.message).not.toContain("请基于以上补充信息继续");
   });
 });
 
@@ -2717,9 +2720,13 @@ describe("Skill Studio draft response", () => {
     expect(payload.message).toContain("不要再询问是否需要调整");
     expect(payload.message).toContain("不要询问是否保存当前版本");
     expect(payload.message).toContain("save_now");
-    expect(payload.message).toContain("一个问题一个问题");
+    expect(payload.message).toContain("不是继续完成原草稿");
+    expect(payload.message).toContain("下一步必须调用 freezone_request_user_clarification");
+    expect(payload.message).toContain("questions 数组必须只有一个问题");
+    expect(payload.message).toContain("在用户回答修改方向之前，禁止调用 freezone_begin_agent_catalog_draft");
     expect(payload.message).toContain("freezone_begin_agent_catalog_draft");
     expect(payload.message).toContain("freezone_finish_agent_catalog_draft");
+    expect(payload.message).toContain("禁止调用 freezone_finish_agent_catalog_draft 原样展示当前草稿");
     expect(payload.message).toContain("不要在单个 tool_call 里传完整 Skill / Recipe catalog");
     expect(payload.message).toContain("不要用普通文本总结修改结果");
   });

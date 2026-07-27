@@ -1124,6 +1124,8 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "freezone_finish_agent_catalog_draft" in prompt
     assert "For local edits, prefer freezone_patch_agent_catalog_draft" in prompt
     assert "Do not regenerate unchanged Recipes" in prompt
+    assert "The top-level parameter is patch, not operation, operations, or patches" in prompt
+    assert 'patch=[{"op":"remove","path":""}]' in prompt
     assert "expected_recipe_count" in prompt
     assert "Use 0 only when the draft intentionally has no Recipes" in prompt
     assert "Do not pass the full Skill/Recipe catalog in one tool call" in prompt

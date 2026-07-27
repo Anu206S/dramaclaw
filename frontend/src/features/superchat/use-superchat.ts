@@ -2688,6 +2688,18 @@ export function useSuperChat({
   }, [desiredScope]);
 
   const submitSkillStudioResult = useCallback((payload: Omit<Extract<ClientFrame, { type: "skill_studio.result" }>, "type">) => {
+    console.info("[superchat] send skill_studio.result", {
+      turn_id: payload.turn_id,
+      bridge_key: payload.bridge_key,
+      action: payload.action,
+      skill_studio_status: payload.skill_studio_status,
+      tool_call_status: payload.tool_call_status,
+      ok: payload.ok,
+      saved_to_catalog: payload.saved_to_catalog,
+      saved_skill_ids: payload.saved_skill_ids,
+      saved_recipe_ids: payload.saved_recipe_ids,
+      client_debug: payload.client_debug,
+    });
     return sendFrame({ type: "skill_studio.result", ...payload });
   }, [sendFrame]);
 
