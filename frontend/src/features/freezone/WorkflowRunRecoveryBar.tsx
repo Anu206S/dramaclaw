@@ -15,6 +15,7 @@ import {
   isNodeActionGenerationPending,
 } from "@/features/freezone/canvasChatCommands";
 import { useCanvasStore } from "@/stores/canvasStore";
+import { useTaskCenterStore } from "@/task-center/store";
 
 const RESUMABLE_ACTION_STATUSES = new Set(["pending", "running", "failed", "blocked"]);
 
@@ -89,6 +90,16 @@ export function WorkflowRunRecoveryBar({
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const staleCleanupRef = useRef(new Set<string>());
+  const trackedTaskKeys = useMemo(
+    () => new Set(
+      runs.flatMap((item) =>
+        item.actions
+          .map((action) => action.task_key?.trim() ?? "")
+          .filter(Boolean)
+      ),
+    ),
+    [runs],
+  );
 
   const refresh = useCallback(async () => {
     try {
@@ -132,6 +143,18 @@ export function WorkflowRunRecoveryBar({
       window.clearInterval(refreshInterval);
     };
   }, [refresh]);
+
+  useEffect(() => {
+    if (trackedTaskKeys.size === 0) return;
+    return useTaskCenterStore.subscribe((state, previous) => {
+      if (state.tasks === previous.tasks) return;
+      for (const taskKey of trackedTaskKeys) {
+        if (state.tasks.get(taskKey) === previous.tasks.get(taskKey)) continue;
+        void refresh();
+        return;
+      }
+    });
+  }, [refresh, trackedTaskKeys]);
 
   const run = useMemo(
     () => latestResumableRun(runs, existingNodeIds),
