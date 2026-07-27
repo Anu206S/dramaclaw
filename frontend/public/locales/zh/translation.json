@@ -1524,6 +1524,13 @@
       "openHint": "点击查看",
       "closeHint": "点击收起"
     },
+    "chatStatus": {
+      "running": "{{count}} 个生成中",
+      "waiting": "{{count}} 个排队中",
+      "completed": "{{count}} 个已完成",
+      "failed": "{{count}} 个失败",
+      "locateNode": "定位画布节点"
+    },
     "relative": {
       "justNow": "刚刚"
     },
