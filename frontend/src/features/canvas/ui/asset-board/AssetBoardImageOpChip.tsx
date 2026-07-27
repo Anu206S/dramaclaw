@@ -4,14 +4,12 @@ import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowLeftRight,
-  Compass,
   FastForward,
   Film,
   Globe,
   Grid2x2,
   Grid3x3,
   LayoutDashboard,
-  Lightbulb,
   Package,
   Rewind,
   User,
@@ -41,13 +39,11 @@ export const ASSET_BOARD_IMAGE_OP_ICONS: Record<AssetBoardImageOpKey, LucideIcon
   frameProjection3sLater: FastForward,
   frameProjection5sEarlier: Rewind,
   scene360: Globe,
-  multiAngle: Compass,
-  relight: Lightbulb,
 };
 
 /**
- * 功能框的分栏：左栏「分镜叙事 + 质感调节」(4+2)、右栏「空间与机位 + 设定图」
- * (3+3)，两栏各 6 行刚好齐平（对标 liblib）。纯排版决策，故功能表里只留分类，
+ * 功能框的分栏：左栏「分镜叙事 + 质感调节」(4+1)、右栏「空间与机位 + 设定图」
+ * (2+3)，两栏各 5 行刚好齐平（对标 liblib）。纯排版决策，故功能表里只留分类，
  * 怎么摆由这里说了算。
  */
 const PANEL_COLUMNS: readonly (readonly AssetBoardImageOpCategoryKey[])[] = [
@@ -166,51 +162,49 @@ export function AssetBoardImageOpChip({
                     <div className="px-2 pb-1.5 text-xs text-white/40">
                       {ASSET_BOARD_IMAGE_OP_CATEGORY_LABELS[category]}
                     </div>
-                    {ASSET_BOARD_IMAGE_OPS.filter((op) => op.category === category).map((op) => {
-                      const OpIcon = ASSET_BOARD_IMAGE_OP_ICONS[op.key];
-                      const isActive = op.key === opKey;
-                      return (
-                        <button
-                          key={op.key}
-                          type="button"
-                          onClick={() => {
-                            switchAssetBoardImageOp(nodeId, op.key);
-                            setAnchor(null);
-                          }}
-                          className={`group flex h-11 w-full items-center gap-2.5 rounded-md px-2 text-left transition-colors ${
-                            isActive ? 'bg-white/[0.1]' : 'hover:bg-white/[0.06]'
-                          }`}
-                        >
-                          <span
-                            className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg transition-colors ${
-                              isActive
-                                ? 'bg-white/[0.14] text-white'
-                                : 'bg-white/[0.06] text-white/65 group-hover:bg-white/[0.1] group-hover:text-white'
+                    <div className="flex flex-col gap-1">
+                      {ASSET_BOARD_IMAGE_OPS.filter((op) => op.category === category).map((op) => {
+                        const OpIcon = ASSET_BOARD_IMAGE_OP_ICONS[op.key];
+                        const isActive = op.key === opKey;
+                        return (
+                          <button
+                            key={op.key}
+                            type="button"
+                            onClick={() => {
+                              switchAssetBoardImageOp(nodeId, op.key);
+                              setAnchor(null);
+                            }}
+                            className={`group flex h-11 w-full items-center gap-2.5 rounded-md px-2 text-left transition-colors ${
+                              isActive ? 'bg-white/[0.1]' : 'hover:bg-white/[0.06]'
                             }`}
                           >
-                            <OpIcon className="h-4 w-4" />
-                          </span>
-                          {/* 行高固定 44px：说明行平时收起、hover/选中才出现，标题
-                              随之上移一点，整块面板不会因此跳高。 */}
-                          <span className="flex min-w-0 flex-col justify-center gap-0.5">
                             <span
-                              className={`truncate text-[13px] leading-tight ${
-                                isActive ? 'text-white' : 'text-white/85 group-hover:text-white'
+                              className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-white transition-colors ${
+                                isActive
+                                  ? 'bg-white/[0.14]'
+                                  : 'bg-white/[0.06] group-hover:bg-white/[0.1]'
                               }`}
                             >
-                              {op.label}
+                              <OpIcon className="h-4 w-4" />
                             </span>
-                            <span
-                              className={`truncate text-[11px] leading-tight text-white/40 ${
-                                isActive ? '' : 'hidden group-hover:block'
-                              }`}
-                            >
-                              {op.summary}
+                            {/* 行高固定 44px：说明行平时收起、hover/选中才出现，标题
+                                随之上移一点，整块面板不会因此跳高。 */}
+                            <span className="flex min-w-0 flex-col justify-center gap-0.5">
+                              <span className="truncate text-[13px] leading-tight text-white">
+                                {op.label}
+                              </span>
+                              <span
+                                className={`truncate text-[11px] leading-tight text-white/40 ${
+                                  isActive ? '' : 'hidden group-hover:block'
+                                }`}
+                              >
+                                {op.summary}
+                              </span>
                             </span>
-                          </span>
-                        </button>
-                      );
-                    })}
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
                 ))}
               </div>
