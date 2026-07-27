@@ -3436,6 +3436,7 @@ export const visibleAssistantOrderedPartsForMessageForTest = visibleAssistantOrd
 
 function reorderAssistantInteractionParts(parts: ChatMessagePart[], text: string): ChatMessagePart[] {
   if (!text.trim()) return parts;
+  if (parts.some((part) => typeof part.seq === "number")) return parts;
   const interactionParts = parts.filter((part) => part.type === "skill_studio" || part.type === "clarification");
   const textParts = parts.filter((part) => part.type === "text");
   if (interactionParts.length === 0 || textParts.length === 0) return parts;

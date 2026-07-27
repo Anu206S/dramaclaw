@@ -504,6 +504,55 @@ describe("assistant message ordered parts", () => {
     ]);
   });
 
+  it("does not move realtime Skill Studio cards ahead of earlier streamed text on final assistant message", () => {
+    let messages: ChatMessage[] = [];
+    const firstText = "好的，方向已确认。我现在开始起草 Skill。";
+    const secondText = `${firstText}\n\n明白，皮克斯风格是核心视觉协议，我现在补回草稿。`;
+    const finalText = `${secondText}\n\n已更新部分内容，你可以继续调整。`;
+
+    messages = upsertAssistantMessageForTest(messages, "turn-skill-studio-patch", firstText);
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-studio-patch", {
+      type: "skill_studio.questions",
+      bridge_key: "questions-key",
+      submitted: true,
+      questions: [],
+      skill_studio_session_id: "studio-1",
+    });
+    messages = upsertAssistantMessageForTest(messages, "turn-skill-studio-patch", secondText);
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-studio-patch", {
+      type: "skill_studio.draft",
+      bridge_key: "draft-key",
+      skill: { id: "skill-1" },
+      recipes: [],
+      skill_studio_session_id: "studio-1",
+    });
+    messages = upsertServerAssistantMessageForTest(
+      messages,
+      {
+        id: 10,
+        role: "assistant",
+        content: finalText,
+        turn_id: "turn-skill-studio-patch",
+        created_at: "2026-07-24T08:56:19.103488+00:00",
+      },
+      "turn-skill-studio-patch",
+    );
+
+    const assistant = messages.find((item) => item.turnId === "turn-skill-studio-patch" && item.role === "assistant");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual([
+      "text",
+      "skill_studio",
+      "text",
+      "skill_studio",
+      "text",
+    ]);
+    expect(assistant?.parts?.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+      firstText,
+      secondText.slice(firstText.length),
+      finalText.slice(secondText.length),
+    ]);
+  });
+
   it("reorders historical Skill Studio parts around their text anchors", () => {
     const firstText = [
       "我先了解一下画布关键节点的详细内容，再来和你确认提炼方向。",
@@ -1305,7 +1354,7 @@ describe("upsertServerAssistantMessage", () => {
     });
   });
 
-  it("preserves transient clarification parts when the final assistant message has draft parts", () => {
+  it("preserves transient clarification parts in arrival order when the final assistant message has draft parts", () => {
     const current: ChatMessage[] = [
       message("user-turn-1", "user", "创建 Skill", 10, "turn-1"),
       {
@@ -1358,8 +1407,8 @@ describe("upsertServerAssistantMessage", () => {
     );
 
     const assistant = merged.find((item) => item.role === "assistant");
-    expect(assistant?.parts?.map((part) => part.type)).toEqual(["clarification", "text", "skill_studio", "text"]);
-    expect(assistant?.parts?.[0]).toMatchObject({
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["text", "clarification", "skill_studio", "text"]);
+    expect(assistant?.parts?.[1]).toMatchObject({
       type: "clarification",
       event: {
         type: "assistant.clarification.request",
