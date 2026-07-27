@@ -1821,6 +1821,7 @@ export type FreezoneTemplateEditMode =
   | "storyboard_25_grid"
   | "cinematic_light_correction"
   | "character_three_view_generation"
+  | "scene_setting_sheet"
   | "image_projection_after_3s"
   | "image_projection_before_5s";
 

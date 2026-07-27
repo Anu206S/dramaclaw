@@ -2881,6 +2881,8 @@
       "cinematicLightCorrectionPrompt": "Apply cinematic light grading: refine key/fill light relationship, adjust color temperature, contrast, and highlight/shadow layering for added volume and cinematic feel, while keeping subject and composition unchanged.",
       "characterThreeView": "Character Three-View",
       "characterThreeViewPrompt": "From this character, generate front, side, and back full-body three-view sheets, keeping costume, accessories, body proportions, and overall style consistent on a unified neutral background suitable for character sheets.",
+      "sceneSettingSheet": "Scene Setting Sheet",
+      "sceneSettingSheetPrompt": "From this scene, generate a scene setting sheet covering the key visual, mood concept sketches, color and material reference, viewpoint reference, architecture and structure design, set prop design, vegetation and nature design, and atmosphere variants across times of day and weather, keeping architecture, materials, color tone, and art style consistent.",
       "frameProjection3sLater": "Project Frame +3s",
       "frameProjection3sLaterPrompt": "Project the state 3 seconds after this frame: continue character motion, expression, camera position, and environmental lighting naturally, while keeping character design and visual style consistent.",
       "frameProjection5sEarlier": "Project Frame -5s",

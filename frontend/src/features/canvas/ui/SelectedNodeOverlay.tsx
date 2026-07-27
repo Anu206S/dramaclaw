@@ -161,6 +161,11 @@ const GRID_RUN_ACTIONS: Record<string, {
     i18nKey: 'nodeToolbar.gridMenu.characterThreeView',
     mode: 'character_three_view_generation',
   },
+  run_grid_scene_setting_sheet: {
+    key: 'sceneSettingSheet',
+    i18nKey: 'nodeToolbar.gridMenu.sceneSettingSheet',
+    mode: 'scene_setting_sheet',
+  },
   run_grid_frame_projection_3s_later: {
     key: 'frameProjection3sLater',
     i18nKey: 'nodeToolbar.gridMenu.frameProjection3sLater',

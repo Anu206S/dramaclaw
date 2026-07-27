@@ -141,6 +141,14 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
     cost: 6,
   },
   {
+    key: 'sceneSettingSheet',
+    label: '场景设定图',
+    summary: '场景美术设定页',
+    description: '点击生成，直接基于当前图像生成场景设定图；支持通过文本补充场景背景。',
+    category: 'setting',
+    cost: 6,
+  },
+  {
     key: 'cinematicLightCorrection',
     label: '电影级光影校正',
     summary: '光影校正到电影级',

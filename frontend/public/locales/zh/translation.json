@@ -2881,6 +2881,8 @@
       "cinematicLightCorrectionPrompt": "请对画面进行电影级光影校正：优化主光与辅光关系，调整色温、对比度与高光阴影层次，增强体积感与电影感，保持主体造型与构图不变。",
       "characterThreeView": "角色三视图生成",
       "characterThreeViewPrompt": "请基于该角色生成正面、侧面与背面的全身三视图，保持服饰、配饰、体型比例与整体风格一致，输出统一中性背景，可用于角色设定稿。",
+      "sceneSettingSheet": "场景设定图",
+      "sceneSettingSheetPrompt": "请基于该场景生成一张场景设定图：包含场景主视觉、氛围概念草图、色彩与材质参考、场景视角参考、建筑与结构设计、场景物件设计、植被与自然设计，以及不同时间/天气的氛围设定，保持建筑形制、材质、色调与美术风格一致。",
       "frameProjection3sLater": "画面推演 - 3秒后",
       "frameProjection3sLaterPrompt": "请基于该画面推演 3 秒后的状态：人物动作、表情、镜头位置、环境光线与运动延续都需要自然合理，保持人物造型与画面风格一致。",
       "frameProjection5sEarlier": "画面推演 - 5秒前",
