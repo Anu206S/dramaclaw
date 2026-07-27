@@ -559,6 +559,8 @@ def _emit_skill_studio_progress_event(
     project: str | None,
     canvas: str | None,
     event: dict[str, Any],
+    *,
+    agent_instruction: str | None = None,
 ) -> str:
     if skill_studio_bridge_key is None or put_pending_skill_studio_event is None:
         return tool_error(
@@ -584,6 +586,11 @@ def _emit_skill_studio_progress_event(
             "type": event.get("type"),
             "skill_studio_session_id": event.get("skill_studio_session_id"),
             "message": event.get("message") or "Skill Studio draft progress updated.",
+            "agent_instruction": agent_instruction or (
+                "The Skill Studio progress event was delivered to the frontend. "
+                "Do not repeat tool fields to the user. Continue the draft flow and call "
+                "freezone_finish_agent_catalog_draft when the updated draft is ready."
+            ),
         }
     )
 
@@ -861,9 +868,42 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
     if expected > 0:
         message = f"已生成 Recipe {index + 1} / {expected}"
         count_payload = {"recipe_count": expected}
+        remaining = max(0, expected - len(recipes))
+        if remaining > 0:
+            next_missing_index = next(
+                (candidate for candidate in range(expected) if candidate not in recipes),
+                len(recipes),
+            )
+            agent_instruction = (
+                "The Skill Studio Recipe chunk was delivered to the frontend. "
+                f"Progress: {len(recipes)} of {expected} Recipe chunks submitted; "
+                f"remaining Recipe chunks: {remaining}. "
+                "Do not repeat tool fields to the user. "
+                "Do not call skill_view, skills_list, tool_search, or tool_describe. "
+                "Do not handle slash commands or internal status names. "
+                "Do not call freezone_finish_agent_catalog_draft yet. "
+                f"Next call MUST be freezone_put_agent_catalog_recipe with index={next_missing_index} "
+                f"and skill_studio_session_id={session_id}."
+            )
+        else:
+            agent_instruction = (
+                "All expected Skill Studio Recipe chunks have been delivered to the frontend. "
+                f"Progress: {len(recipes)} of {expected} Recipe chunks submitted. "
+                "Do not repeat tool fields to the user. "
+                "Do not call skill_view, skills_list, tool_search, or tool_describe. "
+                "Do not handle slash commands or internal status names. "
+                f"Next call MUST be freezone_finish_agent_catalog_draft with skill_studio_session_id={session_id}."
+            )
     else:
         message = f"已生成第 {index + 1} 个 Recipe"
         count_payload = {}
+        agent_instruction = (
+            "The Skill Studio Recipe chunk was delivered to the frontend. "
+            "Do not repeat tool fields to the user. Continue submitting any remaining Recipe chunks. "
+            "When all planned Recipes are submitted, call freezone_finish_agent_catalog_draft. "
+            "Do not call skill_view, skills_list, tool_search, or tool_describe. "
+            "Do not handle slash commands or internal status names."
+        )
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
         canvas or draft.get("canvas_id"),
@@ -875,6 +915,7 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
             "recipe_index": index,
             **count_payload,
         },
+        agent_instruction=agent_instruction,
     )
 
 
