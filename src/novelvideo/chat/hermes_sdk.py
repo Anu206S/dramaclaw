@@ -216,6 +216,52 @@ def _compact_tool_detail(value: object) -> str:
     return text
 
 
+def _compact_log_detail(value: object, limit: int = 2000) -> str:
+    text = _compact_tool_detail(value)
+    if len(text) > limit:
+        return f"{text[:limit]}..."
+    return text
+
+
+def _summarize_acp_message(msg: dict[str, Any]) -> dict[str, Any]:
+    summary: dict[str, Any] = {}
+    if "id" in msg:
+        summary["id"] = msg.get("id")
+    method = msg.get("method")
+    if method:
+        summary["method"] = method
+    if "error" in msg:
+        summary["error"] = msg.get("error")
+    if "result" in msg:
+        result = msg.get("result")
+        summary["result_keys"] = (
+            sorted(result.keys()) if isinstance(result, dict) else type(result).__name__
+        )
+    if method == "session/update":
+        update = (msg.get("params") or {}).get("update") or {}
+        if isinstance(update, dict):
+            kind = update.get("sessionUpdate")
+            summary["sessionUpdate"] = kind
+            for key in ("toolCallId", "tool_call_id", "id", "title", "status", "kind"):
+                if key in update:
+                    summary[key] = update.get(key)
+            tool_input = _first_present(update, "rawInput", "raw_input")
+            tool_output = _first_present(
+                update, "rawOutput", "raw_output", "result", "content"
+            )
+            if tool_input is not None:
+                summary["input"] = _compact_log_detail(tool_input, 800)
+            if tool_output is not None and kind == "tool_call_update":
+                summary["output"] = _compact_log_detail(tool_output, 800)
+    elif method == "session/request_permission":
+        params = msg.get("params") or {}
+        summary["permission_options"] = len(params.get("options") or [])
+        tool_call = params.get("toolCall") or params.get("tool_call")
+        if isinstance(tool_call, dict):
+            summary["tool_title"] = tool_call.get("title")
+    return summary
+
+
 def _has_content_filter_signal(value: object) -> bool:
     if isinstance(value, str):
         lowered = value.lower()
@@ -761,20 +807,51 @@ class HermesSdkThread:
                         self._proc.stdout.readline(), timeout=remaining
                     )
                 except asyncio.TimeoutError:
+                    _log.warning(
+                        "Hermes ACP stream timed out: thread=%s turn=%s req_id=%s "
+                        "pending_tools=%s",
+                        self.id,
+                        turn_id,
+                        req_id,
+                        dict(self._tool_names_by_call_id),
+                    )
                     yield ChatBackendEvent(
                         type="complete", thread_id=self.id, turn_id=turn_id,
                         text="(hermes timed out)",
                     )
                     return
                 if not line:
+                    _log.warning(
+                        "Hermes ACP stdout closed during stream: thread=%s turn=%s req_id=%s "
+                        "pending_tools=%s",
+                        self.id,
+                        turn_id,
+                        req_id,
+                        dict(self._tool_names_by_call_id),
+                    )
                     break
                 try:
                     msg = json.loads(line.decode("utf-8"))
                 except json.JSONDecodeError:
+                    _log.warning(
+                        "non-JSON line from hermes stream: thread=%s turn=%s line=%r",
+                        self.id,
+                        turn_id,
+                        line[:200],
+                    )
                     continue
 
                 # Final response for our session/prompt call
                 if msg.get("id") == req_id:
+                    _log.info(
+                        "Hermes ACP session/prompt final: thread=%s turn=%s req_id=%s "
+                        "pending_tools=%s message=%s",
+                        self.id,
+                        turn_id,
+                        req_id,
+                        dict(self._tool_names_by_call_id),
+                        _summarize_acp_message(msg),
+                    )
                     if _has_content_filter_signal(msg):
                         yield ChatBackendEvent(
                             type="complete",
@@ -806,6 +883,15 @@ class HermesSdkThread:
 
                 # Server-initiated notifications (session/update etc.)
                 # ACP notifications carry assistant chunks, tool calls, etc.
+                method = msg.get("method")
+                if method in {"session/update", "session/request_permission"}:
+                    _log.info(
+                        "Hermes ACP notification: thread=%s turn=%s req_id=%s message=%s",
+                        self.id,
+                        turn_id,
+                        req_id,
+                        _summarize_acp_message(msg),
+                    )
                 ev = self._translate_notification(
                     msg,
                     turn_id,

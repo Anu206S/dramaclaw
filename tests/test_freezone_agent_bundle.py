@@ -224,6 +224,38 @@ def test_export_agent_bundle_uses_default_author_and_license(isolated_catalog: P
     assert bundle["license"] == "Proprietary"
 
 
+def test_export_agent_bundle_uses_current_version_when_minimum_is_missing(
+    isolated_catalog: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_bundle_store, "CURRENT_DRAMACLAW_VERSION", "1.1.2")
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload=_skill_payload("community-video"),
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief"),
+    )
+
+    bundle = agent_bundle_store.export_agent_bundle(
+        username="alice",
+        skill_id="community-video",
+        bundle_meta={
+            "id": "community-video",
+            "name": "社区视频 Skill",
+            "version": "1.0.0",
+            "description": "社区视频动态工作流。",
+            "author": "",
+            "license": "",
+        },
+    )
+
+    assert bundle["min_dramaclaw_version"] == "1.1.2"
+
+
 def test_export_builtin_agent_bundle_uses_dramaclaw_author(isolated_catalog: Path) -> None:
     builtin_root = isolated_catalog / "builtins"
     skill_root = builtin_root / "skills"

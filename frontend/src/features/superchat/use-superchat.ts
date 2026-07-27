@@ -823,6 +823,40 @@ function assistantPartsWithUiEvent(
   return nextParts;
 }
 
+function nextAssistantPartSeq(parts: ChatMessagePart[] | undefined): number {
+  return (parts ?? []).reduce(
+    (max, part) => Math.max(max, typeof part.seq === "number" ? part.seq : 0),
+    0,
+  ) + 1;
+}
+
+function assistantPartsWithSequencedUiEvent(
+  parts: ChatMessagePart[] | undefined,
+  event: unknown,
+): ChatMessagePart[] | undefined {
+  const type = eventPartType(event);
+  if (!type) return parts;
+  const key = uiEventMergeKey(event);
+  const nextParts = [...(isSkillStudioStatusEvent(event) ? parts ?? [] : removeSkillStudioStatusParts(parts) ?? [])];
+  const existingIndex = key
+    ? nextParts.findIndex((part) => part.type !== "text" && uiEventMergeKey(part.event) === key)
+    : -1;
+  if (existingIndex >= 0) {
+    const existing = nextParts[existingIndex];
+    if (existing.type !== "text") {
+      nextParts[existingIndex] = { ...existing, event, seq: existing.seq };
+    }
+    return nextParts;
+  }
+  nextParts.push({
+    id: key ?? `${type}-${nextParts.length + 1}`,
+    type,
+    event,
+    seq: nextAssistantPartSeq(nextParts),
+  });
+  return nextParts;
+}
+
 function assistantPartsWithPart(
   parts: ChatMessagePart[] | undefined,
   part: ChatMessagePart,
@@ -872,13 +906,27 @@ function mergeAssistantMessageParts(
       .filter((part) => part.type !== "text")
       .map(stableUiEventMergeKey),
   );
+  const transientKeys = new Set(
+    stableTransientParts
+      .filter((part) => part.type !== "text")
+      .map(stableUiEventMergeKey),
+  );
+  const hasOrderedTransientParts = stableTransientParts.some((part) =>
+    part.type === "text" || typeof part.seq === "number",
+  );
+  if (hasOrderedTransientParts) {
+    const missingFinalParts = stableFinalParts.filter((part) => {
+      if (part.type === "text") return false;
+      return !transientKeys.has(stableUiEventMergeKey(part));
+    });
+    return assistantPartsWithFinalText([...stableTransientParts, ...missingFinalParts], finalText);
+  }
   const missingTransientParts = stableTransientParts.filter((part) => {
     if (part.type === "text") return false;
     return !finalKeys.has(stableUiEventMergeKey(part));
   });
-  return missingTransientParts.length > 0
-    ? [...missingTransientParts, ...stableFinalParts]
-    : stableFinalParts;
+  if (missingTransientParts.length === 0) return stableFinalParts;
+  return [...stableFinalParts, ...missingTransientParts];
 }
 
 function isRecoverableUiEventState(event: unknown): boolean {
@@ -1018,31 +1066,45 @@ function upsertAssistantUiEvent(
   turnId: string,
   event: unknown,
 ): ChatMessage[] {
+  const receivedAt = Date.now();
+  const eventWithReceivedAt = event && typeof event === "object" && !Array.isArray(event)
+    ? {
+        ...(event as Record<string, unknown>),
+        received_at:
+          typeof (event as Record<string, unknown>).received_at === "number"
+            ? (event as Record<string, unknown>).received_at
+            : receivedAt,
+      }
+    : event;
   const id = `assistant-${turnId}`;
   const existingIndex = messages.findIndex((message) => message.id === id);
   if (existingIndex >= 0) {
     return sortMessages(
       messages.map((message, index) => {
         if (index !== existingIndex) return message;
-        const uiEvents = [...(message.uiEvents ?? []), event];
+        const uiEvents = [...(message.uiEvents ?? []), eventWithReceivedAt];
         return {
           ...message,
           text: message.text || "",
-          parts: assistantPartsWithUiEvent(message.parts, event),
+          parts: assistantPartsWithSequencedUiEvent(message.parts, eventWithReceivedAt),
           uiEvents,
         };
       }),
     );
   }
+  const partType = eventPartType(eventWithReceivedAt);
+  const parts = partType
+    ? [{ id: uiEventMergeKey(eventWithReceivedAt) ?? `${partType}-1`, type: partType, event: eventWithReceivedAt, seq: 1 }]
+    : assistantPartsWithUiEvent(undefined, eventWithReceivedAt);
   return sortMessages([
     ...messages,
     {
       id,
       role: "assistant",
       text: "",
-      parts: assistantPartsWithUiEvent(undefined, event),
+      parts,
       turnId,
-      uiEvents: [event],
+      uiEvents: [eventWithReceivedAt],
       timestamp: Date.now(),
     },
   ]);
@@ -2626,6 +2688,18 @@ export function useSuperChat({
   }, [desiredScope]);
 
   const submitSkillStudioResult = useCallback((payload: Omit<Extract<ClientFrame, { type: "skill_studio.result" }>, "type">) => {
+    console.info("[superchat] send skill_studio.result", {
+      turn_id: payload.turn_id,
+      bridge_key: payload.bridge_key,
+      action: payload.action,
+      skill_studio_status: payload.skill_studio_status,
+      tool_call_status: payload.tool_call_status,
+      ok: payload.ok,
+      saved_to_catalog: payload.saved_to_catalog,
+      saved_skill_ids: payload.saved_skill_ids,
+      saved_recipe_ids: payload.saved_recipe_ids,
+      client_debug: payload.client_debug,
+    });
     return sendFrame({ type: "skill_studio.result", ...payload });
   }, [sendFrame]);
 

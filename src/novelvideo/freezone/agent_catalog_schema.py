@@ -102,7 +102,6 @@ class AgentCatalogPlanning(_CatalogBaseModel):
     planning_notes: str
     prompt_guide: str = ""
     conduct_rules: list[str] = Field(default_factory=list)
-    default_aspect_ratios: dict[str, str] = Field(default_factory=dict)
 
     @field_validator("planning_notes")
     @classmethod

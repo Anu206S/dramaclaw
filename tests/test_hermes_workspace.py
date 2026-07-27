@@ -3,6 +3,10 @@
 from __future__ import annotations
 
 import json
+import runpy
+import sys
+import threading
+import types
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -169,6 +173,7 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert parsed["enabled_toolsets"] == ["hermes-acp", "freezone-acp", "memory"]
     assert parsed["tools"]["tool_search"]["enabled"] == "off"
     assert parsed["plugins"]["enabled"] == ["freezone"]
+    assert parsed["tools"]["skill_manage"]["enabled"] == "off"
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
     soul = (home / "SOUL.md").read_text(encoding="utf-8")
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
@@ -186,6 +191,46 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "node create schema" in memory
     assert "link type catalog" in memory
     assert "生成完整短片" in memory
+    assert (hw.freezone_python_hook_dir(home) / "sitecustomize.py").is_file()
+
+
+def test_freezone_sitecustomize_disables_only_skill_manage(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+    monkeypatch,
+):
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    sitecustomize = hw.freezone_python_hook_dir(home) / "sitecustomize.py"
+    registered: list[str] = []
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self._tools = {"skill_manage": object()}
+            self._lock = threading.RLock()
+
+        def register(self, name: str, **kwargs) -> str:
+            registered.append(name)
+            self._tools[name] = kwargs
+            return name
+
+        def deregister(self, name: str) -> None:
+            self._tools.pop(name, None)
+
+    fake_registry = FakeRegistry()
+    tools_module = types.ModuleType("tools")
+    registry_module = types.ModuleType("tools.registry")
+    registry_module.registry = fake_registry
+    monkeypatch.setitem(sys.modules, "tools", tools_module)
+    monkeypatch.setitem(sys.modules, "tools.registry", registry_module)
+    monkeypatch.setenv("DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE", "1")
+
+    runpy.run_path(str(sitecustomize))
+
+    assert "skill_manage" not in fake_registry._tools
+    assert fake_registry.register("skill_manage") is None
+    assert fake_registry.register("skill_view") == "skill_view"
+    assert registered == ["skill_view"]
 
 
 def test_freezone_profile_materializes_native_workflow_skills(
@@ -237,6 +282,24 @@ def test_freezone_profile_materializes_native_workflow_skills(
 
     assert not skill_dir.exists()
     assert manual_skill.exists()
+
+
+def test_freezone_profile_preserves_tool_search_disable(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+):
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    config_file = home / "config.yaml"
+    parsed = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    parsed["tools"] = {"tool_search": {"enabled": "off"}}
+    config_file.write_text(yaml.safe_dump(parsed, allow_unicode=True), encoding="utf-8")
+
+    hw.ensure_user_hermes_workspace("admin", profile="freezone")
+
+    updated = yaml.safe_load(config_file.read_text(encoding="utf-8"))
+    assert updated["tools"]["tool_search"]["enabled"] == "off"
+    assert updated["tools"]["skill_manage"]["enabled"] == "off"
 
 
 def test_freezone_profile_refreshes_stale_repo_symlinks(
