@@ -603,6 +603,7 @@ frontend/src/__tests__/stores/app-store-dashboard-tab.test.ts,Elastic-2.0,2026 S
 frontend/src/__tests__/stores/app-store-task-panel.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/stores/auth-store.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/stores/canvas-store-3d-upstream.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+frontend/src/__tests__/stores/canvas-store-arrange-group.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/stores/canvas-store-auto-title-index.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/stores/canvas-store-draft-hydrate.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/stores/canvas-store-group-grow.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation

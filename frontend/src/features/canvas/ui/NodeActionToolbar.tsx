@@ -47,12 +47,15 @@ import {
   Scissors,
   Send,
   Sparkles,
+  StretchHorizontal,
+  StretchVertical,
   Trash2,
   Unlink2,
   User,
   Users,
   Video as VideoIcon,
   Wand2,
+  Workflow,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -2224,26 +2227,33 @@ export const NodeActionToolbar = memo(
                     <DropdownMenuContent
                       align="start"
                       sideOffset={6}
-                      className={`${TOOLBAR_MENU_CONTENT_CLASS} min-w-[120px]`}
+                      // 150px 同多选工具条：加了图标后 120px 会把「宫格排列」挤折行。
+                      className={`${TOOLBAR_MENU_CONTENT_CLASS} min-w-[150px]`}
                       onClick={(event) => event.stopPropagation()}
                     >
+                      {/* 文案与图标跟多选工具条（MultiSelectionToolbar）那份排列菜单
+                          逐字对齐：宫格/水平/垂直。这里原来照 mode key 直译成
+                          「网格/横向/纵向」，同一个产品出现两套说法。 */}
                       <DropdownMenuItem
                         className={TOOLBAR_MENU_ITEM_CLASS}
                         onSelect={() => arrangeGroupChildren(nodeId, 'grid')}
                       >
-                        网格
+                        <Workflow className="h-4 w-4 text-text-muted" />
+                        宫格排列
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         className={TOOLBAR_MENU_ITEM_CLASS}
                         onSelect={() => arrangeGroupChildren(nodeId, 'horizontal')}
                       >
-                        横向排列
+                        <StretchHorizontal className="h-4 w-4 text-text-muted" />
+                        水平排列
                       </DropdownMenuItem>
                       <DropdownMenuItem
                         className={TOOLBAR_MENU_ITEM_CLASS}
                         onSelect={() => arrangeGroupChildren(nodeId, 'vertical')}
                       >
-                        纵向排列
+                        <StretchVertical className="h-4 w-4 text-text-muted" />
+                        垂直排列
                       </DropdownMenuItem>
                     </DropdownMenuContent>
                   </DropdownMenu>

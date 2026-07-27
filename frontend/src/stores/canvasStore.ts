@@ -74,6 +74,7 @@ import {
 } from '@/features/canvas/domain/viewportBookmarks';
 import { nodeCatalog } from '@/features/canvas/application/nodeCatalog';
 import { canvasNodeFactory } from '@/features/canvas/application/canvasServices';
+import { computeAutoLayout } from '@/features/canvas/application/autoLayout';
 import {
   aspectRatioFromImageDimensions,
   ensureAtLeastOneMinEdge,
@@ -3588,17 +3589,39 @@ export const useCanvasStore = create<CanvasState>((set, get) => ({
         cursorY += item.size.height + GAP;
       }
     } else {
-      const cols = Math.ceil(Math.sqrt(ordered.length));
-      const cellW = Math.max(...ordered.map((item) => item.size.width)) + GAP;
-      const cellH = Math.max(...ordered.map((item) => item.size.height)) + GAP;
-      ordered.forEach((item, index) => {
-        const row = Math.floor(index / cols);
-        const col = index % cols;
-        targets.set(item.node.id, {
-          x: SIDE_PAD + col * cellW,
-          y: TOP_PAD + row * cellH,
-        });
-      });
+      // 「宫格排列」与多选工具条（MultiSelectionToolbar.handleArrange）用同一套算法：
+      // computeAutoLayout 的 Sugiyama 分层 + 连通分量 shelf 打包，有连线的父→子沿边
+      // 方向左→右分层、纵向按重心对齐。这里以前是自己算的 ceil(sqrt(n)) 等宽格子，
+      // 同一个菜单名两套实现，用户在两个工具条上点同名的项结果不一样。
+      //
+      // 子节点坐标本来就都相对同一个组，直接当独立坐标系喂进去即可；parentId 必须
+      // 清掉——computeAutoLayout 只处理顶层节点，带 parentId 的会被整批过滤掉。
+      const childIds = new Set(ordered.map((item) => item.node.id));
+      const layoutNodes = ordered.map((item) => ({
+        ...item.node,
+        parentId: undefined,
+      }));
+      const layoutEdges = state.edges.filter(
+        (edge) => childIds.has(edge.source) && childIds.has(edge.target),
+      );
+      const { positions } = computeAutoLayout(layoutNodes, layoutEdges);
+      // computeAutoLayout 把结果锚在输入的 min 坐标上（即子节点当前的左上角），这里
+      // 整体平移到组内边距，与 horizontal/vertical 两档的起点保持一致，组框才收得住。
+      let laidOutMinX = Number.POSITIVE_INFINITY;
+      let laidOutMinY = Number.POSITIVE_INFINITY;
+      for (const item of ordered) {
+        const pos = positions[item.node.id];
+        if (!pos) continue;
+        laidOutMinX = Math.min(laidOutMinX, pos.x);
+        laidOutMinY = Math.min(laidOutMinY, pos.y);
+      }
+      const shiftX = Number.isFinite(laidOutMinX) ? SIDE_PAD - laidOutMinX : 0;
+      const shiftY = Number.isFinite(laidOutMinY) ? TOP_PAD - laidOutMinY : 0;
+      for (const item of ordered) {
+        const pos = positions[item.node.id];
+        if (!pos) continue;
+        targets.set(item.node.id, { x: pos.x + shiftX, y: pos.y + shiftY });
+      }
     }
 
     // 收紧组框到刚好包住排列后的子节点。
