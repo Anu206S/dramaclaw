@@ -42,6 +42,10 @@ describe("freezone recipe API", () => {
 
     const prompt = await compileFreezoneRecipePrompt({
       recipeId: "video-storyboard-grid",
+      recipeVersion: "3.0.0",
+      skillId: "video-ad",
+      skillVersion: "2.0.0",
+      confirmedInputs: { aspect_ratio: "9:16" },
       nodeKind: "image",
       nodePrompt: "生成多宫格分镜图",
       userGoal: "制作运动相机广告",
@@ -53,6 +57,12 @@ describe("freezone recipe API", () => {
       expect.objectContaining({
         method: "POST",
         timeout: 10 * 60 * 1000,
+        json: expect.objectContaining({
+          recipe_version: "3.0.0",
+          skill_id: "video-ad",
+          skill_version: "2.0.0",
+          confirmed_inputs: { aspect_ratio: "9:16" },
+        }),
       }),
     );
   });

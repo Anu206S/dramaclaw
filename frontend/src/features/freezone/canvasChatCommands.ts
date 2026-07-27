@@ -42,10 +42,7 @@ import {
   type CanvasEdgeSemanticKind,
 } from "@/features/freezone/canvasEdgeSemantics";
 import { useCanvasStore } from "@/stores/canvasStore";
-import {
-  deterministicNodeOutputIssue,
-  workflowExpansionIssues,
-} from "@/features/freezone/workflowQualityGate";
+import { deterministicNodeOutputIssue } from "@/features/freezone/workflowQualityGate";
 
 export const CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1";
 export const FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT = "freezone/canvas-command-approval";
@@ -2886,13 +2883,6 @@ function applyCanvasChatCommandsInternal(
               ...command,
               node_ids: command.node_ids?.map((nodeId) => resolveNodeId(nodeId, clientIdMap)),
             };
-            if (resolvedCommand.direction !== "node" && resolvedCommand.direction !== "downstream") {
-              const expansionIssues = workflowExpansionIssues(
-                useCanvasStore.getState().nodes,
-                resolvedCommand.node_ids,
-              );
-              if (expansionIssues.length > 0) throw new Error(expansionIssues[0]);
-            }
             const allActions = workflowNodeActions(resolvedCommand, currentCommandIndex, { skipCompleted: false });
             const actions = workflowNodeActions(
               resolvedCommand,

@@ -1002,8 +1002,6 @@ function NewSkillEditor({
   const rawSkillJson = useMemo(
     () => {
       const basePayload = { ...(initialPayload ?? {}) };
-      delete basePayload.workflow_templates;
-      delete basePayload.workflowTemplates;
       return {
         ...basePayload,
         id: skillDraft.id,

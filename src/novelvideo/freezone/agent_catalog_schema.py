@@ -18,13 +18,6 @@ CatalogNodeScope = Literal[
     "videoGeneration",
     "audioGeneration",
 ]
-WorkflowNodeType = Literal[
-    "textGeneration",
-    "imageGeneration",
-    "videoGeneration",
-    "audioGeneration",
-    "videoCompose",
-]
 InputParameterType = Literal["single_select", "multi_select", "text", "number", "boolean"]
 RecipeOutputKind = Literal["text", "image", "video", "audio"]
 
@@ -156,63 +149,6 @@ class AgentCatalogEvaluation(_CatalogBaseModel):
         return [_non_empty(item, "evaluation.domain_constraints item") for item in value]
 
 
-class AgentCatalogWorkflowTemplateCondition(_CatalogBaseModel):
-    message_keywords: list[str] = Field(default_factory=list)
-    text_only: bool | None = None
-    hasInputTypes: list[str] = Field(default_factory=list)
-
-
-class AgentCatalogWorkflowStep(_CatalogBaseModel):
-    id: str | None = None
-    step_id: str | None = None
-    step_number: int | None = None
-    name: str | None = None
-    description: str | None = None
-    goal_template: str | None = None
-    node_type: WorkflowNodeType
-    action_key: str | None = None
-    action_keys: list[str] = Field(default_factory=list)
-    recipe_id: str | None = None
-    input_strategy: dict[str, Any] = Field(default_factory=dict)
-    prompt_strategy: str | None = None
-    aspect_ratio: str | None = None
-    multiplicity: dict[str, Any] | None = None
-    model: str | None = None
-
-    @model_validator(mode="after")
-    def validate_step_identity(self) -> "AgentCatalogWorkflowStep":
-        if not (self.id or self.step_id):
-            raise ValueError("workflow step must include id or step_id")
-        if not (self.action_key or self.action_keys or self.recipe_id or self.node_type == "videoCompose"):
-            raise ValueError("workflow step must reference an action or recipe")
-        return self
-
-
-class AgentCatalogWorkflowTemplate(_CatalogBaseModel):
-    id: str
-    name: str
-    description: str = ""
-    condition: AgentCatalogWorkflowTemplateCondition | dict[str, Any] = Field(default_factory=dict)
-    steps: list[AgentCatalogWorkflowStep]
-
-    @field_validator("id")
-    @classmethod
-    def validate_template_id(cls, value: str) -> str:
-        return _validate_id(value)
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        return _non_empty(value, "name")
-
-    @field_validator("steps")
-    @classmethod
-    def validate_steps(cls, value: list[AgentCatalogWorkflowStep]) -> list[AgentCatalogWorkflowStep]:
-        if not value:
-            raise ValueError("workflow_templates.steps must contain at least one item")
-        return value
-
-
 class AgentCatalogSkillConfig(_CatalogBaseModel):
     schema_version: str = "dramaclaw.workflow-skill.v1"
     id: str
@@ -226,7 +162,6 @@ class AgentCatalogSkillConfig(_CatalogBaseModel):
     allowed_recipe_ids: list[str] = Field(default_factory=list)
     planning: AgentCatalogPlanning
     evaluation: AgentCatalogEvaluation
-    workflow_templates: list[AgentCatalogWorkflowTemplate] = Field(default_factory=list)
 
     @field_validator("id")
     @classmethod
@@ -242,16 +177,6 @@ class AgentCatalogSkillConfig(_CatalogBaseModel):
     @classmethod
     def validate_allowed_recipe_ids(cls, value: list[str]) -> list[str]:
         return [_validate_id(item) for item in value]
-
-    @field_validator("workflow_templates")
-    @classmethod
-    def reject_fixed_workflow_templates(
-        cls,
-        value: list[AgentCatalogWorkflowTemplate],
-    ) -> list[AgentCatalogWorkflowTemplate]:
-        if value:
-            raise ValueError("fixed workflow_templates are not supported")
-        return value
 
     @model_validator(mode="after")
     def validate_dynamic_contract(self) -> "AgentCatalogSkillConfig":

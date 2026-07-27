@@ -1,7 +1,5 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import type { CanvasNode } from '@/features/canvas/domain/canvasNodes';
-
 type JsonRecord = Record<string, unknown>;
 
 function record(value: unknown): JsonRecord | null {
@@ -86,42 +84,4 @@ export function deterministicNodeOutputIssue(
     return '文本节点没有生成内容。';
   }
   return null;
-}
-
-export function workflowExpansionIssues(
-  nodes: CanvasNode[],
-  seedNodeIds?: readonly string[],
-): string[] {
-  const seedIds = new Set(seedNodeIds ?? []);
-  const selectedSignatures = new Set<string>();
-  if (seedIds.size > 0) {
-    for (const node of nodes) {
-      if (!seedIds.has(node.id)) continue;
-      const catalog = record((node.data as JsonRecord).workflowCatalog);
-      const skillId = text(catalog?.skillId);
-      const templateId = text(catalog?.templateId);
-      if (skillId && templateId) selectedSignatures.add(`${skillId}:${templateId}`);
-    }
-  }
-
-  const groups = new Map<string, { expected: number; instances: Set<number>; label: string }>();
-  for (const node of nodes) {
-    const catalog = record((node.data as JsonRecord).workflowCatalog);
-    const skillId = text(catalog?.skillId);
-    const templateId = text(catalog?.templateId);
-    const stepId = text(catalog?.stepId);
-    const expected = finiteNumber(catalog?.stepInstanceCount);
-    const instance = finiteNumber(catalog?.stepInstance);
-    if (!skillId || !templateId || !stepId || expected === null || expected <= 1) continue;
-    const signature = `${skillId}:${templateId}`;
-    if (selectedSignatures.size > 0 && !selectedSignatures.has(signature)) continue;
-    const key = `${signature}:${stepId}`;
-    const group = groups.get(key) ?? { expected, instances: new Set<number>(), label: stepId };
-    group.expected = Math.max(group.expected, expected);
-    if (instance !== null) group.instances.add(instance);
-    groups.set(key, group);
-  }
-  return [...groups.values()]
-    .filter((group) => group.instances.size < group.expected)
-    .map((group) => `工作流步骤 ${group.label} 数量不完整：期望 ${group.expected}，当前 ${group.instances.size}。`);
 }

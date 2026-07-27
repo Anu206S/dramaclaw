@@ -42,6 +42,9 @@ describe('workflowRecipeRuntime', () => {
     const result = await compileWorkflowNodePrompt({
       nodeData: {
         workflowCatalog: {
+          skillId: 'ecommerce-product',
+          skillVersion: '2.0.0',
+          confirmedInputs: { aspect_ratio: '9:16', language: 'zh' },
           recipeId: 'ecommerce-scene-image',
           recipeVersion: '1',
           promptStrategy: 'previous_output',
@@ -59,6 +62,9 @@ describe('workflowRecipeRuntime', () => {
     expect(compileMock).toHaveBeenCalledWith({
       recipeId: 'ecommerce-scene-image',
       recipeVersion: '1',
+      skillId: 'ecommerce-product',
+      skillVersion: '2.0.0',
+      confirmedInputs: { aspect_ratio: '9:16', language: 'zh' },
       nodeKind: 'image',
       promptStrategy: 'previous_output',
       nodePrompt: '北欧厨房',
