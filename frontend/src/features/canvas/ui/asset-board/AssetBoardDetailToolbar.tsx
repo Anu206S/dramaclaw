@@ -54,15 +54,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu';
-import { CreditCostInline } from '@/components/credit-cost-inline';
 import { spawnAssetBoardImageOpNode } from '@/features/canvas/application/assetBoardImageOps';
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { type GridActionKey } from '@/features/canvas/application/gridTemplateAction';
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import { matteImage } from '@/features/canvas/application/matteImage';
-import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
-import { imageModelSupportsQuality } from '@/features/canvas/ui/GridActionConfirmOverlay';
-import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
 import {
   canRegenerateExportImageNode,
   regenerateExportImageNode,
@@ -422,22 +418,23 @@ function DetailHistorySection({
 }
 
 // 宫格模板清单（与 NodeActionToolbar.gridActions 同源：label 即 zh 翻译值，提交时
-// label 同时作为展示 prompt 下发——真正的模板由 key→mode 映射决定；cost 仅作确认提示）。
+// label 同时作为展示 prompt 下发——真正的模板由 key→mode 映射决定）。
+// 这里不挂算力：点一项只是**建节点**，不花钱；价钱在新节点的 ↑ 按钮上按当前
+// 模型/参数活价显示（AssetBoardImageGenForm），在这儿标价反而像是点了就扣。
 const GRID_ACTION_DEFS: Array<{
   key: GridActionKey;
   icon: typeof Crop;
   label: string;
-  cost: number;
 }> = [
-  { key: 'multiCameraGrid', icon: Grid3x3, label: '多机位九宫格', cost: 14 },
-  { key: 'plotFourGrid', icon: Grid2x2, label: '剧情推演四宫格', cost: 8 },
-  { key: 'faceThreeView', icon: User, label: '角色脸部三视图', cost: 6 },
-  { key: 'productThreeView', icon: Package, label: '产品三视图', cost: 6 },
-  { key: 'serialStoryboard25', icon: LayoutDashboard, label: '25宫格连贯分镜', cost: 32 },
-  { key: 'cinematicLightCorrection', icon: Film, label: '电影级光影校正', cost: 4 },
-  { key: 'characterThreeView', icon: Users, label: '角色三视图生成', cost: 6 },
-  { key: 'frameProjection3sLater', icon: FastForward, label: '画面推演 - 3秒后', cost: 4 },
-  { key: 'frameProjection5sEarlier', icon: Rewind, label: '画面推演 - 5秒前', cost: 4 },
+  { key: 'multiCameraGrid', icon: Grid3x3, label: '多机位九宫格' },
+  { key: 'plotFourGrid', icon: Grid2x2, label: '剧情推演四宫格' },
+  { key: 'faceThreeView', icon: User, label: '角色脸部三视图' },
+  { key: 'productThreeView', icon: Package, label: '产品三视图' },
+  { key: 'serialStoryboard25', icon: LayoutDashboard, label: '25宫格连贯分镜' },
+  { key: 'cinematicLightCorrection', icon: Film, label: '电影级光影校正' },
+  { key: 'characterThreeView', icon: Users, label: '角色三视图生成' },
+  { key: 'frameProjection3sLater', icon: FastForward, label: '画面推演 - 3秒后' },
+  { key: 'frameProjection5sEarlier', icon: Rewind, label: '画面推演 - 5秒前' },
 ];
 
 /**
@@ -464,23 +461,6 @@ export function AssetBoardImageDetailToolbar({
   const [historyOpen, setHistoryOpen] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isMatting, setIsMatting] = useState(false);
-
-  // 宫格活价（M2）：与工作流 GridActionConfirmOverlay 同一套查询——不区分具体
-  // 选中的模板，始终按 image_selection 询价（GRID_ACTION_DEFS 里的 cost 只在
-  // 询价还没返回时兜底展示，避免详情面板刚打开时出现空白）。
-  const { models: imageModels } = useFreezoneImageModels();
-  const gridSelectedModel = imageModels[0];
-  const gridActionCost = useGenerationCreditCost(
-    'image_selection',
-    gridSelectedModel?.apiModel ?? null,
-    {
-      surface: 'canvas',
-      params: imageModelSupportsQuality(gridSelectedModel?.apiModel)
-        ? { size: '2K', quality: 'medium' }
-        : { size: '2K' },
-    },
-  );
-  const gridCostDisplay = gridActionCost.data?.data.display;
 
   const hasTool = useCallback(
     (type: NodeToolType) => tools.some((tool) => tool.type === type),
@@ -676,9 +656,6 @@ export function AssetBoardImageDetailToolbar({
                   >
                     <Icon className="h-4 w-4 shrink-0" />
                     <span className="flex-1">{def.label}</span>
-                    {/* 算力成本改用统一的积分图标格式（✦ N），替掉「N 算力」文案；
-                        CE 运行时/隐藏积分时 CreditCostInline 自渲染为 null。 */}
-                    <CreditCostInline display={gridCostDisplay ?? String(def.cost)} />
                   </DropdownMenuItem>
                 );
               })}
