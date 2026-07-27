@@ -2868,28 +2868,15 @@
     "gridMenu": {
       "trigger": "九宫格",
       "multiCameraGrid": "多机位九宫格",
-      "multiCameraGridPrompt": "请基于该图片生成 9 宫格多机位视图，覆盖正面、左/右 3/4 侧面、正侧面、背面以及不同俯仰角等机位，保持主体造型、风格、光照与材质完全一致。",
       "plotFourGrid": "剧情推演四宫格",
-      "plotFourGridPrompt": "请基于该图片推演接下来的剧情，生成 4 宫格连续画面（同一场景下的连续动作或情节进展），保持人物造型、空间关系、光线与画面风格一致。",
       "faceThreeView": "角色脸部三视图",
-      "faceThreeViewPrompt": "请基于该角色脸部生成正面、3/4 侧面与正侧面的三视图，保持发型、五官比例、肤色、眼神与表情风格一致，输出干净统一的设定稿背景。",
       "productThreeView": "产品三视图",
-      "productThreeViewPrompt": "请基于该产品生成正面、侧面与俯视的三视图，保持材质、配色、比例与细节准确，背景使用纯净中性色，便于产品展示。",
       "serialStoryboard25": "25宫格连贯分镜",
-      "serialStoryboard25Prompt": "请基于该图片生成 25 宫格连贯分镜，覆盖一段完整剧情段落（起承转合），保持角色造型、场景设定、镜头风格与画面氛围一致。",
       "cinematicLightCorrection": "电影级光影校正",
-      "cinematicLightCorrectionPrompt": "请对画面进行电影级光影校正：优化主光与辅光关系，调整色温、对比度与高光阴影层次，增强体积感与电影感，保持主体造型与构图不变。",
       "characterThreeView": "角色三视图生成",
-      "characterThreeViewPrompt": "请基于该角色生成正面、侧面与背面的全身三视图，保持服饰、配饰、体型比例与整体风格一致，输出统一中性背景，可用于角色设定稿。",
+      "sceneSettingSheet": "场景设定图",
       "frameProjection3sLater": "画面推演 - 3秒后",
-      "frameProjection3sLaterPrompt": "请基于该画面推演 3 秒后的状态：人物动作、表情、镜头位置、环境光线与运动延续都需要自然合理，保持人物造型与画面风格一致。",
-      "frameProjection5sEarlier": "画面推演 - 5秒前",
-      "frameProjection5sEarlierPrompt": "请基于该画面回溯 5 秒前的状态：人物起始动作、表情、空间关系与镜头位置的合理推导，保持人物造型与画面风格一致。",
-      "confirmBar": {
-        "close": "关闭",
-        "submit": "生成",
-        "cost": "消耗算力"
-      }
+      "frameProjection5sEarlier": "画面推演 - 5秒前"
     },
     "video": {
       "clip": "剪辑",

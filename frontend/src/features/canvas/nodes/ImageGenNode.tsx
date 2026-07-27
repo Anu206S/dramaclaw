@@ -104,6 +104,7 @@ import {
 import { ImageGenerationForm } from '@/features/canvas/nodes/shared/ImageGenerationForm';
 import { spawnAssetLibraryReferences } from '@/features/canvas/nodes/shared/assetLibraryReferenceSpawn';
 import { useImageGenerationForm } from '@/features/canvas/nodes/shared/useImageGenerationForm';
+import { useImageOpFormProps } from '@/features/canvas/nodes/shared/useImageOpFormProps';
 
 type ImageGenNodeProps = NodeProps & {
   id: string;
@@ -162,6 +163,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     canAutoCommitOnGenerate,
     referenceImageUrl,
   } = useImageGenerationForm(id, { onGenerationSettled: refreshHistory });
+
+  // 功能节点（工具条「九宫格」下拉点某一项后建出来的那种）：输入框里多一枚可切可删
+  // 的功能 chip、功能说明当占位文案、↑ 走对应模板。与故事板详情共用同一个 hook，
+  // 两个视图的交互因此完全一致；普通图片生成节点拿到 null，渲染与从前一致。
+  const opFormProps = useImageOpFormProps(id, { isGenerating });
 
   const generationError =
     typeof data.generationError === 'string' && data.generationError.length > 0
@@ -919,10 +925,12 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
               </div>
             )}
             <div className="mt-2 flex justify-center">
+              {/* 功能节点重试要走它自己的模板，别退回常规文生图（那样重试出来的
+                  东西跟失败的那次不是一回事）。 */}
               <RegenerateButton
-                onClick={() => void handleSubmit()}
+                onClick={() => (opFormProps ? opFormProps.onSubmit() : void handleSubmit())}
                 busy={isGenerating}
-                disabled={submitDisabled}
+                disabled={opFormProps ? opFormProps.submitDisabled : submitDisabled}
               />
             </div>
           </div>
@@ -1106,6 +1114,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
             {...imageGenerationFormProps}
             onStylePickerOpenChange={setStylePickerOpen}
             onOpenAssetLibrary={() => setIsAssetLibraryOpen(true)}
+            {...(opFormProps ?? {})}
           />
         </OperationPanelShell>
       )}

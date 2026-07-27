@@ -1072,6 +1072,13 @@ function addImageToolActions(node: CanvasNode, actions: CanvasNodeActionCatalogE
       parameters: { node_id: node.id, grid_action: "characterThreeView", result_policy: "spawn_child" },
     },
     {
+      action: "run_grid_scene_setting_sheet",
+      execution: "frontend_node",
+      command_type: "run_node_action",
+      description: "Generate a scene setting sheet from this image node with default parameters. Does not open UI.",
+      parameters: { node_id: node.id, grid_action: "sceneSettingSheet", result_policy: "spawn_child" },
+    },
+    {
       action: "run_grid_frame_projection_3s_later",
       execution: "frontend_node",
       command_type: "run_node_action",
