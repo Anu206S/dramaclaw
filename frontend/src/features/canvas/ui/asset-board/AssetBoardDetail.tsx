@@ -585,7 +585,13 @@ export function AssetBoardDetail({
           成立，一排灰按钮只是噪音（用户要求）。判定见 has*DetailActions。 */}
       {!missing && item.column === 'image' && hasImageDetailActions(node) && (
         <div className="shrink-0 px-4 pb-2">
-          <AssetBoardImageDetailToolbar key={node.id} node={node} />
+          {/* onOpenNode：宫格模板点完会建一个空的功能节点，详情要跟着切过去
+              （同「创建副本」的处理）——新节点一定落在图片栏。 */}
+          <AssetBoardImageDetailToolbar
+            key={node.id}
+            node={node}
+            onOpenNode={(newNodeId) => onOpenNode(newNodeId, 'image')}
+          />
         </div>
       )}
       {!missing && item.column === 'video' && hasVideoDetailActions(node) && (
