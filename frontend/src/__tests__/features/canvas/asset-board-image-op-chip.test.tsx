@@ -80,6 +80,29 @@ function spawnedOpNode(): CanvasNode {
   return spawned;
 }
 
+function promptEditor(): HTMLElement {
+  const editor = detailPanel().querySelector('.prompt-mention-editor');
+  if (!(editor instanceof HTMLElement)) throw new Error('提示词输入框没渲染出来');
+  return editor;
+}
+
+function opChip(): HTMLElement {
+  return within(detailPanel()).getByTitle(/点击切换功能，退格删除/);
+}
+
+/** 把光标塌缩到 chip 正后面——用户想删掉它时手指所在的位置。 */
+function putCaretAfterChip(): void {
+  const host = promptEditor().querySelector('[data-lead-chip]');
+  if (!host) throw new Error('chip 宿主节点不在输入框里');
+  const range = document.createRange();
+  range.setStartAfter(host);
+  range.collapse(true);
+  const selection = window.getSelection();
+  if (!selection) throw new Error('环境没有 Selection');
+  selection.removeAllRanges();
+  selection.addRange(range);
+}
+
 /** 打开源图详情 → 展开「宫格模板」下拉 → 点某个功能。 */
 async function pickGridOp(label: string) {
   const user = userEvent.setup();
@@ -116,16 +139,22 @@ describe('故事板 · 功能 chip（点功能建节点 → 确认后生成）',
     expect(submitFreezoneTemplateEdit).not.toHaveBeenCalled();
   });
 
-  it('详情随即切到新节点，输入框顶部是可切换的功能 chip + 功能说明', async () => {
+  it('chip 落在提示词输入框内部：功能说明当占位文案，且不混进 prompt', async () => {
     await pickGridOp('角色三视图生成');
+    const spawnedId = spawnedOpNode().id;
 
-    const detail = detailPanel();
-    expect(within(detail).getByRole('button', { name: /角色三视图生成/ })).toBeInTheDocument();
-    expect(within(detail).getByTitle('切换功能')).toBeInTheDocument();
-    expect(within(detail).getByTitle('移除功能（改为普通图片生成）')).toBeInTheDocument();
-    expect(
-      within(detail).getByText(/直接基于当前图像生成完整的角色三视图/),
-    ).toBeInTheDocument();
+    const editor = promptEditor();
+    // chip 是输入框里的一个内联块，不是输入框上方另起的一行控件。
+    expect(editor.contains(opChip())).toBe(true);
+    // 功能说明就是占位文案（接在 chip 右边同一行）。
+    expect(editor.getAttribute('data-placeholder')).toContain(
+      '直接基于当前图像生成完整的角色三视图',
+    );
+
+    // chip 只是展示节点：用户打的字才是 prompt，chip 文案不会被序列化进去。
+    editor.appendChild(document.createTextNode('侧脸再清楚点'));
+    fireEvent.input(editor);
+    expect(nodeData(spawnedId).prompt).toBe('侧脸再清楚点');
   });
 
   it('提示词留空也能提交（↑ 走对应模板，prompt 兜底用功能名）', async () => {
@@ -150,7 +179,7 @@ describe('故事板 · 功能 chip（点功能建节点 → 确认后生成）',
     const user = await pickGridOp('剧情推演四宫格');
     const spawnedId = spawnedOpNode().id;
 
-    await user.click(within(detailPanel()).getByTitle('切换功能'));
+    await user.click(opChip());
     for (const category of ['分镜叙事', '空间与机位', '设定图', '质感调节']) {
       expect(await screen.findByText(category)).toBeInTheDocument();
     }
@@ -160,14 +189,17 @@ describe('故事板 · 功能 chip（点功能建节点 → 确认后生成）',
     expect(nodeData(spawnedId).displayName).toBe('打光');
   });
 
-  it('关掉 chip → 退化成普通图片生成节点（chip 消失，空提示词重新禁用提交）', async () => {
+  it('在 chip 后面退格就能删掉它 → 退化成普通图片生成节点', async () => {
     await pickGridOp('电影级光影校正');
     const spawnedId = spawnedOpNode().id;
 
-    fireEvent.click(within(detailPanel()).getByTitle('移除功能（改为普通图片生成）'));
+    putCaretAfterChip();
+    fireEvent.keyDown(promptEditor(), { key: 'Backspace' });
 
     expect(nodeData(spawnedId).imageOpKey).toBeNull();
-    expect(within(detailPanel()).queryByTitle('切换功能')).not.toBeInTheDocument();
+    expect(within(detailPanel()).queryByTitle(/点击切换功能，退格删除/)).not.toBeInTheDocument();
+    expect(promptEditor().querySelector('[data-lead-chip]')).toBeNull();
+    // 退回常规文生图：空提示词重新禁用提交。
     expect(within(detailPanel()).getByRole('button', { name: '生成' })).toBeDisabled();
   });
 });

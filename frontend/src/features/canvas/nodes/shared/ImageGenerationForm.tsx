@@ -546,11 +546,19 @@ export interface ImageGenerationFormProps {
   compact?: boolean;
 
   /**
-   * 插在 chips 行与提示词编辑器之间的宿主插槽——即「输入框里、提示词上方」那一块。
-   * 故事板详情用它挂功能 chip（`AssetBoardImageOpChip`）；工作流的 ImageGenNode
-   * 不传，渲染结果与从前逐字节一致。本组件不解释内容，只负责位置。
+   * 塞进**提示词输入框内部**、正文最前面的内联 chip（故事板的功能 chip）。它是
+   * contenteditable 里的一个原子节点：不参与 prompt 序列化，但能像一个字符那样被
+   * 光标越过、被退格删掉（删掉时回调 `onPromptLeadingChipDelete`）。工作流的
+   * ImageGenNode 不传这两个 prop，渲染与从前一致。
    */
-  promptLeadingSlot?: ReactNode;
+  promptLeadingChip?: ReactNode;
+  onPromptLeadingChipDelete?: () => void;
+
+  /**
+   * 覆盖提示词占位文案。故事板功能节点用它把「这个功能会拿当前图做什么」写在
+   * chip 后面同一行（对标 liblib），省掉单独一行说明。
+   */
+  promptPlaceholder?: string;
 }
 
 /**
@@ -596,7 +604,9 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
     submitDisabled,
     onSubmit,
     compact = false,
-    promptLeadingSlot = null,
+    promptLeadingChip = null,
+    onPromptLeadingChipDelete,
+    promptPlaceholder,
   } = props;
 
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
@@ -627,27 +637,6 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
     const top = refHover.rect.top - SIZE - 8;
     return { left, top: Math.max(8, top), size: SIZE };
   }, [refHover]);
-
-  // 提取成变量只为在 `promptLeadingSlot` 存在时把它和插槽内容一起套进输入框边框里
-  // （见下方渲染）；不传插槽时渲染位置与类名和从前完全一致。
-  const promptEditor = (
-    <PromptMentionEditor
-      ref={promptEditorRef}
-      value={prompt}
-      onChange={onPromptChange}
-      onCompositionStart={onCompositionStart}
-      onCompositionEnd={onCompositionEnd}
-      candidates={mentionCandidates}
-      placeholder={
-        upstreamTextJoined.length > 0
-          ? '上游内容已自动接入，可继续补充提示词…'
-          : '描述你想要生成的画面内容，@引用素材'
-      }
-      className={`nodrag nowheel min-h-0 w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent text-sm leading-6 text-text-dark outline-none ${
-        promptLeadingSlot === null ? 'px-3 py-2' : 'px-2.5 pb-2 pt-1'
-      } ${CANVAS_NODE_INPUT_PLACEHOLDER_CLASS}`}
-    />
-  );
 
   return (
     <>
@@ -732,20 +721,23 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
         )}
       </div>
 
-      {promptLeadingSlot === null ? (
-        promptEditor
-      ) : (
-        /* 有插槽内容时，把它和提示词编辑器一起套进一个带边框的圆角框——这样插槽
-           内容（故事板的功能 chip）看上去就长在**输入框里**，而不是浮在输入框上方
-           的又一行。点框内空白同样聚焦编辑器，和点真输入框的手感一致。 */
-        <div
-          className="mx-3 mb-1 mt-2 flex min-h-0 flex-1 cursor-text flex-col rounded-[10px] border border-white/[0.12] bg-white/[0.03]"
-          onClick={() => promptEditorRef.current?.focus()}
-        >
-          {promptLeadingSlot}
-          {promptEditor}
-        </div>
-      )}
+      <PromptMentionEditor
+        ref={promptEditorRef}
+        value={prompt}
+        onChange={onPromptChange}
+        onCompositionStart={onCompositionStart}
+        onCompositionEnd={onCompositionEnd}
+        candidates={mentionCandidates}
+        leadingChip={promptLeadingChip}
+        onLeadingChipDelete={onPromptLeadingChipDelete}
+        placeholder={
+          promptPlaceholder
+          ?? (upstreamTextJoined.length > 0
+            ? '上游内容已自动接入，可继续补充提示词…'
+            : '描述你想要生成的画面内容，@引用素材')
+        }
+        className={`nodrag nowheel min-h-0 w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent px-3 py-2 text-sm leading-6 text-text-dark outline-none ${CANVAS_NODE_INPUT_PLACEHOLDER_CLASS}`}
+      />
 
       <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-2">
         <div className="flex min-w-0 items-center gap-2">

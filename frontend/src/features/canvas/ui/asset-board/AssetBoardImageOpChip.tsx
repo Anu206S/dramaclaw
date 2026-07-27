@@ -1,8 +1,9 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useEffect, useRef, useState, type ReactElement } from 'react';
+import { createPortal } from 'react-dom';
 import {
-  ArrowLeftRight,
+  ChevronsUpDown,
   Compass,
   FastForward,
   Film,
@@ -15,7 +16,6 @@ import {
   Rewind,
   User,
   Users,
-  X,
   type LucideIcon,
 } from 'lucide-react';
 
@@ -24,7 +24,6 @@ import {
   ASSET_BOARD_IMAGE_OP_CATEGORY_LABELS,
   ASSET_BOARD_IMAGE_OP_CATEGORY_ORDER,
   ASSET_BOARD_IMAGE_OP_MAP,
-  clearAssetBoardImageOp,
   switchAssetBoardImageOp,
   type AssetBoardImageOpKey,
 } from '@/features/canvas/application/assetBoardImageOps';
@@ -51,17 +50,23 @@ const OP_ITEM_BASE_CLASS =
 const OP_ITEM_IDLE_CLASS = 'text-white/72 hover:bg-white/[0.08] hover:text-white';
 const OP_ITEM_ACTIVE_CLASS = 'bg-white/[0.14] text-white';
 
+const PANEL_WIDTH_PX = 248;
+const PANEL_MAX_HEIGHT_PX = 320;
+const PANEL_GAP_PX = 6;
+
 /**
- * 输入框里的**功能 chip**（对标 liblib 详情输入框里那颗「⬢ 角色设定图 ⇄」，位置
- * 同样在提示词编辑器正上方）：
+ * 提示词输入框**里**的功能 chip（对标 liblib 详情输入框里那颗「⬢ 角色设定图 ⇄」）。
  *
- * - 可点：点 chip 本体 / ⇄ 展开功能框，按四栏（分镜叙事 / 空间与机位 / 设定图 /
- *   质感调节）列出全部功能，选一个就地换掉当前功能（节点名跟着换）。
- * - 可关：× 清掉 `imageOpKey`，节点退化成普通图片生成节点，↑ 走常规文生图。
- * - chip 下方一行功能说明，告诉用户这个功能会拿当前图做什么。
+ * 它不是输入框上方另起的一行控件，而是 contenteditable 内部的一个内联原子块
+ * （由 `PromptMentionEditor` 的 `leadingChip` 插槽 portal 进去），因此：
+ * - 功能说明就是输入框的占位文案，接在 chip 右边同一行；
+ * - 用户打的字从 chip 后面开始流动；
+ * - **像删字符一样退格即可删掉它**（删除由编辑器拦截后回调宿主清 `imageOpKey`），
+ *   所以这里不再画一个 × 按钮。
  *
- * 只挂在故事板详情（宿主 `AssetBoardImageGenForm` 经共用表单的 `promptLeadingSlot`
- * 插槽传入）——工作流侧的节点面板不传该 prop，渲染不受影响。
+ * 点 chip 展开功能框，按四栏（分镜叙事 / 空间与机位 / 设定图 / 质感调节）列出全部
+ * 功能，选一个就地换掉当前功能（节点名跟着换）。功能框走 portal 挂 body，避免被
+ * 输入框的 overflow 裁掉。
  */
 export function AssetBoardImageOpChip({
   nodeId,
@@ -70,70 +75,72 @@ export function AssetBoardImageOpChip({
 }: {
   nodeId: string;
   opKey: AssetBoardImageOpKey;
-  /** 生成中锁住换功能/关闭：在途任务还会回写这个节点，中途改 key 只会让人看错。 */
+  /** 生成中锁住换功能：在途任务还会回写这个节点，中途改 key 只会让人看错。 */
   disabled?: boolean;
 }): ReactElement {
   const triggerRef = useRef<HTMLButtonElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [isOpen, setIsOpen] = useState(false);
+  const panelRef = useRef<HTMLDivElement>(null);
+  const [anchor, setAnchor] = useState<DOMRect | null>(null);
 
   useEffect(() => {
-    if (!isOpen) return;
+    if (!anchor) return;
     const onPointerDown = (event: MouseEvent) => {
       if (
         triggerRef.current?.contains(event.target as Node) ||
-        popoverRef.current?.contains(event.target as Node)
+        panelRef.current?.contains(event.target as Node)
       ) {
         return;
       }
-      setIsOpen(false);
+      setAnchor(null);
     };
     document.addEventListener('mousedown', onPointerDown, true);
     return () => document.removeEventListener('mousedown', onPointerDown, true);
-  }, [isOpen]);
+  }, [anchor]);
+
+  // 功能被切走 / 被删掉时顺手收起面板，避免它挂在原地指向一个已经不在的 chip。
+  useEffect(() => setAnchor(null), [opKey]);
 
   const def = ASSET_BOARD_IMAGE_OP_MAP[opKey];
   const Icon = ASSET_BOARD_IMAGE_OP_ICONS[opKey];
 
+  // 输入框贴在面板底部，往下弹会顶出视口 → 一律往上弹，左边缘对齐 chip 并夹在视口内。
+  const panelStyle = anchor
+    ? {
+        left: Math.max(8, Math.min(anchor.left, window.innerWidth - PANEL_WIDTH_PX - 8)),
+        bottom: Math.max(8, window.innerHeight - anchor.top + PANEL_GAP_PX),
+        width: PANEL_WIDTH_PX,
+        maxHeight: PANEL_MAX_HEIGHT_PX,
+      }
+    : null;
+
   return (
-    // 位置：**输入框边框内**、提示词行正上方（宿主经共用表单的 promptLeadingSlot
-    // 传入，表单会把 chip 和编辑器一起套进那个圆角框）。内边距对齐框内编辑器的 px-2.5。
-    <div className="flex shrink-0 flex-col gap-0.5 px-2.5 pb-0.5 pt-2">
-      <div className="relative flex items-center gap-1.5">
-        <button
-          ref={triggerRef}
-          type="button"
-          title="切换功能"
-          disabled={disabled}
-          onClick={(event) => {
-            event.stopPropagation();
-            setIsOpen((prev) => !prev);
-          }}
-          className="nodrag inline-flex h-7 min-w-0 max-w-full shrink items-center gap-1.5 rounded-full border border-white/[0.16] bg-white/[0.06] pl-2 pr-1.5 text-xs font-medium text-white/88 transition-colors hover:border-white/30 hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:border-white/[0.16] disabled:hover:bg-white/[0.06]"
-        >
-          <Icon className="h-3.5 w-3.5 shrink-0" />
-          <span className="truncate">{def.label}</span>
-          <ArrowLeftRight className="h-3 w-3 shrink-0 text-white/50" />
-        </button>
-        <button
-          type="button"
-          title="移除功能（改为普通图片生成）"
-          disabled={disabled}
-          onClick={(event) => {
-            event.stopPropagation();
-            setIsOpen(false);
-            clearAssetBoardImageOp(nodeId);
-          }}
-          className="nodrag inline-flex h-5 w-5 shrink-0 items-center justify-center rounded-full text-white/45 transition-colors hover:bg-white/[0.1] hover:text-white disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-transparent"
-        >
-          <X className="h-3 w-3" strokeWidth={2.5} />
-        </button>
-        {isOpen && (
+    <>
+      <button
+        ref={triggerRef}
+        type="button"
+        title={`${def.label} · 点击切换功能，退格删除`}
+        disabled={disabled}
+        // 别让 mousedown 走默认行为：那会把光标挪到 chip 上（它是 contenteditable=false
+        // 的原子块），用户接着打字会落在意料之外的位置。
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={() => {
+          setAnchor((prev) =>
+            prev ? null : (triggerRef.current?.getBoundingClientRect() ?? null),
+          );
+        }}
+        className="nodrag inline-flex h-[22px] max-w-[180px] items-center gap-1 rounded-[6px] bg-accent/[0.18] pl-1.5 pr-1 align-middle text-xs leading-none text-white/90 transition-colors hover:bg-accent/[0.28] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-accent/[0.18]"
+      >
+        <Icon className="h-3.5 w-3.5 shrink-0 text-accent" />
+        <span className="truncate">{def.label}</span>
+        <ChevronsUpDown className="h-3 w-3 shrink-0 text-white/45" />
+      </button>
+      {panelStyle
+        && createPortal(
           <div
-            ref={popoverRef}
-            className={`nodrag nowheel absolute bottom-full left-0 z-50 mb-2 max-h-[320px] w-[248px] overflow-y-auto p-2 ${NODE_FLOATING_PANEL_SURFACE_CLASS}`}
-            onPointerDown={(event) => event.stopPropagation()}
-            onClick={(event) => event.stopPropagation()}
+            ref={panelRef}
+            className={`ui-scrollbar nodrag nowheel fixed z-[10000] overflow-y-auto p-2 ${NODE_FLOATING_PANEL_SURFACE_CLASS}`}
+            style={panelStyle}
+            onMouseDown={(event) => event.preventDefault()}
           >
             {ASSET_BOARD_IMAGE_OP_CATEGORY_ORDER.map((category) => {
               const ops = ASSET_BOARD_IMAGE_OPS.filter((op) => op.category === category);
@@ -153,7 +160,7 @@ export function AssetBoardImageOpChip({
                         title={op.description}
                         onClick={() => {
                           switchAssetBoardImageOp(nodeId, op.key);
-                          setIsOpen(false);
+                          setAnchor(null);
                         }}
                         className={`${OP_ITEM_BASE_CLASS} ${
                           isActive ? OP_ITEM_ACTIVE_CLASS : OP_ITEM_IDLE_CLASS
@@ -167,10 +174,9 @@ export function AssetBoardImageOpChip({
                 </div>
               );
             })}
-          </div>
+          </div>,
+          document.body,
         )}
-      </div>
-      <p className="line-clamp-2 text-[11px] leading-4 text-white/40">{def.description}</p>
-    </div>
+    </>
   );
 }
