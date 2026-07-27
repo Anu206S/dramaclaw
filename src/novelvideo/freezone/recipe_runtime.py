@@ -94,6 +94,52 @@ def compose_deterministic_prompt(
     return result
 
 
+def _recipe_compiler_timeout_seconds() -> float:
+    try:
+        value = float(os.getenv("FREEZONE_RECIPE_COMPILER_TIMEOUT_SECONDS", "20"))
+    except (TypeError, ValueError):
+        value = 20.0
+    return min(max(value, 0.1), 120.0)
+
+
+def compose_recipe_fallback_prompt(
+    *,
+    recipe: dict[str, Any],
+    node_prompt: str,
+    user_goal: str,
+    upstream_text: str,
+    reference_media: list[dict[str, str]] | None,
+    confirmed_inputs: dict[str, Any] | None,
+    creative_settings: dict[str, Any] | None,
+    skill_constraints: dict[str, Any] | None,
+) -> str:
+    """Build a deterministic executable prompt when the LLM compiler times out."""
+    parts = [
+        str(user_goal or "").strip(),
+        str(node_prompt or "").strip(),
+        str(recipe.get("system_prompt") or "").strip(),
+        str(upstream_text or "").strip(),
+    ]
+    for label, value in (
+        ("Confirmed inputs", confirmed_inputs),
+        ("Creative settings", creative_settings),
+        ("Production constraints", skill_constraints),
+        ("Reference media", reference_media),
+    ):
+        if value:
+            parts.append(
+                f"{label}:\n"
+                + _limit_model_context(
+                    json.dumps(value, ensure_ascii=False, sort_keys=True),
+                    _MAX_SKILL_CONSTRAINTS_CHARS,
+                )
+            )
+    prompt = "\n\n".join(part for part in parts if part)
+    if not prompt:
+        raise RecipeRuntimeError("node prompt or workflow context is required")
+    return prompt
+
+
 def _cache_key(*, recipe: dict[str, Any], task: str, node_kind: RecipeNodeKind) -> str:
     material = json.dumps(
         {
@@ -163,6 +209,22 @@ def _cache_prompt(key: str, prompt: str, *, username: str) -> None:
         _write_persistent_prompt(username, key, prompt)
     except OSError:
         pass
+
+
+def _finalize_compiler_task(
+    key: str,
+    username: str,
+    task: asyncio.Task[str],
+) -> None:
+    if _prompt_inflight.get(key) is task:
+        _prompt_inflight.pop(key, None)
+    if task.cancelled():
+        return
+    try:
+        compiled = task.result()
+    except Exception:
+        return
+    _cache_prompt(key, compiled, username=username)
 
 
 async def _run_recipe_compiler(task: str) -> str:
@@ -599,8 +661,26 @@ async def compile_recipe_prompt(
     if compiler_task is None:
         compiler_task = asyncio.create_task(_run_recipe_compiler(task))
         _prompt_inflight[cache_key] = compiler_task
+        compiler_task.add_done_callback(
+            lambda done: _finalize_compiler_task(cache_key, username, done)
+        )
     try:
-        compiled = await asyncio.shield(compiler_task)
+        try:
+            compiled = await asyncio.wait_for(
+                asyncio.shield(compiler_task),
+                timeout=_recipe_compiler_timeout_seconds(),
+            )
+        except TimeoutError:
+            return compose_recipe_fallback_prompt(
+                recipe=effective_recipe,
+                node_prompt=node_prompt,
+                user_goal=user_goal,
+                upstream_text=upstream_text,
+                reference_media=reference_media,
+                confirmed_inputs=confirmed_inputs,
+                creative_settings=creative_settings,
+                skill_constraints=_skill_constraints(skill),
+            )
     finally:
         if compiler_task.done() and _prompt_inflight.get(cache_key) is compiler_task:
             _prompt_inflight.pop(cache_key, None)

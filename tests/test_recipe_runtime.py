@@ -305,6 +305,60 @@ async def test_compile_recipe_prompt_deduplicates_concurrent_model_calls(monkeyp
 
 
 @pytest.mark.asyncio
+async def test_compile_recipe_prompt_uses_fallback_on_timeout_and_caches_late_result(
+    monkeypatch,
+    tmp_path,
+):
+    recipe_runtime._prompt_cache.clear()
+    recipe_runtime._prompt_inflight.clear()
+    monkeypatch.setattr(recipe_runtime, "OUTPUT_DIR", tmp_path)
+    monkeypatch.setattr(
+        recipe_runtime,
+        "get_recipe_for_runtime",
+        lambda **_kwargs: {
+            "id": "scene",
+            "version": 1,
+            "output_kind": "image",
+            "system_prompt": "可信的商品摄影方法",
+        },
+    )
+
+    async def slow_compiler(_task: str) -> str:
+        await asyncio.sleep(0.03)
+        return "后台完成的精炼提示词"
+
+    monkeypatch.setattr(recipe_runtime, "_run_recipe_compiler", slow_compiler)
+    monkeypatch.setattr(recipe_runtime, "_recipe_compiler_timeout_seconds", lambda: 0.01)
+
+    fallback = await recipe_runtime.compile_recipe_prompt(
+        username="local",
+        recipe_id="scene",
+        recipe_version="1",
+        node_kind="image",
+        node_prompt="厨房场景",
+        user_goal="生成咖啡机商品图",
+    )
+
+    assert "生成咖啡机商品图" in fallback
+    assert "厨房场景" in fallback
+    assert "可信的商品摄影方法" in fallback
+
+    await asyncio.sleep(0.04)
+    assert recipe_runtime._prompt_inflight == {}
+    assert "后台完成的精炼提示词" in recipe_runtime._prompt_cache.values()
+
+    cached = await recipe_runtime.compile_recipe_prompt(
+        username="local",
+        recipe_id="scene",
+        recipe_version="1",
+        node_kind="image",
+        node_prompt="厨房场景",
+        user_goal="生成咖啡机商品图",
+    )
+    assert cached == "后台完成的精炼提示词"
+
+
+@pytest.mark.asyncio
 async def test_compile_recipe_prompt_skips_model_for_deterministic_strategy(monkeypatch):
     monkeypatch.setattr(
         recipe_runtime,

@@ -119,11 +119,14 @@ from novelvideo.freezone.history import (
     read_generation_history,
 )
 from novelvideo.freezone.workflow_runs import (
+    WorkflowRunLeaseConflict,
     create_workflow_run,
     interrupt_stale_workflow_runs,
     list_workflow_runs,
+    prune_workflow_runs,
     read_workflow_run,
     reconcile_workflow_runs_with_canvas_nodes,
+    reconcile_workflow_runs_with_tasks,
     update_workflow_run,
 )
 from novelvideo.freezone.image_node import (
@@ -10339,7 +10342,15 @@ async def create_canvas_workflow_run(
             actions=body.get("actions") if isinstance(body.get("actions"), list) else [],
             actor_id=_canvas_actor_id(user),
             metadata=body.get("metadata") if isinstance(body.get("metadata"), dict) else None,
+            idempotency_key=(
+                body.get("idempotency_key")
+                if isinstance(body.get("idempotency_key"), str)
+                else ""
+            ),
+            runner_id=body.get("runner_id") if isinstance(body.get("runner_id"), str) else "",
         )
+    except WorkflowRunLeaseConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except (ValueError, CanvasLockBusy) as exc:
         raise HTTPException(400 if isinstance(exc, ValueError) else 503, str(exc)) from exc
     return {"ok": True, "data": run}
@@ -10388,6 +10399,56 @@ async def get_canvas_workflow_runs(
     except (canvas_store.CanvasStoreError, CanvasLockBusy):
         # Recovery records are optional. A transient canvas read/lock failure
         # must not make the canvas itself unavailable.
+        pass
+    try:
+        tasks_by_key = {}
+        for task in get_task_manager().list_tasks_for_project(ctx):
+            task_status = str(task.status or "")
+            if (
+                task_status in {"submitting", "queued", "running"}
+                and task.progress >= 1.0
+                and str(task.current_task or "").strip().lower()
+                in {"完成", "completed", "done"}
+            ):
+                task_status = "completed"
+            task_key = project_task_state_key(
+                task.task_type,
+                ctx.project_id,
+                task.episode,
+                beat_num=task.beat_num,
+                scope=task.scope,
+            )
+            tasks_by_key[task_key] = {
+                "status": task_status,
+                "result": task.result,
+                "error": task.error,
+            }
+        reconcile_workflow_runs_with_tasks(
+            project_dir=canvas_project_dir,
+            canvas_id=canvas_id,
+            tasks_by_key=tasks_by_key,
+            generation_history=read_canvas_generation_history(
+                project_dir=project_dir,
+                canvas_id=canvas_id,
+                limit=1000,
+            ),
+        )
+    except Exception as exc:
+        # Task reconciliation is best-effort and must not block canvas loading.
+        logger.warning("workflow task reconciliation skipped: %s", exc)
+    try:
+        retention_days = max(int(os.getenv("ST_WORKFLOW_RUN_RETENTION_DAYS", "30")), 1)
+        max_terminal_records = max(
+            int(os.getenv("ST_WORKFLOW_RUN_MAX_TERMINAL_RECORDS", "200")),
+            1,
+        )
+        prune_workflow_runs(
+            project_dir=canvas_project_dir,
+            canvas_id=canvas_id,
+            retention_days=retention_days,
+            max_terminal_records=max_terminal_records,
+        )
+    except (CanvasLockBusy, OSError, ValueError):
         pass
     runs = list_workflow_runs(
         project_dir=canvas_project_dir, canvas_id=canvas_id, limit=limit
@@ -10448,11 +10509,47 @@ async def patch_canvas_workflow_run(
             action_updates=(
                 body.get("action_updates") if isinstance(body.get("action_updates"), list) else None
             ),
+            runner_id=body.get("runner_id") if isinstance(body.get("runner_id"), str) else "",
         )
+    except WorkflowRunLeaseConflict as exc:
+        raise HTTPException(409, str(exc)) from exc
     except (ValueError, CanvasLockBusy) as exc:
         raise HTTPException(400 if isinstance(exc, ValueError) else 503, str(exc)) from exc
     if run is None:
         raise HTTPException(404, "workflow run not found")
+    if body.get("status") == "cancelled":
+        task_keys = {
+            str(item.get("task_key") or "").strip()
+            for item in run.get("actions") or []
+            if isinstance(item, dict) and str(item.get("task_key") or "").strip()
+        }
+        if task_keys:
+            backend = get_task_backend()
+            for task in get_task_manager().list_tasks_for_project(ctx):
+                task_key = project_task_state_key(
+                    task.task_type,
+                    ctx.project_id,
+                    task.episode,
+                    beat_num=task.beat_num,
+                    scope=task.scope,
+                )
+                if task_key not in task_keys or task.status not in {
+                    "pending",
+                    "starting",
+                    "submitting",
+                    "queued",
+                    "running",
+                }:
+                    continue
+                try:
+                    await backend.cancel_project_task(ctx, task)
+                except Exception as exc:
+                    logger.warning(
+                        "failed to cancel workflow task %s for run %s: %s",
+                        task_key,
+                        run_id,
+                        exc,
+                    )
     return {"ok": True, "data": run}
 
 

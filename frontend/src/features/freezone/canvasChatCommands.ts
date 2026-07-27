@@ -28,6 +28,7 @@ import {
   type FreezonePresetCanvasRequest,
   type WorkflowRunActionStatus,
 } from "@/api/canvas";
+import { ApiError } from "@/api/client";
 import { isAgentCreatableCanvasNodeType } from "@/features/freezone/agentCreatableNodeTypes";
 import { buildCanvasNodeActionCatalog } from "@/features/freezone/canvasNodeActionCatalog";
 import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetProjection";
@@ -220,6 +221,7 @@ type ApplyCanvasChatCommandsOptions = {
   actionTimeoutMs?: number;
   actionAcceptTimeoutMs?: number;
   actionResultFieldTimeoutMs?: number;
+  actionRetryDelayMs?: number;
 };
 
 export type CanvasChatCommandPartition = {
@@ -444,6 +446,7 @@ const DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS = 3 * 1000;
 const canvasNodeActionQueues = new Map<string, Promise<void>>();
 let nodeActionMountQueue: Promise<void> = Promise.resolve();
 const WORKFLOW_ACTION_CONCURRENCY = 3;
+const WORKFLOW_ACTION_MAX_RETRIES = 2;
 const WORKFLOW_ACTION_LANE_LIMITS = {
   default: 3,
   video: 3,
@@ -499,6 +502,51 @@ function acquireWorkflowActionSlot(action: string): Promise<() => void> {
     workflowActionSlotWaiters.push({ lane: workflowActionLane(action), resolve });
     drainWorkflowActionSlots();
   });
+}
+
+function workflowGraphSignature(actions: PendingNodeAction[]): string {
+  const actionNodeIds = new Set(actions.map((action) => action.nodeId));
+  const state = useCanvasStore.getState();
+  const nodes = state.nodes
+    .filter((node) => actionNodeIds.has(node.id))
+    .map((node) => ({ id: node.id, type: node.type ?? "" }))
+    .sort((left, right) => left.id.localeCompare(right.id));
+  const edges = state.edges
+    .filter((edge) => actionNodeIds.has(edge.source) && actionNodeIds.has(edge.target))
+    .map((edge) => ({
+      source: edge.source,
+      target: edge.target,
+      sourceHandle: edge.sourceHandle ?? "",
+      targetHandle: edge.targetHandle ?? "",
+    }))
+    .sort((left, right) =>
+      `${left.source}:${left.target}:${left.sourceHandle}:${left.targetHandle}`.localeCompare(
+        `${right.source}:${right.target}:${right.sourceHandle}:${right.targetHandle}`,
+      ));
+  return JSON.stringify({ nodes, edges });
+}
+
+function isRetryableWorkflowActionError(error: string | null | undefined): boolean {
+  const normalized = String(error ?? "").trim().toLowerCase();
+  if (!normalized) return false;
+  if (
+    normalized.includes("invalid token") ||
+    normalized.includes("model_not_found") ||
+    normalized.includes("sensitivecontent") ||
+    normalized.includes("privacyinformation") ||
+    normalized.includes("quota has been exhausted") ||
+    normalized.includes("audio_url is required") ||
+    normalized.includes("401") ||
+    normalized.includes("403")
+  ) {
+    return false;
+  }
+  return ["429", "502", "503", "504", "econnreset", "connection reset", "bad_response_body"]
+    .some((marker) => normalized.includes(marker));
+}
+
+function workflowRetryDelayMs(retryCount: number): number {
+  return Math.min(1_000 * (2 ** Math.max(retryCount - 1, 0)), 4_000);
 }
 const WORKFLOW_GENERATE_ACTION_BY_NODE_TYPE: Partial<Record<CanvasNodeType, string[]>> = {
   [CANVAS_NODE_TYPES.script]: ["generate_story_script"],
@@ -1692,14 +1740,39 @@ function submittedGenerationOutputFromNode(nodeId: string): Record<string, unkno
   };
 }
 
+function workflowTaskReference(
+  output: Record<string, unknown> | null | undefined,
+): { task_key?: string; task_type?: string; job_id?: string } {
+  if (!output) return {};
+  const taskKey =
+    nonEmptyString(output.task_key) ??
+    nonEmptyString(output.taskKey) ??
+    nonEmptyString(output.generationTaskKey);
+  const taskType =
+    nonEmptyString(output.task_type) ??
+    nonEmptyString(output.taskType) ??
+    nonEmptyString(output.generationTaskType);
+  const jobId =
+    nonEmptyString(output.job_id) ??
+    nonEmptyString(output.jobId) ??
+    nonEmptyString(output.generationTaskJobId) ??
+    nonEmptyString(output.generationJobId);
+  return {
+    ...(taskKey ? { task_key: taskKey } : {}),
+    ...(taskType ? { task_type: taskType } : {}),
+    ...(jobId ? { job_id: jobId } : {}),
+  };
+}
+
 async function waitForSubmittedGenerationOutputFromNode(
   nodeId: string,
   timeoutMs: number,
+  shouldStop?: () => boolean,
 ): Promise<Record<string, unknown> | null> {
   const immediate = submittedGenerationOutputFromNode(nodeId);
   if (immediate) return immediate;
   const startedAt = Date.now();
-  while (Date.now() - startedAt < timeoutMs) {
+  while (Date.now() - startedAt < timeoutMs && !shouldStop?.()) {
     await new Promise((resolve) => setTimeout(resolve, 50));
     const output = submittedGenerationOutputFromNode(nodeId);
     if (output) return output;
@@ -1955,6 +2028,11 @@ async function executeQueuedNodeActions(
     const projectId = options.projectId?.trim();
     const canvasId = options.canvasId?.trim();
     let workflowRunId: string | null = null;
+    const workflowRunnerId =
+      typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+        ? `canvas-runner:${crypto.randomUUID()}`
+        : `canvas-runner:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
+    let workflowLeaseLost = false;
     let workflowHeartbeat: ReturnType<typeof setInterval> | null = null;
     const stopWorkflowHeartbeat = () => {
       if (workflowHeartbeat !== null) clearInterval(workflowHeartbeat);
@@ -1962,17 +2040,43 @@ async function executeQueuedNodeActions(
     };
     if (projectId && canvasId) {
       try {
+        const workflowRunIdempotencyKey =
+          typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
+            ? `canvas-run:${crypto.randomUUID()}`
+            : `canvas-run:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
         workflowRunId = (await createFreezoneWorkflowRun(
           projectId,
           canvasId,
           pendingActions.map((action) => ({ node_id: action.nodeId, action: action.action })),
+          workflowRunIdempotencyKey,
+          workflowRunnerId,
         )).run_id;
         const runId = workflowRunId;
         workflowHeartbeat = setInterval(() => {
-          void updateFreezoneWorkflowRun(projectId, canvasId, runId, { status: "running" })
-            .catch(() => undefined);
+          void updateFreezoneWorkflowRun(projectId, canvasId, runId, {
+            status: "running",
+            runner_id: workflowRunnerId,
+          }).catch((error) => {
+            if (error instanceof ApiError && error.status === 409) workflowLeaseLost = true;
+          });
         }, 15_000);
-      } catch {
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) {
+          const message = "当前画布已有工作流正在执行，请等待其完成后再试。";
+          result.errors.push(message);
+          for (const action of pendingActions) {
+            result.commandResults.push({
+              commandIndex: action.commandIndex,
+              type: "run_node_action",
+              status: "error",
+              label: action.label,
+              nodeId: action.nodeId,
+              action: action.action,
+              error: message,
+            });
+          }
+          return;
+        }
         // Execution records are additive. A persistence outage must not block generation.
       }
     }
@@ -1982,6 +2086,10 @@ async function executeQueuedNodeActions(
         action: string;
         status: WorkflowRunActionStatus;
         error?: string | null;
+        task_key?: string | null;
+        task_type?: string | null;
+        job_id?: string | null;
+        retry_count?: number;
       }>,
       status?: "completed" | "failed",
     ): Promise<void> => {
@@ -1990,13 +2098,15 @@ async function executeQueuedNodeActions(
         await updateFreezoneWorkflowRun(projectId, canvasId, workflowRunId, {
           ...(updates.length > 0 ? { action_updates: updates } : {}),
           ...(status ? { status } : {}),
+          runner_id: workflowRunnerId,
         });
         if (status && typeof window !== "undefined") {
           window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
             detail: { projectId, canvasId, runId: workflowRunId, status },
           }));
         }
-      } catch {
+      } catch (error) {
+        if (error instanceof ApiError && error.status === 409) workflowLeaseLost = true;
         // Keep the established in-browser runner available when persistence is unavailable.
       }
     };
@@ -2027,6 +2137,8 @@ async function executeQueuedNodeActions(
       return;
     }
 
+    const initialGraphSignature = workflowGraphSignature(pendingActions);
+    const settledActionKeys = new Set<string>();
     const blockedNodeIds = new Set<string>();
     const generationActions = pendingActions.filter((action) =>
       GENERATION_NODE_ACTIONS.has(action.action));
@@ -2040,6 +2152,37 @@ async function executeQueuedNodeActions(
     );
     let runFailed = false;
     for (const level of levels) {
+      if (workflowLeaseLost) {
+        runFailed = true;
+        result.errors.push("工作流执行租约已失效，已停止启动后续节点。");
+        break;
+      }
+      if (workflowGraphSignature(pendingActions) !== initialGraphSignature) {
+        const message = "画布节点或连线已发生变化，已停止执行旧工作流的后续节点。";
+        runFailed = true;
+        result.errors.push(message);
+        const unsettledActions = pendingActions.filter(
+          (action) => !settledActionKeys.has(`${action.nodeId}:${action.action}`),
+        );
+        for (const action of unsettledActions) {
+          result.commandResults.push({
+            commandIndex: action.commandIndex,
+            type: "run_node_action",
+            status: "error",
+            label: action.label,
+            nodeId: action.nodeId,
+            action: action.action,
+            error: message,
+          });
+        }
+        await persistRunUpdate(unsettledActions.map((action) => ({
+          node_id: action.nodeId,
+          action: action.action,
+          status: "blocked",
+          error: message,
+        })));
+        break;
+      }
       const levelResults = await Promise.all(level.map(async (action) => {
         const blockedUpstream = [...(dependenciesByNodeId.get(action.nodeId) ?? [])]
           .find((nodeId) => blockedNodeIds.has(nodeId));
@@ -2052,140 +2195,186 @@ async function executeQueuedNodeActions(
 
         const releaseActionSlot = await acquireWorkflowActionSlot(action.action);
         try {
-          const lane = workflowActionLane(action.action);
-          const mustHoldCapacityUntilCompleted = GENERATION_NODE_ACTIONS.has(action.action) && (
-            generationActions.length > WORKFLOW_ACTION_CONCURRENCY ||
-            generationCountByLane[lane] > WORKFLOW_ACTION_LANE_LIMITS[lane]
-          );
-          const executionMode = mustHoldCapacityUntilCompleted
-            ? "workflow"
-            : action.executionMode;
-          await persistRunUpdate([{
-            node_id: action.nodeId,
-            action: action.action,
-            status: "running",
-          }]);
+          for (
+            let retryCount = 0;
+            retryCount <= WORKFLOW_ACTION_MAX_RETRIES;
+            retryCount += 1
+          ) {
+            const lane = workflowActionLane(action.action);
+            const mustHoldCapacityUntilCompleted = GENERATION_NODE_ACTIONS.has(action.action) && (
+              generationActions.length > WORKFLOW_ACTION_CONCURRENCY ||
+              generationCountByLane[lane] > WORKFLOW_ACTION_LANE_LIMITS[lane]
+            );
+            const executionMode = mustHoldCapacityUntilCompleted
+              ? "workflow"
+              : action.executionMode;
+            await persistRunUpdate([{
+              node_id: action.nodeId,
+              action: action.action,
+              status: "running",
+              retry_count: retryCount,
+            }]);
 
-          const requestId = `node-action:${Date.now()}:${Math.random().toString(36).slice(2)}`;
-          const uiOpenAction = UI_OPEN_NODE_ACTIONS.has(action.action);
-          const waiting = waitForNodeActionResult(
-            requestId,
-            uiOpenAction ? 300 : options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
-            uiOpenAction
-              ? {
-                requestId,
-                nodeId: action.nodeId,
-                action: action.action,
-                status: "success",
-                output: { openedUiAction: true, fallback: true },
-              }
-              : undefined,
-          );
-          const requiresAcceptedSignal = GENERATION_NODE_ACTIONS.has(action.action);
-          const acceptTimeoutMs =
-            options.actionAcceptTimeoutMs ?? DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS;
-          const publishNodeAction = () => dispatchNodeAction({
-            nodeId: action.nodeId,
-            action: action.action,
-            executionMode,
-            ...(action.parameters ? { parameters: action.parameters } : {}),
-            requestId,
-          });
-          markNodeActionRunning(action.nodeId, action.action);
-          let handlerCount = 0;
-          const accepted = requiresAcceptedSignal
-            ? waitForNodeActionAccepted(requestId, acceptTimeoutMs)
-            : Promise.resolve(true);
-          try {
-            handlerCount = publishNodeAction();
-            if (handlerCount === 0 && requiresAcceptedSignal) {
-              // React Flow virtualizes off-screen nodes. Focusing mounts the target,
-              // whose subscription replays the already-pending action.
-              await mountNodeForPendingAction(action.nodeId);
-            }
-          } catch (error) {
-            clearPendingNodeAction(requestId);
-            clearNodeActionRunning(action.nodeId, action.action);
-            return {
-              action,
-              failed: `节点动作执行异常：${errorMessage(error)}`,
-            };
-          }
-          if (handlerCount === 0 && !requiresAcceptedSignal) {
-            clearPendingNodeAction(requestId);
-            clearNodeActionRunning(action.nodeId, action.action);
-            return {
-              action,
-              failed: `节点动作没有处理器：${action.action} (${action.nodeId})。`,
-            };
-          }
-          const firstSignal = await Promise.race([
-            accepted.then((ok) => ({ kind: "accepted" as const, ok })),
-            waiting.then((actionResult) => ({ kind: "result" as const, actionResult })),
-          ]);
-          if (firstSignal.kind === "accepted" && !firstSignal.ok) {
-            clearPendingNodeAction(requestId);
-            clearNodeActionRunning(action.nodeId, action.action);
-            return {
-              action,
-              failed: `节点动作未被目标节点接手：${action.action} (${action.nodeId})。请确认该节点已在画布中渲染后重试。`,
-            };
-          }
-          clearPendingNodeAction(requestId);
-          const singleGenerationSubmission =
-            executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
-              ? waitForSubmittedGenerationOutputFromNode(
-                action.nodeId,
-                options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
-              ).then((output): NodeActionResult | Promise<NodeActionResult> => {
-                if (output) {
-                  return {
-                    requestId,
-                    nodeId: action.nodeId,
-                    action: action.action,
-                    status: "success" as const,
-                    output,
-                  };
+            const requestId = `node-action:${Date.now()}:${Math.random().toString(36).slice(2)}`;
+            const uiOpenAction = UI_OPEN_NODE_ACTIONS.has(action.action);
+            const waiting = waitForNodeActionResult(
+              requestId,
+              uiOpenAction ? 300 : options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
+              uiOpenAction
+                ? {
+                  requestId,
+                  nodeId: action.nodeId,
+                  action: action.action,
+                  status: "success",
+                  output: { openedUiAction: true, fallback: true },
                 }
-                return waiting;
-              })
+                : undefined,
+            );
+            const requiresAcceptedSignal = GENERATION_NODE_ACTIONS.has(action.action);
+            const acceptTimeoutMs =
+              options.actionAcceptTimeoutMs ?? DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS;
+            const publishNodeAction = () => dispatchNodeAction({
+              nodeId: action.nodeId,
+              action: action.action,
+              executionMode,
+              ...(action.parameters ? { parameters: action.parameters } : {}),
+              requestId,
+            });
+            markNodeActionRunning(action.nodeId, action.action);
+            let handlerCount = 0;
+            const accepted = requiresAcceptedSignal
+              ? waitForNodeActionAccepted(requestId, acceptTimeoutMs)
+              : Promise.resolve(true);
+            try {
+              handlerCount = publishNodeAction();
+              if (handlerCount === 0 && requiresAcceptedSignal) {
+                // React Flow virtualizes off-screen nodes. Focusing mounts the target,
+                // whose subscription replays the already-pending action.
+                await mountNodeForPendingAction(action.nodeId);
+              }
+            } catch (error) {
+              clearPendingNodeAction(requestId);
+              clearNodeActionRunning(action.nodeId, action.action);
+              return {
+                action,
+                failed: `节点动作执行异常：${errorMessage(error)}`,
+              };
+            }
+            if (handlerCount === 0 && !requiresAcceptedSignal) {
+              clearPendingNodeAction(requestId);
+              clearNodeActionRunning(action.nodeId, action.action);
+              return {
+                action,
+                failed: `节点动作没有处理器：${action.action} (${action.nodeId})。`,
+              };
+            }
+            const firstSignal = await Promise.race([
+              accepted.then((ok) => ({ kind: "accepted" as const, ok })),
+              waiting.then((actionResult) => ({ kind: "result" as const, actionResult })),
+            ]);
+            if (firstSignal.kind === "accepted" && !firstSignal.ok) {
+              clearPendingNodeAction(requestId);
+              clearNodeActionRunning(action.nodeId, action.action);
+              return {
+                action,
+                failed: `节点动作未被目标节点接手：${action.action} (${action.nodeId})。请确认该节点已在画布中渲染后重试。`,
+              };
+            }
+            let actionSettled = false;
+            const taskReferencePersistence =
+              firstSignal.kind === "accepted" && GENERATION_NODE_ACTIONS.has(action.action)
+                ? waitForSubmittedGenerationOutputFromNode(
+                  action.nodeId,
+                  Math.min(options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS, 5_000),
+                  () => actionSettled,
+                ).then(async (submittedOutput) => {
+                  const taskReference = workflowTaskReference(submittedOutput);
+                  if (Object.keys(taskReference).length === 0) return;
+                  await persistRunUpdate([{
+                    node_id: action.nodeId,
+                    action: action.action,
+                    status: "running",
+                    ...taskReference,
+                  }]);
+                })
+                : Promise.resolve();
+            clearPendingNodeAction(requestId);
+            const singleGenerationSubmission =
+              executionMode === "single" && GENERATION_NODE_ACTIONS.has(action.action)
+                ? waitForSubmittedGenerationOutputFromNode(
+                  action.nodeId,
+                  options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
+                ).then((output): NodeActionResult | Promise<NodeActionResult> => {
+                  if (output) {
+                    return {
+                      requestId,
+                      nodeId: action.nodeId,
+                      action: action.action,
+                      status: "success" as const,
+                      output,
+                    };
+                  }
+                  return waiting;
+                })
+                : null;
+            const actionResult = firstSignal.kind === "result"
+              ? firstSignal.actionResult
+              : singleGenerationSubmission
+                ? await Promise.race([waiting, singleGenerationSubmission])
+                : await waiting;
+            actionSettled = true;
+            void taskReferencePersistence;
+            clearPendingNodeAction(requestId);
+            await requestAnimationFrameOrTimeout();
+            const hasRequiredOutput = actionResult.status === "error"
+              ? false
+              : await waitForGeneratedResultField(
+                action.nodeId,
+                action.action,
+                actionResult.output,
+                options.actionResultFieldTimeoutMs ?? DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS,
+              );
+            const outputIssue = hasRequiredOutput
+              ? deterministicNodeOutputIssue(
+                action.action,
+                nodeById(action.nodeId)?.data,
+                actionResult.output,
+              )
               : null;
-          const actionResult = firstSignal.kind === "result"
-            ? firstSignal.actionResult
-            : singleGenerationSubmission
-              ? await Promise.race([waiting, singleGenerationSubmission])
-              : await waiting;
-          clearPendingNodeAction(requestId);
-          await requestAnimationFrameOrTimeout();
-          const hasRequiredOutput = await waitForGeneratedResultField(
-            action.nodeId,
-            action.action,
-            actionResult.output,
-            options.actionResultFieldTimeoutMs ?? DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS,
-          );
-          const outputIssue = hasRequiredOutput
-            ? deterministicNodeOutputIssue(
-              action.action,
-              nodeById(action.nodeId)?.data,
-              actionResult.output,
-            )
-            : null;
 
-          const actionOpenedUserUi =
-            isRecord(actionResult.output) &&
-            (actionResult.output.openedUiAction === true ||
-              actionResult.output.requires_user_action === true);
-          const failed = actionResult.status === "error"
-            ? actionResult.error || "节点动作执行失败"
-            : outputIssue
-              ? outputIssue
-            : !actionOpenedUserUi && !hasRequiredOutput
-              ? nodeGenerationError(action.nodeId) ??
-                `节点动作完成但未产出 ${mediaRequirementLabel(action.action)}。`
-              : null;
+            const actionOpenedUserUi =
+              isRecord(actionResult.output) &&
+              (actionResult.output.openedUiAction === true ||
+                actionResult.output.requires_user_action === true);
+            const failed = actionResult.status === "error"
+              ? actionResult.error || "节点动作执行失败"
+              : outputIssue
+                ? outputIssue
+              : !actionOpenedUserUi && !hasRequiredOutput
+                ? nodeGenerationError(action.nodeId) ??
+                  `节点动作完成但未产出 ${mediaRequirementLabel(action.action)}。`
+                : null;
 
-          if (failed || actionOpenedUserUi) clearNodeActionRunning(action.nodeId, action.action);
-          return { action, failed, output: actionResult.output };
+            if (failed || actionOpenedUserUi) clearNodeActionRunning(action.nodeId, action.action);
+            if (
+              failed &&
+              retryCount < WORKFLOW_ACTION_MAX_RETRIES &&
+              isRetryableWorkflowActionError(failed)
+            ) {
+              await new Promise((resolve) =>
+                setTimeout(
+                  resolve,
+                  options.actionRetryDelayMs ?? workflowRetryDelayMs(retryCount + 1),
+                ));
+              continue;
+            }
+            return { action, failed, output: actionResult.output, retryCount };
+          }
+          return {
+            action,
+            failed: "节点动作重试次数已耗尽",
+            retryCount: WORKFLOW_ACTION_MAX_RETRIES,
+          };
         } finally {
           releaseActionSlot();
         }
@@ -2220,14 +2409,19 @@ async function executeQueuedNodeActions(
           ...(output ? { output } : {}),
         });
       }
-      await persistRunUpdate(levelResults.map(({ action, failed }) => ({
+      await persistRunUpdate(levelResults.map(({ action, failed, output, retryCount }) => ({
         node_id: action.nodeId,
         action: action.action,
         status: failed
           ? failed.startsWith("跳过 ") ? "blocked" : "failed"
           : "completed",
         ...(failed ? { error: failed } : {}),
+        retry_count: retryCount ?? 0,
+        ...workflowTaskReference(output),
       })));
+      for (const { action } of levelResults) {
+        settledActionKeys.add(`${action.nodeId}:${action.action}`);
+      }
     }
     await persistRunUpdate([], runFailed ? "failed" : "completed");
     stopWorkflowHeartbeat();
