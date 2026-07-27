@@ -520,6 +520,27 @@
   color: var(--canvas-node-input-placeholder);
 }
 
+/* 输入框内的前置 chip（故事板功能 chip）的宿主：contenteditable=false 的内联块，
+   跟文字同一行排版，光标能越过它、退格能删掉它（删除由 JS 拦截后回调宿主）。 */
+.prompt-lead-chip {
+  display: inline-flex;
+  vertical-align: middle;
+  margin-right: 6px;
+  user-select: none;
+}
+
+/* 有前置 chip 时编辑器不是 :empty，上面那两条占位符规则不生效。改用 ::after，
+   占位文案就接在 chip 右边同一行——和 liblib 的「chip + 功能说明」一致。 */
+.prompt-mention-editor[data-text-empty]::after {
+  content: attr(data-placeholder);
+  color: rgba(160, 160, 170, 0.7);
+  pointer-events: none;
+}
+
+.canvas-node-input-placeholder[data-text-empty]::after {
+  color: var(--canvas-node-input-placeholder);
+}
+
 .react-flow__node {
   border-radius: var(--node-radius);
   /* 整块节点都可拖（主体没有 nodrag，drag 从任意处都能起手），但过去只有标题栏

@@ -9,6 +9,7 @@ import { spawnAssetLibraryReferences } from '@/features/canvas/nodes/shared/asse
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import {
   ASSET_BOARD_IMAGE_OP_MAP,
+  clearAssetBoardImageOp,
   isAssetBoardImageOpKey,
   isGridImageOpKey,
   runAssetBoardImageOp,
@@ -36,12 +37,6 @@ import { AssetBoardReferenceDropZone } from './AssetBoardReferenceDropZone';
  * 生成条钉底」，表单占多高就等于上方内容区少多高；184 仍留得下 4~5 行提示词。
  */
 const FORM_HEIGHT_PX = 184;
-
-/**
- * 带功能 chip 时的表单高度：chip 行 + 说明行大约占 56px，不加高就会把提示词区
- * 压到 2 行以内。
- */
-const FORM_HEIGHT_WITH_OP_PX = 240;
 
 /**
  * 故事板详情里的图片生成条：媒体区下方挂 `ImageGenerationForm`，让**空节点**能
@@ -80,6 +75,10 @@ export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactEle
   const handleOpSubmit = useCallback(() => {
     void runAssetBoardImageOp(nodeId);
   }, [nodeId]);
+  // 在输入框开头退格 = 删掉这枚 chip = 该节点退回普通图片生成。
+  const handleOpChipDelete = useCallback(() => {
+    clearAssetBoardImageOp(nodeId);
+  }, [nodeId]);
 
   // 功能节点的算力：宫格按 image_selection 询价（与详情工具条那个下拉同一套查询，
   // 两处显示同一个数）；询价没回来退回功能表里的硬编码 cost。全景/多角度/打光
@@ -117,7 +116,7 @@ export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactEle
       <AssetBoardReferenceDropZone nodeId={nodeId}>
         <div
           className={`flex w-full flex-col rounded-[var(--node-radius)] ${CANVAS_NODE_OPS_PANEL_CLASS}`}
-          style={{ height: opKey ? FORM_HEIGHT_WITH_OP_PX : FORM_HEIGHT_PX }}
+          style={{ height: FORM_HEIGHT_PX }}
         >
           {/* 自带参考图 chip（共用表单不渲这张）：紧贴表单 chip 行上方补显示，移除
               按钮清空 data.referenceImageUrl（与工作流 ImageGenNode 的「移除参考图」
@@ -142,19 +141,27 @@ export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactEle
               </div>
             </div>
           )}
-          {/* 功能 chip 挂在输入框内、提示词上方（对标 liblib）：走共用表单新开的
-              `promptLeadingSlot` 插槽，表单只认位置不解释内容；工作流的 ImageGenNode
-              不传这个 prop，渲染与从前一致。 */}
+          {/* 功能 chip 走共用表单的 `leadingChip` 通道，落在**提示词输入框内部**、
+              正文最前面（对标 liblib）：功能说明当占位文案接在它右边，退格能像删字符
+              一样把它删掉。工作流的 ImageGenNode 不传这些 prop，渲染与从前一致。 */}
           <ImageGenerationForm
             {...formProps}
             compact
             onStylePickerOpenChange={noopStylePickerOpenChange}
             onOpenAssetLibrary={() => setIsAssetLibraryOpen(true)}
-            promptLeadingSlot={
-              opKey ? (
-                <AssetBoardImageOpChip nodeId={nodeId} opKey={opKey} disabled={isGenerating} />
-              ) : null
-            }
+            {...(opKey
+              ? {
+                  promptLeadingChip: (
+                    <AssetBoardImageOpChip
+                      nodeId={nodeId}
+                      opKey={opKey}
+                      disabled={isGenerating}
+                    />
+                  ),
+                  onPromptLeadingChipDelete: handleOpChipDelete,
+                  promptPlaceholder: ASSET_BOARD_IMAGE_OP_MAP[opKey].description,
+                }
+              : {})}
             {...(opKey
               ? {
                   onSubmit: handleOpSubmit,
