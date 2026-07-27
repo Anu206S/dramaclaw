@@ -566,7 +566,7 @@ def test_compiler_uses_explicit_anchor_and_skips_audio_only_compose(monkeypatch)
     )
     audio = catalog.compile_workflow_intent(
         {
-            "skill_id": "pixar-ip-brand-ad-short-film",
+            "skill_id": "video-tutorial",
             "user_goal": "把欢迎使用转换成中文语音",
             "items": [
                 {
@@ -574,7 +574,7 @@ def test_compiler_uses_explicit_anchor_and_skips_audio_only_compose(monkeypatch)
                     "title": "广告音频",
                     "prompt": "欢迎使用",
                     "narration": "欢迎使用",
-                    "recipe_id": "ad-audio-production",
+                    "recipe_id": "general-audio",
                 }
             ],
         }
@@ -589,7 +589,7 @@ def test_compiler_uses_explicit_anchor_and_skips_audio_only_compose(monkeypatch)
     audio_node = next(
         node for node in audio["plan"]["nodes"] if node["node_type"] == "audioNode"
     )
-    assert audio_node["data"]["workflowCatalog"]["recipeId"] == "ad-audio-production"
+    assert audio_node["data"]["workflowCatalog"]["recipeId"] == "general-audio"
 
 
 def test_parameterized_skill_uses_stateless_input_contract(monkeypatch):
@@ -824,7 +824,7 @@ def test_catalog_validation_requires_real_or_generated_source_media(monkeypatch)
     assert anchored_result["ok"] is True
 
 
-def test_project_catalog_loads_imported_skill_and_recipe_bundle(monkeypatch):
+def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
 
@@ -838,9 +838,12 @@ def test_project_catalog_loads_imported_skill_and_recipe_bundle(monkeypatch):
     assert skills["video-tutorial"]["name"] == "视频解说教程"
     assert skills["text-to-image-video"]["name"] == "文生图生视频（动态）"
     assert skills["short-drama-quick"]["name"] == "短剧（快速测试）"
-    assert skills["pixar-ip-brand-ad-short-film"]["name"] == "皮克斯 IP 品牌广告短片"
-    assert "pixar-shot-video-clip" in recipes
-    assert "ad-audio-production" in recipes
+    assert skills["pixar-ip-ad-video"]["name"] == "皮克斯 IP 品牌广告短片"
+    assert "pixar-ip-brand-ad-short-film" not in skills
+    assert "pixar-ip-shot-video" in recipes
+    assert "pixar-ip-audio-layers" in recipes
+    assert "pixar-shot-video-clip" not in recipes
+    assert "ad-audio-production" not in recipes
 
 
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
@@ -851,7 +854,7 @@ def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch
         "video-tutorial": ("general-video", None),
         "text-to-image-video": ("general-video", None),
         "short-drama-quick": ("general-video", None),
-        "pixar-ip-brand-ad-short-film": ("pixar-shot-video-clip", "ip-character-anchor"),
+        "pixar-ip-ad-video": ("pixar-ip-shot-video", "pixar-ip-character-design"),
     }
 
     for skill_id, (recipe_id, anchor_recipe_id) in skill_recipes.items():

@@ -36,10 +36,19 @@ def project_agent_catalog_dir(kind: AgentConfigKind | str) -> Path:
 
 def user_agent_config_dir(username: str, kind: AgentConfigKind | str) -> Path:
     checked_kind = _validate_kind(kind)
-    return Path(OUTPUT_DIR) / username / "_account" / "freezone" / "agent_config" / checked_kind
+    return (
+        Path(OUTPUT_DIR)
+        / username
+        / "_account"
+        / "freezone"
+        / "agent_config"
+        / checked_kind
+    )
 
 
-def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> list[dict]:
+def list_user_agent_config_items(
+    username: str, kind: AgentConfigKind | str
+) -> list[dict]:
     checked_kind = _validate_kind(kind)
     builtin_root = builtin_agent_catalog_dir(checked_kind)
     project_root = project_agent_catalog_dir(checked_kind)
@@ -64,8 +73,7 @@ def list_user_agent_config_items(username: str, kind: AgentConfigKind | str) -> 
         builtin_items_by_id[item_id] = payload
 
     user_items_by_id = {
-        str(payload["id"]): payload
-        for payload in _read_agent_config_items(user_root)
+        str(payload["id"]): payload for payload in _read_agent_config_items(user_root)
     }
     user_items: list[dict] = []
     for item_id in sorted(user_items_by_id):
@@ -110,6 +118,8 @@ def save_user_agent_config_item(
         checked_kind,
         _strip_stored_metadata(payload_without_response_metadata),
     )
+    if checked_kind == "skills" and stored_payload.get("enabled") is not False:
+        _validate_skill_recipe_references(username, stored_payload)
     stored_payload.update(stored_metadata)
 
     target = root / f"{item_id}.json"
@@ -131,6 +141,13 @@ def delete_user_agent_config_item(
 ) -> bool:
     checked_id = _validate_item_id(item_id)
     checked_kind = _validate_kind(kind)
+    if checked_kind == "recipes":
+        referencing_skills = _recipe_referencing_skill_ids(username, checked_id)
+        if referencing_skills:
+            raise ValueError(
+                f"recipe {checked_id} is referenced by skill(s): "
+                + ", ".join(referencing_skills)
+            )
     user_root = user_agent_config_dir(username, checked_kind)
     target = user_root / f"{checked_id}.json"
     if _builtin_agent_config_exists(checked_kind, checked_id):
@@ -178,7 +195,9 @@ def _read_agent_config_items(root: Path) -> list[dict]:
             if not isinstance(item, dict):
                 continue
             item_id = item.get("id")
-            if not isinstance(item_id, str) or not SAFE_AGENT_CONFIG_ID.fullmatch(item_id):
+            if not isinstance(item_id, str) or not SAFE_AGENT_CONFIG_ID.fullmatch(
+                item_id
+            ):
                 continue
             if item.get("hidden") is True:
                 items.append({"id": item_id, "hidden": True})
@@ -223,8 +242,44 @@ def _builtin_agent_config_exists(kind: AgentConfigKind, item_id: str) -> bool:
     )
 
 
+def _validate_skill_recipe_references(username: str, skill: dict) -> None:
+    available_recipe_ids = {
+        str(item.get("id") or "").strip()
+        for item in list_user_agent_config_items(username, "recipes")
+        if item.get("enabled") is not False
+    }
+    requested_recipe_ids = {
+        str(item or "").strip()
+        for item in skill.get("allowed_recipe_ids") or []
+        if str(item or "").strip()
+    }
+    missing = sorted(requested_recipe_ids - available_recipe_ids)
+    if missing:
+        raise ValueError(
+            f"skill {skill.get('id')} references unavailable recipe(s): "
+            + ", ".join(missing)
+        )
+
+
+def _recipe_referencing_skill_ids(username: str, recipe_id: str) -> list[str]:
+    return sorted(
+        str(skill.get("id") or "").strip()
+        for skill in list_user_agent_config_items(username, "skills")
+        if skill.get("enabled") is not False
+        if recipe_id
+        in {
+            str(item or "").strip()
+            for item in skill.get("allowed_recipe_ids") or []
+            if str(item or "").strip()
+        }
+        and str(skill.get("id") or "").strip()
+    )
+
+
 def _strip_response_metadata(payload: dict) -> dict:
-    return {key: value for key, value in payload.items() if not key.startswith("_catalog_")}
+    return {
+        key: value for key, value in payload.items() if not key.startswith("_catalog_")
+    }
 
 
 def _kind_from_dir(root: Path) -> AgentConfigKind:

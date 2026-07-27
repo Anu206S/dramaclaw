@@ -30,8 +30,16 @@
   "schema_version": "dramaclaw.workflow-skill.v1",
   "allowed_recipe_ids": [
     "drama-plot-outline",
+    "drama-character-extraction",
     "drama-character-turnaround",
+    "drama-scene-extraction",
+    "drama-scene-image",
+    "drama-prop-extraction",
+    "drama-prop-image",
+    "drama-shot-planning",
+    "drama-shot-group-detail",
     "drama-shot-group-storyboard",
+    "keyframe-scene-script",
     "general-video",
     "drama-shot-voice",
     "drama-background-music"

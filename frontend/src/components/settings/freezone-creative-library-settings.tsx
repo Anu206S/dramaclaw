@@ -23,6 +23,14 @@ import {
   SelectValue,
 } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import {
+  CANVAS_NODE_TYPES,
+  type CanvasNodeType,
+} from "@/features/canvas/domain/canvasNodes";
+import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
+import { deriveNodeDropInfo } from "@/stores/assetDropStore";
+import { useCanvasStore } from "@/stores/canvasStore";
+import { readUrl } from "@/lib/url-params";
 import { validateFreezoneAgentConfigPayload } from "@/lib/freezone-agent-config-schema";
 import {
   useDeleteFreezoneAgentConfigItem,
@@ -66,6 +74,12 @@ interface AnchorSetDraft {
   canvasId: string;
   tags: string;
   anchors: AnchorDraft[];
+}
+
+interface AnchorNodeOption {
+  id: string;
+  label: string;
+  nodeType: AnchorNodeType;
 }
 
 const OUTPUT_KINDS = ["text", "image", "video", "audio"] as const;
@@ -155,6 +169,27 @@ function anchorSetFromPayload(payload: FreezoneAgentConfigPayload): AnchorSetDra
 
 export function FreezoneCreativeLibrarySettings({ kind }: CreativeLibraryProps) {
   const isAesthetic = kind === "aesthetics";
+  const canvasNodes = useCanvasStore((state) => state.nodes);
+  const anchorNodeOptions = useMemo<AnchorNodeOption[]>(() => canvasNodes.flatMap((node) => {
+    const media = deriveNodeDropInfo(node);
+    const nodeType: AnchorNodeType | null =
+      media?.mediaType === "image"
+        ? "imageGenNode"
+        : media?.mediaType === "video"
+          ? "videoNode"
+          : media?.mediaType === "audio"
+            ? "audioNode"
+            : null;
+    if (!nodeType || !media?.sourceUrl) return [];
+    return [{
+      id: node.id,
+      label: resolveNodeDisplayName(
+        (node.type ?? CANVAS_NODE_TYPES.imageGen) as CanvasNodeType,
+        node.data,
+      ),
+      nodeType,
+    }];
+  }), [canvasNodes]);
   const query = useFreezoneAgentConfigItems(kind);
   const saveItem = useSaveFreezoneAgentConfigItem();
   const deleteItem = useDeleteFreezoneAgentConfigItem();
@@ -249,7 +284,12 @@ export function FreezoneCreativeLibrarySettings({ kind }: CreativeLibraryProps) 
         ) : items.map((item) => {
           const id = stringValue(item.id);
           const builtin = item._catalog_source === "builtin";
-          const anchorCount = Array.isArray(item.anchors) ? item.anchors.length : 0;
+          const anchors = Array.isArray(item.anchors) ? item.anchors : [];
+          const anchorCount = anchors.length;
+          const unresolvedAnchorTemplate = !isAesthetic && anchors.some((value) => {
+            if (!value || typeof value !== "object") return false;
+            return stringValue((value as Record<string, unknown>).node_id).startsWith("replace-with-");
+          });
           return (
             <article
               key={id}
@@ -257,6 +297,7 @@ export function FreezoneCreativeLibrarySettings({ kind }: CreativeLibraryProps) 
             >
               <Checkbox
                 checked={item.enabled !== false}
+                disabled={unresolvedAnchorTemplate}
                 aria-label={`切换 ${stringValue(item.name) || id} 启用状态`}
                 onCheckedChange={(checked) => void toggleEnabled(item, checked === true)}
               />
@@ -272,7 +313,7 @@ export function FreezoneCreativeLibrarySettings({ kind }: CreativeLibraryProps) 
                   ) : null}
                   {!isAesthetic ? (
                     <span className="text-[10px] text-muted-foreground">
-                      {anchorCount} 个锚点
+                      {unresolvedAnchorTemplate ? "请先编辑绑定" : `${anchorCount} 个锚点`}
                     </span>
                   ) : null}
                 </div>
@@ -322,16 +363,20 @@ export function FreezoneCreativeLibrarySettings({ kind }: CreativeLibraryProps) 
         <AnchorSetEditor
           key={`anchor-${stringValue(editing?.id) || "new"}`}
           open={editing !== undefined}
-          initial={editing ? anchorSetFromPayload(editing) : {
-            enabled: true,
-            id: "",
-            name: "",
-            description: "",
-            projectId: "",
-            canvasId: "",
-            tags: "",
-            anchors: [newAnchor()],
-          }}
+          initial={editing ? anchorSetFromPayload(editing) : (() => {
+            const scope = readUrl();
+            return {
+              enabled: true,
+              id: "",
+              name: "",
+              description: "",
+              projectId: scope.project ?? "",
+              canvasId: scope.canvas ?? "",
+              tags: "",
+              anchors: [newAnchor()],
+            };
+          })()}
+          nodeOptions={anchorNodeOptions}
           onClose={() => setEditing(undefined)}
           onSave={async (payload) => {
             await saveItem.mutateAsync({ kind, payload });
@@ -422,12 +467,14 @@ function AestheticEditor({
 function AnchorSetEditor({
   open,
   initial,
+  nodeOptions,
   onClose,
   onSave,
   saving,
 }: {
   open: boolean;
   initial: AnchorSetDraft;
+  nodeOptions: AnchorNodeOption[];
   onClose: () => void;
   onSave: (payload: FreezoneAgentConfigPayload) => Promise<void>;
   saving: boolean;
@@ -491,8 +538,30 @@ function AnchorSetEditor({
         <div className="space-y-2">
           {draft.anchors.map((anchor) => (
             <div key={anchor.key} className="grid gap-2 rounded-md border border-white/[0.08] p-3 sm:grid-cols-[1fr_150px_1fr_auto]">
-              <Input value={anchor.nodeId} onChange={(event) => patchAnchor(anchor.key, { nodeId: event.target.value })} placeholder="画布节点 ID" />
-              <Select value={anchor.nodeType} onValueChange={(value) => patchAnchor(anchor.key, { nodeType: value as AnchorNodeType })}>
+              <Select
+                value={anchor.nodeId || undefined}
+                onValueChange={(value) => {
+                  const nodeId = value ?? "";
+                  const option = nodeOptions.find((item) => item.id === nodeId);
+                  patchAnchor(anchor.key, {
+                    nodeId,
+                    ...(option ? { nodeType: option.nodeType, label: option.label } : {}),
+                  });
+                }}
+              >
+                <SelectTrigger><SelectValue placeholder="选择当前画布资产" /></SelectTrigger>
+                <SelectContent>
+                  {anchor.nodeId && !nodeOptions.some((item) => item.id === anchor.nodeId) ? (
+                    <SelectItem value={anchor.nodeId}>{anchor.label || anchor.nodeId}（当前不可用）</SelectItem>
+                  ) : null}
+                  {nodeOptions.map((option) => (
+                    <SelectItem key={option.id} value={option.id}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Select value={anchor.nodeType} disabled>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>{ANCHOR_NODE_TYPES.map((type) => <SelectItem key={type} value={type}>{type}</SelectItem>)}</SelectContent>
               </Select>
@@ -505,6 +574,11 @@ function AnchorSetEditor({
               </div>
             </div>
           ))}
+          {nodeOptions.length === 0 ? (
+            <p className="text-xs text-muted-foreground">
+              当前画布还没有可复用的图片、视频或音频资产，请先生成或上传素材。
+            </p>
+          ) : null}
         </div>
         <DialogFooter>
           <Button type="button" variant="outline" onClick={onClose}>取消</Button>

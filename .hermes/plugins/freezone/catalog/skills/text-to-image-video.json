@@ -30,8 +30,12 @@
   "schema_version": "dramaclaw.workflow-skill.v1",
   "allowed_recipe_ids": [
     "general-text",
+    "video-creative-outline",
+    "video-storyboard-grid",
     "general-image",
-    "general-video"
+    "general-video",
+    "video-frame-extraction",
+    "smart-editing"
   ],
   "input_parameters": [],
   "evaluation": {
