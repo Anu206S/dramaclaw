@@ -1018,6 +1018,7 @@ def test_template_edit_aspect_ratio_maps_modes() -> None:
     assert _template_edit_aspect_ratio("character_face_three_view") == "3:2"
     assert _template_edit_aspect_ratio("storyboard_25_grid") == "original"
     assert _template_edit_aspect_ratio("cinematic_light_correction") == "original"
+    assert _template_edit_aspect_ratio("scene_setting_sheet") == "16:9"
 
 
 @pytest.mark.asyncio
@@ -2046,6 +2047,36 @@ def test_storyboard_25_grid_prompt_preserves_cell_aspect_ratio() -> None:
     assert "Use OTS only when the source contains" in prompt
     assert "Do not crop each storyboard frame into a different ratio" in prompt
     assert "5x5 grid with thin dividers" in prompt
+
+
+def test_scene_setting_sheet_prompt_lists_all_eight_blocks() -> None:
+    prompt = _build_template_edit_prompt(
+        freezone_routes.FreezoneTemplateEditRequest(
+            source_url="/static/admin/59/freezone/_uploads/source.png",
+            mode="scene_setting_sheet",
+            prompt="遗忘的悬浮神庙",
+        )
+    )
+
+    assert "libtv-style scene setting sheet" in prompt
+    assert "one single landscape design sheet" in prompt
+    assert "dark neutral background" in prompt
+    # 八个板块缺一不可——少一块产出就退化成普通概念图，跟角色三视图撞脸。
+    for block in (
+        "1 scene key visual",
+        "2 mood concept sketches",
+        "3 color and material reference",
+        "4 scene viewpoint reference",
+        "5 architecture and structure design",
+        "6 set prop design",
+        "7 vegetation and nature design",
+        "8 atmosphere variants",
+    ):
+        assert block in prompt
+    assert "short title block" in prompt
+    assert "same language as the user prompt" in prompt
+    # 用户补充提示词照旧拼在模板后面。
+    assert prompt.endswith("User prompt:\n遗忘的悬浮神庙")
 
 
 def test_template_edit_projection_prompt_requires_visible_time_change() -> None:

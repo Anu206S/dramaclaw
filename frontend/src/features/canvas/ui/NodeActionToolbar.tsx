@@ -37,6 +37,7 @@ import {
   Lightbulb,
   Loader2,
   Maximize2,
+  Mountain,
   Package,
   Palette,
   PenLine,
@@ -1557,6 +1558,13 @@ export const NodeActionToolbar = memo(
                     icon: Users,
                     label: t("nodeToolbar.gridMenu.characterThreeView"),
                     prompt: t("nodeToolbar.gridMenu.characterThreeViewPrompt"),
+                    cost: 6,
+                  },
+                  {
+                    key: "sceneSettingSheet",
+                    icon: Mountain,
+                    label: t("nodeToolbar.gridMenu.sceneSettingSheet"),
+                    prompt: t("nodeToolbar.gridMenu.sceneSettingSheetPrompt"),
                     cost: 6,
                   },
                   {

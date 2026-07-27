@@ -433,6 +433,7 @@ const GRID_ACTION_DEFS: Array<{
   { key: 'serialStoryboard25', icon: LayoutDashboard, label: '25宫格连贯分镜' },
   { key: 'cinematicLightCorrection', icon: Film, label: '电影级光影校正' },
   { key: 'characterThreeView', icon: Users, label: '角色三视图生成' },
+  { key: 'sceneSettingSheet', icon: Mountain, label: '场景设定图' },
   { key: 'frameProjection3sLater', icon: FastForward, label: '画面推演 - 3秒后' },
   { key: 'frameProjection5sEarlier', icon: Rewind, label: '画面推演 - 5秒前' },
 ];
