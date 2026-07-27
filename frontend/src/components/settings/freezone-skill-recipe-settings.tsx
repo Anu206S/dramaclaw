@@ -2424,7 +2424,6 @@ function createSkillBundleExportMeta(item: ManagedCatalogItem): Record<string, u
     description: item.description || item.title || item.id,
     author: "",
     license: "",
-    min_dramaclaw_version: "1.0.0",
     tags: item.tags,
   };
 }

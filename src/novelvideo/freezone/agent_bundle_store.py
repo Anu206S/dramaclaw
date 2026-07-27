@@ -82,7 +82,8 @@ def export_agent_bundle(
             username=username,
         ),
         "license": _bundle_meta_value(skill, bundle_meta, "license") or "Proprietary",
-        "min_dramaclaw_version": _bundle_meta_value(skill, bundle_meta, "min_dramaclaw_version") or "2.0.0",
+        "min_dramaclaw_version": _bundle_meta_value(skill, bundle_meta, "min_dramaclaw_version")
+        or current_dramaclaw_version(),
         "tags": _bundle_meta_tags(skill, bundle_meta),
         "skill": _strip_catalog_metadata(skill),
         "recipes": [_strip_catalog_metadata(recipe) for recipe in recipes],
