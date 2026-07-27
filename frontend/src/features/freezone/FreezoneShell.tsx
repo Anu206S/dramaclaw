@@ -2632,10 +2632,13 @@ function FreezoneChatDock({
         ref={asideRef}
         className={cn(
           // 贴右边、通屏高（对标 liblib）：fixed 而不是 absolute——抽屉要从屏幕
-          // 最顶铺到最底，压在顶栏与底部状态条之上，而不是只占内容区那一段。
-          // 被它盖住的那些全屏横条靠 --freezone-dock-width 自己往左收（见 dockOffset）。
-          // z 要压过任务面板(z-40) 与底部状态条(z-50)，否则通高浮层会被它们劈开。
-          "fixed inset-y-0 right-0 z-[60] hidden flex-col overflow-hidden border-l border-white/[0.12] shadow-none lg:flex",
+          // 最顶铺到最底，而不是只占内容区那一段。顶栏/任务面板/底部状态条不靠 z 压，
+          // 是靠 --freezone-dock-width 自己整条往左收（见 dockOffset），两边宽度用同一个
+          // clamp，稳态下压根不重叠。
+          // z 必须 <50：shadcn 的浮层（下拉/选择/气泡/提示/弹窗）都 portal 到 body 且
+          // 定位层是 isolate z-50，抽屉一旦到 50 以上，抽屉内所有菜单都会被自己的实底
+          // 盖住 —— 表现就是「点了没反应」。45 只要高过任务面板(z-40)与其遮罩(z-30)即可。
+          "fixed inset-y-0 right-0 z-[45] hidden flex-col overflow-hidden border-l border-white/[0.12] shadow-none lg:flex",
           // 实底 #212121（用户指定）：比故事板面板的 #262626 再深一档，agent 抽屉不再是半透明
           // 毛玻璃。顺带把 backdrop-blur-2xl 一起去掉——通高的大半径模糊每帧都要
           // 重新光栅化，是拖宽「跟不上手」的主因，实底之后它也没有可模糊的东西了。
