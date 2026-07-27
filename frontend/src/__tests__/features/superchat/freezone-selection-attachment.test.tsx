@@ -614,10 +614,14 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     );
 
     const copyButton = screen.getByLabelText("Copy");
+    // 工具条靠 top-full + mt-1 悬浮在气泡下方的消息间距里，容器不再用 hover:pb-10
+    // 给它预留高度——hover 改高度会触发消息列表的 ResizeObserver，贴底时整条列表
+    // 会往上抖（见「消除虾导消息 hover 时列表跳动」）。
     expect(copyButton.parentElement).toHaveClass("absolute");
-    expect(copyButton.parentElement).toHaveClass("bottom-2");
+    expect(copyButton.parentElement).toHaveClass("top-full");
+    expect(copyButton.parentElement).toHaveClass("mt-1");
     expect(copyButton.parentElement).toHaveClass("right-0");
-    expect(copyButton.parentElement?.parentElement).toHaveClass("hover:pb-10");
+    expect(copyButton.parentElement?.parentElement).not.toHaveClass("hover:pb-10");
 
     fireEvent.click(copyButton);
 
@@ -683,12 +687,14 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     );
 
     const copyButton = screen.getByLabelText("Copy");
+    // 同上：气泡下方悬浮 + 容器零高度变化（左侧只是换成 left-0）。
     expect(copyButton.parentElement).toHaveClass("absolute");
-    expect(copyButton.parentElement).toHaveClass("bottom-2");
+    expect(copyButton.parentElement).toHaveClass("top-full");
+    expect(copyButton.parentElement).toHaveClass("mt-1");
     expect(copyButton.parentElement).toHaveClass("left-0");
     expect(copyButton.parentElement).not.toHaveClass("right-0");
     expect(copyButton.parentElement).not.toHaveClass("top-1.5");
-    expect(copyButton.parentElement?.parentElement).toHaveClass("hover:pb-10");
+    expect(copyButton.parentElement?.parentElement).not.toHaveClass("hover:pb-10");
   });
 
   it("shows context usage as an assistant action badge instead of body text", () => {
