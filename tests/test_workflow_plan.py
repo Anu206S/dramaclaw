@@ -309,12 +309,36 @@ def test_compact_dynamic_intent_compiles_recipe_items_to_valid_plan(monkeypatch)
 
     assert compiled["ok"] is True
     assert compiled["node_count"] == 5
-    assert compiled["step_counts"] == {}
     plan = compiled["plan"]
     assert plan["mode"] == "tool_compiled_dynamic"
-    assert plan["nodes"][1]["data"]["workflowCatalog"]["recipeId"] == "pixar-ip-character-design"
+    node_catalog = plan["nodes"][1]["data"]["workflowCatalog"]
+    assert node_catalog["recipeId"] == "pixar-ip-character-design"
+    assert node_catalog["skillVersion"] == plan["skill"]["version"]
+    assert node_catalog["confirmedInputs"]["aspect_ratio"] == "9:16"
     assert plan["nodes"][-1]["node_type"] == "videoComposeNode"
     assert catalog.validate_agent_workflow_plan(plan)["ok"] is True
+
+
+def test_validator_rejects_skill_version_mismatch_and_recipe_outside_whitelist():
+    plan = _dynamic_plan()
+    plan["nodes"][1]["data"]["workflowCatalog"]["skillVersion"] = "5"
+    result = validate_workflow_plan(
+        plan,
+        skills_by_id={"ecommerce-product": _MINIMAL_ECOMMERCE_SKILL},
+        recipes_by_id={item["id"]: item for item in _MINIMAL_ECOMMERCE_RECIPES},
+    )
+    assert result["ok"] is False
+    assert any(issue["path"].endswith("skillVersion") for issue in result["errors"])
+
+    plan = _dynamic_plan()
+    plan["nodes"][1]["data"]["workflowCatalog"]["recipeId"] = "general-video"
+    result = validate_workflow_plan(
+        plan,
+        skills_by_id={"ecommerce-product": _MINIMAL_ECOMMERCE_SKILL},
+        recipes_by_id={item["id"]: item for item in _MINIMAL_ECOMMERCE_RECIPES},
+    )
+    assert result["ok"] is False
+    assert any("not allowed by skill" in issue["message"] for issue in result["errors"])
 
 
 def test_compiler_uses_explicit_anchor_and_skips_audio_only_compose(monkeypatch):

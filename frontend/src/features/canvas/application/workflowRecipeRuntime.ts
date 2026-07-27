@@ -9,6 +9,9 @@ import { joinUpstreamText } from './graphContentResolver';
 import type { UpstreamContent } from './ports';
 
 interface WorkflowCatalogRuntime {
+  skillId?: unknown;
+  skillVersion?: unknown;
+  confirmedInputs?: unknown;
   recipeId?: unknown;
   recipeVersion?: unknown;
   userGoal?: unknown;
@@ -45,6 +48,20 @@ function text(value: unknown): string {
   if (typeof value === 'string') return value.trim();
   if (typeof value === 'number' && Number.isFinite(value)) return String(value);
   return '';
+}
+
+function confirmedInputs(value: unknown): Record<string, unknown> {
+  return asRecord(value) ?? {};
+}
+
+function skillRuntimeContext(catalog: WorkflowCatalogRuntime | null) {
+  const skillId = text(catalog?.skillId);
+  if (!skillId) return {};
+  return {
+    skillId,
+    skillVersion: text(catalog?.skillVersion),
+    confirmedInputs: confirmedInputs(catalog?.confirmedInputs),
+  };
 }
 
 function promptStrategy(value: unknown): RecipePromptStrategy {
@@ -102,6 +119,7 @@ export async function compileWorkflowNodePrompt(
   return await compileFreezoneRecipePrompt({
     recipeId,
     recipeVersion: text(catalog?.recipeVersion),
+    ...skillRuntimeContext(catalog),
     nodeKind: input.nodeKind,
     promptStrategy: promptStrategy(catalog?.promptStrategy),
     nodePrompt: input.nodePrompt,
@@ -128,6 +146,7 @@ export async function generateWorkflowText(input: {
   return await generateFreezoneRecipeText({
     recipeId,
     recipeVersion: text(catalog?.recipeVersion),
+    ...skillRuntimeContext(catalog),
     nodePrompt: input.nodePrompt,
     upstreamText,
     userGoal: text(catalog?.userGoal) || text(catalog?.promptBuilder?.userGoal),
