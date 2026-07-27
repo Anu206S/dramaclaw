@@ -52,15 +52,16 @@ const OP_ITEM_IDLE_CLASS = 'text-white/72 hover:bg-white/[0.08] hover:text-white
 const OP_ITEM_ACTIVE_CLASS = 'bg-white/[0.14] text-white';
 
 /**
- * 输入框顶部的**功能 chip**（对标 liblib 详情输入框里那颗「⬢ 角色设定图 ⇄」）：
+ * 输入框里的**功能 chip**（对标 liblib 详情输入框里那颗「⬢ 角色设定图 ⇄」，位置
+ * 同样在提示词编辑器正上方）：
  *
  * - 可点：点 chip 本体 / ⇄ 展开功能框，按四栏（分镜叙事 / 空间与机位 / 设定图 /
  *   质感调节）列出全部功能，选一个就地换掉当前功能（节点名跟着换）。
  * - 可关：× 清掉 `imageOpKey`，节点退化成普通图片生成节点，↑ 走常规文生图。
  * - chip 下方一行功能说明，告诉用户这个功能会拿当前图做什么。
  *
- * 只挂在故事板详情（宿主 `AssetBoardImageGenForm`），共用表单
- * `ImageGenerationForm` 零改动——工作流侧的节点面板不受影响。
+ * 只挂在故事板详情（宿主 `AssetBoardImageGenForm` 经共用表单的 `promptLeadingSlot`
+ * 插槽传入）——工作流侧的节点面板不传该 prop，渲染不受影响。
  */
 export function AssetBoardImageOpChip({
   nodeId,
@@ -95,7 +96,9 @@ export function AssetBoardImageOpChip({
   const Icon = ASSET_BOARD_IMAGE_OP_ICONS[opKey];
 
   return (
-    <div className="flex shrink-0 flex-col gap-1 px-3 pt-3">
+    // 位置：输入框内、chips 行（风格/调色盘/资产库）之下、提示词编辑器之上。上面
+    // 那行自带 pt-3，这里只补 pt-2 拉开间距；下方提示词编辑器自带 py-2，不再补。
+    <div className="flex shrink-0 flex-col gap-1 px-3 pt-2">
       <div className="relative flex items-center gap-1.5">
         <button
           ref={triggerRef}
