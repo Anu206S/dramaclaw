@@ -4653,7 +4653,7 @@ export function buildAssistantClarificationResponseForTest(
     ...lines,
     "回答如下：",
     ...answerLines,
-    "请基于以上补充信息继续。",
+    "请根据以上补充信息执行下一步。",
   ].join("\n");
 }
 
@@ -4668,7 +4668,13 @@ export function buildAssistantClarificationToolResultForTest(
   const message = [
     buildAssistantClarificationResponseForTest(event, safeAnswers),
     options.skillStudioRevision
-      ? "当前处于 Skill Studio 草稿修订流程。请根据这个回答决定下一步；如果还需要追问，请一次只提出一个问题，等用户回答后再决定是否继续追问。信息足够时直接输出完整更新后的 Skill / Recipe 草稿。"
+      ? [
+          "当前处于 Skill Studio 草稿修订流程。",
+          "用户已经给出具体修改方向；如果信息足够，下一步必须调用 freezone_patch_agent_catalog_draft 更新草稿，或用分片草稿工具替换较大的 Skill / Recipe 内容。",
+          "更新后必须调用 freezone_finish_agent_catalog_draft 展示新的可编辑草稿卡。",
+          "不要只回复普通文本，不要只总结修改意图，不要询问是否保存，也不要展示未修改的旧草稿。",
+          "只有修改方向仍不明确时，才再调用 freezone_request_user_clarification 追问一个问题。",
+        ].join("\n")
       : "",
   ].filter(Boolean).join("\n\n");
   return {
@@ -4729,6 +4735,27 @@ function buildPersistedAssistantClarificationEvent(
 }
 
 export const buildPersistedAssistantClarificationEventForTest = buildPersistedAssistantClarificationEvent;
+
+function skillStudioResultClientDebug(
+  event: SkillStudioUiEvent,
+  source: string,
+  extra: Record<string, unknown> = {},
+): Record<string, unknown> {
+  const record = event as Record<string, unknown>;
+  return {
+    source,
+    event_type: event.type,
+    event_turn_id: event.turn_id ?? null,
+    bridge_key: typeof record.bridge_key === "string" ? record.bridge_key : null,
+    skill_studio_session_id: typeof record.skill_studio_session_id === "string" ? record.skill_studio_session_id : null,
+    project_id: typeof record.project_id === "string" ? record.project_id : null,
+    canvas_id: typeof record.canvas_id === "string" ? record.canvas_id : null,
+    agent_id: typeof record.agent_id === "string" ? record.agent_id : null,
+    page_url: typeof window !== "undefined" ? window.location.href : null,
+    sent_at: new Date().toISOString(),
+    ...extra,
+  };
+}
 
 function draftPayloadFromEvent(event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>) {
   if (event.draft && typeof event.draft === "object" && !Array.isArray(event.draft)) {
@@ -4898,9 +4925,12 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
       "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
       "不要询问是否保存当前版本，也不要提供 save_now / save_current / confirm_save 这类选项；保存只由页面草稿卡的确认按钮处理。",
-      "如果需要追问，请直接询问具体修改方向、范围或偏好。",
-      "请基于当前完整草稿，一个问题一个问题地收集修改意图；信息足够后使用分片草稿工具输出更新草稿。",
-      "下一步只能调用 freezone_request_user_clarification，或按顺序调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
+      "这不是继续完成原草稿，也不是要求重新展示当前草稿。",
+      "用户还没有提供具体修改方向；下一步必须调用 freezone_request_user_clarification 追问修改方向、范围或偏好。",
+      "这次 clarification 的 questions 数组必须只有一个问题，问题要直接问用户想改哪里或怎么改。",
+      "在用户回答修改方向之前，禁止调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
+      "禁止调用 freezone_finish_agent_catalog_draft 原样展示当前草稿。",
+      "用户回答修改方向后，再基于当前完整草稿进行局部 patch 或分片输出更新草稿。",
       "不要在单个 tool_call 里传完整 Skill / Recipe catalog。",
       "不要用普通文本总结修改结果；不要只说明改了什么；未输出更新草稿前不要让用户保存。",
     ].filter(Boolean).join("\n"),
@@ -12316,6 +12346,11 @@ export function SuperChatPanel({
         ...buildSkillStudioQuestionToolResultForTest(event, selections),
         action,
         skill_studio_status: action === "submit" ? "answered" : action,
+        client_debug: skillStudioResultClientDebug(event, "questions_card_ws", {
+          selected_action: action,
+          active_turn_id: chat.activeTurnId,
+          chat_busy: chat.busy,
+        }),
         message:
           action === "recommended"
             ? buildSkillStudioRecommendedResponse(event)
@@ -12450,7 +12485,23 @@ export function SuperChatPanel({
       return false;
     }
     try {
-      const payload = buildSkillStudioDraftToolResultForTest(event, draftPayload);
+      const payload = {
+        ...buildSkillStudioDraftToolResultForTest(event, draftPayload),
+        client_debug: skillStudioResultClientDebug(event, "draft_confirm_add_http", {
+          active_turn_id: chat.activeTurnId,
+          chat_busy: chat.busy,
+        }),
+      };
+      console.info("[superchat] submit skill_studio.result via http", {
+        turn_id: payload.turn_id,
+        bridge_key: payload.bridge_key,
+        action: payload.action,
+        skill_studio_status: payload.skill_studio_status,
+        saved_to_catalog: payload.saved_to_catalog,
+        saved_skill_ids: payload.saved_skill_ids,
+        saved_recipe_ids: payload.saved_recipe_ids,
+        client_debug: payload.client_debug,
+      });
       const result = await apiCall<SkillStudioToolResultResponse>("chat/skill-studio-tool-result", {
         method: "POST",
         json: payload,
@@ -12521,7 +12572,7 @@ export function SuperChatPanel({
       toast.error("添加 Skill / Recipe 失败，请检查必填字段后重试");
       return false;
     }
-  }, [effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
+  }, [chat.activeTurnId, chat.busy, effectiveFreezoneAgentId, effectiveFreezoneCanvasId, params.project, persistSkillStudioUiEvent, queryClient, updateChatUiEvent]);
 
   const handleSkillStudioDraftChange = useCallback((
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
@@ -12563,7 +12614,13 @@ export function SuperChatPanel({
       return false;
     }
     try {
-      const payload = buildSkillStudioDraftRevisionToolResultForTest(event, draftPayload);
+      const payload = {
+        ...buildSkillStudioDraftRevisionToolResultForTest(event, draftPayload),
+        client_debug: skillStudioResultClientDebug(event, "draft_start_revision_button_ws", {
+          active_turn_id: chat.activeTurnId,
+          chat_busy: chat.busy,
+        }),
+      };
       if (!chat.submitSkillStudioResult(payload)) {
         toast.error("Skill Studio 连接未就绪，请重试");
         return false;
@@ -12614,7 +12671,13 @@ export function SuperChatPanel({
       toast.error("Skill Studio 桥接信息缺失，请重试");
       return;
     }
-    const payload = buildSkillStudioDraftCancelToolResultForTest(event, draftPayload);
+    const payload = {
+      ...buildSkillStudioDraftCancelToolResultForTest(event, draftPayload),
+      client_debug: skillStudioResultClientDebug(event, "draft_cancel_button_ws", {
+        active_turn_id: chat.activeTurnId,
+        chat_busy: chat.busy,
+      }),
+    };
     if (!chat.submitSkillStudioResult(payload)) {
       toast.error("Skill Studio 连接未就绪，请重试");
       return;
