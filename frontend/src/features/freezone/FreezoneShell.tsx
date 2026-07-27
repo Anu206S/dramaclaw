@@ -2009,9 +2009,16 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
               components/nav/sliding-tabs.tsx 的 SlidingTabs，因此这里直接复刻同一套
               容器/选中/未选中类，而不是套用 shadcn Tabs 默认的深色选中态。
               容器底色沿用本任务前一步确定的硬编码 #262626（与故事板背景同色）。
-              top-1.5：与顶栏 虾画/虾集 的间距对齐虾集子菜单的紧凑距离（用户指定）。 */}
+              top-1.5：与顶栏 虾画/虾集 的间距对齐虾集子菜单的紧凑距离（用户指定）。
+
+              居中基准是**视口**而不是这块内容区：故事板下开虾导抽屉会把 <main> 挤窄，
+              按 left-1/2 算就会跟着往左跳一截，与正上方的 虾画/虾集 错开。<main> 左
+              边缘恒在 x=0，所以这里的 left 就是绝对横坐标，直接取 50vw 即可对齐。
+              后一项是兜底：抽屉拖到宽过半屏时（小屏 + 开历史 Agent 就会），视口中线
+              已经被抽屉盖住，此时贴着内容区右缘停住，别钻到抽屉底下去。
+              88px = 胶囊半宽（两个 w-[88px] 按钮），再留 12px 余量。 */}
           {!showBlockingLoading && (
-            <div className="absolute left-1/2 top-1.5 z-40 -translate-x-1/2">
+            <div className="absolute left-[min(50vw,calc(100%_-_100px))] top-1.5 z-40 -translate-x-1/2">
               <nav aria-label="画布视图切换" className="relative flex h-8 items-center rounded-full bg-[#262626] shadow-lg">
                 <span
                   aria-hidden="true"
@@ -2500,7 +2507,7 @@ function FreezoneChatDock({
         <Sheet open={open} onOpenChange={onOpenChange}>
           <SheetContent
             side="right"
-            className="flex w-full flex-col gap-0 bg-[#262626] p-0 sm:!max-w-[560px]"
+            className="flex w-full flex-col gap-0 bg-[#212121] p-0 sm:!max-w-[560px]"
           >
             <SheetHeader className="sr-only">
               <SheetTitle>{title}</SheetTitle>
@@ -2510,7 +2517,7 @@ function FreezoneChatDock({
               <div className="min-h-0 flex-1">{agentPanels}</div>
               <div
                 className={cn(
-                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-[#262626] shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
+                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-[#212121] shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
                   agentHistoryOpen ? "translate-x-0" : "translate-x-full",
                 )}
               >
@@ -2583,10 +2590,10 @@ function FreezoneChatDock({
           // 贴右边、通高（对标 liblib）：不留外边距、不圆角，只留一条左描边把
           // 抽屉与画布/故事板分开。
           "absolute inset-y-0 right-0 z-40 hidden flex-col overflow-hidden border-l border-white/[0.12] shadow-none lg:flex",
-          // 实底 #262626：与故事板三栏/视图切换胶囊同色，agent 抽屉不再是半透明
+          // 实底 #212121（用户指定）：比故事板面板的 #262626 再深一档，agent 抽屉不再是半透明
           // 毛玻璃。顺带把 backdrop-blur-2xl 一起去掉——通高的大半径模糊每帧都要
           // 重新光栅化，是拖宽「跟不上手」的主因，实底之后它也没有可模糊的东西了。
-          "bg-[#262626]",
+          "bg-[#212121]",
           dockTransition,
           panelVisible ? "translate-x-0 opacity-100" : "translate-x-10 opacity-0",
           !panelVisible && "pointer-events-none",
@@ -2641,7 +2648,7 @@ function FreezoneChatDock({
             className={cn(
               // 与聊天区同底色：靠那条左描边分栏就够了。旧的 zinc-950/45 是叠在
               // 半透明抽屉上的一层压暗，抽屉换实底后它会变成一块明显更黑的侧栏。
-              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-[#262626]",
+              "min-h-0 overflow-hidden border-l border-white/[0.08] bg-[#212121]",
               // 与外壳同一条时间线：收起/展开一起走 300ms，拖拽期一起关掉。
               resizing
                 ? "transition-none"
