@@ -319,6 +319,8 @@ const RUN_NODE_ACTIONS = new Set([
   "open_grid_cinematic_light_correction",
   "run_grid_character_three_view",
   "open_grid_character_three_view",
+  "run_grid_scene_setting_sheet",
+  "open_grid_scene_setting_sheet",
   "run_grid_frame_projection_3s_later",
   "open_grid_frame_projection_3s_later",
   "run_grid_frame_projection_5s_earlier",
@@ -406,6 +408,8 @@ const CURRENT_MEDIA_NODE_ACTIONS = new Set([
   "open_grid_cinematic_light_correction",
   "run_grid_character_three_view",
   "open_grid_character_three_view",
+  "run_grid_scene_setting_sheet",
+  "open_grid_scene_setting_sheet",
   "run_grid_frame_projection_3s_later",
   "open_grid_frame_projection_3s_later",
   "run_grid_frame_projection_5s_earlier",
@@ -437,6 +441,7 @@ const RESULT_SPAWNING_NODE_ACTIONS = new Set([
   "run_grid_serial_storyboard_25",
   "run_grid_cinematic_light_correction",
   "run_grid_character_three_view",
+  "run_grid_scene_setting_sheet",
   "run_grid_frame_projection_3s_later",
   "run_grid_frame_projection_5s_earlier",
 ]);
@@ -2616,6 +2621,7 @@ function commandLabel(command: CanvasChatCommand): string {
       if (command.action === "run_grid_serial_storyboard_25") return "生成连续分镜 25 格";
       if (command.action === "run_grid_cinematic_light_correction") return "生成电影感光影修正";
       if (command.action === "run_grid_character_three_view") return "生成角色三视图";
+      if (command.action === "run_grid_scene_setting_sheet") return "生成场景设定图";
       if (command.action === "run_grid_frame_projection_3s_later") return "推演 3 秒后画面";
       if (command.action === "run_grid_frame_projection_5s_earlier") return "推演 5 秒前画面";
       if (command.action === "open_video_viewer") return "打开视频";

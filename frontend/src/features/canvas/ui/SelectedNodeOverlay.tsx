@@ -68,11 +68,9 @@ import {
 } from '@/features/canvas/ui/ProviderModelPicker';
 import { OutpaintEditorOverlay } from './OutpaintEditorOverlay';
 import { RotateEditorOverlay } from './RotateEditorOverlay';
-import {
-  GridActionConfirmOverlay,
-  type GridActionKey,
-  type GridActionRequest,
-} from './GridActionConfirmOverlay';
+import type { GridActionKey } from '@/features/canvas/application/gridTemplateAction';
+import type { GridActionRequest } from './NodeActionToolbar';
+import { spawnAssetBoardImageOpNode } from '@/features/canvas/application/assetBoardImageOps';
 import { readUrl } from '@/lib/url-params';
 import { inheritMainlineFields } from '../domain/inheritMainlineFields';
 
@@ -109,9 +107,6 @@ function nodeHasResourceForToolbar(node: CanvasNode): boolean {
   return true;
 }
 
-const GRID_ACTION_FOCUS_ZOOM = 1.2;
-const GRID_ACTION_FOCUS_DURATION = 320;
-const GRID_ACTION_DEFAULT_NODE_HEIGHT = 320;
 const SCENE_360_FOCUS_ZOOM = 1.2;
 const SCENE_360_FOCUS_DURATION = 320;
 const SCENE_360_DEFAULT_NODE_HEIGHT = 320;
@@ -160,6 +155,11 @@ const GRID_RUN_ACTIONS: Record<string, {
     key: 'characterThreeView',
     i18nKey: 'nodeToolbar.gridMenu.characterThreeView',
     mode: 'character_three_view_generation',
+  },
+  run_grid_scene_setting_sheet: {
+    key: 'sceneSettingSheet',
+    i18nKey: 'nodeToolbar.gridMenu.sceneSettingSheet',
+    mode: 'scene_setting_sheet',
   },
   run_grid_frame_projection_3s_later: {
     key: 'frameProjection3sLater',
@@ -228,7 +228,6 @@ export const SelectedNodeOverlay = memo(() => {
   const [eraseNodeId, setEraseNodeId] = useState<string | null>(null);
   const [outpaintNodeId, setOutpaintNodeId] = useState<string | null>(null);
   const [rotateNodeId, setRotateNodeId] = useState<string | null>(null);
-  const [gridActionRequest, setGridActionRequest] = useState<GridActionRequest | null>(null);
 
   const selectedNode = useMemo(() => {
     if (!selectedNodeId) {
@@ -274,17 +273,6 @@ export const SelectedNodeOverlay = memo(() => {
     [scene360Node]
   );
 
-  const gridActionNode = useMemo(() => {
-    if (!gridActionRequest) {
-      return null;
-    }
-    return nodes.find((node) => node.id === gridActionRequest.nodeId) ?? null;
-  }, [gridActionRequest, nodes]);
-
-  const gridActionImageSource = useMemo(
-    () => resolveNodeSourceImageUrl(gridActionNode),
-    [gridActionNode]
-  );
 
   const handleOpenMultiAngleEditor = useCallback(
     (nodeId: string) => {
@@ -499,43 +487,29 @@ export const SelectedNodeOverlay = memo(() => {
     return selectedNode.data.isUpscaleNode ? selectedNode : null;
   }, [selectedNode]);
 
-  const handleOpenGridAction = useCallback(
+  /**
+   * 「九宫格」下拉点某一项：**只在源节点下游建一个功能节点，不提交**——节点名 =
+   * 功能名，功能 chip 落在它的提示词输入框里，用户改完提示词/参考图/比例按 ↑ 才
+   * 真正下发（与故事板详情工具条同一条交互，同一个 spawn/run）。
+   *
+   * 建完就选中并聚焦过去：功能节点的生成表单是跟着 React Flow 的 `selected` 渲染的，
+   * 不选中就看不见输入框，也就没地方按 ↑。
+   */
+  const handleSpawnGridActionNode = useCallback(
     (request: GridActionRequest) => {
-      const targetNode = nodes.find((node) => node.id === request.nodeId);
-      if (targetNode) {
-        const width =
-          typeof targetNode.measured?.width === 'number'
-            ? targetNode.measured.width
-            : typeof targetNode.width === 'number'
-              ? targetNode.width
-              : DEFAULT_NODE_WIDTH;
-        const height =
-          typeof targetNode.measured?.height === 'number'
-            ? targetNode.measured.height
-            : typeof targetNode.height === 'number'
-              ? targetNode.height
-              : GRID_ACTION_DEFAULT_NODE_HEIGHT;
-        // 组内成员的 position 是相对父组坐标；setCenter 需要绝对坐标，否则视野跳偏。
-        const absolute =
-          reactFlow.getInternalNode(request.nodeId)?.internals.positionAbsolute ??
-          targetNode.position;
-        const centerX = absolute.x + width / 2;
-        const centerY = absolute.y + height / 2;
-        reactFlow.setCenter(centerX, centerY, {
-          zoom: GRID_ACTION_FOCUS_ZOOM,
-          duration: GRID_ACTION_FOCUS_DURATION,
-        });
+      const sourceNode = nodes.find((node) => node.id === request.nodeId) ?? null;
+      const imageSource = resolveNodeSourceImageUrl(sourceNode);
+      if (!sourceNode || !imageSource) {
+        return;
       }
-      setGridActionRequest(request);
-      clearFlowSelection();
-      setSelectedNode(null);
+      const nextNodeId = spawnAssetBoardImageOpNode(sourceNode.id, imageSource, request.key);
+      if (!nextNodeId) {
+        return;
+      }
+      selectAndFocusCanvasNode(nextNodeId);
     },
-    [clearFlowSelection, nodes, reactFlow, setSelectedNode]
+    [nodes, selectAndFocusCanvasNode]
   );
-
-  const handleCloseGridAction = useCallback(() => {
-    setGridActionRequest(null);
-  }, []);
 
   useEffect(() => {
     return subscribeNodeAction(({ nodeId, action, requestId }) => {
@@ -966,7 +940,6 @@ export const SelectedNodeOverlay = memo(() => {
     ?? eraseNodeId
     ?? outpaintNodeId
     ?? rotateNodeId
-    ?? gridActionRequest?.nodeId
     ?? null;
 
   useEffect(() => {
@@ -1019,7 +992,7 @@ export const SelectedNodeOverlay = memo(() => {
           onOpenScene360={handleOpenScene360}
           onOpenUpscale={handleOpenUpscale}
           onOpenOutpaint={handleOpenOutpaint}
-          onOpenGridAction={handleOpenGridAction}
+          onSpawnGridActionNode={handleSpawnGridActionNode}
           onOpenRedraw={handleOpenRedraw}
           onOpenErase={handleOpenErase}
           onOpenRotate={handleOpenRotate}
@@ -1074,14 +1047,6 @@ export const SelectedNodeOverlay = memo(() => {
           node={rotateNode}
           imageSource={rotateImageSource}
           onClose={handleCloseRotate}
-        />
-      )}
-      {gridActionRequest && gridActionNode && gridActionImageSource && (
-        <GridActionConfirmOverlay
-          node={gridActionNode}
-          imageSource={gridActionImageSource}
-          request={gridActionRequest}
-          onClose={handleCloseGridAction}
         />
       )}
     </>

@@ -83,7 +83,6 @@ interface SkillDraft {
   nodeScopes: string[];
   allowedRecipeIds: string[];
   inputParameters: SkillInputParameterDraft[];
-  defaultAspectRatios: Record<string, string>;
   planningNotes: string;
   promptGuide: string;
   conductRules: string[];
@@ -912,7 +911,6 @@ function NewSkillEditor({
     nodeScopes: [],
     allowedRecipeIds: [],
     inputParameters: [],
-    defaultAspectRatios: {},
     planningNotes: "",
     promptGuide: "",
     conductRules: [],
@@ -947,7 +945,6 @@ function NewSkillEditor({
         nodeScopes: [],
         allowedRecipeIds: [],
         inputParameters: [],
-        defaultAspectRatios: {},
         planningNotes: "",
         promptGuide: "",
         conductRules: [],
@@ -1025,9 +1022,6 @@ function NewSkillEditor({
           planning_notes: skillDraft.planningNotes,
           prompt_guide: skillDraft.promptGuide,
           conduct_rules: skillDraft.conductRules,
-          ...(Object.keys(skillDraft.defaultAspectRatios).length > 0
-            ? { default_aspect_ratios: skillDraft.defaultAspectRatios }
-            : {}),
         },
         evaluation: {
           rating_bands: ratingBands.map((anchor) => ({
@@ -1349,14 +1343,6 @@ function skillDraftFromPayload(payload: FreezoneAgentConfigPayload | null): {
       nodeScopes: getStringArray(triggers.node_scopes ?? triggers.nodeTypes ?? triggers.node_types),
       allowedRecipeIds: getStringArray(payload?.allowed_recipe_ids ?? payload?.allowedRecipeIds),
       inputParameters: inputParameterDraftsFromPayload(payload?.input_parameters ?? payload?.inputParameters),
-      defaultAspectRatios: Object.fromEntries(
-        Object.entries(getRecord(planning.default_aspect_ratios ?? planning.defaultAspectRatios))
-          .filter((entry): entry is [string, string] =>
-            typeof entry[1] === "string"
-            && entry[0] !== "textGeneration"
-            && entry[1] !== "auto",
-          ),
-      ),
       planningNotes: getString(planning.planning_notes),
       promptGuide: getString(planning.prompt_guide),
       conductRules: getStringArray(planning.conduct_rules),
@@ -2439,7 +2425,6 @@ function createSkillBundleExportMeta(item: ManagedCatalogItem): Record<string, u
     description: item.description || item.title || item.id,
     author: "",
     license: "",
-    min_dramaclaw_version: "1.0.0",
     tags: item.tags,
   };
 }
@@ -2511,8 +2496,10 @@ export function CommunitySkillDialog({
                     <button
                       type="button"
                       className={cn(
-                        "rounded-md px-1.5 py-1 text-base leading-6 transition hover:bg-white/[0.055]",
-                        !isMine ? "text-foreground" : "text-muted-foreground",
+                        // 全窗统一走纯白 + 透明度分层：muted-foreground 是带蓝调的
+                        // 中灰(oklch .66)，压在 #070808 上发闷，用户要求改白。
+                        "rounded-[6px] px-1.5 py-1 text-base leading-6 transition hover:bg-white/[0.055]",
+                        !isMine ? "text-white" : "text-white/60 hover:text-white/85",
                       )}
                       onClick={() => onModeChange?.("community")}
                     >
@@ -2522,8 +2509,8 @@ export function CommunitySkillDialog({
                   <button
                     type="button"
                     className={cn(
-                      "rounded-md px-1.5 py-1 text-sm leading-5 transition hover:bg-white/[0.055]",
-                      isMine ? "text-foreground" : "text-muted-foreground",
+                      "rounded-[6px] px-1.5 py-1 text-sm leading-5 transition hover:bg-white/[0.055]",
+                      isMine ? "text-white" : "text-white/60 hover:text-white/85",
                     )}
                     onClick={() => onModeChange?.("mine")}
                   >
@@ -2535,7 +2522,7 @@ export function CommunitySkillDialog({
                   <DialogTitle className="text-base leading-8">
                     {t("settings.freezoneCatalog.community.title")}
                   </DialogTitle>
-                  <span className="text-sm text-muted-foreground">
+                  <span className="text-sm text-white/62">
                     {t("settings.freezoneCatalog.community.featured")}
                   </span>
                 </>
@@ -2545,7 +2532,7 @@ export function CommunitySkillDialog({
               <button
                 type="button"
                 aria-label={t("settings.freezoneCatalog.refresh")}
-                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.055] hover:text-foreground disabled:cursor-not-allowed disabled:opacity-50"
+                className="grid size-8 shrink-0 place-items-center rounded-[6px] text-white/60 transition-colors hover:bg-white/[0.055] hover:text-white disabled:cursor-not-allowed disabled:opacity-50"
                 onClick={onRetry}
                 disabled={loading}
               >
@@ -2554,7 +2541,7 @@ export function CommunitySkillDialog({
               <button
                 type="button"
                 aria-label={t("settings.freezoneCatalog.community.close")}
-                className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.055] hover:text-foreground"
+                className="grid size-8 shrink-0 place-items-center rounded-[6px] text-white/60 transition-colors hover:bg-white/[0.055] hover:text-white"
                 onClick={() => onOpenChange(false)}
               >
                 <X className="size-4" />
@@ -2566,18 +2553,20 @@ export function CommunitySkillDialog({
               <span
                 key={key}
                 className={cn(
-                  "rounded-md border px-3 py-1.5 text-xs",
+                  // 圆角写死 px：本项目 --radius=1rem，rounded-md 实际 14px，
+                  // 这排小筛选片会圆成胶囊（用户要求收小）。
+                  "rounded-[6px] border px-3 py-1.5 text-xs",
                   key === "recommended"
-                    ? "border-border bg-white/[0.08] text-foreground"
-                    : "border-border/60 bg-white/[0.02] text-muted-foreground",
+                    ? "border-border bg-white/[0.08] text-white"
+                    : "border-border/60 bg-white/[0.02] text-white/62",
                 )}
               >
                 {t(`settings.freezoneCatalog.community.filters.${key}`)}
               </span>
             ))}
             <div className="relative ml-auto w-[min(340px,36vw)]">
-              <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-muted-foreground" />
-              <div className="h-9 rounded-full border border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs leading-9 text-muted-foreground">
+              <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-white/45" />
+              <div className="h-9 rounded-[8px] border border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs leading-9 text-white/50">
                 {t("settings.freezoneCatalog.community.searchPlaceholder")}
               </div>
             </div>
@@ -2585,7 +2574,7 @@ export function CommunitySkillDialog({
         </DialogHeader>
         <div className="h-[calc(100%-96px)] overflow-y-auto px-5 py-4">
           {loading ? (
-            <div className="grid h-full min-h-80 place-items-center text-sm text-muted-foreground">
+            <div className="grid h-full min-h-80 place-items-center text-sm text-white/70">
               <div className="flex items-center gap-2">
                 <RefreshCw className="size-3.5 animate-spin" />
                 {t("settings.freezoneCatalog.community.loading")}
@@ -2594,10 +2583,10 @@ export function CommunitySkillDialog({
           ) : error ? (
             <div className="grid h-full min-h-80 place-items-center text-center">
               <div>
-                <p className="text-sm font-medium text-foreground">
+                <p className="text-sm font-medium text-white">
                   {t("settings.freezoneCatalog.community.loadFailed")}
                 </p>
-                <p className="mt-1 text-xs text-muted-foreground">
+                <p className="mt-1 text-xs text-white/70">
                   {t("settings.freezoneCatalog.community.loadFailedHint")}
                 </p>
                 <Button type="button" variant="outline" size="sm" className="mt-4 h-8" onClick={onRetry}>
@@ -2609,10 +2598,10 @@ export function CommunitySkillDialog({
             localItems.length === 0 ? (
               <div className="grid h-full min-h-80 place-items-center text-center">
                 <div>
-                  <p className="text-sm font-medium text-foreground">
+                  <p className="text-sm font-medium text-white">
                     这里暂时没有 Skill
                   </p>
-                  <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-muted-foreground">
+                  <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-white/70">
                     可以先让虾导总结当前画布，或描述工作流来创建自己的 Skill。
                   </p>
                 </div>
@@ -2622,24 +2611,26 @@ export function CommunitySkillDialog({
                 {localItems.map((item) => (
                   <article
                     key={item.id}
-                    className="flex min-h-[104px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3"
+                    // hover 整条给反馈（用户要求）：只提亮底色和描边，不换指针——
+                    // 可点的只有右侧「使用」，整条并不是按钮。
+                    className="group/skill-card flex min-h-[104px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3 transition-colors hover:border-white/20 hover:bg-white/[0.05]"
                   >
-                    <div className="grid size-14 shrink-0 place-items-center rounded-md border border-white/[0.08] bg-white/[0.04] text-xs text-muted-foreground">
+                    <div className="grid size-14 shrink-0 place-items-center rounded-md border border-white/[0.08] bg-white/[0.04] text-xs text-white/55 transition-colors group-hover/skill-card:bg-white/[0.07] group-hover/skill-card:text-white/75">
                       Skill
                     </div>
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-2">
-                        <h4 className="truncate text-[13px] font-semibold text-foreground">
+                        <h4 className="truncate text-[13px] font-semibold text-white">
                           {item.label || item.id}
                         </h4>
                         {item.category ? (
-                          <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/75">
+                          <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-white/62">
                             {item.category}
                           </span>
                         ) : null}
                       </div>
                       {item.description ? (
-                        <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                        <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-white/72">
                           {item.description}
                         </p>
                       ) : null}
@@ -2660,10 +2651,10 @@ export function CommunitySkillDialog({
           ) : items.length === 0 ? (
             <div className="grid h-full min-h-80 place-items-center text-center">
               <div>
-                <p className="text-sm font-medium text-foreground">
+                <p className="text-sm font-medium text-white">
                   {t("settings.freezoneCatalog.community.empty")}
                 </p>
-                <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-muted-foreground">
+                <p className="mx-auto mt-1 max-w-[360px] text-xs leading-relaxed text-white/70">
                   {t("settings.freezoneCatalog.community.emptyDescription")}
                 </p>
               </div>
@@ -2676,7 +2667,7 @@ export function CommunitySkillDialog({
                 return (
                   <article
                     key={item.id}
-                    className="flex min-h-[128px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3"
+                    className="group/skill-card flex min-h-[128px] items-center gap-3 rounded-md border border-border/70 bg-white/[0.015] px-3 py-3 transition-colors hover:border-white/20 hover:bg-white/[0.05]"
                   >
                     {item.cover_url ? (
                       <img
@@ -2685,23 +2676,23 @@ export function CommunitySkillDialog({
                         className="h-24 w-40 shrink-0 rounded-md object-cover"
                       />
                     ) : (
-                      <div className="grid h-24 w-40 shrink-0 place-items-center rounded-md bg-white/[0.04] text-xs text-muted-foreground">
+                      <div className="grid h-24 w-40 shrink-0 place-items-center rounded-md bg-white/[0.04] text-xs text-white/55 transition-colors group-hover/skill-card:bg-white/[0.07] group-hover/skill-card:text-white/75">
                         Skill
                       </div>
                     )}
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-2">
-                        <h4 className="truncate text-[13px] font-semibold text-foreground">
+                        <h4 className="truncate text-[13px] font-semibold text-white">
                           {item.name || item.id}
                         </h4>
-                        <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-muted-foreground/75">
+                        <span className="shrink-0 rounded border border-white/[0.08] bg-white/[0.025] px-1.5 py-0.5 text-[10px] leading-none text-white/62">
                           v{item.version}
                         </span>
                       </div>
-                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-white/72">
                         {item.description}
                       </p>
-                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground/75">
+                      <div className="mt-2 flex flex-wrap items-center gap-1.5 text-[10px] text-white/58">
                         <span>{item.author}</span>
                         <span>·</span>
                         <span>{item.license}</span>
