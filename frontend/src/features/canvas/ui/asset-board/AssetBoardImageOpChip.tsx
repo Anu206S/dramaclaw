@@ -177,7 +177,7 @@ export function AssetBoardImageOpChip({
                             switchAssetBoardImageOp(nodeId, op.key);
                             setAnchor(null);
                           }}
-                          className={`group flex h-11 w-full items-center gap-2.5 rounded-lg px-2 text-left transition-colors ${
+                          className={`group flex h-11 w-full items-center gap-2.5 rounded-md px-2 text-left transition-colors ${
                             isActive ? 'bg-white/[0.1]' : 'hover:bg-white/[0.06]'
                           }`}
                         >
