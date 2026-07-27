@@ -5,7 +5,14 @@ from __future__ import annotations
 import re
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationError,
+    field_validator,
+    model_validator,
+)
 
 from novelvideo.freezone.agent_catalog_security import (
     scan_agent_catalog_payload_for_unsafe_content,
@@ -18,7 +25,9 @@ CatalogNodeScope = Literal[
     "videoGeneration",
     "audioGeneration",
 ]
-InputParameterType = Literal["single_select", "multi_select", "text", "number", "boolean"]
+InputParameterType = Literal[
+    "single_select", "multi_select", "text", "number", "boolean"
+]
 RecipeOutputKind = Literal["text", "image", "video", "audio"]
 
 SAFE_AGENT_CONFIG_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
@@ -48,7 +57,9 @@ class AgentCatalogTriggerConfig(_CatalogBaseModel):
 
     @field_validator("keywords")
     @classmethod
-    def validate_keywords(cls, value: list[str | dict[str, Any]]) -> list[str | dict[str, Any]]:
+    def validate_keywords(
+        cls, value: list[str | dict[str, Any]]
+    ) -> list[str | dict[str, Any]]:
         if not value:
             raise ValueError("keywords must contain at least one item")
         return value
@@ -136,7 +147,9 @@ class AgentCatalogEvaluation(_CatalogBaseModel):
 
     @field_validator("rating_bands")
     @classmethod
-    def validate_rating_bands(cls, value: list[AgentCatalogRatingBand]) -> list[AgentCatalogRatingBand]:
+    def validate_rating_bands(
+        cls, value: list[AgentCatalogRatingBand]
+    ) -> list[AgentCatalogRatingBand]:
         if not value:
             raise ValueError("evaluation.rating_bands must contain at least one item")
         return value
@@ -145,8 +158,12 @@ class AgentCatalogEvaluation(_CatalogBaseModel):
     @classmethod
     def validate_domain_constraints(cls, value: list[str]) -> list[str]:
         if not value:
-            raise ValueError("evaluation.domain_constraints must contain at least one item")
-        return [_non_empty(item, "evaluation.domain_constraints item") for item in value]
+            raise ValueError(
+                "evaluation.domain_constraints must contain at least one item"
+            )
+        return [
+            _non_empty(item, "evaluation.domain_constraints item") for item in value
+        ]
 
 
 class AgentCatalogSkillConfig(_CatalogBaseModel):
@@ -306,6 +323,16 @@ class AgentCatalogAnchorSetConfig(_CatalogBaseModel):
     def validate_tags(cls, value: list[str]) -> list[str]:
         return [_non_empty(item, "tags item") for item in value]
 
+    @model_validator(mode="after")
+    def validate_enabled_anchors_are_resolved(self) -> "AgentCatalogAnchorSetConfig":
+        if self.enabled and any(
+            anchor.node_id.startswith("replace-with-") for anchor in self.anchors
+        ):
+            raise ValueError(
+                "enabled anchor_sets cannot contain unresolved replace-with-* node ids"
+            )
+        return self
+
 
 class AgentCatalogHiddenOverlay(_CatalogBaseModel):
     id: str
@@ -317,13 +344,17 @@ class AgentCatalogHiddenOverlay(_CatalogBaseModel):
         return _validate_id(value)
 
 
-def validate_agent_config_item(kind: AgentConfigKind | str, payload: dict[str, Any]) -> dict[str, Any]:
+def validate_agent_config_item(
+    kind: AgentConfigKind | str, payload: dict[str, Any]
+) -> dict[str, Any]:
     """Validate and normalize one agent catalog Skill or Recipe item."""
 
     try:
         scan_agent_catalog_payload_for_unsafe_content(payload)
         if payload.get("hidden") is True:
-            return AgentCatalogHiddenOverlay.model_validate(payload).model_dump(mode="json")
+            return AgentCatalogHiddenOverlay.model_validate(payload).model_dump(
+                mode="json"
+            )
         if kind == "skills":
             return AgentCatalogSkillConfig.model_validate(payload).model_dump(
                 mode="json",

@@ -80,6 +80,14 @@ def _anchor_set_payload(item_id: str) -> dict:
     }
 
 
+def _save_test_recipe(username: str = "alice") -> None:
+    agent_config_store.save_user_agent_config_item(
+        username=username,
+        kind="recipes",
+        payload=_recipe_payload("test-recipe"),
+    )
+
+
 @pytest.fixture(autouse=True)
 def isolated_project_catalog(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(
@@ -97,7 +105,10 @@ def test_user_agent_config_items_are_account_scoped(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
-    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins")
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
+    _save_test_recipe()
 
     saved = agent_config_store.save_user_agent_config_item(
         username="alice",
@@ -128,7 +139,9 @@ def test_aesthetic_and_anchor_set_are_first_class_catalog_items(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
-    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins")
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
 
     aesthetic = agent_config_store.save_user_agent_config_item(
         username="alice",
@@ -143,12 +156,18 @@ def test_aesthetic_and_anchor_set_are_first_class_catalog_items(
 
     assert aesthetic["prompt_guide"] == "高饱和霓虹色与实景光。"
     assert anchor_set["anchors"][0]["node_id"] == "product-node"
-    assert [item["id"] for item in agent_config_store.list_user_agent_config_items(
-        "alice", "aesthetics"
-    )] == ["neon-film"]
-    assert [item["id"] for item in agent_config_store.list_user_agent_config_items(
-        "alice", "anchor_sets"
-    )] == ["product-assets"]
+    assert [
+        item["id"]
+        for item in agent_config_store.list_user_agent_config_items(
+            "alice", "aesthetics"
+        )
+    ] == ["neon-film"]
+    assert [
+        item["id"]
+        for item in agent_config_store.list_user_agent_config_items(
+            "alice", "anchor_sets"
+        )
+    ] == ["product-assets"]
 
 
 def test_builtin_anchor_set_templates_are_available_and_disabled() -> None:
@@ -188,6 +207,7 @@ def test_agent_config_items_include_builtin_catalog_with_user_override(
         ),
         encoding="utf-8",
     )
+    _save_test_recipe()
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
@@ -225,7 +245,10 @@ def test_project_catalog_overrides_builtin_and_supports_array_files(
     )
     (project_root / "skills" / "video-skill.json").write_text(
         json.dumps(
-            {**_skill_payload("video-skill", description="项目名称"), "name": "项目名称"},
+            {
+                **_skill_payload("video-skill", description="项目名称"),
+                "name": "项目名称",
+            },
             ensure_ascii=False,
         ),
         encoding="utf-8",
@@ -253,7 +276,9 @@ def test_agent_config_cache_invalidates_when_catalog_file_changes(
     skill_root.mkdir(parents=True)
     target = skill_root / "story-skill.json"
     target.write_text(
-        json.dumps(_skill_payload("story-skill", description="第一版"), ensure_ascii=False),
+        json.dumps(
+            _skill_payload("story-skill", description="第一版"), ensure_ascii=False
+        ),
         encoding="utf-8",
     )
 
@@ -262,7 +287,9 @@ def test_agent_config_cache_invalidates_when_catalog_file_changes(
     first[0]["description"] = "调用方不应污染缓存"
 
     target.write_text(
-        json.dumps(_skill_payload("story-skill", description="第二版更长"), ensure_ascii=False),
+        json.dumps(
+            _skill_payload("story-skill", description="第二版更长"), ensure_ascii=False
+        ),
         encoding="utf-8",
     )
 
@@ -361,6 +388,7 @@ def test_agent_config_items_sort_user_then_customized_then_builtin_by_mtime(
             encoding="utf-8",
         )
 
+    _save_test_recipe()
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="skills",
@@ -436,7 +464,9 @@ def test_user_agent_config_item_rejects_unsafe_ids(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
-    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins")
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
 
     with pytest.raises(ValueError, match="invalid agent config id"):
         agent_config_store.save_user_agent_config_item(
@@ -451,7 +481,9 @@ def test_user_agent_config_item_can_be_deleted(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
-    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins")
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="recipes",
@@ -468,12 +500,92 @@ def test_user_agent_config_item_can_be_deleted(
     assert agent_config_store.list_user_agent_config_items("alice", "recipes") == []
 
 
+def test_enabled_skill_rejects_unavailable_recipe_reference(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
+
+    with pytest.raises(ValueError, match="references unavailable recipe"):
+        agent_config_store.save_user_agent_config_item(
+            username="alice",
+            kind="skills",
+            payload=_skill_payload("broken-skill"),
+        )
+
+
+def test_referenced_recipe_requires_disabling_skill_before_delete(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
+    _save_test_recipe()
+    skill = _skill_payload("story-skill")
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload=skill,
+    )
+
+    with pytest.raises(ValueError, match="referenced by skill"):
+        agent_config_store.delete_user_agent_config_item(
+            username="alice",
+            kind="recipes",
+            item_id="test-recipe",
+        )
+
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="skills",
+        payload={**skill, "enabled": False},
+    )
+    assert agent_config_store.delete_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        item_id="test-recipe",
+    )
+
+
+def test_enabled_anchor_set_rejects_unresolved_template_node_id(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
+    payload = _anchor_set_payload("brand-template")
+    payload["anchors"][0]["node_id"] = "replace-with-brand-node-id"
+
+    with pytest.raises(ValueError, match="unresolved replace-with"):
+        agent_config_store.save_user_agent_config_item(
+            username="alice",
+            kind="anchor_sets",
+            payload=payload,
+        )
+
+    disabled = agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="anchor_sets",
+        payload={**payload, "enabled": False},
+    )
+    assert disabled["enabled"] is False
+
+
 def test_user_agent_config_delete_missing_item_is_idempotent(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
-    monkeypatch.setattr(agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins")
+    monkeypatch.setattr(
+        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
+    )
 
     deleted = agent_config_store.delete_user_agent_config_item(
         username="alice",

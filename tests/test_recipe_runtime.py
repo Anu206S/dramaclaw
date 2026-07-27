@@ -11,7 +11,11 @@ from novelvideo.freezone import recipe_runtime
 def test_build_recipe_compiler_task_checks_output_kind():
     with pytest.raises(recipe_runtime.RecipeRuntimeError, match="incompatible"):
         recipe_runtime.build_recipe_compiler_task(
-            recipe={"id": "image-only", "output_kind": "image", "system_prompt": "refine"},
+            recipe={
+                "id": "image-only",
+                "output_kind": "image",
+                "system_prompt": "refine",
+            },
             node_kind="video",
             node_prompt="rotate product",
         )
@@ -33,7 +37,11 @@ def test_build_recipe_compiler_task_contains_runtime_context():
                 "negative_prompt": "避免明亮商业棚拍",
             },
             "anchor_bindings": [
-                {"node_id": "character-1", "label": "女主角", "target_item_ids": ["shot-1"]}
+                {
+                    "node_id": "character-1",
+                    "label": "女主角",
+                    "target_item_ids": ["shot-1"],
+                }
             ],
         },
         skill_constraints={
@@ -60,15 +68,17 @@ def test_get_skill_for_runtime_enforces_version_and_recipe_whitelist(monkeypatch
     monkeypatch.setattr(
         recipe_runtime,
         "list_user_agent_config_items",
-        lambda _username, kind: [
-            {
-                "id": "ecommerce",
-                "version": "2.1.0",
-                "allowed_recipe_ids": ["product-image"],
-            }
-        ]
-        if kind == "skills"
-        else [],
+        lambda _username, kind: (
+            [
+                {
+                    "id": "ecommerce",
+                    "version": "2.1.0",
+                    "allowed_recipe_ids": ["product-image"],
+                }
+            ]
+            if kind == "skills"
+            else []
+        ),
     )
 
     skill = recipe_runtime.get_skill_for_runtime(
@@ -142,6 +152,44 @@ def test_resolve_creative_settings_expands_catalog_references(monkeypatch):
     assert resolved["anchor_bindings"][0]["node_id"] == "hero-node"
 
 
+def test_resolve_creative_settings_filters_aesthetic_by_node_kind(monkeypatch):
+    monkeypatch.setattr(
+        recipe_runtime,
+        "list_user_agent_config_items",
+        lambda _username, kind: (
+            [
+                {
+                    "id": "pencil",
+                    "name": "分镜铅笔稿",
+                    "prompt_guide": "纯黑白铅笔线稿",
+                    "negative_prompt": "不要上色",
+                    "output_kinds": ["image"],
+                }
+            ]
+            if kind == "aesthetics"
+            else []
+        ),
+    )
+
+    image_settings = recipe_runtime.resolve_creative_settings(
+        username="local",
+        creative_settings={"aesthetic_id": "pencil"},
+        node_kind="image",
+    )
+    audio_settings = recipe_runtime.resolve_creative_settings(
+        username="local",
+        creative_settings={
+            "aesthetic_id": "pencil",
+            "aesthetic": {"label": "旧缓存", "prompt_guide": "不应保留"},
+        },
+        node_kind="audio",
+    )
+
+    assert image_settings["aesthetic"]["prompt_guide"] == "纯黑白铅笔线稿"
+    assert audio_settings["aesthetic_id"] == "pencil"
+    assert "aesthetic" not in audio_settings
+
+
 def test_combined_recipe_preserves_pipeline_order():
     combined = recipe_runtime._combined_recipe(
         [
@@ -169,9 +217,16 @@ def test_combined_recipe_preserves_pipeline_order():
 
 
 def test_recipe_compiler_priority_places_skill_before_recipe():
-    assert "confirmed inputs, Skill hard constraints" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
-    assert "confirmed creative settings" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
-    assert "Recipe method, then defaults" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
+    assert (
+        "confirmed inputs, Skill hard constraints"
+        in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
+    )
+    assert (
+        "confirmed creative settings" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
+    )
+    assert (
+        "Recipe method, then defaults" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
+    )
 
 
 def test_build_recipe_compiler_task_limits_large_upstream_context():
@@ -256,7 +311,9 @@ async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt
 
 
 @pytest.mark.asyncio
-async def test_compile_recipe_prompt_deduplicates_concurrent_model_calls(monkeypatch, tmp_path):
+async def test_compile_recipe_prompt_deduplicates_concurrent_model_calls(
+    monkeypatch, tmp_path
+):
     recipe_runtime._prompt_cache.clear()
     recipe_runtime._prompt_inflight.clear()
     monkeypatch.setattr(recipe_runtime, "OUTPUT_DIR", tmp_path)
@@ -328,7 +385,9 @@ async def test_compile_recipe_prompt_uses_fallback_on_timeout_and_caches_late_re
         return "后台完成的精炼提示词"
 
     monkeypatch.setattr(recipe_runtime, "_run_recipe_compiler", slow_compiler)
-    monkeypatch.setattr(recipe_runtime, "_recipe_compiler_timeout_seconds", lambda: 0.01)
+    monkeypatch.setattr(
+        recipe_runtime, "_recipe_compiler_timeout_seconds", lambda: 0.01
+    )
 
     fallback = await recipe_runtime.compile_recipe_prompt(
         username="local",
@@ -359,7 +418,9 @@ async def test_compile_recipe_prompt_uses_fallback_on_timeout_and_caches_late_re
 
 
 @pytest.mark.asyncio
-async def test_compile_recipe_prompt_skips_model_for_deterministic_strategy(monkeypatch):
+async def test_compile_recipe_prompt_skips_model_for_deterministic_strategy(
+    monkeypatch,
+):
     monkeypatch.setattr(
         recipe_runtime,
         "get_recipe_for_runtime",

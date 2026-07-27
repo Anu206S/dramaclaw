@@ -17,7 +17,9 @@ from novelvideo.config import OUTPUT_DIR
 from novelvideo.official_defaults import DEFAULT_FREEZONE_STORY_SCRIPT_MODEL
 
 RecipeNodeKind = Literal["image", "video", "audio", "text"]
-RecipePromptStrategy = Literal["template", "user_message", "previous_output", "llm_refine"]
+RecipePromptStrategy = Literal[
+    "template", "user_message", "previous_output", "llm_refine"
+]
 
 _PROMPT_CACHE_LIMIT = 128
 _PERSISTENT_CACHE_LIMIT = 256
@@ -247,7 +249,9 @@ async def _run_recipe_compiler(task: str) -> str:
     return compiled
 
 
-def get_recipe_for_runtime(*, username: str, recipe_id: str, recipe_version: str = "") -> dict:
+def get_recipe_for_runtime(
+    *, username: str, recipe_id: str, recipe_version: str = ""
+) -> dict:
     """Resolve one enabled Recipe from the effective user catalog."""
     checked_id = str(recipe_id or "").strip()
     if not checked_id:
@@ -316,7 +320,9 @@ def _combined_recipe(recipes: list[dict[str, Any]]) -> dict[str, Any]:
     return {
         **primary,
         "id": "+".join(str(recipe.get("id") or "").strip() for recipe in recipes),
-        "version": "+".join(str(recipe.get("version") or "").strip() for recipe in recipes),
+        "version": "+".join(
+            str(recipe.get("version") or "").strip() for recipe in recipes
+        ),
         "system_prompt": (
             "Apply these compatible production methods in the stated order. "
             "Later methods refine the result but do not erase earlier requirements.\n\n"
@@ -356,7 +362,9 @@ def get_skill_for_runtime(
             f"found {actual_version or 'unversioned'}"
         )
     allowed_recipe_ids = {
-        str(item).strip() for item in skill.get("allowed_recipe_ids") or [] if str(item).strip()
+        str(item).strip()
+        for item in skill.get("allowed_recipe_ids") or []
+        if str(item).strip()
     }
     recipe_extensions = {
         str(item).strip()
@@ -365,7 +373,9 @@ def get_skill_for_runtime(
     }
     allowed_recipe_ids.update(recipe_extensions)
     if recipe_id not in allowed_recipe_ids:
-        raise RecipeRuntimeError(f"recipe {recipe_id} is not allowed by skill {checked_id}")
+        raise RecipeRuntimeError(
+            f"recipe {recipe_id} is not allowed by skill {checked_id}"
+        )
     return skill
 
 
@@ -373,7 +383,9 @@ def _skill_constraints(skill: dict[str, Any] | None) -> dict[str, Any]:
     if not skill:
         return {}
     planning = skill.get("planning") if isinstance(skill.get("planning"), dict) else {}
-    evaluation = skill.get("evaluation") if isinstance(skill.get("evaluation"), dict) else {}
+    evaluation = (
+        skill.get("evaluation") if isinstance(skill.get("evaluation"), dict) else {}
+    )
     return {
         "hard_constraints": [
             *(
@@ -392,7 +404,10 @@ def _skill_constraints(skill: dict[str, Any] | None) -> dict[str, Any]:
 
 
 def resolve_creative_settings(
-    *, username: str, creative_settings: dict[str, Any] | None
+    *,
+    username: str,
+    creative_settings: dict[str, Any] | None,
+    node_kind: RecipeNodeKind | None = None,
 ) -> dict[str, Any]:
     """Expand trusted Aesthetic and AnchorSet references while preserving inline overrides."""
     value = dict(creative_settings or {})
@@ -412,12 +427,24 @@ def resolve_creative_settings(
         if aesthetic is None:
             raise RecipeRuntimeError(f"aesthetic is unavailable: {aesthetic_id}")
         value["aesthetic_id"] = aesthetic_id
-        value["aesthetic"] = {
-            "label": str(aesthetic.get("name") or aesthetic_id).strip(),
-            "prompt_guide": str(aesthetic.get("prompt_guide") or "").strip(),
-            "negative_prompt": str(aesthetic.get("negative_prompt") or "").strip(),
-            **(value.get("aesthetic") if isinstance(value.get("aesthetic"), dict) else {}),
+        output_kinds = {
+            str(item or "").strip()
+            for item in aesthetic.get("output_kinds") or []
+            if str(item or "").strip()
         }
+        if node_kind and output_kinds and node_kind not in output_kinds:
+            value.pop("aesthetic", None)
+        else:
+            value["aesthetic"] = {
+                "label": str(aesthetic.get("name") or aesthetic_id).strip(),
+                "prompt_guide": str(aesthetic.get("prompt_guide") or "").strip(),
+                "negative_prompt": str(aesthetic.get("negative_prompt") or "").strip(),
+                **(
+                    value.get("aesthetic")
+                    if isinstance(value.get("aesthetic"), dict)
+                    else {}
+                ),
+            }
 
     anchor_set_ids = value.get("anchor_set_ids") or value.get("anchorSetIds") or []
     if not isinstance(anchor_set_ids, list):
@@ -439,7 +466,9 @@ def resolve_creative_settings(
                 continue
             resolved_ids.append(anchor_set_id)
             stored_bindings.extend(
-                item for item in anchor_set.get("anchors") or [] if isinstance(item, dict)
+                item
+                for item in anchor_set.get("anchors") or []
+                if isinstance(item, dict)
             )
     inline_bindings = value.get("anchor_bindings") or value.get("anchorBindings") or []
     if not isinstance(inline_bindings, list):
@@ -456,9 +485,7 @@ def resolve_creative_settings(
             targets = tuple(
                 str(item or "").strip()
                 for item in (
-                    binding.get("target_item_ids")
-                    or binding.get("targetItemIds")
-                    or []
+                    binding.get("target_item_ids") or binding.get("targetItemIds") or []
                 )
                 if str(item or "").strip()
             )
@@ -483,7 +510,9 @@ def _creative_context(value: dict[str, Any] | None) -> dict[str, Any]:
                 aesthetic.get("prompt_guide") or aesthetic.get("promptGuide") or ""
             ).strip(),
             "negative_prompt": str(
-                aesthetic.get("negative_prompt") or aesthetic.get("negativePrompt") or ""
+                aesthetic.get("negative_prompt")
+                or aesthetic.get("negativePrompt")
+                or ""
             ).strip(),
         }
     extensions = value.get("recipe_extensions")
@@ -555,7 +584,10 @@ def build_recipe_compiler_task(
             "Target node kind:\n" + node_kind,
             "Trusted Skill identity:\n"
             + _limited_json(
-                {"id": str(skill_id or "").strip(), "version": str(skill_version or "").strip()},
+                {
+                    "id": str(skill_id or "").strip(),
+                    "version": str(skill_version or "").strip(),
+                },
                 512,
             ),
             "User goal:\n" + (goal or "(not provided)"),
@@ -564,7 +596,9 @@ def build_recipe_compiler_task(
             "Trusted Skill constraints:\n"
             + _limited_json(skill_constraints or {}, _MAX_SKILL_CONSTRAINTS_CHARS),
             "Confirmed creative settings:\n"
-            + _limited_json(_creative_context(creative_settings), _MAX_SKILL_CONSTRAINTS_CHARS),
+            + _limited_json(
+                _creative_context(creative_settings), _MAX_SKILL_CONSTRAINTS_CHARS
+            ),
             "Current node intent:\n" + (prompt or "(not provided)"),
             "Trusted Recipe instructions:\n" + system_prompt,
             "Upstream text context:\n" + (upstream or "(none)"),
@@ -595,8 +629,14 @@ async def compile_recipe_prompt(
     creative_settings = resolve_creative_settings(
         username=username,
         creative_settings=creative_settings,
+        node_kind=node_kind,
     )
-    if prompt_strategy not in {"template", "user_message", "previous_output", "llm_refine"}:
+    if prompt_strategy not in {
+        "template",
+        "user_message",
+        "previous_output",
+        "llm_refine",
+    }:
         raise RecipeRuntimeError(f"unsupported prompt strategy: {prompt_strategy}")
     recipe = get_recipe_for_runtime(
         username=username,
@@ -696,6 +736,7 @@ async def generate_recipe_text(**compile_args: Any) -> str:
     creative_settings = resolve_creative_settings(
         username=username,
         creative_settings=compile_args.get("creative_settings"),
+        node_kind="text",
     )
     recipe = get_recipe_for_runtime(
         username=username,
