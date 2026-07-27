@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowUp,
@@ -544,6 +544,13 @@ export interface ImageGenerationFormProps {
    * 没有那个按钮，传 true 收掉这段留白，避免 chips 行凭空缺一块。
    */
   compact?: boolean;
+
+  /**
+   * 插在 chips 行与提示词编辑器之间的宿主插槽——即「输入框里、提示词上方」那一块。
+   * 故事板详情用它挂功能 chip（`AssetBoardImageOpChip`）；工作流的 ImageGenNode
+   * 不传，渲染结果与从前逐字节一致。本组件不解释内容，只负责位置。
+   */
+  promptLeadingSlot?: ReactNode;
 }
 
 /**
@@ -589,6 +596,7 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
     submitDisabled,
     onSubmit,
     compact = false,
+    promptLeadingSlot = null,
   } = props;
 
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
@@ -702,6 +710,8 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
           </div>
         )}
       </div>
+
+      {promptLeadingSlot}
 
       <PromptMentionEditor
         ref={promptEditorRef}
