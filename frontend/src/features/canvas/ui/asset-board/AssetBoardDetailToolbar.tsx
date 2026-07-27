@@ -54,17 +54,11 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu';
-import { CreditCostInline } from '@/components/credit-cost-inline';
+import { spawnAssetBoardImageOpNode } from '@/features/canvas/application/assetBoardImageOps';
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
-import {
-  submitGridTemplateAction,
-  type GridActionKey,
-} from '@/features/canvas/application/gridTemplateAction';
+import { type GridActionKey } from '@/features/canvas/application/gridTemplateAction';
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import { matteImage } from '@/features/canvas/application/matteImage';
-import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
-import { imageModelSupportsQuality } from '@/features/canvas/ui/GridActionConfirmOverlay';
-import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
 import {
   canRegenerateExportImageNode,
   regenerateExportImageNode,
@@ -424,29 +418,39 @@ function DetailHistorySection({
 }
 
 // 宫格模板清单（与 NodeActionToolbar.gridActions 同源：label 即 zh 翻译值，提交时
-// label 同时作为展示 prompt 下发——真正的模板由 key→mode 映射决定；cost 仅作确认提示）。
+// label 同时作为展示 prompt 下发——真正的模板由 key→mode 映射决定）。
+// 这里不挂算力：点一项只是**建节点**，不花钱；价钱在新节点的 ↑ 按钮上按当前
+// 模型/参数活价显示（AssetBoardImageGenForm），在这儿标价反而像是点了就扣。
 const GRID_ACTION_DEFS: Array<{
   key: GridActionKey;
   icon: typeof Crop;
   label: string;
-  cost: number;
 }> = [
-  { key: 'multiCameraGrid', icon: Grid3x3, label: '多机位九宫格', cost: 14 },
-  { key: 'plotFourGrid', icon: Grid2x2, label: '剧情推演四宫格', cost: 8 },
-  { key: 'faceThreeView', icon: User, label: '角色脸部三视图', cost: 6 },
-  { key: 'productThreeView', icon: Package, label: '产品三视图', cost: 6 },
-  { key: 'serialStoryboard25', icon: LayoutDashboard, label: '25宫格连贯分镜', cost: 32 },
-  { key: 'cinematicLightCorrection', icon: Film, label: '电影级光影校正', cost: 4 },
-  { key: 'characterThreeView', icon: Users, label: '角色三视图生成', cost: 6 },
-  { key: 'frameProjection3sLater', icon: FastForward, label: '画面推演 - 3秒后', cost: 4 },
-  { key: 'frameProjection5sEarlier', icon: Rewind, label: '画面推演 - 5秒前', cost: 4 },
+  { key: 'multiCameraGrid', icon: Grid3x3, label: '多机位九宫格' },
+  { key: 'plotFourGrid', icon: Grid2x2, label: '剧情推演四宫格' },
+  { key: 'faceThreeView', icon: User, label: '角色脸部三视图' },
+  { key: 'productThreeView', icon: Package, label: '产品三视图' },
+  { key: 'serialStoryboard25', icon: LayoutDashboard, label: '25宫格连贯分镜' },
+  { key: 'cinematicLightCorrection', icon: Film, label: '电影级光影校正' },
+  { key: 'characterThreeView', icon: Users, label: '角色三视图生成' },
+  { key: 'frameProjection3sLater', icon: FastForward, label: '画面推演 - 3秒后' },
+  { key: 'frameProjection5sEarlier', icon: Rewind, label: '画面推演 - 5秒前' },
 ];
 
 /**
  * 图片详情工具条。常显：下载 / 失败重试 / 编辑下拉 / 全景 / 多角度 / 重打光 / 宫格模板；
  * 抠图 / 裁剪 / 标注 / 分格抽取 / 历史 收进「...」更多菜单（悬停展开）。
+ *
+ * @param onOpenNode 建出新节点后把详情切过去（同头部「创建副本」那条路径）。
+ *   宫格模板现在是「先建节点、按 ↑ 才提交」，不切详情用户就看不出发生了什么。
  */
-export function AssetBoardImageDetailToolbar({ node }: { node: CanvasNode }): ReactElement {
+export function AssetBoardImageDetailToolbar({
+  node,
+  onOpenNode,
+}: {
+  node: CanvasNode;
+  onOpenNode?: (nodeId: string) => void;
+}): ReactElement {
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const imageSource = useMemo(() => resolveNodeSourceImageUrl(node), [node]);
@@ -455,26 +459,8 @@ export function AssetBoardImageDetailToolbar({ node }: { node: CanvasNode }): Re
   const isGenerating = data.isGenerating === true;
   const canRegenerate = canRegenerateExportImageNode(data);
   const [historyOpen, setHistoryOpen] = useState(false);
-  const [pendingGridKey, setPendingGridKey] = useState<GridActionKey | null>(null);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isMatting, setIsMatting] = useState(false);
-
-  // 宫格活价（M2）：与工作流 GridActionConfirmOverlay 同一套查询——不区分具体
-  // 选中的模板，始终按 image_selection 询价（GRID_ACTION_DEFS 里的 cost 只在
-  // 询价还没返回时兜底展示，避免详情面板刚打开时出现空白）。
-  const { models: imageModels } = useFreezoneImageModels();
-  const gridSelectedModel = imageModels[0];
-  const gridActionCost = useGenerationCreditCost(
-    'image_selection',
-    gridSelectedModel?.apiModel ?? null,
-    {
-      surface: 'canvas',
-      params: imageModelSupportsQuality(gridSelectedModel?.apiModel)
-        ? { size: '2K', quality: 'medium' }
-        : { size: '2K' },
-    },
-  );
-  const gridCostDisplay = gridActionCost.data?.data.display;
 
   const hasTool = useCallback(
     (type: NodeToolType) => tools.some((tool) => tool.type === type),
@@ -522,36 +508,23 @@ export function AssetBoardImageDetailToolbar({ node }: { node: CanvasNode }): Re
     void result.completion.finally(() => setIsMatting(false));
   }, [imageSource, isMatting, node.id]);
 
+  // 点功能 = **先建节点、不提交**（对标 liblib）：在下游建一个空的图片生成节点，
+  // 节点名 = 功能名，输入框里带一枚可关可切的功能 chip；详情随即切到新节点，
+  // 用户改完提示词/参考图/比例（或在功能框里换个功能）按 ↑ 才真正提交。
+  //
+  // 这条只改故事板的交互形态：工作流侧的「确认即提交」（GridActionConfirmOverlay
+  // + submitGridTemplateAction）一行没动，能力完全一样。
   const handleGridAction = useCallback(
-    async (def: (typeof GRID_ACTION_DEFS)[number]) => {
-      if (!imageSource || pendingGridKey) return;
-      // 本批不做花哨确认 UI —— window.confirm 级即可；算力用活价，询价未返回
-      // 前退回硬编码 cost（同下方下拉菜单展示）。
-      const costLabel = gridCostDisplay ?? String(def.cost);
-      if (!window.confirm(`确认使用「${def.label}」生成？（约消耗 ${costLabel} 算力）`)) {
-        return;
-      }
-      setPendingGridKey(def.key);
-      try {
-        // submitGridTemplateAction 是 async：占位节点在函数内部同步建好，但
-        // nextNodeId 只在整条链（提交→轮询→回填）结束后才作为返回值可用——
-        // 按任务要求不改 application 函数本体，所以这里的视口预定位只能在
-        // await 之后才发生（比 handleMatte/handleUpscaleSubmit 稍晚，生成
-        // 完成时才对焦，而不是创建时），但仍能让用户切回工作流时看到结果。
-        const newNodeId = await submitGridTemplateAction({
-          sourceNodeId: node.id,
-          imageSource,
-          key: def.key,
-          label: def.label,
-        });
-        if (newNodeId) {
-          useCanvasStore.getState().requestFocusNode(newNodeId);
-        }
-      } finally {
-        setPendingGridKey(null);
-      }
+    (def: (typeof GRID_ACTION_DEFS)[number]) => {
+      if (!imageSource) return;
+      const newNodeId = spawnAssetBoardImageOpNode(node.id, imageSource, def.key);
+      if (!newNodeId) return;
+      // 低成本视口预定位（M7）：保活挂载的 Canvas 先把视口对准新节点，用户切回
+      // 工作流时不用自己找。
+      useCanvasStore.getState().requestFocusNode(newNodeId);
+      onOpenNode?.(newNodeId);
     },
-    [gridCostDisplay, imageSource, node.id, pendingGridKey],
+    [imageSource, node.id, onOpenNode],
   );
 
   const handleRestoreHistory = useCallback(
@@ -569,8 +542,6 @@ export function AssetBoardImageDetailToolbar({ node }: { node: CanvasNode }): Re
     },
     [node.id, updateNodeData],
   );
-
-  const pendingGrid = GRID_ACTION_DEFS.find((def) => def.key === pendingGridKey) ?? null;
 
   // 「...」更多菜单条目：抠图 / 裁剪 / 标注 / 分格抽取 / 宫格模板 / 历史。显隐条件与
   // 原常显按钮逐条同源（imageEdit 节点不给编辑类入口、需对应工具插件、需有图源），
@@ -655,22 +626,18 @@ export function AssetBoardImageDetailToolbar({ node }: { node: CanvasNode }): Re
           <AssetBoardImageOps node={node} imageSource={imageSource} />
         )}
         {/* 宫格模板：常显下拉按钮（从「...」菜单挪出来，用户要求）。点开列 9 个模板，
-            选中即按活价确认后提交；在途时按钮转 spinner 并显示当前模板名。 */}
+            选中即在下游建一个同名的空图片节点并把详情切过去——不再当场提交，
+            用户在新节点的输入框里确认（或换功能）后按 ↑ 才真正生成。 */}
         {!isImageEdit && imageSource && (
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
-                disabled={pendingGridKey !== null}
                 title="基于本图套用宫格 / 多视图模板生成"
                 className={DETAIL_TOOLBAR_BUTTON_CLASS}
               >
-                {pendingGridKey !== null ? (
-                  <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                ) : (
-                  <LayoutGrid className="h-3.5 w-3.5" />
-                )}
-                {pendingGrid ? pendingGrid.label : '宫格模板'}
+                <LayoutGrid className="h-3.5 w-3.5" />
+                宫格模板
                 <ChevronDown className="h-3 w-3" />
               </button>
             </DropdownMenuTrigger>
@@ -685,13 +652,10 @@ export function AssetBoardImageDetailToolbar({ node }: { node: CanvasNode }): Re
                   <DropdownMenuItem
                     key={def.key}
                     className="gap-2 rounded-[6px] text-white/80 focus:bg-white/[0.08] focus:text-white"
-                    onSelect={() => void handleGridAction(def)}
+                    onSelect={() => handleGridAction(def)}
                   >
                     <Icon className="h-4 w-4 shrink-0" />
                     <span className="flex-1">{def.label}</span>
-                    {/* 算力成本改用统一的积分图标格式（✦ N），替掉「N 算力」文案；
-                        CE 运行时/隐藏积分时 CreditCostInline 自渲染为 null。 */}
-                    <CreditCostInline display={gridCostDisplay ?? String(def.cost)} />
                   </DropdownMenuItem>
                 );
               })}

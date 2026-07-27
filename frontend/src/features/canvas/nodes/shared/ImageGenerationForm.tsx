@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 import {
   ArrowUp,
@@ -544,6 +544,21 @@ export interface ImageGenerationFormProps {
    * 没有那个按钮，传 true 收掉这段留白，避免 chips 行凭空缺一块。
    */
   compact?: boolean;
+
+  /**
+   * 塞进**提示词输入框内部**、正文最前面的内联 chip（故事板的功能 chip）。它是
+   * contenteditable 里的一个原子节点：不参与 prompt 序列化，但能像一个字符那样被
+   * 光标越过、被退格删掉（删掉时回调 `onPromptLeadingChipDelete`）。工作流的
+   * ImageGenNode 不传这两个 prop，渲染与从前一致。
+   */
+  promptLeadingChip?: ReactNode;
+  onPromptLeadingChipDelete?: () => void;
+
+  /**
+   * 覆盖提示词占位文案。故事板功能节点用它把「这个功能会拿当前图做什么」写在
+   * chip 后面同一行（对标 liblib），省掉单独一行说明。
+   */
+  promptPlaceholder?: string;
 }
 
 /**
@@ -589,6 +604,9 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
     submitDisabled,
     onSubmit,
     compact = false,
+    promptLeadingChip = null,
+    onPromptLeadingChipDelete,
+    promptPlaceholder,
   } = props;
 
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
@@ -710,10 +728,13 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
         onCompositionStart={onCompositionStart}
         onCompositionEnd={onCompositionEnd}
         candidates={mentionCandidates}
+        leadingChip={promptLeadingChip}
+        onLeadingChipDelete={onPromptLeadingChipDelete}
         placeholder={
-          upstreamTextJoined.length > 0
+          promptPlaceholder
+          ?? (upstreamTextJoined.length > 0
             ? '上游内容已自动接入，可继续补充提示词…'
-            : '描述你想要生成的画面内容，@引用素材'
+            : '描述你想要生成的画面内容，@引用素材')
         }
         className={`nodrag nowheel min-h-0 w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent px-3 py-2 text-sm leading-6 text-text-dark outline-none ${CANVAS_NODE_INPUT_PLACEHOLDER_CLASS}`}
       />
