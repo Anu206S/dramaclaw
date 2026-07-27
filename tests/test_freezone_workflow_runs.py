@@ -7,11 +7,15 @@ from pathlib import Path
 import pytest
 
 from novelvideo.freezone.workflow_runs import (
+    WorkflowRunLeaseConflict,
+    classify_workflow_error,
     create_workflow_run,
     interrupt_stale_workflow_runs,
     list_workflow_runs,
+    prune_workflow_runs,
     read_workflow_run,
     reconcile_workflow_runs_with_canvas_nodes,
+    reconcile_workflow_runs_with_tasks,
     update_workflow_run,
 )
 
@@ -66,6 +70,286 @@ def test_workflow_runs_are_listed_newest_first(tmp_path: Path) -> None:
     listed = list_workflow_runs(project_dir=tmp_path, canvas_id="default")
 
     assert [item["run_id"] for item in listed] == [second["run_id"], first["run_id"]]
+
+
+def test_workflow_run_creation_is_idempotent(tmp_path: Path) -> None:
+    first = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_image"}],
+        idempotency_key="canvas-run:request-1",
+    )
+    duplicate = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_image"}],
+        idempotency_key="canvas-run:request-1",
+    )
+
+    assert duplicate["run_id"] == first["run_id"]
+    assert len(list_workflow_runs(project_dir=tmp_path, canvas_id="default")) == 1
+
+
+def test_active_runner_lease_prevents_second_runner(tmp_path: Path) -> None:
+    create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_image"}],
+        runner_id="runner-one",
+    )
+
+    with pytest.raises(WorkflowRunLeaseConflict, match="another workflow runner"):
+        create_workflow_run(
+            project_dir=tmp_path,
+            project_id="project-a",
+            canvas_id="default",
+            actions=[{"node_id": "two", "action": "generate_video"}],
+            runner_id="runner-two",
+        )
+
+
+def test_runner_lease_protects_updates_and_tracks_task_reference(
+    tmp_path: Path,
+) -> None:
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_image"}],
+        runner_id="runner-one",
+    )
+
+    with pytest.raises(WorkflowRunLeaseConflict, match="another runner"):
+        update_workflow_run(
+            project_dir=tmp_path,
+            canvas_id="default",
+            run_id=run["run_id"],
+            status="running",
+            runner_id="runner-two",
+        )
+
+    updated = update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        runner_id="runner-one",
+        action_updates=[
+            {
+                "node_id": "one",
+                "action": "generate_image",
+                "status": "running",
+                "task_key": "image_generation:node-one",
+                "task_type": "image_generation",
+                "job_id": "job-one",
+                "retry_count": 2,
+            }
+        ],
+    )
+
+    assert updated is not None
+    assert updated["actions"][0]["task_key"] == "image_generation:node-one"
+    assert updated["actions"][0]["task_type"] == "image_generation"
+    assert updated["actions"][0]["job_id"] == "job-one"
+    assert updated["actions"][0]["retry_count"] == 2
+
+
+@pytest.mark.parametrize(
+    ("error", "category", "retryable"),
+    [
+        ("HTTP 503 upstream unavailable", "transient_upstream", True),
+        ("read ECONNRESET", "transient_upstream", True),
+        ("HTTP 401: Invalid token", "authentication", False),
+        ("model_not_found", "model_unavailable", False),
+        ("HTTP 429: token-plan quota has been exhausted", "quota_exhausted", False),
+    ],
+)
+def test_workflow_error_classification(
+    error: str,
+    category: str,
+    retryable: bool,
+) -> None:
+    assert classify_workflow_error(error) == (category, retryable)
+
+
+def test_task_reconciliation_completes_run_with_existing_artifact(tmp_path: Path) -> None:
+    output_path = tmp_path / "freezone" / "_outputs" / "image.png"
+    output_path.parent.mkdir(parents=True)
+    output_path.write_bytes(b"image")
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_image"}],
+    )
+    update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        action_updates=[
+            {
+                "node_id": "one",
+                "action": "generate_image",
+                "status": "running",
+                "task_key": "task:image-one",
+            }
+        ],
+    )
+
+    changed = reconcile_workflow_runs_with_tasks(
+        project_dir=tmp_path,
+        canvas_id="default",
+        tasks_by_key={
+            "task:image-one": {
+                "status": "completed",
+                "result": {"image_path": str(output_path)},
+                "error": None,
+            }
+        },
+    )
+
+    assert changed == [run["run_id"]]
+    reconciled = read_workflow_run(
+        project_dir=tmp_path, canvas_id="default", run_id=run["run_id"]
+    )
+    assert reconciled is not None
+    assert reconciled["status"] == "completed"
+    assert reconciled["actions"][0]["artifact_status"] == "valid"
+
+
+def test_task_reconciliation_rejects_missing_artifact(tmp_path: Path) -> None:
+    input_path = tmp_path / "inputs" / "source.png"
+    input_path.parent.mkdir(parents=True)
+    input_path.write_bytes(b"input")
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_video"}],
+    )
+    update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        action_updates=[
+            {
+                "node_id": "one",
+                "action": "generate_video",
+                "status": "running",
+                "task_key": "task:video-one",
+            }
+        ],
+    )
+
+    reconcile_workflow_runs_with_tasks(
+        project_dir=tmp_path,
+        canvas_id="default",
+        tasks_by_key={
+            "task:video-one": {
+                "status": "completed",
+                "result": {
+                    "input_image_path": str(input_path),
+                    "video_path": "freezone/_outputs/missing.mp4",
+                },
+                "error": None,
+            }
+        },
+    )
+
+    reconciled = read_workflow_run(
+        project_dir=tmp_path, canvas_id="default", run_id=run["run_id"]
+    )
+    assert reconciled is not None
+    assert reconciled["status"] == "failed"
+    assert reconciled["actions"][0]["artifact_status"] == "missing"
+    assert reconciled["actions"][0]["error_category"] == "artifact_missing"
+    assert reconciled["actions"][0]["retryable"] is False
+    assert reconcile_workflow_runs_with_tasks(
+        project_dir=tmp_path,
+        canvas_id="default",
+        tasks_by_key={
+            "task:video-one": {
+                "status": "completed",
+                "result": {
+                    "input_image_path": str(input_path),
+                    "video_path": "freezone/_outputs/missing.mp4",
+                },
+                "error": None,
+            }
+        },
+    ) == []
+
+
+def test_task_reconciliation_classifies_task_failure(tmp_path: Path) -> None:
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_audio"}],
+    )
+    update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        action_updates=[
+            {
+                "node_id": "one",
+                "action": "generate_audio",
+                "status": "running",
+                "task_key": "task:audio-one",
+            }
+        ],
+    )
+
+    reconcile_workflow_runs_with_tasks(
+        project_dir=tmp_path,
+        canvas_id="default",
+        tasks_by_key={
+            "task:audio-one": {
+                "status": "failed",
+                "result": None,
+                "error": "HTTP 503 upstream unavailable",
+            }
+        },
+    )
+
+    reconciled = read_workflow_run(
+        project_dir=tmp_path, canvas_id="default", run_id=run["run_id"]
+    )
+    assert reconciled is not None
+    assert reconciled["actions"][0]["error_category"] == "transient_upstream"
+    assert reconciled["actions"][0]["retryable"] is True
+
+
+@pytest.mark.parametrize("terminal_status", ["completed", "failed", "interrupted"])
+def test_late_heartbeat_does_not_reopen_terminal_run(
+    tmp_path: Path,
+    terminal_status: str,
+) -> None:
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_image"}],
+    )
+    update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        status=terminal_status,
+    )
+
+    late_heartbeat = update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        status="running",
+    )
+
+    assert late_heartbeat is not None
+    assert late_heartbeat["status"] == terminal_status
 
 
 def test_new_workflow_run_supersedes_overlapping_resumable_run(tmp_path: Path) -> None:
@@ -247,6 +531,95 @@ def test_stale_running_workflow_is_marked_interrupted(tmp_path: Path) -> None:
     assert recovered is not None
     assert recovered["status"] == "interrupted"
     assert recovered["metadata"]["interrupt_reason"] == "runner_heartbeat_expired"
+
+
+def test_cancelled_run_skips_unfinished_actions_without_runner_lease(
+    tmp_path: Path,
+) -> None:
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[
+            {"node_id": "done", "action": "generate_text"},
+            {"node_id": "pending", "action": "generate_image"},
+        ],
+        runner_id="runner-one",
+    )
+    update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        runner_id="runner-one",
+        action_updates=[
+            {"node_id": "done", "action": "generate_text", "status": "completed"}
+        ],
+    )
+
+    cancelled = update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        status="cancelled",
+    )
+
+    assert cancelled is not None
+    assert cancelled["status"] == "cancelled"
+    assert [item["status"] for item in cancelled["actions"]] == ["completed", "skipped"]
+    assert cancelled["metadata"]["cancel_requested_at"]
+
+
+def test_prune_workflow_runs_only_removes_old_non_resumable_records(
+    tmp_path: Path,
+) -> None:
+    now = datetime(2026, 7, 27, 12, 0, tzinfo=timezone.utc)
+    run_ids: dict[str, str] = {}
+    for label, status in (
+        ("completed", "completed"),
+        ("cancelled", "cancelled"),
+        ("failed", "failed"),
+        ("interrupted", "interrupted"),
+    ):
+        run = create_workflow_run(
+            project_dir=tmp_path,
+            project_id="project-a",
+            canvas_id="default",
+            actions=[{"node_id": label, "action": "generate_image"}],
+        )
+        update_workflow_run(
+            project_dir=tmp_path,
+            canvas_id="default",
+            run_id=run["run_id"],
+            status=status,
+        )
+        path = (
+            tmp_path
+            / "freezone"
+            / "_workflow_runs"
+            / "default"
+            / f"{run['run_id']}.json"
+        )
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        old_timestamp = (now - timedelta(days=31)).isoformat().replace("+00:00", "Z")
+        payload["updated_at"] = old_timestamp
+        payload["completed_at"] = old_timestamp
+        path.write_text(json.dumps(payload), encoding="utf-8")
+        run_ids[label] = run["run_id"]
+
+    deleted = prune_workflow_runs(
+        project_dir=tmp_path,
+        canvas_id="default",
+        retention_days=30,
+        now=now,
+    )
+
+    assert set(deleted) == {run_ids["completed"], run_ids["cancelled"]}
+    remaining = {
+        item["run_id"]
+        for item in list_workflow_runs(project_dir=tmp_path, canvas_id="default")
+    }
+    assert run_ids["failed"] in remaining
+    assert run_ids["interrupted"] in remaining
 
 
 @pytest.mark.parametrize(

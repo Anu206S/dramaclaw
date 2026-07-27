@@ -90,6 +90,13 @@ export interface FreezoneWorkflowRunAction {
   status: WorkflowRunActionStatus;
   updated_at?: string | null;
   error?: string | null;
+  task_key?: string | null;
+  task_type?: string | null;
+  job_id?: string | null;
+  error_category?: string | null;
+  retryable?: boolean | null;
+  artifact_status?: "valid" | "missing" | "unverified" | "not_required" | null;
+  retry_count?: number;
 }
 
 export interface FreezoneWorkflowRun {
@@ -103,6 +110,8 @@ export interface FreezoneWorkflowRun {
   started_at: string;
   updated_at: string;
   completed_at?: string | null;
+  runner_id?: string | null;
+  lease_expires_at?: string | null;
   actions: FreezoneWorkflowRunAction[];
   metadata?: Record<string, unknown>;
 }
@@ -111,10 +120,19 @@ export async function createFreezoneWorkflowRun(
   projectId: string,
   canvasId: string,
   actions: Array<{ node_id: string; action: string }>,
+  idempotencyKey?: string,
+  runnerId?: string,
 ): Promise<FreezoneWorkflowRun> {
   return await apiCall<FreezoneWorkflowRun>(
     `projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}/workflow-runs`,
-    { method: "POST", json: { actions } },
+    {
+      method: "POST",
+      json: {
+        actions,
+        ...(idempotencyKey ? { idempotency_key: idempotencyKey } : {}),
+        ...(runnerId ? { runner_id: runnerId } : {}),
+      },
+    },
   );
 }
 
@@ -129,7 +147,12 @@ export async function updateFreezoneWorkflowRun(
       action: string;
       status: WorkflowRunActionStatus;
       error?: string | null;
+      task_key?: string | null;
+      task_type?: string | null;
+      job_id?: string | null;
+      retry_count?: number;
     }>;
+    runner_id?: string;
   },
 ): Promise<FreezoneWorkflowRun> {
   return await apiCall<FreezoneWorkflowRun>(
