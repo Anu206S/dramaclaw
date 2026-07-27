@@ -1249,6 +1249,21 @@ def _handle_finish_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     warnings = list(_safe_list(draft.get("warnings")))
     if expected_recipe_count and len(recipes) != expected_recipe_count:
         warnings.append(f"Recipe 数量为 {len(recipes)}，与预期 {expected_recipe_count} 不一致。")
+    seen_recipe_ids: set[str] = set()
+    duplicate_recipe_ids: list[str] = []
+    deduped_reversed: list[dict[str, Any]] = []
+    for recipe in reversed(recipes):
+        recipe_id = str(recipe.get("id") or "").strip() if isinstance(recipe, dict) else ""
+        if recipe_id:
+            if recipe_id in seen_recipe_ids:
+                duplicate_recipe_ids.append(recipe_id)
+                continue
+            seen_recipe_ids.add(recipe_id)
+        deduped_reversed.append(recipe)
+    if duplicate_recipe_ids:
+        duplicate_summary = "、".join(sorted(set(duplicate_recipe_ids)))
+        warnings.append(f"检测到重复 Recipe ID，已保留最后一次提交的版本：{duplicate_summary}。")
+        recipes = list(reversed(deduped_reversed))
     result = _emit_skill_studio_event(
         project or draft.get("project_id"),
         canvas or draft.get("canvas_id"),
@@ -3840,28 +3855,6 @@ _SKILL_STUDIO_QUESTION_SCHEMA = {
     "required": ["id", "title", "options"],
 }
 
-_SKILL_STUDIO_ASPECT_RATIO_SCHEMA = {
-    "type": "object",
-    "description": (
-        "Default canvas aspect ratio by catalog task type. Only imageGeneration and "
-        "videoGeneration keys are allowed. For imageGeneration choose one of 1:1, 9:16, "
-        "16:9, 3:4, 4:3, 3:2, 2:3, 4:5, 5:4, 21:9. For videoGeneration choose one of "
-        "16:9, 4:3, 1:1, 3:4, 9:16, 21:9. Do not use auto, textGeneration, "
-        "audioGeneration, model names, or arbitrary keys for saved Skill defaults."
-    ),
-    "properties": {
-        "imageGeneration": {
-            "type": "string",
-            "enum": ["1:1", "9:16", "16:9", "3:4", "4:3", "3:2", "2:3", "4:5", "5:4", "21:9"],
-        },
-        "videoGeneration": {
-            "type": "string",
-            "enum": ["16:9", "4:3", "1:1", "3:4", "9:16", "21:9"],
-        },
-    },
-    "additionalProperties": False,
-}
-
 _SKILL_STUDIO_RATING_BAND_SCHEMA = {
     "type": "object",
     "properties": {
@@ -3975,17 +3968,15 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
                     "description": (
                         "hard execution rules the agent should follow in this domain, not only style "
                         "principles. Include step order, one-node-per-step constraints, input source "
-                        "rules, review gates, aspect ratios, and forbidden premature downstream execution."
+                        "rules, review gates, input parameter usage, and forbidden premature downstream execution."
                     ),
                     "items": {"type": "string"},
                 },
-                "default_aspect_ratios": _SKILL_STUDIO_ASPECT_RATIO_SCHEMA,
             },
             "required": [
                 "planning_notes",
                 "prompt_guide",
                 "conduct_rules",
-                "default_aspect_ratios",
             ],
         },
         "evaluation": {
