@@ -41,6 +41,14 @@ _MINIMAL_ECOMMERCE_RECIPES = [
         "output_kind": "video",
         "requires_source_media": False,
     },
+    {
+        "id": "custom-shot-image",
+        "name": "自定义分镜图",
+        "version": 1,
+        "enabled": True,
+        "output_kind": "image",
+        "requires_source_media": True,
+    },
 ]
 
 
@@ -218,6 +226,171 @@ def test_workflow_skill_package_supports_skill_without_template(monkeypatch):
     assert package["planning_contract"]["strict_validation"] is True
 
 
+def test_creative_settings_extend_recipe_and_bind_existing_anchor(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "schema_version": "freezone_workflow_intent.v1",
+            "skill_id": "ecommerce-product",
+            "user_goal": "使用自定义分镜方法制作王家卫风格商品图",
+            "creative_settings": {
+                "aesthetic": {
+                    "label": "王家卫电影感",
+                    "prompt_guide": "高饱和霓虹色、手持摄影、步印效果",
+                    "negative_prompt": "避免标准商业棚拍",
+                },
+                "recipe_extensions": ["custom-shot-image"],
+                "anchor_bindings": [
+                    {
+                        "node_id": "existing-product-node",
+                        "node_type": "imageGenNode",
+                        "label": "商品原图",
+                        "target_item_ids": ["hero-shot"],
+                    }
+                ],
+            },
+            "items": [
+                {
+                    "id": "hero-shot",
+                    "title": "商品英雄镜头",
+                    "prompt": "雨夜霓虹街道中的产品特写",
+                    "recipe_id": "custom-shot-image",
+                }
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is True
+    assert compiled["edge_count"] == 2
+    plan = compiled["plan"]
+    assert plan["creative_settings"]["aesthetic"]["label"] == "王家卫电影感"
+    assert plan["external_edges"] == [
+        {
+            "source": "existing-product-node",
+            "target": "hero-shot",
+            "link_type": "media_input_for",
+        }
+    ]
+    catalog_data = plan["nodes"][1]["data"]["workflowCatalog"]
+    assert catalog_data["creativeSettings"]["recipe_extensions"] == ["custom-shot-image"]
+
+
+def test_empty_image_anchor_targets_only_compatible_media_nodes(monkeypatch):
+    catalog = _load_catalog_module()
+    skill = {
+        **_MINIMAL_ECOMMERCE_SKILL,
+        "triggers": {
+            "node_scopes": [
+                "imageGeneration",
+                "videoGeneration",
+                "audioGeneration",
+            ]
+        },
+        "allowed_recipe_ids": ["general-image", "general-video", "general-audio"],
+    }
+    recipes = [
+        _MINIMAL_ECOMMERCE_RECIPES[1],
+        _MINIMAL_ECOMMERCE_RECIPES[2],
+        {
+            "id": "general-audio",
+            "name": "通用音频",
+            "version": 1,
+            "enabled": True,
+            "output_kind": "audio",
+            "requires_source_media": False,
+        },
+    ]
+
+    def fake_load_json_dir(path):
+        if path == catalog._SKILLS_DIR:
+            return copy.deepcopy([skill])
+        if path == catalog._RECIPES_DIR:
+            return copy.deepcopy(recipes)
+        return []
+
+    monkeypatch.setattr(catalog, "_load_json_dir", fake_load_json_dir)
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-product",
+            "user_goal": "生成商品图片、视频和旁白",
+            "creative_settings": {
+                "anchor_bindings": [
+                    {
+                        "node_id": "existing-product-node",
+                        "node_type": "imageGenNode",
+                        "label": "商品原图",
+                        "target_item_ids": [],
+                    }
+                ]
+            },
+            "items": [
+                {"id": "hero", "title": "商品图", "recipe_id": "general-image"},
+                {"id": "clip", "title": "商品视频", "recipe_id": "general-video"},
+                {"id": "voice", "title": "旁白", "recipe_id": "general-audio"},
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is True
+    assert compiled["plan"]["external_edges"] == [
+        {
+            "source": "existing-product-node",
+            "target": "hero",
+            "link_type": "media_input_for",
+        },
+        {
+            "source": "existing-product-node",
+            "target": "clip",
+            "link_type": "media_input_for",
+        },
+    ]
+
+
+def test_dynamic_item_supports_ordered_recipe_pipeline(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-product",
+            "user_goal": "先按通用构图，再按自定义分镜方法生成商品图",
+            "creative_settings": {
+                "recipe_extensions": ["custom-shot-image"],
+                "anchor_bindings": [
+                    {
+                        "node_id": "existing-product",
+                        "node_type": "imageGenNode",
+                        "label": "商品原图",
+                        "target_item_ids": ["hero-shot"],
+                    }
+                ],
+            },
+            "items": [
+                {
+                    "id": "hero-shot",
+                    "title": "商品英雄镜头",
+                    "recipe_id": "general-image",
+                    "recipe_pipeline": ["custom-shot-image", "general-image"],
+                }
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is True
+    workflow_catalog = compiled["plan"]["nodes"][1]["data"]["workflowCatalog"]
+    assert workflow_catalog["recipeId"] == "general-image"
+    assert workflow_catalog["recipePipeline"] == [
+        {"id": "custom-shot-image", "version": 1}
+    ]
+
+
 def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
     catalog = _load_catalog_module()
     _install_minimal_builtin_catalog(monkeypatch, catalog)
@@ -270,6 +443,31 @@ def test_workflow_skill_limits_recipes_and_identifies_source_anchor(monkeypatch)
     assert package["planning_contract"]["missing_source_media"][
         "source_anchor_recipe_ids"
     ] == {"image": ["general-image"]}
+
+
+def test_canvas_scoped_anchor_sets_do_not_leak_to_other_canvases():
+    catalog = _load_catalog_module()
+    item = {
+        "id": "product-anchor",
+        "project_id": "project-a",
+        "canvas_id": "canvas-a",
+    }
+
+    assert catalog._catalog_item_matches_scope(
+        item,
+        project_id="project-a",
+        canvas_id="canvas-a",
+    )
+    assert not catalog._catalog_item_matches_scope(
+        item,
+        project_id="project-a",
+        canvas_id="canvas-b",
+    )
+    assert not catalog._catalog_item_matches_scope(
+        item,
+        project_id="project-b",
+        canvas_id="canvas-a",
+    )
 
 
 def test_compact_dynamic_intent_compiles_recipe_items_to_valid_plan(monkeypatch):

@@ -14,7 +14,7 @@ from novelvideo.freezone.agent_catalog_schema import (
     validate_agent_config_item,
 )
 
-AgentConfigKind = Literal["skills", "recipes"]
+AgentConfigKind = Literal["skills", "recipes", "aesthetics", "anchor_sets"]
 
 BUILTIN_AGENT_CATALOG_DIR = Path(__file__).with_name("agent_catalog") / "builtins"
 PROJECT_AGENT_CATALOG_DIR = (
@@ -152,7 +152,7 @@ def delete_user_agent_config_item(
 
 
 def _validate_kind(kind: AgentConfigKind | str) -> AgentConfigKind:
-    if kind in {"skills", "recipes"}:
+    if kind in {"skills", "recipes", "aesthetics", "anchor_sets"}:
         return kind  # type: ignore[return-value]
     raise ValueError("invalid agent config kind")
 

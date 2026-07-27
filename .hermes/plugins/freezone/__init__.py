@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import inspect
 import json
 import os
 import sys
@@ -2708,8 +2709,17 @@ def _handle_get_workflow_skill(args: dict[str, Any], **_: Any) -> str:
             "Freezone Workflow Skill catalog is unavailable. "
             f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
         )
+    scoped_args = {
+        **args,
+        "project_id": str(
+            args.get("project_id") or args.get("project") or _default_project_id()
+        ).strip(),
+        "canvas_id": str(
+            args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
+        ).strip(),
+    }
     return _structured_tool_result(
-        get_workflow_skill(args),
+        get_workflow_skill(scoped_args),
         tool_name="freezone_get_workflow_skill",
     )
 
@@ -2776,6 +2786,38 @@ def _workflow_draft_dependencies_available() -> bool:
     )
 
 
+def _compile_workflow_intent_for_scope(
+    intent: Any,
+    *,
+    project_id: str,
+    canvas_id: str,
+) -> dict[str, Any]:
+    """Pass scope to the native compiler while retaining one-argument extensions."""
+    compiler = compile_workflow_intent
+    if compiler is None:
+        return {
+            "ok": False,
+            "status": "workflow_intent_compiler_unavailable",
+            "error": "workflow intent compiler is unavailable",
+        }
+    try:
+        parameters = inspect.signature(compiler).parameters.values()
+        supports_scope = any(
+            parameter.name == "project_id"
+            or parameter.kind == inspect.Parameter.VAR_KEYWORD
+            for parameter in parameters
+        )
+    except (TypeError, ValueError):
+        supports_scope = True
+    if supports_scope:
+        return compiler(
+            intent,
+            project_id=project_id,
+            canvas_id=canvas_id,
+        )
+    return compiler(intent)
+
+
 def _workflow_draft_unavailable() -> str:
     return tool_error(
         "Freezone workflow drafts are unavailable. "
@@ -2797,24 +2839,32 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if not _workflow_draft_dependencies_available():
         return _workflow_draft_unavailable()
     intent = args.get("intent")
-    compiled = compile_workflow_intent(intent)
+    project_id = str(
+        args.get("project_id") or args.get("project") or _default_project_id()
+    ).strip()
+    canvas_id = str(
+        args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
+    ).strip()
+    compiled = _compile_workflow_intent_for_scope(
+        intent,
+        project_id=project_id,
+        canvas_id=canvas_id,
+    )
     if not compiled.get("ok"):
         return tool_result(compiled)
     run_after_create = _run_after_create_arg(args)
     payload = create_workflow_draft(
         intent=intent,
         compiled=compiled,
-        project_id=str(
-            args.get("project_id") or args.get("project") or _default_project_id()
-        ).strip(),
-        canvas_id=str(
-            args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
-        ).strip(),
+        project_id=project_id,
+        canvas_id=canvas_id,
         run_after_create=bool(run_after_create),
     )
     result = public_workflow_draft(payload)
     result["agent_instruction"] = (
         "Present the exact preview in product language and wait for user confirmation. "
+        "Summarize creative_settings as 视觉风格、创作方法、资产绑定; say Skill 推荐 "
+        "for defaults and never expose internal field names. "
         "For adjustments, patch this draft instead of rebuilding the intent. "
         "After confirmation, call freezone_confirm_workflow_draft with draft_id and revision."
     )
@@ -2864,7 +2914,15 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     payload, error = patch_workflow_draft(
         draft_id=draft_id,
         changes=changes,
-        compile_intent=compile_workflow_intent,
+        compile_intent=lambda intent: _compile_workflow_intent_for_scope(
+            intent,
+            project_id=str(
+                args.get("project_id") or args.get("project") or _default_project_id()
+            ).strip(),
+            canvas_id=str(
+                args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
+            ).strip(),
+        ),
         expected_revision=expected_revision,
         run_after_create=_run_after_create_arg(args),
     )
@@ -2874,6 +2932,7 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     result["status"] = "workflow_draft_updated"
     result["agent_instruction"] = (
         "Present only the resulting product-level changes and updated preview. "
+        "Describe creative_settings as 视觉风格、创作方法、资产绑定. "
         "Keep using this draft_id and revision for further adjustments or confirmation."
     )
     return tool_result(result)
@@ -3000,13 +3059,6 @@ def _handle_create_workflow_from_intent(args: dict[str, Any], **_: Any) -> str:
             "Freezone workflow graph builder is unavailable. "
             f"Import error: {_WORKFLOW_GRAPH_IMPORT_ERROR}"
         )
-    compiled = compile_workflow_intent(args.get("intent"))
-    if not compiled.get("ok"):
-        return tool_result(compiled)
-    plan = compiled.get("plan")
-    built = build_workflow_graph_commands({**args, "plan": plan})
-    if not built.get("ok"):
-        return tool_result(built)
     project = (
         str(args.get("project_id") or args.get("project") or _default_project_id()).strip()
         or None
@@ -3015,6 +3067,17 @@ def _handle_create_workflow_from_intent(args: dict[str, Any], **_: Any) -> str:
         str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip()
         or None
     )
+    compiled = _compile_workflow_intent_for_scope(
+        args.get("intent"),
+        project_id=project or "",
+        canvas_id=canvas or "",
+    )
+    if not compiled.get("ok"):
+        return tool_result(compiled)
+    plan = compiled.get("plan")
+    built = build_workflow_graph_commands({**args, "plan": plan})
+    if not built.get("ok"):
+        return tool_result(built)
     return _emit_canvas_commands(
         project,
         canvas,
@@ -3507,6 +3570,65 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
         "title": {"type": "string"},
         "summary": {"type": "string"},
         "inputs": {"type": "object"},
+        "creative_settings": {
+            "type": "object",
+            "description": (
+                "Optional advanced composition settings. Omit for the Skill defaults. "
+                "Use only for an explicit aesthetic override, confirmed extra Recipes, "
+                "or existing canvas assets selected as anchors."
+            ),
+            "properties": {
+                "aesthetic_id": {
+                    "type": "string",
+                    "description": "Id from available_aesthetics in the selected Skill package.",
+                },
+                "aesthetic": {
+                    "type": "object",
+                    "properties": {
+                        "label": {"type": "string"},
+                        "prompt_guide": {"type": "string"},
+                        "negative_prompt": {"type": "string"},
+                    },
+                    "required": ["label", "prompt_guide"],
+                },
+                "recipe_extensions": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {"type": "string"},
+                    "description": (
+                        "Installed Recipe ids intentionally added for this confirmed draft. "
+                        "Do not add a Recipe unless the user selected the method or the preview "
+                        "clearly discloses it."
+                    ),
+                },
+                "anchor_bindings": {
+                    "type": "array",
+                    "maxItems": 20,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "node_id": {"type": "string"},
+                            "node_type": {
+                                "type": "string",
+                                "enum": ["imageGenNode", "videoNode", "audioNode"],
+                            },
+                            "label": {"type": "string"},
+                            "target_item_ids": {
+                                "type": "array",
+                                "items": {"type": "string"},
+                            },
+                        },
+                        "required": ["node_id", "node_type", "label"],
+                    },
+                },
+                "anchor_set_ids": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {"type": "string"},
+                    "description": "Ids from available_anchor_sets in the selected Skill package.",
+                },
+            },
+        },
         "items": {
             "type": "array",
             "description": (
@@ -3522,6 +3644,16 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
                     "prompt": {"type": "string"},
                     "narration": {"type": "string"},
                     "recipe_id": {"type": "string"},
+                    "recipe_pipeline": {
+                        "type": "array",
+                        "maxItems": 6,
+                        "items": {"type": "string"},
+                        "description": (
+                            "Optional ordered supplemental Recipe ids. The primary recipe_id "
+                            "runs first; duplicates are ignored and all Recipes must have the "
+                            "same output kind."
+                        ),
+                    },
                     "depends_on": {
                         "type": "array",
                         "items": {"type": "string"},
@@ -4528,8 +4660,9 @@ TOOLS = (
                     "type": "object",
                     "description": (
                         "Changed compact-intent fields only. Supported fields: user_goal, title, "
-                        "summary, inputs, items, include_audio, include_compose, assumptions. "
-                        "Null removes an optional field; inputs are merged."
+                        "summary, inputs, creative_settings, items, include_audio, "
+                        "include_compose, assumptions. Null removes an optional field; "
+                        "inputs and creative_settings are merged."
                     ),
                 },
                 **_WORKFLOW_RUN_AFTER_CREATE_PROPS,

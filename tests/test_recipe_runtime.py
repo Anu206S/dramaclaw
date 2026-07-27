@@ -26,6 +26,16 @@ def test_build_recipe_compiler_task_contains_runtime_context():
         upstream_text="银色金属机身",
         reference_media=[{"kind": "image", "label": "产品锚点"}],
         confirmed_inputs={"aspect_ratio": "9:16", "language": "zh"},
+        creative_settings={
+            "aesthetic": {
+                "label": "王家卫电影感",
+                "prompt_guide": "高饱和霓虹色，手持摄影与步印效果",
+                "negative_prompt": "避免明亮商业棚拍",
+            },
+            "anchor_bindings": [
+                {"node_id": "character-1", "label": "女主角", "target_item_ids": ["shot-1"]}
+            ],
+        },
         skill_constraints={
             "hard_constraints": ["不得虚构产品功能", "不要字幕"],
             "prompt_guide": "高端商业摄影",
@@ -41,6 +51,8 @@ def test_build_recipe_compiler_task_contains_runtime_context():
     assert '"aspect_ratio": "9:16"' in task
     assert "不得虚构产品功能" in task
     assert "高端商业摄影" in task
+    assert "王家卫电影感" in task
+    assert "女主角" in task
     assert '"version": "2.1.0"' in task
 
 
@@ -80,10 +92,85 @@ def test_get_skill_for_runtime_enforces_version_and_recipe_whitelist(monkeypatch
             skill_id="ecommerce",
             recipe_id="other-image",
         )
+    extended = recipe_runtime.get_skill_for_runtime(
+        username="local",
+        skill_id="ecommerce",
+        recipe_id="other-image",
+        creative_settings={"recipe_extensions": ["other-image"]},
+    )
+    assert extended is not None
+
+
+def test_resolve_creative_settings_expands_catalog_references(monkeypatch):
+    def catalog(_username, kind):
+        if kind == "aesthetics":
+            return [
+                {
+                    "id": "neon-film",
+                    "name": "霓虹电影感",
+                    "prompt_guide": "高饱和霓虹色",
+                    "negative_prompt": "避免棚拍",
+                }
+            ]
+        if kind == "anchor_sets":
+            return [
+                {
+                    "id": "hero-assets",
+                    "anchors": [
+                        {
+                            "node_id": "hero-node",
+                            "node_type": "imageGenNode",
+                            "label": "主角",
+                            "target_item_ids": ["shot-1"],
+                        }
+                    ],
+                }
+            ]
+        return []
+
+    monkeypatch.setattr(recipe_runtime, "list_user_agent_config_items", catalog)
+
+    resolved = recipe_runtime.resolve_creative_settings(
+        username="local",
+        creative_settings={
+            "aesthetic_id": "neon-film",
+            "anchor_set_ids": ["hero-assets"],
+        },
+    )
+
+    assert resolved["aesthetic"]["label"] == "霓虹电影感"
+    assert resolved["anchor_bindings"][0]["node_id"] == "hero-node"
+
+
+def test_combined_recipe_preserves_pipeline_order():
+    combined = recipe_runtime._combined_recipe(
+        [
+            {
+                "id": "shotlist",
+                "name": "分镜方法",
+                "version": 1,
+                "output_kind": "image",
+                "system_prompt": "先确定镜头信息。",
+            },
+            {
+                "id": "lighting",
+                "name": "布光方法",
+                "version": 2,
+                "output_kind": "image",
+                "system_prompt": "再设计光线。",
+            },
+        ]
+    )
+
+    assert combined["id"] == "shotlist+lighting"
+    assert combined["system_prompt"].index("先确定镜头信息") < combined[
+        "system_prompt"
+    ].index("再设计光线")
 
 
 def test_recipe_compiler_priority_places_skill_before_recipe():
     assert "confirmed inputs, Skill hard constraints" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
+    assert "confirmed creative settings" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
     assert "Recipe method, then defaults" in recipe_runtime._RECIPE_COMPILER_SYSTEM_PROMPT
 
 

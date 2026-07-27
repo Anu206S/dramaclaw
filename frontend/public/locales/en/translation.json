@@ -3710,7 +3710,9 @@
       "models": "Models & Channels",
       "storage": "Media Storage",
       "freezoneSkills": "Freezone Skills",
-      "freezoneRecipes": "Freezone Recipes"
+      "freezoneRecipes": "Freezone Recipes",
+      "freezoneAesthetics": "Aesthetics",
+      "freezoneAnchorSets": "Asset Anchors"
     },
     "freezoneCatalog": {
       "skills": {

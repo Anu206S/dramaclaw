@@ -1612,14 +1612,24 @@ class FreezoneRecipeCompileReference(BaseModel):
     label: str = Field(default="", max_length=200)
 
 
+class FreezoneRecipePipelineEntry(BaseModel):
+    id: str = Field(min_length=1, max_length=128)
+    version: str = Field(default="", max_length=64)
+
+
 class FreezoneRecipeCompileRequest(BaseModel):
     """将节点意图与可信 Recipe 编译为最终执行提示词。"""
 
     recipe_id: str = Field(min_length=1, max_length=128)
     recipe_version: str = Field(default="", max_length=64)
+    recipe_pipeline: list[FreezoneRecipePipelineEntry] = Field(
+        default_factory=list,
+        max_length=6,
+    )
     skill_id: str = Field(default="", max_length=128)
     skill_version: str = Field(default="", max_length=64)
     confirmed_inputs: dict[str, Any] = Field(default_factory=dict)
+    creative_settings: dict[str, Any] = Field(default_factory=dict)
     node_kind: Literal["image", "video", "audio", "text"]
     prompt_strategy: Literal["template", "user_message", "previous_output", "llm_refine"] = (
         "llm_refine"

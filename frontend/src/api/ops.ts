@@ -22,9 +22,11 @@ export type FreezoneRecipeNodeKind = "image" | "video" | "audio" | "text";
 export interface FreezoneRecipeCompilePayload {
   recipeId: string;
   recipeVersion?: string;
+  recipePipeline?: Array<{ id: string; version?: string }>;
   skillId?: string;
   skillVersion?: string;
   confirmedInputs?: Record<string, unknown>;
+  creativeSettings?: Record<string, unknown>;
   nodeKind: FreezoneRecipeNodeKind;
   promptStrategy?: "template" | "user_message" | "previous_output" | "llm_refine";
   nodePrompt?: string;
@@ -49,9 +51,13 @@ export async function compileFreezoneRecipePrompt(
     json: {
       recipe_id: payload.recipeId,
       recipe_version: payload.recipeVersion ?? "",
+      ...(payload.recipePipeline?.length
+        ? { recipe_pipeline: payload.recipePipeline }
+        : {}),
       skill_id: payload.skillId ?? "",
       skill_version: payload.skillVersion ?? "",
       confirmed_inputs: payload.confirmedInputs ?? {},
+      creative_settings: payload.creativeSettings ?? {},
       node_kind: payload.nodeKind,
       prompt_strategy: payload.promptStrategy ?? "llm_refine",
       node_prompt: payload.nodePrompt ?? "",
@@ -74,9 +80,13 @@ export async function generateFreezoneRecipeText(
     json: {
       recipe_id: payload.recipeId,
       recipe_version: payload.recipeVersion ?? "",
+      ...(payload.recipePipeline?.length
+        ? { recipe_pipeline: payload.recipePipeline }
+        : {}),
       skill_id: payload.skillId ?? "",
       skill_version: payload.skillVersion ?? "",
       confirmed_inputs: payload.confirmedInputs ?? {},
+      creative_settings: payload.creativeSettings ?? {},
       node_kind: "text",
       node_prompt: payload.nodePrompt ?? "",
       user_goal: payload.userGoal ?? "",

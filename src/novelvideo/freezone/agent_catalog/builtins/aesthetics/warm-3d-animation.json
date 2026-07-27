@@ -1,0 +1,12 @@
+{
+  "schema_version": "dramaclaw.aesthetic.v1",
+  "id": "warm-3d-animation",
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "温暖三维动画",
+  "description": "适合家庭向故事、IP 短片和轻松品牌叙事。",
+  "prompt_guide": "使用富有表情的三维角色、柔和但有方向性的光线、清晰剪影、精致材质和温暖色彩；动作可读，情绪表达明确，镜头具有动画电影叙事感。",
+  "negative_prompt": "避免恐怖谷、僵硬表情、肢体错误、低细节塑料材质、过曝高光和背景喧宾夺主。",
+  "tags": ["三维动画", "温暖", "家庭"],
+  "output_kinds": ["image", "video"]
+}
