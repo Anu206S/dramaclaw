@@ -363,13 +363,19 @@ export function AssetBoardCard({
               </span>
             </div>
           )}
-          {/* 生成中：半透明遮罩 + 居中 spinner + 「生成中 X%...」进度（盖过播放按钮等
-              叠层，z 最高）。进度直接叠在卡片缩略图上，不再跟在节点标题后面。 */}
+          {/* 生成中：遮罩 + 居中 spinner + 「生成中 X%...」进度（盖过播放按钮等叠层，
+              z 最高）。进度直接叠在卡片缩略图上，不再跟在节点标题后面。
+              底下有媒体（重新生成）才用半透明——让用户还看得见正在被替换的那张；
+              底下是空态占位（首次生成）时遮罩必须不透明，否则「待确认后生成」的
+              图标与文案会从遮罩后透出来，跟 spinner、百分比叠成一团糊字。 */}
           {item.isGenerating && (
             <span
               role="status"
               aria-label="生成中"
-              className="absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5 bg-black/50"
+              className={cn(
+                'absolute inset-0 z-20 flex flex-col items-center justify-center gap-1.5',
+                item.thumbnailUrl || item.mediaUrl ? 'bg-black/50' : 'bg-[#141414]',
+              )}
             >
               <Loader2 className="h-5 w-5 animate-spin text-white" />
               <GeneratingLabel item={item} className="text-[12px] text-white/85" paused={paused} />
