@@ -65,9 +65,9 @@ export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactEle
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const [isAssetLibraryOpen, setIsAssetLibraryOpen] = useState(false);
 
-  // 功能节点（详情工具条点了某个一图流功能后建出来的那种）：输入框顶部多一枚
-  // 可关可切的功能 chip，↑ 走对应能力而不是常规文生图。普通图片生成节点没有这
-  // 个字段，下面所有分支都退化成原来的行为。
+  // 功能节点（详情工具条点了某个一图流功能后建出来的那种）：输入框里、提示词
+  // 正上方多一枚可关可切的功能 chip，↑ 走对应能力而不是常规文生图。普通图片生成
+  // 节点没有这个字段，下面所有分支都退化成原来的行为。
   const opKeyRaw = useCanvasStore((state) => {
     const node = state.nodes.find((candidate) => candidate.id === nodeId);
     return (node?.data as { imageOpKey?: unknown } | undefined)?.imageOpKey;
@@ -119,11 +119,6 @@ export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactEle
           className={`flex w-full flex-col rounded-[var(--node-radius)] ${CANVAS_NODE_OPS_PANEL_CLASS}`}
           style={{ height: opKey ? FORM_HEIGHT_WITH_OP_PX : FORM_HEIGHT_PX }}
         >
-          {/* 功能 chip + 说明：与自带参考 chip 同一手法——渲在共用表单外面、同一个
-              面板容器里，所以工作流的 ImageGenNode 一行没改。 */}
-          {opKey && (
-            <AssetBoardImageOpChip nodeId={nodeId} opKey={opKey} disabled={isGenerating} />
-          )}
           {/* 自带参考图 chip（共用表单不渲这张）：紧贴表单 chip 行上方补显示，移除
               按钮清空 data.referenceImageUrl（与工作流 ImageGenNode 的「移除参考图」
               同一 patch）。仅在存在自带参考图时出现。 */}
@@ -147,11 +142,19 @@ export function AssetBoardImageGenForm({ nodeId }: { nodeId: string }): ReactEle
               </div>
             </div>
           )}
+          {/* 功能 chip 挂在输入框内、提示词上方（对标 liblib）：走共用表单新开的
+              `promptLeadingSlot` 插槽，表单只认位置不解释内容；工作流的 ImageGenNode
+              不传这个 prop，渲染与从前一致。 */}
           <ImageGenerationForm
             {...formProps}
             compact
             onStylePickerOpenChange={noopStylePickerOpenChange}
             onOpenAssetLibrary={() => setIsAssetLibraryOpen(true)}
+            promptLeadingSlot={
+              opKey ? (
+                <AssetBoardImageOpChip nodeId={nodeId} opKey={opKey} disabled={isGenerating} />
+              ) : null
+            }
             {...(opKey
               ? {
                   onSubmit: handleOpSubmit,
