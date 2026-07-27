@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, type ReactElement } from 'react';
 import { createPortal } from 'react-dom';
 import {
-  ChevronsUpDown,
+  ArrowLeftRight,
   Compass,
   FastForward,
   Film,
@@ -128,11 +128,13 @@ export function AssetBoardImageOpChip({
             prev ? null : (triggerRef.current?.getBoundingClientRect() ?? null),
           );
         }}
-        className="nodrag inline-flex h-[22px] max-w-[180px] items-center gap-1 rounded-[6px] bg-accent/[0.18] pl-1.5 pr-1 align-middle text-xs leading-none text-white/90 transition-colors hover:bg-accent/[0.28] disabled:cursor-not-allowed disabled:opacity-45 disabled:hover:bg-accent/[0.18]"
+        className="prompt-op-chip nodrag"
       >
-        <Icon className="h-3.5 w-3.5 shrink-0 text-accent" />
-        <span className="truncate">{def.label}</span>
-        <ChevronsUpDown className="h-3 w-3 shrink-0 text-white/45" />
+        <span className="prompt-op-chip-icon">
+          <Icon className="h-2.5 w-2.5" strokeWidth={2.5} />
+        </span>
+        <span className="prompt-op-chip-label">{def.label}</span>
+        <ArrowLeftRight className="prompt-op-chip-switch h-3 w-3" />
       </button>
       {panelStyle
         && createPortal(
