@@ -42,7 +42,9 @@ export interface AssetBoardImageOpDef {
   key: AssetBoardImageOpKey;
   /** 功能名。同时作为新节点的 displayName，以及提示词为空时下发的 prompt。 */
   label: string;
-  /** 功能框 / chip 下方那行说明（对标 liblib「点击生成，直接基于当前图像生成…」）。 */
+  /** 功能框里跟在功能名下面的一行短说明（一句话说清这个功能产出什么）。 */
+  summary: string;
+  /** 选中该功能后，输入框的占位文案（对标 liblib「点击生成，直接基于当前图像生成…」）。 */
   description: string;
   category: AssetBoardImageOpCategoryKey;
   /** 询价用的硬编码兜底算力（活价没回来时展示，与工具条同源）。 */
@@ -59,13 +61,6 @@ export const ASSET_BOARD_IMAGE_OP_CATEGORY_LABELS: Record<
   texture: '质感调节',
 };
 
-export const ASSET_BOARD_IMAGE_OP_CATEGORY_ORDER: readonly AssetBoardImageOpCategoryKey[] = [
-  'narrative',
-  'space',
-  'setting',
-  'texture',
-];
-
 /**
  * 功能清单。label 与工具条 `GRID_ACTION_DEFS` / 全景・多角度・打光按钮同名——
  * 同一个能力在两个视图里必须叫同一个名字。
@@ -74,6 +69,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'plotFourGrid',
     label: '剧情推演四宫格',
+    summary: '一图推演四格剧情',
     description: '点击生成，直接基于当前图像推演出四格剧情；支持通过文本补充剧情走向。',
     category: 'narrative',
     cost: 8,
@@ -81,6 +77,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'serialStoryboard25',
     label: '25宫格连贯分镜',
+    summary: '长段落连贯分镜',
     description: '点击生成，直接基于当前图像生成 25 格连贯分镜；支持通过文本描述段落节奏。',
     category: 'narrative',
     cost: 32,
@@ -88,6 +85,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'frameProjection3sLater',
     label: '画面推演 - 3秒后',
+    summary: '预测 3 秒后的画面',
     description: '点击生成，推演当前画面 3 秒之后的样子；支持通过文本指定运动或事件。',
     category: 'narrative',
     cost: 4,
@@ -95,6 +93,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'frameProjection5sEarlier',
     label: '画面推演 - 5秒前',
+    summary: '反推 5 秒前的画面',
     description: '点击生成，反推当前画面 5 秒之前的样子；支持通过文本指定前情。',
     category: 'narrative',
     cost: 4,
@@ -102,6 +101,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'multiCameraGrid',
     label: '多机位九宫格',
+    summary: '九个机位一次铺开',
     description: '点击生成，直接基于当前图像铺开九个机位；支持通过文本指定镜头语言。',
     category: 'space',
     cost: 14,
@@ -109,6 +109,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'scene360',
     label: '全景',
+    summary: '扩成 360° 全景',
     description: '点击生成，把当前图像扩成 360° 全景；比例固定 2:1 / 21:9。',
     category: 'space',
     cost: 10,
@@ -116,6 +117,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'multiAngle',
     label: '多角度',
+    summary: '换个机位重拍',
     description: '点击生成，换一个机位重拍当前画面；支持通过文本指定角度与景别。',
     category: 'space',
     cost: 6,
@@ -123,6 +125,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'characterThreeView',
     label: '角色三视图生成',
+    summary: '角色全身三视图',
     description: '点击生成，直接基于当前图像生成完整的角色三视图；支持通过文本/参考图生成。',
     category: 'setting',
     cost: 6,
@@ -130,6 +133,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'faceThreeView',
     label: '角色脸部三视图',
+    summary: '五官细节三视图',
     description: '点击生成，直接基于当前图像生成角色脸部三视图；支持通过文本补充五官特征。',
     category: 'setting',
     cost: 6,
@@ -137,6 +141,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'productThreeView',
     label: '产品三视图',
+    summary: '产品前侧后三视图',
     description: '点击生成，直接基于当前图像生成产品三视图；支持通过文本补充材质与细节。',
     category: 'setting',
     cost: 6,
@@ -144,6 +149,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'cinematicLightCorrection',
     label: '电影级光影校正',
+    summary: '光影校正到电影级',
     description: '点击生成，把当前图像的光影校正到电影级；支持通过文本指定影调倾向。',
     category: 'texture',
     cost: 4,
@@ -151,6 +157,7 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
   {
     key: 'relight',
     label: '打光',
+    summary: '重新布光换氛围',
     description: '点击生成，为当前图像重新布光；支持通过文本描述想要的光线氛围。',
     category: 'texture',
     cost: 6,
