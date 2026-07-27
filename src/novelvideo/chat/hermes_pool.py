@@ -34,6 +34,7 @@ from novelvideo.chat.hermes_workspace import (
     effective_gateway_credentials,
     effective_gateway_fingerprint,
     ensure_user_hermes_workspace,
+    freezone_python_hook_dir,
 )
 from novelvideo.ports import get_auth_session_port
 from novelvideo.ports.auth_contract import AgentSessionToken
@@ -665,6 +666,13 @@ class HermesPool:
         if canvas_id:
             env["DRAMACLAW_CANVAS_ID"] = canvas_id
             env["SUPERTALE_CANVAS_ID"] = canvas_id
+        if agent_profile.startswith("freezone"):
+            hook_dir = freezone_python_hook_dir(home)
+            existing_pythonpath = os.environ.get("PYTHONPATH", "").strip()
+            env["PYTHONPATH"] = (
+                f"{hook_dir}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else str(hook_dir)
+            )
+            env["DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE"] = "1"
         if project_id:
             env["DRAMACLAW_PROJECT_ID"] = project_id
             env["DRAMACLAW_PROJECT"] = project_id

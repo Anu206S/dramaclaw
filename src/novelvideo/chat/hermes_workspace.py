@@ -34,6 +34,7 @@ DEFAULT_HERMES_TOOLSETS = {"hermes-acp"}
 FREEZONE_HERMES_SKILLS = {"freezone", "workflows"}
 FREEZONE_HERMES_PLUGINS = {"freezone"}
 _GENERATED_WORKFLOW_SKILL_MARKER = ".dramaclaw-workflow-skill.json"
+FREEZONE_HERMES_PYTHON_HOOK_DIR = ".dramaclaw-python"
 _warned_repo_state_fallback = False
 
 
@@ -123,6 +124,8 @@ plugins:
 tools:
   tool_search:
     enabled: off
+  skill_manage:
+    enabled: "off"
 
 display:
   tool_progress: verbose
@@ -149,6 +152,61 @@ _DEFAULT_ENV_TEMPLATE = """# DramaClaw-managed Hermes workspace.
 # Model credentials are synchronized from DramaClaw settings so Hermes profile
 # secret scoping resolves the same gateway key as the API process.
 """
+
+_FREEZONE_SITECUSTOMIZE_PY = '''"""DramaClaw-managed Freezone Hermes startup hooks."""
+
+from __future__ import annotations
+
+import os
+import sys
+
+
+def _truthy(value: str | None) -> bool:
+    return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _disable_skill_manage() -> None:
+    try:
+        from tools.registry import registry
+    except Exception as exc:  # noqa: BLE001
+        print(
+            f"DramaClaw Freezone warning: failed to import Hermes tool registry: {exc}",
+            file=sys.stderr,
+        )
+        return
+
+    if getattr(registry, "_dramaclaw_skill_manage_disabled", False):
+        return
+
+    original_register = registry.register
+
+    def register_without_skill_manage(*args, **kwargs):
+        name = kwargs.get("name")
+        if name is None and args:
+            name = args[0]
+        if name == "skill_manage":
+            return None
+        return original_register(*args, **kwargs)
+
+    registry.register = register_without_skill_manage
+    setattr(registry, "_dramaclaw_skill_manage_disabled", True)
+
+    try:
+        registry.deregister("skill_manage")
+    except Exception:
+        tools = getattr(registry, "_tools", None)
+        lock = getattr(registry, "_lock", None)
+        if isinstance(tools, dict):
+            if lock is None:
+                tools.pop("skill_manage", None)
+            else:
+                with lock:
+                    tools.pop("skill_manage", None)
+
+
+if _truthy(os.environ.get("DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE")):
+    _disable_skill_manage()
+'''
 
 _MANAGED_MODEL_ENV_KEYS = {
     "NEWAPI_API_KEY",
@@ -403,6 +461,7 @@ def ensure_user_hermes_workspace(username: str, *, profile: str = "director") ->
         )
     if normalized_profile == "freezone":
         _ensure_freezone_config_policy(config_yaml)
+        _ensure_freezone_python_hooks(home)
     else:
         _ensure_default_plugin_enabled(config_yaml)
         _ensure_default_toolsets_enabled(config_yaml)
@@ -440,6 +499,23 @@ def list_freezone_hermes_workflow_skills(username: str) -> list[dict[str, object
         if isinstance(payload, dict) and payload.get("id"):
             summaries.append(payload)
     return summaries
+
+
+def freezone_python_hook_dir(home: Path) -> Path:
+    return home / FREEZONE_HERMES_PYTHON_HOOK_DIR
+
+
+def _ensure_freezone_python_hooks(home: Path) -> None:
+    hook_dir = freezone_python_hook_dir(home)
+    hook_dir.mkdir(exist_ok=True)
+    sitecustomize = hook_dir / "sitecustomize.py"
+    if sitecustomize.exists():
+        try:
+            if sitecustomize.read_text(encoding="utf-8") == _FREEZONE_SITECUSTOMIZE_PY:
+                return
+        except OSError:
+            pass
+    sitecustomize.write_text(_FREEZONE_SITECUSTOMIZE_PY, encoding="utf-8")
 
 
 def _parse_env_assignments(text: str) -> dict[str, str]:
@@ -823,6 +899,11 @@ def _ensure_freezone_config_policy(config_yaml: Path) -> None:
     # simple canvas edits route incorrectly.
     tool_search["enabled"] = "off"
     tools["tool_search"] = tool_search
+    skill_manage = tools.get("skill_manage")
+    if not isinstance(skill_manage, dict):
+        skill_manage = {}
+    skill_manage["enabled"] = "off"
+    tools["skill_manage"] = skill_manage
     config["tools"] = tools
 
     disabled_toolsets = config.get("disabled_toolsets")
@@ -1124,4 +1205,5 @@ __all__ = [
     "effective_gateway_fingerprint",
     "ensure_user_hermes_workspace",
     "list_freezone_hermes_workflow_skills",
+    "freezone_python_hook_dir",
 ]
