@@ -175,6 +175,23 @@ describe('故事板 · 功能 chip（点功能建节点 → 确认后生成）',
     expect(useCanvasStore.getState().nodes).toHaveLength(2);
   });
 
+  it('场景设定图：功能框「设定图」栏里能切到，提交走 scene_setting_sheet 模板', async () => {
+    const user = await pickGridOp('多机位九宫格');
+    const spawnedId = spawnedOpNode().id;
+
+    await user.click(opChip());
+    await user.click(screen.getByRole('button', { name: /^场景设定图/ }));
+    expect(nodeData(spawnedId).imageOpKey).toBe('sceneSettingSheet');
+    expect(nodeData(spawnedId).displayName).toBe('场景设定图');
+
+    fireEvent.click(within(detailPanel()).getByRole('button', { name: '生成' }));
+
+    await waitFor(() => expect(submitFreezoneTemplateEdit).toHaveBeenCalled());
+    const [, payload] = vi.mocked(submitFreezoneTemplateEdit).mock.calls[0];
+    expect(payload.mode).toBe('scene_setting_sheet');
+    expect(payload.prompt).toBe('场景设定图');
+  });
+
   it('点 chip 展开功能框（四栏），选另一个功能 → key 与节点名一起换', async () => {
     const user = await pickGridOp('剧情推演四宫格');
     const spawnedId = spawnedOpNode().id;

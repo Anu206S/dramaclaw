@@ -26,6 +26,7 @@ export type GridActionKey =
   | 'serialStoryboard25'
   | 'cinematicLightCorrection'
   | 'characterThreeView'
+  | 'sceneSettingSheet'
   | 'frameProjection3sLater'
   | 'frameProjection5sEarlier';
 
@@ -37,6 +38,7 @@ export const GRID_ACTION_MODE_MAP: Record<GridActionKey, FreezoneTemplateEditMod
   serialStoryboard25: 'storyboard_25_grid',
   cinematicLightCorrection: 'cinematic_light_correction',
   characterThreeView: 'character_three_view_generation',
+  sceneSettingSheet: 'scene_setting_sheet',
   frameProjection3sLater: 'image_projection_after_3s',
   frameProjection5sEarlier: 'image_projection_before_5s',
 };

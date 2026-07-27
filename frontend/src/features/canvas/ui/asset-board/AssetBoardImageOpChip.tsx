@@ -10,6 +10,7 @@ import {
   Grid2x2,
   Grid3x3,
   LayoutDashboard,
+  Mountain,
   Package,
   Rewind,
   User,
@@ -36,6 +37,7 @@ export const ASSET_BOARD_IMAGE_OP_ICONS: Record<AssetBoardImageOpKey, LucideIcon
   serialStoryboard25: LayoutDashboard,
   cinematicLightCorrection: Film,
   characterThreeView: Users,
+  sceneSettingSheet: Mountain,
   frameProjection3sLater: FastForward,
   frameProjection5sEarlier: Rewind,
   scene360: Globe,
@@ -43,8 +45,8 @@ export const ASSET_BOARD_IMAGE_OP_ICONS: Record<AssetBoardImageOpKey, LucideIcon
 
 /**
  * 功能框的分栏：左栏「分镜叙事 + 质感调节」(4+1)、右栏「空间与机位 + 设定图」
- * (2+3)，两栏各 5 行刚好齐平（对标 liblib）。纯排版决策，故功能表里只留分类，
- * 怎么摆由这里说了算。
+ * (2+4)，左 5 行右 6 行（对标 liblib；加了场景设定图后右栏多出一行，面板本身
+ * 可滚动，不影响可达性）。纯排版决策，故功能表里只留分类，怎么摆由这里说了算。
  */
 const PANEL_COLUMNS: readonly (readonly AssetBoardImageOpCategoryKey[])[] = [
   ['narrative', 'texture'],
