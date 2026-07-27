@@ -1063,6 +1063,58 @@ def test_freezone_plugin_chunked_draft_recipe_progress_without_expected_count_av
     assert "recipe_count" not in pending_events[-1]["event"]
 
 
+def test_freezone_plugin_chunked_draft_recipe_result_directs_next_recipe_before_finish(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+
+    handlers["freezone_begin_agent_catalog_draft"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+            "expected_recipe_count": 6,
+        }
+    )
+    for index in range(4):
+        handlers["freezone_put_agent_catalog_recipe"](
+            {
+                "project_id": "project-a",
+                "canvas_id": "canvas-a",
+                "skill_studio_session_id": "skill_studio_01",
+                "index": index,
+                "recipe": {"id": f"recipe-{index}", "name": f"Recipe {index}"},
+            }
+        )
+    result = handlers["freezone_put_agent_catalog_recipe"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "index": 4,
+            "recipe": {"id": "audio-layer", "name": "音频层"},
+        }
+    )
+
+    instruction = result["agent_instruction"]
+    assert "remaining Recipe chunks: 1" in instruction
+    assert "freezone_put_agent_catalog_recipe" in instruction
+    assert "index=5" in instruction
+    assert "Do not call skill_view" in instruction
+    assert "Do not handle slash commands" in instruction
+    assert "Do not call freezone_finish_agent_catalog_draft yet" in instruction
+
+
 def test_freezone_plugin_chunked_draft_revision_preserves_unchanged_recipes(monkeypatch):
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
