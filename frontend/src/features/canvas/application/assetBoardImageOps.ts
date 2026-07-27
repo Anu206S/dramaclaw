@@ -23,13 +23,12 @@ import { GRID_ACTION_MODE_MAP, type GridActionKey } from './gridTemplateAction';
 import { generationTaskDescriptor } from './resumeGeneration';
 
 /**
- * 故事板「功能」key。= 10 项一图流能力：9 个宫格模板（复用
+ * 一图流「功能」key。= 11 项能力：10 个宫格模板（复用
  * {@link GRID_ACTION_MODE_MAP}）+ 全景。
  *
- * 与工作流侧的差别只在**交互形态**：工作流是「在源节点上配好参数 → 确认 →
- * 建结果节点」，故事板这条是「点功能 → 先建一个空的图片生成节点（节点名=功能名）
- * → 在它的输入框里改提示词/参考图/比例、或换成别的功能 → 按 ↑ 才真正提交」。
- * 能力本身完全一样。
+ * 交互形态两个视图现在完全一致：点功能 → 先建一个空的图片生成节点（节点名=功能名）
+ * → 在它的输入框里改提示词/参考图/比例、或换成别的功能 → 按 ↑ 才真正提交。
+ * 工作流侧原来那条「确认即提交」的浮条（GridActionConfirmOverlay）已按用户要求撤掉。
  *
  * 多角度 / 打光**不在这张表里**（用户要求撤下）：它们的价值在环绕角・俯仰角・
  * 景别 / 亮度・色温・主光方向那几组滑杆上，退化成「一句提示词点生成」并不好用；
@@ -141,6 +140,14 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
     cost: 6,
   },
   {
+    key: 'sceneSettingSheet',
+    label: '场景设定图',
+    summary: '场景美术设定页',
+    description: '点击生成，直接基于当前图像生成场景设定图；支持通过文本补充场景背景。',
+    category: 'setting',
+    cost: 6,
+  },
+  {
     key: 'cinematicLightCorrection',
     label: '电影级光影校正',
     summary: '光影校正到电影级',
@@ -178,13 +185,10 @@ function readString(data: Record<string, unknown>, field: string): string | null
 /**
  * 点功能时**先建节点、不提交**：在源节点下游建一个空的 imageGen 节点并连边，
  * 节点名 = 功能名，`imageOpKey` 记住选中的功能、`imageOpSourceUrl` 记住源图。
+ * 工作流工具条的「九宫格」下拉与故事板详情工具条都走这里。
  *
- * 建 imageGen（而不是工作流那些编排用的 exportImage 结果节点）是这条交互的前提：
- * 故事板详情只给 imageGen / video 节点渲生成表单（`generationFormKindOf`），
- * 没有表单就没有输入框，功能 chip 也就无处可挂。
- *
- * 工作流侧的 `submitGridTemplateAction` / `scene360Image` 等一行不动——那边仍是
- * 「确认即提交」。
+ * 建 imageGen（而不是编排用的 exportImage 结果节点）是这条交互的前提：两个视图都
+ * 只给 imageGen / video 节点渲生成表单，没有表单就没有输入框，功能 chip 也就无处可挂。
  *
  * @returns 新节点 id；源节点已不存在时返回 null。
  */
@@ -289,10 +293,10 @@ function submitOp(
 }
 
 /**
- * 按 ↑ 时真正提交：**把结果写回节点自己**（不像工作流那几个编排那样再建一个
+ * 按 ↑ 时真正提交：**把结果写回节点自己**（不像扩图/高清那几个编排那样再建一个
  * 结果节点）——用户是在这个节点上配的参数，产物就该落在这个节点上。
  *
- * 提交 → 轮询 → 回填 url / 写错，与 `submitGridTemplateAction` 等同一套语义。
+ * 提交 → 轮询 → 回填 url / 写错，与画布上其它一图流编排同一套语义。
  *
  * @returns settle 时 resolve 的后台链（不 reject）。
  */

@@ -581,6 +581,7 @@ export const BASE_CANVAS_ACTION_CAPABILITIES: CanvasActionCapability[] = [
   imageUiCapability("ui.run_grid_serial_storyboard_25", "连续分镜 25 格", "run_grid_serial_storyboard_25"),
   imageUiCapability("ui.run_grid_cinematic_light_correction", "电影感光影修正", "run_grid_cinematic_light_correction"),
   imageUiCapability("ui.run_grid_character_three_view", "角色三视图", "run_grid_character_three_view"),
+  imageUiCapability("ui.run_grid_scene_setting_sheet", "场景设定图", "run_grid_scene_setting_sheet"),
   imageUiCapability("ui.run_grid_frame_projection_3s_later", "推演 3 秒后画面", "run_grid_frame_projection_3s_later"),
   imageUiCapability("ui.run_grid_frame_projection_5s_earlier", "推演 5 秒前画面", "run_grid_frame_projection_5s_earlier"),
   videoUiCapability("ui.open_video_viewer", "视频查看", "open_video_viewer"),

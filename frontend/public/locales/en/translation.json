@@ -2868,28 +2868,15 @@
     "gridMenu": {
       "trigger": "Grid",
       "multiCameraGrid": "Multi-Camera 3x3",
-      "multiCameraGridPrompt": "From this image, generate a 3x3 grid of multi-camera views covering front, left/right 3/4, profiles, back, and varied tilt angles, keeping the subject, style, lighting, and materials fully consistent.",
       "plotFourGrid": "Plot Progression 2x2",
-      "plotFourGridPrompt": "From this image, project the next plot beats and generate a 2x2 grid of consecutive frames within the same scene, preserving character design, spatial relationships, lighting, and overall style.",
       "faceThreeView": "Face Three-View",
-      "faceThreeViewPrompt": "From this character face, generate front, 3/4, and full profile three-view sheets, keeping hairstyle, facial proportions, skin tone, gaze, and expression style consistent on a clean neutral background.",
       "productThreeView": "Product Three-View",
-      "productThreeViewPrompt": "From this product, generate front, side, and top three-view sheets, keeping materials, colors, proportions, and details accurate on a clean neutral background suitable for product display.",
       "serialStoryboard25": "25-Cell Storyboard",
-      "serialStoryboard25Prompt": "From this image, generate a coherent 25-cell storyboard covering a full narrative beat (setup-development-climax-resolution), keeping character design, scene setting, shot style, and atmosphere consistent.",
       "cinematicLightCorrection": "Cinematic Light Grading",
-      "cinematicLightCorrectionPrompt": "Apply cinematic light grading: refine key/fill light relationship, adjust color temperature, contrast, and highlight/shadow layering for added volume and cinematic feel, while keeping subject and composition unchanged.",
       "characterThreeView": "Character Three-View",
-      "characterThreeViewPrompt": "From this character, generate front, side, and back full-body three-view sheets, keeping costume, accessories, body proportions, and overall style consistent on a unified neutral background suitable for character sheets.",
+      "sceneSettingSheet": "Scene Setting Sheet",
       "frameProjection3sLater": "Project Frame +3s",
-      "frameProjection3sLaterPrompt": "Project the state 3 seconds after this frame: continue character motion, expression, camera position, and environmental lighting naturally, while keeping character design and visual style consistent.",
-      "frameProjection5sEarlier": "Project Frame -5s",
-      "frameProjection5sEarlierPrompt": "Reconstruct the state 5 seconds before this frame: infer the initiating actions, expressions, spatial relationships, and camera position, while keeping character design and visual style consistent.",
-      "confirmBar": {
-        "close": "Close",
-        "submit": "Generate",
-        "cost": "Compute cost"
-      }
+      "frameProjection5sEarlier": "Project Frame -5s"
     },
     "video": {
       "clip": "Clip",

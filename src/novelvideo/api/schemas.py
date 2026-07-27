@@ -748,13 +748,14 @@ class FreezoneTemplateEditRequest(BaseModel):
         "storyboard_25_grid",
         "cinematic_light_correction",
         "character_three_view_generation",
+        "scene_setting_sheet",
         "image_projection_after_3s",
         "image_projection_before_5s",
     ] = Field(
         description=(
             "模板模式。分别对应：多机位九宫格 / 剧情推演四宫格 / 角色脸部三视图 / "
             "产品三视图 / 25宫格连贯分镜 / 电影级光影校正 / 角色三视图生成 / "
-            "画面推演-3秒后 / 画面推演-5秒前"
+            "场景设定图 / 画面推演-3秒后 / 画面推演-5秒前"
         )
     )
     prompt: str = Field(default="", description="用户补充提示词，可为空")
