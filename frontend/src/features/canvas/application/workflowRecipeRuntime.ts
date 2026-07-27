@@ -12,8 +12,10 @@ interface WorkflowCatalogRuntime {
   skillId?: unknown;
   skillVersion?: unknown;
   confirmedInputs?: unknown;
+  creativeSettings?: unknown;
   recipeId?: unknown;
   recipeVersion?: unknown;
+  recipePipeline?: unknown;
   userGoal?: unknown;
   promptStrategy?: unknown;
   inputStrategy?: unknown;
@@ -54,6 +56,17 @@ function confirmedInputs(value: unknown): Record<string, unknown> {
   return asRecord(value) ?? {};
 }
 
+function recipePipeline(value: unknown): Array<{ id: string; version?: string }> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item) => {
+    const record = asRecord(item);
+    const id = text(record?.id ?? item);
+    if (!id) return [];
+    const version = text(record?.version);
+    return [{ id, ...(version ? { version } : {}) }];
+  });
+}
+
 function skillRuntimeContext(catalog: WorkflowCatalogRuntime | null) {
   const skillId = text(catalog?.skillId);
   if (!skillId) return {};
@@ -61,6 +74,7 @@ function skillRuntimeContext(catalog: WorkflowCatalogRuntime | null) {
     skillId,
     skillVersion: text(catalog?.skillVersion),
     confirmedInputs: confirmedInputs(catalog?.confirmedInputs),
+    creativeSettings: confirmedInputs(catalog?.creativeSettings),
   };
 }
 
@@ -115,10 +129,12 @@ export async function compileWorkflowNodePrompt(
     input.upstreamContents,
     input.upstreamText ?? '',
   );
+  const pipeline = recipePipeline(catalog?.recipePipeline);
 
   return await compileFreezoneRecipePrompt({
     recipeId,
     recipeVersion: text(catalog?.recipeVersion),
+    ...(pipeline.length > 0 ? { recipePipeline: pipeline } : {}),
     ...skillRuntimeContext(catalog),
     nodeKind: input.nodeKind,
     promptStrategy: promptStrategy(catalog?.promptStrategy),
@@ -143,9 +159,11 @@ export async function generateWorkflowText(input: {
     input.upstreamContents,
     input.upstreamText ?? '',
   );
+  const pipeline = recipePipeline(catalog?.recipePipeline);
   return await generateFreezoneRecipeText({
     recipeId,
     recipeVersion: text(catalog?.recipeVersion),
+    ...(pipeline.length > 0 ? { recipePipeline: pipeline } : {}),
     ...skillRuntimeContext(catalog),
     nodePrompt: input.nodePrompt,
     upstreamText,

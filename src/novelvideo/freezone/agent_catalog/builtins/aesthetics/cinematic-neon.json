@@ -1,0 +1,12 @@
+{
+  "schema_version": "dramaclaw.aesthetic.v1",
+  "id": "cinematic-neon",
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "霓虹电影感",
+  "description": "适合都市情绪、夜景广告与风格化短片。",
+  "prompt_guide": "采用高饱和霓虹色、环境实景光、克制的手持摄影感、浅景深与富有情绪的构图；保持主体身份和产品结构稳定。",
+  "negative_prompt": "避免普通商业棚拍、无动机彩光、过度磨皮、主体结构变形和杂乱文字。",
+  "tags": ["电影感", "霓虹", "都市"],
+  "output_kinds": ["image", "video"]
+}

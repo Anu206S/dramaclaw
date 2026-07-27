@@ -13,9 +13,10 @@ export function validateFreezoneAgentConfigPayload(
   kind: FreezoneAgentConfigKind,
   payload: FreezoneAgentConfigPayload,
 ): ValidationResult {
-  return kind === "skills"
-    ? validateFreezoneSkillPayload(payload)
-    : validateFreezoneRecipePayload(payload);
+  if (kind === "skills") return validateFreezoneSkillPayload(payload);
+  if (kind === "recipes") return validateFreezoneRecipePayload(payload);
+  if (kind === "aesthetics") return validateFreezoneAestheticPayload(payload);
+  return validateFreezoneAnchorSetPayload(payload);
 }
 
 export function isValidFreezoneSkillPayload(payload: FreezoneAgentConfigPayload): boolean {
@@ -109,6 +110,48 @@ function validateFreezoneRecipePayload(payload: FreezoneAgentConfigPayload): Val
   for (const field of ["system_prompt", "planning_prompt", "result_summary"] as const) {
     const result = requireNonEmptyString(payload[field], field);
     if (!result.ok) return result;
+  }
+  return { ok: true };
+}
+
+function validateFreezoneAestheticPayload(
+  payload: FreezoneAgentConfigPayload,
+): ValidationResult {
+  const idResult = validateId(payload.id, "id");
+  if (!idResult.ok) return idResult;
+  for (const field of ["name", "prompt_guide"] as const) {
+    const result = requireNonEmptyString(payload[field], field);
+    if (!result.ok) return result;
+  }
+  const outputKinds = readStringArray(payload.output_kinds);
+  if (outputKinds.some((kind) => !RECIPE_OUTPUT_KINDS.has(kind))) {
+    return invalid("output_kinds 包含不支持的类型");
+  }
+  return { ok: true };
+}
+
+function validateFreezoneAnchorSetPayload(
+  payload: FreezoneAgentConfigPayload,
+): ValidationResult {
+  const idResult = validateId(payload.id, "id");
+  if (!idResult.ok) return idResult;
+  const nameResult = requireNonEmptyString(payload.name, "name");
+  if (!nameResult.ok) return nameResult;
+  const anchors = Array.isArray(payload.anchors) ? payload.anchors : [];
+  if (anchors.length === 0) return invalid("anchors 至少需要 1 项");
+  for (const value of anchors) {
+    const anchor = getRecord(value);
+    for (const field of ["node_id", "node_type", "label"] as const) {
+      const result = requireNonEmptyString(anchor[field], `anchors.${field}`);
+      if (!result.ok) return result;
+    }
+    if (!["imageGenNode", "videoNode", "audioNode"].includes(readString(anchor.node_type))) {
+      return invalid("anchors.node_type 不支持");
+    }
+    for (const targetId of readStringArray(anchor.target_item_ids)) {
+      const result = validateId(targetId, "anchors.target_item_ids");
+      if (!result.ok) return result;
+    }
   }
   return { ok: true };
 }
