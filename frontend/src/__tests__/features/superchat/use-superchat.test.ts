@@ -49,6 +49,7 @@ import {
   buildSkillStudioDraftCancelToolResultForTest,
   buildSkillStudioDraftRevisionToolResultForTest,
   buildSkillStudioDraftToolResultForTest,
+  normalizeSkillStudioDraftForCatalogForTest,
   skillStudioDraftFieldLabelsForTest,
   buildSkillStudioFlowItemsForTest,
   buildSkillStudioQuestionTimelineItemsForTest,
@@ -449,6 +450,133 @@ describe("assistant message ordered parts", () => {
     ]);
   });
 
+  it("keeps streamed prose around submitted Skill Studio cards when the final assistant message arrives", () => {
+    let messages: ChatMessage[] = [];
+    const firstText = [
+      "我先了解一下画布关键节点的详细内容，再来和你确认提炼方向。",
+      "",
+      "我已经读完当前画布，整体看这是一条品牌 IP 短片制作流程。",
+      "",
+      "在正式提炼前，我先和你确认几个关键方向。",
+      "",
+    ].join("\n");
+    const confirmedText = `${firstText}\n好的，方向已确认：可复用 Skill / 细粒度 6 个 Recipe。我现在开始起草。\n\n`;
+
+    messages = upsertAssistantMessageForTest(messages, "turn-skill-studio-final", firstText);
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-studio-final", {
+      type: "assistant.clarification.request",
+      submitted: true,
+      bridge_key: "clarification-key",
+      anchor_text_prefix: firstText,
+      questions: [],
+      answers: {},
+    });
+    messages = upsertAssistantMessageForTest(messages, "turn-skill-studio-final", confirmedText);
+    messages = upsertAssistantUiEventForTest(messages, "turn-skill-studio-final", {
+      type: "skill_studio.draft",
+      bridge_key: "draft-key",
+      skill_studio_session_id: "studio-1",
+      skill: { id: "skill-1" },
+      recipes: [],
+    });
+    messages = upsertServerAssistantMessageForTest(
+      messages,
+      {
+        id: 9,
+        role: "assistant",
+        content: confirmedText,
+        turn_id: "turn-skill-studio-final",
+        created_at: "2026-07-24T06:39:26.750139+00:00",
+      },
+      "turn-skill-studio-final",
+    );
+
+    const assistant = messages.find((item) => item.turnId === "turn-skill-studio-final" && item.role === "assistant");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual([
+      "text",
+      "clarification",
+      "text",
+      "skill_studio",
+    ]);
+    expect(assistant?.parts?.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+      firstText,
+      confirmedText.slice(firstText.length),
+    ]);
+  });
+
+  it("reorders historical Skill Studio parts around their text anchors", () => {
+    const firstText = [
+      "我先了解一下画布关键节点的详细内容，再来和你确认提炼方向。",
+      "",
+      "我已经读完当前画布，整体看这是一条品牌 IP 短片制作流程。",
+      "",
+      "在正式提炼前，我先和你确认几个关键方向。",
+      "",
+    ].join("\n");
+    const confirmedText = `${firstText}\n好的，方向已确认：可复用 Skill / 细粒度 6 个 Recipe。我现在开始起草。\n\n`;
+    const assistant: ChatMessage = {
+      id: "backend-assistant-1",
+      role: "assistant",
+      text: confirmedText,
+      turnId: "turn-skill-studio-history",
+      timestamp: 1,
+      parts: [
+        {
+          id: "clarification:clarification-key",
+          type: "clarification",
+          event: {
+            type: "assistant.clarification.request",
+            submitted: true,
+            bridge_key: "clarification-key",
+            anchor_text_prefix: firstText,
+            questions: [],
+            answers: {},
+          },
+        },
+        {
+          id: "agent_thought:turn-skill-studio-history:middle",
+          type: "agent_thought",
+          event: {
+            type: "agent.thought.delta",
+            status: "completed",
+            text: "开始起草 Skill 和 Recipe。",
+          },
+        },
+        {
+          id: "skill_studio.draft:draft-key",
+          type: "skill_studio",
+          event: {
+            type: "skill_studio.draft",
+            bridge_key: "draft-key",
+            skill_studio_session_id: "studio-1",
+            anchor_text_prefix: firstText,
+            skill: { id: "skill-1" },
+            recipes: [],
+          },
+        },
+        {
+          id: "text-1",
+          type: "text",
+          text: confirmedText,
+        },
+      ],
+    };
+
+    const parts = visibleAssistantOrderedPartsForMessageForTest(assistant);
+
+    expect(parts.map((part) => part.type)).toEqual([
+      "text",
+      "clarification",
+      "agent_thought",
+      "text",
+      "skill_studio",
+    ]);
+    expect(parts.filter((part) => part.type === "text").map((part) => part.text)).toEqual([
+      firstText,
+      confirmedText.slice(firstText.length),
+    ]);
+  });
+
   it("keeps Skill Studio status in ordered parts after a submitted question card", () => {
     let messages: ChatMessage[] = [];
 
@@ -474,7 +602,7 @@ describe("assistant message ordered parts", () => {
     ]);
   });
 
-  it("removes transient Skill Studio status from ordered parts when prose arrives", () => {
+  it("keeps real Skill Studio progress in ordered parts when prose arrives", () => {
     let messages: ChatMessage[] = [];
 
     messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
@@ -485,11 +613,14 @@ describe("assistant message ordered parts", () => {
     messages = upsertAssistantMessageForTest(messages, "turn-skill-status", "开始整理草稿");
 
     const assistant = messages.find((item) => item.turnId === "turn-skill-status" && item.role === "assistant");
-    expect(assistant?.parts?.map((part) => part.type)).toEqual(["text"]);
-    expect(assistant?.parts?.[0]).toMatchObject({ type: "text", text: "开始整理草稿" });
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["skill_studio", "text"]);
+    expect(assistant?.parts?.map((part) => part.type === "text" ? part.text : (part.event as { type?: string }).type)).toEqual([
+      "skill_studio.status",
+      "开始整理草稿",
+    ]);
   });
 
-  it("removes transient Skill Studio status when the final assistant message arrives", () => {
+  it("keeps real Skill Studio progress when the final assistant message arrives", () => {
     let messages: ChatMessage[] = [];
 
     messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
@@ -519,17 +650,19 @@ describe("assistant message ordered parts", () => {
 
     const assistant = messages.find((item) => item.turnId === "turn-skill-status" && item.role === "assistant");
     expect(assistant?.text).toBe("草稿生成未完成，请继续补充调整方向。");
-    expect(assistant?.parts?.map((part) => part.type)).toEqual(["skill_studio", "text"]);
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["skill_studio", "skill_studio", "text"]);
     expect(assistant?.parts?.map((part) => part.type === "text" ? part.text : (part.event as { type?: string }).type)).toEqual([
       "skill_studio.questions",
+      "skill_studio.status",
       "草稿生成未完成，请继续补充调整方向。",
     ]);
     expect(assistant?.uiEvents?.map((event) => (event as { type?: string }).type)).toEqual([
       "skill_studio.questions",
+      "skill_studio.status",
     ]);
   });
 
-  it("clears transient Skill Studio status when a turn completes without a final assistant payload", () => {
+  it("keeps real Skill Studio progress when a turn completes without a final assistant payload", () => {
     let messages: ChatMessage[] = [];
 
     messages = upsertAssistantUiEventForTest(messages, "turn-skill-status", {
@@ -551,9 +684,11 @@ describe("assistant message ordered parts", () => {
 
     expect(assistant?.parts?.map((part) => part.type === "text" ? part.text : (part.event as { type?: string }).type)).toEqual([
       "skill_studio.questions",
+      "skill_studio.status",
     ]);
     expect(assistant?.uiEvents?.map((event) => (event as { type?: string }).type)).toEqual([
       "skill_studio.questions",
+      "skill_studio.status",
     ]);
   });
 
@@ -2135,7 +2270,7 @@ describe("Skill Studio status events", () => {
     }).map((event) => event.type)).toEqual([]);
   });
 
-  it("hides submitted Skill Studio progress status once assistant prose has started", () => {
+  it("keeps submitted Skill Studio progress status once assistant prose has started", () => {
     expect(visibleSkillStudioEventsForMessageForTest({
       id: "assistant-turn-1",
       role: "assistant",
@@ -2157,10 +2292,10 @@ describe("Skill Studio status events", () => {
           message: "正在创建草稿结构...",
         },
       ],
-    }).map((event) => event.type)).toEqual([]);
+    }).map((event) => event.type)).toEqual(["skill_studio.status"]);
   });
 
-  it("hides submitted Skill Studio progress parts once assistant prose has started", () => {
+  it("keeps submitted Skill Studio progress parts once assistant prose has started", () => {
     const assistant = message(
       "assistant-turn-1",
       "assistant",
@@ -2195,6 +2330,7 @@ describe("Skill Studio status events", () => {
 
     expect(visibleAssistantOrderedPartsForMessageForTest(assistant).map((part) => part.type)).toEqual([
       "clarification",
+      "skill_studio",
     ]);
   });
 
@@ -2408,6 +2544,56 @@ describe("Skill Studio draft response", () => {
     });
     expect(payload.message).toContain("home-culture-poster");
     expect(payload.message).toContain("已保存为正式 Skill / Recipe");
+  });
+
+  it("normalizes Skill Studio draft input parameters before catalog save", () => {
+    const draft = normalizeSkillStudioDraftForCatalogForTest({
+      skill: {
+        id: "pixar-ip-brand-short-video",
+        input_parameters: [
+          {
+            id: "aspect_ratio",
+            label: "画面比例",
+            type: "single_select",
+            required: false,
+            default: "16:9",
+            placeholder: "不要保存这个展示字段",
+            options: ["16:9 横版", "9:16 竖版"],
+          },
+          {
+            id: "shot_count",
+            label: "分镜数量",
+            type: "number",
+            required: false,
+            default: 6,
+            options: [4, 6, 8, 9],
+          },
+        ],
+      },
+      recipes: [],
+    });
+
+    expect(draft.skill).toMatchObject({
+      input_parameters: [
+        {
+          id: "aspect_ratio",
+          label: "画面比例",
+          type: "single_select",
+          required: false,
+          default: "16:9 横版",
+          options: ["16:9 横版", "9:16 竖版"],
+        },
+        {
+          id: "shot_count",
+          label: "分镜数量",
+          type: "number",
+          required: false,
+          default: 6,
+          options: ["4", "6", "8", "9"],
+        },
+      ],
+    });
+    expect(JSON.stringify(draft)).not.toContain("placeholder");
   });
 
   it("builds a bridge tool result when the draft is cancelled", () => {
