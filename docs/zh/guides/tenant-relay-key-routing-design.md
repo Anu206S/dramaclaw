@@ -2,7 +2,7 @@
 
 > 状态：实施方案
 >
-> 代码基线：DramaClaw `freezone-canvas`；虾驿 = `claymore-llm-gateway`（QuantumNous/new-api fork）；EE = `SuperTale_main`（积分实现在 `src/novelvideo_ee/ports_bootstrap.py`）
+> 代码基线：DramaClaw `freezone-canvas`；虾驿 = `claymore-llm-gateway`（QuantumNous/new-api fork）；EE = `SuperTale_main`（积分实现在 EE 侧 `ports_bootstrap.py`）
 >
 > 适用范围：起步与试用客户的共享实例。大客户走独立部署，不在本方案内。
 
@@ -22,7 +22,7 @@
 | 1 | Agent 单例按 key 分桶 | `freezone/text_node.py`、`agents/global_video_optimizer.py`、`model_gateway_runtime.py` | 3 处同一模式，**getter 共 6 个调用点** |
 | 2 | `tenant_relay_key` 表 + admin 接口 | `model_gateway_settings.py`、`api/routes/model_gateway.py` | ~120 行机械活，`settings.db` 与 `save_*` 模式现成 |
 | 3 | `get_effective_newapi_config(username=...)`；BYOK 标记进 contextvars | `model_gateway_settings.py:499`、`llm_instrumentation.py`、`task_backend/run_core.py:196` | key 解析**仅 4 个调用点**；标记有**两个设置点**（请求入口 + 任务侧） |
-| 4 | EE 的 `EEUsageMeter` 加 BYOK 判断 | `SuperTale_main/src/novelvideo_ee/ports_bootstrap.py:170` | **一个类里加 6 个 `if`**；业务代码 37 处一行不改（§3.2） |
+| 4 | EE 的 `EEUsageMeter` 加 BYOK 判断 | EE 侧 `ports_bootstrap.py:170` | **一个类里加 6 个 `if`**；业务代码 37 处一行不改（§3.2） |
 | 5 | 虾驿侧配置（用户 / token / 渠道 / `auto` 分组） | 虾驿后台或 admin API | **零代码**，纯后台配置 |
 
 **合计约 250 行加测试。** 规模不大，原因是每处收口都很窄：`get_effective_newapi_config` 只有 4 个调用点、三个 Agent getter 合计 6 个调用点、扣费靠 EE 薄壳层 6 个 `if` 收口、虾驿侧零代码。
@@ -398,8 +398,8 @@ class NoOpUsageMeter:
 **CE 根本不扣积分**，在这个文件里加判断毫无意义。真实实现在 EE：
 
 ```text
-SuperTale_main/src/novelvideo_ee/ports_bootstrap.py:170   class EEUsageMeter
-SuperTale_main/src/novelvideo_ee/ports_bootstrap.py:478   register_port("usage_meter", EEUsageMeter())
+EE ports_bootstrap.py:170   class EEUsageMeter
+EE ports_bootstrap.py:478   register_port("usage_meter", EEUsageMeter())
 ```
 
 而 `EEUsageMeter` 是**一层纯转发的薄壳**，积分核心逻辑在 `metrics_emit` 与 `credit_ledger` 里：
