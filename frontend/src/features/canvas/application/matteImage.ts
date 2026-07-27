@@ -80,6 +80,7 @@ export function matteImage(
   );
   store.addEdge(node.id, nextNodeId);
   store.setSelectedNode(nextNodeId);
+  store.requestFocusNode(nextNodeId);
 
   const sourceUrl = imageSource;
   const completion = (async () => {
