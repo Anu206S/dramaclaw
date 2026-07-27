@@ -2,8 +2,6 @@
 // Copyright (c) 2026 ClaymoreLab
 import {
   fetchFreezoneJobResult,
-  submitFreezoneMultiView,
-  submitFreezoneRelight,
   submitFreezoneScene360,
   submitFreezoneTemplateEdit,
   DEFAULT_FREEZONE_SCENE_360_ASPECT_RATIO,
@@ -25,15 +23,19 @@ import { GRID_ACTION_MODE_MAP, type GridActionKey } from './gridTemplateAction';
 import { generationTaskDescriptor } from './resumeGeneration';
 
 /**
- * 故事板「功能」key。= 现有 12 项一图流能力：9 个宫格模板（复用
- * {@link GRID_ACTION_MODE_MAP}）+ 全景 / 多角度 / 打光。
+ * 故事板「功能」key。= 10 项一图流能力：9 个宫格模板（复用
+ * {@link GRID_ACTION_MODE_MAP}）+ 全景。
  *
  * 与工作流侧的差别只在**交互形态**：工作流是「在源节点上配好参数 → 确认 →
  * 建结果节点」，故事板这条是「点功能 → 先建一个空的图片生成节点（节点名=功能名）
  * → 在它的输入框里改提示词/参考图/比例、或换成别的功能 → 按 ↑ 才真正提交」。
  * 能力本身完全一样。
+ *
+ * 多角度 / 打光**不在这张表里**（用户要求撤下）：它们的价值在环绕角・俯仰角・
+ * 景别 / 亮度・色温・主光方向那几组滑杆上，退化成「一句提示词点生成」并不好用；
+ * 详情工具条上的那两个完整编辑器仍在，走的是工作流那条「确认即提交」。
  */
-export type AssetBoardImageOpKey = GridActionKey | 'scene360' | 'multiAngle' | 'relight';
+export type AssetBoardImageOpKey = GridActionKey | 'scene360';
 
 /** 功能框的分组（对标 liblib 的四栏：分镜叙事 / 空间与机位 / 设定图 / 质感调节）。 */
 export type AssetBoardImageOpCategoryKey = 'narrative' | 'space' | 'setting' | 'texture';
@@ -115,14 +117,6 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
     cost: 10,
   },
   {
-    key: 'multiAngle',
-    label: '多角度',
-    summary: '换个机位重拍',
-    description: '点击生成，换一个机位重拍当前画面；支持通过文本指定角度与景别。',
-    category: 'space',
-    cost: 6,
-  },
-  {
     key: 'characterThreeView',
     label: '角色三视图生成',
     summary: '角色全身三视图',
@@ -154,14 +148,6 @@ export const ASSET_BOARD_IMAGE_OPS: readonly AssetBoardImageOpDef[] = [
     category: 'texture',
     cost: 4,
   },
-  {
-    key: 'relight',
-    label: '打光',
-    summary: '重新布光换氛围',
-    description: '点击生成，为当前图像重新布光；支持通过文本描述想要的光线氛围。',
-    category: 'texture',
-    cost: 6,
-  },
 ];
 
 export const ASSET_BOARD_IMAGE_OP_MAP: Record<AssetBoardImageOpKey, AssetBoardImageOpDef> =
@@ -175,9 +161,8 @@ export function isAssetBoardImageOpKey(value: unknown): value is AssetBoardImage
 }
 
 /**
- * 是不是 9 个宫格模板之一。询价用得上：宫格走 `image_selection`（与详情工具条
- * 下拉里那个价同源），全景 / 多角度 / 打光目前没有对应的询价口径，宁可不显示
- * 也不摆一个文生图的价上去骗人。
+ * 是不是 9 个宫格模板之一。询价用得上：宫格走 `image_selection`，全景没有对应
+ * 的询价口径，宁可不显示也不摆一个文生图的价上去骗人。
  */
 export function isGridImageOpKey(key: AssetBoardImageOpKey): key is GridActionKey {
   return key in GRID_ACTION_MODE_MAP;
@@ -198,8 +183,8 @@ function readString(data: Record<string, unknown>, field: string): string | null
  * 故事板详情只给 imageGen / video 节点渲生成表单（`generationFormKindOf`），
  * 没有表单就没有输入框，功能 chip 也就无处可挂。
  *
- * 工作流侧的 `submitGridTemplateAction` / `scene360Image` / `multiAngleImage` /
- * `relightImage` 一行不动——那边仍是「确认即提交」。
+ * 工作流侧的 `submitGridTemplateAction` / `scene360Image` 等一行不动——那边仍是
+ * 「确认即提交」。
  *
  * @returns 新节点 id；源节点已不存在时返回 null。
  */
@@ -293,30 +278,12 @@ function submitOp(
       prompt,
     });
   }
+  // 宫格之外只剩全景（多角度/打光已从功能表撤下，见 AssetBoardImageOpKey）。
+  // 全景的比例是它自己那套 2:1 / 21:9，不吃通用比例。
   const imageSize = readString(data, 'size') ?? undefined;
-  if (opKey === 'scene360') {
-    return submitFreezoneScene360(project, {
-      referenceUrl: sourceUrl,
-      aspectRatio: resolveScene360AspectRatio(data),
-      ...(imageSize ? { imageSize } : {}),
-    });
-  }
-  if (opKey === 'multiAngle') {
-    // 故事板这条走「提示词驱动」的轻量入口：角度/景别用面板默认值，用户想要
-    // 精细的环绕角・俯仰角・景别滑杆，工具条上的「多角度」编辑器一如既往还在。
-    return submitFreezoneMultiView(project, {
-      sourceUrl,
-      preset: 'custom',
-      prompt,
-      ...(imageSize ? { imageSize } : {}),
-    });
-  }
-  // relight：同上，智能模式 + 提示词；亮度/色温/主光方向走后端默认，
-  // 细调仍在工具条的「打光」编辑器里。
-  return submitFreezoneRelight(project, {
-    sourceUrl,
-    smartMode: true,
-    prompt,
+  return submitFreezoneScene360(project, {
+    referenceUrl: sourceUrl,
+    aspectRatio: resolveScene360AspectRatio(data),
     ...(imageSize ? { imageSize } : {}),
   });
 }

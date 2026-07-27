@@ -184,10 +184,10 @@ describe('故事板 · 功能 chip（点功能建节点 → 确认后生成）',
       expect(await screen.findByText(category)).toBeInTheDocument();
     }
     // 每行是「功能名 + 一句话说明」，所以按名字前缀匹配。
-    await user.click(screen.getByRole('button', { name: /^打光/ }));
+    await user.click(screen.getByRole('button', { name: /^全景/ }));
 
-    expect(nodeData(spawnedId).imageOpKey).toBe('relight');
-    expect(nodeData(spawnedId).displayName).toBe('打光');
+    expect(nodeData(spawnedId).imageOpKey).toBe('scene360');
+    expect(nodeData(spawnedId).displayName).toBe('全景');
   });
 
   it('在 chip 后面退格就能删掉它 → 退化成普通图片生成节点', async () => {
