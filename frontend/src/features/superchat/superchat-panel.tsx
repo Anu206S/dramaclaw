@@ -33,6 +33,7 @@ import {
   Volume2,
   VolumeX,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
 import type {
   CSSProperties,
@@ -63,6 +64,13 @@ import { Badge } from "@/components/ui/badge";
 import { Input } from "@/components/ui/input";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuRadioGroup,
+  DropdownMenuRadioItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { apiCall } from "@/api/client";
 import {
   Dialog,
@@ -9073,6 +9081,27 @@ type CanvasCommandSurfaceEvent =
 const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
 const CANVAS_COMMAND_APPROVAL_TIMEOUT_MS = 60_000;
 
+/** 输入框左下角那颗「手动确认 / 自动生成」下拉里的两档。 */
+const CANVAS_COMMAND_EXECUTION_MODE_OPTIONS: ReadonlyArray<{
+  value: CanvasCommandExecutionMode;
+  icon: LucideIcon;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "manual_confirm",
+    icon: ShieldAlert,
+    label: "手动确认",
+    description: "Agent 在执行画布命令前都会请求确认",
+  },
+  {
+    value: "auto_execute",
+    icon: Wrench,
+    label: "自动生成",
+    description: "Agent 会自动执行安全命令并反馈结果",
+  },
+];
+
 function loadCanvasCommandExecutionMode(): CanvasCommandExecutionMode {
   if (typeof window === "undefined") return "manual_confirm";
   return window.localStorage.getItem(CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY) === "auto_execute"
@@ -10235,7 +10264,6 @@ export function SuperChatPanel({
   const historyScrollKeyRef = useRef<string | null>(null);
   const composerShellRef = useRef<HTMLDivElement | null>(null);
   const composerBeamRef = useRef<BorderBeamController | null>(null);
-  const canvasCommandModeButtonRef = useRef<HTMLButtonElement | null>(null);
   const skillStudioDraftPersistTimerRef = useRef<number | null>(null);
   const onFreezoneUserMessageRef = useRef(onFreezoneUserMessage);
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
@@ -10261,10 +10289,6 @@ export function SuperChatPanel({
   const resolvedCanvasCommandApprovalKeysRef = useRef<Set<string>>(new Set());
   const [canvasCommandExecutionMode, setCanvasCommandExecutionMode] = useState<CanvasCommandExecutionMode>(() => loadCanvasCommandExecutionMode());
   const [canvasCommandModeMenuOpen, setCanvasCommandModeMenuOpen] = useState(false);
-  const [canvasCommandModeMenuPosition, setCanvasCommandModeMenuPosition] = useState<{
-    left: number;
-    bottom: number;
-  } | null>(null);
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 
   useEffect(() => {
@@ -10654,45 +10678,6 @@ export function SuperChatPanel({
     saveCanvasCommandExecutionMode(mode);
     setCanvasCommandModeMenuOpen(false);
   }, []);
-
-  useLayoutEffect(() => {
-    if (!canvasCommandModeMenuOpen) {
-      setCanvasCommandModeMenuPosition(null);
-      return;
-    }
-    const updatePosition = () => {
-      const button = canvasCommandModeButtonRef.current;
-      if (!button) return;
-      const rect = button.getBoundingClientRect();
-      const menuWidth = 288;
-      setCanvasCommandModeMenuPosition({
-        left: Math.max(8, Math.min(rect.left, window.innerWidth - menuWidth - 8)),
-        bottom: Math.max(8, window.innerHeight - rect.top + 8),
-      });
-    };
-    updatePosition();
-    window.addEventListener("resize", updatePosition);
-    window.addEventListener("scroll", updatePosition, true);
-    return () => {
-      window.removeEventListener("resize", updatePosition);
-      window.removeEventListener("scroll", updatePosition, true);
-    };
-  }, [canvasCommandModeMenuOpen]);
-
-  useEffect(() => {
-    if (!canvasCommandModeMenuOpen) return;
-    const handlePointerDown = (event: PointerEvent) => {
-      const target = event.target;
-      if (!(target instanceof Node)) return;
-      if (canvasCommandModeButtonRef.current?.contains(target)) return;
-      if (target instanceof Element && target.closest("[data-canvas-command-mode-menu='true']")) return;
-      setCanvasCommandModeMenuOpen(false);
-    };
-    document.addEventListener("pointerdown", handlePointerDown);
-    return () => {
-      document.removeEventListener("pointerdown", handlePointerDown);
-    };
-  }, [canvasCommandModeMenuOpen]);
 
   const userMessageHistory = useMemo(
     () =>
@@ -13358,26 +13343,73 @@ export function SuperChatPanel({
                   <div className="flex items-center gap-1">
                     {isFreezoneLayout && (
                       <>
-                        <Button
-                          ref={canvasCommandModeButtonRef}
-                          type="button"
-                          variant="ghost"
-                          size="sm"
-                          className="h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
-                          onClick={() => setCanvasCommandModeMenuOpen((open) => !open)}
+                        <DropdownMenu
+                          open={canvasCommandModeMenuOpen}
+                          onOpenChange={setCanvasCommandModeMenuOpen}
                         >
-                          {canvasCommandExecutionMode === "manual_confirm" ? (
-                            <>
-                              <ShieldAlert className="size-3.5" />
-                              手动确认
-                            </>
-                          ) : (
-                            <>
-                              <Wrench className="size-3.5" />
-                              自动生成
-                            </>
-                          )}
-                        </Button>
+                          <DropdownMenuTrigger
+                            render={
+                              <Button
+                                type="button"
+                                variant="ghost"
+                                size="sm"
+                                className={cn(
+                                  "h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+                                  canvasCommandModeMenuOpen && "bg-white/[0.08] text-foreground",
+                                )}
+                              />
+                            }
+                          >
+                            {canvasCommandExecutionMode === "manual_confirm" ? (
+                              <>
+                                <ShieldAlert className="size-3.5" />
+                                手动确认
+                              </>
+                            ) : (
+                              <>
+                                <Wrench className="size-3.5" />
+                                自动生成
+                              </>
+                            )}
+                          </DropdownMenuTrigger>
+                          {/* 两档执行模式：语义上就是一组单选，交给 shadcn 的
+                              DropdownMenuRadioGroup —— 定位、外点关闭、Esc、方向键
+                              与选中标记都由组件给，不再手搓 portal + getBoundingClientRect。 */}
+                          <DropdownMenuContent
+                            side="top"
+                            align="start"
+                            sideOffset={8}
+                            // 圆角收到 rounded-md（用户要求「别太大」）；底色跟画布
+                            // 工具条一套中性灰，别用带蓝调的 popover token——抽屉是
+                            // 中性 #212121，蓝灰浮层压上去会发闷。
+                            className="w-[260px] rounded-md bg-[#2a2a2c] p-1 shadow-lg ring-white/12"
+                          >
+                            <DropdownMenuRadioGroup
+                              value={canvasCommandExecutionMode}
+                              onValueChange={(value) =>
+                                setCanvasExecutionMode(value as CanvasCommandExecutionMode)
+                              }
+                            >
+                              {CANVAS_COMMAND_EXECUTION_MODE_OPTIONS.map((option) => (
+                                <DropdownMenuRadioItem
+                                  key={option.value}
+                                  value={option.value}
+                                  // pr-8 得留着：选中标记是绝对定位在右侧的，收窄右
+                                  // 内边距会让它压到描述文字上。
+                                  className="items-start gap-2.5 rounded-md py-2 pl-2 pr-8 focus:bg-white/[0.075] data-checked:bg-white/[0.05] data-checked:focus:bg-white/[0.075]"
+                                >
+                                  <option.icon className="mt-0.5 shrink-0 text-muted-foreground" />
+                                  <span className="min-w-0 flex-1">
+                                    <span className="block text-sm font-medium">{option.label}</span>
+                                    <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+                                      {option.description}
+                                    </span>
+                                  </span>
+                                </DropdownMenuRadioItem>
+                              ))}
+                            </DropdownMenuRadioGroup>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                         <Button
                           ref={freezoneSkillMenuButtonRef}
                           type="button"
@@ -13683,56 +13715,6 @@ export function SuperChatPanel({
           onInstall={(item) => void installFreezoneCommunitySkill(item)}
           onSelectLocalSkill={selectFreezoneSkillFromDialog}
         />
-      )}
-      {isFreezoneLayout && canvasCommandModeMenuOpen && canvasCommandModeMenuPosition && createPortal(
-        <div
-          data-canvas-command-mode-menu="true"
-          className="fixed z-[1000] w-72 overflow-hidden rounded-xl border border-white/10 bg-popover p-1.5 text-popover-foreground shadow-xl"
-          style={{
-            left: canvasCommandModeMenuPosition.left,
-            bottom: canvasCommandModeMenuPosition.bottom,
-          }}
-        >
-          <button
-            type="button"
-            className={cn(
-              "flex min-h-[58px] w-full items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-white/[0.06]",
-              canvasCommandExecutionMode === "manual_confirm" && "bg-white/[0.08]",
-            )}
-            onClick={() => setCanvasExecutionMode("manual_confirm")}
-          >
-            <ShieldAlert className="mt-0.5 size-4 shrink-0" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium">手动确认</span>
-              <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
-                Agent 在执行画布命令前都会请求确认
-              </span>
-            </span>
-            <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
-              {canvasCommandExecutionMode === "manual_confirm" && <CheckCircle2 className="size-4" />}
-            </span>
-          </button>
-          <button
-            type="button"
-            className={cn(
-              "flex min-h-[58px] w-full items-start gap-3 rounded-lg px-3 py-2 text-left hover:bg-white/[0.06]",
-              canvasCommandExecutionMode === "auto_execute" && "bg-white/[0.08]",
-            )}
-            onClick={() => setCanvasExecutionMode("auto_execute")}
-          >
-            <Wrench className="mt-0.5 size-4 shrink-0" />
-            <span className="min-w-0 flex-1">
-              <span className="block text-sm font-medium">自动生成</span>
-              <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
-                Agent 会自动执行安全命令并反馈结果
-              </span>
-            </span>
-            <span className="mt-0.5 flex size-4 shrink-0 items-center justify-center">
-              {canvasCommandExecutionMode === "auto_execute" && <CheckCircle2 className="size-4" />}
-            </span>
-          </button>
-        </div>,
-        document.body,
       )}
       <FormatCheckDetailsDialog
         formatCheck={formatCheckDetails?.formatCheck ?? null}
