@@ -53,33 +53,6 @@ def _recipe_payload(item_id: str, *, name: str | None = None) -> dict:
     }
 
 
-def _aesthetic_payload(item_id: str) -> dict:
-    return {
-        "schema_version": "dramaclaw.aesthetic.v1",
-        "id": item_id,
-        "name": "霓虹电影感",
-        "prompt_guide": "高饱和霓虹色与实景光。",
-        "negative_prompt": "避免标准棚拍。",
-        "output_kinds": ["image", "video"],
-    }
-
-
-def _anchor_set_payload(item_id: str) -> dict:
-    return {
-        "schema_version": "dramaclaw.anchor-set.v1",
-        "id": item_id,
-        "name": "商品资产",
-        "anchors": [
-            {
-                "node_id": "product-node",
-                "node_type": "imageGenNode",
-                "label": "商品原图",
-                "target_item_ids": ["hero-shot"],
-            }
-        ],
-    }
-
-
 def _save_test_recipe(username: str = "alice") -> None:
     agent_config_store.save_user_agent_config_item(
         username=username,
@@ -132,56 +105,6 @@ def test_user_agent_config_items_are_account_scoped(
     listed = agent_config_store.list_user_agent_config_items("alice", "skills")
     assert [item["id"] for item in listed] == ["story-skill"]
     assert agent_config_store.list_user_agent_config_items("bob", "skills") == []
-
-
-def test_aesthetic_and_anchor_set_are_first_class_catalog_items(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
-    monkeypatch.setattr(
-        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
-    )
-
-    aesthetic = agent_config_store.save_user_agent_config_item(
-        username="alice",
-        kind="aesthetics",
-        payload=_aesthetic_payload("neon-film"),
-    )
-    anchor_set = agent_config_store.save_user_agent_config_item(
-        username="alice",
-        kind="anchor_sets",
-        payload=_anchor_set_payload("product-assets"),
-    )
-
-    assert aesthetic["prompt_guide"] == "高饱和霓虹色与实景光。"
-    assert anchor_set["anchors"][0]["node_id"] == "product-node"
-    assert [
-        item["id"]
-        for item in agent_config_store.list_user_agent_config_items(
-            "alice", "aesthetics"
-        )
-    ] == ["neon-film"]
-    assert [
-        item["id"]
-        for item in agent_config_store.list_user_agent_config_items(
-            "alice", "anchor_sets"
-        )
-    ] == ["product-assets"]
-
-
-def test_builtin_anchor_set_templates_are_available_and_disabled() -> None:
-    items = agent_config_store.list_user_agent_config_items("alice", "anchor_sets")
-    items_by_id = {item["id"]: item for item in items}
-
-    assert set(items_by_id) == {
-        "brand-identity-reference",
-        "character-identity-reference",
-        "ecommerce-product-reference",
-        "scene-environment-reference",
-    }
-    assert all(item["enabled"] is False for item in items)
-    assert items_by_id["brand-identity-reference"]["anchors"][0]["label"] == "品牌 Logo"
 
 
 def test_agent_config_items_include_builtin_catalog_with_user_override(
@@ -550,32 +473,6 @@ def test_referenced_recipe_requires_disabling_skill_before_delete(
         kind="recipes",
         item_id="test-recipe",
     )
-
-
-def test_enabled_anchor_set_rejects_unresolved_template_node_id(
-    tmp_path: Path,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    monkeypatch.setattr(agent_config_store, "OUTPUT_DIR", str(tmp_path))
-    monkeypatch.setattr(
-        agent_config_store, "BUILTIN_AGENT_CATALOG_DIR", tmp_path / "builtins"
-    )
-    payload = _anchor_set_payload("brand-template")
-    payload["anchors"][0]["node_id"] = "replace-with-brand-node-id"
-
-    with pytest.raises(ValueError, match="unresolved replace-with"):
-        agent_config_store.save_user_agent_config_item(
-            username="alice",
-            kind="anchor_sets",
-            payload=payload,
-        )
-
-    disabled = agent_config_store.save_user_agent_config_item(
-        username="alice",
-        kind="anchor_sets",
-        payload={**payload, "enabled": False},
-    )
-    assert disabled["enabled"] is False
 
 
 def test_user_agent_config_delete_missing_item_is_idempotent(

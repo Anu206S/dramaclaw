@@ -265,34 +265,6 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
         }
         commands.append(command)
 
-    seen_external_edges: set[tuple[str, str]] = set()
-    raw_external_edges = payload.get("external_edges")
-    if isinstance(raw_external_edges, list):
-        for edge_index, edge in enumerate(raw_external_edges):
-            if not isinstance(edge, dict):
-                warnings.append(f"external_edges[{edge_index}] ignored because it is not an object")
-                continue
-            source_id = str(edge.get("source") or "").strip()
-            target_ref = str(edge.get("target") or "").strip()
-            target = node_by_plan_id.get(target_ref)
-            if not source_id or target is None:
-                warnings.append(
-                    f"external_edges[{edge_index}] ignored because source or target is unavailable"
-                )
-                continue
-            edge_key = (source_id, target["client_id"])
-            if edge_key in seen_external_edges:
-                continue
-            seen_external_edges.add(edge_key)
-            commands.append(
-                {
-                    "type": "create_edge",
-                    "source": source_id,
-                    "target": target["client_id"],
-                    "link_type": "media_input_for",
-                }
-            )
-
     groups = _groups(payload.get("groups"), payload.get("layout"))
     group_client_node_ids: list[list[str]] = []
     if groups:

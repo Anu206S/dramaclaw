@@ -3704,9 +3704,7 @@
       "models": "模型与渠道",
       "storage": "媒体存储",
       "freezoneSkills": "虾画 Skills",
-      "freezoneRecipes": "虾画 Recipes",
-      "freezoneAesthetics": "审美风格",
-      "freezoneAnchorSets": "资产锚点"
+      "freezoneRecipes": "虾画 Recipes"
     },
     "freezoneCatalog": {
       "skills": {

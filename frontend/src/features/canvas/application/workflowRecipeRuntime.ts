@@ -12,7 +12,6 @@ interface WorkflowCatalogRuntime {
   skillId?: unknown;
   skillVersion?: unknown;
   confirmedInputs?: unknown;
-  creativeSettings?: unknown;
   recipeId?: unknown;
   recipeVersion?: unknown;
   recipePipeline?: unknown;
@@ -74,7 +73,6 @@ function skillRuntimeContext(catalog: WorkflowCatalogRuntime | null) {
     skillId,
     skillVersion: text(catalog?.skillVersion),
     confirmedInputs: confirmedInputs(catalog?.confirmedInputs),
-    creativeSettings: confirmedInputs(catalog?.creativeSettings),
   };
 }
 
