@@ -44,6 +44,7 @@ import {
 
 import { useCanvasStore } from "@/stores/canvasStore";
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
+import { resolveAudioKind } from "@/features/canvas/application/audioSpeechText";
 import {
   isAudioNode,
   isVideoNode,
@@ -87,6 +88,9 @@ import {
 import { CoverEditor } from "./CoverEditor";
 import { useComposePlayback } from "./useComposePlayback";
 import { getFilmstrip, pickFrame, type FilmstripFrame } from "./filmstrip";
+
+const DEFAULT_VOICEOVER_START_MS = 500;
+const BACKGROUND_MUSIC_TRACK_ID = `${AUDIO_TRACK_ID}_background_music`;
 
 export interface VideoComposeModalProps {
   project: string;
@@ -195,7 +199,7 @@ export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineStat
   const backgroundMusicClips: ComposeClip[] = [];
   // 初始把同种类片段顺序首尾相接摆放（与旧行为一致）；之后可自由拖动。
   let videoCursor = 0;
-  let audioCursor = 0;
+  let audioCursor = DEFAULT_VOICEOVER_START_MS;
   const videoStartByWorkflowInstance = new Map<string, number>();
 
   for (const nodeId of seedNodeIds) {
@@ -207,6 +211,7 @@ export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineStat
     if (key) videoStartByWorkflowInstance.set(key, videoCursor);
     videoCursor += durationMs ?? FALLBACK_CLIP_MS;
   }
+  const totalVideoDurationMs = videoCursor;
   videoCursor = 0;
 
   for (const nodeId of seedNodeIds) {
@@ -252,7 +257,10 @@ export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineStat
         timelineStartMs:
           timelineRole === "background_music" ? 0 : alignedStart ?? audioCursor,
         trimStartMs: 0,
-        trimEndMs: len,
+        trimEndMs:
+          timelineRole === "background_music" && totalVideoDurationMs > 0
+            ? Math.min(len, totalVideoDurationMs)
+            : len,
         volume: timelineRole === "background_music" ? 0.25 : 1,
         muted: false,
         speed: 1,
@@ -274,7 +282,7 @@ export function buildInitialTimeline(seedNodeIds: string[]): ComposeTimelineStat
   }
   if (backgroundMusicClips.length > 0) {
     tracks.push({
-      id: `${AUDIO_TRACK_ID}_background_music`,
+      id: BACKGROUND_MUSIC_TRACK_ID,
       kind: "audio",
       clips: backgroundMusicClips,
     });
@@ -292,7 +300,10 @@ function workflowTimelineCatalog(data: unknown): Record<string, unknown> | null 
 
 function workflowTimelineRole(data: unknown): string {
   const value = workflowTimelineCatalog(data)?.timelineRole;
-  return typeof value === "string" ? value : "";
+  if (typeof value === "string" && value) return value;
+  return resolveAudioKind(data as Parameters<typeof resolveAudioKind>[0]) === "music"
+    ? "background_music"
+    : "";
 }
 
 function workflowTimelineInstanceKey(data: unknown): string | null {
@@ -382,8 +393,72 @@ export function reconcileDraftWithUpstream(
       }
     }
   }
+  // 旧草稿可能把 BGM 和旁白串在同一音轨。按当前节点语义迁移到并行轨道：
+  // BGM 从 0ms 铺底，普通旁白从 500ms 开始；已经正确分轨的编辑保持不变。
+  const migratedMusicClips: ComposeClip[] = [];
+  const totalVideoDurationMs = tracks
+    .filter((track) => track.kind === "video")
+    .flatMap((track) => layoutTrack(track))
+    .reduce((max, clip) => Math.max(max, clip.timelineEndMs), 0);
+  const trimBackgroundMusic = (clip: ComposeClip): ComposeClip => ({
+    ...clip,
+    timelineStartMs: 0,
+    trimEndMs:
+      totalVideoDurationMs > 0
+        ? Math.min(clip.trimEndMs, clip.trimStartMs + totalVideoDurationMs)
+        : clip.trimEndMs,
+  });
+  const normalizedTracks = tracks
+    .map((track) => {
+      if (track.kind !== "audio") {
+        return track;
+      }
+      if (track.id === BACKGROUND_MUSIC_TRACK_ID) {
+        return { ...track, clips: track.clips.map(trimBackgroundMusic) };
+      }
+      const musicClips = track.clips.filter((clip) => {
+        const node = clip.nodeId ? nodeById.get(clip.nodeId) : null;
+        return node && isAudioNode(node)
+          ? workflowTimelineRole(node.data) === "background_music"
+          : false;
+      });
+      if (musicClips.length === 0) return track;
+      migratedMusicClips.push(
+        ...musicClips.map((clip) => ({
+          ...trimBackgroundMusic(clip),
+          volume: 0.25,
+        })),
+      );
+      const speechClips = track.clips.filter(
+        (clip) => !musicClips.some((musicClip) => musicClip.id === clip.id),
+      );
+      let cursor = DEFAULT_VOICEOVER_START_MS;
+      return {
+        ...track,
+        clips: speechClips.map((clip) => {
+          const migrated = { ...clip, timelineStartMs: Math.round(cursor) };
+          cursor += clipLengthMs(migrated);
+          return migrated;
+        }),
+      };
+    })
+    .filter((track) => track.kind !== "audio" || track.clips.length > 0);
+  if (migratedMusicClips.length > 0) {
+    const musicTrack = normalizedTracks.find(
+      (track) => track.id === BACKGROUND_MUSIC_TRACK_ID,
+    );
+    if (musicTrack) {
+      musicTrack.clips.push(...migratedMusicClips);
+    } else {
+      normalizedTracks.push({
+        id: BACKGROUND_MUSIC_TRACK_ID,
+        kind: "audio",
+        clips: migratedMusicClips,
+      });
+    }
+  }
   // 视频轨补位，保持无缝。
-  return compactVideoTracks({ ...draft, tracks });
+  return compactVideoTracks({ ...draft, tracks: normalizedTracks });
 }
 
 /**

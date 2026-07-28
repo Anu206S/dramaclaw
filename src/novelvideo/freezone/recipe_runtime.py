@@ -6,6 +6,7 @@ import asyncio
 import json
 import os
 from collections import OrderedDict
+from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
 from typing import Any, Literal
@@ -19,6 +20,13 @@ from novelvideo.official_defaults import DEFAULT_FREEZONE_STORY_SCRIPT_MODEL
 RecipeNodeKind = Literal["image", "video", "audio", "text"]
 RecipePromptStrategy = Literal[
     "template", "user_message", "previous_output", "llm_refine"
+]
+RecipeCompileMode = Literal[
+    "deterministic",
+    "memory_cache",
+    "persistent_cache",
+    "model",
+    "timeout_fallback",
 ]
 
 _PROMPT_CACHE_LIMIT = 128
@@ -55,6 +63,13 @@ directly to produce the final requested text deliverable instead of returning an
 
 class RecipeRuntimeError(ValueError):
     """Raised when a workflow node cannot safely compile its Recipe."""
+
+
+@dataclass(frozen=True)
+class RecipeCompileResult:
+    prompt: str
+    mode: RecipeCompileMode
+    recipe_ids: tuple[str, ...]
 
 
 def _validate_recipe_kind(recipe: dict[str, Any], node_kind: RecipeNodeKind) -> None:
@@ -302,6 +317,23 @@ def get_recipe_pipeline_for_runtime(
         _validate_recipe_kind(recipe, node_kind)
         recipes.append(recipe)
         seen.add(checked_id)
+    recipe_ids = {
+        str(recipe.get("id") or "").strip()
+        for recipe in recipes
+        if str(recipe.get("id") or "").strip()
+    }
+    for recipe in recipes:
+        recipe_id = str(recipe.get("id") or "").strip()
+        conflicts = {
+            str(item).strip()
+            for item in recipe.get("conflicts_with") or []
+            if str(item).strip()
+        }
+        matched = sorted((conflicts & recipe_ids) - {recipe_id})
+        if matched:
+            raise RecipeRuntimeError(
+                f"recipe {recipe_id} conflicts with {matched[0]}"
+            )
     return recipes
 
 
@@ -461,7 +493,7 @@ def build_recipe_compiler_task(
     )
 
 
-async def compile_recipe_prompt(
+async def compile_recipe_prompt_result(
     *,
     username: str,
     recipe_id: str,
@@ -476,8 +508,8 @@ async def compile_recipe_prompt(
     skill_id: str = "",
     skill_version: str = "",
     confirmed_inputs: dict[str, Any] | None = None,
-) -> str:
-    """Compile an effective user Recipe into a prompt for one node execution."""
+) -> RecipeCompileResult:
+    """Compile a Recipe and report how the executable prompt was produced."""
     if prompt_strategy not in {
         "template",
         "user_message",
@@ -510,12 +542,21 @@ async def compile_recipe_prompt(
             skill_version=skill_version,
             recipe_id=str(supplemental_recipe.get("id") or ""),
         )
+    recipe_ids = tuple(
+        str(item.get("id") or "").strip()
+        for item in recipes
+        if str(item.get("id") or "").strip()
+    )
     if prompt_strategy != "llm_refine":
-        return compose_deterministic_prompt(
-            prompt_strategy=prompt_strategy,
-            node_prompt=node_prompt,
-            user_goal=user_goal,
-            upstream_text=upstream_text,
+        return RecipeCompileResult(
+            prompt=compose_deterministic_prompt(
+                prompt_strategy=prompt_strategy,
+                node_prompt=node_prompt,
+                user_goal=user_goal,
+                upstream_text=upstream_text,
+            ),
+            mode="deterministic",
+            recipe_ids=recipe_ids,
         )
     effective_recipe = _combined_recipe(recipes)
     task = build_recipe_compiler_task(
@@ -534,12 +575,12 @@ async def compile_recipe_prompt(
     cached = _prompt_cache.get(cache_key)
     if cached is not None:
         _prompt_cache.move_to_end(cache_key)
-        return cached
+        return RecipeCompileResult(cached, "memory_cache", recipe_ids)
     persisted = _read_persistent_prompt(username, cache_key)
     if persisted is not None:
         _prompt_cache[cache_key] = persisted
         _prompt_cache.move_to_end(cache_key)
-        return persisted
+        return RecipeCompileResult(persisted, "persistent_cache", recipe_ids)
 
     compiler_task = _prompt_inflight.get(cache_key)
     if compiler_task is None:
@@ -555,20 +596,29 @@ async def compile_recipe_prompt(
                 timeout=_recipe_compiler_timeout_seconds(),
             )
         except TimeoutError:
-            return compose_recipe_fallback_prompt(
-                recipe=effective_recipe,
-                node_prompt=node_prompt,
-                user_goal=user_goal,
-                upstream_text=upstream_text,
-                reference_media=reference_media,
-                confirmed_inputs=confirmed_inputs,
-                skill_constraints=_skill_constraints(skill),
+            return RecipeCompileResult(
+                prompt=compose_recipe_fallback_prompt(
+                    recipe=effective_recipe,
+                    node_prompt=node_prompt,
+                    user_goal=user_goal,
+                    upstream_text=upstream_text,
+                    reference_media=reference_media,
+                    confirmed_inputs=confirmed_inputs,
+                    skill_constraints=_skill_constraints(skill),
+                ),
+                mode="timeout_fallback",
+                recipe_ids=recipe_ids,
             )
     finally:
         if compiler_task.done() and _prompt_inflight.get(cache_key) is compiler_task:
             _prompt_inflight.pop(cache_key, None)
     _cache_prompt(cache_key, compiled, username=username)
-    return compiled
+    return RecipeCompileResult(compiled, "model", recipe_ids)
+
+
+async def compile_recipe_prompt(**compile_args: Any) -> str:
+    """Compatibility wrapper returning only the executable prompt."""
+    return (await compile_recipe_prompt_result(**compile_args)).prompt
 
 
 async def generate_recipe_text(**compile_args: Any) -> str:

@@ -34,6 +34,7 @@ function workflowNode(
   type: typeof CANVAS_NODE_TYPES.video | typeof CANVAS_NODE_TYPES.audio,
   instance: number,
   timelineRole?: string,
+  audioKind?: 'speech' | 'music',
 ): CanvasNode {
   return {
     id,
@@ -44,6 +45,7 @@ function workflowNode(
         ? { videoUrl: `/${id}.mp4`, durationMs: 5_000 }
         : { audioUrl: `/${id}.mp3`, durationMs: 2_000 }),
       workflowInstanceId: 'workflow-1',
+      ...(audioKind ? { audioKind } : {}),
       workflowCatalog: {
         stepInstance: instance,
         ...(timelineRole ? { timelineRole } : {}),
@@ -126,5 +128,71 @@ describe('reconcileDraftWithUpstream', () => {
     expect(bgmTrack?.clips).toHaveLength(1);
     expect(bgmTrack?.clips[0].timelineStartMs).toBe(0);
     expect(bgmTrack?.clips[0].volume).toBe(0.25);
+    expect(bgmTrack?.clips[0].trimEndMs).toBe(2_000);
+  });
+
+  it('infers BGM from audioKind and starts global voiceover at 500ms', () => {
+    const nodes = [
+      workflowNode('video-1', CANVAS_NODE_TYPES.video, 1),
+      workflowNode('voice', CANVAS_NODE_TYPES.audio, 1, undefined, 'speech'),
+      workflowNode('bgm', CANVAS_NODE_TYPES.audio, 1, undefined, 'music'),
+    ];
+    nodes[2].data.durationMs = 30_000;
+    useCanvasStore.getState().setCanvasData(nodes, []);
+
+    const result = buildInitialTimeline(nodes.map((node) => node.id));
+    const voiceTrack = result.tracks.find((track) => track.id === AUDIO_TRACK_ID);
+    const bgmTrack = result.tracks.find((track) => track.id.endsWith('background_music'));
+
+    expect(voiceTrack?.clips[0].timelineStartMs).toBe(500);
+    expect(bgmTrack?.clips[0].timelineStartMs).toBe(0);
+    expect(bgmTrack?.clips[0].volume).toBe(0.25);
+    expect(bgmTrack?.clips[0].trimEndMs).toBe(5_000);
+  });
+
+  it('migrates a legacy mixed audio track into parallel voice and BGM tracks', () => {
+    const voice = workflowNode(
+      'voice',
+      CANVAS_NODE_TYPES.audio,
+      1,
+      undefined,
+      'speech',
+    );
+    const bgm = workflowNode(
+      'bgm',
+      CANVAS_NODE_TYPES.audio,
+      1,
+      undefined,
+      'music',
+    );
+    bgm.data.durationMs = 30_000;
+    useCanvasStore.getState().setCanvasData([voice, bgm], []);
+    const seeded = buildInitialTimeline(['voice', 'bgm']);
+    const voiceClip = seeded.tracks
+      .find((track) => track.id === AUDIO_TRACK_ID)!
+      .clips[0];
+    const bgmClip = seeded.tracks
+      .find((track) => track.id.endsWith('background_music'))!
+      .clips[0];
+    const legacyDraft: ComposeTimelineState = {
+      ...seeded,
+      tracks: [{
+        id: AUDIO_TRACK_ID,
+        kind: 'audio',
+        clips: [
+          { ...bgmClip, timelineStartMs: 0, volume: 1 },
+          { ...voiceClip, timelineStartMs: 2_000 },
+        ],
+      }],
+    };
+
+    const result = reconcileDraftWithUpstream(legacyDraft, ['voice', 'bgm']);
+    const migratedVoice = result.tracks.find((track) => track.id === AUDIO_TRACK_ID);
+    const migratedBgm = result.tracks.find((track) =>
+      track.id.endsWith('background_music'));
+
+    expect(migratedVoice?.clips[0].timelineStartMs).toBe(500);
+    expect(migratedBgm?.clips[0].timelineStartMs).toBe(0);
+    expect(migratedBgm?.clips[0].volume).toBe(0.25);
   });
 });

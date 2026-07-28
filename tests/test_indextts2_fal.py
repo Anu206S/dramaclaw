@@ -158,6 +158,59 @@ async def test_indextts2_newapi_posts_audio_speech_schema(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_indextts2_newapi_retries_transient_connection_reset(monkeypatch, tmp_path):
+    import httpx
+    import novelvideo.generators.indextts2_fal as indextts2_fal
+
+    from novelvideo.generators.indextts2_fal import IndexTTS2FalClient
+
+    attempts = 0
+    sleeps: list[int] = []
+
+    class FlakyAsyncClient(_FakeAsyncClient):
+        async def post(self, url, *, headers=None, json=None):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise httpx.ReadError("connection reset by peer")
+            return _FakeResponse(
+                content=b"generated-wav",
+                headers={"content-type": "audio/wav"},
+            )
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    async def fake_reserve(model, *, source):
+        return "reservation_1"
+
+    async def fake_confirm(**kwargs):
+        return None
+
+    monkeypatch.setattr(httpx, "AsyncClient", FlakyAsyncClient)
+    monkeypatch.setattr(indextts2_fal.asyncio, "sleep", fake_sleep)
+    monkeypatch.setattr(indextts2_fal, "_reserve_tts_model_call", fake_reserve)
+    monkeypatch.setattr(indextts2_fal, "_confirm_tts_model_call", fake_confirm)
+
+    output_path = tmp_path / "retry.mp3"
+    result = await IndexTTS2FalClient(
+        provider="newapi",
+        api_key="newapi-test-key",
+        endpoint="http://newapi.test/v1",
+        model="index-tts-2",
+    ).generate(
+        prompt="测试重试",
+        audio_url="data:audio/wav;base64,abc",
+        output_path=output_path,
+    )
+
+    assert result.success is True
+    assert output_path.read_bytes() == b"generated-wav"
+    assert attempts == 3
+    assert sleeps == [1, 2]
+
+
+@pytest.mark.asyncio
 async def test_indextts2_fal_posts_schema_and_downloads_audio(monkeypatch, tmp_path):
     import httpx
     import novelvideo.generators.indextts2_fal as indextts2_fal

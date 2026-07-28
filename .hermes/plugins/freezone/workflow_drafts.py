@@ -24,6 +24,7 @@ PATCHABLE_FIELDS = {
     "include_compose",
     "inputs",
     "items",
+    "planner",
     "summary",
     "title",
     "user_goal",
@@ -113,31 +114,83 @@ def _plan_preview(compiled: dict[str, Any]) -> dict[str, Any]:
     plan = compiled.get("plan") if isinstance(compiled.get("plan"), dict) else {}
     nodes = plan.get("nodes") if isinstance(plan.get("nodes"), list) else []
     phases = plan.get("phases") if isinstance(plan.get("phases"), list) else []
-    preview_nodes: list[dict[str, str]] = []
+    preview_nodes: list[dict[str, Any]] = []
+    recipe_pipelines: list[dict[str, Any]] = []
     for node in nodes:
         if not isinstance(node, dict):
             continue
         data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        catalog = (
+            data.get("workflowCatalog")
+            if isinstance(data.get("workflowCatalog"), dict)
+            else {}
+        )
+        primary_recipe_id = str(catalog.get("recipeId") or "").strip()
+        primary_recipe_name = str(catalog.get("recipeName") or "").strip()
+        raw_pipeline = (
+            catalog.get("recipePipeline")
+            if isinstance(catalog.get("recipePipeline"), list)
+            else []
+        )
+        pipeline_steps = []
+        if primary_recipe_id:
+            pipeline_steps.append(
+                {
+                    "role": "primary",
+                    "id": primary_recipe_id,
+                    "name": primary_recipe_name or primary_recipe_id,
+                    "version": catalog.get("recipeVersion"),
+                }
+            )
+        for item in raw_pipeline:
+            value = item if isinstance(item, dict) else {"id": item}
+            recipe_id = str(value.get("id") or "").strip()
+            if not recipe_id:
+                continue
+            pipeline_steps.append(
+                {
+                    "role": "supplemental",
+                    "id": recipe_id,
+                    "name": str(value.get("name") or recipe_id).strip(),
+                    "version": value.get("version"),
+                }
+            )
+        node_name = str(
+            node.get("name")
+            or data.get("displayName")
+            or data.get("title")
+            or node.get("id")
+            or ""
+        ).strip()
         preview_nodes.append(
             {
                 "id": str(node.get("id") or "").strip(),
-                "name": str(
-                    node.get("name")
-                    or data.get("displayName")
-                    or data.get("title")
-                    or node.get("id")
-                    or ""
-                ).strip(),
+                "name": node_name,
                 "stage": str(node.get("stage") or "").strip(),
                 "node_type": str(node.get("node_type") or "").strip(),
+                **(
+                    {"recipe_pipeline": deepcopy(pipeline_steps)}
+                    if pipeline_steps
+                    else {}
+                ),
             }
         )
+        if pipeline_steps:
+            recipe_pipelines.append(
+                {
+                    "node_id": str(node.get("id") or "").strip(),
+                    "node_name": node_name,
+                    "steps": pipeline_steps,
+                }
+            )
     return {
+        "planner": deepcopy(compiled.get("planner") or plan.get("planner") or {}),
         "title": str(plan.get("summary") or "").strip(),
         "skill_id": str(compiled.get("skill_id") or "").strip(),
         "inputs": deepcopy(plan.get("inputs") or {}),
         "phases": [str(item).strip() for item in phases if str(item).strip()],
         "nodes": preview_nodes,
+        "recipe_pipelines": recipe_pipelines,
         "node_count": len(preview_nodes),
         "edge_count": int(compiled.get("edge_count") or 0),
     }

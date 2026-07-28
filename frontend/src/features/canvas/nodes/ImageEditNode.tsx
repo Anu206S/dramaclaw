@@ -644,6 +644,11 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
         kind: 'image',
         label: `reference-${index + 1}`,
       })),
+      onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(id, {
+        workflowRecipeCompileMode: mode,
+        workflowRecipeCompiledAt: new Date().toISOString(),
+        workflowRecipeIds: recipeIds,
+      }),
     });
     const generationDurationMs = selectedModel.expectedDurationMs ?? 60000;
     const generationStartedAt = Date.now();

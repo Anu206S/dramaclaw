@@ -18,6 +18,17 @@ export interface FreezoneNodeContext {
 }
 
 export type FreezoneRecipeNodeKind = "image" | "video" | "audio" | "text";
+export type FreezoneRecipeCompileMode =
+  | "deterministic"
+  | "memory_cache"
+  | "persistent_cache"
+  | "model"
+  | "timeout_fallback";
+
+export interface FreezoneRecipeCompileMetadata {
+  mode: FreezoneRecipeCompileMode;
+  recipeIds: string[];
+}
 
 export interface FreezoneRecipeCompilePayload {
   recipeId: string;
@@ -35,6 +46,7 @@ export interface FreezoneRecipeCompilePayload {
     kind: "image" | "video" | "audio";
     label?: string;
   }>;
+  onCompileMetadata?: (metadata: FreezoneRecipeCompileMetadata) => void;
 }
 
 const RECIPE_MODEL_TIMEOUT_MS = 10 * 60 * 1000;
@@ -42,7 +54,11 @@ const RECIPE_MODEL_TIMEOUT_MS = 10 * 60 * 1000;
 export async function compileFreezoneRecipePrompt(
   payload: FreezoneRecipeCompilePayload,
 ): Promise<string> {
-  const data = await apiCall<{ prompt: string }>("freezone/recipes/compile", {
+  const data = await apiCall<{
+    prompt: string;
+    compile_mode?: FreezoneRecipeCompileMode;
+    recipe_ids?: string[];
+  }>("freezone/recipes/compile", {
     method: "POST",
     // Prompt compilation invokes the text model before the media task exists.
     // Keep it aligned with Recipe text execution instead of the shared 30s timeout.
@@ -63,6 +79,12 @@ export async function compileFreezoneRecipePrompt(
       upstream_text: payload.upstreamText ?? "",
       reference_media: payload.referenceMedia ?? [],
     },
+  });
+  payload.onCompileMetadata?.({
+    mode: data.compile_mode ?? "model",
+    recipeIds: Array.isArray(data.recipe_ids)
+      ? data.recipe_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
+      : [payload.recipeId, ...(payload.recipePipeline ?? []).map((item) => item.id)],
   });
   return data.prompt;
 }

@@ -324,6 +324,7 @@ def _validate_node_catalog_refs(
         errors.append(_issue(f"{path}.data.workflowCatalog.recipePipeline", "must be an array"))
         return
     seen_pipeline_ids = {recipe_id}
+    pipeline_recipe_ids = {recipe_id}
     for pipeline_index, raw_pipeline_item in enumerate(pipeline):
         pipeline_id = str(
             raw_pipeline_item.get("id")
@@ -335,6 +336,7 @@ def _validate_node_catalog_refs(
         if not pipeline_id or pipeline_id in seen_pipeline_ids:
             continue
         seen_pipeline_ids.add(pipeline_id)
+        pipeline_recipe_ids.add(pipeline_id)
         pipeline_recipe = recipes_by_id.get(pipeline_id)
         if pipeline_recipe is None:
             errors.append(_issue(pipeline_path, f"unknown recipe: {pipeline_id}"))
@@ -367,6 +369,24 @@ def _validate_node_catalog_refs(
                 )
         if pipeline_recipe.get("requires_source_media"):
             source_required_nodes[str(node.get("id") or "")] = path
+    for checked_recipe_id in sorted(pipeline_recipe_ids):
+        checked_recipe = recipes_by_id.get(checked_recipe_id)
+        if checked_recipe is None:
+            continue
+        conflicts = {
+            str(item).strip()
+            for item in checked_recipe.get("conflicts_with") or []
+            if str(item).strip()
+        }
+        matched = sorted((conflicts & pipeline_recipe_ids) - {checked_recipe_id})
+        if matched:
+            errors.append(
+                _issue(
+                    f"{path}.data.workflowCatalog.recipePipeline",
+                    f"recipe {checked_recipe_id} conflicts with {matched[0]}",
+                )
+            )
+            break
 
 
 def _validate_group_refs(

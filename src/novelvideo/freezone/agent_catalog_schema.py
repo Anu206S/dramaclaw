@@ -212,6 +212,7 @@ class AgentCatalogRecipeConfig(_CatalogBaseModel):
     action_keys: list[str]
     system_prompt: str
     must_have_items: list[str] = Field(default_factory=list)
+    conflicts_with: list[str] = Field(default_factory=list)
     planning_prompt: str
     result_summary: str
     requires_source_media: bool = False
@@ -239,6 +240,19 @@ class AgentCatalogRecipeConfig(_CatalogBaseModel):
     @classmethod
     def validate_must_have_items(cls, value: list[str]) -> list[str]:
         return [_non_empty(item, "must_have_items item") for item in value]
+
+    @field_validator("conflicts_with")
+    @classmethod
+    def validate_conflicts_with(cls, value: list[str]) -> list[str]:
+        return [_validate_id(item) for item in value]
+
+    @model_validator(mode="after")
+    def validate_pipeline_contract(self) -> "AgentCatalogRecipeConfig":
+        if self.id in self.conflicts_with:
+            raise ValueError("recipe cannot conflict with itself")
+        if len(self.conflicts_with) != len(set(self.conflicts_with)):
+            raise ValueError("conflicts_with must not contain duplicates")
+        return self
 
 
 class AgentCatalogHiddenOverlay(_CatalogBaseModel):

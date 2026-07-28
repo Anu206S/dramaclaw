@@ -449,6 +449,7 @@ const RESULT_SPAWNING_NODE_ACTIONS = new Set([
 const DEFAULT_NODE_ACTION_TIMEOUT_MS = 10 * 60 * 1000;
 const DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS = 3 * 1000;
 const DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS = 3 * 1000;
+const NODE_ACTION_ACCEPTANCE_GRACE_MS = 25;
 const canvasNodeActionQueues = new Map<string, Promise<void>>();
 let nodeActionMountQueue: Promise<void> = Promise.resolve();
 const WORKFLOW_ACTION_CONCURRENCY = 3;
@@ -1590,9 +1591,17 @@ function requestAnimationFrameOrTimeout(): Promise<void> {
   });
 }
 
+const NODE_FOCUS_ANIMATION_SETTLE_MS = 360;
+
 function mountNodeForPendingAction(nodeId: string): Promise<void> {
   const next = nodeActionMountQueue.catch(() => undefined).then(async () => {
     selectAndFocusNode(nodeId);
+    // Canvas focus animates for 320 ms. Advancing the mount queue after only
+    // two frames lets the next off-screen action interrupt that animation, so
+    // the previous node never mounts and cannot accept its pending action.
+    await new Promise<void>((resolve) => {
+      setTimeout(resolve, NODE_FOCUS_ANIMATION_SETTLE_MS);
+    });
     await requestAnimationFrameOrTimeout();
     await requestAnimationFrameOrTimeout();
   });
@@ -1899,9 +1908,8 @@ function markNodeActionRunning(nodeId: string, action: string): void {
   const node = nodeById(nodeId);
   if (!node) return;
   useCanvasStore.getState().updateNodeData(nodeId, {
-    isGenerating: true,
-    generationStartedAt: Date.now(),
-    generationError: null,
+    workflowActionRunning: true,
+    workflowActionStartedAt: Date.now(),
   });
 }
 
@@ -1992,8 +2000,8 @@ function clearNodeActionRunning(nodeId: string, action: string): void {
   const node = nodeById(nodeId);
   if (!node) return;
   useCanvasStore.getState().updateNodeData(nodeId, {
-    isGenerating: false,
-    generationStartedAt: null,
+    workflowActionRunning: false,
+    workflowActionStartedAt: null,
   });
 }
 
@@ -2357,10 +2365,30 @@ async function executeQueuedNodeActions(
               : Promise.resolve(true);
             try {
               handlerCount = publishNodeAction();
-              if (handlerCount === 0 && requiresAcceptedSignal) {
-                // React Flow virtualizes off-screen nodes. Focusing mounts the target,
-                // whose subscription replays the already-pending action.
-                await mountNodeForPendingAction(action.nodeId);
+              if (requiresAcceptedSignal) {
+                // The event-bus subscriber count is global, not target-specific. Other
+                // visible nodes can make handlerCount non-zero while this target is
+                // still virtualized off-screen. Give the target a brief chance to
+                // accept, then mount it regardless of unrelated subscribers.
+                const preMountSignal = await Promise.race([
+                  accepted.then((ok) => ok ? "accepted" as const : "rejected" as const),
+                  waiting.then(() => "result" as const),
+                  new Promise<"pending">((resolve) => {
+                    setTimeout(() => resolve("pending"), NODE_ACTION_ACCEPTANCE_GRACE_MS);
+                  }),
+                ]);
+                if (preMountSignal === "pending") {
+                  // Focusing mounts the target, whose subscription replays the
+                  // already-pending action.
+                  await mountNodeForPendingAction(action.nodeId);
+                }
+              } else if (handlerCount === 0) {
+                clearPendingNodeAction(requestId);
+                clearNodeActionRunning(action.nodeId, action.action);
+                return {
+                  action,
+                  failed: `节点动作没有处理器：${action.action} (${action.nodeId})。`,
+                };
               }
             } catch (error) {
               clearPendingNodeAction(requestId);
@@ -2368,14 +2396,6 @@ async function executeQueuedNodeActions(
               return {
                 action,
                 failed: `节点动作执行异常：${errorMessage(error)}`,
-              };
-            }
-            if (handlerCount === 0 && !requiresAcceptedSignal) {
-              clearPendingNodeAction(requestId);
-              clearNodeActionRunning(action.nodeId, action.action);
-              return {
-                action,
-                failed: `节点动作没有处理器：${action.action} (${action.nodeId})。`,
               };
             }
             const firstSignal = await Promise.race([
@@ -2465,7 +2485,7 @@ async function executeQueuedNodeActions(
                   `节点动作完成但未产出 ${mediaRequirementLabel(action.action)}。`
                 : null;
 
-            if (failed || actionOpenedUserUi) clearNodeActionRunning(action.nodeId, action.action);
+            clearNodeActionRunning(action.nodeId, action.action);
             if (
               failed &&
               retryCount < WORKFLOW_ACTION_MAX_RETRIES &&
