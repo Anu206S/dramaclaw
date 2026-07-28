@@ -22,6 +22,7 @@ import {
   Camera,
   ChevronDown,
   Download,
+  Images,
   Layers,
   Loader2,
   Pause,
@@ -34,6 +35,7 @@ import {
   Volume2,
   VolumeX,
   X as XIcon,
+  type LucideIcon,
 } from "lucide-react";
 import { useTranslation } from "react-i18next";
 
@@ -51,6 +53,7 @@ import {
 } from "@/features/canvas/application/nodeActionResult";
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import { isVideoFile, VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
+import { spawnExternalAssetNodes } from "@/features/canvas/application/spawnExternalAssets";
 import {
   captureVideoFrameToNode,
   resolveCaptureSeekSec,
@@ -121,6 +124,10 @@ import {
 import type { FreezoneGenerationHistoryRecord } from "@/api/ops";
 import { readUrl } from "@/lib/url-params";
 import { CreditCostPill } from "@/components/credits/credit-visual";
+import {
+  videoEmptyStateCtaModes,
+  type VideoEmptyStateCtaMode,
+} from "@/features/canvas/nodes/shared/videoModelCapabilities";
 
 type VideoNodeProps = NodeProps & {
   id: string;
@@ -139,8 +146,15 @@ const MAX_HEIGHT = 1000;
 // 「首帧生成视频」会在视频节点左侧新建一个图片节点，排版要按它的真实尺寸算。
 const IMAGE_GEN_NODE_WIDTH = 580;
 const IMAGE_GEN_NODE_HEIGHT = 360;
-/** 「首帧生成视频」预填的提示词，用户可以直接改。 */
-const FIRST_FRAME_PROMPT = "以当前图为首帧生成视频";
+const VIDEO_EMPTY_STATE_CTA_META: Record<
+  VideoEmptyStateCtaMode,
+  { Icon: LucideIcon; label: string }
+> = {
+  allReference: { Icon: Sparkles, label: "全能参考" },
+  imageReference: { Icon: Images, label: "图片参考" },
+  imageToVideo: { Icon: VideoIcon, label: "首帧生成视频" },
+  firstLastFrame: { Icon: Layers, label: "首尾帧生成视频" },
+};
 
 const OPERATIONS_PANEL_HEIGHT = 280;
 const OPERATIONS_PANEL_GAP = 12;
@@ -180,6 +194,7 @@ export const VideoNode = memo(
       (state) => state.setActiveOverlayNodeId,
     );
     const inputRef = useRef<HTMLInputElement>(null);
+    const externalAssetInputRef = useRef<HTMLInputElement>(null);
     // Mirror the actual <video> element into state so VideoPlayerControls 能
     // 在挂载/卸载时重新订阅事件（仅 ref 不会触发重渲染）。同时保留可写的
     // ref，给非 React 路径（capture frame 之类）继续用 .current。
@@ -218,9 +233,8 @@ export const VideoNode = memo(
       isGenerating,
       submitDisabled,
       submit: handleSubmit,
-      prompt,
       quality,
-      upstreamCounts,
+      selectedVideoModelId,
     } = useVideoGenerationForm(id, { onGenerationSettled: refreshHistory });
 
     const openCharacterLibrary = useCallback(() => {
@@ -469,19 +483,23 @@ export const VideoNode = memo(
       inputRef.current?.click();
     }, []);
 
-    // Spawn the frame source node(s) to the left of this video node and wire
-    // them as inputs. Used by the empty-state "首帧/首尾帧 生成视频" CTAs.
-    // 首帧走图片节点（可上传也可直接生图）+ 全能参考；首尾帧仍走上传节点 + 关键帧。
+    // Spawn model-compatible reference nodes to the left of this video node.
     const spawnFrameUploads = useCallback(
-      (mode: "firstFrame" | "firstLastFrame") => {
+      (mode: VideoEmptyStateCtaMode) => {
         const state = useCanvasStore.getState();
         const self = state.nodes.find((n) => n.id === id);
         if (!self) return;
-        const isFirstFrame = mode === "firstFrame";
+        const selfHeight =
+          self.measured?.height ??
+          (typeof self.height === "number" ? self.height : DEFAULT_HEIGHT);
+        const isSingleImage =
+          mode === "allReference" ||
+          mode === "imageReference" ||
+          mode === "imageToVideo";
         // 两种源节点的默认尺寸不同（图片节点 580×360 / 上传节点 320×350），
         // 左列的定位与避让都得按实际尺寸算，否则图片节点会压到视频节点身上。
-        const FRAME_WIDTH = isFirstFrame ? IMAGE_GEN_NODE_WIDTH : 320;
-        const FRAME_HEIGHT = isFirstFrame ? IMAGE_GEN_NODE_HEIGHT : 350;
+        const FRAME_WIDTH = isSingleImage ? IMAGE_GEN_NODE_WIDTH : 320;
+        const FRAME_HEIGHT = isSingleImage ? IMAGE_GEN_NODE_HEIGHT : 350;
         const GAP_X = 40;
         const GAP_Y = 24;
         const baseX = self.position.x - FRAME_WIDTH - GAP_X;
@@ -550,30 +568,28 @@ export const VideoNode = memo(
           occupiedRects.push({ x: baseX, y, width: FRAME_WIDTH, height: FRAME_HEIGHT });
           return y;
         };
-        if (isFirstFrame) {
-          const baseY = resolveAvailableY(
-            self.position.y + ((self.height ?? DEFAULT_HEIGHT) - FRAME_HEIGHT) / 2,
-          );
+        if (isSingleImage) {
+          const baseY = self.position.y + (selfHeight - FRAME_HEIGHT) / 2;
           const newId = addNode(
             CANVAS_NODE_TYPES.imageGen,
             { x: baseX, y: baseY },
             {
-              displayName: "首帧",
+              displayName: mode === "imageToVideo" ? "首帧" : "参考图",
             },
           );
           addEdge(newId, id);
-          state.autoGroupSpawn(id, [newId], { label: '首帧生成视频组' });
-          // 首帧走全能参考（把上游图当参考图喂给全能生成端点），并把提示词直接
-          // 写好；用户已经写过提示词就别覆盖他的内容。
-          updateNodeData(id, {
-            genMode: "allReference",
-            ...(prompt.trim() ? {} : { prompt: FIRST_FRAME_PROMPT }),
-          });
+          const groupLabel =
+            mode === "imageReference"
+              ? "图片参考组"
+              : mode === "imageToVideo"
+                ? "首帧生成视频组"
+                : "全能参考组";
+          state.autoGroupSpawn(id, [newId], { label: groupLabel });
+          updateNodeData(id, { genMode: mode });
           return;
         }
         const totalH = FRAME_HEIGHT * 2 + GAP_Y;
-        const startY =
-          self.position.y + ((self.height ?? DEFAULT_HEIGHT) - totalH) / 2;
+        const startY = self.position.y + (selfHeight - totalH) / 2;
         const firstY = resolveAvailableY(startY);
         const lastY = resolveAvailableY(firstY + stepY);
         const firstId = addNode(
@@ -591,7 +607,7 @@ export const VideoNode = memo(
         state.autoGroupSpawn(id, [firstId, lastId], { label: '首尾帧生成视频组' });
         updateNodeData(id, { genMode: "firstLastFrame" });
       },
-      [addEdge, addNode, id, prompt, updateNodeData],
+      [addEdge, addNode, id, updateNodeData],
     );
 
     // Spawn reference nodes from selected asset-library entries — one per
@@ -603,6 +619,33 @@ export const VideoNode = memo(
         spawnVideoAssetLibraryReferences(id, selections);
       },
       [id],
+    );
+
+    const handleExternalAssetFiles = useCallback(
+      (event: ChangeEvent<HTMLInputElement>) => {
+        const files = Array.from(event.target.files ?? []);
+        event.target.value = "";
+        if (files.length === 0) return;
+        const state = useCanvasStore.getState();
+        const self = state.nodes.find((node) => node.id === id);
+        if (!self) return;
+        spawnExternalAssetNodes(
+          {
+            id,
+            position: self.position,
+            height: self.measured?.height ?? self.height ?? undefined,
+          },
+          files,
+          {
+            addNode,
+            addEdge,
+            publish: (type, payload) => canvasEventBus.publish(type, payload),
+            autoGroupSpawn: (sourceId, spawnedIds, opts) =>
+              state.autoGroupSpawn(sourceId, spawnedIds, opts),
+          },
+        );
+      },
+      [addEdge, addNode, id],
     );
 
     useEffect(() => {
@@ -1091,37 +1134,28 @@ export const VideoNode = memo(
             </div>
           ) : (
             <div className="flex h-full w-full items-center px-8">
-              {/* 上游含视频时只能走全能参考，首尾帧/首帧这两个 CTA 会引导到被禁用的
-                  firstLastFrame 模式，所以此时隐藏。 */}
-              {upstreamCounts.videos === 0 && (
-                <div className="flex min-h-0 flex-col justify-center gap-2 py-4">
-                  <div className="text-xs text-[var(--canvas-node-input-helper)]">试试：</div>
-                  <div className="flex flex-col gap-0.5">
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        spawnFrameUploads("firstLastFrame");
-                      }}
-                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
-                    >
-                      <Layers className="h-4 w-4 text-text-muted/90" />
-                      <span>首尾帧生成视频</span>
-                    </button>
-                    <button
-                      type="button"
-                      onClick={(event) => {
-                        event.stopPropagation();
-                        spawnFrameUploads("firstFrame");
-                      }}
-                      className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
-                    >
-                      <Sparkles className="h-4 w-4 text-text-muted/90" />
-                      <span>首帧生成视频</span>
-                    </button>
-                  </div>
+              <div className="flex min-h-0 flex-col justify-center gap-2 py-4">
+                <div className="text-xs text-[var(--canvas-node-input-helper)]">试试：</div>
+                <div className="flex flex-col gap-0.5">
+                  {videoEmptyStateCtaModes(selectedVideoModelId).map((mode) => {
+                    const { Icon, label } = VIDEO_EMPTY_STATE_CTA_META[mode];
+                    return (
+                      <button
+                        key={mode}
+                        type="button"
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          spawnFrameUploads(mode);
+                        }}
+                        className="nodrag -mx-2 inline-flex items-center gap-3 rounded-lg px-2 py-2 text-sm text-text-dark transition-colors hover:bg-white/[0.08]"
+                      >
+                        <Icon className="h-4 w-4 text-text-muted/90" />
+                        <span>{label}</span>
+                      </button>
+                    );
+                  })}
                 </div>
-              )}
+              </div>
               <Play className="ml-auto mr-20 h-9 w-9 text-text-muted/46" />
             </div>
           )}
@@ -1358,6 +1392,7 @@ export const VideoNode = memo(
               <VideoGenerationForm
                 {...videoFormProps}
                 onOpenCharacterLibrary={openCharacterLibrary}
+                onOpenExternalAssets={() => externalAssetInputRef.current?.click()}
               />
             </OperationPanelShell>
           )}
@@ -1419,6 +1454,14 @@ export const VideoNode = memo(
           accept={VIDEO_FILE_ACCEPT}
           className="hidden"
           onChange={handleFileChange}
+        />
+        <input
+          ref={externalAssetInputRef}
+          type="file"
+          multiple
+          accept={`image/*,${VIDEO_FILE_ACCEPT},audio/*`}
+          className="hidden"
+          onChange={handleExternalAssetFiles}
         />
 
         <AssetLibraryModal

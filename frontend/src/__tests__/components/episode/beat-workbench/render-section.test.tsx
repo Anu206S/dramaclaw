@@ -30,6 +30,7 @@ beforeAll(async () => {
             regenerate: "重新生成",
             upload: "上传",
             loading: "Loading",
+            close: "关闭",
           },
           episode: {
             beat: { noRender: "暂无 Render" },
@@ -55,6 +56,13 @@ beforeAll(async () => {
                 backgroundSaved: "背景已切换",
                 backgroundSaveFailed: "背景切换失败",
                 backgroundCropSave: "保存截图",
+                backgroundCropTitleWithAspect: "裁剪 {{aspect}}",
+                backgroundCropDragHandle: "移动裁剪区域",
+                relightLabel: "Relight 到 {{timeOfDay}}",
+                relightLabelDefaultTime: "指定时间",
+                relightTooltip: "Relight：按 beat 时间重新打光，不改变场景结构。",
+                lockedLightTooltip: "锁图光：使用场景图自带光线，不重新打光。",
+                lockedLightLabel: "锁图光",
                 renderCurrentSketch: "Render 当前草图",
                 regenDesc: "重生 Beat #{{n}}",
                 regenFailed: "重生失败",
@@ -84,6 +92,7 @@ const cropBackgroundAnchorMock: Mock = vi.fn();
 const uploadBackgroundAnchorMock: Mock = vi.fn();
 const taskStartMock: Mock = vi.fn();
 const invalidateQueriesMock: Mock = vi.fn();
+const generationCreditCostMock: Mock = vi.fn();
 
 vi.mock("@tanstack/react-query", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@tanstack/react-query")>();
@@ -170,12 +179,7 @@ vi.mock("@/lib/queries/scenes", () => ({
 }));
 
 vi.mock("@/lib/queries/generation-credit-cost", () => ({
-  useGenerationCreditCost: () => ({
-    data: {
-      ok: true,
-      data: { cost: 1, display: "1 credit" },
-    },
-  }),
+  useGenerationCreditCost: (...args: unknown[]) => generationCreditCostMock(...args),
 }));
 
 vi.mock("@/hooks/use-task-controller", () => ({
@@ -353,6 +357,13 @@ beforeEach(() => {
   uploadBackgroundAnchorMock.mockResolvedValue({ ok: true });
   taskStartMock.mockReset();
   invalidateQueriesMock.mockReset();
+  generationCreditCostMock.mockReset();
+  generationCreditCostMock.mockReturnValue({
+    data: {
+      ok: true,
+      data: { cost: 1, display: "1 credit" },
+    },
+  });
   scenePlatePreviewState.data = null;
 });
 
@@ -500,6 +511,86 @@ describe("RenderSection", () => {
     expect(
       updateBackgroundAnchorMock.mock.invocationCallOrder[0],
     ).toBeLessThan(regenerateMock.mock.invocationCallOrder[0]);
+  });
+
+  it("uses the landscape project aspect for single render regeneration and credit cost", async () => {
+    const user = userEvent.setup();
+    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    regenerateMock.mockResolvedValue({ ok: true, scope: "render-scope" });
+
+    render(
+      <I18nextProvider i18n={i18n}>
+        <RenderSection
+          beat={beat}
+          project="demo"
+          episode={1}
+          images={[renderImage, sketchImage]}
+          assignments={{ "5": "render-5" }}
+        />
+      </I18nextProvider>,
+    );
+
+    expect(generationCreditCostMock).toHaveBeenCalledWith(
+      "image_selection",
+      "doubao_seedream-3.0-t2i",
+      { surface: "supertale", imageRole: "render", modeKey: "1x1_16-9" },
+    );
+
+    await user.click(screen.getByRole("button", { name: /重新生成/ }));
+    await user.click(screen.getByRole("button", { name: "确认" }));
+
+    expect(regenerateMock).toHaveBeenCalledWith({
+      beatIndices: [5],
+      modeKey: "1x1_16-9",
+    });
+  });
+
+  it("prefers the source sketch aspect over the project aspect", async () => {
+    const user = userEvent.setup();
+    useAspectRatioStore.getState().setOrientation("demo", "landscape");
+    regenerateMock.mockResolvedValue({ ok: true, scope: "render-scope" });
+    class MockImage {
+      naturalWidth = 1200;
+      naturalHeight = 1800;
+      onload: (() => void) | null = null;
+
+      set src(_value: string) {
+        queueMicrotask(() => this.onload?.());
+      }
+    }
+    vi.stubGlobal("Image", MockImage);
+
+    try {
+      render(
+        <I18nextProvider i18n={i18n}>
+          <RenderSection
+            beat={{ ...beat, sketch_url: "/static/current-sketch.png" }}
+            project="demo"
+            episode={1}
+            images={[renderImage, sketchImage]}
+            assignments={{ "5": "render-5" }}
+          />
+        </I18nextProvider>,
+      );
+
+      await waitFor(() =>
+        expect(generationCreditCostMock).toHaveBeenLastCalledWith(
+          "image_selection",
+          "doubao_seedream-3.0-t2i",
+          { surface: "supertale", imageRole: "render", modeKey: "1x1_2-3" },
+        ),
+      );
+
+      await user.click(screen.getByRole("button", { name: /重新生成/ }));
+      await user.click(screen.getByRole("button", { name: "确认" }));
+
+      expect(regenerateMock).toHaveBeenCalledWith({
+        beatIndices: [5],
+        modeKey: "1x1_2-3",
+      });
+    } finally {
+      vi.unstubAllGlobals();
+    }
   });
 
   it("shows render background reference controls and renders current sketch", async () => {

@@ -118,6 +118,38 @@ class _M06Store:
     async def get_episode_from_graph(self, episode: int):
         return self._episodes[episode]
 
+    async def get_graph_snapshot(self):
+        return {
+            "nodes": [
+                {
+                    "id": "character-1",
+                    "label": _CHARACTER,
+                    "type": "Entity",
+                    "degree": 1,
+                    "properties": {"description": "雨巷少年"},
+                },
+                {
+                    "id": "scene-1",
+                    "label": _SCENE,
+                    "type": "Entity",
+                    "degree": 1,
+                    "properties": {},
+                },
+            ],
+            "edges": [
+                {
+                    "id": "edge-1",
+                    "source": "character-1",
+                    "target": "scene-1",
+                    "relation": "appears_in",
+                    "properties": {},
+                }
+            ],
+            "total_nodes": 2,
+            "total_edges": 1,
+            "truncated": False,
+        }
+
     async def list_visual_beats(self):
         return []
 
@@ -325,6 +357,11 @@ def m06_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         app.dependency_overrides[api_auth.get_api_user] = lambda user=user: user
         app.dependency_overrides[ingest.get_api_user] = lambda user=user: user
         app.dependency_overrides[freezone.get_api_user] = lambda user=user: user
+
+        async def override_cognee_store():
+            yield store
+
+        app.dependency_overrides[ingest.get_cognee_store] = override_cognee_store
         return TestClient(app), task_backend, task_manager, project_dir, assets, store
 
     return build
@@ -409,8 +446,55 @@ def test_m06_ingest_upload_preview_and_unsupported_format(m06_client_factory):
     assert payload["error_type"] == "unsupported"
 
 
+def test_m06_ingest_exposes_real_knowledge_graph_snapshot(m06_client_factory):
+    client, _backend, _task_manager, _project_dir, _assets, _store = m06_client_factory("inline")
+
+    response = client.get(f"/api/v1/projects/{_PROJECT}/ingest/graph")
+    payload = _assert_ok(response)
+
+    assert payload["data"]["total_nodes"] == 2
+    assert payload["data"]["total_edges"] == 1
+    assert payload["data"]["nodes"][0]["label"] == _CHARACTER
+    assert payload["data"]["edges"][0]["relation"] == "appears_in"
+
+
+@pytest.mark.asyncio
+async def test_m06_cancelled_graph_request_waits_for_reader_before_cleanup():
+    from novelvideo.api.routes.ingest import get_ingest_knowledge_graph
+
+    read_started = asyncio.Event()
+    allow_read_to_finish = asyncio.Event()
+    calls: list[str] = []
+
+    class FakeStore:
+        async def get_graph_snapshot(self):
+            calls.append("read.start")
+            read_started.set()
+            await allow_read_to_finish.wait()
+            calls.append("read.finish")
+            return {"nodes": [], "edges": []}
+
+    request_task = asyncio.create_task(
+        get_ingest_knowledge_graph("demo", store=FakeStore())
+    )
+    await read_started.wait()
+    request_task.cancel()
+    await asyncio.sleep(0)
+
+    assert not request_task.done()
+    assert calls == ["read.start"]
+
+    allow_read_to_finish.set()
+    with pytest.raises(asyncio.CancelledError):
+        await request_task
+
+    assert calls == ["read.start", "read.finish"]
+
+
 @pytest.mark.parametrize("backend", ["inline", "celery"])
 def test_m06_ingest_start_task_shape_is_ce_ee_isomorphic(m06_client_factory, backend: str):
+    from novelvideo.project_config import load_project_config_file_from_state_dir
+
     client, task_backend, _task_manager, project_dir, _assets, _store = m06_client_factory(backend)
     upload = project_dir / "uploads" / "novel.txt"
     upload.parent.mkdir(parents=True, exist_ok=True)
@@ -426,6 +510,12 @@ def test_m06_ingest_start_task_shape_is_ce_ee_isomorphic(m06_client_factory, bac
     assert payload["backend"] == backend
     assert payload["queue"] == ("inline" if backend == "inline" else "default")
     assert [call["task_type"] for call in task_backend.calls] == ["ingest_fast"]
+    assert (
+        load_project_config_file_from_state_dir(_assets.ctx.state_dir)[
+            "ingest_source_filename"
+        ]
+        == "novel.txt"
+    )
 
 
 def _freezone_task_cases(client: TestClient, assets: SimpleNamespace):

@@ -71,7 +71,7 @@ import {
   isPresetManagedNode,
 } from '@/features/canvas/domain/mainlineNodeFlags';
 import { prepareNodeImage } from '@/features/canvas/application/imageData';
-import { isVideoFile } from '@/features/canvas/application/videoFileTypes';
+import { isSupportedMediaFile } from '@/features/canvas/application/videoFileTypes';
 import { uploadLocalImageToBackend } from '@/features/canvas/application/uploadToolOutput';
 import {
   buildGenerationErrorReport,
@@ -120,6 +120,7 @@ import { CanvasMinimapButton } from './ui/CanvasMinimapButton';
 import { CanvasFpsMeter } from './ui/CanvasFpsMeter';
 import { CanvasSnapAlignButton } from './snap-align/CanvasSnapAlignButton';
 import { useTrackpadPanStore } from './trackpad-pan/trackpadPanStore';
+import { useCanvasToolStore } from './ui/canvasToolStore';
 import { SnapAlignGuides } from './snap-align/SnapAlignGuides';
 import { useSnapAlignStore } from './snap-align/snapAlignStore';
 import {
@@ -149,6 +150,9 @@ const PAN_ACTIVATION_KEY_CODE = 'Space';
 // (button 1). Left drag (0) runs the custom marquee box-select on the empty pane;
 // right click (2) opens the canvas context menu.
 const PAN_ON_DRAG_BUTTONS = [1];
+// 抓手工具（H）下左键也平移。ReactFlow 见到数组里有 0 会给 pane 挂 .draggable，
+// 抓手光标由它自带的样式负责。
+const PAN_ON_DRAG_BUTTONS_HAND = [0, 1];
 const NODE_SPAWN_PLUS_HIDE_DELAY_MS = 400;
 
 function resolveCenteredViewport(
@@ -465,20 +469,14 @@ function resolveClipboardImageFile(event: ClipboardEvent): File | null {
   return null;
 }
 
-// 从一次 OS 文件拖放里挑出图片 / 视频 / 音频文件，保持与 UploadNode 的媒体识别
-// 口径一致（按 MIME 前缀）。非媒体文件被忽略。
+// 从一次 OS 文件拖放里挑出图片 / 视频 / 音频文件，口径见 isSupportedMediaFile
+// （与 UploadNode 的媒体分流一致）。非媒体文件被忽略。
 function collectDroppedMediaFiles(dataTransfer: DataTransfer): File[] {
   const files = dataTransfer.files;
   if (!files || files.length === 0) {
     return [];
   }
-  return Array.from(files).filter(
-    (file) =>
-      file.type.startsWith('image/') ||
-      // isVideoFile 兜住 .mxf 等 file.type 为空串的专业容器（后续 ffmpeg 转码）。
-      isVideoFile(file) ||
-      file.type.startsWith('audio/')
-  );
+  return Array.from(files).filter(isSupportedMediaFile);
 }
 
 function resolveAllowedNodeTypes(
@@ -1029,6 +1027,8 @@ export function Canvas({
   // 触控板平移开关：开启后用 ReactFlow 的 panOnScroll（两指滑动平移、捏合缩放），
   // 关闭则回到默认的滚轮缩放。
   const trackpadPanEnabled = useTrackpadPanStore((state) => state.enabled);
+  // 指针工具：抓手（H）下左键拖动 = 平移画布。
+  const handToolActive = useCanvasToolStore((state) => state.tool === 'hand');
   // 底部任务中心面板展开时，让出底部空间——隐藏画布快捷操作栏，避免与面板重叠。
   const taskPanelOpen = useAppStore((state) => state.taskPanelOpen);
   // Stable signatures of the nodes that need polling / resume, so those effects
@@ -2212,7 +2212,9 @@ export function Canvas({
       }
       // Space + left-drag is a pan gesture (React Flow's panActivationKeyCode).
       // Don't start a marquee on top of it, or a dashed box shows while panning.
-      if (spacePanActiveRef.current) {
+      // 抓手工具是同一回事，只是长按在工具上而不是空格上 —— 从 store 现读，免得
+      // 这个 effect 为了一个开关重新挂一遍 pointer 监听。
+      if (spacePanActiveRef.current || useCanvasToolStore.getState().tool === 'hand') {
         clearMarqueeSelection();
         return;
       }
@@ -2242,7 +2244,8 @@ export function Canvas({
       if (!gesture || event.pointerId !== gesture.pointerId) {
         return;
       }
-      if (spacePanActiveRef.current) {
+      // 拖到一半按下空格或 H 切到抓手：框选就地放弃，别让虚线框跟着平移一起走。
+      if (spacePanActiveRef.current || useCanvasToolStore.getState().tool === 'hand') {
         clearMarqueeSelection();
         return;
       }
@@ -2283,7 +2286,8 @@ export function Canvas({
       if (!gesture || event.pointerId !== gesture.pointerId) {
         return;
       }
-      if (spacePanActiveRef.current) {
+      // 拖到一半按下空格或 H 切到抓手：框选就地放弃，别让虚线框跟着平移一起走。
+      if (spacePanActiveRef.current || useCanvasToolStore.getState().tool === 'hand') {
         clearMarqueeSelection();
         return;
       }
@@ -2631,6 +2635,14 @@ export function Canvas({
         return;
       }
 
+      // V = 移动工具，H = 抓手（Figma / liblib 同款）。必须是光秃秃的按键：带上
+      // ⌘/Ctrl 的 V 是粘贴，带 Alt 的字母多半是系统输入法在组字。
+      if (!commandPressed && !event.altKey && !event.shiftKey && (key === 'v' || key === 'h')) {
+        event.preventDefault();
+        useCanvasToolStore.getState().setTool(key === 'v' ? 'move' : 'hand');
+        return;
+      }
+
       if (isCopy) {
         if (selectedNodeIds.length === 0) {
           return;
@@ -2912,11 +2924,14 @@ export function Canvas({
           y: basePosition.y + index * 36,
         };
         // File drops are user actions by definition — stamp user_spawned: true
-        // so the new node is correctly classified by `nodeMainlineFlags`
-        // (and survives `_merge_restored_preset_canvas` refresh). Without
-        // this, dropped uploads on a mainline preset canvas would be locked
-        // by the canvas-level fallback in `NodeActionToolbar`, breaking the
-        // mixed-canvas contract.
+        // so the new node is correctly classified by `nodeMainlineFlags` and
+        // survives `_merge_restored_preset_canvas` refresh (the backend's
+        // `_is_replaceable_projection_node` refuses to overwrite it).
+        //
+        // NB: this is NOT about unlocking. The canvas-level fallback that used
+        // to lock unmarked nodes on preset canvases is gone — NodeActionToolbar
+        // now locks on `isPresetManaged` alone, and an unmarked node classifies
+        // as "ordinary" (see system-managed-node-data.test.ts).
         const newNodeId = addNode(
           CANVAS_NODE_TYPES.upload,
           position,
@@ -4548,6 +4563,7 @@ export function Canvas({
     <CreditDisplayHiddenProvider value={isCeRuntime()}>
     <div
       ref={wrapperRef}
+      data-canvas-tool={handToolActive ? 'hand' : 'move'}
       className="relative h-full w-full bg-background"
       onDragEnter={handleCanvasDragEnter}
       onDragOver={handleCanvasDragOver}
@@ -4586,10 +4602,13 @@ export function Canvas({
         connectionRadius={CONNECTION_SNAP_RADIUS}
         minZoom={0.1}
         maxZoom={8}
-        nodesDraggable
+        // 抓手工具下节点既不可拖也不可选：不可拖，左键落在节点上才会交给 pane 去平移；
+        // 不可选，否则一次「拖着节点平移」松手时还会顺手把它选中。
+        nodesDraggable={!handToolActive}
+        elementsSelectable={!handToolActive}
         nodesConnectable
         edgesReconnectable
-        panOnDrag={PAN_ON_DRAG_BUTTONS}
+        panOnDrag={handToolActive ? PAN_ON_DRAG_BUTTONS_HAND : PAN_ON_DRAG_BUTTONS}
         panOnScroll={trackpadPanEnabled}
         zoomOnScroll={!trackpadPanEnabled}
         panActivationKeyCode={PAN_ACTIVATION_KEY_CODE}

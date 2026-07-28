@@ -5,7 +5,6 @@ import { createJSONStorage, persist } from "zustand/middleware";
 import { quotaSafeStateStorage } from "@/lib/localStorageQuota";
 import { regionAbortController } from "@/lib/region-abort";
 import { isCeRuntime } from "@/lib/runtime-config";
-import { LIEXIAOREN_ENTRY_PENDING_KEY } from "@/features/liexiaoren/liexiaoren-events";
 import type { OkResponse } from "@/types/api";
 
 export interface CurrentUser {
@@ -100,9 +99,6 @@ export const useAuthStore = create<AuthState>()(
           username: data.data.username,
           role: data.data.role,
         });
-        if (typeof window !== "undefined") {
-          window.sessionStorage.setItem(LIEXIAOREN_ENTRY_PENDING_KEY, "1");
-        }
         // Avatar is an EE-only feature served by its own endpoint, not /auth/me.
         void useAuthStore.getState().refreshAvatar();
       },

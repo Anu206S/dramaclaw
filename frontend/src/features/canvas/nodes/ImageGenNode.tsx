@@ -173,24 +173,29 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     typeof data.generationError === 'string' && data.generationError.length > 0
       ? data.generationError
       : null;
+  const generationErrorDetails =
+    typeof data.generationErrorDetails === 'string' && data.generationErrorDetails.length > 0
+      ? data.generationErrorDetails
+      : null;
   const generationErrorRequestId =
     typeof data.generationErrorRequestId === 'string' && data.generationErrorRequestId.length > 0
       ? data.generationErrorRequestId
       : null;
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [isUploading, setIsUploading] = useState(false);
-  const [requestIdCopied, setRequestIdCopied] = useState(false);
+  const [errorDetailsCopied, setErrorDetailsCopied] = useState(false);
 
-  const handleCopyRequestId = useCallback(async () => {
-    if (!generationErrorRequestId) return;
+  const handleCopyErrorDetails = useCallback(async () => {
+    const copyText = generationErrorDetails || generationError || generationErrorRequestId;
+    if (!copyText) return;
     try {
-      await navigator.clipboard.writeText(generationErrorRequestId);
-      setRequestIdCopied(true);
-      window.setTimeout(() => setRequestIdCopied(false), 1200);
+      await navigator.clipboard.writeText(copyText);
+      setErrorDetailsCopied(true);
+      window.setTimeout(() => setErrorDetailsCopied(false), 1200);
     } catch (error) {
-      console.error('[image-gen] copy request id failed', error);
+      console.error('[image-gen] copy error details failed', error);
     }
-  }, [generationErrorRequestId]);
+  }, [generationError, generationErrorDetails, generationErrorRequestId]);
 
   // 生成进行中时，点击历史记录走「非破坏性预览」：不覆写 imageUrl、不打断在途
   // 任务，仅把这张历史图临时显示在主体上（见 isGenerating 渲染分支）。新图生成
@@ -912,10 +917,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
                 </code>
                 <button
                   type="button"
-                  title={requestIdCopied ? t("node.imageNode.requestIdCopied") : t("node.imageNode.copyRequestId")}
+                  title={errorDetailsCopied ? t("nodeToolbar.copied") : t("nodeToolbar.copyErrorReport")}
                   onClick={(event) => {
                     event.stopPropagation();
-                    void handleCopyRequestId();
+                    void handleCopyErrorDetails();
                   }}
                   onPointerDown={(event) => event.stopPropagation()}
                   className="inline-flex h-5 w-5 shrink-0 items-center justify-center rounded text-text-muted/70 transition-colors hover:bg-white/10 hover:text-text-dark"
@@ -1197,4 +1202,3 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
 });
 
 ImageGenNode.displayName = 'ImageGenNode';
-

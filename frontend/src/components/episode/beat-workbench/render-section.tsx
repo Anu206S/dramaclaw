@@ -134,6 +134,29 @@ export function RenderSection({
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const { spec: aspectSpec } = useProjectAspectRatio(project);
+  const currentAssignment = assignments[String(beat.beat_number)] ?? null;
+  const currentSketch = currentAssignment
+    ? images.find((image) => isSketchAssignmentMatch(image, currentAssignment)) ?? null
+    : null;
+  const latestSketch = images
+    .filter(
+      (image) =>
+        image.type === "sketch" &&
+        image.original_beat === beat.beat_number &&
+        image.cell_url,
+    )
+    .sort((a, b) => {
+      const ta = a.generated_at ? Date.parse(a.generated_at) : 0;
+      const tb = b.generated_at ? Date.parse(b.generated_at) : 0;
+      return tb - ta;
+    })[0] ?? null;
+  const sourceSketchAspect = useImageAspectRatio(
+    beat.sketch_url || currentSketch?.cell_url || latestSketch?.cell_url || null,
+  );
+  const singleRenderModeKey =
+    (sourceSketchAspect ?? aspectSpec.renderAspect) === "16:9"
+      ? "1x1_16-9"
+      : "1x1_2-3";
   const poolSelect = usePoolSelect(project, episode);
   const regenerate = useRegenerateRenderBeats(project, episode);
   const renderSettings = useRenderSettings(project);
@@ -151,7 +174,7 @@ export function RenderSection({
   const renderRegenCost = useGenerationCreditCost(
     "image_selection",
     renderSettings.data?.data.render_image_selection,
-    { surface: "supertale", imageRole: "render", modeKey: "1x1_2-3" },
+    { surface: "supertale", imageRole: "render", modeKey: singleRenderModeKey },
   );
   const uploadRender = useUploadBeatImage(project, episode, "render");
   const backgroundAnchors = useBeatBackgroundAnchors(project, episode, beat.beat_number);
@@ -198,7 +221,6 @@ export function RenderSection({
       return tb - ta;
     });
 
-  const currentAssignment = assignments[String(beat.beat_number)] ?? null;
   const assignedRender = currentAssignment
     ? images.find((i) => isRenderAssignmentMatch(i, currentAssignment)) ?? null
     : null;
@@ -259,7 +281,10 @@ export function RenderSection({
         toast.error(backgroundRes.error || t("episode.workbench.render.backgroundSaveFailed"));
         return;
       }
-      const res = await regenerate.mutateAsync({ beatIndices: [beat.beat_number], modeKey: "1x1_2-3" });
+      const res = await regenerate.mutateAsync({
+        beatIndices: [beat.beat_number],
+        modeKey: singleRenderModeKey,
+      });
       if (res.ok === false) {
         toast.error(res.error || t("episode.workbench.render.regenFailed"));
         return;
@@ -668,11 +693,14 @@ function RenderRelightBadge({
   relight: boolean;
   timeOfDay: string;
 }) {
+  const { t } = useTranslation();
   if (relight) {
-    const label = `Relight 到 ${timeOfDay.trim() || "指定时间"}`;
+    const label = t("episode.workbench.render.relightLabel", {
+      timeOfDay: timeOfDay.trim() || t("episode.workbench.render.relightLabelDefaultTime"),
+    });
     return (
       <span
-        title="Relight：按 beat 时间重新打光，不改变场景结构。"
+        title={t("episode.workbench.render.relightTooltip")}
         className={cn(
           RELIGHT_BADGE_CLASS,
           "border-amber-300/35 bg-amber-300/[0.08] text-amber-200/90",
@@ -685,14 +713,14 @@ function RenderRelightBadge({
   }
   return (
     <span
-      title="锁图光：使用场景图自带光线，不重新打光。"
+      title={t("episode.workbench.render.lockedLightTooltip")}
       className={cn(
         RELIGHT_BADGE_CLASS,
         "border-emerald-300/30 bg-emerald-300/[0.07] text-emerald-200/88",
       )}
     >
       <Lock className="size-3.5" />
-      锁图光
+      {t("episode.workbench.render.lockedLightLabel")}
     </span>
   );
 }
@@ -998,14 +1026,14 @@ function RenderBackgroundReferencePanel({
           <div className="relative flex h-12 items-center border-b border-white/10 px-4">
             <div className="flex items-center gap-2 text-sm font-medium text-white">
               <Crop className="size-4" />
-              {`裁剪 ${cropAspectLabel}`}
+              {t("episode.workbench.render.backgroundCropTitleWithAspect", { aspect: cropAspectLabel })}
             </div>
             <DialogTitle className="absolute left-1/2 max-w-[52vw] -translate-x-1/2 truncate text-center text-sm font-medium text-white">
               {cropTitle}
             </DialogTitle>
             <button
               type="button"
-              aria-label="关闭"
+              aria-label={t("common.close")}
               className="absolute right-4 flex size-7 items-center justify-center text-white/90 hover:text-white"
               onClick={closeCropDialog}
             >
@@ -1040,7 +1068,7 @@ function RenderBackgroundReferencePanel({
                     ref={cropBoxRef}
                     role="button"
                     tabIndex={0}
-                    aria-label="移动裁剪区域"
+                    aria-label={t("episode.workbench.render.backgroundCropDragHandle")}
                     className="absolute cursor-move touch-none border-2 border-cyan-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.58)]"
                     style={cropBoxStyle}
                     onPointerDown={(event) => {
@@ -1104,4 +1132,41 @@ function isRenderAssignmentMatch(img: PoolImage, assignment: string) {
       img.cell_path === assignment ||
       img.grid_path === assignment)
   );
+}
+
+function isSketchAssignmentMatch(img: PoolImage, assignment: string) {
+  return (
+    img.type === "sketch" &&
+    (img.id === assignment ||
+      img.cell_path === assignment ||
+      img.grid_path === assignment)
+  );
+}
+
+function useImageAspectRatio(url: string | null): "2:3" | "16:9" | null {
+  const [aspect, setAspect] = useState<"2:3" | "16:9" | null>(null);
+
+  useEffect(() => {
+    setAspect(null);
+    const resolvedUrl = url ? resolveMediaUrl(url) : null;
+    if (!resolvedUrl) return;
+
+    let active = true;
+    const image = new Image();
+    image.onload = () => {
+      if (!active || image.naturalWidth <= 0 || image.naturalHeight <= 0) return;
+      const ratio = image.naturalWidth / image.naturalHeight;
+      setAspect(
+        Math.abs(ratio - 16 / 9) < Math.abs(ratio - 2 / 3) ? "16:9" : "2:3",
+      );
+    };
+    image.src = resolvedUrl;
+
+    return () => {
+      active = false;
+      image.onload = null;
+    };
+  }, [url]);
+
+  return aspect;
 }
