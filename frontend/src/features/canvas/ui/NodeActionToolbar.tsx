@@ -131,7 +131,6 @@ import {
   NODE_TOOLBAR_POSITION,
 } from "./nodeToolbarConfig";
 import type { GridActionKey } from "@/features/canvas/application/gridTemplateAction";
-import { AssetAnchorDialog } from "./AssetAnchorDialog";
 
 /**
  * 「九宫格」下拉选中某一项时抛给宿主的请求。宿主据此在源节点下游建一个功能节点
@@ -506,7 +505,6 @@ export const NodeActionToolbar = memo(
     const [isCopySuccess, setIsCopySuccess] = useState(false);
     const [isCopyTextSuccess, setIsCopyTextSuccess] = useState(false);
     const [isCopyErrorSuccess, setIsCopyErrorSuccess] = useState(false);
-    const [anchorDialogOpen, setAnchorDialogOpen] = useState(false);
     const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     );
@@ -552,10 +550,6 @@ export const NodeActionToolbar = memo(
       () => Boolean(deriveNodeDropInfo(node)?.sourceUrl),
       [node],
     );
-    const canCreateAssetAnchor = useMemo(() => {
-      const dropInfo = deriveNodeDropInfo(node);
-      return Boolean(dropInfo?.sourceUrl && dropInfo.mediaType !== "model");
-    }, [node]);
     const protectedProjectionKey =
       isProtectedProjectionGroupNode(node) &&
       typeof node.data.projection_key === "string" &&
@@ -2321,21 +2315,6 @@ export const NodeActionToolbar = memo(
                   : t("common.delete")}
               </UiChipButton>
             )}
-            {canCreateAssetAnchor && (
-              <UiChipButton
-                key="node-anchor"
-                className={TOOLBAR_TEXT_BUTTON_CLASS}
-                onClick={(event) => {
-                  event.stopPropagation();
-                  closeDownloadMenu();
-                  setAnchorDialogOpen(true);
-                }}
-                title="在动态工作流中复用当前素材"
-              >
-                <Link2 className="h-3.5 w-3.5" />
-                {node.data.assetAnchorSetId ? "更新锚点" : "设为锚点"}
-              </UiChipButton>
-            )}
             {canCommitNode && (
               <UiChipButton
                 key="node-commit"
@@ -2356,13 +2335,6 @@ export const NodeActionToolbar = memo(
           </UiPanel>
           </ZoomScaledToolbar>
         </ReactFlowNodeToolbar>
-        {canCreateAssetAnchor ? (
-          <AssetAnchorDialog
-            node={node}
-            open={anchorDialogOpen}
-            onOpenChange={setAnchorDialogOpen}
-          />
-        ) : null}
       </>
     );
   },

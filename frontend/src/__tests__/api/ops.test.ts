@@ -47,12 +47,6 @@ describe("freezone recipe API", () => {
       skillId: "video-ad",
       skillVersion: "2.0.0",
       confirmedInputs: { aspect_ratio: "9:16" },
-      creativeSettings: {
-        aesthetic: {
-          label: "王家卫电影感",
-          prompt_guide: "高饱和霓虹色与手持摄影",
-        },
-      },
       nodeKind: "image",
       nodePrompt: "生成多宫格分镜图",
       userGoal: "制作运动相机广告",
@@ -70,12 +64,6 @@ describe("freezone recipe API", () => {
           skill_id: "video-ad",
           skill_version: "2.0.0",
           confirmed_inputs: { aspect_ratio: "9:16" },
-          creative_settings: {
-            aesthetic: {
-              label: "王家卫电影感",
-              prompt_guide: "高饱和霓虹色与手持摄影",
-            },
-          },
         }),
       }),
     );

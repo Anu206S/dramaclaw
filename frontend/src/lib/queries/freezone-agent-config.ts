@@ -4,7 +4,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 
 import { apiCall } from "@/api/client";
 
-export type FreezoneAgentConfigKind = "skills" | "recipes" | "aesthetics" | "anchor_sets";
+export type FreezoneAgentConfigKind = "skills" | "recipes";
 export type FreezoneAgentConfigPayload = Record<string, unknown> & { id?: string };
 export type FreezoneAgentBundlePayload = Record<string, unknown> & {
   id?: string;

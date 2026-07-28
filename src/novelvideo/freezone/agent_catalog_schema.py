@@ -18,7 +18,7 @@ from novelvideo.freezone.agent_catalog_security import (
     scan_agent_catalog_payload_for_unsafe_content,
 )
 
-AgentConfigKind = Literal["skills", "recipes", "aesthetics", "anchor_sets"]
+AgentConfigKind = Literal["skills", "recipes"]
 CatalogNodeScope = Literal[
     "textGeneration",
     "imageGeneration",
@@ -241,98 +241,6 @@ class AgentCatalogRecipeConfig(_CatalogBaseModel):
         return [_non_empty(item, "must_have_items item") for item in value]
 
 
-class AgentCatalogAestheticConfig(_CatalogBaseModel):
-    schema_version: str = "dramaclaw.aesthetic.v1"
-    id: str
-    enabled: bool = True
-    version: str | int = "1.0.0"
-    name: str
-    description: str = ""
-    prompt_guide: str
-    negative_prompt: str = ""
-    tags: list[str] = Field(default_factory=list)
-    output_kinds: list[RecipeOutputKind] = Field(default_factory=list)
-
-    @field_validator("id")
-    @classmethod
-    def validate_aesthetic_id(cls, value: str) -> str:
-        return _validate_id(value)
-
-    @field_validator("name", "prompt_guide")
-    @classmethod
-    def validate_required_strings(cls, value: str) -> str:
-        return _non_empty(value, "required string")
-
-    @field_validator("tags")
-    @classmethod
-    def validate_tags(cls, value: list[str]) -> list[str]:
-        return [_non_empty(item, "tags item") for item in value]
-
-
-class AgentCatalogAnchorBinding(_CatalogBaseModel):
-    node_id: str
-    node_type: Literal["imageGenNode", "videoNode", "audioNode"]
-    label: str
-    target_item_ids: list[str] = Field(default_factory=list)
-
-    @field_validator("node_id", "label")
-    @classmethod
-    def validate_required_strings(cls, value: str) -> str:
-        return _non_empty(value, "required string")
-
-    @field_validator("target_item_ids")
-    @classmethod
-    def validate_target_item_ids(cls, value: list[str]) -> list[str]:
-        return [_validate_id(item) for item in value]
-
-
-class AgentCatalogAnchorSetConfig(_CatalogBaseModel):
-    schema_version: str = "dramaclaw.anchor-set.v1"
-    id: str
-    enabled: bool = True
-    version: str | int = "1.0.0"
-    name: str
-    description: str = ""
-    project_id: str = ""
-    canvas_id: str = ""
-    anchors: list[AgentCatalogAnchorBinding]
-    tags: list[str] = Field(default_factory=list)
-
-    @field_validator("id")
-    @classmethod
-    def validate_anchor_set_id(cls, value: str) -> str:
-        return _validate_id(value)
-
-    @field_validator("name")
-    @classmethod
-    def validate_name(cls, value: str) -> str:
-        return _non_empty(value, "name")
-
-    @field_validator("anchors")
-    @classmethod
-    def validate_anchors(
-        cls, value: list[AgentCatalogAnchorBinding]
-    ) -> list[AgentCatalogAnchorBinding]:
-        if not value:
-            raise ValueError("anchors must contain at least one item")
-        return value
-
-    @field_validator("tags")
-    @classmethod
-    def validate_tags(cls, value: list[str]) -> list[str]:
-        return [_non_empty(item, "tags item") for item in value]
-
-    @model_validator(mode="after")
-    def validate_enabled_anchors_are_resolved(self) -> "AgentCatalogAnchorSetConfig":
-        if self.enabled and any(
-            anchor.node_id.startswith("replace-with-") for anchor in self.anchors
-        ):
-            raise ValueError(
-                "enabled anchor_sets cannot contain unresolved replace-with-* node ids"
-            )
-        return self
-
-
 class AgentCatalogHiddenOverlay(_CatalogBaseModel):
     id: str
     hidden: Literal[True]
@@ -364,16 +272,6 @@ def validate_agent_config_item(
                 mode="json",
                 exclude_none=True,
             )
-        if kind == "aesthetics":
-            return AgentCatalogAestheticConfig.model_validate(payload).model_dump(
-                mode="json",
-                exclude_none=True,
-            )
-        if kind == "anchor_sets":
-            return AgentCatalogAnchorSetConfig.model_validate(payload).model_dump(
-                mode="json",
-                exclude_none=True,
-            )
     except ValidationError as exc:
         raise ValueError(f"invalid agent config {kind}: {exc}") from exc
     raise ValueError("invalid agent config kind")
@@ -385,11 +283,3 @@ def validate_agent_skill_config(payload: dict[str, Any]) -> dict[str, Any]:
 
 def validate_agent_recipe_config(payload: dict[str, Any]) -> dict[str, Any]:
     return validate_agent_config_item("recipes", payload)
-
-
-def validate_agent_aesthetic_config(payload: dict[str, Any]) -> dict[str, Any]:
-    return validate_agent_config_item("aesthetics", payload)
-
-
-def validate_agent_anchor_set_config(payload: dict[str, Any]) -> dict[str, Any]:
-    return validate_agent_config_item("anchor_sets", payload)

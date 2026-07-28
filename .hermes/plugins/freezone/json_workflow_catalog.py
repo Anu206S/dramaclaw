@@ -32,8 +32,6 @@ _ROOT = Path(__file__).resolve().parents[3]
 _CATALOG_ROOT = _ROOT / "src" / "novelvideo" / "freezone" / "agent_catalog" / "builtins"
 _SKILLS_DIR = _CATALOG_ROOT / "skills"
 _RECIPES_DIR = _CATALOG_ROOT / "recipes"
-_AESTHETICS_DIR = _CATALOG_ROOT / "aesthetics"
-_ANCHOR_SETS_DIR = _CATALOG_ROOT / "anchor_sets"
 _PLUGIN_CATALOG_ROOT = Path(__file__).resolve().parent / "catalog"
 _PLUGIN_SKILLS_DIR = _PLUGIN_CATALOG_ROOT / "skills"
 _PLUGIN_RECIPES_DIR = _PLUGIN_CATALOG_ROOT / "recipes"
@@ -324,21 +322,6 @@ def _skill_input_contract(
     }
 
 
-def _catalog_item_matches_scope(
-    item: dict[str, Any],
-    *,
-    project_id: str = "",
-    canvas_id: str = "",
-) -> bool:
-    item_project = _text(item.get("project_id") or item.get("projectId"))
-    item_canvas = _text(item.get("canvas_id") or item.get("canvasId"))
-    if item_project and item_project != project_id:
-        return False
-    if item_canvas and item_canvas != canvas_id:
-        return False
-    return True
-
-
 def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
     """Return one complete planning package for an explicitly selected Skill."""
     skill_id = _text(args.get("skill_id") or args.get("skillId") or args.get("id"))
@@ -385,23 +368,6 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
     recipe_summaries = [
         _recipe_planning_summary(recipe) for recipe in selected_recipes
     ]
-    aesthetics = [
-        _without_private_fields(item)
-        for item in _load_agent_config_items("aesthetics", _AESTHETICS_DIR)
-        if item.get("enabled") is not False and _text(item.get("id"))
-    ]
-    project_id = _text(args.get("project_id") or args.get("project"))
-    canvas_id = _text(args.get("canvas_id") or args.get("canvasId"))
-    anchor_sets = [
-        _without_private_fields(item)
-        for item in _load_agent_config_items("anchor_sets", _ANCHOR_SETS_DIR)
-        if item.get("enabled") is not False and _text(item.get("id"))
-        and _catalog_item_matches_scope(
-            item,
-            project_id=project_id,
-            canvas_id=canvas_id,
-        )
-    ]
     recipes_by_output_kind: dict[str, list[str]] = {}
     source_anchor_recipe_ids: dict[str, list[str]] = {}
     for recipe in recipe_summaries:
@@ -425,8 +391,6 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
         "recipes": [] if compact else full_recipes,
         "recipe_definitions_omitted": compact,
         "available_recipes": recipe_summaries,
-        "available_aesthetics": aesthetics,
-        "available_anchor_sets": anchor_sets,
         "capabilities": [
             {
                 "id": capability,
@@ -475,11 +439,6 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
                 "anchor, choose a same-output Recipe listed in source_anchor_recipe_ids; "
                 "never copy a downstream text Recipe onto an image anchor."
             ),
-            "anchor_selection_rule": (
-                "Enabled available_anchor_sets are explicit selections made on this canvas. "
-                "Apply relevant sets through creative_settings.anchor_set_ids and disclose "
-                "the asset binding in the draft preview."
-            ),
         },
         "message": (
             "已加载完整 Workflow Skill 包，可直接规划 freezone_workflow_plan.v1。"
@@ -489,12 +448,7 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def compile_workflow_intent(
-    intent: Any,
-    *,
-    project_id: str = "",
-    canvas_id: str = "",
-) -> dict[str, Any]:
+def compile_workflow_intent(intent: Any) -> dict[str, Any]:
     """Compile a compact Agent decision into a complete, validated dynamic plan."""
     if not isinstance(intent, dict):
         return _intent_error("intent must be an object", path="intent")
@@ -536,8 +490,6 @@ def compile_workflow_intent(
         skill=skill,
         user_goal=user_goal,
         resolved_inputs=input_contract["resolved"],
-        project_id=project_id,
-        canvas_id=canvas_id,
     )
 
 def _compile_dynamic_recipe_items_intent(
@@ -546,8 +498,6 @@ def _compile_dynamic_recipe_items_intent(
     skill: dict[str, Any],
     user_goal: str,
     resolved_inputs: dict[str, Any],
-    project_id: str = "",
-    canvas_id: str = "",
 ) -> dict[str, Any]:
     items = _intent_items(intent)
     if not items:
@@ -560,15 +510,6 @@ def _compile_dynamic_recipe_items_intent(
     allowed_recipe_ids = {
         _text(item) for item in skill.get("allowed_recipe_ids") or [] if _text(item)
     }
-    creative_settings, creative_error = _intent_creative_settings(
-        intent,
-        recipes,
-        project_id=project_id,
-        canvas_id=canvas_id,
-    )
-    if creative_error is not None:
-        return creative_error
-    allowed_recipe_ids.update(creative_settings.get("recipe_extensions") or [])
     nodes: list[dict[str, Any]] = [
         {
             "id": "workflow_input",
@@ -622,7 +563,9 @@ def _compile_dynamic_recipe_items_intent(
             )
         for pipeline_index, pipeline_value in enumerate(raw_pipeline[:6]):
             pipeline_id = _text(
-                pipeline_value.get("id") if isinstance(pipeline_value, dict) else pipeline_value
+                pipeline_value.get("id")
+                if isinstance(pipeline_value, dict)
+                else pipeline_value
             )
             pipeline_recipe = recipes.get(pipeline_id)
             canonical_pipeline_id = (
@@ -665,7 +608,6 @@ def _compile_dynamic_recipe_items_intent(
             item=item,
             user_goal=user_goal,
             resolved_inputs=resolved_inputs,
-            creative_settings=creative_settings,
             recipe_pipeline=recipe_pipeline,
         )
         explicit_stage = _text(item.get("stage"))
@@ -731,7 +673,6 @@ def _compile_dynamic_recipe_items_intent(
                             "skillId": _text(skill.get("id")),
                             "skillVersion": skill.get("version"),
                             "confirmedInputs": resolved_inputs,
-                            "creativeSettings": creative_settings,
                             "stepId": compose_id,
                             "promptBuilder": {"userGoal": user_goal},
                         },
@@ -750,38 +691,6 @@ def _compile_dynamic_recipe_items_intent(
             )
             phases.append("compose")
 
-    external_edges: list[dict[str, str]] = []
-    for index, binding in enumerate(creative_settings.get("anchor_bindings") or []):
-        target_ids = list(binding.get("target_item_ids") or [])
-        if not target_ids:
-            source_type = _text(binding.get("node_type"))
-            compatible_target_types = {
-                "imageGenNode": {"imageGenNode", "videoNode"},
-                "videoNode": {"videoNode"},
-                "audioNode": {"audioNode"},
-            }.get(source_type, set())
-            target_ids = [
-                node_id
-                for node_id, node_type in node_types.items()
-                if node_id != "workflow_input"
-                and node_type in compatible_target_types
-            ]
-            binding["target_item_ids"] = target_ids
-        for target_id in target_ids:
-            normalized_target = _safe_id(_text(target_id))
-            if normalized_target not in item_by_id:
-                return _intent_error(
-                    f"unknown anchor target item: {target_id}",
-                    path=f"creative_settings.anchor_bindings.{index}.target_item_ids",
-                )
-            external_edges.append(
-                {
-                    "source": _text(binding.get("node_id")),
-                    "target": normalized_target,
-                    "link_type": "media_input_for",
-                }
-            )
-
     edges = _dedupe_intent_edges(edges)
     skill_id = _text(skill.get("id"))
     title = _text(intent.get("title")) or _catalog_label(skill)
@@ -794,7 +703,7 @@ def _compile_dynamic_recipe_items_intent(
         "source_context": {
             "user_goal": user_goal,
             "canvas_context": [],
-            "input_assets": list(creative_settings.get("anchor_bindings") or []),
+            "input_assets": [],
         },
         "analysis": {"entities": [], "production_units": [], "risks": []},
         "phases": phases,
@@ -802,10 +711,8 @@ def _compile_dynamic_recipe_items_intent(
         "missing_inputs": [],
         "expansion_rules": {"item_count": len(items)},
         "inputs": resolved_inputs,
-        "creative_settings": creative_settings,
         "nodes": nodes,
         "edges": edges,
-        "external_edges": _dedupe_intent_edges(external_edges),
         "layout": {
             "direction": "left_to_right",
             "groups": [
@@ -835,7 +742,7 @@ def _compile_dynamic_recipe_items_intent(
         "schema_version": WORKFLOW_INTENT_SCHEMA_VERSION,
         "skill_id": skill_id,
         "node_count": len(nodes),
-        "edge_count": len(edges) + len(external_edges),
+        "edge_count": len(edges),
         "plan": plan,
     }
 
@@ -867,183 +774,6 @@ def _intent_bool(intent: dict[str, Any], key: str, default: bool) -> bool:
     if value is None:
         return default
     return value if isinstance(value, bool) else default
-
-
-def _intent_creative_settings(
-    intent: dict[str, Any],
-    recipes: dict[str, dict[str, Any]],
-    *,
-    project_id: str = "",
-    canvas_id: str = "",
-) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    raw = intent.get("creative_settings") or intent.get("creativeSettings") or {}
-    if not isinstance(raw, dict):
-        return {}, _intent_error(
-            "creative_settings must be an object",
-            path="creative_settings",
-        )
-
-    result: dict[str, Any] = {}
-    aesthetic_id = _text(raw.get("aesthetic_id") or raw.get("aestheticId"))
-    if aesthetic_id:
-        aesthetic = next(
-            (
-                item
-                for item in _load_agent_config_items("aesthetics", _AESTHETICS_DIR)
-                if _text(item.get("id")) == aesthetic_id
-                and item.get("enabled") is not False
-            ),
-            None,
-        )
-        if aesthetic is None:
-            return {}, _intent_error(
-                f"unknown Aesthetic: {aesthetic_id}",
-                path="creative_settings.aesthetic_id",
-            )
-        result["aesthetic_id"] = aesthetic_id
-        result["aesthetic"] = {
-            "label": _text(aesthetic.get("name"))[:120],
-            "prompt_guide": _text(aesthetic.get("prompt_guide"))[:4000],
-            "negative_prompt": _text(aesthetic.get("negative_prompt"))[:2000],
-        }
-
-    raw_aesthetic = raw.get("aesthetic")
-    if raw_aesthetic is not None:
-        if not isinstance(raw_aesthetic, dict):
-            return {}, _intent_error(
-                "creative_settings.aesthetic must be an object",
-                path="creative_settings.aesthetic",
-            )
-        aesthetic = {
-            "label": _text(raw_aesthetic.get("label"))[:120],
-            "prompt_guide": _text(
-                raw_aesthetic.get("prompt_guide") or raw_aesthetic.get("promptGuide")
-            )[:4000],
-            "negative_prompt": _text(
-                raw_aesthetic.get("negative_prompt") or raw_aesthetic.get("negativePrompt")
-            )[:2000],
-        }
-        if not aesthetic["label"] or not aesthetic["prompt_guide"]:
-            return {}, _intent_error(
-                "aesthetic label and prompt_guide are required",
-                path="creative_settings.aesthetic",
-            )
-        result["aesthetic"] = aesthetic
-
-    raw_extensions = raw.get("recipe_extensions") or raw.get("recipeExtensions") or []
-    if not isinstance(raw_extensions, list):
-        return {}, _intent_error(
-            "recipe_extensions must be an array",
-            path="creative_settings.recipe_extensions",
-        )
-    extensions: list[str] = []
-    for index, value in enumerate(raw_extensions[:12]):
-        requested_id = _text(value)
-        recipe = recipes.get(requested_id)
-        recipe_id = _text(recipe.get("id")) if recipe else ""
-        if not recipe_id:
-            return {}, _intent_error(
-                f"unknown Recipe extension: {requested_id or '<missing>'}",
-                path=f"creative_settings.recipe_extensions.{index}",
-            )
-        if recipe_id not in extensions:
-            extensions.append(recipe_id)
-    if extensions:
-        result["recipe_extensions"] = extensions
-
-    raw_anchor_set_ids = raw.get("anchor_set_ids") or raw.get("anchorSetIds") or []
-    if not isinstance(raw_anchor_set_ids, list):
-        return {}, _intent_error(
-            "anchor_set_ids must be an array",
-            path="creative_settings.anchor_set_ids",
-        )
-    anchor_sets = {
-        _text(item.get("id")): item
-        for item in _load_agent_config_items("anchor_sets", _ANCHOR_SETS_DIR)
-        if item.get("enabled") is not False and _text(item.get("id"))
-        and _catalog_item_matches_scope(
-            item,
-            project_id=project_id,
-            canvas_id=canvas_id,
-        )
-    }
-    resolved_anchor_set_ids: list[str] = []
-    stored_bindings: list[dict[str, Any]] = []
-    for index, value in enumerate(raw_anchor_set_ids[:12]):
-        anchor_set_id = _text(value)
-        anchor_set = anchor_sets.get(anchor_set_id)
-        if anchor_set is None:
-            return {}, _intent_error(
-                f"unknown AnchorSet: {anchor_set_id or '<missing>'}",
-                path=f"creative_settings.anchor_set_ids.{index}",
-            )
-        if anchor_set_id not in resolved_anchor_set_ids:
-            resolved_anchor_set_ids.append(anchor_set_id)
-            stored_bindings.extend(
-                item for item in anchor_set.get("anchors") or [] if isinstance(item, dict)
-            )
-    if resolved_anchor_set_ids:
-        result["anchor_set_ids"] = resolved_anchor_set_ids
-
-    raw_bindings = [
-        *stored_bindings,
-        *(raw.get("anchor_bindings") or raw.get("anchorBindings") or []),
-    ]
-    if not isinstance(raw_bindings, list):
-        return {}, _intent_error(
-            "anchor_bindings must be an array",
-            path="creative_settings.anchor_bindings",
-        )
-    bindings: list[dict[str, Any]] = []
-    for index, value in enumerate(raw_bindings[:20]):
-        if not isinstance(value, dict):
-            return {}, _intent_error(
-                "anchor binding must be an object",
-                path=f"creative_settings.anchor_bindings.{index}",
-            )
-        node_id = _text(value.get("node_id") or value.get("nodeId"))
-        node_type = _text(value.get("node_type") or value.get("nodeType"))
-        label = _text(value.get("label"))[:200]
-        if not node_id or len(node_id) > 200 or any(char.isspace() for char in node_id):
-            return {}, _intent_error(
-                "anchor node_id must be a valid existing canvas node id",
-                path=f"creative_settings.anchor_bindings.{index}.node_id",
-            )
-        if node_type not in {"imageGenNode", "videoNode", "audioNode"}:
-            return {}, _intent_error(
-                f"unsupported anchor node_type: {node_type or '<missing>'}",
-                path=f"creative_settings.anchor_bindings.{index}.node_type",
-            )
-        raw_targets = value.get("target_item_ids") or value.get("targetItemIds") or []
-        if not isinstance(raw_targets, list):
-            return {}, _intent_error(
-                "anchor target_item_ids must be an array",
-                path=f"creative_settings.anchor_bindings.{index}.target_item_ids",
-            )
-        bindings.append(
-            {
-                "node_id": node_id,
-                "node_type": node_type,
-                "label": label or node_id,
-                "target_item_ids": [
-                    _safe_id(_text(item)) for item in raw_targets if _text(item)
-                ],
-            }
-        )
-    if bindings:
-        deduped_bindings: list[dict[str, Any]] = []
-        seen_bindings: set[tuple[str, tuple[str, ...]]] = set()
-        for binding in bindings:
-            key = (
-                _text(binding.get("node_id")),
-                tuple(binding.get("target_item_ids") or []),
-            )
-            if key in seen_bindings:
-                continue
-            seen_bindings.add(key)
-            deduped_bindings.append(binding)
-        result["anchor_bindings"] = deduped_bindings
-    return result, None
 
 
 def _intent_recipe_index() -> dict[str, dict[str, Any]]:
@@ -1188,7 +918,6 @@ def _intent_item_node(
     item: dict[str, Any],
     user_goal: str,
     resolved_inputs: dict[str, Any],
-    creative_settings: dict[str, Any],
     recipe_pipeline: list[dict[str, Any]],
 ) -> dict[str, Any]:
     label = (_text(item.get("title")) or _text(item.get("prompt")) or item_id)[:64]
@@ -1221,7 +950,6 @@ def _intent_item_node(
             "skillId": _text(skill.get("id")),
             "skillVersion": skill.get("version"),
             "confirmedInputs": resolved_inputs,
-            "creativeSettings": creative_settings,
             "stepId": item_id,
             **({"timelineRole": timeline_role} if timeline_role else {}),
             "operationType": operation_type,
@@ -1326,16 +1054,6 @@ def validate_agent_workflow_plan(plan: Any) -> dict[str, Any]:
             skills[skill_id], list(recipes.values())
         )
     }
-    plan_creative_settings = (
-        plan.get("creative_settings")
-        if isinstance(plan.get("creative_settings"), dict)
-        else {}
-    )
-    allowed_recipe_ids.update(
-        _text(item)
-        for item in plan_creative_settings.get("recipe_extensions") or []
-        if _text(item)
-    )
     errors: list[dict[str, str]] = []
     plan_inputs = plan.get("inputs", {})
     if not isinstance(plan_inputs, dict):
@@ -1601,10 +1319,7 @@ def _load_agent_config_items(
                 pass
 
     if project_dir is None:
-        if kind == "recipes":
-            project_dir = _PLUGIN_RECIPES_DIR
-        elif kind == "skills":
-            project_dir = _PLUGIN_SKILLS_DIR
+        project_dir = _PLUGIN_RECIPES_DIR if kind == "recipes" else _PLUGIN_SKILLS_DIR
     fallback_items = _load_json_dir(fallback_dir)
     if project_dir is not None:
         project_items = [

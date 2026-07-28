@@ -3704,9 +3704,7 @@
       "models": "Models & Channels",
       "storage": "Media Storage",
       "freezoneSkills": "Freezone Skills",
-      "freezoneRecipes": "Freezone Recipes",
-      "freezoneAesthetics": "Aesthetics",
-      "freezoneAnchorSets": "Asset Anchors"
+      "freezoneRecipes": "Freezone Recipes"
     },
     "freezoneCatalog": {
       "skills": {

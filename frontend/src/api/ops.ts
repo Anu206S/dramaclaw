@@ -26,7 +26,6 @@ export interface FreezoneRecipeCompilePayload {
   skillId?: string;
   skillVersion?: string;
   confirmedInputs?: Record<string, unknown>;
-  creativeSettings?: Record<string, unknown>;
   nodeKind: FreezoneRecipeNodeKind;
   promptStrategy?: "template" | "user_message" | "previous_output" | "llm_refine";
   nodePrompt?: string;
@@ -57,7 +56,6 @@ export async function compileFreezoneRecipePrompt(
       skill_id: payload.skillId ?? "",
       skill_version: payload.skillVersion ?? "",
       confirmed_inputs: payload.confirmedInputs ?? {},
-      creative_settings: payload.creativeSettings ?? {},
       node_kind: payload.nodeKind,
       prompt_strategy: payload.promptStrategy ?? "llm_refine",
       node_prompt: payload.nodePrompt ?? "",
@@ -86,7 +84,6 @@ export async function generateFreezoneRecipeText(
       skill_id: payload.skillId ?? "",
       skill_version: payload.skillVersion ?? "",
       confirmed_inputs: payload.confirmedInputs ?? {},
-      creative_settings: payload.creativeSettings ?? {},
       node_kind: "text",
       node_prompt: payload.nodePrompt ?? "",
       user_goal: payload.userGoal ?? "",
