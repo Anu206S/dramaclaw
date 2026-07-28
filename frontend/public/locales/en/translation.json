@@ -3781,11 +3781,13 @@
       "deleteSkillDialog": {
         "title": "Delete Skill",
         "description": "Delete \"{{id}}\"?",
-        "recipeHint": "{{count}} linked Recipes. Choose whether to delete them too.",
+        "recipeHint": "This Skill uses {{count}} modules: {{exclusiveCount}} used only here, {{sharedCount}} also used by other Skills.",
         "noRecipeHint": "This cannot be undone.",
+        "exclusiveRecipes": "Can be deleted with this Skill",
+        "sharedRecipes": "Shared modules will be kept",
         "cancel": "Cancel",
         "deleteSkillOnly": "Delete Skill only",
-        "deleteWithRecipes": "Delete Recipes too"
+        "deleteWithRecipes": "Delete Skill and exclusive modules"
       },
       "recipesPendingTitle": "Recipe settings entry reserved",
       "recipesPendingDescription": "The backend does not expose a Freezone Recipe catalog yet, so this keeps the management entry ready. Once connected, Recipes can be listed, searched, edited, imported, and exported here.",

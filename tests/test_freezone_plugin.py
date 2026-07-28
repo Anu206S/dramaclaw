@@ -130,6 +130,7 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_put_agent_catalog_recipe" in names
     assert "freezone_patch_agent_catalog_draft" in names
     assert "freezone_finish_agent_catalog_draft" in names
+    assert "freezone_list_agent_catalog" in names
     assert "freezone_get_saved_skill" in names
     assert "freezone_get_saved_recipe" in names
     create_schema = schemas["freezone_create_workflow_graph"]["parameters"]
@@ -749,6 +750,92 @@ def test_freezone_plugin_reads_saved_skill_and_recipe(monkeypatch):
     assert recipe["ok"] is True
     assert recipe["kind"] == "recipes"
     assert recipe["item"]["system_prompt"] == "完整 Recipe 配置"
+
+
+def test_freezone_plugin_lists_agent_catalog_summaries(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    def fake_request(method, path, *, query=None, body=None):  # noqa: ARG001
+        assert method == "GET"
+        if path == "/api/v1/freezone/agent-config/recipes":
+            return {
+                "ok": True,
+                "data": [
+                    {
+                        "id": "ad-character-anchor",
+                        "name": "广告 IP 角色锚点",
+                        "description": "角色立绘提示词",
+                        "enabled": True,
+                        "output_kind": "image",
+                        "action_keys": ["character-anchor"],
+                        "result_summary": "角色锚点图",
+                        "system_prompt": "完整 Recipe prompt 不应出现在列表摘要里",
+                    },
+                    {
+                        "id": "video-audio-layer",
+                        "name": "广告音频层",
+                        "description": "配音和音效",
+                        "enabled": False,
+                        "output_kind": "audio",
+                        "action_keys": ["audio-layer"],
+                        "system_prompt": "也不应出现",
+                    },
+                ],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    listed = handlers["freezone_list_agent_catalog"]({"kind": "recipes", "query": "角色"})
+
+    assert listed["ok"] is True
+    assert listed["kind"] == "recipes"
+    assert listed["count"] == 1
+    assert listed["items"] == [
+        {
+            "id": "ad-character-anchor",
+            "name": "广告 IP 角色锚点",
+            "description": "角色立绘提示词",
+            "enabled": True,
+            "schema_version": "",
+            "version": "",
+            "output_kind": "image",
+            "action_keys": ["character-anchor"],
+            "result_summary": "角色锚点图",
+            "requires_source_media": False,
+            "force_enhancement": False,
+            "builtin": False,
+            "owned": False,
+        }
+    ]
+    assert "system_prompt" not in listed["items"][0]
+
+
+def test_freezone_plugin_lists_agent_catalog_reports_available_ids(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    def fake_request(method, path, *, query=None, body=None):  # noqa: ARG001
+        assert method == "GET"
+        if path == "/api/v1/freezone/agent-config/skills":
+            return {
+                "ok": True,
+                "data": [
+                    {"id": "lego-video", "name": "乐高小人动画短片", "enabled": True},
+                    {"id": "pixar-video", "name": "皮克斯广告短片", "enabled": True},
+                ],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    listed = handlers["freezone_list_agent_catalog"]({"kind": "skills", "query": "不存在"})
+
+    assert listed["ok"] is True
+    assert listed["kind"] == "skills"
+    assert listed["count"] == 0
+    assert listed["available_ids"] == ["lego-video", "pixar-video"]
 
 
 def test_freezone_plugin_clarification_tool_waits_for_frontend_result(monkeypatch):

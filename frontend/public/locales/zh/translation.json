@@ -3781,11 +3781,13 @@
       "deleteSkillDialog": {
         "title": "删除 Skill",
         "description": "确定要删除「{{id}}」吗？",
-        "recipeHint": "关联 {{count}} 个 Recipes，可选择是否一起删除。",
+        "recipeHint": "这个 Skill 使用了 {{count}} 个能力模块，其中 {{exclusiveCount}} 个仅当前 Skill 使用，{{sharedCount}} 个也被其他 Skill 使用。",
         "noRecipeHint": "删除后不可恢复。",
+        "exclusiveRecipes": "可随 Skill 一起删除",
+        "sharedRecipes": "共享模块会保留",
         "cancel": "取消",
         "deleteSkillOnly": "只删除 Skill",
-        "deleteWithRecipes": "同时删除 Recipes"
+        "deleteWithRecipes": "删除 Skill 和独占模块"
       },
       "recipesPendingTitle": "Recipe 配置入口已预留",
       "recipesPendingDescription": "当前后端还没有虾画 Recipe catalog 接口，所以这里先保留管理入口。接入后会在这里展示、搜索、编辑和导入导出 Recipes。",
