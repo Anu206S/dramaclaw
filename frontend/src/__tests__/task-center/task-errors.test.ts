@@ -20,6 +20,29 @@ function task(partial: Partial<TaskState>): TaskState {
 }
 
 describe("taskErrorMessage", () => {
+  it("uses i18n for a missing novel task error", () => {
+    const tMock = vi.fn((key: string, options?: { defaultValue?: string }) => {
+      if (key === "common.novelImportRequired") {
+        return "Please import a novel first";
+      }
+      return options?.defaultValue ?? key;
+    });
+    const t = tMock as unknown as TFunction;
+
+    expect(
+      taskErrorMessage(
+        task({
+          error_code: "NOVEL_IMPORT_REQUIRED",
+          error: "请先导入小说",
+        }),
+        t,
+      ),
+    ).toBe("Please import a novel first");
+    expect(tMock).toHaveBeenCalledWith("common.novelImportRequired", {
+      defaultValue: "请先导入小说",
+    });
+  });
+
   it("uses i18n for missing billing rule task errors", () => {
     const tMock = vi.fn((key: string, options?: { defaultValue?: string }) => {
       if (key === "common.billingRuleNotConfigured") {
@@ -41,5 +64,17 @@ describe("taskErrorMessage", () => {
     expect(tMock).toHaveBeenCalledWith("common.billingRuleNotConfigured", {
       defaultValue: "计费规则未配置，请联系管理员设置积分规则",
     });
+  });
+
+  it("uses only the nested provider message in failure notifications", () => {
+    const t = vi.fn((key: string) => key) as unknown as TFunction;
+    const raw =
+      'DramaClawAPI image generation failed: HTTP 400: request_id=req-123; ' +
+      'body={"error":{"message":"Content failed safety review. / 内容未通过安全审核。",' +
+      '"type":"content_policy_violation","code":"moderation_blocked"}}';
+
+    expect(taskErrorMessage(task({ error: raw }), t)).toBe(
+      "Content failed safety review. / 内容未通过安全审核。",
+    );
   });
 });

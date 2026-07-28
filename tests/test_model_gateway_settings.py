@@ -2172,7 +2172,7 @@ def test_custom_newapi_embedding_model_writes_mapping_and_persists_dimension(
             "newApiBaseUrl": "http://new-api:3000",
             "provider": "openai",
             "upstreamModel": "text-embedding-3-large",
-            "dimension": 3072,
+            "dimension": 1024,
             "batchSize": 36,
         },
     )
@@ -2186,7 +2186,7 @@ def test_custom_newapi_embedding_model_writes_mapping_and_persists_dimension(
         "DC-cognee-embedding": "text-embedding-3-large",
     }
     assert "dimension" not in payloads[0]["channel"]
-    assert "3072" not in payloads[0]["channel"]["model_mapping"]
+    assert "1024" not in payloads[0]["channel"]["model_mapping"]
     assert "sk-openai-upstream-secret" not in response.text
 
     config_response = client.get("/model-gateway/config")
@@ -2194,14 +2194,32 @@ def test_custom_newapi_embedding_model_writes_mapping_and_persists_dimension(
     assert embedding == {
         "provider": "openai",
         "upstreamModel": "text-embedding-3-large",
-        "dimension": 3072,
+        "dimension": 1024,
         "batchSize": 36,
+        "sendDimensions": True,
         "internalModel": "DC-cognee-embedding",
     }
 
 
+def test_custom_newapi_embedding_model_accepts_positive_project_dimension(
+):
+    body = model_gateway.SaveEmbeddingModelBody.model_validate(
+        {
+            "provider": "openai",
+            "upstreamModel": "text-embedding-3-large",
+            "dimension": 3072,
+        }
+    )
+
+    _, normalized = model_gateway._build_embedding_model_channel_spec(body)
+
+    assert normalized["dimension"] == 3072
+    assert normalized["sendDimensions"] is True
+
+
 def test_effective_cognee_embedding_prefers_saved_custom_config(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
+    set_model_gateway_mode(MODE_CUSTOM)
     monkeypatch.setenv("COGNEE_EMBEDDING_PROVIDER", "gemini")
     monkeypatch.setenv("COGNEE_EMBEDDING_MODEL", "gemini-embedding-001")
     monkeypatch.setenv("COGNEE_EMBEDDING_DIM", "768")
@@ -2224,6 +2242,7 @@ def test_effective_cognee_embedding_prefers_saved_custom_config(monkeypatch, tmp
 
 def test_effective_cognee_embedding_keeps_saved_batch_size(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
+    set_model_gateway_mode(MODE_CUSTOM)
 
     save_newapi_embedding_model_config(
         provider="ali",
@@ -2239,6 +2258,25 @@ def test_effective_cognee_embedding_keeps_saved_batch_size(monkeypatch, tmp_path
     assert effective.model == "DC-cognee-embedding"
     assert effective.dimensions == "1024"
     assert effective.batch_size == "10"
+
+
+def test_ce_official_embedding_ignores_saved_custom_model(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    save_newapi_embedding_model_config(
+        provider="openai",
+        upstream_model="stale-custom-model",
+        dimension=1024,
+    )
+    set_model_gateway_mode(MODE_OFFICIAL)
+    monkeypatch.setenv("COGNEE_EMBEDDING_MODEL", "DC-cognee-embedding")
+    monkeypatch.setenv("COGNEE_EMBEDDING_DIM", "1024")
+
+    effective = get_effective_cognee_embedding_config()
+
+    assert effective.source == "environment"
+    assert effective.model == "DC-cognee-embedding"
+    assert effective.dimensions == "1024"
+    assert effective.upstream_model == ""
 
 
 def test_cognee_apply_embedding_env_sets_saved_batch_size(monkeypatch, tmp_path):
@@ -2422,6 +2460,137 @@ def test_media_relay_config_route_persists_and_masks_cloudinary_keys(
     assert data["configured"] is True
     assert "cloudinary-api-key-secret" not in response.text
     assert "cloudinary-api-secret" not in response.text
+
+
+def test_media_relay_config_route_supports_partial_credential_updates(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("NEWAPI_PROVISIONER_ENABLED", "true")
+    monkeypatch.setattr(model_gateway.app_config, "MEDIA_RELAY_PROVIDER", "aliyun_oss")
+    monkeypatch.setattr(model_gateway.app_config, "MEDIA_RELAY_TTL_SECONDS", 1800)
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_ENDPOINT", "")
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_BUCKET", "")
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_AK", "")
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_SK", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_CLOUD_NAME", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_API_KEY", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_API_SECRET", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_FOLDER", "")
+
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+    client = TestClient(app)
+
+    initial = client.post(
+        "/model-gateway/media-relay/config",
+        json={
+            "provider": "aliyun_oss",
+            "ttlSeconds": 900,
+            "endpoint": "oss-cn-shanghai.aliyuncs.com",
+            "bucket": "user-relay",
+            "accessKeyId": "LTAI-old-secret",
+            "accessKeySecret": "SK-old-secret",
+        },
+    )
+    assert initial.status_code == 200
+
+    updated = client.post(
+        "/model-gateway/media-relay/config",
+        json={
+            "provider": "aliyun_oss",
+            "ttlSeconds": 1200,
+            "endpoint": "oss-cn-beijing.aliyuncs.com",
+            "bucket": "user-relay",
+            "accessKeyId": "LTAI-new-secret",
+            "accessKeySecret": "",
+        },
+    )
+
+    assert updated.status_code == 200
+    data = updated.json()["data"]
+    assert data["ttlSeconds"] == 1200
+    assert data["endpoint"] == "oss-cn-beijing.aliyuncs.com"
+    assert data["accessKeyIdPreview"] == "LTAI...cret"
+    assert data["accessKeySecretPreview"] == "SK-o...cret"
+    assert data["configured"] is True
+    assert "LTAI-new-secret" not in updated.text
+    assert "SK-old-secret" not in updated.text
+
+
+def test_media_relay_config_route_preserves_inactive_provider_credentials(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("NEWAPI_PROVISIONER_ENABLED", "true")
+    monkeypatch.setattr(model_gateway.app_config, "MEDIA_RELAY_PROVIDER", "aliyun_oss")
+    monkeypatch.setattr(model_gateway.app_config, "MEDIA_RELAY_TTL_SECONDS", 1800)
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_ENDPOINT", "")
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_BUCKET", "")
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_AK", "")
+    monkeypatch.setattr(model_gateway.app_config, "OSS_RELAY_SK", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_CLOUD_NAME", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_API_KEY", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_API_SECRET", "")
+    monkeypatch.setattr(model_gateway.app_config, "CLOUDINARY_RELAY_FOLDER", "")
+
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+    client = TestClient(app)
+
+    oss = client.post(
+        "/model-gateway/media-relay/config",
+        json={
+            "provider": "aliyun_oss",
+            "endpoint": "oss.example.com",
+            "bucket": "oss-bucket",
+            "accessKeyId": "oss-access-key",
+            "accessKeySecret": "oss-secret-key",
+        },
+    )
+    assert oss.status_code == 200
+
+    cloudinary = client.post(
+        "/model-gateway/media-relay/config",
+        json={
+            "provider": "cloudinary",
+            "cloudName": "demo-cloud",
+            "apiKey": "cloudinary-api-key",
+            "apiSecret": "cloudinary-api-secret",
+        },
+    )
+    assert cloudinary.status_code == 200
+    cloudinary_data = cloudinary.json()["data"]
+    assert cloudinary_data["accessKeyIdPreview"] == "oss-...-key"
+    assert cloudinary_data["accessKeySecretPreview"] == "oss-...-key"
+
+    cloudinary_partial = client.post(
+        "/model-gateway/media-relay/config",
+        json={
+            "provider": "cloudinary",
+            "cloudName": "demo-cloud",
+            "apiKey": "",
+            "apiSecret": "cloudinary-new-secret",
+        },
+    )
+    assert cloudinary_partial.status_code == 200
+    cloudinary_partial_data = cloudinary_partial.json()["data"]
+    assert cloudinary_partial_data["cloudinaryApiKeyPreview"] == "clou...-key"
+    assert cloudinary_partial_data["cloudinaryApiSecretPreview"] == "clou...cret"
+
+    switched_back = client.post(
+        "/model-gateway/media-relay/config",
+        json={
+            "provider": "aliyun_oss",
+            "endpoint": "oss.example.com",
+            "bucket": "oss-bucket",
+        },
+    )
+    assert switched_back.status_code == 200
+    switched_data = switched_back.json()["data"]
+    assert switched_data["configured"] is True
+    assert switched_data["cloudinaryApiKeyPreview"] == "clou...-key"
+    assert switched_data["cloudinaryApiSecretPreview"] == "clou...cret"
 
 
 def test_media_relay_status_prefers_database_config(monkeypatch, tmp_path):

@@ -1122,7 +1122,8 @@ function EmbeddingModelBlock({
 
   const selectedProvider = localModel?.provider ?? "";
   const upstreamModel = localModel?.upstreamModel ?? "";
-  const dimension = localModel?.dimension ?? DEFAULT_EMBEDDING_DIMENSION;
+  const dimension =
+    localModel === undefined ? DEFAULT_EMBEDDING_DIMENSION : localModel.dimension;
   const batchSize =
     localModel === undefined ? DEFAULT_EMBEDDING_BATCH_SIZE : localModel.batchSize;
 
@@ -1162,8 +1163,8 @@ function EmbeddingModelBlock({
       toast.error(t("settings.modelConfig.embeddingModel.missingModel"));
       return;
     }
-    const normalizedDimension = Math.round(Number(dimension));
-    if (!Number.isFinite(normalizedDimension) || normalizedDimension <= 0) {
+    const normalizedDimension = Number(dimension);
+    if (!Number.isInteger(normalizedDimension) || normalizedDimension <= 0) {
       toast.error(t("settings.modelConfig.embeddingModel.invalidDimension"));
       return;
     }
@@ -1255,7 +1256,13 @@ function EmbeddingModelBlock({
           />
           <Input
             value={String(dimension)}
-            onChange={(event) => updateLocal({ dimension: Number(event.target.value) })}
+            onChange={(event) => {
+              if (event.target.value.trim()) {
+                updateLocal({
+                  dimension: Number(event.target.value),
+                });
+              }
+            }}
             inputMode="numeric"
             min={1}
             step={1}
@@ -2263,17 +2270,25 @@ function MediaStorageSection() {
               provider: "cloudinary",
               ttlSeconds: Math.trunc(ttl),
               cloudName: cloudinary.cloudName.trim(),
-              apiKey: cloudinary.apiKey.trim(),
-              apiSecret: cloudinary.apiSecret.trim(),
               apiFolder: cloudinary.apiFolder.trim(),
+              ...(cloudinary.apiKey.trim()
+                ? { apiKey: cloudinary.apiKey.trim() }
+                : {}),
+              ...(cloudinary.apiSecret.trim()
+                ? { apiSecret: cloudinary.apiSecret.trim() }
+                : {}),
             }
           : {
               provider: "aliyun_oss",
               ttlSeconds: Math.trunc(ttl),
               endpoint: aliyunOss.endpoint.trim(),
               bucket: aliyunOss.bucket.trim(),
-              accessKeyId: aliyunOss.accessKeyId.trim(),
-              accessKeySecret: aliyunOss.accessKeySecret.trim(),
+              ...(aliyunOss.accessKeyId.trim()
+                ? { accessKeyId: aliyunOss.accessKeyId.trim() }
+                : {}),
+              ...(aliyunOss.accessKeySecret.trim()
+                ? { accessKeySecret: aliyunOss.accessKeySecret.trim() }
+                : {}),
             },
       );
       if (!res.ok) {

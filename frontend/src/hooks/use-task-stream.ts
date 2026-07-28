@@ -6,10 +6,12 @@ import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
 import { useAuthStore } from "@/stores/auth-store";
 import {
+  backendErrorCodeToastMessage,
   backendErrorToastMessage,
   errorFromBackendBody,
   humanizeTaskError,
 } from "@/lib/api-errors";
+import { SESSION_EXPIRED_EVENT } from "@/lib/session-expiry";
 import { p } from "@/lib/api-path";
 import type { TaskStatus, TaskStreamEvent } from "@/types/task";
 
@@ -85,6 +87,8 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
   const taskErrorMessage = useCallback(
     (data: Pick<TaskStreamEvent, "error" | "error_code">, fallback: string) => {
       const message = data.error || fallback;
+      const localized = backendErrorCodeToastMessage(data.error_code, message, t);
+      if (localized) return localized;
       const status = data.error_code === "INSUFFICIENT_CREDITS" ? 402 : 409;
       const parsed = data.error_code
         ? errorFromBackendBody(
@@ -212,11 +216,9 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
     taskErrorMessage,
   ]);
 
-  // Region-switch teardown: the orchestrator dispatches a window
-  // "region-switch" event just before the hard reload. The regionAbortController
-  // only aborts fetches, not EventSource connections, so close the SSE stream
-  // explicitly here. Otherwise the stream would keep reconnecting and 401 the
-  // moment the region cookie flips.
+  // Browser lifecycle teardown: fetch abort controllers do not affect
+  // EventSource, so close the stream explicitly before region changes and as
+  // soon as any HTTP client confirms that the session has expired.
   useEffect(() => {
     const handler = () => {
       if (eventSourceRef.current) {
@@ -225,7 +227,11 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
       }
     };
     window.addEventListener("region-switch", handler);
-    return () => window.removeEventListener("region-switch", handler);
+    window.addEventListener(SESSION_EXPIRED_EVENT, handler);
+    return () => {
+      window.removeEventListener("region-switch", handler);
+      window.removeEventListener(SESSION_EXPIRED_EVENT, handler);
+    };
   }, []);
 
   return state;

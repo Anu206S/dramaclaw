@@ -24,6 +24,9 @@
     },
     "logoHomeTooltip": "Click to return to project management center"
   },
+  "loginCinematic": {
+    "moreInfo": "More information"
+  },
   "header": {
     "partyFounding105": "庆祝建党105周年",
     "settings": "Settings",
@@ -584,7 +587,15 @@
       "total": "Characters",
       "withPortraits": "With portrait",
       "identities": "Identities",
-      "attempts": "Gen requests"
+      "attempts": "Gen requests",
+      "strip": {
+        "total": "Total",
+        "mainCharacter": "Narrator lead",
+        "portrait": "Portrait",
+        "identity": "Identity",
+        "voice": "Voice",
+        "ariaLabel": "Character stats"
+      }
     },
     "tabs": {
       "basics": "Basics",
@@ -1088,7 +1099,39 @@
     "sortDesc": "Descending",
     "nodes": "Nodes",
     "empty": "No Projects",
-    "emptyHint": "Click the button above to create a new project"
+    "emptyHint": "Click the button above to create a new project",
+    "notFound": "Project not found",
+    "notFoundDescriptionPrefix": "No project found under the current account:",
+    "notFoundDescriptionSuffix": ".",
+    "backToProjects": "Back to projects",
+    "shareDialog": {
+      "title": "Share project",
+      "descriptionWithOwner": "{{name}} · {{owner}}",
+      "descriptionFallback": "Manage project members",
+      "currentUserFallback": "current user",
+      "addMember": "Add member",
+      "addMemberHint": "Enter a username, choose a role, then add them to the project.",
+      "copyLink": "Copy link",
+      "searchPlaceholder": "Search username",
+      "alreadyInProject": "Already in project",
+      "add": "Add",
+      "members": "Members",
+      "owner": "Owner",
+      "projectOwner": "Project owner",
+      "loadingMembers": "Loading members",
+      "removeMember": "Remove member",
+      "roleViewer": "View only",
+      "roleEditor": "Can edit and run tasks",
+      "roleAdmin": "Can manage shared members",
+      "toastMemberUpdated": "Shared member updated",
+      "toastShareFailed": "Share failed. Confirm the user exists and you have permission.",
+      "toastLinkCopied": "Project link copied",
+      "toastCopyFailed": "Copy failed",
+      "toastPermissionUpdated": "Permission updated",
+      "toastPermissionUpdateFailed": "Failed to update permission",
+      "toastMemberRemoved": "Shared member removed",
+      "toastRemoveFailed": "Failed to remove"
+    }
   },
   "assets": {
     "common": {
@@ -1183,7 +1226,8 @@
         "environmentPrompt": "Environment prompt",
         "variantPrompt": "Variant delta prompt",
         "variantPromptPlaceholder": "Only describe what differs from the base scene, such as wet reflections, scorched walls, or holiday dressing.",
-        "description": "Narrative description"
+        "description": "Narrative description",
+        "variantPlaceholder": "Water leak"
       },
       "environment": {
         "front": "Front",
@@ -1254,6 +1298,7 @@
     "loading": "Loading...",
     "back": "Back",
     "error": "Something went wrong",
+    "novelImportRequired": "Please import a novel first",
     "insufficientCredits": "Insufficient credits. Please contact your administrator to recharge.",
     "billingRuleNotConfigured": "Billing rule is not configured. Please contact an administrator to set credit pricing.",
     "billingRuleNotConfiguredShort": "Configure",
@@ -1353,9 +1398,25 @@
       "failed": "Import failed"
     },
     "previewHeading": "Novel Structure Preview",
+    "knowledgeGraph": {
+      "title": "Knowledge Graph",
+      "stats": "{{nodes}} nodes · {{edges}} relationships",
+      "connections": "{{count}} connections",
+      "relationships": "Relationships",
+      "interactionHint": "Drag to pan · Scroll to zoom · Select a node for details",
+      "truncated": "Showing core relationships",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "resetView": "Reset view",
+      "expand": "Expand graph",
+      "loadFailed": "Knowledge graph is temporarily unavailable",
+      "loadFailedHint": "Your graph data is intact. Try loading it again shortly."
+    },
     "scriptDetails": "Script details",
     "previewGenerating": "Generating structure preview...",
     "restoredFilename": "Imported novel",
+    "reimport": "Re-import",
+    "reimportSourceMissing": "The original uploaded file is unavailable. Upload it again before importing.",
     "statFilename": "Filename",
     "statTotalChars": "Total chars",
     "statBillableChars": "Billable chars",
@@ -1490,7 +1551,8 @@
       "single_video": "Single video",
       "global_optimize_video": "Global optimize video",
       "selected_regen": "Selected regen",
-      "compose_episode": "Video compose"
+      "compose_episode": "Video compose",
+      "freezone_image_reverse_prompt": "Image reverse prompt"
     }
   },
   "taskCenter": {
@@ -1535,6 +1597,8 @@
       "justNow": "just now"
     },
     "detail": {
+      "currentStatus": "Current status",
+      "debugInfo": "Debug info",
       "tabs": {
         "overview": "Overview",
         "logs": "Logs"
@@ -1592,12 +1656,15 @@
   "pikoMiniGame": {
     "statusEntry": "Piko Break",
     "statusTooltip": "Play a one-minute Piko game",
+    "libraryTitle": "Piko Break",
+    "librarySubtitle": "Choose a game",
     "title": "Piko a bit, find your spark",
     "idleHint": "Press Space to fire",
     "countdownHint": "Ready to go~",
     "start": "Start",
     "playAgain": "Play again",
     "backToWork": "Back to work",
+    "backToLibrary": "Back to game list",
     "audioOn": "Turn Piko game sound on",
     "audioOff": "Turn Piko game sound off",
     "score": "Idea power {{score}}",
@@ -1646,6 +1713,70 @@
         "jelly": "Time Jelly slowed the field"
       },
       "ultimate": "Idea burst"
+    },
+    "memory": {
+      "title": "Memory Match",
+      "hint": "Match cards with the same symbol",
+      "moves": "Moves",
+      "cardHidden": "Face-down card",
+      "cardVisible": "Card {{value}}",
+      "completed": "All pairs matched",
+      "resultMeta": "{{moves}} moves"
+    },
+    "breakout": {
+      "title": "Breakout",
+      "canvasLabel": "Breakout game board",
+      "hint": "Move the paddle with your mouse or touch, or use Arrow keys or A and D",
+      "start": "Start game",
+      "ready": "Clear every brick",
+      "lifeLost": "Keep going!",
+      "won": "Board cleared!",
+      "lost": "Game over",
+      "score": "Score {{score}}",
+      "lives": "Lives {{lives}}"
+    },
+    "rollingBall": {
+      "title": "Rolling Ball",
+      "canvasLabel": "Rolling Ball game board",
+      "hint": "Move left and right to land on the scrolling platforms",
+      "start": "Start game",
+      "ready": "Keep rolling down",
+      "lost": "The ball slipped away",
+      "score": "Landings {{score}}"
+    },
+    "flying": {
+      "title": "Flying Piko",
+      "canvasLabel": "Flying Piko game board",
+      "hint": "Press Space, Arrow Up, or tap to fly Piko through the energy gates",
+      "start": "Start flying",
+      "ready": "Ready for takeoff",
+      "lost": "Piko hit an energy gate",
+      "score": "Gates {{score}}"
+    },
+    "catch": {
+      "title": "Piko Catch",
+      "canvasLabel": "Piko Catch game board",
+      "hint": "Move Piko left and right, catch idea stars and crystals, and avoid red glitches",
+      "start": "Start catching",
+      "ready": "Catch the falling ideas",
+      "finished": "Idea collection complete",
+      "lost": "Piko needs a quick rest",
+      "score": "Ideas {{score}}",
+      "status": "Lives {{lives}} · {{seconds}}s",
+      "result": "You collected {{score}} idea points"
+    },
+    "leap": {
+      "title": "Piko Leap",
+      "canvasLabel": "Piko Leap game board",
+      "hint": "Hold Space, mouse, or touch to charge, then release to jump to the next idea chip",
+      "start": "Start leaping",
+      "ready": "Ready for the next leap",
+      "lost": "Piko missed the landing",
+      "score": "Leap score {{score}}",
+      "combo": "Center combo ×{{combo}}",
+      "centerHint": "Land in the center for bonus points",
+      "chargeHint": "Hold to charge · release to jump",
+      "result": "You scored {{score}} points"
     }
   },
   "literalScript": {
@@ -1948,7 +2079,9 @@
         "configureVoiceAction": "Configure",
         "beatNarrationVoice": "This beat's narration audio",
         "beatNarrationVoiceUpload": "Upload beat audio",
-        "beatNarrationVoiceUploaded": "Beat narration audio uploaded"
+        "beatNarrationVoiceUploaded": "Beat narration audio uploaded",
+        "prereqHintCharacters": ". Go to Characters to upload the narrator voice.",
+        "prereqHintVoices": ". Go to Assets > Voices to upload or trim a default narrator voice."
       },
       "video": {
         "started": "Beat #{{n}} video started",
@@ -2104,7 +2237,16 @@
         "narratorVoiceTrimDuration": "Duration seconds",
         "narratorVoiceTrimApply": "Trim to 3-5 seconds",
         "narratorVoiceTrimInvalid": "Invalid trim values",
-        "narratorVoiceUse": "Use"
+        "narratorVoiceUse": "Use",
+        "seedance2SubjectPromptGenerated": "Subject prompt optimized",
+        "grokVideoInspector": "Grok Video Inspector",
+        "happyHorseInspector": "HappyHorse Inspector",
+        "grokPromptLabel": "Grok prompt",
+        "subjectPromptLabel": "Subject prompt",
+        "generateGrokPrompt": "Generate Grok prompt",
+        "generateSubjectPrompt": "Generate subject prompt",
+        "seedance2CropTitleWithAspect": "Crop {{aspect}}",
+        "seedance2CropDragHandle": "Move crop area"
       },
       "sketch": {
         "switched": "Sketch switched",
@@ -2182,7 +2324,9 @@
         "openFreezone": "Edit in Freezone",
         "openFreezoneTip": "Edit this beat sketch in Freezone",
         "freezoneOpened": "Sketch Freezone opened",
-        "freezoneOpenFailed": "Failed to open Sketch Freezone"
+        "freezoneOpenFailed": "Failed to open Sketch Freezone",
+        "cropTitleWithAspect": "Crop {{aspect}}",
+        "cropDragHandle": "Move crop area"
       },
       "sketchGrid": {
         "title": "Sketch Grid",
@@ -2204,7 +2348,8 @@
         "copySuccess": "Prompt copied",
         "cut": "Cut to pool",
         "cutSuccess": "Grid #{{n}} cut",
-        "cutFailed": "Grid cut failed"
+        "cutFailed": "Grid cut failed",
+        "unknownScene": "Unknown scene"
       },
       "render": {
         "generateNew": "Generate new",
@@ -2242,7 +2387,14 @@
         "backgroundUploadFailed": "Failed to upload render background reference",
         "backgroundSaved": "Render background reference switched",
         "backgroundSaveFailed": "Failed to save render background reference",
-        "backgroundCropSave": "Save crop"
+        "backgroundCropSave": "Save crop",
+        "backgroundCropTitleWithAspect": "Crop {{aspect}}",
+        "backgroundCropDragHandle": "Move crop area",
+        "relightLabel": "Relight to {{timeOfDay}}",
+        "relightLabelDefaultTime": "specified time",
+        "relightTooltip": "Relight: re-lights the shot for the beat's time of day without changing the scene structure.",
+        "lockedLightTooltip": "Locked lighting: uses the scene image's own lighting; no relight.",
+        "lockedLightLabel": "Locked lighting"
       },
       "renderGrid": {
         "title": "Render Grid",
@@ -2415,7 +2567,8 @@
       "readyRatio": "{{ready}}/{{total}}",
       "blockedCount": "{{count}} blocked",
       "composeReady": "Ready",
-      "composeBlocked": "Missing {{count}}"
+      "composeBlocked": "Missing {{count}}",
+      "beatCount": "{{count}} beats"
     },
     "compose": {
       "blocked": "Missing:",
@@ -2544,7 +2697,8 @@
       "errors": {
         "invalidBeats": "Selected beats are not in this episode",
         "noBeats": "This episode has no beats yet"
-      }
+      },
+      "paddingCount": "+{{count}} empty"
     },
     "renderSettings": {
       "model": "Render model",
@@ -2569,8 +2723,11 @@
     "projectDefault": "Project default",
     "preset": "Preset",
     "custom": "Custom",
-    "customPreviewUnavailable": "Server preview not yet available for custom styles",
-    "customPreviewHint": "Pending backend: POST /styles/{id}/preview/generate",
+    "customPreviewEmpty": "No uploaded reference image",
+    "uploadedPreview": "Uploaded reference preview",
+    "analyzingPreview": "Analyzing reference image…",
+    "styleIdRequiredBeforeUpload": "Enter a style ID before uploading a reference image",
+    "unsupportedPreviewType": "Use a PNG, JPEG, WebP, or GIF image.",
     "jsonFormatError": "Invalid JSON",
     "jsonChangesApplied": "JSON changes applied",
     "styleSaved": "Style saved",
@@ -2731,6 +2888,9 @@
       "unlock": "Unlock Canvas",
       "organize": "Organize / Locate Canvas",
       "organizeShortcut": "⌥⇧F",
+      "toolMove": "Move",
+      "toolHand": "Hand",
+      "toolGroupLabel": "Canvas pointer tool",
       "hideEdges": "Hide connections",
       "showEdges": "Show connections"
     },
@@ -2760,6 +2920,11 @@
       "sortAsc": "Oldest first",
       "batch": "Select",
       "selectedCount": "{{n}} selected",
+      "searchPlaceholder": "Search prompts…",
+      "searchPlaceholderName": "Search names…",
+      "clearSearch": "Clear search",
+      "noMatch": "No matching history assets",
+      "noMatchOtherTabs": "No matches in this tab — try {{tabs}}",
       "empty": "No history assets yet",
       "unknownDate": "Unknown date",
       "view": "View",
@@ -3319,7 +3484,11 @@
         "title": "Generate Audio",
         "on": "On",
         "off": "Off",
-        "durationExceeded": "Total audio duration must not exceed {{max}} seconds. Shorten or replace the audio reference and try again."
+        "durationTooShort": "Each audio clip must be at least {{min}} seconds: {{clips}}. Replace it or use a longer clip and try again.",
+        "durationTooLong": "Each audio clip must be at most {{max}} seconds: {{clips}}. Trim it or use a shorter clip and try again.",
+        "clipDuration": "{{label}} ({{seconds}}s)",
+        "clipSeparator": ", ",
+        "clipFallbackLabel": "Audio {{index}}"
       },
       "count": {
         "format": "{{count}}"
@@ -4063,7 +4232,7 @@
       },
       "embeddingModel": {
         "title": "② Vectorization & Semantic Search (Embedding)",
-        "description": "Vectorizes text for semantic knowledge-base search. Choose a channel and upstream Embedding model; the dimension must match the actual upstream output.",
+        "description": "Vectorizes text for semantic knowledge-base search. A custom model's dimension is bound when each project is created.",
         "colProvider": "Configured Channel",
         "colUpstreamModel": "Upstream Model",
         "colDimension": "Dimension",
@@ -4071,7 +4240,7 @@
         "defaultProvider": "Choose Channel",
         "upstreamModelPlaceholder": "Enter upstream embedding model, e.g. text-embedding-3-large",
         "batchSizePlaceholder": "Default 10",
-        "dimensionWarning": "The dimension must match the upstream embedding output. Empty batch size uses the EMBEDDING_BATCH_SIZE env var or the official default 10; models that support larger batches can be tuned upward.",
+        "dimensionWarning": "The dimension is bound to the custom embedding model when a project is created; later changes here affect only new projects. Clear and rebuild the graph before changing an existing project's model or dimension. Empty batch size uses the official default 10.",
         "saveHint": "Saving writes the NewAPI mapping and stores the dimension and optional batch size in the CE local config.",
         "noChannelsHint": "Add provider channels above before configuring the embedding model.",
         "save": "Save Embedding Config",
@@ -4079,7 +4248,7 @@
         "noChannels": "Add a provider channel first.",
         "missingProvider": "Choose the provider channel for embedding.",
         "missingModel": "Enter the upstream embedding model name.",
-        "invalidDimension": "Enter a valid embedding dimension.",
+        "invalidDimension": "Embedding dimension must be a positive integer.",
         "invalidBatchSize": "Enter a valid embedding batch size."
       },
       "mediaModels": {
@@ -4121,13 +4290,13 @@
       "notConfiguredImpact": "Reference media storage is not configured. Text-only flows and text-to-image usually still work; features that need to upload local reference images will fail, including XiaHua reference images, character references, identity images, image-to-image, video first frames, and image-to-video. Configure Aliyun OSS or Cloudinary.",
       "showSecret": "Show",
       "hideSecret": "Hide",
-      "fieldsHint": "Saved values are stored in the local CE settings database; full AccessKeys are not returned, so re-enter them when updating.",
+      "fieldsHint": "Saved values are stored in the local CE settings database; full AccessKeys are not returned. Leave saved credentials blank and enter only the fields you want to replace.",
       "save": "Save OSS config",
       "saveCloudinary": "Save Cloudinary config",
       "saveSuccess": "OSS config saved",
       "cloudinarySaveSuccess": "Cloudinary config saved",
       "saveFailed": "Failed to save OSS config",
-      "cloudinaryFieldsHint": "Saved values are stored in the local CE settings database; full API Key / Secret values are not returned, so re-enter them when updating. API Folder is optional; leave it empty to upload to the Cloudinary root.",
+      "cloudinaryFieldsHint": "Saved values are stored in the local CE settings database; full API Key / Secret values are not returned. Leave saved credentials blank and enter only the fields you want to replace. API Folder is optional; leave it empty to upload to the Cloudinary root.",
       "cloudinaryRegisterLink": "Register at Cloudinary",
       "testUpload": "Test upload",
       "testUploadPlaceholder": "Test upload is coming soon",

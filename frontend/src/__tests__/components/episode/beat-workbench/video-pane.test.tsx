@@ -30,6 +30,7 @@ beforeAll(async () => {
             download: "下载",
             regenerate: "重新生成",
             save: "保存",
+            close: "关闭",
           },
           episode: {
             workbench: {
@@ -127,6 +128,15 @@ beforeAll(async () => {
                 },
                 seedance2GeneratePrompt: "AI 优化",
                 seedance2PromptGenerated: "Seedance2 Prompt 已优化",
+                seedance2SubjectPromptGenerated: "主体提示词已优化",
+                grokVideoInspector: "Grok Video 检视器",
+                happyHorseInspector: "HappyHorse 检视器",
+                grokPromptLabel: "Grok 提示词",
+                subjectPromptLabel: "主体提示词",
+                generateGrokPrompt: "生成 Grok 提示词",
+                generateSubjectPrompt: "生成主体提示词",
+                seedance2CropTitleWithAspect: "裁剪 {{aspect}}",
+                seedance2CropDragHandle: "移动裁剪区域",
                 seedance2PromptGeneratedOtherBeat: "主体提示词已优化，已写回镜头 #{{n}}",
                 seedance2PromptGenerateFailed: "Seedance2 Prompt 生成失败",
                 videoPrompt: "视频提示词",
@@ -1228,7 +1238,7 @@ describe("VideoPane Seedance2 inspector", () => {
     });
   });
 
-  it("maps 2:3 first-frame Seedance2 crops to 9:16 video input", async () => {
+  it("uses the configured output ratio for first-frame Seedance2 crops", async () => {
     const user = userEvent.setup();
     renderPane(
       makeBeat({
@@ -1243,8 +1253,7 @@ describe("VideoPane Seedance2 inspector", () => {
     expandSeedance2References();
 
     await user.click(screen.getAllByRole("button", { name: "裁剪" })[0]);
-    expect(await screen.findByText("裁剪 9:16")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "16:9" })).not.toBeInTheDocument();
+    expect(await screen.findByText("裁剪 16:9")).toBeInTheDocument();
 
     const image = screen
       .getAllByAltText("当前 render · Beat 1")
@@ -1262,10 +1271,10 @@ describe("VideoPane Seedance2 inspector", () => {
 
     await waitFor(() => {
       expect(screen.getByLabelText("移动裁剪区域")).toHaveStyle({
-        left: "8.611599297012302%",
-        top: "0%",
-        width: "82.95254833040421%",
-        height: "100%",
+        left: "0%",
+        top: "30.870083432657925%",
+        width: "100%",
+        height: "38.14064362336114%",
       });
     });
 
@@ -1276,7 +1285,7 @@ describe("VideoPane Seedance2 inspector", () => {
       assetKey: "first_frame",
       sourcePath: "frames/ep001/beat_01.png",
       target: "first_frame",
-      crop: { x: 49, y: 0, width: 472, height: 839 },
+      crop: { x: 0, y: 259, width: 569, height: 320 },
     });
   });
 
@@ -1331,7 +1340,7 @@ describe("VideoPane Seedance2 inspector", () => {
     );
   });
 
-  it("keeps 16:9 first-frame Seedance2 crops at 16:9 video input", async () => {
+  it("does not override the configured first-frame crop ratio with the project aspect", async () => {
     const user = userEvent.setup();
     useAspectRatioStore.getState().setOrientation("demo", "landscape");
     renderPane(
@@ -1347,8 +1356,7 @@ describe("VideoPane Seedance2 inspector", () => {
     expandSeedance2References();
 
     await user.click(screen.getAllByRole("button", { name: "裁剪" })[0]);
-    expect(await screen.findByText("裁剪 16:9")).toBeInTheDocument();
-    expect(screen.queryByRole("button", { name: "9:16" })).not.toBeInTheDocument();
+    expect(await screen.findByText("裁剪 9:16")).toBeInTheDocument();
   });
 
   it("allows trimming Seedance2 audio reference assets", async () => {

@@ -123,6 +123,11 @@ def test_ce_auth_me_logout_and_project_crud_contract(
         detail = client.get(f"/api/v1/projects/{project_id}")
         assert detail.status_code == 200
         assert detail.json()["data"]["project_id"] == project_id
+        assert (
+            detail.json()["data"]["cognee_embedding_model"]
+            == "DC-cognee-embedding-v2"
+        )
+        assert detail.json()["data"]["cognee_embedding_dimension"] == 1024
 
 
 @pytest.mark.ee
@@ -144,3 +149,18 @@ def test_ee_auth_missing_and_bad_cookie_contract() -> None:
         bad = client.get("/api/v1/auth/me", cookies={"st_session": "bad-cookie"})
         assert bad.status_code == 401
         assert bad.json()["detail"] == "Invalid session"
+
+        missing_logout = client.post("/api/v1/auth/logout")
+        assert missing_logout.status_code == 200
+        assert missing_logout.json() == {"ok": True}
+        assert "st_session=" in missing_logout.headers["set-cookie"]
+        assert "Max-Age=0" in missing_logout.headers["set-cookie"]
+
+        bad_logout = client.post(
+            "/api/v1/auth/logout",
+            cookies={"st_session": "bad-cookie"},
+        )
+        assert bad_logout.status_code == 200
+        assert bad_logout.json() == {"ok": True}
+        assert "st_session=" in bad_logout.headers["set-cookie"]
+        assert "Max-Age=0" in bad_logout.headers["set-cookie"]

@@ -8,6 +8,7 @@
 // a 401 immediately and we surface that to the caller.
 
 import { apiCall } from "./client";
+import { SESSION_EXPIRED_EVENT } from "@/lib/session-expiry";
 import { readUrl } from "@/lib/url-params";
 
 export type TaskStatus =
@@ -105,6 +106,20 @@ export function openTaskStream(handler: TaskStreamHandler): SseHandle {
   let attempt = 0;
   let reconnectTimer: number | null = null;
 
+  const close = () => {
+    closed = true;
+    if (reconnectTimer != null) window.clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+    es?.close();
+    es = null;
+  };
+  const handleSessionExpired = () => {
+    window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+    close();
+    handler.onAuthRevoked?.();
+  };
+  window.addEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
+
   const connect = () => {
     if (closed) return;
     es = new EventSource(
@@ -139,10 +154,8 @@ export function openTaskStream(handler: TaskStreamHandler): SseHandle {
 
   return {
     close() {
-      closed = true;
-      if (reconnectTimer != null) window.clearTimeout(reconnectTimer);
-      es?.close();
-      es = null;
+      close();
+      window.removeEventListener(SESSION_EXPIRED_EVENT, handleSessionExpired);
     },
   };
 }

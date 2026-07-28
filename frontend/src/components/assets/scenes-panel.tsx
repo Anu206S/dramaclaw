@@ -37,6 +37,7 @@ import { useAssetImageSourceSelection } from "@/lib/queries/character-image-sele
 import { useAssetFocus } from "@/hooks/use-asset-focus";
 import { useNavigateToAsset } from "@/hooks/use-assets-deep-link";
 import {
+  backendErrorResponseToastMessage,
   backendErrorToastMessage,
   BillingRuleNotConfiguredError,
 } from "@/lib/api-errors";
@@ -361,7 +362,9 @@ function SceneDialog({
                         variant_id: event.target.value,
                       }))
                     }
-                    placeholder="漏水"
+                    placeholder={t("assets.scenes.fields.variantPlaceholder", {
+                      defaultValue: "漏水",
+                    })}
                     className={SCENE_DIALOG_INPUT_CLASS}
                   />
                 </div>
@@ -1250,7 +1253,7 @@ export function ScenesPanel({
       return;
     }
     if (isErrorResponse(res)) {
-      toast.error(backendErrorToastMessage(res.error, t));
+      toast.error(backendErrorResponseToastMessage(res, t));
       return;
     }
     toast.success(res.message);
