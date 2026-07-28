@@ -4403,6 +4403,19 @@ describe("tool status parts", () => {
     })).toBe(false);
   });
 
+  it.each([
+    "freezone_list_agent_catalog",
+    "freezone_get_saved_skill",
+    "freezone_get_saved_recipe",
+  ])("renders %s as readable assistant status parts", (name) => {
+    expect(shouldRenderAgentToolStatusPart({
+      type: "agent.tool.started",
+      turn_id: "turn-a",
+      name,
+      status: "running",
+    })).toBe(true);
+  });
+
   it("does not render canvas command result payloads as assistant status parts", () => {
     expect(shouldRenderToolStatusPart({
       type: "tool.result",

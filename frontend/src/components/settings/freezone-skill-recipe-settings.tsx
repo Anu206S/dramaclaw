@@ -145,10 +145,7 @@ export function FreezoneSkillRecipeSettings({
   const [addingRecipe, setAddingRecipe] = useState(false);
   const [editingSkill, setEditingSkill] = useState<FreezoneAgentConfigPayload | null>(null);
   const [editingRecipe, setEditingRecipe] = useState<FreezoneAgentConfigPayload | null>(null);
-  const [skillDeleteCandidate, setSkillDeleteCandidate] = useState<{
-    item: ManagedCatalogItem;
-    recipes: ManagedCatalogItem[];
-  } | null>(null);
+  const [skillDeleteCandidate, setSkillDeleteCandidate] = useState<SkillDeleteCandidate | null>(null);
   const [communityCatalogOpen, setCommunityCatalogOpen] = useState(false);
   const [communityCatalogMode, setCommunityCatalogMode] = useState<"community" | "mine">("community");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
@@ -235,7 +232,10 @@ export function FreezoneSkillRecipeSettings({
     if (kind === "skills") {
       const allowedRecipeIds = getSkillAllowedRecipeIds(item.payload);
       const associatedRecipes = recipeItems.filter((recipe) => allowedRecipeIds.includes(recipe.id));
-      setSkillDeleteCandidate({ item, recipes: associatedRecipes });
+      const recipeUsageCounts = getRecipeUsageCounts(catalogItems);
+      const exclusiveRecipes = associatedRecipes.filter((recipe) => (recipeUsageCounts.get(recipe.id) ?? 0) <= 1);
+      const sharedRecipes = associatedRecipes.filter((recipe) => (recipeUsageCounts.get(recipe.id) ?? 0) > 1);
+      setSkillDeleteCandidate({ item, exclusiveRecipes, sharedRecipes });
       return;
     }
     try {
@@ -254,12 +254,12 @@ export function FreezoneSkillRecipeSettings({
 
   const deleteSkillCandidate = async (deleteRecipes: boolean) => {
     if (!skillDeleteCandidate) return;
-    const { item, recipes } = skillDeleteCandidate;
+    const { item, exclusiveRecipes } = skillDeleteCandidate;
     try {
       await deleteCatalogItem.mutateAsync({ kind: "skills", id: item.id });
-      if (deleteRecipes && recipes.length > 0) {
+      if (deleteRecipes && exclusiveRecipes.length > 0) {
         await Promise.all(
-          recipes.map((recipe) =>
+          exclusiveRecipes.map((recipe) =>
             deleteCatalogItem.mutateAsync({ kind: "recipes", id: recipe.id }),
           ),
         );
@@ -2416,6 +2416,12 @@ interface ManagedCatalogItem {
   tags: string[];
 }
 
+interface SkillDeleteCandidate {
+  item: ManagedCatalogItem;
+  exclusiveRecipes: ManagedCatalogItem[];
+  sharedRecipes: ManagedCatalogItem[];
+}
+
 function createSkillBundleExportMeta(item: ManagedCatalogItem): Record<string, unknown> {
   const payload = stripCatalogMetadata(item.payload);
   return {
@@ -2814,13 +2820,15 @@ function SkillDeleteDialog({
   onCancel,
   onConfirm,
 }: {
-  candidate: { item: ManagedCatalogItem; recipes: ManagedCatalogItem[] } | null;
+  candidate: SkillDeleteCandidate | null;
   deleting: boolean;
   onCancel: () => void;
   onConfirm: (deleteRecipes: boolean) => void;
 }) {
   const { t } = useTranslation();
-  const recipeCount = candidate?.recipes.length ?? 0;
+  const exclusiveRecipeCount = candidate?.exclusiveRecipes.length ?? 0;
+  const sharedRecipeCount = candidate?.sharedRecipes.length ?? 0;
+  const recipeCount = exclusiveRecipeCount + sharedRecipeCount;
 
   return (
     <Dialog
@@ -2845,6 +2853,8 @@ function SkillDeleteDialog({
             <p className="mt-2 text-xs leading-relaxed text-muted-foreground">
               {t("settings.freezoneCatalog.deleteSkillDialog.recipeHint", {
                 count: recipeCount,
+                exclusiveCount: exclusiveRecipeCount,
+                sharedCount: sharedRecipeCount,
               })}
             </p>
           ) : (
@@ -2853,12 +2863,20 @@ function SkillDeleteDialog({
             </p>
           )}
           {recipeCount > 0 ? (
-            <div className="mt-3 max-h-28 overflow-y-auto rounded-md bg-white/[0.025] px-2 py-1.5">
-              {candidate?.recipes.map((recipe) => (
-                <div key={recipe.id} className="truncate py-0.5 font-mono text-[11px] text-muted-foreground">
-                  {recipe.id}
-                </div>
-              ))}
+            <div className="mt-3 space-y-2">
+              {exclusiveRecipeCount > 0 ? (
+                <RecipeDeleteList
+                  title={t("settings.freezoneCatalog.deleteSkillDialog.exclusiveRecipes")}
+                  recipes={candidate?.exclusiveRecipes ?? []}
+                />
+              ) : null}
+              {sharedRecipeCount > 0 ? (
+                <RecipeDeleteList
+                  title={t("settings.freezoneCatalog.deleteSkillDialog.sharedRecipes")}
+                  recipes={candidate?.sharedRecipes ?? []}
+                  muted
+                />
+              ) : null}
             </div>
           ) : null}
         </div>
@@ -2866,7 +2884,7 @@ function SkillDeleteDialog({
           <Button type="button" variant="ghost" onClick={onCancel} disabled={deleting}>
             {t("settings.freezoneCatalog.deleteSkillDialog.cancel")}
           </Button>
-          {recipeCount > 0 ? (
+          {exclusiveRecipeCount > 0 ? (
             <Button
               type="button"
               variant="outline"
@@ -2883,6 +2901,35 @@ function SkillDeleteDialog({
         </DialogFooter>
       </DialogContent>
     </Dialog>
+  );
+}
+
+function RecipeDeleteList({
+  muted = false,
+  recipes,
+  title,
+}: {
+  muted?: boolean;
+  recipes: ManagedCatalogItem[];
+  title: string;
+}) {
+  return (
+    <div className="rounded-md bg-white/[0.025] px-2 py-1.5">
+      <div className="mb-1 text-[11px] text-muted-foreground">{title}</div>
+      <div className="max-h-24 overflow-y-auto">
+        {recipes.map((recipe) => (
+          <div
+            key={recipe.id}
+            className={cn(
+              "truncate py-0.5 font-mono text-[11px]",
+              muted ? "text-muted-foreground/70" : "text-muted-foreground",
+            )}
+          >
+            {recipe.id}
+          </div>
+        ))}
+      </div>
+    </div>
   );
 }
 
@@ -3070,6 +3117,16 @@ function toManagedCatalogItem(
 
 function getSkillAllowedRecipeIds(payload: FreezoneAgentConfigPayload): string[] {
   return getStringArray(payload.allowed_recipe_ids ?? payload.allowedRecipeIds);
+}
+
+function getRecipeUsageCounts(skillItems: ManagedCatalogItem[]): Map<string, number> {
+  const counts = new Map<string, number>();
+  for (const skill of skillItems) {
+    for (const recipeId of getSkillAllowedRecipeIds(skill.payload)) {
+      counts.set(recipeId, (counts.get(recipeId) ?? 0) + 1);
+    }
+  }
+  return counts;
 }
 
 function catalogGenerationTypeBadgeClass(type: RecipeGenerationType) {
