@@ -3060,7 +3060,8 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     )
     result = public_workflow_draft(payload)
     result["agent_instruction"] = (
-        "Present the exact preview in product language and wait for user confirmation. "
+        "Present the exact preview in product language, including each node's "
+        "preview.recipe_pipelines order as 主 Recipe → 补充 Recipe, and wait for user confirmation. "
         "For adjustments, patch this draft instead of rebuilding the intent. "
         "After confirmation, call freezone_confirm_workflow_draft with draft_id and revision."
     )
@@ -3119,7 +3120,8 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     result = public_workflow_draft(payload)
     result["status"] = "workflow_draft_updated"
     result["agent_instruction"] = (
-        "Present only the resulting product-level changes and updated preview. "
+        "Present only the resulting product-level changes and updated preview, including any "
+        "changed 主 Recipe → 补充 Recipe order from preview.recipe_pipelines. "
         "Keep using this draft_id and revision for further adjustments or confirmation."
     )
     return tool_result(result)
@@ -3753,6 +3755,36 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
         "title": {"type": "string"},
         "summary": {"type": "string"},
         "inputs": {"type": "object"},
+        "planner": {
+            "type": "object",
+            "description": (
+                "Preferred for supported common Skills. The Agent supplies only count, "
+                "deliverable, and content units; the tool selects Recipes and dependencies."
+            ),
+            "properties": {
+                "mode": {"type": "string", "enum": ["standard"]},
+                "deliverable": {
+                    "type": "string",
+                    "enum": ["images", "video", "mixed"],
+                },
+                "item_count": {"type": "integer", "minimum": 1, "maximum": 12},
+                "include_audio": {"type": "boolean"},
+                "units": {
+                    "type": "array",
+                    "maxItems": 12,
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "prompt": {"type": "string"},
+                            "narration": {"type": "string"},
+                        },
+                        "required": ["title"],
+                    },
+                },
+            },
+            "required": ["mode"],
+        },
         "items": {
             "type": "array",
             "description": (
@@ -3766,7 +3798,23 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
                     "id": {"type": "string"},
                     "title": {"type": "string"},
                     "prompt": {"type": "string"},
-                    "narration": {"type": "string"},
+                    "narration": {
+                        "type": "string",
+                        "description": (
+                            "Literal words to speak. Required when audio_kind is speech; "
+                            "never put generation instructions here."
+                        ),
+                    },
+                    "audio_kind": {
+                        "type": "string",
+                        "enum": ["speech", "music"],
+                        "description": "Required for audio items when the intent is ambiguous.",
+                    },
+                    "music_length_ms": {
+                        "type": "integer",
+                        "minimum": 3000,
+                        "maximum": 600000,
+                    },
                     "recipe_id": {"type": "string"},
                     "depends_on": {
                         "type": "array",
@@ -4784,7 +4832,8 @@ TOOLS = (
                     "type": "object",
                     "description": (
                         "Changed compact-intent fields only. Supported fields: user_goal, title, "
-                        "summary, inputs, items, include_audio, include_compose, assumptions. "
+                        "summary, inputs, planner, items, include_audio, include_compose, "
+                        "assumptions. "
                         "Null removes an optional field; inputs are merged."
                     ),
                 },

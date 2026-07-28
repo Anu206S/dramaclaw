@@ -53,6 +53,7 @@ import {
   MAX_AUDIO_REFERENCE_DURATION_MS,
   MIN_AUDIO_REFERENCE_DURATION_MS,
   videoModeRequiresPrompt,
+  videoReferenceAutoSwitchAction,
   videoSubmitMediaRejectionReason,
   videoUpstreamImageDefaultMode,
 } from "@/features/canvas/nodes/shared/videoModelCapabilities";
@@ -879,6 +880,37 @@ export function useVideoGenerationForm(
     updateNodeData,
   ]);
 
+  // Seedance 1.x cannot consume video or audio references. Switch once to the
+  // base Seedance 2.0 omni model when those node types first appear. The pure
+  // capability helper also waits for the real model list before choosing.
+  const autoSwitchedForMediaRef = useRef(false);
+  useEffect(() => {
+    const action = videoReferenceAutoSwitchAction({
+      counts: upstreamTypeCounts,
+      currentModelId: selectedVideoModelId,
+      models: availableVideoModels,
+      modelsLoading: videoModelsLoading,
+      alreadySwitched: autoSwitchedForMediaRef.current,
+    });
+    if (action.kind === "release") {
+      autoSwitchedForMediaRef.current = false;
+      return;
+    }
+    if (action.kind === "none") return;
+    autoSwitchedForMediaRef.current = true;
+    updateNodeData(id, {
+      model: action.modelId,
+      genMode: action.genMode,
+    });
+  }, [
+    availableVideoModels,
+    id,
+    selectedVideoModelId,
+    updateNodeData,
+    upstreamTypeCounts,
+    videoModelsLoading,
+  ]);
+
   // Audio refs only carry meaning under the omni-gen (allReference) path —
   // textToVideo / firstLastFrame / imageToVideo discard them. So when an
   // audio upstream first appears, force the mode to `allReference`. Tracked
@@ -1031,6 +1063,11 @@ export function useVideoGenerationForm(
           kind: item.kind,
           label: item.nodeId,
         })),
+        onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(id, {
+          workflowRecipeCompileMode: mode,
+          workflowRecipeCompiledAt: new Date().toISOString(),
+          workflowRecipeIds: recipeIds,
+        }),
       });
       // Walk the current edges/nodes once — used by every non-textToVideo
       // branch to collect upstream resources. 必须与 UI 编号侧（useUpstreamNodes）
@@ -1553,7 +1590,11 @@ export function useVideoGenerationForm(
       upstreamTextJoined,
       modelId,
       onModelChange: handleModelChange,
-      modelUpstreamCounts: upstreamCounts,
+      modelUpstreamCounts: {
+        images: upstreamCounts.images,
+        videos: upstreamTypeCounts.videos,
+        audios: upstreamTypeCounts.audios,
+      },
       aspectRatio,
       quality,
       qualityOptions,

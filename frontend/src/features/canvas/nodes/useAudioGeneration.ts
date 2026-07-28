@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useCallback, useMemo } from 'react';
+import { useCallback, useEffect, useMemo } from 'react';
 
 import {
   fetchFreezoneJobResult,
@@ -17,7 +17,12 @@ import {
   CLEARED_GENERATION_TASK_FIELDS,
   generationTaskDescriptor,
 } from '@/features/canvas/application/resumeGeneration';
-import { extractSpeakableAudioText } from '@/features/canvas/application/audioSpeechText';
+import {
+  extractSpeakableAudioText,
+  isSpeechGenerationInstruction,
+  resolveAudioKind,
+  resolveMusicLengthMs,
+} from '@/features/canvas/application/audioSpeechText';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
 import {
@@ -54,10 +59,55 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     () => joinUpstreamText(upstreamContents),
     [upstreamContents],
   );
-  const isMusic = data.audioKind === 'music';
+  const resolvedAudioKind = resolveAudioKind(data);
+  const isMusic = resolvedAudioKind === 'music';
+  const resolvedMusicLengthMs = isMusic ? resolveMusicLengthMs(data) : undefined;
+  useEffect(() => {
+    if (resolvedAudioKind === 'music' && data.audioKind !== 'music') {
+      updateNodeData(nodeId, {
+        audioKind: 'music',
+        model: 'suno_music',
+        audioUrl: null,
+        durationMs: null,
+        generationError: '背景音乐节点已修正，请重新生成音乐',
+        workflowResultStale: true,
+        workflowInvalidatedAt: new Date().toISOString(),
+        workflowInvalidationReason: '音频类型由语音修正为背景音乐',
+      });
+    }
+  }, [data.audioKind, nodeId, resolvedAudioKind, updateNodeData]);
+  useEffect(() => {
+    if (
+      isMusic
+      && resolvedMusicLengthMs !== undefined
+      && data.musicLengthMs !== resolvedMusicLengthMs
+    ) {
+      updateNodeData(nodeId, { musicLengthMs: resolvedMusicLengthMs });
+    }
+  }, [
+    data.musicLengthMs,
+    isMusic,
+    nodeId,
+    resolvedMusicLengthMs,
+    updateNodeData,
+  ]);
   // 有效 prompt：上游引用的文本不回显进输入框，仅在提交时与本地输入「拼接」成最终
   // prompt（上游在前、本地在后，与 joinUpstreamText 一致用空行分隔，过滤空段）。
   const ownText = deriveAudioText(data);
+  const hasInvalidSpeechInstruction =
+    !isMusic && isSpeechGenerationInstruction(ownText);
+  useEffect(() => {
+    if (hasInvalidSpeechInstruction && data.audioUrl) {
+      updateNodeData(nodeId, {
+        audioUrl: null,
+        durationMs: null,
+        generationError: '旁白节点缺少实际朗读文案，请填写旁白正文后重新生成',
+        workflowResultStale: true,
+        workflowInvalidatedAt: new Date().toISOString(),
+        workflowInvalidationReason: '旁白生成说明不能作为朗读正文',
+      });
+    }
+  }, [data.audioUrl, hasInvalidSpeechInstruction, nodeId, updateNodeData]);
   const effectivePrompt = [upstreamTextJoined.trim(), ownText.trim()]
     .filter((segment) => segment.length > 0)
     .join('\n\n');
@@ -87,6 +137,11 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
             upstreamText: upstreamTextJoined,
             upstreamContents,
             fallbackPrompt,
+            onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(nodeId, {
+              workflowRecipeCompileMode: mode,
+              workflowRecipeCompiledAt: new Date().toISOString(),
+              workflowRecipeIds: recipeIds,
+            }),
           })
         : extractSpeakableAudioText(
             ownText.trim()
@@ -98,8 +153,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
       const ref = isMusic
         ? await submitFreezoneAudioMusic(project, {
             prompt: trimmed,
-            musicLengthMs:
-              typeof data.musicLengthMs === 'number' ? data.musicLengthMs : undefined,
+            musicLengthMs: resolvedMusicLengthMs,
             forceInstrumental: data.forceInstrumental ?? true,
             respectSectionsDurations: data.respectSectionsDurations ?? true,
           })
@@ -150,6 +204,8 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     data.presetModel,
     data.presetVoice,
     effectivePrompt,
+    hasInvalidSpeechInstruction,
+    resolvedMusicLengthMs,
     emotionPrompt,
     speechMode,
     nodeId,

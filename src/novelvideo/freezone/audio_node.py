@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import subprocess
@@ -573,40 +574,55 @@ async def _write_newapi_audio_speech(
     output_path.parent.mkdir(parents=True, exist_ok=True)
     async with httpx.AsyncClient(timeout=timeout_seconds, follow_redirects=True) as client:
         endpoint = _newapi_audio_endpoint(resolved_base_url)
-        response = await client.post(
-            endpoint,
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            json=body,
-        )
-        try:
-            response.raise_for_status()
-        except httpx.HTTPStatusError as exc:
-            response_headers = getattr(exc.response, "headers", {}) or {}
-            request_id = (
-                response_headers.get("x-request-id")
-                or response_headers.get("x-newapi-request-id")
-                or response_headers.get("x-oneapi-request-id")
-                or ""
-            )
-            safe_context = {
-                "endpoint": endpoint,
-                "model": body.get("model"),
-                "response_format": body.get("response_format"),
-                "voice": body.get("voice", ""),
-                "input_chars": len(str(body.get("input") or "")),
-                "metadata_keys": sorted((body.get("metadata") or {}).keys()),
-                "request_id": request_id,
-            }
-            response_body = str(getattr(exc.response, "text", "") or "")[:2000]
-            raise RuntimeError(
-                "NewAPI audio request failed: "
-                f"HTTP {exc.response.status_code}; "
-                f"context={json.dumps(safe_context, ensure_ascii=False)}; "
-                f"body={response_body}"
-            ) from exc
+        response = None
+        for attempt in range(3):
+            try:
+                response = await client.post(
+                    endpoint,
+                    headers={
+                        "Authorization": f"Bearer {key}",
+                        "Content-Type": "application/json",
+                    },
+                    json=body,
+                )
+                response.raise_for_status()
+                break
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code in {408, 425, 429, 500, 502, 503, 504} and attempt < 2:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                response_headers = getattr(exc.response, "headers", {}) or {}
+                request_id = (
+                    response_headers.get("x-request-id")
+                    or response_headers.get("x-newapi-request-id")
+                    or response_headers.get("x-oneapi-request-id")
+                    or ""
+                )
+                safe_context = {
+                    "endpoint": endpoint,
+                    "model": body.get("model"),
+                    "response_format": body.get("response_format"),
+                    "voice": body.get("voice", ""),
+                    "input_chars": len(str(body.get("input") or "")),
+                    "metadata_keys": sorted((body.get("metadata") or {}).keys()),
+                    "request_id": request_id,
+                }
+                response_body = str(getattr(exc.response, "text", "") or "")[:2000]
+                raise RuntimeError(
+                    "NewAPI audio request failed: "
+                    f"HTTP {exc.response.status_code}; "
+                    f"context={json.dumps(safe_context, ensure_ascii=False)}; "
+                    f"body={response_body}"
+                ) from exc
+            except (httpx.TransportError, httpx.TimeoutException) as exc:
+                if attempt < 2:
+                    await asyncio.sleep(2**attempt)
+                    continue
+                raise RuntimeError(
+                    f"NewAPI audio request failed after 3 attempts: {exc}"
+                ) from exc
+        if response is None:
+            raise RuntimeError("NewAPI audio request failed without a response")
         content_type = str(response.headers.get("content-type") or "").lower()
         if "application/json" not in content_type:
             output_path.write_bytes(response.content)
@@ -639,8 +655,22 @@ async def _write_newapi_audio_speech(
         if not result_url:
             raise RuntimeError("NewAPI audio response missing audio bytes or URL")
 
-        audio_response = await client.get(result_url)
-        audio_response.raise_for_status()
+        audio_response = None
+        for attempt in range(3):
+            try:
+                audio_response = await client.get(result_url)
+                audio_response.raise_for_status()
+                break
+            except (httpx.TransportError, httpx.TimeoutException):
+                if attempt >= 2:
+                    raise
+                await asyncio.sleep(2**attempt)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code not in {408, 425, 429, 500, 502, 503, 504} or attempt >= 2:
+                    raise
+                await asyncio.sleep(2**attempt)
+        if audio_response is None:
+            raise RuntimeError("NewAPI audio download failed without a response")
         output_path.write_bytes(audio_response.content)
 
 

@@ -3,6 +3,7 @@
 import {
   compileFreezoneRecipePrompt,
   generateFreezoneRecipeText,
+  type FreezoneRecipeCompileMetadata,
   type FreezoneRecipeNodeKind,
 } from '@/api/ops';
 import { joinUpstreamText } from './graphContentResolver';
@@ -34,6 +35,7 @@ export interface CompileWorkflowNodePromptInput {
     kind: 'image' | 'video' | 'audio';
     label?: string;
   }>;
+  onCompileMetadata?: (metadata: FreezoneRecipeCompileMetadata) => void;
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -140,6 +142,7 @@ export async function compileWorkflowNodePrompt(
     upstreamText,
     userGoal: text(catalog?.userGoal) || text(catalog?.promptBuilder?.userGoal),
     referenceMedia: input.referenceMedia,
+    ...(input.onCompileMetadata ? { onCompileMetadata: input.onCompileMetadata } : {}),
   });
 }
 

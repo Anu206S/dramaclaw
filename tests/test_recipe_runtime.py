@@ -172,14 +172,14 @@ async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt
         lambda *_args, **_kwargs: object(),
     )
 
-    result = await recipe_runtime.compile_recipe_prompt(
+    compiled = await recipe_runtime.compile_recipe_prompt_result(
         username="local",
         recipe_id="scene",
         recipe_version="1",
         node_kind="image",
         node_prompt="厨房场景",
     )
-    cached = await recipe_runtime.compile_recipe_prompt(
+    cached = await recipe_runtime.compile_recipe_prompt_result(
         username="local",
         recipe_id="scene",
         recipe_version="1",
@@ -187,20 +187,32 @@ async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt
         node_prompt="厨房场景",
     )
 
-    assert result == "最终可执行提示词"
-    assert cached == result
+    assert compiled.prompt == "最终可执行提示词"
+    assert compiled.mode == "model"
+    assert cached.prompt == compiled.prompt
+    assert cached.mode == "memory_cache"
     assert calls == 1
 
     recipe_runtime._prompt_cache.clear()
-    persisted = await recipe_runtime.compile_recipe_prompt(
+    persisted = await recipe_runtime.compile_recipe_prompt_result(
         username="local",
         recipe_id="scene",
         recipe_version="1",
         node_kind="image",
         node_prompt="厨房场景",
     )
-    assert persisted == result
+    assert persisted.prompt == compiled.prompt
+    assert persisted.mode == "persistent_cache"
     assert calls == 1
+
+    compatible_prompt = await recipe_runtime.compile_recipe_prompt(
+        username="local",
+        recipe_id="scene",
+        recipe_version="1",
+        node_kind="image",
+        node_prompt="厨房场景",
+    )
+    assert compatible_prompt == compiled.prompt
 
 
 @pytest.mark.asyncio
@@ -282,7 +294,7 @@ async def test_compile_recipe_prompt_uses_fallback_on_timeout_and_caches_late_re
         recipe_runtime, "_recipe_compiler_timeout_seconds", lambda: 0.01
     )
 
-    fallback = await recipe_runtime.compile_recipe_prompt(
+    fallback_result = await recipe_runtime.compile_recipe_prompt_result(
         username="local",
         recipe_id="scene",
         recipe_version="1",
@@ -291,9 +303,11 @@ async def test_compile_recipe_prompt_uses_fallback_on_timeout_and_caches_late_re
         user_goal="生成咖啡机商品图",
     )
 
-    assert "生成咖啡机商品图" in fallback
-    assert "厨房场景" in fallback
-    assert "可信的商品摄影方法" in fallback
+    assert fallback_result.mode == "timeout_fallback"
+    assert fallback_result.recipe_ids == ("scene",)
+    assert "生成咖啡机商品图" in fallback_result.prompt
+    assert "厨房场景" in fallback_result.prompt
+    assert "可信的商品摄影方法" in fallback_result.prompt
 
     await asyncio.sleep(0.04)
     assert recipe_runtime._prompt_inflight == {}
@@ -339,6 +353,34 @@ async def test_compile_recipe_prompt_skips_model_for_deterministic_strategy(
     )
 
     assert result == "商品分镜\n\n镜头缓慢推进"
+
+
+def test_recipe_pipeline_rejects_explicit_conflicts(monkeypatch):
+    recipes = {
+        "base": {
+            "id": "base",
+            "output_kind": "image",
+            "conflicts_with": [],
+        },
+        "overlay": {
+            "id": "overlay",
+            "output_kind": "image",
+            "conflicts_with": ["base"],
+        },
+    }
+    monkeypatch.setattr(
+        recipe_runtime,
+        "get_recipe_for_runtime",
+        lambda recipe_id, **_kwargs: recipes[recipe_id],
+    )
+
+    with pytest.raises(recipe_runtime.RecipeRuntimeError, match="conflicts with"):
+        recipe_runtime.get_recipe_pipeline_for_runtime(
+            username="local",
+            primary_recipe=recipes["base"],
+            recipe_pipeline=["overlay"],
+            node_kind="image",
+        )
 
 
 @pytest.mark.asyncio

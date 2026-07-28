@@ -156,7 +156,7 @@ from novelvideo.freezone.route_helpers import (
 )
 from novelvideo.freezone.recipe_runtime import (
     RecipeRuntimeError,
-    compile_recipe_prompt,
+    compile_recipe_prompt_result,
     generate_recipe_text,
 )
 from novelvideo.freezone.route_helpers import (
@@ -4073,7 +4073,7 @@ async def compile_freezone_recipe(
     """Compile an effective user Recipe without returning its internal definition."""
     username = str(user.get("username") or "")
     try:
-        prompt = await compile_recipe_prompt(
+        compiled = await compile_recipe_prompt_result(
             username=username,
             recipe_id=body.recipe_id,
             recipe_version=body.recipe_version,
@@ -4093,7 +4093,14 @@ async def compile_freezone_recipe(
     except Exception as exc:
         logger.exception("freezone Recipe compilation failed")
         raise HTTPException(status_code=503, detail="Recipe compilation failed") from exc
-    return {"ok": True, "data": {"prompt": prompt}}
+    return {
+        "ok": True,
+        "data": {
+            "prompt": compiled.prompt,
+            "compile_mode": compiled.mode,
+            "recipe_ids": list(compiled.recipe_ids),
+        },
+    }
 
 
 @router.post(

@@ -93,9 +93,11 @@ vi.mock("react-i18next", () => ({
       options?: {
         defaultValue?: string;
         count?: number;
+        exclusiveCount?: number;
         id?: string;
         page?: string;
         selectedCount?: number;
+        sharedCount?: number;
       },
     ) =>
       ({

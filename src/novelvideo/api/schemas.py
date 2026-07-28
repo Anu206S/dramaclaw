@@ -1649,6 +1649,14 @@ class FreezoneRecipeCompileRequest(BaseModel):
 
 class FreezoneRecipeCompileData(BaseModel):
     prompt: str
+    compile_mode: Literal[
+        "deterministic",
+        "memory_cache",
+        "persistent_cache",
+        "model",
+        "timeout_fallback",
+    ]
+    recipe_ids: list[str] = Field(default_factory=list)
 
 
 class FreezoneRecipeCompileResponse(BaseModel):

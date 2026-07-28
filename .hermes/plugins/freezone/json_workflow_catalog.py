@@ -94,6 +94,34 @@ _TEXT_FIRST_BUILTIN_RECIPE_IDS = {
     "video-storyboard-script",
 }
 
+_DETERMINISTIC_SKILL_PLANNERS = {
+    "ecommerce-ad": {
+        "default_item_count": 3,
+        "deliverables": ["images", "video", "mixed"],
+        "default_deliverable": "video",
+        "default_include_audio": True,
+    },
+    "text-to-image-video": {
+        "default_item_count": 3,
+        "deliverables": ["video"],
+        "default_deliverable": "video",
+        "default_include_audio": False,
+    },
+    "video-tutorial": {
+        "default_item_count": 3,
+        "deliverables": ["video"],
+        "default_deliverable": "video",
+        "default_include_audio": True,
+    },
+    "short-drama-quick": {
+        "default_item_count": 3,
+        "deliverables": ["video"],
+        "default_deliverable": "video",
+        "default_include_audio": True,
+    },
+}
+
+
 def _workflow_input_values(args: dict[str, Any]) -> dict[str, Any]:
     value = args.get("inputs")
     if isinstance(value, dict):
@@ -361,13 +389,8 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
         for recipe in candidate_recipes
         if _recipe_matches_references(recipe, referenced_recipe_ids)
     ]
-    full_recipes = [
-        _without_private_fields(recipe)
-        for recipe in selected_recipes
-    ]
-    recipe_summaries = [
-        _recipe_planning_summary(recipe) for recipe in selected_recipes
-    ]
+    full_recipes = [_without_private_fields(recipe) for recipe in selected_recipes]
+    recipe_summaries = [_recipe_planning_summary(recipe) for recipe in selected_recipes]
     recipes_by_output_kind: dict[str, list[str]] = {}
     source_anchor_recipe_ids: dict[str, list[str]] = {}
     for recipe in recipe_summaries:
@@ -419,9 +442,23 @@ def get_workflow_skill(args: dict[str, Any]) -> dict[str, Any]:
             "schema_version": PLAN_SCHEMA_VERSION,
             "workflow_type_prefix": "dynamic.",
             "mode": "dynamic_only",
-            "requires_agent_authored_topology": True,
+            "requires_agent_authored_topology": (
+                _text(skill.get("id")) not in _DETERMINISTIC_SKILL_PLANNERS
+            ),
+            "custom_items_require_agent_authored_topology": True,
             "requires_explicit_skill_id": True,
-            "requires_explicit_recipe_id": True,
+            "requires_explicit_recipe_id": (
+                _text(skill.get("id")) not in _DETERMINISTIC_SKILL_PLANNERS
+            ),
+            "custom_items_require_explicit_recipe_id": True,
+            "topology_modes": (
+                ["standard_planner", "custom_items"]
+                if _text(skill.get("id")) in _DETERMINISTIC_SKILL_PLANNERS
+                else ["custom_items"]
+            ),
+            "standard_planner": deepcopy(
+                _DETERMINISTIC_SKILL_PLANNERS.get(_text(skill.get("id"))) or {}
+            ),
             "supports_ordered_recipe_pipeline": True,
             "strict_validation": True,
             "plan_inputs_field": "inputs",
@@ -485,12 +522,368 @@ def compile_workflow_intent(intent: Any) -> dict[str, Any]:
             "errors": errors,
         }
 
-    return _compile_dynamic_recipe_items_intent(
-        intent=intent,
+    compiled_intent = deepcopy(intent)
+    planner_metadata: dict[str, Any] | None = None
+    if not _intent_items(compiled_intent):
+        compiled_intent, planner_metadata, planner_error = (
+            _expand_standard_skill_intent(
+                intent=compiled_intent,
+                skill_id=skill_id,
+                user_goal=user_goal,
+            )
+        )
+        if planner_error is not None:
+            return planner_error
+
+    compiled = _compile_dynamic_recipe_items_intent(
+        intent=compiled_intent,
         skill=skill,
         user_goal=user_goal,
         resolved_inputs=input_contract["resolved"],
     )
+    if compiled.get("ok") and planner_metadata is not None:
+        compiled["planner"] = planner_metadata
+        plan = compiled.get("plan")
+        if isinstance(plan, dict):
+            plan["planner"] = deepcopy(planner_metadata)
+    return compiled
+
+def _standard_skill_items(
+    *,
+    skill_id: str,
+    deliverable: str,
+    include_audio: bool,
+    units: list[dict[str, str]],
+    user_goal: str,
+) -> list[dict[str, Any]]:
+    items: list[dict[str, Any]] = []
+    if skill_id == "ecommerce-ad":
+        items.append(
+            _planned_item(
+                item_id="creative_outline",
+                title="广告创意大纲",
+                prompt=user_goal,
+                recipe_id="video-ad-creative-outline",
+                depends_on=["workflow_input"],
+                stage="planning",
+            )
+        )
+        items.append(
+            _planned_item(
+                item_id="product_reference",
+                title="商品视觉锚点",
+                prompt=f"{user_goal}，生成稳定一致的商品主体参考图",
+                recipe_id="general-image",
+                depends_on=["creative_outline"],
+                stage="assets",
+            )
+        )
+        for index, unit in enumerate(units, 1):
+            image_id = f"scene_{index}"
+            items.append(
+                _planned_item(
+                    item_id=image_id,
+                    title=unit["title"],
+                    prompt=unit["prompt"],
+                    recipe_id="ecommerce-scene-image",
+                    depends_on=["product_reference"],
+                    stage="images",
+                )
+            )
+            if deliverable != "images":
+                items.append(
+                    _planned_item(
+                        item_id=f"clip_{index}",
+                        title=f"{unit['title']}视频",
+                        prompt=unit["prompt"],
+                        recipe_id="video-clip-generation",
+                        depends_on=[image_id],
+                        stage="video",
+                        timeline_role="visual",
+                    )
+                )
+            if include_audio:
+                items.append(
+                    _planned_item(
+                        item_id=f"voice_{index}",
+                        title=f"{unit['title']}旁白",
+                        prompt=unit["narration"],
+                        narration=unit["narration"],
+                        recipe_id="general-audio",
+                        depends_on=["creative_outline"],
+                        stage="audio",
+                        timeline_role="voiceover",
+                    )
+                )
+        return items
+
+    outline_recipe = {
+        "text-to-image-video": "video-creative-outline",
+        "video-tutorial": "general-text",
+        "short-drama-quick": "drama-plot-outline",
+    }[skill_id]
+    items.append(
+        _planned_item(
+            item_id="outline",
+            title="内容规划",
+            prompt=user_goal,
+            recipe_id=outline_recipe,
+            depends_on=["workflow_input"],
+            stage="planning",
+        )
+    )
+    for index, unit in enumerate(units, 1):
+        if skill_id == "short-drama-quick":
+            source_id = f"shot_plan_{index}"
+            items.append(
+                _planned_item(
+                    item_id=source_id,
+                    title=f"{unit['title']}镜头设计",
+                    prompt=unit["prompt"],
+                    recipe_id="drama-shot-group-detail",
+                    depends_on=["outline"],
+                    stage="shots",
+                )
+            )
+        else:
+            source_id = f"frame_{index}"
+            items.append(
+                _planned_item(
+                    item_id=source_id,
+                    title=f"{unit['title']}画面",
+                    prompt=unit["prompt"],
+                    recipe_id="general-image",
+                    depends_on=["outline"],
+                    stage="images",
+                )
+            )
+        items.append(
+            _planned_item(
+                item_id=f"clip_{index}",
+                title=f"{unit['title']}视频",
+                prompt=unit["prompt"],
+                recipe_id="general-video",
+                depends_on=[source_id],
+                stage="video",
+                timeline_role="visual",
+            )
+        )
+        if include_audio and skill_id in {"video-tutorial", "short-drama-quick"}:
+            items.append(
+                _planned_item(
+                    item_id=f"voice_{index}",
+                    title=f"{unit['title']}旁白",
+                    prompt=unit["narration"],
+                    narration=unit["narration"],
+                    recipe_id=(
+                        "drama-shot-voice"
+                        if skill_id == "short-drama-quick"
+                        else "general-audio"
+                    ),
+                    depends_on=[source_id],
+                    stage="audio",
+                    timeline_role="voiceover",
+                )
+            )
+    if include_audio and skill_id == "short-drama-quick":
+        items.append(
+            _planned_item(
+                item_id="background_music",
+                title="背景音乐",
+                prompt=f"{user_goal}，生成与情绪节奏匹配的纯音乐",
+                recipe_id="drama-background-music",
+                depends_on=["outline"],
+                stage="audio",
+                timeline_role="music",
+            )
+        )
+    return items
+
+
+def _standard_planner_units(
+    *,
+    planner: dict[str, Any],
+    item_count: int,
+    user_goal: str,
+) -> list[dict[str, str]]:
+    raw_units = planner.get("units")
+    source_units = raw_units if isinstance(raw_units, list) else []
+    units: list[dict[str, str]] = []
+    for index in range(item_count):
+        raw_unit = source_units[index] if index < len(source_units) else {}
+        if isinstance(raw_unit, str):
+            raw_unit = {"title": raw_unit, "prompt": raw_unit}
+        if not isinstance(raw_unit, dict):
+            raw_unit = {}
+        number = index + 1
+        title = (
+            _text(raw_unit.get("title") or raw_unit.get("name")) or f"内容段 {number}"
+        )
+        prompt = (
+            _text(
+                raw_unit.get("prompt")
+                or raw_unit.get("description")
+                or raw_unit.get("goal")
+            )
+            or f"{user_goal}，第 {number} 段：{title}"
+        )
+        narration = (
+            _text(
+                raw_unit.get("narration")
+                or raw_unit.get("voiceover")
+                or raw_unit.get("dialogue")
+            )
+            or title
+        )
+        units.append({"title": title, "prompt": prompt, "narration": narration})
+    return units
+
+
+def _planned_item(
+    *,
+    item_id: str,
+    title: str,
+    prompt: str,
+    recipe_id: str,
+    depends_on: list[str],
+    stage: str,
+    narration: str = "",
+    timeline_role: str = "",
+) -> dict[str, Any]:
+    return {
+        "id": item_id,
+        "title": title,
+        "prompt": prompt,
+        "recipe_id": recipe_id,
+        "depends_on": depends_on,
+        "stage": stage,
+        **({"narration": narration} if narration else {}),
+        **({"timeline_role": timeline_role} if timeline_role else {}),
+    }
+
+
+def _expand_standard_skill_intent(
+    *,
+    intent: dict[str, Any],
+    skill_id: str,
+    user_goal: str,
+) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
+    profile = _DETERMINISTIC_SKILL_PLANNERS.get(skill_id)
+    if profile is None:
+        return (
+            intent,
+            None,
+            _intent_error(
+                "dynamic workflow intent must include at least one recipe-backed item",
+                path="items",
+            ),
+        )
+    raw_planner = intent.get("planner")
+    if raw_planner is not None and not isinstance(raw_planner, dict):
+        return intent, None, _intent_error("planner must be an object", path="planner")
+    planner = raw_planner if isinstance(raw_planner, dict) else {}
+    mode = _text(planner.get("mode")) or "standard"
+    if mode != "standard":
+        return (
+            intent,
+            None,
+            _intent_error(
+                "planner.mode must equal standard",
+                path="planner.mode",
+            ),
+        )
+    deliverable = _text(planner.get("deliverable")) or profile["default_deliverable"]
+    if deliverable not in profile["deliverables"]:
+        return (
+            intent,
+            None,
+            _intent_error(
+                f"planner.deliverable is not supported by Skill {skill_id}: {deliverable}",
+                path="planner.deliverable",
+            ),
+        )
+    raw_count = planner.get("item_count", planner.get("itemCount"))
+    if raw_count is None:
+        item_count = int(profile["default_item_count"])
+    elif isinstance(raw_count, int) and not isinstance(raw_count, bool):
+        item_count = raw_count
+    else:
+        return (
+            intent,
+            None,
+            _intent_error(
+                "planner.item_count must be an integer",
+                path="planner.item_count",
+            ),
+        )
+    if not 1 <= item_count <= 12:
+        return (
+            intent,
+            None,
+            _intent_error(
+                "planner.item_count must be between 1 and 12",
+                path="planner.item_count",
+            ),
+        )
+    planner_include_audio = planner.get("include_audio")
+    if planner_include_audio is not None and not isinstance(
+        planner_include_audio, bool
+    ):
+        return (
+            intent,
+            None,
+            _intent_error(
+                "planner.include_audio must be a boolean",
+                path="planner.include_audio",
+            ),
+        )
+    if planner.get("units") is not None and not isinstance(planner.get("units"), list):
+        return (
+            intent,
+            None,
+            _intent_error(
+                "planner.units must be an array",
+                path="planner.units",
+            ),
+        )
+    include_audio = _intent_bool(
+        intent,
+        "include_audio",
+        (
+            planner_include_audio
+            if isinstance(planner_include_audio, bool)
+            else profile["default_include_audio"]
+        ),
+    )
+    if deliverable == "images":
+        include_audio = False
+    units = _standard_planner_units(
+        planner=planner,
+        item_count=item_count,
+        user_goal=user_goal,
+    )
+    items = _standard_skill_items(
+        skill_id=skill_id,
+        deliverable=deliverable,
+        include_audio=include_audio,
+        units=units,
+        user_goal=user_goal,
+    )
+    expanded = {
+        **intent,
+        "items": items,
+        "include_audio": include_audio,
+        "include_compose": deliverable != "images",
+    }
+    metadata = {
+        "mode": "deterministic_standard",
+        "skill_id": skill_id,
+        "deliverable": deliverable,
+        "item_count": len(units),
+        "include_audio": include_audio,
+    }
+    return expanded, metadata, None
+
 
 def _compile_dynamic_recipe_items_intent(
     *,
@@ -528,6 +921,7 @@ def _compile_dynamic_recipe_items_intent(
     ]
     node_types = {"workflow_input": "textAnnotationNode"}
     node_recipes: dict[str, dict[str, Any] | None] = {"workflow_input": None}
+    node_requires_source: dict[str, bool] = {"workflow_input": False}
     item_by_id: dict[str, dict[str, Any]] = {}
     phases: list[str] = []
     include_audio = _intent_bool(intent, "include_audio", True)
@@ -582,7 +976,9 @@ def _compile_dynamic_recipe_items_intent(
                     f"{_text(skill.get('id'))}",
                     path=f"items.{index}.recipe_pipeline.{pipeline_index}",
                 )
-            if _text(pipeline_recipe.get("output_kind")) != _text(recipe.get("output_kind")):
+            if _text(pipeline_recipe.get("output_kind")) != _text(
+                recipe.get("output_kind")
+            ):
                 return _intent_error(
                     f"Recipe {canonical_pipeline_id} output kind does not match "
                     f"{canonical_recipe_id}",
@@ -594,11 +990,29 @@ def _compile_dynamic_recipe_items_intent(
             ):
                 continue
             recipe_pipeline.append(pipeline_recipe)
+        conflict = _recipe_pipeline_conflict([recipe, *recipe_pipeline])
+        if conflict is not None:
+            source_id, target_id = conflict
+            return _intent_error(
+                f"Recipe {source_id} conflicts with {target_id}",
+                path=f"items.{index}.recipe_pipeline",
+            )
         node_type = _NODE_TYPE_BY_OUTPUT_KIND.get(_text(recipe.get("output_kind")))
         if not node_type:
             return _intent_error(
                 f"Recipe {canonical_recipe_id} has unsupported output_kind",
                 path=f"items.{index}.recipe_id",
+            )
+        if (
+            node_type == "audioNode"
+            and _intent_audio_kind(item, recipe) == "speech"
+            and not _text(item.get("narration"))
+            and _looks_like_speech_generation_instruction(item.get("prompt"))
+        ):
+            return _intent_error(
+                "speech audio item must provide narration as the literal text to speak; "
+                "prompt must not be a request to generate narration",
+                path=f"items.{index}.narration",
             )
         node = _intent_item_node(
             skill=skill,
@@ -619,27 +1033,68 @@ def _compile_dynamic_recipe_items_intent(
         nodes.append(node)
         node_types[item_id] = node_type
         node_recipes[item_id] = recipe
+        node_requires_source[item_id] = any(
+            bool(candidate.get("requires_source_media") or candidate.get("requiresSourceMedia"))
+            for candidate in [recipe, *recipe_pipeline]
+        )
         item_by_id[item_id] = item
 
     edges: list[dict[str, str]] = []
+    item_order = {item_id: index for index, item_id in enumerate(item_by_id)}
     for item_id, item in item_by_id.items():
         raw_dependencies = item.get("depends_on") or item.get("dependsOn") or []
         dependencies = (
             [_text(value) for value in raw_dependencies if _text(value)]
             if isinstance(raw_dependencies, list)
-            else [_text(raw_dependencies)] if _text(raw_dependencies) else []
+            else [_text(raw_dependencies)]
+            if _text(raw_dependencies)
+            else []
         )
         if not dependencies:
             dependencies = ["workflow_input"]
+        normalized_dependencies: list[str] = []
         for source_id in dependencies:
             normalized_source = (
-                "workflow_input" if source_id == "workflow_input" else _safe_id(source_id)
+                "workflow_input"
+                if source_id == "workflow_input"
+                else _safe_id(source_id)
             )
             if normalized_source not in node_types:
                 return _intent_error(
                     f"unknown dependency {source_id} for dynamic item {item_id}",
                     path=f"items.{item_id}.depends_on",
                 )
+            normalized_dependencies.append(normalized_source)
+
+        has_media_dependency = any(
+            node_types.get(source_id) in {"imageGenNode", "videoNode", "audioNode"}
+            for source_id in normalized_dependencies
+        )
+        if node_requires_source.get(item_id) and not has_media_dependency:
+            current_order = item_order[item_id]
+            candidates = [
+                candidate_id
+                for candidate_id, candidate_order in item_order.items()
+                if candidate_order < current_order
+                and node_types.get(candidate_id) in {"imageGenNode", "videoNode", "audioNode"}
+                and not node_requires_source.get(candidate_id)
+            ]
+            same_kind_candidates = [
+                candidate_id
+                for candidate_id in candidates
+                if node_types.get(candidate_id) == node_types.get(item_id)
+            ]
+            anchor_id = (
+                same_kind_candidates[0]
+                if len(same_kind_candidates) == 1
+                else candidates[0]
+                if not same_kind_candidates and len(candidates) == 1
+                else ""
+            )
+            if anchor_id:
+                normalized_dependencies.append(anchor_id)
+
+        for normalized_source in normalized_dependencies:
             edges.extend(
                 _intent_dependency_edges(
                     [normalized_source],
@@ -760,6 +1215,85 @@ def _dynamic_default_model(recipe: dict[str, Any]) -> str:
     return "suno_music" if any(token in searchable for token in ("music", "bgm", "音乐", "配乐")) else "edge-tts"
 
 
+def _intent_audio_kind(item: dict[str, Any], recipe: dict[str, Any] | None) -> str:
+    explicit = _text(item.get("audio_kind") or item.get("audioKind")).lower()
+    if explicit in {"music", "speech"}:
+        return explicit
+
+    model = _text(item.get("model")).lower()
+    if model:
+        return "music" if model == "suno_music" else "speech"
+    if _text(item.get("narration")):
+        return "speech"
+
+    searchable = " ".join(
+        [
+            _text(item.get("id")),
+            _text(item.get("title")),
+            _text(item.get("timeline_role") or item.get("timelineRole")),
+            _text(item.get("prompt")),
+            _text(recipe.get("id") if recipe else ""),
+            _text(recipe.get("name") if recipe else ""),
+        ]
+    ).lower()
+    return (
+        "music"
+        if any(token in searchable for token in ("background_music", "bgm", "背景音乐", "配乐", "纯音乐"))
+        else "speech"
+    )
+
+
+def _looks_like_speech_generation_instruction(value: Any) -> bool:
+    text = _text(value)
+    if not text:
+        return False
+    return bool(
+        re.search(
+            r"(?:根据|基于|使用|提取|将).{0,40}(?:旁白|文案|脚本|广告词).{0,40}"
+            r"(?:生成|制作|转换|合成).{0,12}(?:旁白|配音|语音|音频)"
+            r"|(?:生成|制作).{0,20}(?:旁白配音|语音音频)",
+            text,
+            re.IGNORECASE,
+        )
+    )
+
+
+def _duration_ms(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value > 0:
+        return int(float(value) * 1000)
+    text = _text(value).lower()
+    if not text:
+        return None
+    minute_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:分钟|分|min(?:ute)?s?)", text)
+    if minute_match:
+        return int(float(minute_match.group(1)) * 60_000)
+    second_match = re.search(r"(\d+(?:\.\d+)?)\s*(?:秒|s(?:ec(?:ond)?s?)?)", text)
+    if second_match:
+        return int(float(second_match.group(1)) * 1000)
+    return None
+
+
+def _intent_music_length_ms(
+    item: dict[str, Any],
+    user_goal: str,
+    resolved_inputs: dict[str, Any],
+) -> int | None:
+    explicit = item.get("music_length_ms") or item.get("musicLengthMs")
+    if isinstance(explicit, (int, float)) and not isinstance(explicit, bool):
+        return max(3_000, min(int(explicit), 600_000))
+    for key in ("total_duration", "target_duration", "video_duration", "duration"):
+        parsed = _duration_ms(resolved_inputs.get(key))
+        if parsed:
+            return max(3_000, min(parsed + 1_000, 600_000))
+    for value in (user_goal, item.get("prompt")):
+        parsed = _duration_ms(value)
+        if parsed:
+            return max(3_000, min(parsed + 1_000, 600_000))
+    return None
+
+
 def _intent_error(message: str, *, path: str) -> dict[str, Any]:
     return {
         "ok": False,
@@ -789,6 +1323,23 @@ def _intent_recipe_index() -> dict[str, dict[str, Any]]:
                 if _text(action_key):
                     result.setdefault(_text(action_key), recipe)
     return result
+
+
+def _recipe_pipeline_conflict(
+    recipes: list[dict[str, Any]],
+) -> tuple[str, str] | None:
+    recipe_ids = {
+        _text(recipe.get("id")) for recipe in recipes if _text(recipe.get("id"))
+    }
+    for recipe in recipes:
+        recipe_id = _text(recipe.get("id"))
+        conflicts = {
+            _text(item) for item in recipe.get("conflicts_with") or [] if _text(item)
+        }
+        matched = sorted((conflicts & recipe_ids) - {recipe_id})
+        if matched:
+            return recipe_id, matched[0]
+    return None
 
 
 def _intent_items(intent: dict[str, Any]) -> list[dict[str, Any]]:
@@ -868,6 +1419,35 @@ def _intent_items(intent: dict[str, Any]) -> list[dict[str, Any]]:
                             if _text(raw_item.get("model"))
                             else {}
                         ),
+                        **(
+                            {
+                                "audio_kind": _text(
+                                    raw_item.get("audio_kind") or raw_item.get("audioKind")
+                                ).lower()
+                            }
+                            if _text(raw_item.get("audio_kind") or raw_item.get("audioKind")).lower()
+                            in {"music", "speech"}
+                            else {}
+                        ),
+                        **(
+                            {
+                                "music_length_ms": int(
+                                    raw_item.get("music_length_ms")
+                                    or raw_item.get("musicLengthMs")
+                                )
+                            }
+                            if isinstance(
+                                raw_item.get("music_length_ms")
+                                or raw_item.get("musicLengthMs"),
+                                (int, float),
+                            )
+                            and not isinstance(
+                                raw_item.get("music_length_ms")
+                                or raw_item.get("musicLengthMs"),
+                                bool,
+                            )
+                            else {}
+                        ),
                     }
                 )
     return items
@@ -921,7 +1501,10 @@ def _intent_item_node(
     recipe_pipeline: list[dict[str, Any]],
 ) -> dict[str, Any]:
     label = (_text(item.get("title")) or _text(item.get("prompt")) or item_id)[:64]
-    model = _text(item.get("model")) or _dynamic_default_model(recipe or {})
+    audio_kind = _intent_audio_kind(item, recipe) if node_type == "audioNode" else ""
+    model = _text(item.get("model"))
+    if not model:
+        model = "suno_music" if audio_kind == "music" else _dynamic_default_model(recipe or {})
     item_prompt = _text(item.get("prompt"))
     if node_type == "audioNode" and model in {
         "edge-tts",
@@ -954,10 +1537,12 @@ def _intent_item_node(
             **({"timelineRole": timeline_role} if timeline_role else {}),
             "operationType": operation_type,
             "recipeId": recipe_id,
+            "recipeName": _text(recipe.get("name") if recipe else ""),
             "recipeVersion": recipe.get("version") if recipe else None,
             "recipePipeline": [
                 {
                     "id": _text(pipeline_recipe.get("id")),
+                    "name": _text(pipeline_recipe.get("name")),
                     "version": pipeline_recipe.get("version"),
                 }
                 for pipeline_recipe in recipe_pipeline
@@ -979,11 +1564,14 @@ def _intent_item_node(
         data["aspectRatio"] = aspect_ratio
     if node_type == "audioNode":
         data["text"] = prompt
-        if model == "suno_music":
+        if audio_kind == "music":
             data["audioKind"] = "music"
             data["makeInstrumental"] = True
             data["sunoGptDescriptionPrompt"] = prompt
-        elif model in {"edge-tts", "LingShan-TTS-2", "qwen3-tts-flash"}:
+            music_length_ms = _intent_music_length_ms(item, user_goal, resolved_inputs)
+            if music_length_ms is not None:
+                data["musicLengthMs"] = music_length_ms
+        else:
             data["audioKind"] = "speech"
             data["speechMode"] = "preset"
             data["presetModel"] = (
@@ -1291,6 +1879,9 @@ def _recipe_planning_summary(recipe: dict[str, Any]) -> dict[str, Any]:
         "requires_source_media": bool(
             recipe.get("requires_source_media") or recipe.get("requiresSourceMedia")
         ),
+        "conflicts_with": [
+            _text(item) for item in recipe.get("conflicts_with") or [] if _text(item)
+        ],
     }
 
 

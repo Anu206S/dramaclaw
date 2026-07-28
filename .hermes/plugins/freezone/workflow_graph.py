@@ -169,6 +169,7 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
 
     edge_records: list[dict[str, Any]] = []
     prompt_source_plan_ids: set[str] = set()
+    context_source_plan_ids: set[str] = set()
     audio_prompt_target_plan_ids: set[str] = set()
     for edge_index, edge in enumerate(_edge_pairs(payload.get("edges"))):
         source_ref, target_ref, requested_link_type = edge
@@ -226,6 +227,8 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
         edge_records.append(record)
         if link_type == "prompt_for" and source["node_type"] in TEXTUAL_NODE_TYPES:
             prompt_source_plan_ids.add(source["plan_id"])
+        if link_type == "context_for" and source["node_type"] in TEXTUAL_NODE_TYPES:
+            context_source_plan_ids.add(source["plan_id"])
         if (
             link_type == "prompt_for"
             and source["node_type"] in TEXTUAL_NODE_TYPES
@@ -240,7 +243,11 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
             node["node_type"],
             audio_uses_upstream_text=node["plan_id"] in audio_prompt_target_plan_ids,
         )
-        if node["plan_id"] in prompt_source_plan_ids and node["node_type"] in TEXTUAL_NODE_TYPES:
+        if (
+            node["plan_id"] in prompt_source_plan_ids
+            and node["plan_id"] not in context_source_plan_ids
+            and node["node_type"] in TEXTUAL_NODE_TYPES
+        ):
             data.setdefault("semanticOutputRole", "input_text")
         data.setdefault("workflowInstanceId", workflow_instance_id)
         data.setdefault("workflowPlanNodeId", node["plan_id"])

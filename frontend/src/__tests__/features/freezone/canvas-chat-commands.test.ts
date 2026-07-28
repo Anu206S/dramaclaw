@@ -1073,6 +1073,81 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("mounts an off-screen generation target when another node is already subscribed", async () => {
+    const imageNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        prompt: "离屏目标节点",
+      },
+    );
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribeOtherNode = subscribeNodeAction(() => undefined);
+    let unsubscribeTarget: (() => void) | null = null;
+
+    const resultPromise = applyCanvasChatCommandsAsync(
+      [
+        {
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [
+            {
+              type: "run_node_action",
+              node_id: imageNodeId,
+              action: "generate_image",
+            },
+          ],
+        },
+      ],
+      { actionAcceptTimeoutMs: 1_000 },
+    );
+
+    await vi.waitFor(() => {
+      expect(useCanvasStore.getState().pendingFocusNodeId).toBe(imageNodeId);
+    });
+
+    unsubscribeTarget = subscribeNodeAction((payload) => {
+      if (payload.nodeId !== imageNodeId || payload.action !== "generate_image")
+        return;
+      events.push({ nodeId: payload.nodeId, action: payload.action });
+      if (!payload.requestId) return;
+      canvasEventBus.publish("freezone/node-action-accepted", {
+        requestId: payload.requestId,
+        nodeId: payload.nodeId,
+        action: payload.action,
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: payload.requestId,
+        nodeId: payload.nodeId,
+        action: payload.action,
+        status: "success",
+        output: { submitted: true, task_key: "task-image-offscreen" },
+      });
+    });
+
+    try {
+      const result = await resultPromise;
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
+      ]);
+      expect(result.commandResults).toEqual([
+        expect.objectContaining({
+          type: "run_node_action",
+          status: "success",
+          action: "generate_image",
+          output: expect.objectContaining({
+            submitted: true,
+            task_key: "task-image-offscreen",
+          }),
+        }),
+      ]);
+    } finally {
+      unsubscribeTarget?.();
+      unsubscribeOtherNode();
+    }
+  });
+
   it("treats generation actions that open a user-required UI as handed off instead of missing output", async () => {
     const audioId = useCanvasStore.getState().addNode(
       CANVAS_NODE_TYPES.audio,
@@ -4722,6 +4797,8 @@ describe("canvas chat commands", () => {
         useCanvasStore
           .getState()
           .updateNodeData(payload.nodeId, {
+            // Real generation nodes claim this lock only after receiving the action.
+            isGenerating: true,
             generationTaskKey: "freezone_gen:job-a",
             generationTaskType: "freezone_gen",
           });
@@ -5558,6 +5635,62 @@ describe("canvas chat commands", () => {
       const result = await resultPromise;
       expect(result.errors).toEqual([]);
       expect(result.commandResults).toHaveLength(5);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("does not claim the node generation lock before the node accepts a workflow action", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      { prompt: "商品主图" },
+    );
+    let generatingAtDispatch: unknown;
+    let workflowRunningAtDispatch: unknown;
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      if (payload.nodeId !== imageNodeId || !payload.requestId) return;
+      const nodeData = useCanvasStore.getState().nodes.find(
+        (node) => node.id === imageNodeId,
+      )?.data;
+      generatingAtDispatch = nodeData?.isGenerating;
+      workflowRunningAtDispatch = nodeData?.workflowActionRunning;
+      useCanvasStore.getState().updateNodeData(imageNodeId, {
+        imageUrl: "/static/product.png",
+      });
+      canvasEventBus.publish("freezone/node-action-accepted", {
+        requestId: payload.requestId,
+        nodeId: payload.nodeId,
+        action: payload.action,
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: payload.requestId,
+        nodeId: payload.nodeId,
+        action: payload.action,
+        status: "success",
+      });
+    });
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{
+            type: "run_node_action",
+            node_id: imageNodeId,
+            action: "generate_image",
+          }],
+        }]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(generatingAtDispatch).not.toBe(true);
+      expect(workflowRunningAtDispatch).toBe(true);
+      expect(useCanvasStore.getState().nodes.find(
+        (node) => node.id === imageNodeId,
+      )?.data.workflowActionRunning).toBe(false);
     } finally {
       unsubscribe();
     }

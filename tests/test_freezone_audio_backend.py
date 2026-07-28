@@ -146,6 +146,47 @@ async def test_newapi_audio_uses_saved_custom_gateway_before_env(
     assert request.headers["authorization"] == "Bearer sk-custom-secret"
 
 
+@pytest.mark.asyncio
+async def test_newapi_audio_retries_transient_gateway_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _isolate_settings_db(monkeypatch, tmp_path)
+    save_custom_newapi_gateway(
+        base_url="https://custom.example",
+        api_key="sk-custom-secret",
+        activate=True,
+    )
+    sleeps: list[int] = []
+
+    async def fake_sleep(delay):
+        sleeps.append(delay)
+
+    monkeypatch.setattr(audio_node.asyncio, "sleep", fake_sleep)
+    with respx.mock(assert_all_called=True) as router:
+        route = router.post("https://custom.example/v1/audio/speech").mock(
+            side_effect=[
+                Response(502, text="read fal tts audio failed: connection reset by peer"),
+                Response(
+                    200,
+                    content=b"audio-bytes",
+                    headers={"content-type": "audio/mpeg"},
+                ),
+            ]
+        )
+
+        output_path = tmp_path / "audio.mp3"
+        await audio_node._write_newapi_audio_speech(
+            output_path=output_path,
+            model="LingShan-MU-11",
+            input_text="quiet piano",
+        )
+
+    assert output_path.read_bytes() == b"audio-bytes"
+    assert len(route.calls) == 2
+    assert sleeps == [1]
+
+
 def test_create_user_audio_voice_rejects_unsupported_extension(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

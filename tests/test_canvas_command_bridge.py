@@ -38,3 +38,36 @@ def test_repeated_canvas_context_requests_receive_unique_bridge_keys(monkeypatch
     )
 
     assert first != second
+
+
+def test_late_canvas_cancellation_does_not_replace_accepted_result(tmp_path) -> None:
+    bridge_dir = tmp_path / "bridge"
+    accepted = canvas_command_bridge.resolve_canvas_command(
+        "bridge-a",
+        {
+            "ok": True,
+            "tool_call_status": "completed",
+            "canvas_apply_status": "accepted",
+            "applied": True,
+            "cancelled": False,
+        },
+        bridge_dir=bridge_dir,
+    )
+
+    resolved = canvas_command_bridge.resolve_canvas_command(
+        "bridge-a",
+        {
+            "ok": False,
+            "tool_call_status": "failed",
+            "canvas_apply_status": "cancelled_by_user",
+            "applied": False,
+            "cancelled": True,
+        },
+        bridge_dir=bridge_dir,
+    )
+
+    assert resolved == accepted
+    persisted = canvas_command_bridge._read_json(
+        bridge_dir / "bridge-a.result.json"
+    )
+    assert persisted == accepted
