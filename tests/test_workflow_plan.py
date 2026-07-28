@@ -689,6 +689,7 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert skills["text-to-image-video"]["name"] == "文生图生视频（动态）"
     assert skills["short-drama-quick"]["name"] == "短剧（快速测试）"
     assert skills["pixar-ip-ad-video"]["name"] == "皮克斯 IP 品牌广告短片"
+    assert skills["lego-minifigure-animation-video"]["name"] == "乐高小人动画短片"
     assert "pixar-ip-brand-ad-short-film" not in skills
     assert skills["pixar-ip-ad-video"]["allowed_recipe_ids"] == [
         "ad-ip-character-anchor",
@@ -697,11 +698,25 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "shot-video",
         "ad-video-audio-layer",
     ]
+    assert skills["lego-minifigure-animation-video"]["allowed_recipe_ids"] == [
+        "workflow-input-analysis",
+        "short-film-script-outline",
+        "storyboard-plan",
+        "visual-key-elements",
+        "storyboard-shot-video",
+        "video-audio-layer",
+    ]
     assert "ad-ip-character-anchor" in recipes
     assert "ad-product-prop-anchor" in recipes
     assert "storyboard-sketch" in recipes
     assert "shot-video" in recipes
     assert "ad-video-audio-layer" in recipes
+    assert "workflow-input-analysis" in recipes
+    assert "short-film-script-outline" in recipes
+    assert "storyboard-plan" in recipes
+    assert "visual-key-elements" in recipes
+    assert "storyboard-shot-video" in recipes
+    assert "video-audio-layer" in recipes
     assert "pixar-ip-character-design" not in recipes
     assert "pixar-ip-prop-anchor" not in recipes
     assert "pixar-ip-storyboard-sketch" not in recipes
@@ -710,6 +725,13 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "pixar-ip-compose-plan" not in recipes
     assert "pixar-shot-video-clip" not in recipes
     assert "ad-audio-production" not in recipes
+    assert "lego-minifig-input-analysis" not in recipes
+    assert "lego-minifig-script-outline" not in recipes
+    assert "lego-minifig-video-spec" not in recipes
+    assert "lego-minifig-storyboard" not in recipes
+    assert "lego-minifig-key-elements" not in recipes
+    assert "lego-minifig-shot-video" not in recipes
+    assert "lego-minifig-audio-layers" not in recipes
 
 
 def test_pixar_skill_keeps_methodology_while_recipes_stay_stage_focused(monkeypatch):
@@ -781,6 +803,73 @@ def test_pixar_skill_keeps_methodology_while_recipes_stay_stage_focused(monkeypa
     assert "no tail / tailless" not in character_text
 
 
+def test_lego_skill_keeps_style_while_recipes_are_shared_workflow_stages(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    skills = {item["id"]: item for item in catalog._load_skills()}
+    recipes = {
+        item["id"]: item
+        for item in catalog._load_agent_config_items("recipes", catalog._RECIPES_DIR)
+    }
+    lego_skill = skills["lego-minifigure-animation-video"]
+    planning = lego_skill["planning"]
+    planning_text = "\n".join(
+        [
+            planning["planning_notes"],
+            planning["prompt_guide"],
+            "\n".join(planning["conduct_rules"]),
+            "\n".join(lego_skill["evaluation"]["domain_constraints"]),
+        ]
+    )
+
+    assert "LEGO Minifigure animation" in planning["prompt_guide"]
+    assert "ABS 塑料材质" in planning["prompt_guide"]
+    assert "LEGO building logic" in planning["prompt_guide"]
+    assert "输入分析" in planning["planning_notes"]
+    assert "剧本大纲" in planning["planning_notes"]
+    assert "三层分镜" in planning["planning_notes"]
+    assert "视觉关键元素" in planning["planning_notes"]
+    assert "视频片段" in planning["planning_notes"]
+    assert "音频" in planning["planning_notes"]
+    assert "Final_Video_Spec" not in planning_text
+    assert "input_parameters" not in planning_text
+    assert "planning.prompt_guide" not in planning_text
+    assert "conduct_rules" not in planning_text
+    assert "workflow-input-analysis" not in planning_text
+    assert "short-film-script-outline" not in planning_text
+    assert "storyboard-plan" not in planning_text
+    assert "visual-key-elements" not in planning_text
+    assert "storyboard-shot-video" not in planning_text
+    assert "video-audio-layer" not in planning_text
+
+    recipe_text = "\n".join(
+        item
+        for recipe_id in [
+            "workflow-input-analysis",
+            "short-film-script-outline",
+            "storyboard-plan",
+            "visual-key-elements",
+            "storyboard-shot-video",
+            "video-audio-layer",
+        ]
+        for item in [
+            recipes[recipe_id]["name"],
+            recipes[recipe_id]["system_prompt"],
+            recipes[recipe_id]["planning_prompt"],
+            recipes[recipe_id]["result_summary"],
+            "\n".join(recipes[recipe_id]["must_have_items"]),
+        ]
+    )
+    assert "LEGO Minifigure" not in recipe_text
+    assert "official LEGO style" not in recipe_text
+    assert "ABS plastic material" not in recipe_text
+    assert "Final_Video_Spec" not in recipe_text
+    assert "Skill 输入参数" not in recipe_text
+    assert "覆盖 Skill" not in recipe_text
+    assert "Recipe 内" not in recipe_text
+
+
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
@@ -790,6 +879,10 @@ def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch
         "text-to-image-video": ("general-video", None),
         "short-drama-quick": ("general-video", None),
         "pixar-ip-ad-video": ("shot-video", "ad-ip-character-anchor"),
+        "lego-minifigure-animation-video": (
+            "storyboard-shot-video",
+            "visual-key-elements",
+        ),
     }
 
     for skill_id, (recipe_id, anchor_recipe_id) in skill_recipes.items():
