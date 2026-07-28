@@ -45,12 +45,6 @@ describe('workflowRecipeRuntime', () => {
           skillId: 'ecommerce-product',
           skillVersion: '2.0.0',
           confirmedInputs: { aspect_ratio: '9:16', language: 'zh' },
-          creativeSettings: {
-            aesthetic: {
-              label: '王家卫电影感',
-              prompt_guide: '高饱和霓虹色与手持摄影',
-            },
-          },
           recipeId: 'ecommerce-scene-image',
           recipeVersion: '1',
           promptStrategy: 'previous_output',
@@ -61,7 +55,7 @@ describe('workflowRecipeRuntime', () => {
       nodePrompt: '北欧厨房',
       upstreamText: '银色咖啡机',
       fallbackPrompt: 'fallback',
-      referenceMedia: [{ kind: 'image', label: '产品锚点' }],
+      referenceMedia: [{ kind: 'image', label: '产品参考图' }],
     });
 
     expect(result).toBe('compiled prompt');
@@ -71,18 +65,12 @@ describe('workflowRecipeRuntime', () => {
       skillId: 'ecommerce-product',
       skillVersion: '2.0.0',
       confirmedInputs: { aspect_ratio: '9:16', language: 'zh' },
-      creativeSettings: {
-        aesthetic: {
-          label: '王家卫电影感',
-          prompt_guide: '高饱和霓虹色与手持摄影',
-        },
-      },
       nodeKind: 'image',
       promptStrategy: 'previous_output',
       nodePrompt: '北欧厨房',
       upstreamText: '银色咖啡机',
       userGoal: '生成三张商品图',
-      referenceMedia: [{ kind: 'image', label: '产品锚点' }],
+      referenceMedia: [{ kind: 'image', label: '产品参考图' }],
     });
   });
 

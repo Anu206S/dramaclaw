@@ -1630,7 +1630,6 @@ class FreezoneRecipeCompileRequest(BaseModel):
     skill_id: str = Field(default="", max_length=128)
     skill_version: str = Field(default="", max_length=64)
     confirmed_inputs: dict[str, Any] = Field(default_factory=dict)
-    creative_settings: dict[str, Any] = Field(default_factory=dict)
     node_kind: Literal["image", "video", "audio", "text"]
     prompt_strategy: Literal["template", "user_message", "previous_output", "llm_refine"] = (
         "llm_refine"

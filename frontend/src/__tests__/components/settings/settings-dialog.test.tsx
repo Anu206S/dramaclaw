@@ -106,8 +106,6 @@ vi.mock("react-i18next", () => ({
         "settings.pages.storage": "媒体存储",
         "settings.pages.freezoneSkills": "虾画 Skills",
         "settings.pages.freezoneRecipes": "虾画 Recipes",
-        "settings.pages.freezoneAesthetics": "审美风格",
-        "settings.pages.freezoneAnchorSets": "资产锚点",
         "settings.statusConfigured": `${options?.page ?? ""}已配置`,
         "settings.statusNotConfigured": `${options?.page ?? ""}未配置`,
         "settings.modelConfig.title": "模型配置",
@@ -1297,87 +1295,4 @@ describe("SettingsDialog pages", () => {
     expect(rawJson.planning.model_preferences).toBeUndefined();
   });
 
-  it("opens the Aesthetic library and edits a built-in profile", () => {
-    freezoneAgentConfigMocks.itemsByKind = {
-      aesthetics: [
-        {
-          id: "cinematic-neon",
-          name: "霓虹电影感",
-          description: "都市夜景风格",
-          prompt_guide: "高饱和霓虹色与实景光",
-          negative_prompt: "避免普通棚拍",
-          output_kinds: ["image", "video"],
-          _catalog_source: "builtin",
-        },
-      ],
-    };
-    renderSettingsDialog();
-
-    fireEvent.click(screen.getByRole("button", { name: "审美风格" }));
-
-    expect(screen.getByText("霓虹电影感")).toBeInTheDocument();
-    expect(screen.getByText("内置")).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("编辑"));
-    expect(screen.getByText("编辑审美风格")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("高饱和霓虹色与实景光")).toBeInTheDocument();
-  });
-
-  it("opens the AnchorSet library with structured anchor rows", () => {
-    freezoneAgentConfigMocks.itemsByKind = {
-      anchor_sets: [
-        {
-          id: "product-assets",
-          name: "商品资产",
-          description: "运动相机素材",
-          anchors: [
-            {
-              node_id: "product-node",
-              node_type: "imageGenNode",
-              label: "商品原图",
-              target_item_ids: ["hero-shot"],
-            },
-          ],
-        },
-      ],
-    };
-    renderSettingsDialog();
-
-    fireEvent.click(screen.getByRole("button", { name: "资产锚点" }));
-
-    expect(screen.getByText("商品资产")).toBeInTheDocument();
-    expect(screen.getByText("1 个锚点")).toBeInTheDocument();
-    fireEvent.click(screen.getByTitle("编辑"));
-    expect(screen.getByText("编辑资产锚点")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("product-node")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("hero-shot")).toBeInTheDocument();
-  });
-
-  it("requires built-in AnchorSet templates to be bound before enabling", () => {
-    freezoneAgentConfigMocks.itemsByKind = {
-      anchor_sets: [
-        {
-          id: "brand-template",
-          name: "品牌视觉资产模板",
-          enabled: false,
-          anchors: [
-            {
-              node_id: "replace-with-brand-logo-node-id",
-              node_type: "imageGenNode",
-              label: "品牌 Logo",
-              target_item_ids: [],
-            },
-          ],
-          _catalog_source: "builtin",
-        },
-      ],
-    };
-    renderSettingsDialog();
-
-    fireEvent.click(screen.getByRole("button", { name: "资产锚点" }));
-
-    expect(screen.getByText("请先编辑绑定")).toBeInTheDocument();
-    expect(screen.getByRole("checkbox", {
-      name: "切换 品牌视觉资产模板 启用状态",
-    })).toHaveAttribute("aria-disabled", "true");
-  });
 });
