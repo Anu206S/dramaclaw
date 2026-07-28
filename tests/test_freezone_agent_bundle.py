@@ -197,13 +197,13 @@ def test_export_agent_bundle_preserves_imported_bundle_metadata(isolated_catalog
 def test_export_agent_bundle_uses_default_author_and_license(isolated_catalog: Path) -> None:
     agent_config_store.save_user_agent_config_item(
         username="alice",
-        kind="skills",
-        payload=_skill_payload("community-video"),
+        kind="recipes",
+        payload=_recipe_payload("community-brief"),
     )
     agent_config_store.save_user_agent_config_item(
         username="alice",
-        kind="recipes",
-        payload=_recipe_payload("community-brief"),
+        kind="skills",
+        payload=_skill_payload("community-video"),
     )
 
     bundle = agent_bundle_store.export_agent_bundle(
@@ -231,13 +231,13 @@ def test_export_agent_bundle_uses_current_version_when_minimum_is_missing(
     monkeypatch.setattr(agent_bundle_store, "CURRENT_DRAMACLAW_VERSION", "1.1.2")
     agent_config_store.save_user_agent_config_item(
         username="alice",
-        kind="skills",
-        payload=_skill_payload("community-video"),
+        kind="recipes",
+        payload=_recipe_payload("community-brief"),
     )
     agent_config_store.save_user_agent_config_item(
         username="alice",
-        kind="recipes",
-        payload=_recipe_payload("community-brief"),
+        kind="skills",
+        payload=_skill_payload("community-video"),
     )
 
     bundle = agent_bundle_store.export_agent_bundle(
@@ -292,6 +292,11 @@ def test_export_builtin_agent_bundle_uses_dramaclaw_author(isolated_catalog: Pat
 def test_install_agent_bundle_rejects_existing_ids(isolated_catalog: Path) -> None:
     agent_config_store.save_user_agent_config_item(
         username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief"),
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
         kind="skills",
         payload=_skill_payload("community-video"),
     )
@@ -303,13 +308,13 @@ def test_install_agent_bundle_rejects_existing_ids(isolated_catalog: Path) -> No
 def test_export_agent_bundle_includes_allowed_recipes(isolated_catalog: Path) -> None:
     agent_config_store.save_user_agent_config_item(
         username="alice",
-        kind="skills",
-        payload=_skill_payload("community-video"),
+        kind="recipes",
+        payload=_recipe_payload("community-brief"),
     )
     agent_config_store.save_user_agent_config_item(
         username="alice",
-        kind="recipes",
-        payload=_recipe_payload("community-brief"),
+        kind="skills",
+        payload=_skill_payload("community-video"),
     )
 
     bundle = agent_bundle_store.export_agent_bundle(

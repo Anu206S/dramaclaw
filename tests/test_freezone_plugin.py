@@ -735,12 +735,12 @@ def test_freezone_get_workflow_skill_accepts_native_skill_id(monkeypatch):
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
     loaded = handlers["freezone_get_workflow_skill"](
-        {"skill_id": "pixar-ip-brand-ad-short-film"}
+        {"skill_id": "ecommerce-ad"}
     )
 
     decoded = json.loads(loaded)
     assert decoded["ok"] is True
-    assert decoded["skill_id"] == "pixar-ip-brand-ad-short-film"
+    assert decoded["skill_id"] == "ecommerce-ad"
 
 
 def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatch):
@@ -748,7 +748,7 @@ def test_freezone_get_workflow_skill_compact_omits_recipe_definitions(monkeypatc
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
 
     loaded = handlers["freezone_get_workflow_skill"](
-        {"skill_id": "pixar-ip-brand-ad-short-film", "compact": True}
+        {"skill_id": "ecommerce-ad", "compact": True}
     )
 
     decoded = json.loads(loaded)
