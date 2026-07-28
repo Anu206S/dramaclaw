@@ -1358,6 +1358,136 @@ def _handle_get_saved_agent_catalog_item(
     )
 
 
+def _catalog_item_text(item: dict[str, Any], keys: tuple[str, ...]) -> str:
+    values: list[str] = []
+    for key in keys:
+        value = item.get(key)
+        if isinstance(value, str):
+            values.append(value)
+        elif isinstance(value, list):
+            values.extend(str(entry) for entry in value if entry is not None)
+        elif isinstance(value, dict):
+            values.extend(str(entry) for entry in value.values() if entry is not None)
+        elif value is not None:
+            values.append(str(value))
+    return "\n".join(values).lower()
+
+
+def _summarize_agent_catalog_item(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
+    summary: dict[str, Any] = {
+        "id": str(item.get("id") or ""),
+        "name": str(item.get("name") or ""),
+        "description": str(item.get("description") or ""),
+        "enabled": bool(item.get("enabled", False)),
+        "schema_version": str(item.get("schema_version") or ""),
+        "version": str(item.get("version") or ""),
+    }
+    if kind == "skills":
+        allowed_recipe_ids = item.get("allowed_recipe_ids")
+        input_parameters = item.get("input_parameters")
+        summary.update(
+            {
+                "category": str(item.get("category") or ""),
+                "allowed_recipe_ids": allowed_recipe_ids if isinstance(allowed_recipe_ids, list) else [],
+                "input_parameter_count": len(input_parameters) if isinstance(input_parameters, list) else 0,
+                "builtin": bool(item.get("builtin", False)),
+                "owned": bool(item.get("owned", False)),
+            }
+        )
+    else:
+        action_keys = item.get("action_keys")
+        summary.update(
+            {
+                "output_kind": str(item.get("output_kind") or ""),
+                "action_keys": action_keys if isinstance(action_keys, list) else [],
+                "result_summary": str(item.get("result_summary") or ""),
+                "requires_source_media": bool(item.get("requires_source_media", False)),
+                "force_enhancement": bool(item.get("force_enhancement", False)),
+                "builtin": bool(item.get("builtin", False)),
+                "owned": bool(item.get("owned", False)),
+            }
+        )
+    return summary
+
+
+def _handle_list_agent_catalog(args: dict[str, Any], **_: Any) -> str:
+    kind = str(args.get("kind") or "").strip()
+    if kind not in {"skills", "recipes"}:
+        return _structured_tool_result(
+            {
+                "ok": False,
+                "status": "kind_invalid",
+                "error": "kind must be 'skills' or 'recipes'",
+            },
+            tool_name="freezone_list_agent_catalog",
+        )
+    query = str(args.get("query") or args.get("q") or "").strip().lower()
+    try:
+        limit = int(args.get("limit") or 50)
+    except (TypeError, ValueError):
+        limit = 50
+    limit = min(max(limit, 1), 100)
+
+    response = _request("GET", f"/api/v1/freezone/agent-config/{kind}")
+    if not response.get("ok", False):
+        return _structured_tool_result(
+            {
+                "ok": False,
+                "kind": kind,
+                "status": "catalog_read_failed",
+                "error": response.get("error") or response.get("message") or "Failed to read saved catalog.",
+                "response": response,
+            },
+            tool_name="freezone_list_agent_catalog",
+        )
+    raw_items = response.get("data")
+    if not isinstance(raw_items, list):
+        return _structured_tool_result(
+            {
+                "ok": False,
+                "kind": kind,
+                "status": "catalog_shape_invalid",
+                "error": "Saved catalog response data must be a list.",
+                "response": response,
+            },
+            tool_name="freezone_list_agent_catalog",
+        )
+
+    searchable_keys = (
+        "id",
+        "name",
+        "description",
+        "category",
+        "output_kind",
+        "action_keys",
+        "allowed_recipe_ids",
+        "result_summary",
+    )
+    items = [item for item in raw_items if isinstance(item, dict)]
+    matched = [
+        item
+        for item in items
+        if not query or query in _catalog_item_text(item, searchable_keys)
+    ]
+    summarized = [_summarize_agent_catalog_item(item, kind=kind) for item in matched[:limit]]
+    return _structured_tool_result(
+        {
+            "ok": True,
+            "kind": kind,
+            "query": query,
+            "count": len(summarized),
+            "total_count": len(items),
+            "items": summarized,
+            "available_ids": [
+                str(item.get("id") or "")
+                for item in items
+                if isinstance(item, dict) and str(item.get("id") or "").strip()
+            ],
+        },
+        tool_name="freezone_list_agent_catalog",
+    )
+
+
 def _handle_get_saved_skill(args: dict[str, Any], **_: Any) -> str:
     return _handle_get_saved_agent_catalog_item(
         args,
@@ -4382,6 +4512,34 @@ TOOLS = (
             ["skill_studio_session_id"],
         ),
         _handle_finish_agent_catalog_draft,
+    ),
+    (
+        "freezone_list_agent_catalog",
+        _schema(
+            "freezone_list_agent_catalog",
+            "List compact saved Xi画 Skill or Recipe summaries for Skill Studio discovery and reuse. Read-only: does not return full Recipe system_prompt, does not save catalog files, does not execute workflows, and does not write canvas nodes. Use query to find reusable Recipes before creating new ones.",
+            {
+                "kind": {
+                    "type": "string",
+                    "enum": ["skills", "recipes"],
+                    "description": "Catalog kind to list.",
+                },
+                "query": {
+                    "type": "string",
+                    "description": "Optional keyword used to search id, name, description, action keys, allowed Recipes, output kind, or result summary.",
+                },
+                "q": {
+                    "type": "string",
+                    "description": "Alias of query.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum summaries to return. Default 50, maximum 100.",
+                },
+            },
+            ["kind"],
+        ),
+        _handle_list_agent_catalog,
     ),
     (
         "freezone_get_saved_skill",
