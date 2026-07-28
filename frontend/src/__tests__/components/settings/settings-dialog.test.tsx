@@ -137,10 +137,12 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.deleteSelected": "删除选中",
         "settings.freezoneCatalog.deleteSkillDialog.title": "删除 Skill",
         "settings.freezoneCatalog.deleteSkillDialog.description": `确定要删除「${options?.id ?? ""}」吗？`,
-        "settings.freezoneCatalog.deleteSkillDialog.recipeHint": `这个 Skill 当前关联 ${options?.count ?? 0} 个 Recipes。`,
+        "settings.freezoneCatalog.deleteSkillDialog.recipeHint": `这个 Skill 使用了 ${options?.count ?? 0} 个能力模块，其中 ${options?.exclusiveCount ?? 0} 个仅当前 Skill 使用，${options?.sharedCount ?? 0} 个也被其他 Skill 使用。`,
+        "settings.freezoneCatalog.deleteSkillDialog.exclusiveRecipes": "可随 Skill 一起删除",
+        "settings.freezoneCatalog.deleteSkillDialog.sharedRecipes": "共享模块会保留",
         "settings.freezoneCatalog.deleteSkillDialog.cancel": "取消",
         "settings.freezoneCatalog.deleteSkillDialog.deleteSkillOnly": "只删除 Skill",
-        "settings.freezoneCatalog.deleteSkillDialog.deleteWithRecipes": "同时删除 Recipes",
+        "settings.freezoneCatalog.deleteSkillDialog.deleteWithRecipes": "删除 Skill 和独占模块",
         "settings.freezoneCatalog.exported": "虾画配置已导出",
         "settings.freezoneCatalog.imported": "虾画配置已导入",
         "settings.freezoneCatalog.importFailed": "导入失败，请选择有效的 JSON 文件",
@@ -1215,13 +1217,18 @@ describe("SettingsDialog pages", () => {
     });
   });
 
-  it("can delete a Skill with its linked Recipes", async () => {
+  it("deletes a Skill with only its exclusive linked Recipes", async () => {
     freezoneAgentConfigMocks.itemsByKind = {
       skills: [
         {
           id: "story-skill",
           description: "故事规则",
           allowed_recipe_ids: ["recipe-a", "recipe-b"],
+        },
+        {
+          id: "visual-skill",
+          description: "视觉规则",
+          allowed_recipe_ids: ["recipe-b"],
         },
       ],
       recipes: [
@@ -1239,8 +1246,10 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByText("recipe-a")).toBeInTheDocument();
     expect(screen.getByText("recipe-b")).toBeInTheDocument();
     expect(screen.queryByText("recipe-c")).not.toBeInTheDocument();
+    expect(screen.getByText("可随 Skill 一起删除")).toBeInTheDocument();
+    expect(screen.getByText("共享模块会保留")).toBeInTheDocument();
 
-    fireEvent.click(screen.getByRole("button", { name: "同时删除 Recipes" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除 Skill 和独占模块" }));
 
     await waitFor(() => {
       expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
@@ -1251,13 +1260,55 @@ describe("SettingsDialog pages", () => {
         kind: "recipes",
         id: "recipe-a",
       });
-      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
+      expect(freezoneAgentConfigMocks.delete).not.toHaveBeenCalledWith({
         kind: "recipes",
         id: "recipe-b",
       });
       expect(freezoneAgentConfigMocks.delete).not.toHaveBeenCalledWith({
         kind: "recipes",
         id: "recipe-c",
+      });
+    });
+  });
+
+  it("keeps the linked Recipe delete option hidden when all linked Recipes are shared", async () => {
+    freezoneAgentConfigMocks.itemsByKind = {
+      skills: [
+        {
+          id: "story-skill",
+          description: "故事规则",
+          allowed_recipe_ids: ["recipe-a"],
+        },
+        {
+          id: "visual-skill",
+          description: "视觉规则",
+          allowed_recipe_ids: ["recipe-a"],
+        },
+      ],
+      recipes: [
+        { id: "recipe-a", output_kind: "text", result_summary: "A" },
+      ],
+    };
+    freezoneAgentConfigMocks.delete.mockResolvedValue({ deleted: true });
+    renderSettingsDialog();
+
+    fireEvent.click(screen.getByRole("button", { name: "虾画 Skills" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除 story-skill" }));
+
+    expect(screen.getByText("recipe-a")).toBeInTheDocument();
+    expect(screen.getByText("共享模块会保留")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "删除 Skill 和独占模块" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "只删除 Skill" }));
+
+    await waitFor(() => {
+      expect(freezoneAgentConfigMocks.delete).toHaveBeenCalledWith({
+        kind: "skills",
+        id: "story-skill",
+      });
+      expect(freezoneAgentConfigMocks.delete).not.toHaveBeenCalledWith({
+        kind: "recipes",
+        id: "recipe-a",
       });
     });
   });

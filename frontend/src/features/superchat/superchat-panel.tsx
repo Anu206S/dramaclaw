@@ -427,6 +427,9 @@ const AGENT_TOOL_TITLE_OVERRIDES: Record<string, string> = {
   freezone_get_workflow_skill: "加载 Workflow Skill",
   get_workflow_skill: "加载 Workflow Skill",
   "get workflow skill": "加载 Workflow Skill",
+  freezone_list_agent_catalog: "读取 Skill / Recipe 列表",
+  freezone_get_saved_skill: "读取 Skill 配置",
+  freezone_get_saved_recipe: "读取 Recipe 配置",
 };
 
 function toolRawRecord(message: ChatMessage): Record<string, unknown> | null {

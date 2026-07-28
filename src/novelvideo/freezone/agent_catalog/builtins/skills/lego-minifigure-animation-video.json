@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "enabled": true,
   "name": "乐高小人动画短片",
-  "description": "把主题、角色、场景、冲突或参考素材发展成 LEGO Minifigure 风格动画短片，按输入分析、剧本、全局规格、分镜、关键元素、逐镜视频和音频层分阶段推进。",
+  "description": "把主题、角色、场景、冲突或参考素材发展成 LEGO Minifigure 风格动画短片，通过输入分析、剧本大纲、分镜规划、关键元素锚定、单段视频和音频层分阶段推进，保持乐高小人比例、积木场景逻辑和跨镜头一致性。",
   "category": "video",
   "triggers": {
     "keywords": [
@@ -87,27 +87,30 @@
     }
   ],
   "allowed_recipe_ids": [
-    "lego-minifig-input-analysis",
-    "lego-minifig-script-outline",
-    "lego-minifig-video-spec",
-    "lego-minifig-storyboard",
-    "lego-minifig-key-elements",
-    "lego-minifig-shot-video",
-    "lego-minifig-audio-layers"
+    "workflow-input-analysis",
+    "short-film-script-outline",
+    "storyboard-plan",
+    "visual-key-elements",
+    "storyboard-shot-video",
+    "video-audio-layer"
   ],
   "planning": {
-    "planning_notes": "动态执行路径：先根据 total_duration、aspect_ratio、dialogue_language、audio_mode、execution_mode、用户输入和画布/上传素材判断入口。先创建 textGeneration/lego-minifig-input-analysis 分析主题、角色、场景、冲突、情绪和受众，等待确认；再创建 textGeneration/lego-minifig-script-outline 生成 Logline 和三幕剧本，等待确认；然后创建 textGeneration/lego-minifig-video-spec 锁定 Final_Video_Spec；确认后创建 textGeneration/lego-minifig-storyboard 生成 Key Elements、Sequence/Shot Group/Shot 三层分镜和 Audio Layers；分镜确认后创建 imageGeneration/lego-minifig-key-elements 绑定已有素材或生成角色转面图、表情表和积木场景参考图；关键元素确认后按 Shot Group 或单镜创建 videoGeneration/lego-minifig-shot-video；若 audio_mode 不是“仅画面不生成音频”，创建 audioGeneration/lego-minifig-audio-layers 生成对白/旁白/BGM/音效提示。画幅使用 input aspect_ratio；视频默认 720p，单次生成不超过 15s。",
-    "prompt_guide": "始终把输出写成清晰的中文 Markdown。核心风格锁定为 LEGO Minifigure animation：官方乐高小人比例、ABS 塑料材质、积木搭建逻辑、电影级灯光、没有真人写实比例、没有动漫长身比例。镜头描述只写画面可见动作、对白和音效，不使用抽象心理状态。每个阶段完成后必须向用户展示阶段产物并等待确认。",
+    "planning_notes": "【阶段路径】\n1. 开始前根据目标时长、画幅、对白语言、音频模式、执行方式、用户输入和画布/上传素材判断入口，先分析主题、角色、场景、冲突、情绪、目标受众和素材可用性，展示后等待确认。\n2. 基于已确认输入分析生成 Logline 和三幕剧本大纲，展示后等待确认。\n3. 基于剧本大纲和输入分析生成 Key Elements、Sequence → Shot Group → Shot 三层分镜和 Audio Layers 规划，展示后等待确认。\n4. 分镜确认后进入视觉关键元素阶段：优先绑定用户已有角色/场景素材；缺少关键元素时生成角色转面图、表情表、场景参考图和必要道具参考图，展示后等待确认。\n5. 关键元素确认后，按 Shot Group 或单个 Shot 生成视频片段；每个视频片段必须引用对应角色元素图和场景元素图，通常跳过上一镜视频引用，只有强连续动作才使用。\n6. 若音频模式不是“仅画面不生成音频”，生成对白/旁白、BGM、环境声和动作音效提示；完成后进入最终合成。\n7. 最终剪辑、混音和导出交给画布合成节点处理。\n\n【规划规则】\n开始前确认的画幅、目标时长、对白语言和音频策略必须贯穿分镜、关键元素、视频和音频阶段。\nShot Group 围绕单一叙事目标，通常 8-15 秒、3-8 个 Shot；Shot 必须服务叙事逻辑，不堆砌无意义运镜。",
+    "prompt_guide": "所有阶段输出使用中文 Markdown，除非用户明确要求英文。\n\n【LEGO 视觉语言】\n核心风格锁定为 LEGO Minifigure animation：官方乐高小人比例、ABS 塑料材质、脸部印刷、积木手部、短腿比例、电影级灯光、清晰高质感玩具摄影观感。禁止真人写实比例、Anime 长身比例、非积木玩具风格和有机写实材质。\n\n【积木场景语言】\n所有场景元素遵循 LEGO building logic：建筑、道路、家具、车辆、树木、水体和道具都由积木几何形态构成；避免真实有机曲面结构。场景描述要写清建筑布局、道路、关键道具位置、时间段和光线方向。\n\n【提示词表达】\n图片提示词只写画面可见内容，重点锁定发型、服装颜色与图案、配饰、脸部印刷、场景空间关系和关键道具位置。视频提示词按 Subject description → Action beats → Scene and environment → Shot scale + camera movement → Lighting effects → style anchoring 组织；对白用 {原始对白}，音效用 <sound effect description>。",
     "conduct_rules": [
-      "不要一次性连续跑完整流程；每个主要阶段完成后必须暂停并等待用户确认/修改/重生成。",
+      "不要一次性连续跑完整流程；每个主要阶段完成后必须展示结果并等待用户确认/修改/重生成。",
       "输入分析阶段必须提取主题、角色、场景、冲突、情绪、目标受众和已有素材可用性。",
+      "已确认的时长、画幅、语言、音频和 LEGO 视觉风格必须贯穿分镜、关键元素、视频和音频阶段。",
       "所有角色必须保持 LEGO Minifigure 比例和官方乐高小人风格；禁止真人写实比例、Anime 比例或非积木玩具风格。",
-      "所有场景必须遵循 LEGO building logic，建筑、道路、家具、车辆、树木和水体都应由积木几何形态构成，避免有机曲面结构。",
+      "所有场景必须遵循 LEGO building logic，避免真实有机曲面结构。",
       "关键元素确认后成为全片外观锚点；后续所有镜头必须复用对应角色和场景元素，不能擅自改变发型、服装、配饰、脸部印刷和场景空间关系。",
-      "Shot 设计必须采用 Sequence → Shot Group → Shot 三层结构；每个 Shot Group 围绕一个叙事目标，通常 8-15 秒、3-8 个镜头。",
+      "如果用户已经上传匹配角色或场景素材，必须优先注册并绑定到对应 Key Element，不要重复生成。",
+      "Shot 设计必须采用 Sequence → Shot Group → Shot 三层结构；每个 Shot Group 围绕一个叙事目标。",
       "每个 Shot 必须包含景别、运镜、可视化角色动作、完整原始对白和音效说明；禁止在 Shot 层设计屏幕字幕或浮动文字。",
+      "动作描述只能写可视化动作，不得用“陷入沉思”“感到痛苦”等不可见心理状态替代画面。",
       "视频镜头必须绑定相关角色元素图和场景元素图；上一镜视频只在强连续动作场景中作为参考，通常跳过以避免风格漂移。",
-      "音频层必须区分 Dialogue/Narration、BGM、Ambient/Action SFX；BGM 不得引用知名音乐人姓名。"
+      "音频层必须区分 Dialogue/Narration、BGM、Ambient/Action SFX；BGM 不得引用知名音乐人姓名。",
+      "最终剪辑、混音和导出交给画布合成节点处理。"
     ]
   },
   "evaluation": {
@@ -156,14 +159,13 @@
     ],
     "quality_threshold": 4,
     "domain_constraints": [
-      "遵循开始前选择的画幅和时长。",
+      "遵循开始前选择的画幅、目标时长、对白语言和音频模式。",
       "角色必须为 LEGO Minifigure 风格，不得使用真人写实或 Anime 比例。",
       "场景必须遵循 LEGO building logic。",
       "关键元素确认后必须作为全片锚点复用。",
       "Shot 层不设计字幕或浮动文字。",
-      "视频单次生成时长不超过 15 秒。",
-      "BGM 不得引用知名音乐人姓名。",
-      "最终输出必须包含剪辑、混音、导出设置和质检摘要。"
+      "视频片段必须绑定相关角色元素图和场景元素图。",
+      "BGM 不得引用知名音乐人姓名。"
     ]
   }
 }
