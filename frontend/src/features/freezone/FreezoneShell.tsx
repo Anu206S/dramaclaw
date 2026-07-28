@@ -2749,7 +2749,7 @@ function FreezoneAgentHistoryPanel({
           className="min-w-0 flex-1 bg-transparent text-sm text-zinc-100 outline-none placeholder:text-zinc-500"
         />
       </label>
-      <div className="mt-3 min-h-0 flex-1 space-y-1 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      <div className="mt-3 min-h-0 flex-1 space-y-2 overflow-y-auto pr-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         {visibleAgents.map((agent) => {
           const active = agent.id === activeAgentId;
           return (
@@ -2758,10 +2758,12 @@ function FreezoneAgentHistoryPanel({
               type="button"
               onClick={() => onSelect(agent.id)}
               className={cn(
-                "relative flex min-h-[50px] w-full flex-col items-start justify-center rounded-lg px-4 py-2 text-left transition-colors",
+                // 列表行不是卡片:圆角压到 6px、行高收一档,底色也别拉太亮 —— 0.14 的
+                // 填充在近黑面板上是一整块灰,选中态靠左侧竖条认就够了。
+                "relative flex min-h-[44px] w-full flex-col items-start justify-center rounded-md px-3 py-2 text-left transition-colors",
                 active
-                  ? "bg-white/[0.14] text-white shadow-inner shadow-white/[0.03] before:absolute before:inset-y-2 before:left-0 before:w-px before:rounded-full before:bg-white/80"
-                  : "text-zinc-400 hover:bg-white/[0.07] hover:text-zinc-100",
+                  ? "bg-white/[0.08] text-white before:absolute before:inset-y-2 before:left-0 before:w-px before:rounded-full before:bg-white/70"
+                  : "text-zinc-400 hover:bg-white/[0.045] hover:text-zinc-100",
               )}
               title={agent.name}
             >
