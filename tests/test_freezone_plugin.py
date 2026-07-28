@@ -125,6 +125,7 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert "freezone_create_workflow_from_intent" in names
     assert "freezone_create_workflow_graph" in names
     assert "freezone_present_agent_catalog_draft" in names
+    assert "freezone_put_agent_catalog_draft_outline" in names
     assert "freezone_begin_agent_catalog_draft" in names
     assert "freezone_put_agent_catalog_skill" in names
     assert "freezone_put_agent_catalog_recipe" in names
@@ -844,6 +845,96 @@ def test_freezone_plugin_lists_agent_catalog_summaries(monkeypatch):
     assert "system_prompt" not in listed["items"][0]
 
 
+def test_freezone_plugin_list_agent_catalog_token_search_ranks_partial_matches(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    def fake_request(method, path, *, query=None, body=None):  # noqa: ARG001
+        assert method == "GET"
+        if path == "/api/v1/freezone/agent-config/recipes":
+            return {
+                "ok": True,
+                "data": [
+                    {
+                        "id": "general-image",
+                        "name": "通用图片",
+                        "description": "基础图片生成",
+                        "enabled": True,
+                        "output_kind": "image",
+                        "action_keys": ["image"],
+                    },
+                    {
+                        "id": "video-audio-layer",
+                        "name": "视频音频层",
+                        "description": "配音、音效和背景音乐",
+                        "enabled": True,
+                        "output_kind": "audio",
+                        "action_keys": ["audio-layer"],
+                        "result_summary": "音频层",
+                    },
+                    {
+                        "id": "storyboard-shot-video",
+                        "name": "分镜单段视频",
+                        "description": "根据 storyboard 生成 video 片段",
+                        "enabled": True,
+                        "output_kind": "video",
+                        "action_keys": ["shot-video"],
+                        "result_summary": "逐镜视频",
+                    },
+                    {
+                        "id": "video-storyboard-grid",
+                        "name": "多宫格分镜图",
+                        "description": "生成 storyboard grid",
+                        "enabled": True,
+                        "output_kind": "image",
+                        "action_keys": ["storyboard"],
+                        "result_summary": "分镜图",
+                    },
+                ],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    listed = handlers["freezone_list_agent_catalog"](
+        {"kind": "recipes", "query": "pixar character prop anchor storyboard video"}
+    )
+
+    assert listed["ok"] is True
+    assert [item["id"] for item in listed["items"]] == [
+        "storyboard-shot-video",
+        "video-storyboard-grid",
+        "video-audio-layer",
+    ]
+
+
+def test_freezone_plugin_list_agent_catalog_returns_fallback_summaries_when_query_misses(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    def fake_request(method, path, *, query=None, body=None):  # noqa: ARG001
+        assert method == "GET"
+        if path == "/api/v1/freezone/agent-config/recipes":
+            return {
+                "ok": True,
+                "data": [
+                    {"id": "video-storyboard-grid", "name": "多宫格分镜图", "enabled": True},
+                    {"id": "storyboard-shot-video", "name": "分镜单段视频", "enabled": True},
+                ],
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    listed = handlers["freezone_list_agent_catalog"](
+        {"kind": "recipes", "query": "no matching phrase", "limit": 1}
+    )
+
+    assert listed["ok"] is True
+    assert listed["count"] == 0
+    assert [item["id"] for item in listed["fallback_items"]] == ["video-storyboard-grid"]
+
+
 def test_freezone_plugin_lists_agent_catalog_reports_available_ids(monkeypatch):
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
@@ -1063,6 +1154,31 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
     monkeypatch.setattr(plugin, "wait_skill_studio_result", fake_wait_result)
 
+    outline = handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+                "reuse_goal": "公益短片工作流",
+                "stages": [
+                    {
+                        "id": "story-outline",
+                        "recipe_id": "story-outline",
+                        "reuse": "new",
+                        "new_recipe_craft_gap": "现有 Recipe 缺少公益故事的输入结构和输出结构。",
+                    },
+                    {
+                        "id": "video-render",
+                        "recipe_id": "video-render",
+                        "reuse": "new",
+                        "new_recipe_craft_gap": "现有 Recipe 缺少公益视频生成的质量检查和失败边界。",
+                    },
+                ],
+            "expected_recipe_count": 2,
+            "catalog_checked": True,
+        }
+    )
     begin = handlers["freezone_begin_agent_catalog_draft"](
         {
             "project_id": "project-a",
@@ -1107,6 +1223,7 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
         }
     )
 
+    assert outline["ok"] is True
     assert begin["ok"] is True
     assert skill["ok"] is True
     assert "remaining Recipe chunks: 2" in skill["agent_instruction"]
@@ -1115,26 +1232,327 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     assert recipe_1["ok"] is True
     assert recipe_2["ok"] is True
     assert finished["ok"] is True
-    assert wait_keys == [("skill-studio-5", 600)]
+    assert wait_keys == [("skill-studio-6", 600)]
     event_types = [item["event"]["type"] for item in pending_events]
     assert event_types == [
         "skill_studio.status",
         "skill_studio.status",
         "skill_studio.status",
         "skill_studio.status",
+        "skill_studio.status",
         "skill_studio.draft",
     ]
-    assert pending_events[0]["event"]["status"] == "draft_begin"
-    assert pending_events[1]["event"]["message"] == "已生成 Skill 基础配置"
+    assert pending_events[0]["event"]["status"] == "draft_outline_ready"
+    assert pending_events[1]["event"]["status"] == "draft_begin"
+    assert pending_events[2]["event"]["message"] == "已生成 Skill 基础配置"
     assert "Next call MUST be freezone_put_agent_catalog_recipe" in (
-        pending_events[1]["event"]["debug"]["agent_instruction"]
+        pending_events[2]["event"]["debug"]["agent_instruction"]
     )
-    assert pending_events[2]["event"]["message"] == "已生成 Recipe 1 / 2"
-    assert "Do not write pseudo tool calls" in pending_events[2]["event"]["debug"]["agent_instruction"]
-    assert pending_events[3]["event"]["message"] == "已生成 Recipe 2 / 2"
+    assert pending_events[3]["event"]["message"] == "已生成 Recipe 1 / 2"
+    assert "Do not write pseudo tool calls" in pending_events[3]["event"]["debug"]["agent_instruction"]
+    assert pending_events[4]["event"]["message"] == "已生成 Recipe 2 / 2"
     draft_event = pending_events[-1]["event"]
     assert draft_event["skill"]["id"] == "public-service-video"
     assert [recipe["id"] for recipe in draft_event["recipes"]] == ["story-outline", "video-render"]
+
+
+def test_freezone_plugin_begin_agent_catalog_draft_requires_outline_for_create(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+
+    result = handlers["freezone_begin_agent_catalog_draft"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_requires_outline",
+            "mode": "create",
+            "expected_recipe_count": 1,
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "skill_studio_outline_required"
+    assert "freezone_put_agent_catalog_draft_outline" in result["agent_instruction"]
+
+
+def test_freezone_plugin_draft_outline_allows_create_flow_and_reaches_final_draft(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):  # noqa: ARG001
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    def fake_wait_result(key, timeout_seconds):  # noqa: ARG001
+        return {"ok": True, "bridge_key": key, "skill_studio_status": "answered"}
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+    monkeypatch.setattr(plugin, "wait_skill_studio_result", fake_wait_result)
+
+    base_args = {
+        "project_id": "project-a",
+        "canvas_id": "canvas-a",
+        "skill_studio_session_id": "skill_studio_outline",
+    }
+    outline = handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            **base_args,
+            "mode": "create",
+            "reuse_goal": "把当前广告短片流程沉淀成可复用 Skill",
+                "skill_level_constraints": ["皮克斯 3D 风格放在 Skill"],
+                "stages": [
+                    {
+                        "id": "story-outline",
+                        "recipe_id": "story-outline",
+                        "reuse": "new",
+                        "new_recipe_craft_gap": "现有 Recipe 缺少广告短片故事大纲的输入结构和输出结构。",
+                    },
+                ],
+            "expected_recipe_count": 1,
+            "catalog_checked": True,
+        }
+    )
+    begin = handlers["freezone_begin_agent_catalog_draft"]({**base_args, "mode": "create", "expected_recipe_count": 1})
+    handlers["freezone_put_agent_catalog_skill"]({**base_args, "skill": {"id": "ad-video"}})
+    handlers["freezone_put_agent_catalog_recipe"](
+        {
+            **base_args,
+            "index": 0,
+            "recipe": {"id": "story-outline", "name": "故事大纲", "output_kind": "text"},
+        }
+    )
+    handlers["freezone_finish_agent_catalog_draft"](base_args)
+
+    assert outline["ok"] is True
+    assert begin["ok"] is True
+    draft_event = pending_events[-1]["event"]
+    assert draft_event["outline"]["reuse_goal"] == "把当前广告短片流程沉淀成可复用 Skill"
+    assert draft_event["outline"]["expected_recipe_count"] == 1
+
+
+def test_freezone_plugin_draft_outline_counts_only_new_recipe_chunks(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):  # noqa: ARG001
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+
+    base_args = {
+        "project_id": "project-a",
+        "canvas_id": "canvas-a",
+        "skill_studio_session_id": "skill_studio_reuse_outline",
+    }
+    outline = handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            **base_args,
+            "mode": "create",
+                "reuse_goal": "复用广告短片制作流程",
+                "stages": [
+                    {
+                        "id": "character-anchor",
+                        "recipe_id": "pixar-character-anchor",
+                        "reuse": "new",
+                        "new_recipe_craft_gap": "现有 Recipe 缺少广告 IP 角色锚点的输入结构和失败边界。",
+                    },
+                    {
+                        "id": "prop-anchor",
+                        "recipe_id": "brand-prop-anchor",
+                        "reuse": "new",
+                        "new_recipe_craft_gap": "现有 Recipe 缺少品牌道具植入的输出结构和质量检查。",
+                    },
+                    {"id": "storyboard", "recipe_id": "video-storyboard-grid", "reuse": "existing"},
+                    {"id": "shot-video", "recipe_id": "storyboard-shot-video", "reuse": "existing"},
+                    {"id": "audio-layer", "recipe_id": "video-audio-layer", "reuse": "existing"},
+            ],
+            "expected_recipe_count": 5,
+            "catalog_checked": True,
+        }
+    )
+    begin = handlers["freezone_begin_agent_catalog_draft"]({**base_args, "mode": "create", "expected_recipe_count": 5})
+    skill = handlers["freezone_put_agent_catalog_skill"]({**base_args, "skill": {"id": "pixar-ad-video"}})
+
+    assert outline["ok"] is True
+    assert outline["agent_instruction"].count("expected_recipe_count=2") == 1
+    assert begin["ok"] is True
+    assert skill["agent_instruction"].count("0 of 2 Recipe chunks submitted") == 1
+    outline_event = pending_events[0]["event"]
+    assert outline_event["status"] == "draft_outline_ready"
+
+
+def test_freezone_plugin_draft_outline_requires_craft_gap_for_new_recipes():
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    result = handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_missing_craft_gap_outline",
+            "mode": "create",
+            "reuse_goal": "把皮克斯 3D 广告短片沉淀成可复用 Skill",
+            "skill_level_constraints": ["皮克斯 3D 风格放在 Skill"],
+            "stages": [
+                {
+                    "id": "pixar-character-anchor",
+                    "recipe_id": "pixar-character-anchor",
+                    "reuse": "new",
+                    "reason": "皮克斯卡通渲染风格的角色立绘是此 Skill 的核心特色，现有 Recipe 不含此风格",
+                },
+                {
+                    "id": "storyboard",
+                    "recipe_id": "video-storyboard-grid",
+                    "reuse": "existing",
+                    "reason": "已有通用多宫格分镜 Recipe，可直接复用",
+                },
+            ],
+            "expected_recipe_count": 2,
+            "catalog_checked": True,
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "skill_studio_outline_new_recipe_craft_gap_required"
+    assert "new_recipe_craft_gap" in result["agent_instruction"]
+
+
+def test_freezone_plugin_draft_outline_accepts_new_recipe_with_craft_gap(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):  # noqa: ARG001
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+
+    result = handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_with_craft_gap_outline",
+            "mode": "create",
+            "reuse_goal": "把广告 IP 角色短片沉淀成可复用 Skill",
+            "skill_level_constraints": ["视觉风格放在 Skill"],
+            "stages": [
+                {
+                    "id": "ad-ip-character-anchor",
+                    "recipe_id": "ad-ip-character-anchor",
+                    "reuse": "new",
+                    "reason": "需要广告 IP 角色锚点工艺",
+                    "new_recipe_craft_gap": (
+                        "现有角色锚点缺少广告 IP 角色的输入结构、输出结构和失败边界："
+                        "必须拆出职业标识、品牌隔离、后续引用锁定，并禁止把产品卖点混入角色主体。"
+                    ),
+                },
+                {
+                    "id": "storyboard",
+                    "recipe_id": "video-storyboard-grid",
+                    "reuse": "existing",
+                    "reason": "已有通用分镜图工艺可复用",
+                },
+            ],
+            "expected_recipe_count": 2,
+            "catalog_checked": True,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["agent_instruction"].count("expected_recipe_count=1") == 1
+    outline_event = pending_events[0]["event"]
+    assert outline_event["outline"]["recipe_chunk_count"] == 1
+
+
+def test_freezone_plugin_finish_agent_catalog_draft_warns_structural_recipe_issues(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):  # noqa: ARG001
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    def fake_wait_result(key, timeout_seconds):  # noqa: ARG001
+        return {"ok": True, "bridge_key": key, "skill_studio_status": "answered"}
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+    monkeypatch.setattr(plugin, "wait_skill_studio_result", fake_wait_result)
+
+    base_args = {
+        "project_id": "project-a",
+        "canvas_id": "canvas-a",
+        "skill_studio_session_id": "skill_studio_lint",
+    }
+    handlers["freezone_begin_agent_catalog_draft"]({**base_args, "mode": "create", "expected_recipe_count": 3})
+    handlers["freezone_put_agent_catalog_skill"](
+        {
+            **base_args,
+            "skill": {
+                "id": "light-shadow-ad-video",
+                "name": "光影广告短片",
+                "input_parameters": [{"id": "shot_count", "type": "number", "default": 6}],
+            },
+        }
+    )
+    handlers["freezone_put_agent_catalog_recipe"](
+        {
+            **base_args,
+            "index": 0,
+            "recipe": {
+                "id": "anchor-assets",
+                "name": "锚点资产",
+                "output_kind": "image",
+                "system_prompt": "输出两条提示词，分别生成角色锚点和道具锚点。",
+            },
+        }
+    )
+    handlers["freezone_put_agent_catalog_recipe"](
+        {
+            **base_args,
+            "index": 1,
+            "recipe": {
+                "id": "storyboard-plan",
+                "name": "分镜图",
+                "output_kind": "image",
+                "system_prompt": "生成固定 9 宫格分镜草图。",
+            },
+        }
+    )
+    handlers["freezone_put_agent_catalog_recipe"](
+        {
+            **base_args,
+            "index": 2,
+            "recipe": {
+                "id": "audio-layer",
+                "name": "音频层",
+                "output_kind": "audio",
+                "system_prompt": "生成配音和音效，并把所有视频和音频合成为最终成片。",
+            },
+        }
+    )
+
+    handlers["freezone_finish_agent_catalog_draft"](base_args)
+
+    warnings = pending_events[-1]["event"]["warnings"]
+    assert any("可能一次生成多个执行节点" in warning for warning in warnings)
+    assert any("固定了九宫格" in warning for warning in warnings)
+    assert any("音频输出" in warning and "最终合成" in warning for warning in warnings)
 
 
 def test_freezone_plugin_chunked_draft_skill_result_directs_first_recipe_before_finish(monkeypatch):
@@ -1151,6 +1569,26 @@ def test_freezone_plugin_chunked_draft_skill_result_directs_first_recipe_before_
     monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
     monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
 
+    handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+            "reuse_goal": "公益短片工作流",
+            "stages": [
+                {
+                    "id": f"recipe-{index}",
+                    "recipe_id": f"recipe-{index}",
+                    "reuse": "new",
+                    "new_recipe_craft_gap": "现有 Recipe 缺少该阶段的输入结构和输出结构。",
+                }
+                for index in range(5)
+            ],
+            "expected_recipe_count": 5,
+            "catalog_checked": True,
+        }
+    )
     handlers["freezone_begin_agent_catalog_draft"](
         {
             "project_id": "project-a",
@@ -1194,6 +1632,26 @@ def test_freezone_plugin_chunked_draft_skill_without_recipes_directs_finish(monk
     monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
     monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
 
+    handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+            "reuse_goal": "多阶段工作流",
+            "stages": [
+                {
+                    "id": f"recipe-{index}",
+                    "recipe_id": f"recipe-{index}",
+                    "reuse": "new",
+                    "new_recipe_craft_gap": "现有 Recipe 缺少该阶段的输入结构和输出结构。",
+                }
+                for index in range(6)
+            ],
+            "expected_recipe_count": 6,
+            "catalog_checked": True,
+        }
+    )
     handlers["freezone_begin_agent_catalog_draft"](
         {
             "project_id": "project-a",
@@ -1272,6 +1730,26 @@ def test_freezone_plugin_chunked_draft_recipe_result_directs_next_recipe_before_
     monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
     monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
 
+    handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "skill_studio_session_id": "skill_studio_01",
+            "mode": "create",
+            "reuse_goal": "多阶段工作流",
+            "stages": [
+                {
+                    "id": f"recipe-{index}",
+                    "recipe_id": f"recipe-{index}",
+                    "reuse": "new",
+                    "new_recipe_craft_gap": "现有 Recipe 缺少该阶段的输入结构和输出结构。",
+                }
+                for index in range(6)
+            ],
+            "expected_recipe_count": 6,
+            "catalog_checked": True,
+        }
+    )
     handlers["freezone_begin_agent_catalog_draft"](
         {
             "project_id": "project-a",

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import uuid
@@ -756,6 +757,122 @@ def _skill_studio_meta_text(value: Any) -> str:
     return value.strip() if isinstance(value, str) else ""
 
 
+def _skill_studio_collect_text(value: Any) -> str:
+    if isinstance(value, str):
+        return value
+    if isinstance(value, dict):
+        return "\n".join(_skill_studio_collect_text(item) for item in value.values())
+    if isinstance(value, list):
+        return "\n".join(_skill_studio_collect_text(item) for item in value)
+    return ""
+
+
+def _skill_studio_has_input_parameter(skill: dict[str, Any], parameter_id: str) -> bool:
+    parameters = skill.get("input_parameters")
+    if not isinstance(parameters, list):
+        return False
+    return any(
+        isinstance(parameter, dict) and str(parameter.get("id") or "").strip() == parameter_id
+        for parameter in parameters
+    )
+
+
+def _skill_studio_lint_draft(skill: dict[str, Any], recipes: list[dict[str, Any]]) -> list[str]:
+    warnings: list[str] = []
+    has_shot_count = _skill_studio_has_input_parameter(skill, "shot_count")
+    multi_output_markers = (
+        "输出两条",
+        "输出2条",
+        "分别生成角色",
+        "分别生成道具",
+        "同时生成角色",
+        "同时生成道具",
+        "多个执行节点",
+        "多个节点",
+        "两个节点",
+        "两个 image",
+        "两个image",
+        "两张图",
+    )
+    fixed_grid_markers = ("固定 9 宫格", "固定9宫格", "固定九宫格", "固定 9 个分镜", "固定9个分镜")
+    audio_compose_markers = (
+        "最终成片",
+        "最终合成",
+        "合成为",
+        "合成所有",
+        "所有视频和音频",
+        "videoCompose",
+        "video compose",
+    )
+    for recipe in recipes:
+        if not isinstance(recipe, dict):
+            continue
+        recipe_id = str(recipe.get("id") or "").strip() or "未命名 Recipe"
+        text = _skill_studio_collect_text(recipe)
+        compact_text = text.replace(" ", "")
+        if any(marker in text for marker in multi_output_markers) or "分别生成角色" in compact_text:
+            warnings.append(
+                f"Recipe「{recipe_id}」可能一次生成多个执行节点。建议拆成单一阶段 Recipe。"
+            )
+        if has_shot_count and any(marker in text for marker in fixed_grid_markers):
+            warnings.append(
+                f"Recipe「{recipe_id}」固定了九宫格，但 Skill 已有分镜数量输入。建议让数量跟随开始前选项。"
+            )
+        output_kind = str(recipe.get("output_kind") or "").strip().lower()
+        if output_kind == "audio" and any(marker in text for marker in audio_compose_markers):
+            warnings.append(
+                f"Recipe「{recipe_id}」是音频输出，但包含最终合成说明。音频 Recipe 应只负责音频层，合成由动态计划处理。"
+            )
+    return warnings
+
+
+def _skill_studio_stage_requires_recipe_chunk(stage: Any) -> bool:
+    if not isinstance(stage, dict):
+        return False
+    reuse = str(stage.get("reuse") or "").strip().lower()
+    return reuse != "existing"
+
+
+def _skill_studio_craft_gap_categories(text: str) -> set[str]:
+    normalized = text.strip().lower()
+    compact = normalized.replace(" ", "")
+    categories: set[str] = set()
+    category_markers = {
+        "input": ("输入", "输入来源", "上游", "素材", "参考", "source", "upstream", "input"),
+        "output": ("输出", "输出结构", "必须包含", "must_have", "must have", "output"),
+        "quality": ("质量", "质量标准", "检查", "审核", "标准", "quality", "evaluation", "check"),
+        "failure": ("失败", "失败边界", "禁止", "不得", "排除", "负向", "failure", "forbid", "negative"),
+        "execution": ("执行", "阶段", "动作", "工艺", "节点", "流程", "stage", "craft", "action"),
+    }
+    for category, markers in category_markers.items():
+        if any(marker in normalized or marker in compact for marker in markers):
+            categories.add(category)
+    return categories
+
+
+def _skill_studio_new_recipe_craft_gap(stage: dict[str, Any]) -> str:
+    value = stage.get("new_recipe_craft_gap")
+    if value is None:
+        value = stage.get("craft_gap")
+    return str(value or "").strip()
+
+
+def _skill_studio_outline_new_recipe_gap_errors(stages: list[Any]) -> list[str]:
+    errors: list[str] = []
+    for stage in stages:
+        if not _skill_studio_stage_requires_recipe_chunk(stage):
+            continue
+        if not isinstance(stage, dict):
+            errors.append("未命名阶段")
+            continue
+        recipe_id = str(stage.get("recipe_id") or stage.get("id") or "未命名阶段").strip()
+        craft_gap = _skill_studio_new_recipe_craft_gap(stage)
+        categories = _skill_studio_craft_gap_categories(craft_gap)
+        if len(categories) < 2:
+            errors.append(recipe_id)
+    return errors
+
+
 def _skill_studio_missing_session_result() -> str:
     return tool_result(
         {
@@ -764,6 +881,120 @@ def _skill_studio_missing_session_result() -> str:
             "status": "skill_studio_session_id_required",
             "error": "skill_studio_session_id is required",
         }
+    )
+
+
+def _handle_put_agent_catalog_draft_outline(args: dict[str, Any], **_: Any) -> str:
+    project, canvas = _skill_studio_scope_from_args(args)
+    session_id = _skill_studio_session_id_from_args(args)
+    if not session_id:
+        return _skill_studio_missing_session_result()
+    mode = str(args.get("mode") or "create").strip() or "create"
+    if mode not in {"create", "edit"}:
+        mode = "create"
+    try:
+        expected_recipe_count = int(args.get("expected_recipe_count") or 0)
+    except (TypeError, ValueError):
+        expected_recipe_count = 0
+    stages = _safe_list(args.get("stages"))
+    recipe_chunk_count = sum(1 for stage in stages if _skill_studio_stage_requires_recipe_chunk(stage))
+    if stages:
+        expected_recipe_count = recipe_chunk_count
+    outline = {
+        "reuse_goal": str(args.get("reuse_goal") or "").strip(),
+        "skill_level_constraints": _safe_list(args.get("skill_level_constraints")),
+        "stages": stages,
+        "expected_recipe_count": max(0, expected_recipe_count),
+        "planned_stage_count": len(stages),
+        "reused_recipe_count": max(0, len(stages) - recipe_chunk_count),
+        "recipe_chunk_count": max(0, recipe_chunk_count),
+        "catalog_checked": bool(args.get("catalog_checked")),
+        "catalog_notes": str(args.get("catalog_notes") or "").strip(),
+        "warnings": _safe_list(args.get("warnings")),
+    }
+    if not outline["reuse_goal"]:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_studio_outline_reuse_goal_required",
+                "error": "reuse_goal is required before creating the Skill Studio draft.",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    if outline["expected_recipe_count"] > 0 and not stages:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_studio_outline_stages_required",
+                "error": "stages must describe the planned Recipe boundaries when expected_recipe_count is greater than 0.",
+                "skill_studio_session_id": session_id,
+            }
+        )
+    if outline["expected_recipe_count"] > 0 and not outline["catalog_checked"]:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_studio_catalog_check_required",
+                "error": "catalog_checked must be true after using injected catalog summary or freezone_list_agent_catalog.",
+                "skill_studio_session_id": session_id,
+                "agent_instruction": (
+                    "Before drafting Recipes, check existing Recipe summaries. Use the injected catalog summary "
+                    "or call freezone_list_agent_catalog(kind=\"recipes\", query=...). Then call "
+                    "freezone_put_agent_catalog_draft_outline again with catalog_checked=true."
+                ),
+            }
+        )
+    new_recipe_gap_errors = _skill_studio_outline_new_recipe_gap_errors(stages)
+    if new_recipe_gap_errors:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "skill_studio_outline_new_recipe_craft_gap_required",
+                "error": (
+                    "Every reuse=new stage must include new_recipe_craft_gap describing the real craft gap, "
+                    "not only style/theme/brand difference."
+                ),
+                "invalid_recipe_ids": new_recipe_gap_errors,
+                "skill_studio_session_id": session_id,
+                "agent_instruction": (
+                    "Revise the outline before beginning the draft. For each reuse=new stage, add "
+                    "new_recipe_craft_gap that explains the missing executable craft in existing Recipes: "
+                    "input structure, output structure, required items, quality checks, failure boundaries, "
+                    "or execution-stage differences. Style, subject, brand, visual taste, or aesthetic "
+                    "differences belong in the Skill planning.prompt_guide/conduct_rules/evaluation and "
+                    "are not enough reason to create a new Recipe. Reuse existing Recipes when the craft matches."
+                ),
+            }
+        )
+    existing = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id) if mode == "edit" else None
+    _PENDING_SKILL_STUDIO_DRAFTS[session_id] = {
+        "project_id": project or (existing or {}).get("project_id"),
+        "canvas_id": canvas or (existing or {}).get("canvas_id"),
+        "mode": mode,
+        "summary": str(args.get("summary") or (existing or {}).get("summary") or "").strip(),
+        "warnings": _safe_list(args.get("warnings")) or list(_safe_list((existing or {}).get("warnings"))),
+        "expected_recipe_count": outline["expected_recipe_count"]
+        or int((existing or {}).get("expected_recipe_count") or 0),
+        "outline": outline,
+        "skill": (existing or {}).get("skill"),
+        "recipes": dict((existing or {}).get("recipes") or {}),
+    }
+    return _emit_skill_studio_progress_event(
+        project,
+        canvas,
+        {
+            "type": "skill_studio.status",
+            "skill_studio_session_id": session_id,
+            "status": "draft_outline_ready",
+            "message": "已完成 Skill / Recipe 分工方案",
+            "outline": outline,
+        },
+        agent_instruction=(
+            "The Skill Studio outline was accepted. "
+            f"Only submit new Recipe chunks; reused existing Recipes are already represented by allowed_recipe_ids. "
+            f"Next call MUST be freezone_begin_agent_catalog_draft with expected_recipe_count={outline['expected_recipe_count']} "
+            f"and skill_studio_session_id={session_id}."
+        ),
     )
 
 
@@ -780,6 +1011,46 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     except (TypeError, ValueError):
         expected_recipe_count = 0
     existing = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id) if mode == "edit" else None
+    if mode == "create" and expected_recipe_count > 0:
+        existing_create = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id)
+        outline = existing_create.get("outline") if isinstance(existing_create, dict) else None
+        if not isinstance(outline, dict):
+            return tool_result(
+                {
+                    "ok": False,
+                    "status": "skill_studio_outline_required",
+                    "error": "Call freezone_put_agent_catalog_draft_outline before beginning a create draft with Recipes.",
+                    "skill_studio_session_id": session_id,
+                    "agent_instruction": (
+                        "Before freezone_begin_agent_catalog_draft, call freezone_put_agent_catalog_draft_outline "
+                        "with reuse_goal, skill_level_constraints, stages, expected_recipe_count, and catalog_checked=true."
+                    ),
+                }
+            )
+        if not bool(outline.get("catalog_checked")):
+            return tool_result(
+                {
+                    "ok": False,
+                    "status": "skill_studio_catalog_check_required",
+                    "error": "The draft outline must confirm catalog_checked=true before creating Recipes.",
+                    "skill_studio_session_id": session_id,
+                    "agent_instruction": (
+                        "Check existing Recipe summaries first, then call freezone_put_agent_catalog_draft_outline "
+                        "again with catalog_checked=true."
+                    ),
+                }
+            )
+        if not _safe_list(outline.get("stages")):
+            return tool_result(
+                {
+                    "ok": False,
+                    "status": "skill_studio_outline_stages_required",
+                    "error": "The draft outline must include planned Recipe stages.",
+                    "skill_studio_session_id": session_id,
+                }
+            )
+        existing = existing_create
+        expected_recipe_count = int(outline.get("expected_recipe_count") or 0)
     _PENDING_SKILL_STUDIO_DRAFTS[session_id] = {
         "project_id": project or (existing or {}).get("project_id"),
         "canvas_id": canvas or (existing or {}).get("canvas_id"),
@@ -788,6 +1059,7 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
         "warnings": _safe_list(args.get("warnings")) or list(_safe_list((existing or {}).get("warnings"))),
         "expected_recipe_count": max(0, expected_recipe_count)
         or int((existing or {}).get("expected_recipe_count") or 0),
+        "outline": (existing or {}).get("outline"),
         "skill": (existing or {}).get("skill"),
         "recipes": dict((existing or {}).get("recipes") or {}),
     }
@@ -832,6 +1104,7 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
             "summary": "",
             "warnings": [],
             "expected_recipe_count": 0,
+            "outline": None,
             "skill": None,
             "recipes": {},
         },
@@ -900,6 +1173,7 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
             "summary": "",
             "warnings": [],
             "expected_recipe_count": 0,
+            "outline": None,
             "skill": None,
             "recipes": {},
         },
@@ -1263,6 +1537,9 @@ def _handle_finish_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
         duplicate_summary = "、".join(sorted(set(duplicate_recipe_ids)))
         warnings.append(f"检测到重复 Recipe ID，已保留最后一次提交的版本：{duplicate_summary}。")
         recipes = list(reversed(deduped_reversed))
+    for warning in _skill_studio_lint_draft(skill, recipes):
+        if warning not in warnings:
+            warnings.append(warning)
     result = _emit_skill_studio_event(
         project or draft.get("project_id"),
         canvas or draft.get("canvas_id"),
@@ -1270,6 +1547,7 @@ def _handle_finish_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
             "type": "skill_studio.draft",
             "skill_studio_session_id": session_id,
             "mode": str(draft.get("mode") or "create"),
+            "outline": draft.get("outline") if isinstance(draft.get("outline"), dict) else None,
             "skill": skill,
             "recipes": recipes,
             "summary": str(draft.get("summary") or args.get("summary") or "").strip(),
@@ -1373,6 +1651,25 @@ def _catalog_item_text(item: dict[str, Any], keys: tuple[str, ...]) -> str:
     return "\n".join(values).lower()
 
 
+def _catalog_query_tokens(query: str) -> list[str]:
+    tokens = [
+        token.strip()
+        for token in re.split(r"[\s,，、/|;；:：()（）\[\]{}<>《》\"'`]+", query.lower())
+        if len(token.strip()) >= 2
+    ]
+    return list(dict.fromkeys(tokens))
+
+
+def _catalog_item_match_score(item: dict[str, Any], keys: tuple[str, ...], query: str) -> int:
+    if not query:
+        return 1
+    text = _catalog_item_text(item, keys)
+    if query in text:
+        return max(1, len(_catalog_query_tokens(query))) + 1
+    tokens = _catalog_query_tokens(query)
+    return sum(1 for token in tokens if token in text)
+
+
 def _summarize_agent_catalog_item(item: dict[str, Any], *, kind: str) -> dict[str, Any]:
     summary: dict[str, Any] = {
         "id": str(item.get("id") or ""),
@@ -1423,10 +1720,10 @@ def _handle_list_agent_catalog(args: dict[str, Any], **_: Any) -> str:
         )
     query = str(args.get("query") or args.get("q") or "").strip().lower()
     try:
-        limit = int(args.get("limit") or 50)
+        limit = int(args.get("limit") or 12)
     except (TypeError, ValueError):
-        limit = 50
-    limit = min(max(limit, 1), 100)
+        limit = 12
+    limit = min(max(limit, 1), 30)
 
     response = _request("GET", f"/api/v1/freezone/agent-config/{kind}")
     if not response.get("ok", False):
@@ -1464,12 +1761,20 @@ def _handle_list_agent_catalog(args: dict[str, Any], **_: Any) -> str:
         "result_summary",
     )
     items = [item for item in raw_items if isinstance(item, dict)]
+    scored_items = [
+        (_catalog_item_match_score(item, searchable_keys, query), index, item)
+        for index, item in enumerate(items)
+    ]
     matched = [
         item
-        for item in items
-        if not query or query in _catalog_item_text(item, searchable_keys)
+        for score, _index, item in sorted(scored_items, key=lambda entry: (-entry[0], entry[1]))
+        if score > 0
     ]
     summarized = [_summarize_agent_catalog_item(item, kind=kind) for item in matched[:limit]]
+    fallback_items = [
+        _summarize_agent_catalog_item(item, kind=kind)
+        for item in items[:limit]
+    ] if query and not summarized else []
     return _structured_tool_result(
         {
             "ok": True,
@@ -1478,6 +1783,7 @@ def _handle_list_agent_catalog(args: dict[str, Any], **_: Any) -> str:
             "count": len(summarized),
             "total_count": len(items),
             "items": summarized,
+            "fallback_items": fallback_items,
             "available_ids": [
                 str(item.get("id") or "")
                 for item in items
@@ -3925,6 +4231,47 @@ _SKILL_STUDIO_QUESTION_SCHEMA = {
     "required": ["id", "title", "options"],
 }
 
+_SKILL_STUDIO_DRAFT_OUTLINE_STAGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {
+            "type": "string",
+            "description": "Stable planned stage id.",
+        },
+        "name": {
+            "type": "string",
+            "description": "Short stage name.",
+        },
+        "recipe_id": {
+            "type": "string",
+            "description": "Planned Recipe id for this executable stage.",
+        },
+        "output_kind": {
+            "type": "string",
+            "enum": ["text", "image", "video", "audio"],
+            "description": "Expected Recipe output kind.",
+        },
+        "reuse": {
+            "type": "string",
+            "enum": ["existing", "new"],
+            "description": "Whether this stage reuses a saved Recipe or needs a new Recipe.",
+        },
+        "reason": {
+            "type": "string",
+            "description": "Short internal reason for the boundary and reuse decision.",
+        },
+        "new_recipe_craft_gap": {
+            "type": "string",
+            "description": (
+                "Required when reuse=new. Explain the executable craft gap missing from existing Recipes: "
+                "input structure, output structure, required items, quality checks, failure boundaries, "
+                "or execution-stage differences. Style/theme/brand/aesthetic difference alone is not a craft gap."
+            ),
+        },
+    },
+    "required": ["id", "recipe_id", "reuse"],
+}
+
 _SKILL_STUDIO_RATING_BAND_SCHEMA = {
     "type": "object",
     "properties": {
@@ -4117,7 +4464,7 @@ _SKILL_STUDIO_SKILL_SCHEMA = {
 
 _SKILL_STUDIO_RECIPE_SCHEMA = {
     "type": "object",
-    "description": "Complete Xi画 Recipe catalog draft.",
+    "description": "Complete 虾画 Recipe catalog draft.",
     "properties": {
         "id": {
             "type": "string",
@@ -4414,7 +4761,7 @@ TOOLS = (
         "freezone_present_agent_catalog_draft",
         _schema(
             "freezone_present_agent_catalog_draft",
-            "Legacy small-draft path for presenting an editable Skill/Recipe catalog draft for Xi画 Skill Studio. Prefer the chunked draft tools for normal Skill Studio drafts: begin, put skill, put each recipe, then finish. Do not paste final JSON in prose and do not claim it is saved.",
+            "Legacy small-draft path for presenting an editable Skill/Recipe catalog draft for 虾画 Skill Studio. Prefer the chunked draft tools for normal Skill Studio drafts: begin, put skill, put each recipe, then finish. Do not paste final JSON in prose and do not claim it is saved.",
             {
                 "skill_studio_session_id": {
                     "type": "string",
@@ -4442,10 +4789,63 @@ TOOLS = (
         _handle_present_agent_catalog_draft,
     ),
     (
+        "freezone_put_agent_catalog_draft_outline",
+        _schema(
+            "freezone_put_agent_catalog_draft_outline",
+            "Submit the internal 虾画 Skill Studio capability outline before creating a chunked draft. Use this after modeling the reusable Skill goal, Skill-level constraints, planned executable stages, and existing Recipe reuse. For create drafts with Recipes, call this before freezone_begin_agent_catalog_draft.",
+            {
+                "skill_studio_session_id": {
+                    "type": "string",
+                    "description": "Stable id shared by questions, outline, draft chunks, final draft, and later edits.",
+                },
+                "mode": {"type": "string", "enum": ["create", "edit"], "description": "Draft mode."},
+                "reuse_goal": {
+                    "type": "string",
+                    "description": "Internal one-sentence reusable capability goal for the Skill.",
+                },
+                "skill_level_constraints": {
+                    "type": "array",
+                    "description": "Style, domain, behavior, material inheritance, review, and global quality rules that belong to the Skill rather than Recipes.",
+                    "items": {"type": "string"},
+                },
+                "stages": {
+                    "type": "array",
+                    "description": (
+                        "Planned executable Recipe stages. Include only stages that will become allowed_recipe_ids. "
+                        "For reuse=new stages, include new_recipe_craft_gap with concrete craft differences; "
+                        "do not create a new Recipe only because the Skill has a different style, theme, brand, or aesthetic."
+                    ),
+                    "items": _SKILL_STUDIO_DRAFT_OUTLINE_STAGE_SCHEMA,
+                },
+                "expected_recipe_count": {
+                    "type": "integer",
+                    "description": "Planned number of new Recipe chunks that must be submitted after the outline. Reused existing Recipes do not count; they should only appear in Skill allowed_recipe_ids.",
+                },
+                "catalog_checked": {
+                    "type": "boolean",
+                    "description": "True only after checking injected catalog summary or calling freezone_list_agent_catalog(kind='recipes', query=...).",
+                },
+                "catalog_notes": {
+                    "type": "string",
+                    "description": "Short internal note describing reused existing Recipes and new Recipe gaps.",
+                },
+                "summary": {"type": "string", "description": "Short user-facing summary for the final draft."},
+                "warnings": {
+                    "type": "array",
+                    "description": "User-facing draft warnings collected during outline modeling.",
+                    "items": {"type": "string"},
+                },
+                **_SCOPE_PROPS,
+            },
+            ["skill_studio_session_id", "mode", "reuse_goal", "stages", "expected_recipe_count", "catalog_checked"],
+        ),
+        _handle_put_agent_catalog_draft_outline,
+    ),
+    (
         "freezone_begin_agent_catalog_draft",
         _schema(
             "freezone_begin_agent_catalog_draft",
-            "Begin a chunked Xi画 Skill Studio draft. Before calling this, decide the target number of Recipe chunks and pass expected_recipe_count, using 0 only when this draft intentionally has no Recipes. This tool only emits progress and does not wait for user confirmation.",
+            "Begin a chunked 虾画 Skill Studio draft. Before calling this, decide the target number of Recipe chunks and pass expected_recipe_count, using 0 only when this draft intentionally has no Recipes. This tool only emits progress and does not wait for user confirmation.",
             {
                 "skill_studio_session_id": {
                     "type": "string",
@@ -4472,7 +4872,7 @@ TOOLS = (
         "freezone_put_agent_catalog_skill",
         _schema(
             "freezone_put_agent_catalog_skill",
-            "Submit the Skill chunk for the current Xi画 Skill Studio draft. Do not include Recipe drafts inside skill.",
+            "Submit the Skill chunk for the current 虾画 Skill Studio draft. Do not include Recipe drafts inside skill.",
             {
                 "skill_studio_session_id": {
                     "type": "string",
@@ -4489,7 +4889,7 @@ TOOLS = (
         "freezone_put_agent_catalog_recipe",
         _schema(
             "freezone_put_agent_catalog_recipe",
-            "Submit one Recipe chunk for the current Xi画 Skill Studio draft. Call once per Recipe instead of passing all recipes in one tool call.",
+            "Submit one Recipe chunk for the current 虾画 Skill Studio draft. Call once per Recipe instead of passing all recipes in one tool call.",
             {
                 "skill_studio_session_id": {
                     "type": "string",
@@ -4510,7 +4910,7 @@ TOOLS = (
         "freezone_patch_agent_catalog_draft",
         _schema(
             "freezone_patch_agent_catalog_draft",
-            "Apply small JSON Pointer patches for local edits to the current Xi画 Skill Studio draft session. For local edits, prefer this tool over regenerating unchanged Skill/Recipe chunks. Use put_skill or put_recipe only when replacing an entire object. Always finish with freezone_finish_agent_catalog_draft after patching.",
+            "Apply small JSON Pointer patches for local edits to the current 虾画 Skill Studio draft session. For local edits, prefer this tool over regenerating unchanged Skill/Recipe chunks. Use put_skill or put_recipe only when replacing an entire object. Always finish with freezone_finish_agent_catalog_draft after patching.",
             {
                 "skill_studio_session_id": {
                     "type": "string",
@@ -4565,7 +4965,7 @@ TOOLS = (
         "freezone_finish_agent_catalog_draft",
         _schema(
             "freezone_finish_agent_catalog_draft",
-            "Finish a chunked Xi画 Skill Studio draft, assemble previously submitted chunks, and present the editable draft card. Do not pass the full Skill/Recipe catalog in this call; this schema intentionally has no skill or recipes parameters.",
+            "Finish a chunked 虾画 Skill Studio draft, assemble previously submitted chunks, and present the editable draft card. Do not pass the full Skill/Recipe catalog in this call; this schema intentionally has no skill or recipes parameters.",
             {
                 "skill_studio_session_id": {
                     "type": "string",
@@ -4589,7 +4989,7 @@ TOOLS = (
         "freezone_list_agent_catalog",
         _schema(
             "freezone_list_agent_catalog",
-            "List compact saved Xi画 Skill or Recipe summaries for Skill Studio discovery and reuse. Read-only: does not return full Recipe system_prompt, does not save catalog files, does not execute workflows, and does not write canvas nodes. Use query to find reusable Recipes before creating new ones.",
+            "List compact saved 虾画 Skill or Recipe summaries for Skill Studio discovery and reuse. Read-only: does not return full Recipe system_prompt, does not save catalog files, does not execute workflows, and does not write canvas nodes. Use query to find reusable Recipes before creating new ones.",
             {
                 "kind": {
                     "type": "string",
@@ -4598,7 +4998,11 @@ TOOLS = (
                 },
                 "query": {
                     "type": "string",
-                    "description": "Optional keyword used to search id, name, description, action keys, allowed Recipes, output kind, or result summary.",
+                    "description": (
+                        "Optional search text. The tool tokenizes this text and returns compact summaries ranked by "
+                        "matched tokens across id, name, description, action keys, allowed Recipes, output kind, "
+                        "and result summary. Use a few craft keywords rather than a full sentence."
+                    ),
                 },
                 "q": {
                     "type": "string",
@@ -4606,7 +5010,7 @@ TOOLS = (
                 },
                 "limit": {
                     "type": "integer",
-                    "description": "Maximum summaries to return. Default 50, maximum 100.",
+                    "description": "Maximum summaries to return. Default 12, maximum 30.",
                 },
             },
             ["kind"],
@@ -4617,7 +5021,7 @@ TOOLS = (
         "freezone_get_saved_skill",
         _schema(
             "freezone_get_saved_skill",
-            "Read one existing saved Xi画 Skill configuration by id for Skill Studio editing. Read-only: does not save catalog files, does not execute workflows, and does not write canvas nodes. Use this when revising a saved Skill and conversation history only has the saved id or an incomplete draft.",
+            "Read one existing saved 虾画 Skill configuration by id for Skill Studio editing. Read-only: does not save catalog files, does not execute workflows, and does not write canvas nodes. Use this when revising a saved Skill and conversation history only has the saved id or an incomplete draft.",
             {
                 "skill_id": {
                     "type": "string",
@@ -4632,7 +5036,7 @@ TOOLS = (
         "freezone_get_saved_recipe",
         _schema(
             "freezone_get_saved_recipe",
-            "Read one existing saved Xi画 Recipe configuration by id for Skill Studio editing. Read-only: does not save catalog files, does not execute workflows, and does not write canvas nodes. Use this when revising a saved Recipe and conversation history only has the saved id or an incomplete draft.",
+            "Read one existing saved 虾画 Recipe configuration by id for Skill Studio editing. Read-only: does not save catalog files, does not execute workflows, and does not write canvas nodes. Use this when revising a saved Recipe and conversation history only has the saved id or an incomplete draft.",
             {
                 "recipe_id": {
                     "type": "string",

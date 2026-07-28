@@ -86,8 +86,13 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 
 1. 先做 `capability modeling`。
 2. 再决定 Skill / Recipe 的能力边界。
-3. 再写执行路径、质量闸门和返工规则。
-4. 最后才把结果序列化进 schema 字段。
+3. 先提交内部 outline，记录复用目标、Skill 级约束、计划阶段、Recipe 复用/新建决策和预计 Recipe 数量。
+4. 再写执行路径、质量闸门和返工规则。
+5. 最后才把结果序列化进 schema 字段。
+
+outline 是写 JSON 前的架构拆分，不是用户可见文案。包含 Recipe 的新草稿必须先调用 `freezone_put_agent_catalog_draft_outline`，再调用 `freezone_begin_agent_catalog_draft`。不要跳过 outline 直接 begin。复用已有 Recipe 时，只把它的 id 写进 Skill 的 `allowed_recipe_ids`，不要再调用 `freezone_put_agent_catalog_recipe` 提交一遍；`expected_recipe_count` 只统计本次需要新建的 Recipe chunk。
+
+outline 中每个 `reuse=new` 阶段必须写 `new_recipe_craft_gap`。这个字段只写“为什么现有 Recipe 的执行工艺不够”，不要写“因为当前 Skill 风格/题材/品牌不同”。有效的 craft gap 应说明至少两类差异：输入结构、输出结构、必须包含项、质量检查、失败边界或执行阶段差异。如果去掉当前风格、题材、品牌和一次性案例变量后说不出这些差异，就应复用已有 Recipe，把风格和领域约束写进 Skill。
 
 坏输出通常长这样：
 
@@ -243,7 +248,7 @@ Skill 只固化“换一个作者也应该得到同样答案”的规则。会�
 
 ## 8. Recipe 拆分原则
 
-Recipe 的边界应对应可复用能力模块。生成草稿前先看当前已启用的 catalog summary；如果摘要缺失或不够判断，先调用 `freezone_list_agent_catalog(kind="recipes", query=...)` 读取紧凑 Recipe 摘要，再判断已有 Recipe 是否能覆盖同一阶段工艺。能复用就复用，只有真实工艺缺口才新建。
+Recipe 的边界应对应可复用能力模块。生成草稿前先看当前已启用的 catalog summary；如果摘要缺失或不够判断，先调用 `freezone_list_agent_catalog(kind="recipes", query=...)` 读取紧凑 Recipe 摘要，再判断已有 Recipe 是否能覆盖同一阶段工艺。能复用就复用，只有真实工艺缺口才新建。确认复用/新建决策后，把结果写进 `freezone_put_agent_catalog_draft_outline`，并设置 `catalog_checked=true`。outline 里的 `reuse=existing` 表示使用已保存 Recipe，不需要提交 Recipe chunk；`reuse=new` 才需要后续 `freezone_put_agent_catalog_recipe`。
 
 判断顺序：
 
@@ -251,7 +256,8 @@ Recipe 的边界应对应可复用能力模块。生成草稿前先看当前已�
 2. 再对照现有 Recipe 的 name、output_kind、action_keys、planning_prompt 和 result_summary。
 3. 工艺相同就复用已有 Recipe；风格、题材、品牌不同，不等于必须新建 Recipe。
 4. 只有现有 Recipe 无法表达这个阶段，或强行复用会让 Recipe 变得含糊、误导、过度泛化时，才新建 Recipe。
-5. `allowed_recipe_ids` 只写本 Skill 实际可执行链路需要的 Recipe id。它是运行白名单，不是“相关 Recipe 大合集”。
+5. 每个新建 Recipe 决策都要在 outline 的 `new_recipe_craft_gap` 写清工艺缺口；没有具体缺口就改为复用已有 Recipe。
+6. `allowed_recipe_ids` 只写本 Skill 实际可执行链路需要的 Recipe id。它是运行白名单，不是“相关 Recipe 大合集”。
 
 Skill 和 Recipe 的分工：
 
@@ -511,5 +517,15 @@ Skill 草稿必须提供足够明确的规划约束：
 - 如果不同 Skill 只是风格、题材、语气或行业不同，但阶段输入、输出结构、质量标准和风险边界相同，优先复用 Recipe。
 - 如果某个阶段包含明确领域规则，或输入结构、输出结构、质量标准、审核边界明显不同，就新建领域 Recipe。
 - 如果某个前置步骤只是在 Skill 里做规划或确认，并不会创建可被下游消费的节点，就不要把它放进 `allowed_recipe_ids`。
+
+### 完稿前自检
+
+调用 `freezone_finish_agent_catalog_draft` 前，先做一次内部自检；发现明确问题时直接修正，不要把问题留给用户：
+
+- 每个 Recipe 是否只负责一个可执行阶段。如果一条 Recipe 要同时产出两个或多个下游节点，应拆分。
+- 音频 Recipe 是否只负责旁白、音效、BGM 等音频层；不要把最终视频合成写进音频 Recipe。
+- Skill 已经有开始前选项时，Recipe 不要写死对应数量、比例、时长等可变值。
+- 风格、题材、品牌、角色身份和全局质量口径是否放在 Skill；Recipe 只保留本阶段输入、输出结构、质量标准和失败边界。
+- 如果 Recipe 抽象后只剩“稳定、清晰、可复用、高质量”等虚词，说明抽得太空，应保留更具体的领域边界和名称。
 
 字段落地时始终遵守这条线：**厚 Skill 写观感、资产策略、阶段原则和质量标准；Recipe 写可复用阶段工艺；Schema 保持薄，不新增字段。**
