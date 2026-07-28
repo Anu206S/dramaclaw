@@ -42,9 +42,20 @@ import {
   ASPECT_RATIOS,
   REFERENCE_CAPS_BY_MODE,
   clampVideoDuration,
-  isHappyHorseVideoModel,
   type ReferenceMediaItem,
 } from "@/features/canvas/nodes/shared/videoFormOptions";
+import {
+  audioReferenceDurationRejection,
+  formatAudioDurationClips,
+  isHappyHorseVideoModel,
+  isSeedance2VideoModel,
+  isVideoModeSupportedByModel,
+  MAX_AUDIO_REFERENCE_DURATION_MS,
+  MIN_AUDIO_REFERENCE_DURATION_MS,
+  videoModeRequiresPrompt,
+  videoSubmitMediaRejectionReason,
+  videoUpstreamImageDefaultMode,
+} from "@/features/canvas/nodes/shared/videoModelCapabilities";
 import type { VideoGenerationFormProps } from "@/features/canvas/nodes/shared/VideoGenerationForm";
 import { setAlbumPendingTotal } from "@/features/canvas/nodes/shared/albumPendingTotals";
 import { useReferenceMentionSync } from "@/features/canvas/nodes/useReferenceMentionSync";
@@ -54,7 +65,7 @@ import {
   showErrorDialog,
 } from "@/features/canvas/application/errorDialog";
 import { backendErrorToastMessage } from "@/lib/api-errors";
-import { extractRequestId } from "@/features/canvas/application/generationErrorReport";
+import { resolveGenerationErrorDiagnostics } from "@/features/canvas/application/generationErrorReport";
 import type { MentionCandidate } from "@/features/canvas/nodes/PromptMentionEditor";
 import {
   CAMERA_MOVEMENT_PRESETS,
@@ -137,11 +148,6 @@ function videoDurationBoundsForModel(
   return { min: resolvedMin, max: resolvedMax };
 }
 
-// Seedance 2.0(doubao-seedance-2-0，r2v）后端硬上限：一次请求的音频总时长
-// 必须 ≤ 15.2s，超了会以 InvalidParameter 报错。对用户按「15 秒」提示，实际
-// 用 15.2s 作拦截阈值，避免把后端本会放行的 15.0~15.2s 音频误拦。
-const MAX_AUDIO_TOTAL_DURATION_MS = 15_200;
-
 // 音频节点的 durationMs 是懒加载的（波形播放器挂载读元数据后才写入），刚上传、
 // 从未渲染过的音频节点可能为 null。提交前用一个临时 <audio> 探测真实时长兜底，
 // 探测失败（CORS/网络等）返回 null，不阻断提交，交由后端兜底。
@@ -180,24 +186,6 @@ function isSeedance2ValueModel(modelId: string | null | undefined): boolean {
     normalized === "newapi_seedance-2.0-fast-value" ||
     normalized === "huimeng_seedance-2.0-value" ||
     normalized === "huimeng_seedance-2.0-fast-value";
-}
-
-// 某 genMode 是否被指定模型支持（与 GenModeSelect 的可见 tab 口径一致）：
-// videoEdit 是 HappyHorse 专属；firstLastFrame / allReference 是非 HappyHorse 专属。
-// 切换模型时用它判断是否要重置残留 genMode，避免提交打到不支持的端点。
-function isVideoModeSupportedByModel(
-  mode: VideoGenMode,
-  modelId: string | null | undefined,
-): boolean {
-  if (isHappyHorseVideoModel(modelId)) {
-    return (
-      mode === "textToVideo" ||
-      mode === "imageToVideo" ||
-      mode === "imageReference" ||
-      mode === "videoEdit"
-    );
-  }
-  return mode !== "videoEdit";
 }
 
 function sceneOptimizeOptionsForModel(
@@ -328,6 +316,7 @@ export interface UseVideoGenerationFormResult {
   submit: () => Promise<{ videoUrl?: string }>;
   prompt: string;
   quality: VideoGenQuality;
+  selectedVideoModelId: string;
   upstreamCounts: { images: number; videos: number; audios: number };
 }
 
@@ -471,9 +460,7 @@ export function useVideoGenerationForm(
     defaultSceneOptimizeForModel(selectedVideoModel),
   );
   const generateAudio = Boolean(data.generateAudio);
-  // 真人素材审核开关只对 Seedance 2.0 系列模型生效。归一化掉分隔符后匹配
-  // `seedance2`，覆盖 `huimeng_seedance20_fast` / 未来可能的 `seedance_2_0` 等 id。
-  const isSeedance20Model = /seedance2/i.test(modelId.replace(/[\s._-]/g, ""));
+  const isSeedance20Model = isSeedance2VideoModel(selectedVideoModelId);
   const humanReview = Boolean(data.humanReview);
   const count: VideoGenCount = (data.count ?? 1) as VideoGenCount;
   useEffect(() => {
@@ -840,18 +827,23 @@ export function useVideoGenerationForm(
     }
   }, [id, isGenerating, isTranslatingPrompt, prompt, updateNodeData]);
 
-  // First time an upstream image becomes available, flip the gen mode so the
-  // video actually consumes it. Default to `allReference`（全能参考）—— it
-  // accepts 1-9 images and is the more general entry point; the 首尾帧 keyframe
-  // workflow stays reachable via the explicit empty-state CTA. Only fires while
-  // data.genMode is undefined — once the user picks any tab we respect that.
-  // HappyHorse 走下面的统一状态机，不参与这条默认。
+  // First connected image selects a model-compatible mode. Seedance 2.0 uses
+  // omni reference; Seedance 1.x uses first-frame generation.
   useEffect(() => {
     if (isHappyHorseModel) return;
     if (data.genMode != null) return;
     if (referenceImages.length === 0) return;
-    updateNodeData(id, { genMode: "allReference" });
-  }, [data.genMode, id, isHappyHorseModel, referenceImages.length, updateNodeData]);
+    updateNodeData(id, {
+      genMode: videoUpstreamImageDefaultMode(selectedVideoModelId),
+    });
+  }, [
+    data.genMode,
+    id,
+    isHappyHorseModel,
+    referenceImages.length,
+    selectedVideoModelId,
+    updateNodeData,
+  ]);
 
   // HappyHorse 的模式完全由上游节点类型决定（文档的 4 大功能一一对应），这里用
   // 一条统一状态机替代分散的兜底 effect，避免多个 effect 互相打架：
@@ -900,10 +892,23 @@ export function useVideoGenerationForm(
   useEffect(() => {
     const prev = prevHasAudioRef.current;
     prevHasAudioRef.current = hasAudioUpstream;
-    if (!prev && hasAudioUpstream && data.genMode !== "allReference" && !isHappyHorseModel) {
+    if (
+      !prev &&
+      hasAudioUpstream &&
+      data.genMode !== "allReference" &&
+      !isHappyHorseModel &&
+      isSeedance20Model
+    ) {
       updateNodeData(id, { genMode: "allReference" });
     }
-  }, [data.genMode, hasAudioUpstream, id, isHappyHorseModel, updateNodeData]);
+  }, [
+    data.genMode,
+    hasAudioUpstream,
+    id,
+    isHappyHorseModel,
+    isSeedance20Model,
+    updateNodeData,
+  ]);
 
   // 上游接入视频素材时，只有「全能参考」能消费视频；其它模式（文生 / 图生 /
   // 首尾帧 / 图片参考）都会把视频丢弃。所以只要上游存在视频就强制切到
@@ -912,9 +917,17 @@ export function useVideoGenerationForm(
   useEffect(() => {
     if (upstreamCounts.videos === 0) return;
     if (isHappyHorseModel) return;
+    if (!isSeedance20Model) return;
     if (genMode === "allReference") return;
     updateNodeData(id, { genMode: "allReference" });
-  }, [upstreamCounts.videos, genMode, id, isHappyHorseModel, updateNodeData]);
+  }, [
+    upstreamCounts.videos,
+    genMode,
+    id,
+    isHappyHorseModel,
+    isSeedance20Model,
+    updateNodeData,
+  ]);
 
   // 文生视频不接受任何素材引用。即便用户先手动选了 textToVideo 再接入
   // 图片/音频（此时上面两个自动切换 effect 都因 genMode 已显式而 bail），
@@ -924,10 +937,18 @@ export function useVideoGenerationForm(
     if (isHappyHorseModel) return;
     if (genMode !== "textToVideo") return;
     if (upstreamCounts.images === 0 && upstreamCounts.audios === 0) return;
-    updateNodeData(id, { genMode: "allReference" });
+    if (upstreamCounts.images > 0) {
+      updateNodeData(id, {
+        genMode: videoUpstreamImageDefaultMode(selectedVideoModelId),
+      });
+    } else if (isSeedance20Model) {
+      updateNodeData(id, { genMode: "allReference" });
+    }
   }, [
     genMode,
     isHappyHorseModel,
+    isSeedance20Model,
+    selectedVideoModelId,
     upstreamCounts.images,
     upstreamCounts.audios,
     id,
@@ -945,9 +966,22 @@ export function useVideoGenerationForm(
     updateNodeData(id, { genMode: "allReference" });
   }, [genMode, isHappyHorseModel, upstreamCounts.images, id, updateNodeData]);
 
+  const hasPromptText = prompt.trim().length > 0 || upstreamTextJoined.length > 0;
+  const hasRequiredMediaForMode =
+    genMode === "videoEdit"
+      ? upstreamCounts.videos > 0
+      : upstreamCounts.images > 0;
+  const mediaRejectionReason = videoSubmitMediaRejectionReason(
+    genMode,
+    selectedVideoModelId,
+    upstreamCounts,
+  );
   const submitDisabled =
     isGenerating ||
-    (prompt.trim().length === 0 && upstreamTextJoined.length === 0);
+    mediaRejectionReason != null ||
+    (videoModeRequiresPrompt(genMode)
+      ? !hasPromptText
+      : !hasRequiredMediaForMode);
 
   const handleSubmit = useCallback(async (): Promise<{ videoUrl?: string }> => {
     if (submitDisabled) return {};
@@ -1126,9 +1160,11 @@ export function useVideoGenerationForm(
             nodeId: targetId,
           });
       } else if (genMode === "allReference") {
-        if (isHappyHorseModel) {
+        if (!isSeedance20Model) {
           void showErrorDialog(
-            "HappyHorse 不支持全能参考模式，请切换为文生视频或图生视频。",
+            isHappyHorseModel
+              ? "HappyHorse 不支持全能参考模式，请切换为文生视频或图生视频。"
+              : "全能参考仅支持 Seedance 2.0 模型，请切换到 Seedance 2.0，或改用「首帧生成视频」。",
             t("common.error"),
           );
           updateNodeData(id, {
@@ -1141,8 +1177,11 @@ export function useVideoGenerationForm(
         // backend caps: image≤9, video≤3, audio≤3, total≤12.
         const upstream = collectUpstream();
         const references: FreezoneVideoReferenceItem[] = [];
-        // 与 references 里 type==="audio" 的项一一对应，用于提交前校验音频总时长。
-        const audioRefs: { url: string; durationMs: number | null }[] = [];
+        const audioRefs: {
+          url: string;
+          label: string;
+          durationMs: number | null;
+        }[] = [];
         let imageCount = 0;
         let videoCount = 0;
         let audioCount = 0;
@@ -1178,6 +1217,11 @@ export function useVideoGenerationForm(
               });
               audioRefs.push({
                 url,
+                label:
+                  rawLabel ||
+                  t("node.videoNode.audio.clipFallbackLabel", {
+                    index: audioCount + 1,
+                  }),
                 durationMs:
                   typeof node.data.durationMs === "number"
                     ? node.data.durationMs
@@ -1201,9 +1245,8 @@ export function useVideoGenerationForm(
           });
           return {};
         }
-        // Seedance 2.0 后端限制音频总时长 ≤ 15.2s，超了会以 InvalidParameter
-        // 报错。提交前先本地校验：durationMs 缺失时用 <audio> 探测兜底，超限就
-        // 弹窗拦下，避免白跑一趟后端。仅对 seedance2 生效（其它模型上限可能不同）。
+        // Seedance 2.0 requires every audio reference to stay within the
+        // provider's 1.8s-15.2s range.
         if (isSeedance20Model && audioRefs.length > 0) {
           const resolvedDurations = await Promise.all(
             audioRefs.map((ref) =>
@@ -1212,13 +1255,26 @@ export function useVideoGenerationForm(
                 : probeAudioDurationMs(ref.url),
             ),
           );
-          const totalAudioMs = resolvedDurations.reduce<number>(
-            (sum, ms) => sum + (ms ?? 0),
-            0,
+          const rejection = audioReferenceDurationRejection(
+            audioRefs.map((ref, index) => ({
+              label: ref.label,
+              durationMs: resolvedDurations[index] ?? null,
+            })),
           );
-          if (totalAudioMs > MAX_AUDIO_TOTAL_DURATION_MS) {
+          if (rejection) {
+            const clips = formatAudioDurationClips(rejection.clips, (key, vars) =>
+              t(key, vars),
+            );
             void showErrorDialog(
-              t("node.videoNode.audio.durationExceeded", { max: 15 }),
+              rejection.kind === "tooShort"
+                ? t("node.videoNode.audio.durationTooShort", {
+                    min: MIN_AUDIO_REFERENCE_DURATION_MS / 1000,
+                    clips,
+                  })
+                : t("node.videoNode.audio.durationTooLong", {
+                    max: MAX_AUDIO_REFERENCE_DURATION_MS / 1000,
+                    clips,
+                  }),
               t("common.error"),
             );
             updateNodeData(id, {
@@ -1348,6 +1404,7 @@ export function useVideoGenerationForm(
           if (completedUrls.length > 0) return;
           const resolved = resolveErrorContent(error, "视频生成失败");
           const displayErrorMessage = backendErrorToastMessage(error, t);
+          const diagnostics = resolveGenerationErrorDiagnostics(error, resolved.details);
           // Persist the failure on the node so the 重新生成 entry survives after
           // the user dismisses the dialog (previously the error was dialog-only).
           // 只有 run 0 失败才终结 loading：非首 run 失败时 run 0 可能还在跑，
@@ -1357,9 +1414,8 @@ export function useVideoGenerationForm(
               ? { isGenerating: false, generationStartedAt: null }
               : {}),
             generationError: displayErrorMessage,
-            generationErrorDetails: resolved.details ?? null,
-            generationErrorRequestId:
-              extractRequestId(displayErrorMessage) ?? extractRequestId(resolved.details),
+            generationErrorDetails: diagnostics.details,
+            generationErrorRequestId: diagnostics.requestId,
           });
         }
       };
@@ -1382,7 +1438,8 @@ export function useVideoGenerationForm(
         const firstError = runErrors[0];
         const resolved = resolveErrorContent(firstError, "视频生成失败");
         const displayErrorMessage = backendErrorToastMessage(firstError, t);
-        const haystack = `${displayErrorMessage}\n${resolved.details ?? ""}`;
+        const diagnostics = resolveGenerationErrorDiagnostics(firstError, resolved.details);
+        const haystack = `${displayErrorMessage}\n${diagnostics.details ?? ""}`;
         if (
           haystack.includes("InputImageSensitiveContentDetected.PrivateInformation")
           || haystack.includes("InputImageSensitiveContentDetected.PrivacyInformation")
@@ -1391,10 +1448,14 @@ export function useVideoGenerationForm(
           void showErrorDialog(
             "素材包含真实人脸，已被内容安全策略拦截。请在下方打开「真人素材审核」开关后重试（可能增加审核时间，不保证通过）。",
             "素材被拦截",
-            resolved.details,
+            diagnostics.details ?? undefined,
           );
         } else {
-          void showErrorDialog(displayErrorMessage, t("common.error"), resolved.details);
+          void showErrorDialog(
+            displayErrorMessage,
+            t("common.error"),
+            diagnostics.details ?? undefined,
+          );
         }
       } else if (runErrors.length > 0) {
         toast.error(
@@ -1513,6 +1574,7 @@ export function useVideoGenerationForm(
       onTranslate: handleTranslate,
       totalCreditCostDisplay,
       submitDisabled,
+      submitDisabledReason: mediaRejectionReason,
       onSubmit: handleGenerateClick,
     },
     isGenerating,
@@ -1520,6 +1582,7 @@ export function useVideoGenerationForm(
     submit: handleSubmit,
     prompt,
     quality,
+    selectedVideoModelId,
     upstreamCounts,
   };
 }

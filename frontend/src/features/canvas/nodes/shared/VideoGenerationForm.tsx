@@ -21,6 +21,7 @@ import {
   Loader2,
   Music,
   Pause,
+  Plus,
   Volume2,
   VolumeX,
 } from "lucide-react";
@@ -46,6 +47,7 @@ import {
   type ReferenceMediaCapEntry,
   type ReferenceMediaItem,
 } from "@/features/canvas/nodes/shared/videoFormOptions";
+import { isVideoModeSupportedByModel } from "@/features/canvas/nodes/shared/videoModelCapabilities";
 import {
   PromptMentionEditor,
   type MentionCandidate,
@@ -238,7 +240,9 @@ function GenModeSelect({ value, modelId, upstreamCounts, onChange }: GenModeSele
   // 非 HappyHorse 不暴露「视频编辑」(它是 HappyHorse 专属功能)。
   const visibleTabs = useMemo(() => {
     if (!isHappyHorseVideoModel(modelId)) {
-      return MODE_TABS.filter((tab) => tab.key !== "videoEdit");
+      return MODE_TABS.filter((tab) =>
+        isVideoModeSupportedByModel(tab.key, modelId),
+      );
     }
     const order =
       upstreamCounts.videos > 0
@@ -761,6 +765,22 @@ function CharacterLibraryChip({ onOpen }: CharacterLibraryChipProps) {
     >
       <Library className={`${NODE_TEXT_CONTROL_ICON_CLASS} group-hover/asset:text-text-dark`} />
       <span>资产库</span>
+    </button>
+  );
+}
+
+function ExternalAssetChip({ onOpen }: { onOpen: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={(event) => {
+        event.stopPropagation();
+        onOpen();
+      }}
+      className={`${NODE_TEXT_CONTROL_TRIGGER_CLASS} group/external px-1.5`}
+    >
+      <Plus className={`${NODE_TEXT_CONTROL_ICON_CLASS} group-hover/external:text-text-dark`} />
+      <span>外部素材</span>
     </button>
   );
 }
@@ -1310,6 +1330,7 @@ export interface VideoGenerationFormProps {
   cameraTemplatesLoading: boolean;
   cameraMovementId: string | null;
   onOpenCharacterLibrary: () => void;
+  onOpenExternalAssets?: () => void;
   genMode: VideoGenMode;
   /** 送进模式菜单判可用性的模型标识（优先 apiModel，回落 id）。 */
   genModeModelId: string | null | undefined;
@@ -1369,6 +1390,7 @@ export interface VideoGenerationFormProps {
   // ── 提交 ──
   totalCreditCostDisplay: string | null;
   submitDisabled: boolean;
+  submitDisabledReason?: string | null;
   onSubmit: () => void;
 
   /**
@@ -1401,6 +1423,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
     cameraTemplatesLoading,
     cameraMovementId,
     onOpenCharacterLibrary,
+    onOpenExternalAssets,
     genMode,
     genModeModelId,
     genModeUpstreamCounts,
@@ -1433,6 +1456,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
     onTranslate,
     totalCreditCostDisplay,
     submitDisabled,
+    submitDisabledReason,
     onSubmit,
     compact = false,
   } = props;
@@ -1470,6 +1494,9 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
             }
           />
           <CharacterLibraryChip onOpen={onOpenCharacterLibrary} />
+          {onOpenExternalAssets ? (
+            <ExternalAssetChip onOpen={onOpenExternalAssets} />
+          ) : null}
         </div>
         <div className="ml-3 flex shrink-0 items-center gap-3">
           <GenModeSelect
@@ -1614,7 +1641,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
             title={
               isGenerating
                 ? t("node.videoNode.submitBusy")
-                : t("node.videoNode.submit")
+                : (submitDisabledReason ?? t("node.videoNode.submit"))
             }
             onClick={(event) => {
               event.stopPropagation();

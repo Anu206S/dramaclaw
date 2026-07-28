@@ -228,7 +228,7 @@ interface Seedance2ConfigDraft {
 }
 
 type Seedance2ReferenceField = "prompt_guidance" | "final_prompt";
-type Seedance2CropAspect = "2:3" | "9:16" | "16:9";
+type Seedance2CropAspect = Seedance2ConfigDraft["ratio"];
 
 const SEEDANCE2_AUTOSAVE_DELAY_MS = 800;
 
@@ -944,7 +944,7 @@ export function VideoPane({
       void seedance2Status.refetch?.();
       toast.success(
         showHappyHorseConfig || showGrokVideoConfig
-          ? "主体提示词已优化"
+          ? t("episode.workbench.video.seedance2SubjectPromptGenerated")
           : t("episode.workbench.video.seedance2PromptGenerated"),
       );
     } catch (error) {
@@ -1841,9 +1841,9 @@ export function VideoPane({
             <Settings2 className="size-3.5 text-muted-foreground/78" />
             <Label className="text-xs font-medium text-foreground/82">
               {showGrokVideoConfig
-                ? "Grok Video 检视器"
+                ? t("episode.workbench.video.grokVideoInspector")
                 : showHappyHorseConfig
-                ? "HappyHorse 检视器"
+                ? t("episode.workbench.video.happyHorseInspector")
                 : t("episode.workbench.video.seedance2Inspector")}
             </Label>
             <Seedance2SummaryPill
@@ -2435,9 +2435,9 @@ export function VideoPane({
                     className="text-[11px] text-muted-foreground/78"
                   >
                     {showGrokVideoConfig
-                      ? "Grok 提示词"
+                      ? t("episode.workbench.video.grokPromptLabel")
                       : showHappyHorseConfig
-                      ? "主体提示词"
+                      ? t("episode.workbench.video.subjectPromptLabel")
                       : t("episode.workbench.video.seedance2Prompt")}
                   </Label>
                 </div>
@@ -2500,9 +2500,9 @@ export function VideoPane({
                     <WandSparkles className="size-3" />
                   )}
                   {showGrokVideoConfig
-                    ? "生成 Grok 提示词"
+                    ? t("episode.workbench.video.generateGrokPrompt")
                     : showHappyHorseConfig
-                    ? "生成主体提示词"
+                    ? t("episode.workbench.video.generateSubjectPrompt")
                     : t("episode.workbench.video.seedance2GeneratePrompt")}
                   <CreditCostInline display={seedance2PromptCostDisplay} />
                 </Button>
@@ -2549,12 +2549,8 @@ export function VideoPane({
       <Seedance2AssetCropDialog
         intent={seedance2CropIntent}
         targetCropAspect={
-          showSeedance2Config
-            ? seedance2CropAspectForMode(
-                seedance2Draft.mode,
-                seedance2Draft.ratio,
-                spec.renderAspect,
-              )
+          showSeedance2Config || showHappyHorseConfig || showGrokVideoConfig
+            ? seedance2Draft.ratio
             : videoInputCropAspectForProjectAspect(spec.renderAspect)
         }
         pending={cropSeedance2Asset.isPending}
@@ -2707,14 +2703,14 @@ function Seedance2AssetCropDialog({
         <div className="relative flex h-12 items-center border-b border-white/10 px-4">
           <div className="flex items-center gap-2 text-sm font-medium text-white">
             <Scissors className="size-4" />
-            {`裁剪 ${cropAspect}`}
+            {t("episode.workbench.video.seedance2CropTitleWithAspect", { aspect: cropAspect })}
           </div>
           <DialogTitle className="absolute left-1/2 max-w-[52vw] -translate-x-1/2 truncate text-center text-sm font-medium text-white">
             {t("episode.workbench.video.seedance2AssetCropTitle")}
           </DialogTitle>
           <button
             type="button"
-            aria-label="关闭"
+            aria-label={t("common.close")}
             className="absolute right-4 flex size-7 items-center justify-center text-white/90 hover:text-white"
             onClick={() => onOpenChange(false)}
           >
@@ -2744,7 +2740,7 @@ function Seedance2AssetCropDialog({
                     ref={cropBoxRef}
                     role="button"
                     tabIndex={0}
-                    aria-label="移动裁剪区域"
+                    aria-label={t("episode.workbench.video.seedance2CropDragHandle")}
                     className="absolute cursor-move touch-none border-2 border-cyan-400 shadow-[0_0_0_9999px_rgba(0,0,0,0.58)]"
                     style={cropBoxStyle}
                     onPointerDown={(event) => {
@@ -3105,17 +3101,6 @@ function seedance2DefaultRatioForProjectAspect(
   return aspect === "16:9" ? "16:9" : "9:16";
 }
 
-function seedance2CropAspectForMode(
-  mode: Seedance2ConfigDraft["mode"],
-  ratio: Seedance2ConfigDraft["ratio"],
-  firstFrameAspect: "2:3" | "16:9",
-): Seedance2CropAspect {
-  if (mode === "first_frame" || mode === "first_last_frame") {
-    return videoInputCropAspectForProjectAspect(firstFrameAspect);
-  }
-  return ratio === "16:9" ? "16:9" : "9:16";
-}
-
 function seedance2CropTargetForAsset(
   mode: Seedance2ConfigDraft["mode"],
   asset: Seedance2AssetItem,
@@ -3134,9 +3119,8 @@ function videoInputCropAspectForProjectAspect(
 }
 
 function cropAspectRatioValue(aspect: Seedance2CropAspect): number {
-  if (aspect === "16:9") return 16 / 9;
-  if (aspect === "2:3") return 2 / 3;
-  return 9 / 16;
+  const [width, height] = aspect.split(":").map(Number);
+  return width > 0 && height > 0 ? width / height : 9 / 16;
 }
 
 function defaultSeedance2Config(

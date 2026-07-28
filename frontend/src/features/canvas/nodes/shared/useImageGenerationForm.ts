@@ -459,6 +459,7 @@ export function useImageGenerationForm(
       isGenerating: true,
       generationStartedAt: Date.now(),
       generationError: null,
+      generationErrorDetails: null,
       generationErrorRequestId: null,
       generationBatch: null,
     });
@@ -532,13 +533,18 @@ export function useImageGenerationForm(
         if (resolvedCompletionMode === 'submitted') {
           void completeTask().catch((error) => {
             console.error('[image-gen] background generation failed', error);
+            const rawErrorMessage =
+              error instanceof Error && error.message
+                ? error.message
+                : String(error || t('common.error'));
             const displayErrorMessage = backendErrorToastMessage(error, t);
             updateNodeData(id, {
               ...(runIndex === 0
                 ? { isGenerating: false, generationStartedAt: null }
                 : {}),
               generationError: displayErrorMessage,
-              generationErrorRequestId: extractRequestId(displayErrorMessage),
+              generationErrorDetails: rawErrorMessage,
+              generationErrorRequestId: extractRequestId(rawErrorMessage),
             });
           });
           return;
@@ -573,13 +579,18 @@ export function useImageGenerationForm(
         // submit — the request id is the handle support uses to trace it.
         // 只有 run 0 失败才终结 loading：非首 run 失败时 run 0 可能还在跑，
         // 它的成功补丁会清掉这里写的错误横幅。
+        const rawErrorMessage =
+          error instanceof Error && error.message
+            ? error.message
+            : String(error || t('common.error'));
         const displayErrorMessage = backendErrorToastMessage(error, t);
         updateNodeData(id, {
           ...(runIndex === 0
             ? { isGenerating: false, generationStartedAt: null }
             : {}),
           generationError: displayErrorMessage,
-          generationErrorRequestId: extractRequestId(displayErrorMessage),
+          generationErrorDetails: rawErrorMessage,
+          generationErrorRequestId: extractRequestId(rawErrorMessage),
         });
         // Re-throw so the caller can surface a single error dialog after all
         // concurrent attempts settle (rather than one dialog per failed image).
