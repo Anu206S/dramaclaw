@@ -335,20 +335,20 @@ def test_compact_dynamic_intent_compiles_recipe_items_to_valid_plan(monkeypatch)
                     "id": "character_anchor",
                     "title": "角色锚点",
                     "prompt": "设计品牌动画角色",
-                    "recipe_id": "pixar-ip-character-design",
+                    "recipe_id": "ad-ip-character-anchor",
                 },
                 {
                     "id": "storyboard",
                     "title": "广告分镜",
                     "prompt": "生成五镜头广告分镜",
-                    "recipe_id": "pixar-ip-storyboard-sketch",
+                    "recipe_id": "storyboard-sketch",
                     "depends_on": ["character_anchor"],
                 },
                 {
                     "id": "video_clip",
                     "title": "广告视频",
                     "prompt": "生成品牌广告视频",
-                    "recipe_id": "pixar-ip-shot-video",
+                    "recipe_id": "shot-video",
                     "depends_on": ["storyboard"],
                 },
             ],
@@ -360,7 +360,7 @@ def test_compact_dynamic_intent_compiles_recipe_items_to_valid_plan(monkeypatch)
     plan = compiled["plan"]
     assert plan["mode"] == "tool_compiled_dynamic"
     node_catalog = plan["nodes"][1]["data"]["workflowCatalog"]
-    assert node_catalog["recipeId"] == "pixar-ip-character-design"
+    assert node_catalog["recipeId"] == "ad-ip-character-anchor"
     assert node_catalog["skillVersion"] == plan["skill"]["version"]
     assert node_catalog["confirmedInputs"]["aspect_ratio"] == "9:16"
     assert plan["nodes"][-1]["node_type"] == "videoComposeNode"
@@ -402,13 +402,13 @@ def test_compiler_uses_explicit_anchor_and_skips_audio_only_compose(monkeypatch)
                     "id": "anchor",
                     "title": "角色锚点",
                     "prompt": "生成品牌角色",
-                    "recipe_id": "pixar-ip-character-design",
+                    "recipe_id": "ad-ip-character-anchor",
                 },
                 {
                     "id": "video",
                     "title": "广告视频",
                     "prompt": "生成品牌广告视频",
-                    "recipe_id": "pixar-ip-shot-video",
+                    "recipe_id": "shot-video",
                     "depends_on": ["anchor"],
                 },
             ],
@@ -690,10 +690,95 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert skills["short-drama-quick"]["name"] == "短剧（快速测试）"
     assert skills["pixar-ip-ad-video"]["name"] == "皮克斯 IP 品牌广告短片"
     assert "pixar-ip-brand-ad-short-film" not in skills
-    assert "pixar-ip-shot-video" in recipes
-    assert "pixar-ip-audio-layers" in recipes
+    assert skills["pixar-ip-ad-video"]["allowed_recipe_ids"] == [
+        "ad-ip-character-anchor",
+        "ad-product-prop-anchor",
+        "storyboard-sketch",
+        "shot-video",
+        "ad-video-audio-layer",
+    ]
+    assert "ad-ip-character-anchor" in recipes
+    assert "ad-product-prop-anchor" in recipes
+    assert "storyboard-sketch" in recipes
+    assert "shot-video" in recipes
+    assert "ad-video-audio-layer" in recipes
+    assert "pixar-ip-character-design" not in recipes
+    assert "pixar-ip-prop-anchor" not in recipes
+    assert "pixar-ip-storyboard-sketch" not in recipes
+    assert "pixar-ip-shot-video" not in recipes
+    assert "pixar-ip-audio-layers" not in recipes
+    assert "pixar-ip-compose-plan" not in recipes
     assert "pixar-shot-video-clip" not in recipes
     assert "ad-audio-production" not in recipes
+
+
+def test_pixar_skill_keeps_methodology_while_recipes_stay_stage_focused(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    skills = {item["id"]: item for item in catalog._load_skills()}
+    recipes = {
+        item["id"]: item
+        for item in catalog._load_agent_config_items("recipes", catalog._RECIPES_DIR)
+    }
+    pixar_skill = skills["pixar-ip-ad-video"]
+    planning_text = "\n".join(
+        [
+            pixar_skill["planning"]["planning_notes"],
+            pixar_skill["planning"]["prompt_guide"],
+            "\n".join(pixar_skill["planning"]["conduct_rules"]),
+            "\n".join(pixar_skill["evaluation"]["domain_constraints"]),
+        ]
+    )
+    planning_notes = pixar_skill["planning"]["planning_notes"]
+    prompt_guide = pixar_skill["planning"]["prompt_guide"]
+
+    assert "闸门 1" in planning_text
+    assert "角色属性表" in planning_text
+    assert "产品道具" in planning_text
+    assert "角色关联道具" in planning_text
+    assert "15 秒广告 = 9 个面板" in planning_text
+    assert "15 秒广告拆分为 4 个视频片段" in planning_text
+    assert "角色设计" in planning_text and "分镜" in planning_text
+    assert "皮克斯 3D 卡通渲染" in prompt_guide
+    assert "C4D + Octane" in prompt_guide
+    assert "【执行路径】" not in prompt_guide
+    assert "【皮克斯视觉方向】" not in planning_notes
+
+    recipe_text = "\n".join(
+        item
+        for recipe_id in [
+            "ad-ip-character-anchor",
+            "ad-product-prop-anchor",
+            "storyboard-sketch",
+            "shot-video",
+            "ad-video-audio-layer",
+        ]
+        for item in [
+            recipes[recipe_id]["system_prompt"],
+            recipes[recipe_id]["planning_prompt"],
+            "\n".join(recipes[recipe_id]["must_have_items"]),
+        ]
+    )
+    assert "自创风格" not in recipe_text
+    assert "覆盖 Skill" not in recipe_text
+    assert "Recipe 内" not in recipe_text
+
+    character_anchor = recipes["ad-ip-character-anchor"]
+    character_text = "\n".join(
+        [
+            character_anchor["name"],
+            character_anchor["system_prompt"],
+            character_anchor["planning_prompt"],
+            character_anchor["result_summary"],
+            "\n".join(character_anchor["must_have_items"]),
+        ]
+    )
+    assert "广告 IP 角色锚点" in character_text
+    assert "身体附属结构" in character_text
+    assert "品牌、Logo、产品卖点和产品外观留给道具锚点阶段" in character_text
+    assert "尾巴状态必须明确" not in character_text
+    assert "no tail / tailless" not in character_text
 
 
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
@@ -704,7 +789,7 @@ def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch
         "video-tutorial": ("general-video", None),
         "text-to-image-video": ("general-video", None),
         "short-drama-quick": ("general-video", None),
-        "pixar-ip-ad-video": ("pixar-ip-shot-video", "pixar-ip-character-design"),
+        "pixar-ip-ad-video": ("shot-video", "ad-ip-character-anchor"),
     }
 
     for skill_id, (recipe_id, anchor_recipe_id) in skill_recipes.items():
