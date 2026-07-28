@@ -65,12 +65,17 @@ import {
   latestPendingSkillStudioQuestionEventForTest,
   latestPendingSkillStudioQuestionEventForActiveTurnForTest,
   skillStudioQuestionEventIdentityForTest,
+  agentRuntimeDisplayPartsForTest,
+  assistantRuntimeShouldHideSettledToolStatusForTest,
+  agentThoughtRuntimePresentationForTest,
+  genericToolTitleForTest,
   messageIsWaitingForUserReplyForTest,
   messageHasSkillStudioUiEventForTest,
   messageHasAgentRuntimeActivityForTest,
   messageHasVisibleAgentProgressActivityForTest,
   messageIdForThinkingCanvasContextActivityForTest,
   mergeAdjacentAgentThoughtPartsForTest,
+  mergeAdjacentToolStatusPartsForTest,
   shouldHideSkillStudioStatusOnlyMessageForTest,
   shouldShowComposerWaitingIndicator,
   skillStudioEvaluationDraftFieldsForTest,
@@ -4303,6 +4308,223 @@ describe("tool status parts", () => {
       },
     });
     expect(merged[2]).toMatchObject({ id: "thought-3" });
+  });
+
+  it("merges adjacent tool status parts with the same display into one runtime item", () => {
+    const merged = mergeAdjacentToolStatusPartsForTest([
+      toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-1",
+        name: "freezone_get_saved_recipe",
+        status: "completed",
+      }, "turn-a"),
+      toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-2",
+        name: "freezone_get_saved_recipe",
+        status: "completed",
+      }, "turn-a"),
+      toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-3",
+        name: "freezone_list_agent_catalog",
+        status: "completed",
+      }, "turn-a"),
+    ]);
+
+    expect(merged).toHaveLength(2);
+    expect(merged[0]).toMatchObject({
+      id: "tool_status:turn-a:call-1+tool_status:turn-a:call-2",
+      type: "tool_status",
+      repeatCount: 2,
+    });
+    expect(merged[1]).toMatchObject({
+      id: "tool_status:turn-a:call-3",
+    });
+    expect("repeatCount" in (merged[1] ?? {})).toBe(false);
+  });
+
+  it("uses friendly labels for Skill Studio catalog draft tools", () => {
+    const part = toolStatusPartForTest("agent.tool.updated", {
+      type: "agent.tool.updated",
+      turn_id: "turn-a",
+      call_id: "call-1",
+      name: "freezone_put_agent_catalog_draft_outline",
+      status: "completed",
+    }, "turn-a");
+
+    expect(genericToolTitleForTest((part as { event: ChatMessage }).event)).toBe("整理 Skill 方案");
+  });
+
+  it("hides non-failed tool status parts when replaying historical runtime activity", () => {
+    const runningTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-running",
+        name: "freezone_put_agent_catalog_recipe",
+        status: "running",
+      }, "turn-a"),
+      seq: 1,
+    };
+    const completedTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-completed",
+        name: "freezone_put_agent_catalog_recipe",
+        status: "completed",
+      }, "turn-a"),
+      seq: 2,
+    };
+    const failedTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-failed",
+        name: "freezone_put_agent_catalog_recipe",
+        status: "failed",
+        error: "提交失败",
+      }, "turn-a"),
+      seq: 3,
+    };
+    const thought: ChatMessagePart = {
+      id: "thought-a",
+      type: "agent_thought",
+      seq: 4,
+      event: { text: "继续整理草稿。", status: "running" },
+    };
+
+    const historical = agentRuntimeDisplayPartsForTest(
+      [runningTool, completedTool, failedTool, thought],
+      { streaming: false },
+    );
+    const streaming = agentRuntimeDisplayPartsForTest(
+      [runningTool, completedTool, failedTool, thought],
+      { streaming: true },
+    );
+
+    expect(historical.map((part) => part.id)).toEqual(["tool_status:turn-a:call-failed", "thought-a"]);
+    expect(streaming.map((part) => part.id)).toEqual([
+      "tool_status:turn-a:call-running+tool_status:turn-a:call-completed",
+      "tool_status:turn-a:call-failed",
+      "thought-a",
+    ]);
+  });
+
+  it("hides settled tool status once a Skill Studio surface is present", () => {
+    const skillStudioPart: ChatMessagePart = {
+      id: "skill-studio-draft",
+      type: "skill_studio",
+      event: {
+        type: "skill_studio.draft",
+        skill_studio_session_id: "studio-1",
+      },
+    };
+    const completedTool = toolStatusPartForTest("agent.tool.updated", {
+      type: "agent.tool.updated",
+      turn_id: "turn-a",
+      call_id: "call-completed",
+      name: "freezone_put_agent_catalog_recipe",
+      status: "completed",
+    }, "turn-a");
+
+    const hideWithoutSkillStudio = assistantRuntimeShouldHideSettledToolStatusForTest([completedTool]);
+    const hideWithSkillStudio = assistantRuntimeShouldHideSettledToolStatusForTest([completedTool, skillStudioPart]);
+
+    expect(hideWithoutSkillStudio).toBe(false);
+    expect(hideWithSkillStudio).toBe(true);
+    expect(agentRuntimeDisplayPartsForTest([completedTool], {
+      streaming: true,
+      hideSettledToolStatus: hideWithSkillStudio,
+    })).toEqual([]);
+  });
+
+  it("keeps runtime activity live while only Skill Studio progress status is present", () => {
+    const statusPart: ChatMessagePart = {
+      id: "skill-studio-status",
+      type: "skill_studio",
+      event: {
+        type: "skill_studio.status",
+        status: "routing",
+        message: "正在整理 Skill 方向...",
+      },
+    };
+    const thought: ChatMessagePart & { type: "agent_thought"; event: unknown } = {
+      id: "thought-a",
+      type: "agent_thought",
+      event: { text: "I need to read the canvas details.", status: "running" },
+    };
+    const hideSettledToolStatus = assistantRuntimeShouldHideSettledToolStatusForTest([statusPart, thought]);
+
+    expect(hideSettledToolStatus).toBe(false);
+    expect(agentThoughtRuntimePresentationForTest(thought, { streaming: true })).toMatchObject({
+      label: "思考中",
+      initiallyExpanded: true,
+    });
+  });
+
+  it("hides Skill Studio progress status once a draft surface is present in ordered parts", () => {
+    const assistant: ChatMessage = {
+      id: "assistant-1",
+      role: "assistant",
+      text: "好的，我重新提交这份草稿，你可以在预览后确认保存或继续修改。",
+      timestamp: Date.now(),
+      parts: [
+        {
+          id: "text-1",
+          type: "text",
+          text: "好的，我重新提交这份草稿，你可以在预览后确认保存或继续修改。",
+          seq: 1,
+        },
+        {
+          id: "skill-status-1",
+          type: "skill_studio",
+          seq: 2,
+          event: {
+            type: "skill_studio.status",
+            status: "draft_recipe_ready",
+            message: "已生成 Recipe 1 / 5",
+          },
+        },
+        {
+          id: "skill-draft-1",
+          type: "skill_studio",
+          seq: 3,
+          event: {
+            type: "skill_studio.draft",
+            skill_studio_session_id: "studio-1",
+            submitted: true,
+            cancelled: true,
+          },
+        },
+      ],
+    };
+
+    expect(visibleAssistantOrderedPartsForMessageForTest(assistant).map((part) => part.id)).toEqual([
+      "text-1",
+      "skill-draft-1",
+    ]);
+  });
+
+  it("collapses running thought parts when they are shown from history", () => {
+    const thought: ChatMessagePart & { type: "agent_thought"; event: unknown } = {
+      id: "thought-a",
+      type: "agent_thought",
+      event: { text: "继续整理草稿。", status: "running" },
+    };
+
+    expect(agentThoughtRuntimePresentationForTest(thought, { streaming: false })).toMatchObject({
+      label: "思考过程",
+      initiallyExpanded: false,
+    });
+    expect(agentThoughtRuntimePresentationForTest(thought, { streaming: true })).toMatchObject({
+      label: "思考中",
+      initiallyExpanded: true,
+    });
   });
 
   it("keeps repeated calls to the same tool separate", () => {

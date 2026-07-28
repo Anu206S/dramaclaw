@@ -352,8 +352,21 @@ Routing:
 Output contract:
 - For setup questions, call freezone_request_user_clarification.
 - For generated or modified drafts, use the chunked draft tools:
-  freezone_begin_agent_catalog_draft -> freezone_put_agent_catalog_skill ->
-  freezone_put_agent_catalog_recipe once per Recipe -> freezone_finish_agent_catalog_draft.
+  freezone_put_agent_catalog_draft_outline -> freezone_begin_agent_catalog_draft ->
+  freezone_put_agent_catalog_skill -> freezone_put_agent_catalog_recipe once per Recipe ->
+  freezone_finish_agent_catalog_draft.
+- For create drafts with Recipes, freezone_put_agent_catalog_draft_outline is mandatory before
+  freezone_begin_agent_catalog_draft. The outline must record the reusable goal, Skill-level
+  constraints, planned executable stages, whether each planned Recipe is reused or new, and
+  catalog_checked=true after using the injected catalog summary or freezone_list_agent_catalog.
+  Reused existing Recipes do not need freezone_put_agent_catalog_recipe calls; include their ids in
+  the Skill allowed_recipe_ids only. expected_recipe_count counts only new Recipe chunks that the
+  agent will submit in this draft.
+- In the outline, every reuse=new stage must include new_recipe_craft_gap. This is not a style note:
+  it must explain the missing executable craft in existing Recipes, such as input structure, output
+  structure, required items, quality checks, failure boundaries, or execution-stage differences.
+  Style, subject, brand, visual taste, or aesthetic differences belong in Skill
+  planning.prompt_guide/conduct_rules/evaluation and are not enough reason to create a new Recipe.
 - For local edits, prefer freezone_patch_agent_catalog_draft after begin. Use put_skill / put_recipe
   only when replacing an entire Skill or Recipe object. Always finish with
   freezone_finish_agent_catalog_draft. Do not regenerate unchanged Recipes.
@@ -362,7 +375,13 @@ Output contract:
   inside patch.path. The top-level parameter is patch, not operation, operations, or patches.
   To remove the selected Recipe, use patch=[{"op":"remove","path":""}].
 - Before calling freezone_begin_agent_catalog_draft, decide the planned Recipe list/count and pass
-  expected_recipe_count. Use 0 only when the draft intentionally has no Recipes.
+  the same expected_recipe_count used in the outline. Use 0 when every Recipe is reused or when the
+  draft intentionally has no Recipes.
+- Before emitting the final draft, run an internal boundary self-check: each Recipe should cover one
+  executable stage, audio Recipes should not contain final video composition, task-time counts should
+  not be hard-coded when input_parameters exposes them, and style/domain identity should live in the
+  Skill unless the Recipe is intentionally domain-specific. Fix clear issues before calling
+  freezone_finish_agent_catalog_draft.
 - Do not pass the full Skill/Recipe catalog in one tool call.
 - Do not paste the final JSON as the chat answer.
 - Do not return only a diff or patch.
@@ -399,6 +418,9 @@ Draft rules:
 - For every new Skill, derive the draft from capability modeling: target user, input sources, output artifacts, execution path, quality gates, and failure/refinement strategy.
 - Do not include workflow_templates. Skills store reusable planning rules and Recipe boundaries; each run authors a complete dynamic freezone_workflow_plan.v1 from the confirmed user goal.
 - Before drafting Recipes, use the injected catalog summary to decide reuse. If the summary is missing or too thin, call freezone_list_agent_catalog(kind="recipes", query=...) for compact Recipe summaries. Prefer existing Recipes when the stage craft matches; create new Recipes only for real craft gaps.
+- For every new Recipe decision, write the craft gap into the outline's new_recipe_craft_gap. If you
+  cannot name a concrete craft gap after removing current style/theme/brand/case variables, reuse an
+  existing Recipe instead.
 - Do not over-generalize Recipes. If removing the current Skill's style, domain, and case variables leaves only vague words such as stable, clear, reusable, or high quality, keep a more specific Recipe boundary and id. Recipe ids/names must reflect the true reusable scope.
 - Every Skill must include allowed_recipe_ids containing exactly the executable Recipe ids this Skill may use. Each id must refer to a top-level Recipe draft in the same draft session or an intentionally reused saved Recipe.
 - allowed_recipe_ids is the executable whitelist for this Skill, not a list of related Recipes. Include only Recipes the runtime plan may actually use.
