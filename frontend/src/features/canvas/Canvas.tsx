@@ -127,6 +127,7 @@ import {
   type SnapAlignIndex,
 } from './snap-align/computeSnapAlign';
 import { computeAutoLayout } from './application/autoLayout';
+import { useOrganizeUndo } from './hooks/useOrganizeUndo';
 import { migratePastedNodeAssets } from './application/crossProjectAssets';
 
 const DEFAULT_VIEWPORT: Viewport = { x: 0, y: 0, zoom: 1 };
@@ -2533,19 +2534,52 @@ export function Canvas({
     setSelectedNode,
   ]);
 
+  const {
+    pending: organizeUndo,
+    capture: captureOrganizeUndo,
+    keep: handleKeepOrganize,
+    consume: consumeOrganizeUndo,
+  } = useOrganizeUndo();
+
   const handleOrganizeCanvas = useCallback(() => {
     const { positions, changedCount } = computeAutoLayout(nodes, edges);
     if (Object.keys(positions).length === 0) {
       return;
     }
     if (changedCount > 0) {
+      const previous: Record<string, { x: number; y: number }> = {};
+      for (const node of nodes) {
+        if (positions[node.id]) {
+          previous[node.id] = { x: node.position.x, y: node.position.y };
+        }
+      }
+      const viewport = reactFlowInstance.getViewport();
       setNodePositions(positions);
       scheduleCanvasPersist(0);
+      // 拍快照要排在 setNodePositions 之后:整理自身那一次编辑得算进基准里。
+      captureOrganizeUndo(previous, viewport);
     }
     window.requestAnimationFrame(() => {
       reactFlowInstance.fitView({ duration: 240, padding: 0.2 });
     });
-  }, [edges, nodes, reactFlowInstance, scheduleCanvasPersist, setNodePositions]);
+  }, [
+    captureOrganizeUndo,
+    edges,
+    nodes,
+    reactFlowInstance,
+    scheduleCanvasPersist,
+    setNodePositions,
+  ]);
+
+  const handleRevertOrganize = useCallback(() => {
+    const snapshot = consumeOrganizeUndo();
+    if (!snapshot) {
+      return;
+    }
+    setNodePositions(snapshot.positions);
+    scheduleCanvasPersist(0);
+    reactFlowInstance.setViewport(snapshot.viewport, { duration: 240 });
+  }, [consumeOrganizeUndo, reactFlowInstance, scheduleCanvasPersist, setNodePositions]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -4744,6 +4778,9 @@ export function Canvas({
 
       <CanvasZoomControl
         onOrganize={handleOrganizeCanvas}
+        organizeConfirmOpen={organizeUndo !== null}
+        onKeepOrganize={handleKeepOrganize}
+        onRevertOrganize={handleRevertOrganize}
         placement={controlsPlacement}
       />
 

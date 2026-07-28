@@ -30,11 +30,18 @@ function isTypingTarget(target: EventTarget | null): boolean {
 
 interface CanvasZoomControlProps {
   onOrganize: () => void;
+  /** 整理刚发生、用户还没表态时为 true —— 控件上方浮出「保留 / 还原」确认条。 */
+  organizeConfirmOpen?: boolean;
+  onKeepOrganize?: () => void;
+  onRevertOrganize?: () => void;
   placement?: 'bottom-right' | 'top-right';
 }
 
 export function CanvasZoomControl({
   onOrganize,
+  organizeConfirmOpen = false,
+  onKeepOrganize,
+  onRevertOrganize,
   placement = 'bottom-right',
 }: CanvasZoomControlProps) {
   const { zoomTo, getZoom, fitView } = useReactFlow();
@@ -194,6 +201,33 @@ export function CanvasZoomControl({
           {percent}%
         </button>
       </div>
+
+      {/* 确认条和缩放菜单抢同一个锚点(控件正上方),菜单展开时先让位 —— 收起菜单后
+          它会原样回来,不会因此把这次整理默认判成「保留」。 */}
+      {organizeConfirmOpen && !menuOpen && (
+        <div
+          role="status"
+          className={`absolute right-0 z-40 flex items-center gap-1.5 whitespace-nowrap rounded-xl border border-white/10 bg-[#1c1c1e]/95 py-1.5 pl-3 pr-1.5 shadow-[0_12px_32px_rgba(0,0,0,0.45)] backdrop-blur-2xl ${
+            isTop ? 'top-full mt-2' : 'bottom-full mb-2'
+          }`}
+        >
+          <span className="text-[13px] text-text-dark">{t('canvas.toolbar.organizeConfirm')}</span>
+          <button
+            type="button"
+            onClick={onRevertOrganize}
+            className="rounded-lg px-2.5 py-1 text-[12px] text-text-muted transition hover:bg-white/10 hover:text-text"
+          >
+            {t('canvas.toolbar.organizeRevert')}
+          </button>
+          <button
+            type="button"
+            onClick={onKeepOrganize}
+            className="rounded-lg bg-white/[0.16] px-2.5 py-1 text-[12px] text-text transition hover:bg-white/[0.24]"
+          >
+            {t('canvas.toolbar.organizeKeep')}
+          </button>
+        </div>
+      )}
 
       {menuOpen && (
         <div

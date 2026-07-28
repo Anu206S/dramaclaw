@@ -2867,6 +2867,9 @@
       "unlock": "Unlock Canvas",
       "organize": "Organize / Locate Canvas",
       "organizeShortcut": "⌥⇧F",
+      "organizeConfirm": "Keep this arrangement?",
+      "organizeKeep": "Keep",
+      "organizeRevert": "Revert",
       "hideEdges": "Hide connections",
       "showEdges": "Show connections"
     },

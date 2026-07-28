@@ -2867,6 +2867,9 @@
       "unlock": "解锁画布",
       "organize": "整理 / 定位画布",
       "organizeShortcut": "⌥⇧F",
+      "organizeConfirm": "是否保留此次整理结果？",
+      "organizeKeep": "保留",
+      "organizeRevert": "还原",
       "hideEdges": "隐藏连线",
       "showEdges": "显示连线"
     },
