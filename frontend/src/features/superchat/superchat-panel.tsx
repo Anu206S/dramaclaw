@@ -430,6 +430,12 @@ const AGENT_TOOL_TITLE_OVERRIDES: Record<string, string> = {
   freezone_list_agent_catalog: "读取 Skill / Recipe 列表",
   freezone_get_saved_skill: "读取 Skill 配置",
   freezone_get_saved_recipe: "读取 Recipe 配置",
+  freezone_put_agent_catalog_draft_outline: "整理 Skill 方案",
+  freezone_begin_agent_catalog_draft: "创建 Skill 草稿",
+  freezone_put_agent_catalog_skill: "生成 Skill 配置",
+  freezone_put_agent_catalog_recipe: "生成 Recipe 配置",
+  freezone_patch_agent_catalog_draft: "调整 Skill 草稿",
+  freezone_finish_agent_catalog_draft: "展示 Skill 草稿",
 };
 
 function toolRawRecord(message: ChatMessage): Record<string, unknown> | null {
@@ -1662,6 +1668,8 @@ function genericToolTitle(message: ChatMessage): string {
     .replace(/\b\w/gu, (value) => value.toUpperCase());
 }
 
+export const genericToolTitleForTest = genericToolTitle;
+
 function normalizeInternalToolName(name: string): string {
   return name.trim().replace(/[\s_-]+/gu, " ").toLowerCase();
 }
@@ -1852,11 +1860,15 @@ function assistantPartsPreferWideLayout(parts: ChatMessagePart[]): boolean {
 
 export const assistantPartsPreferWideLayoutForTest = assistantPartsPreferWideLayout;
 
-function compactToolStatusLabel(status: ReturnType<typeof freezoneToolStatus>): string {
-  if (status === "running") return "进行中";
-  if (status === "failed") return "失败";
-  return "";
+function assistantRuntimeShouldHideSettledToolStatus(parts: ChatMessagePart[]): boolean {
+  return parts.some((part) => {
+    if (part.type !== "skill_studio") return false;
+    const event = part.event as SkillStudioUiEvent;
+    return event.type === "skill_studio.questions" || event.type === "skill_studio.draft";
+  });
 }
+
+export const assistantRuntimeShouldHideSettledToolStatusForTest = assistantRuntimeShouldHideSettledToolStatus;
 
 type AgentThoughtRuntimePart = ChatMessagePart & {
   type: "agent_thought";
@@ -1906,27 +1918,114 @@ function mergeAdjacentAgentThoughtParts(parts: ChatMessagePart[]): ChatMessagePa
 
 export const mergeAdjacentAgentThoughtPartsForTest = mergeAdjacentAgentThoughtParts;
 
-function AgentThoughtRuntimeItem({ part }: { part: AgentThoughtRuntimePart }) {
+type ToolStatusRuntimePart = ChatMessagePart & {
+  type: "tool_status";
+  event: ChatMessage;
+  repeatCount?: number;
+};
+
+type RuntimeDisplayPart = ChatMessagePart & { repeatCount?: number };
+
+function toolStatusPartMergeKey(part: RuntimeDisplayPart): string | null {
+  if (part.type !== "tool_status") return null;
+  const toolMessage = part.event as ChatMessage;
+  const display = freezoneToolDisplay(toolMessage);
+  const raw = toolRawRecord(toolMessage);
+  const status = freezoneToolStatus(toolMessage);
+  const error = typeof raw?.error === "string"
+    ? raw.error.trim()
+    : raw?.error ? JSON.stringify(raw.error) : "";
+  return [
+    display?.title ?? genericToolTitle(toolMessage),
+    status,
+    status === "failed" ? error : "",
+  ].join("|");
+}
+
+function mergeAdjacentToolStatusParts(parts: ChatMessagePart[]): RuntimeDisplayPart[] {
+  const merged: RuntimeDisplayPart[] = [];
+  for (const part of parts) {
+    const previous = merged[merged.length - 1];
+    const currentKey = toolStatusPartMergeKey(part);
+    if (currentKey && previous && toolStatusPartMergeKey(previous) === currentKey) {
+      merged[merged.length - 1] = {
+        ...previous,
+        id: `${previous.id}+${part.id}`,
+        seq: typeof previous.seq === "number" ? previous.seq : part.seq,
+        repeatCount: (previous.repeatCount ?? 1) + 1,
+      };
+      continue;
+    }
+    merged.push(part);
+  }
+  return merged;
+}
+
+export const mergeAdjacentToolStatusPartsForTest = mergeAdjacentToolStatusParts;
+
+function agentThoughtRuntimePresentation(
+  part: AgentThoughtRuntimePart,
+  options: { streaming: boolean },
+): { label: string; initiallyExpanded: boolean; running: boolean } {
+  const event = part.event && typeof part.event === "object" && !Array.isArray(part.event)
+    ? part.event as Record<string, unknown>
+    : {};
+  const running = event.status === "running";
+  const active = options.streaming && running;
+  return {
+    label: active ? "思考中" : "思考过程",
+    initiallyExpanded: active,
+    running,
+  };
+}
+
+export const agentThoughtRuntimePresentationForTest = agentThoughtRuntimePresentation;
+
+function agentRuntimeDisplayParts(
+  parts: ChatMessagePart[],
+  options: { streaming: boolean; hideSettledToolStatus?: boolean },
+): RuntimeDisplayPart[] {
+  return mergeAdjacentToolStatusParts(
+    mergeAdjacentAgentThoughtParts(
+      [...parts]
+        .filter((part) => {
+          if (part.type === "agent_usage") return false;
+          if (part.type !== "tool_status") return true;
+          const toolMessage = part.event as ChatMessage;
+          if (shouldHideInternalToolMessage(toolMessage)) return false;
+          if ((options.hideSettledToolStatus || !options.streaming) && freezoneToolStatus(toolMessage) !== "failed") {
+            return false;
+          }
+          return true;
+        })
+        .sort(compareRuntimeParts),
+    ),
+  );
+}
+
+export const agentRuntimeDisplayPartsForTest = agentRuntimeDisplayParts;
+
+function AgentThoughtRuntimeItem({ part, streaming }: { part: AgentThoughtRuntimePart; streaming: boolean }) {
   const event = part.event && typeof part.event === "object" && !Array.isArray(part.event)
     ? part.event as Record<string, unknown>
     : {};
   const text = typeof event.text === "string"
     ? String(event.text).trim()
     : "";
-  const running = event.status === "running";
-  const [expanded, setExpanded] = useState(running);
+  const presentation = agentThoughtRuntimePresentation(part, { streaming });
+  const [expanded, setExpanded] = useState(presentation.initiallyExpanded);
   const contentRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    setExpanded(running);
-  }, [part.id, running]);
+    setExpanded(presentation.initiallyExpanded);
+  }, [part.id, presentation.initiallyExpanded]);
 
   useEffect(() => {
-    if (!expanded || !running) return;
+    if (!expanded || !presentation.running || !streaming) return;
     const content = contentRef.current;
     if (!content) return;
     content.scrollTop = content.scrollHeight;
-  }, [expanded, running, text]);
+  }, [expanded, presentation.running, streaming, text]);
 
   if (!text) return null;
   return (
@@ -1937,7 +2036,7 @@ function AgentThoughtRuntimeItem({ part }: { part: AgentThoughtRuntimePart }) {
         onClick={() => setExpanded((value) => !value)}
       >
         <ChevronRight className={cn("size-3 shrink-0 transition-transform", expanded && "rotate-90")} />
-        <span className="min-w-0 flex-1 truncate">{running ? "思考中" : "思考过程"}</span>
+        <span className="min-w-0 flex-1 truncate">{presentation.label}</span>
       </button>
       {expanded && (
         <div
@@ -1951,21 +2050,23 @@ function AgentThoughtRuntimeItem({ part }: { part: AgentThoughtRuntimePart }) {
   );
 }
 
-function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
-  const runtimeParts = mergeAdjacentAgentThoughtParts(
-    [...parts]
-      .filter((part) =>
-      part.type !== "agent_usage" &&
-      !(part.type === "tool_status" && shouldHideInternalToolMessage(part.event as ChatMessage))
-      )
-      .sort(compareRuntimeParts),
-  );
+function AgentRuntimeTimeline({
+  parts,
+  streaming,
+  hideSettledToolStatus = false,
+}: {
+  parts: ChatMessagePart[];
+  streaming: boolean;
+  hideSettledToolStatus?: boolean;
+}) {
+  const runtimeParts = agentRuntimeDisplayParts(parts, { streaming, hideSettledToolStatus });
   if (runtimeParts.length === 0) return null;
   return (
     <div className="w-fit max-w-full space-y-1 text-xs text-muted-foreground">
       {runtimeParts.map((part) => {
         if (part.type === "tool_status") {
-          const toolMessage = part.event as ChatMessage;
+          const toolPart = part as ToolStatusRuntimePart;
+          const toolMessage = toolPart.event as ChatMessage;
           const display = freezoneToolDisplay(toolMessage);
           const status = freezoneToolStatus(toolMessage);
           const raw = toolRawRecord(toolMessage);
@@ -1973,12 +2074,18 @@ function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
             ? raw.error.trim()
             : raw?.error ? JSON.stringify(raw.error) : "";
           const detail = status === "failed" && error ? error : "";
-          const statusLabel = compactToolStatusLabel(status);
+          const title = display?.title ?? genericToolTitle(toolMessage);
+          const repeatText = toolPart.repeatCount && toolPart.repeatCount > 1 ? ` × ${toolPart.repeatCount}` : "";
+          const statusText = status === "running"
+            ? `正在${title}`
+            : status === "failed"
+              ? `${title}失败`
+              : `已${title}`;
           return (
             <div
               key={part.id}
               className={cn(
-                "flex min-h-6 max-w-full items-center gap-2 py-0.5",
+                "mt-2 flex w-fit max-w-full items-center gap-2 rounded-md px-0 py-1 text-xs",
                 status === "failed" ? "text-red-100" : "text-muted-foreground",
               )}
             >
@@ -1987,16 +2094,11 @@ function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
               ) : status === "failed" ? (
                 <AlertCircle className="size-3.5 shrink-0 text-red-400" />
               ) : (
-                <Check className="size-3.5 shrink-0 text-emerald-400" />
+                <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" />
               )}
-              <span className="min-w-0 flex-1 break-words font-medium text-foreground/90">
-                {display?.title ?? genericToolTitle(toolMessage)}
+              <span className="min-w-0 flex-1 break-words font-medium">
+                {statusText}{repeatText}
               </span>
-              {statusLabel && (
-                <span className="shrink-0 text-[11px] text-muted-foreground/80">
-                  {statusLabel}
-                </span>
-              )}
               {detail && <span className="min-w-0 flex-1 break-words text-[11px] text-red-200/80">{detail}</span>}
             </div>
           );
@@ -2043,7 +2145,7 @@ function AgentRuntimeTimeline({ parts }: { parts: ChatMessagePart[] }) {
           );
         }
         if (part.type === "agent_thought") {
-          return <AgentThoughtRuntimeItem key={part.id} part={part as AgentThoughtRuntimePart} />;
+          return <AgentThoughtRuntimeItem key={part.id} part={part as AgentThoughtRuntimePart} streaming={streaming} />;
         }
         return null;
       })}
@@ -3436,10 +3538,19 @@ export const visibleSkillStudioEventsForMessageForTest = visibleSkillStudioEvent
 function visibleAssistantOrderedPartsForMessage(message: ChatMessage): ChatMessagePart[] {
   if (!message.parts?.some((part) => part.type !== "text")) return [];
   const parts = hydrateOrderedPartsWithUiEvents(message.parts, messageUiEvents(message)) ?? [];
-  const visibleParts = !message.text.trim() ? parts : parts.filter((part) => {
+  const hasInteractiveSkillStudioPart = parts.some((part) => {
+    if (part.type !== "skill_studio") return false;
+    const event = part.event as SkillStudioUiEvent;
+    return event.type === "skill_studio.questions" || event.type === "skill_studio.draft";
+  });
+  const visibleParts = (!message.text.trim() ? parts : parts.filter((part) => {
     if (part.type !== "skill_studio") return true;
     const event = part.event;
     return !isTransientSkillStudioStatus(event);
+  })).filter((part) => {
+    if (!hasInteractiveSkillStudioPart || part.type !== "skill_studio") return true;
+    const event = part.event as SkillStudioUiEvent;
+    return event.type !== "skill_studio.status";
   });
   return reorderAssistantInteractionParts(visibleParts, message.text);
 }
@@ -6394,6 +6505,7 @@ const MessageBubble = memo(function MessageBubble({
   const assistantOrderedParts = collapseRepeatedCanvasStatusParts(assistantOrderedPartsRaw);
   const assistantPartGroups = groupAssistantOrderedParts(assistantOrderedParts);
   const assistantPrefersWideLayout = assistantPartsPreferWideLayout(assistantOrderedParts);
+  const assistantRuntimeHideSettledToolStatus = assistantRuntimeShouldHideSettledToolStatus(assistantOrderedParts);
   const assistantUsageSummary = !isUser && !isTool
     ? agentUsageSummaryFromMessage(message)
     : null;
@@ -6675,7 +6787,14 @@ const MessageBubble = memo(function MessageBubble({
               <div className="space-y-1.5">
                 {assistantPartGroups.map((group) => {
                   if (group.kind === "runtime") {
-                    return <AgentRuntimeTimeline key={group.key} parts={group.parts} />;
+                    return (
+                      <AgentRuntimeTimeline
+                        key={group.key}
+                        parts={group.parts}
+                        streaming={streaming}
+                        hideSettledToolStatus={assistantRuntimeHideSettledToolStatus}
+                      />
+                    );
                   }
                   return group.parts.map((part) => {
                     if (part.type === "text") {

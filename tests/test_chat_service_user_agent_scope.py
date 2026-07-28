@@ -1127,7 +1127,7 @@ def test_freezone_prompt_includes_skill_studio_contract_only_for_catalog_intent(
     assert "The top-level parameter is patch, not operation, operations, or patches" in prompt
     assert 'patch=[{"op":"remove","path":""}]' in prompt
     assert "expected_recipe_count" in prompt
-    assert "Use 0 only when the draft intentionally has no Recipes" in prompt
+    assert "Use 0 when every Recipe is reused" in prompt
     assert "Do not pass the full Skill/Recipe catalog in one tool call" in prompt
     assert "skill_studio_session_id" in prompt
     assert "Do not claim the Skill or Recipe is saved" in prompt
@@ -1236,8 +1236,7 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
     assert "hard_constraints" in prompt
     assert "start_options" in prompt
     assert "applicability_scope" in prompt
-    assert "皮克斯 3D 卡通广告片" in prompt
-    assert "柔和棚拍光影" in prompt
+    assert "Only mention a concrete visual style when it is actually supported" in prompt
     assert "not on the user's short request or canvas summary" in prompt
     assert "Do not read every node detail one by one" in prompt
     assert "Do not treat tool schemas as authoring guidance" in prompt
@@ -1266,10 +1265,8 @@ def test_freezone_prompt_requires_canvas_workflow_distillation_rules(
     assert "remove case_variables but preserve reusable_protocol_terms" in prompt
     assert "Do not let workflow_method_terms alone dominate the Skill identity" in prompt
     assert "keywords must cover protocol, output format, use case, and workflow method" in prompt
-    assert "Visual projects may need global visual language, stage-specific style exceptions, and style inheritance rules" in prompt
-    assert "Pixar 3D cartoon, C4D + Octane, soft studio lighting" in prompt
-    assert "storyboard may require black-and-white pencil sketch instead of inheriting rendered 3D color" in prompt
-    assert "videoCompose does not generate new creative content" in prompt
+    assert "Express it in generic layers first" in prompt
+    assert "global creative language, stage-specific exceptions, and inheritance rules" in prompt
     assert "For non-visual domains, the same contract may capture metric definitions, legal jurisdiction, teaching level, voice persona, or gameplay rules" in prompt
     assert "Do not derive Recipes only from node types" in prompt
 
