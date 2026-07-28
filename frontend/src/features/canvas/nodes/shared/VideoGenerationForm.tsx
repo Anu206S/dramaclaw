@@ -47,7 +47,10 @@ import {
   type ReferenceMediaCapEntry,
   type ReferenceMediaItem,
 } from "@/features/canvas/nodes/shared/videoFormOptions";
-import { isVideoModeSupportedByModel } from "@/features/canvas/nodes/shared/videoModelCapabilities";
+import {
+  isVideoModeSupportedByModel,
+  videoModelReferenceDisabledReason,
+} from "@/features/canvas/nodes/shared/videoModelCapabilities";
 import {
   PromptMentionEditor,
   type MentionCandidate,
@@ -121,44 +124,6 @@ const VIDEO_MODE_TOOLTIP_CLASS =
   "pointer-events-none absolute left-full top-1/2 z-[10001] ml-2 -translate-y-1/2 " +
   "whitespace-nowrap rounded-md bg-[#1f1f22] px-2.5 py-1.5 text-[11px] font-medium " +
   "text-white/90 shadow-lg ring-1 ring-white/10";
-
-// Seedance 1 全系列(1.0 Pro Fast / 1.5 Pro / …)。素材去掉分隔符后版本号
-// `1.x` → `1x`,匹配 `seedance1` 后跟任意数字,避免误命中 2.0(`20`)。
-// 引用了素材时这些模型不可用。
-function isSeedance1xModel(modelId: string | null | undefined): boolean {
-  const normalized = String(modelId ?? "")
-    .replace(/[\s._-]/g, "")
-    .toLowerCase();
-  return /seedance1\d/.test(normalized);
-}
-
-function isGrokVideoChannelModel(modelId: string | null | undefined): boolean {
-  const normalized = String(modelId ?? "")
-    .replace(/[\s._-]/g, "")
-    .toLowerCase();
-  return normalized.includes("grokvideochannel");
-}
-
-function videoModelReferenceDisabledReason(
-  modelId: string | null | undefined,
-  counts: { images: number; videos: number; audios: number },
-): string | null {
-  if (isGrokVideoChannelModel(modelId)) {
-    if (counts.videos > 0 || counts.audios > 0) {
-      return "Grok Video Channel 仅支持图片素材";
-    }
-    if (counts.images > 8) {
-      return "Grok Video Channel 最多支持 1 张首帧和 7 张参考图";
-    }
-    return null;
-  }
-  if (isSeedance1xModel(modelId)) {
-    if (counts.images > 0 || counts.videos > 0 || counts.audios > 0) {
-      return "该模型不支持当前接入的素材";
-    }
-  }
-  return null;
-}
 
 interface GenModeSelectProps {
   value: VideoGenMode;

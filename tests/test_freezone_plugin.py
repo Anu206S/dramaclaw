@@ -143,6 +143,9 @@ def test_freezone_plugin_registers_canvas_command_tools():
         "skill_id",
         "user_goal",
     ]
+    planner_schema = intent_schema["properties"]["intent"]["properties"]["planner"]
+    assert planner_schema["properties"]["mode"]["enum"] == ["standard"]
+    assert planner_schema["properties"]["item_count"]["maximum"] == 12
     draft_schema = schemas["freezone_confirm_workflow_draft"]["parameters"]
     assert draft_schema["required"] == ["draft_id", "revision"]
     patch_draft_schema = schemas["freezone_patch_workflow_draft"]["parameters"]
@@ -622,6 +625,35 @@ def test_workflow_graph_can_run_validated_nodes_after_create():
         "node_ids": ["brief", "image"],
         "scope": "selection",
     }
+
+
+def test_workflow_graph_leaves_mixed_text_edge_roles_for_per_edge_inference():
+    plugin = _load_plugin_module()
+    built = plugin.build_workflow_graph_commands(
+        {
+            "plan": {
+                "schema_version": "freezone_workflow_plan.v1",
+                "workflow_type": "dynamic.example",
+                "nodes": [
+                    {"id": "input", "node_type": "textAnnotationNode"},
+                    {"id": "outline", "node_type": "textAnnotationNode"},
+                    {"id": "image", "node_type": "imageGenNode"},
+                ],
+                "edges": [
+                    {"source": "input", "target": "outline", "link_type": "context_for"},
+                    {"source": "input", "target": "image", "link_type": "prompt_for"},
+                ],
+            }
+        }
+    )
+
+    assert built["ok"] is True
+    input_command = next(
+        command
+        for command in built["commands"]
+        if command.get("type") == "create_node" and command.get("client_id") == "input"
+    )
+    assert "semanticOutputRole" not in input_command["data"]
 
 
 def test_workflow_graph_defaults_speech_audio_to_preset_voice():

@@ -219,12 +219,21 @@ def resolve_canvas_command(
     *,
     bridge_dir: str | Path | None = None,
 ) -> dict[str, Any]:
+    result_path = _path("result", key, bridge_dir)
+    existing = _read_json(result_path)
+    if existing is not None:
+        # A background workflow reports "accepted" immediately, while the
+        # browser continues executing it. A duplicate recovered approval may
+        # later expire; that late cancellation must not overwrite the result
+        # already consumed by the waiting tool call.
+        _unlink_if_exists(_path("pending", key, bridge_dir))
+        return existing
     payload = {
         "key": key,
         "resolved_at": time.time(),
         **result,
     }
-    _write_json(_path("result", key, bridge_dir), payload)
+    _write_json(result_path, payload)
     _unlink_if_exists(_path("pending", key, bridge_dir))
     return payload
 

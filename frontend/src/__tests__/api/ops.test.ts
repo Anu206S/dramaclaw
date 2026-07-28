@@ -38,7 +38,12 @@ describe("freezone recipe API", () => {
   });
 
   it("allows long-running prompt compilation before media submission", async () => {
-    vi.mocked(apiCall).mockResolvedValueOnce({ prompt: "编译后的图片提示词" });
+    vi.mocked(apiCall).mockResolvedValueOnce({
+      prompt: "编译后的图片提示词",
+      compile_mode: "timeout_fallback",
+      recipe_ids: ["video-storyboard-grid", "cinematic-lighting"],
+    });
+    const onCompileMetadata = vi.fn();
 
     const prompt = await compileFreezoneRecipePrompt({
       recipeId: "video-storyboard-grid",
@@ -50,6 +55,7 @@ describe("freezone recipe API", () => {
       nodeKind: "image",
       nodePrompt: "生成多宫格分镜图",
       userGoal: "制作运动相机广告",
+      onCompileMetadata,
     });
 
     expect(prompt).toBe("编译后的图片提示词");
@@ -67,5 +73,9 @@ describe("freezone recipe API", () => {
         }),
       }),
     );
+    expect(onCompileMetadata).toHaveBeenCalledWith({
+      mode: "timeout_fallback",
+      recipeIds: ["video-storyboard-grid", "cinematic-lighting"],
+    });
   });
 });

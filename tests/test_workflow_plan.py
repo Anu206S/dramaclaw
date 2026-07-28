@@ -84,6 +84,140 @@ def _install_minimal_builtin_catalog(monkeypatch, catalog) -> None:
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
 
 
+def _install_real_builtin_catalog(monkeypatch, catalog) -> None:
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+
+def test_standard_ecommerce_image_planner_omits_audio_video_and_compose(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    result = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-ad",
+            "user_goal": "生成三张黑色运动相机电商图",
+            "planner": {
+                "mode": "standard",
+                "deliverable": "images",
+                "item_count": 3,
+                "include_audio": True,
+            },
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["planner"]["include_audio"] is False
+    node_types = {node["node_type"] for node in result["plan"]["nodes"]}
+    assert "audioNode" not in node_types
+    assert "videoNode" not in node_types
+    assert "videoComposeNode" not in node_types
+
+
+def test_standard_skill_planners_expand_without_agent_authored_topology(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+    skill_package = catalog.get_workflow_skill(
+        {"skill_id": "ecommerce-ad", "user_goal": "生成电商广告"}
+    )
+    planning_contract = skill_package["planning_contract"]
+    assert planning_contract["topology_modes"] == ["standard_planner", "custom_items"]
+    assert planning_contract["requires_agent_authored_topology"] is False
+    assert planning_contract["custom_items_require_agent_authored_topology"] is True
+    assert planning_contract["requires_explicit_recipe_id"] is False
+    assert planning_contract["custom_items_require_explicit_recipe_id"] is True
+
+    expectations = {
+        "ecommerce-ad": {"video-clip-generation", "general-audio"},
+        "text-to-image-video": {"general-image", "general-video"},
+        "video-tutorial": {"general-video", "general-audio"},
+        "short-drama-quick": {"general-video", "drama-shot-voice"},
+    }
+    for skill_id, expected_recipe_ids in expectations.items():
+        result = catalog.compile_workflow_intent(
+            {
+                "skill_id": skill_id,
+                "user_goal": "生成一个两段式竖屏测试视频",
+                "planner": {
+                    "mode": "standard",
+                    "item_count": 2,
+                    "units": [
+                        {
+                            "title": "开场",
+                            "prompt": "快速建立主题",
+                            "narration": "先看核心内容。",
+                        },
+                        {
+                            "title": "收尾",
+                            "prompt": "完成信息收束",
+                            "narration": "以上就是全部内容。",
+                        },
+                    ],
+                },
+            }
+        )
+
+        assert result["ok"] is True
+        assert result["planner"] == {
+            "mode": "deterministic_standard",
+            "skill_id": skill_id,
+            "deliverable": "video",
+            "item_count": 2,
+            "include_audio": skill_id != "text-to-image-video",
+        }
+        plan = result["plan"]
+        assert plan["planner"] == result["planner"]
+        recipe_ids = {
+            node.get("data", {}).get("workflowCatalog", {}).get("recipeId")
+            for node in plan["nodes"]
+        }
+        assert expected_recipe_ids <= recipe_ids
+        assert catalog.validate_agent_workflow_plan(plan)["ok"] is True
+
+
+def test_standard_skill_planner_uses_defaults_for_minimal_intent(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    result = catalog.compile_workflow_intent(
+        {
+            "skill_id": "text-to-image-video",
+            "user_goal": "生成一段赛博城市文生图生视频",
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["planner"]["mode"] == "deterministic_standard"
+    assert result["planner"]["item_count"] == 3
+    assert result["planner"]["include_audio"] is False
+
+
+def test_custom_items_take_precedence_over_standard_planner(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    result = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-ad",
+            "user_goal": "只生成一张自定义商品图",
+            "planner": {"mode": "standard", "item_count": 6},
+            "include_compose": False,
+            "items": [
+                {
+                    "id": "custom_image",
+                    "title": "自定义商品图",
+                    "prompt": "极简背景中的商品",
+                    "recipe_id": "general-image",
+                }
+            ],
+        }
+    )
+
+    assert result["ok"] is True
+    assert "planner" not in result
+    node_ids = {node["id"] for node in result["plan"]["nodes"]}
+    assert node_ids == {"workflow_input", "custom_image"}
+
+
 def _dynamic_plan(*, image_count: int = 1) -> dict:
     nodes = [
         {
@@ -253,9 +387,80 @@ def test_dynamic_item_supports_ordered_recipe_pipeline(monkeypatch):
     assert compiled["ok"] is True
     workflow_catalog = compiled["plan"]["nodes"][1]["data"]["workflowCatalog"]
     assert workflow_catalog["recipeId"] == "general-image"
+    assert workflow_catalog["recipeName"] == "通用图片"
     assert workflow_catalog["recipePipeline"] == [
-        {"id": "custom-shot-image", "version": 1}
+        {"id": "custom-shot-image", "name": "自定义分镜图", "version": 1}
     ]
+
+
+def test_dynamic_item_auto_connects_unique_generated_source_anchor(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-product",
+            "user_goal": "先生成商品锚点，再生成广告图",
+            "items": [
+                {
+                    "id": "product-anchor",
+                    "title": "商品锚点",
+                    "recipe_id": "general-image",
+                },
+                {
+                    "id": "hero-shot",
+                    "title": "商品广告图",
+                    "recipe_id": "ecommerce-ad-image",
+                },
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is True
+    assert {
+        (edge["source"], edge["target"], edge["link_type"])
+        for edge in compiled["plan"]["edges"]
+    } >= {
+        ("product-anchor", "hero-shot", "media_input_for"),
+    }
+
+
+def test_dynamic_item_rejects_conflicting_recipe_pipeline(monkeypatch):
+    catalog = _load_catalog_module()
+    recipes = copy.deepcopy(_MINIMAL_ECOMMERCE_RECIPES)
+    next(item for item in recipes if item["id"] == "custom-shot-image")[
+        "conflicts_with"
+    ] = ["general-image"]
+
+    def fake_load_json_dir(path):
+        if path == catalog._SKILLS_DIR:
+            return copy.deepcopy([_MINIMAL_ECOMMERCE_SKILL])
+        if path == catalog._RECIPES_DIR:
+            return copy.deepcopy(recipes)
+        return []
+
+    monkeypatch.setattr(catalog, "_load_json_dir", fake_load_json_dir)
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-product",
+            "user_goal": "生成商品图",
+            "items": [
+                {
+                    "id": "hero",
+                    "title": "商品图",
+                    "recipe_id": "general-image",
+                    "recipe_pipeline": ["custom-shot-image"],
+                }
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is False
+    assert "conflicts with" in compiled["error"]
 
 
 def test_user_agent_config_merges_with_builtin_catalog(monkeypatch):
@@ -440,6 +645,85 @@ def test_compiler_uses_explicit_anchor_and_skips_audio_only_compose(monkeypatch)
         node for node in audio["plan"]["nodes"] if node["node_type"] == "audioNode"
     )
     assert audio_node["data"]["workflowCatalog"]["recipeId"] == "general-audio"
+
+
+def test_compiler_routes_general_audio_bgm_to_music_generation(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "制作一条 15 秒广告",
+            "items": [
+                {
+                    "id": "bgm",
+                    "title": "背景音乐",
+                    "prompt": "为 15 秒广告创作轻柔背景音乐",
+                    "recipe_id": "general-audio",
+                }
+            ],
+        }
+    )
+
+    assert compiled["ok"] is True
+    audio_node = next(
+        node for node in compiled["plan"]["nodes"] if node["node_type"] == "audioNode"
+    )
+    assert audio_node["data"]["audioKind"] == "music"
+    assert audio_node["data"]["model"] == "suno_music"
+    assert audio_node["data"]["musicLengthMs"] == 16_000
+    assert "speechMode" not in audio_node["data"]
+
+
+def test_compiler_respects_explicit_audio_kind_for_ambiguous_general_audio(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "制作一条广告",
+            "items": [
+                {
+                    "id": "soundtrack",
+                    "title": "广告声音",
+                    "prompt": "轻柔钢琴",
+                    "audio_kind": "music",
+                    "recipe_id": "general-audio",
+                }
+            ],
+        }
+    )
+
+    audio_node = next(
+        node for node in compiled["plan"]["nodes"] if node["node_type"] == "audioNode"
+    )
+    assert audio_node["data"]["audioKind"] == "music"
+
+
+def test_compiler_rejects_speech_instruction_without_literal_narration(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "制作一条广告",
+            "items": [
+                {
+                    "id": "narration",
+                    "title": "旁白配音",
+                    "prompt": "根据广告脚本中的旁白文案，生成女声旁白配音",
+                    "audio_kind": "speech",
+                    "recipe_id": "general-audio",
+                }
+            ],
+        }
+    )
+
+    assert compiled["ok"] is False
+    assert compiled["errors"][0]["path"] == "items.0.narration"
 
 
 def test_parameterized_skill_uses_stateless_input_contract(monkeypatch):

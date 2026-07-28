@@ -17,6 +17,7 @@ import {
   DropdownMenuTrigger,
 } from "@/components/shadcn/dropdown-menu";
 import {
+  AlertTriangle,
   Boxes,
   ChevronDown,
   Copy,
@@ -1281,6 +1282,8 @@ export const NodeActionToolbar = memo(
     // missing.
     const _toolbarFlags = nodeMainlineFlags(node);
     const isPresetLocked = _toolbarFlags.isPresetManaged;
+    const recipeCompileFellBack =
+      node.data.workflowRecipeCompileMode === "timeout_fallback";
 
     // 分镜组 has its own dedicated toolbar (aspect / grid / index / convert /
     // ungroup) — render it instead of the generic node toolbar.
@@ -1314,6 +1317,16 @@ export const NodeActionToolbar = memo(
                 className="rounded-full bg-amber-500/15 px-3 py-1.5 text-sm text-amber-100"
               >
                 主线投影 · 锁定
+              </span>
+            )}
+            {recipeCompileFellBack && (
+              <span
+                key="recipe-compile-fallback"
+                className="inline-flex items-center gap-1 rounded-full bg-amber-500/15 px-3 py-1.5 text-sm text-amber-100"
+                title="Recipe 模型编译超时，本次已使用稳定降级提示词继续生成"
+              >
+                <AlertTriangle className="h-3.5 w-3.5" />
+                Recipe 已降级编译
               </span>
             )}
             {isPresetLocked && workbenchTarget && (

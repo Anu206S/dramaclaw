@@ -58,6 +58,13 @@ export type ImageQuality = 'low' | 'medium' | 'high';
 
 export interface NodeDisplayData {
   displayName?: string;
+  /**
+   * The workflow runner has scheduled this node action. This is deliberately
+   * separate from `isGenerating`, which is owned by the node after it accepts
+   * and submits the generation request.
+   */
+  workflowActionRunning?: boolean;
+  workflowActionStartedAt?: number | null;
   /** 关键元素分类：用户把该节点标记为关键元素并归类（见 domain/keyElements）。
    *  纯展示元数据、画布级持久化、工作流侧不读——未标记为 undefined/null。 */
   keyElementCategory?: KeyElementCategory | null;

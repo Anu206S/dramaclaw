@@ -420,6 +420,11 @@ export function useImageGenerationForm(
         kind: 'image',
         label: `reference-${index + 1}`,
       })),
+      onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(id, {
+        workflowRecipeCompileMode: mode,
+        workflowRecipeCompiledAt: new Date().toISOString(),
+        workflowRecipeIds: recipeIds,
+      }),
     });
     const genPayload = {
       prompt: effectivePrompt,
