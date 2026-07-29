@@ -1059,6 +1059,7 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert skills["lego-minifigure-animation-video"]["name"] == "乐高小人动画短片"
     assert skills["retro-hong-kong-kungfu-comedy-video"]["name"] == "港风功夫萌宠短片"
     assert skills["outdoor-stage-duel-video"]["name"] == "户外舞台双人能力秀"
+    assert skills["ling-cage-cinematic-video"]["name"] == "灵笼风格科幻短片"
     assert "pixar-ip-brand-ad-short-film" not in skills
     assert skills["pixar-ip-ad-video"]["allowed_recipe_ids"] == [
         "ad-ip-character-anchor",
@@ -1088,6 +1089,13 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "outdoor-stage-duel-shot-video",
         "outdoor-stage-duel-audio-layers",
     ]
+    assert skills["ling-cage-cinematic-video"]["allowed_recipe_ids"] == [
+        "sci-fi-survival-story-script",
+        "sci-fi-survival-storyboard",
+        "sci-fi-survival-key-elements",
+        "sci-fi-survival-shot-video",
+        "sci-fi-survival-audio-layers",
+    ]
     assert "ad-ip-character-anchor" in recipes
     assert "ad-product-prop-anchor" in recipes
     assert "workflow-input-analysis" in recipes
@@ -1100,6 +1108,11 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "outdoor-stage-duel-key-elements" in recipes
     assert "outdoor-stage-duel-shot-video" in recipes
     assert "outdoor-stage-duel-audio-layers" in recipes
+    assert "sci-fi-survival-story-script" in recipes
+    assert "sci-fi-survival-storyboard" in recipes
+    assert "sci-fi-survival-key-elements" in recipes
+    assert "sci-fi-survival-shot-video" in recipes
+    assert "sci-fi-survival-audio-layers" in recipes
     assert "visual-key-elements" in recipes
     assert "storyboard-shot-video" in recipes
     assert "video-audio-layer" in recipes
@@ -1128,6 +1141,12 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "retro-kungfu-shot-video" not in recipes
     assert "retro-kungfu-bgm" not in recipes
     assert "outdoor-stage-duel-video-spec" not in recipes
+    assert "ling-cage-video-spec" not in recipes
+    assert "ling-cage-story-script" not in recipes
+    assert "ling-cage-storyboard" not in recipes
+    assert "ling-cage-key-elements" not in recipes
+    assert "ling-cage-shot-video" not in recipes
+    assert "ling-cage-audio-layers" not in recipes
 
 
 def test_pixar_skill_keeps_methodology_while_recipes_stay_stage_focused(monkeypatch):
@@ -1425,6 +1444,101 @@ def test_outdoor_stage_duel_skill_keeps_global_spec_in_skill(monkeypatch):
     assert "Audio_VO" in recipe_text
 
 
+def test_ling_cage_skill_keeps_style_while_recipes_are_survival_sci_fi_stages(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    skills = {item["id"]: item for item in catalog._load_skills()}
+    recipes = {
+        item["id"]: item
+        for item in catalog._load_agent_config_items("recipes", catalog._RECIPES_DIR)
+    }
+    skill = skills["ling-cage-cinematic-video"]
+    planning = skill["planning"]
+    planning_text = "\n".join(
+        [
+            planning["planning_notes"],
+            planning["prompt_guide"],
+            "\n".join(planning["conduct_rules"]),
+            "\n".join(skill["evaluation"]["domain_constraints"]),
+        ]
+    )
+
+    assert "灵笼气质" in planning["prompt_guide"]
+    assert "半写实 3D CG" in planning_text
+    assert "GPT Image 2" in planning_text
+    assert "Seedance 2.0" in planning_text
+    assert "同模型失败自动重试一次" in planning_text
+    assert "这个规格不创建独立节点" in planning["planning_notes"]
+    assert "故事方向" in planning["planning_notes"]
+    assert "分镜" in planning["planning_notes"]
+    assert "关键元素图" in planning["planning_notes"]
+    assert "单镜视频" in planning["planning_notes"]
+    assert "音频" in planning["planning_notes"]
+    assert "Final_Video_Spec" not in planning_text
+    assert "ling-cage-video-spec" not in planning_text
+    assert "sci-fi-survival-story-script" not in planning_text
+    assert "sci-fi-survival-storyboard" not in planning_text
+    assert "sci-fi-survival-key-elements" not in planning_text
+    assert "sci-fi-survival-shot-video" not in planning_text
+    assert "sci-fi-survival-audio-layers" not in planning_text
+
+    recipe_text = "\n".join(
+        item
+        for recipe_id in [
+            "sci-fi-survival-story-script",
+            "sci-fi-survival-storyboard",
+            "sci-fi-survival-key-elements",
+            "sci-fi-survival-shot-video",
+            "sci-fi-survival-audio-layers",
+        ]
+        for item in [
+            recipes[recipe_id]["name"],
+            recipes[recipe_id]["system_prompt"],
+            recipes[recipe_id]["planning_prompt"],
+            recipes[recipe_id]["result_summary"],
+            "\n".join(recipes[recipe_id]["must_have_items"]),
+        ]
+    )
+    assert "末世科幻" in recipe_text
+    assert "Final_Video_Spec" not in recipe_text
+    assert "灵笼" not in recipe_text
+    assert "玛娜" not in recipe_text
+    assert "灯塔" not in recipe_text
+    assert "龙骨村" not in recipe_text
+    assert "噬极兽" not in recipe_text
+    assert "覆盖 Skill" not in recipe_text
+    assert "Recipe 内" not in recipe_text
+
+    key_elements = recipes["sci-fi-survival-key-elements"]
+    key_text = "\n".join(
+        [
+            key_elements["name"],
+            key_elements["system_prompt"],
+            key_elements["planning_prompt"],
+            key_elements["result_summary"],
+            "\n".join(key_elements["must_have_items"]),
+        ]
+    )
+    assert "全身三视图" in key_text
+    assert "2x2 无角色四宫格" in key_text
+    assert "完整结构或多角度" in key_text
+    assert "后续视频引用锚点" in key_text
+
+    shot_text = "\n".join(
+        [
+            recipes["sci-fi-survival-shot-video"]["system_prompt"],
+            "\n".join(recipes["sci-fi-survival-shot-video"]["must_have_items"]),
+        ]
+    )
+    assert "image_infos 最多 9" in shot_text
+    assert "audio_infos 最多 3" in shot_text
+    assert "reference_video" in shot_text
+    assert "back to camera" in shot_text
+    assert "micro-shake" in shot_text
+    assert "no subtitles" in shot_text
+
+
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
@@ -1441,6 +1555,10 @@ def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch
         "outdoor-stage-duel-video": (
             "outdoor-stage-duel-shot-video",
             "outdoor-stage-duel-key-elements",
+        ),
+        "ling-cage-cinematic-video": (
+            "sci-fi-survival-shot-video",
+            "sci-fi-survival-key-elements",
         ),
     }
 
