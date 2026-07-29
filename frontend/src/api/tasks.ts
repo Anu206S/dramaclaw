@@ -41,6 +41,19 @@ export interface TaskState {
   metadata?: Record<string, unknown> | null;
 }
 
+export type ProjectTaskQueueKind = "default" | "video" | "world" | "ffmpeg";
+
+export interface ProjectTaskLaneLimits {
+  limit: number | null;
+  active: number;
+  remaining: number | null;
+  user_limit: number | null;
+  user_active: number;
+  user_remaining: number | null;
+}
+
+export type ProjectTaskLimits = Record<ProjectTaskQueueKind, ProjectTaskLaneLimits>;
+
 export class TaskCompletionError extends Error {
   constructor(
     message: string,
@@ -64,6 +77,13 @@ export async function listTasks(projectId?: string): Promise<TaskState[]> {
   const resolved = resolveTaskProjectId(projectId);
   return await apiCall<TaskState[]>(
     `projects/${encodeURIComponent(resolved)}/tasks`,
+  );
+}
+
+export async function getProjectTaskLimits(projectId: string): Promise<ProjectTaskLimits> {
+  const resolved = resolveTaskProjectId(projectId);
+  return await apiCall<ProjectTaskLimits>(
+    `projects/${encodeURIComponent(resolved)}/tasks/limits`,
   );
 }
 
