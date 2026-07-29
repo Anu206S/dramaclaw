@@ -692,9 +692,12 @@ export function AssetLibraryPanel({
       <aside
         className="pointer-events-none absolute inset-y-0 left-0 z-30 overflow-visible"
       >
-        {/* 折叠/展开胶囊 — 停在卡片右侧的画布上 */}
+        {/* 折叠/展开胶囊 — 停在卡片右侧的画布上。
+            top-[52px]：让开内容区顶部那条 48px 窄带——「工作流/故事板」图标开关搬到
+            左上角后就钉在那里（FreezoneShell），把手留在 top-3 会正好压上去。
+            故事板那侧本来就用 pt-12 空出同一条带，两个视图因此对齐。 */}
         <div
-          className="group/handle pointer-events-auto absolute top-3 z-30 flex h-10 w-10 items-center justify-center transition-[left] duration-[360ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
+          className="group/handle pointer-events-auto absolute top-[52px] z-30 flex h-10 w-10 items-center justify-center transition-[left] duration-[360ms] ease-[cubic-bezier(0.22,1,0.36,1)]"
           style={{ left: collapsed ? 16 : 316 }}
         >
           <button
@@ -736,7 +739,9 @@ export function AssetLibraryPanel({
               ? "pointer-events-none -translate-x-3 opacity-0"
               : "pointer-events-auto translate-x-0 opacity-100"
           }`}
-          style={{ width: 288, marginLeft: 16, marginTop: 16, marginBottom: 16, height: 'calc(100% - 32px)' }}
+          // marginTop 56：同上，给左上角那颗视图切换开关让出顶部窄带（把手在 52，卡片
+          // 比它再低 4px，沿用原来「把手比卡片高 4px」的相对关系）。
+          style={{ width: 288, marginLeft: 16, marginTop: 56, marginBottom: 16, height: 'calc(100% - 72px)' }}
         >
           {/* ─ 分段 Tab 栏 ── */}
           <div className="flex rounded-full border border-white/10 mx-3 mt-4 mb-1.5 p-0.5 gap-0.5">

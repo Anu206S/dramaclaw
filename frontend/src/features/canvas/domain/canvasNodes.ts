@@ -768,6 +768,20 @@ export function isExportImageNode(
   return node?.type === CANVAS_NODE_TYPES.exportImage;
 }
 
+/**
+ * 「还没出图的高清放大结果节点」：`createUpscaleResultNode` 预建、用户还没按 ↑ 提交
+ * （或任务尚未回填）的那种。
+ *
+ * 这类节点的 `previewImageUrl` 存的是**待放大的源图**，用来给编辑器当参照；但它不是
+ * 这个节点的内容。谁把它当缩略图渲染出来，用户就会以为那已经是放大后的效果——所以
+ * 凡是「这个节点长什么样 / 有没有素材可操作」的判断都要先问过这里，答案是没有。
+ */
+export function isPendingUpscaleNode(node: CanvasNode | null | undefined): boolean {
+  if (!isExportImageNode(node)) return false;
+  const data = node.data as { resultKind?: unknown; imageUrl?: unknown };
+  return data.resultKind === 'upscale' && !data.imageUrl;
+}
+
 export function isBeatContextNode(
   node: CanvasNode | null | undefined
 ): node is Node<BeatContextNodeData, typeof CANVAS_NODE_TYPES.beatContext> {
