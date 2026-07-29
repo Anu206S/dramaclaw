@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ArrowUp, ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronRight, Copy, Download, Eye, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -71,6 +71,10 @@ const NODE_SCOPE_LABELS: Record<(typeof NODE_SCOPE_OPTIONS)[number], string> = {
   videoGeneration: "视频生成",
   audioGeneration: "音频生成",
 };
+
+function getBodyPortalContainer() {
+  return typeof document === "undefined" ? null : document.body;
+}
 
 interface SkillDraft {
   id: string;
@@ -633,6 +637,7 @@ export function FreezoneSkillRecipeSettings({
       <NewSkillEditor
         open={addingSkill || editingSkill !== null}
         initialPayload={editingSkill}
+        recipes={recipeItems}
         onOpenChange={(open) => {
           setAddingSkill(open);
           if (!open) setEditingSkill(null);
@@ -765,6 +770,7 @@ function NewRecipeEditor({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         showCloseButton={false}
+        portalContainer={getBodyPortalContainer()}
         className="grid h-[min(86vh,704px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-lg border border-border bg-black p-0 text-foreground ring-0 sm:max-w-[720px]"
         overlayClassName="bg-black/35"
       >
@@ -918,12 +924,14 @@ function NewSkillEditor({
   open,
   onOpenChange,
   onSave,
+  recipes,
   saving,
 }: {
   initialPayload: FreezoneAgentConfigPayload | null;
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSave: (payload: FreezoneAgentConfigPayload) => Promise<void>;
+  recipes: ManagedCatalogItem[];
   saving: boolean;
 }) {
   const { t } = useTranslation();
@@ -948,6 +956,8 @@ function NewSkillEditor({
   const [visualReviewItems, setVisualDimensions] = useState<DimensionDraft[]>([]);
   const [textReviewItems, setTextDimensions] = useState<DimensionDraft[]>([]);
   const [rawJsonOpen, setRawJsonOpen] = useState(false);
+  const [recipePickerOpen, setRecipePickerOpen] = useState(false);
+  const [recipeDetail, setRecipeDetail] = useState<ManagedCatalogItem | null>(null);
 
   useEffect(() => {
     if (!open) return;
@@ -957,6 +967,8 @@ function NewSkillEditor({
     setVisualDimensions(hydrated.visualReviewItems);
     setTextDimensions(hydrated.textReviewItems);
     setRawJsonOpen(false);
+    setRecipePickerOpen(false);
+    setRecipeDetail(null);
   }, [initialPayload, open]);
 
   const handleOpenChange = (nextOpen: boolean) => {
@@ -982,6 +994,8 @@ function NewSkillEditor({
       setVisualDimensions([]);
       setTextDimensions([]);
       setRawJsonOpen(false);
+      setRecipePickerOpen(false);
+      setRecipeDetail(null);
     }
     onOpenChange(nextOpen);
   };
@@ -1080,6 +1094,7 @@ function NewSkillEditor({
     <Dialog open={open} onOpenChange={handleOpenChange}>
       <DialogContent
         showCloseButton={false}
+        portalContainer={getBodyPortalContainer()}
         className="grid h-[min(86vh,704px)] grid-rows-[auto_minmax(0,1fr)_auto] gap-0 overflow-hidden rounded-lg border border-border bg-black p-0 text-foreground ring-0 sm:max-w-[720px]"
         overlayClassName="bg-black/35"
       >
@@ -1138,11 +1153,15 @@ function NewSkillEditor({
             title={t("settings.freezoneCatalog.newSkill.workflow2Title")}
             description={t("settings.freezoneCatalog.newSkill.workflow2Description")}
           >
-            <TagInputField
+            <AllowedRecipesEditor
+              availableRecipes={recipes}
+              detailRecipe={recipeDetail}
+              pickerOpen={recipePickerOpen}
               label={t("settings.freezoneCatalog.newSkill.allowedRecipeIds")}
-              placeholder={t("settings.freezoneCatalog.newSkill.allowedRecipeIdsPlaceholder")}
               value={skillDraft.allowedRecipeIds}
               onChange={(value) => updateSkillDraft({ allowedRecipeIds: value })}
+              onDetailChange={setRecipeDetail}
+              onPickerOpenChange={setRecipePickerOpen}
               hint={t("settings.freezoneCatalog.newSkill.allowedRecipeIdsHint")}
             />
             <InputParametersEditor
@@ -1326,6 +1345,7 @@ function NewSkillEditor({
             {t("settings.freezoneCatalog.newSkill.save")}
           </Button>
         </DialogFooter>
+        <RecipeDetailDrawer recipe={recipeDetail} onClose={() => setRecipeDetail(null)} />
       </DialogContent>
     </Dialog>
   );
@@ -1791,6 +1811,375 @@ function TagInputField({
       </div>
       {hint ? <span className="mt-1 block text-[10px] text-muted-foreground">{hint}</span> : null}
     </div>
+  );
+}
+
+function AllowedRecipesEditor({
+  availableRecipes,
+  detailRecipe,
+  hint,
+  label,
+  onChange,
+  onDetailChange,
+  onPickerOpenChange,
+  pickerOpen,
+  value,
+}: {
+  availableRecipes: ManagedCatalogItem[];
+  detailRecipe: ManagedCatalogItem | null;
+  hint?: string;
+  label: string;
+  onChange: (value: string[]) => void;
+  onDetailChange: (recipe: ManagedCatalogItem | null) => void;
+  onPickerOpenChange: (open: boolean) => void;
+  pickerOpen: boolean;
+  value: string[];
+}) {
+  const [query, setQuery] = useState("");
+  const [manualRecipeId, setManualRecipeId] = useState("");
+  const [expanded, setExpanded] = useState(false);
+  const recipeById = useMemo(() => {
+    return new Map(availableRecipes.map((recipe) => [recipe.id, recipe]));
+  }, [availableRecipes]);
+  const linkedIds = useMemo(
+    () => Array.from(new Set(value.map((id) => id.trim()).filter(Boolean))),
+    [value],
+  );
+  const selectedIdSet = useMemo(() => new Set(linkedIds), [linkedIds]);
+  const missingRecipeCount = useMemo(
+    () => linkedIds.filter((recipeId) => !recipeById.has(recipeId)).length,
+    [linkedIds, recipeById],
+  );
+  const filteredRecipes = useMemo(() => {
+    const needle = query.trim().toLowerCase();
+    return availableRecipes
+      .filter((recipe) => !selectedIdSet.has(recipe.id))
+      .filter((recipe) => {
+        if (!needle) return true;
+        return [recipe.id, recipe.title, recipe.description, ...recipe.tags]
+          .join(" ")
+          .toLowerCase()
+          .includes(needle);
+      });
+  }, [availableRecipes, query, selectedIdSet]);
+
+  const removeRecipe = (recipeId: string) => {
+    onChange(linkedIds.filter((id) => id !== recipeId));
+    if (detailRecipe?.id === recipeId) {
+      onDetailChange(null);
+    }
+  };
+
+  const addRecipe = (recipeId: string) => {
+    if (selectedIdSet.has(recipeId)) return;
+    onChange([...linkedIds, recipeId]);
+    onPickerOpenChange(false);
+    setQuery("");
+  };
+  const addManualRecipe = () => {
+    const recipeId = manualRecipeId.trim();
+    if (!recipeId || selectedIdSet.has(recipeId)) return;
+    onChange([...linkedIds, recipeId]);
+    setManualRecipeId("");
+    setQuery("");
+    onPickerOpenChange(false);
+  };
+
+  return (
+    <div className="block">
+      <div className="overflow-hidden rounded-md border border-input/80 bg-input/10">
+        <div className="flex items-center gap-3 px-3 py-2.5">
+          <button
+            type="button"
+            aria-label={expanded ? "收起关联 Recipes" : "展开关联 Recipes"}
+            onClick={() => setExpanded((value) => !value)}
+            className="flex min-w-0 flex-1 items-center gap-2 text-left"
+          >
+            {expanded ? (
+              <ChevronDown className="size-3.5 shrink-0 text-muted-foreground" />
+            ) : (
+              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+            )}
+            <span className="min-w-0 flex-1">
+              <span className="block text-xs font-medium text-foreground">{label}</span>
+              <span className="mt-0.5 block truncate text-[10px] text-muted-foreground">
+                {linkedIds.length > 0
+                  ? `已关联 ${linkedIds.length} 个 Recipe${missingRecipeCount > 0 ? `，${missingRecipeCount} 个未找到配置` : ""}`
+                  : "这个 Skill 暂时没有关联 Recipe"}
+              </span>
+            </span>
+          </button>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            onClick={() => onPickerOpenChange(true)}
+            className="h-8 shrink-0"
+          >
+            <Plus className="size-3.5" />
+            添加 Recipe
+          </Button>
+        </div>
+        {hint ? (
+          <div className="border-t border-border/60 px-3 py-1.5 text-[10px] text-muted-foreground">
+            {hint}
+          </div>
+        ) : null}
+        {expanded ? (
+          <div className="border-t border-border/60">
+            {linkedIds.length > 0 ? (
+              linkedIds.map((recipeId) => {
+                const recipe = recipeById.get(recipeId);
+                return (
+                  <div
+                    key={recipeId}
+                    className="grid grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-border/60 px-3 py-2.5 last:border-b-0"
+                  >
+                    <div className="min-w-0">
+                      <div className="flex min-w-0 items-center gap-2">
+                        {recipe?.generationType ? (
+                          <span className={catalogGenerationTypeBadgeClass(recipe.generationType)}>
+                            {recipe.generationType}
+                          </span>
+                        ) : null}
+                        <span className="truncate text-[13px] font-medium text-foreground">
+                          {recipe?.title || recipeId}
+                        </span>
+                        <span className="truncate font-mono text-[11px] text-muted-foreground/70">
+                          {recipeId}
+                        </span>
+                      </div>
+                      <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                        {recipe?.description || "未找到本地 Recipe 配置，保存时仍会保留这个关联 ID。"}
+                      </p>
+                    </div>
+                    <div className="flex shrink-0 items-center gap-1">
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="sm"
+                        disabled={!recipe}
+                        onClick={() => recipe && onDetailChange(recipe)}
+                        className="h-7 px-2 text-xs text-muted-foreground hover:text-foreground"
+                      >
+                        <Eye className="size-3.5" />
+                        查看
+                      </Button>
+                      <button
+                        type="button"
+                        aria-label={`移除 ${recipeId}`}
+                        onClick={() => removeRecipe(recipeId)}
+                        className="grid size-7 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
+                      >
+                        <X className="size-3.5" />
+                      </button>
+                    </div>
+                  </div>
+                );
+              })
+            ) : (
+              <div className="px-3 py-3 text-xs text-muted-foreground">
+                这个 Skill 暂时没有关联 Recipe
+              </div>
+            )}
+          </div>
+        ) : null}
+      </div>
+
+      <Dialog open={pickerOpen} onOpenChange={onPickerOpenChange}>
+        <DialogContent
+          portalContainer={getBodyPortalContainer()}
+          className="max-w-[520px] gap-0 overflow-hidden rounded-lg border-border bg-black p-0"
+        >
+          <DialogHeader className="border-b border-border px-5 py-4">
+            <DialogTitle className="text-base">添加 Recipe</DialogTitle>
+          </DialogHeader>
+          <div className="p-5">
+            <div className="mb-3 grid gap-2 rounded-md border border-border/70 bg-white/[0.02] p-3">
+              <div className="text-[11px] font-medium text-foreground">手动添加 ID</div>
+              <div className="flex gap-2">
+                <Input
+                  value={manualRecipeId}
+                  onChange={(event) => setManualRecipeId(event.target.value)}
+                  onKeyDown={(event) => {
+                    if (event.key === "Enter") {
+                      event.preventDefault();
+                      addManualRecipe();
+                    }
+                  }}
+                  placeholder="输入 Recipe ID"
+                  className="h-9 rounded-md border-input/80 bg-input/20 text-foreground"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  disabled={!manualRecipeId.trim()}
+                  onClick={addManualRecipe}
+                >
+                  添加
+                </Button>
+              </div>
+            </div>
+            <div className="relative">
+              <Search className="pointer-events-none absolute left-3 top-1/2 size-4 -translate-y-1/2 text-muted-foreground" />
+              <Input
+                value={query}
+                onChange={(event) => setQuery(event.target.value)}
+                placeholder="搜索 Recipe"
+                className="h-9 rounded-md border-input/80 bg-input/20 pl-9 text-foreground"
+              />
+            </div>
+            <div className="mt-3 max-h-[320px] overflow-y-auto rounded-md border border-border/70">
+              {filteredRecipes.length > 0 ? (
+                filteredRecipes.map((recipe) => (
+                  <button
+                    key={recipe.id}
+                    type="button"
+                    onClick={() => addRecipe(recipe.id)}
+                    className="block w-full border-b border-border/60 px-3 py-2.5 text-left transition-colors last:border-b-0 hover:bg-white/[0.04]"
+                  >
+                    <div className="flex min-w-0 items-center gap-2">
+                      {recipe.generationType ? (
+                        <span className={catalogGenerationTypeBadgeClass(recipe.generationType)}>
+                          {recipe.generationType}
+                        </span>
+                      ) : null}
+                      <span className="truncate text-[13px] font-medium text-foreground">
+                        {recipe.title}
+                      </span>
+                      <span className="truncate font-mono text-[11px] text-muted-foreground/70">
+                        {recipe.id}
+                      </span>
+                    </div>
+                    <p className="mt-1 line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
+                      {recipe.description || "暂无描述"}
+                    </p>
+                  </button>
+                ))
+              ) : (
+                <div className="px-3 py-8 text-center text-xs text-muted-foreground">
+                  没有可添加的 Recipe
+                </div>
+              )}
+            </div>
+          </div>
+          <DialogFooter className="border-t border-border px-5 py-4">
+            <Button type="button" variant="outline" onClick={() => onPickerOpenChange(false)}>
+              关闭
+            </Button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
+    </div>
+  );
+}
+
+function RecipeDetailDrawer({
+  onClose,
+  recipe,
+}: {
+  onClose: () => void;
+  recipe: ManagedCatalogItem | null;
+}) {
+  if (!recipe) return null;
+  const payload = recipe.payload;
+  const actionKeys = getStringArray(payload.action_keys);
+  const mustHaveItems = getStringArray(payload.must_have_items);
+  const planningPrompt = getString(payload.planning_prompt);
+  const resultSummary = getString(payload.result_summary);
+  const systemPrompt = getString(payload.system_prompt);
+
+  return (
+    <div className="absolute inset-0 z-20 flex justify-end bg-black/35">
+      <button type="button" aria-label="关闭 Recipe 详情背景" className="flex-1" onClick={onClose} />
+      <aside className="flex h-full w-[min(430px,92vw)] flex-col border-l border-border bg-black shadow-2xl">
+        <div className="flex items-start justify-between gap-3 border-b border-border px-5 py-4">
+          <div className="min-w-0">
+            <div className="mb-2 flex items-center gap-2">
+              <span className="text-[10px] uppercase tracking-[0.18em] text-muted-foreground">
+                Recipe
+              </span>
+              {recipe.generationType ? (
+                <span className={catalogGenerationTypeBadgeClass(recipe.generationType)}>
+                  {recipe.generationType}
+                </span>
+              ) : null}
+            </div>
+            <h4 className="truncate text-base font-semibold text-foreground">{recipe.title}</h4>
+            <div className="mt-1 truncate font-mono text-[11px] text-muted-foreground">
+              {recipe.id}
+            </div>
+          </div>
+          <button
+            type="button"
+            aria-label="关闭 Recipe 详情"
+            onClick={onClose}
+            className="grid size-8 shrink-0 place-items-center rounded-md text-muted-foreground transition-colors hover:bg-white/[0.05] hover:text-foreground"
+          >
+            <X className="size-4" />
+          </button>
+        </div>
+        <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
+          <RecipeDetailBlock title="描述">
+            <p>{recipe.description || "暂无描述"}</p>
+          </RecipeDetailBlock>
+          {resultSummary ? (
+            <RecipeDetailBlock title="结果摘要">
+              <p>{resultSummary}</p>
+            </RecipeDetailBlock>
+          ) : null}
+          {planningPrompt ? (
+            <RecipeDetailBlock title="规划提示">
+              <p>{planningPrompt}</p>
+            </RecipeDetailBlock>
+          ) : null}
+          {actionKeys.length > 0 ? (
+            <RecipeDetailBlock title="Action Keys">
+              <div className="flex flex-wrap gap-1.5">
+                {actionKeys.map((key) => (
+                  <span key={key} className="rounded bg-white/[0.07] px-2 py-1 font-mono text-[11px]">
+                    {key}
+                  </span>
+                ))}
+              </div>
+            </RecipeDetailBlock>
+          ) : null}
+          {mustHaveItems.length > 0 ? (
+            <RecipeDetailBlock title="必含项">
+              <ul className="space-y-1">
+                {mustHaveItems.map((item) => (
+                  <li key={item} className="rounded bg-white/[0.04] px-2 py-1">
+                    {item}
+                  </li>
+                ))}
+              </ul>
+            </RecipeDetailBlock>
+          ) : null}
+          {systemPrompt ? (
+            <RecipeDetailBlock title="System Prompt">
+              <pre className="whitespace-pre-wrap break-words rounded-md bg-white/[0.04] p-3 font-sans text-[11px] leading-relaxed">
+                {systemPrompt}
+              </pre>
+            </RecipeDetailBlock>
+          ) : null}
+        </div>
+      </aside>
+    </div>
+  );
+}
+
+function RecipeDetailBlock({
+  children,
+  title,
+}: {
+  children: ReactNode;
+  title: string;
+}) {
+  return (
+    <section>
+      <h5 className="mb-1.5 text-[11px] font-medium text-foreground">{title}</h5>
+      <div className="text-[12px] leading-relaxed text-muted-foreground">{children}</div>
+    </section>
   );
 }
 
