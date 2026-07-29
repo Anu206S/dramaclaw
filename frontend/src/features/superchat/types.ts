@@ -71,10 +71,11 @@ export type ClientFrame =
       draft?: Record<string, unknown> | null;
 	      saved_to_catalog?: boolean;
 	      saved_skill_ids?: string[];
-	      saved_recipe_ids?: string[];
-	      errors?: string[];
-	      message?: string | null;
-	      client_debug?: Record<string, unknown>;
+      saved_recipe_ids?: string[];
+      errors?: string[];
+      message?: string | null;
+      agent_instruction?: string | null;
+      client_debug?: Record<string, unknown>;
 	    }
 	  | {
 	      type: "assistant.clarification.result";

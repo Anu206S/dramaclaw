@@ -1926,6 +1926,49 @@ type ToolStatusRuntimePart = ChatMessagePart & {
 
 type RuntimeDisplayPart = ChatMessagePart & { repeatCount?: number };
 
+const PERSISTENT_SETTLED_TOOL_STATUS_NAMES = new Set<string>([
+  "freezone_list_agent_catalog",
+  "freezone_get_saved_skill",
+  "freezone_get_saved_recipe",
+  "freezone_put_agent_catalog_draft_outline",
+]);
+
+function shouldPersistSettledToolStatus(toolMessage: ChatMessage): boolean {
+  const raw = toolRawRecord(toolMessage);
+  const candidates = [
+    raw?.name,
+    raw?.tool_name,
+    raw?.toolName,
+    raw?.function_name,
+    raw?.functionName,
+  ];
+  return candidates.some((candidate) =>
+    typeof candidate === "string" && PERSISTENT_SETTLED_TOOL_STATUS_NAMES.has(candidate),
+  );
+}
+
+function toolStatusRuntimeText(params: {
+  status: "running" | "done" | "failed";
+  title: string;
+  toolMessage: ChatMessage;
+}): string {
+  const { status, title, toolMessage } = params;
+  const raw = toolRawRecord(toolMessage);
+  if (
+    status === "failed" &&
+    (raw?.name === "freezone_put_agent_catalog_draft_outline" ||
+      raw?.tool_name === "freezone_put_agent_catalog_draft_outline" ||
+      raw?.toolName === "freezone_put_agent_catalog_draft_outline")
+  ) {
+    return "待重新整理 Skill 方案";
+  }
+  if (status === "running") return `正在${title}`;
+  if (status === "failed") return `${title}失败`;
+  return `已${title}`;
+}
+
+export const toolStatusRuntimeTextForTest = toolStatusRuntimeText;
+
 function toolStatusPartMergeKey(part: RuntimeDisplayPart): string | null {
   if (part.type !== "tool_status") return null;
   const toolMessage = part.event as ChatMessage;
@@ -1993,7 +2036,12 @@ function agentRuntimeDisplayParts(
           if (part.type !== "tool_status") return true;
           const toolMessage = part.event as ChatMessage;
           if (shouldHideInternalToolMessage(toolMessage)) return false;
-          if ((options.hideSettledToolStatus || !options.streaming) && freezoneToolStatus(toolMessage) !== "failed") {
+          const status = freezoneToolStatus(toolMessage);
+          if (
+            (options.hideSettledToolStatus || !options.streaming)
+            && status !== "failed"
+            && !shouldPersistSettledToolStatus(toolMessage)
+          ) {
             return false;
           }
           return true;
@@ -2076,23 +2124,19 @@ function AgentRuntimeTimeline({
           const detail = status === "failed" && error ? error : "";
           const title = display?.title ?? genericToolTitle(toolMessage);
           const repeatText = toolPart.repeatCount && toolPart.repeatCount > 1 ? ` × ${toolPart.repeatCount}` : "";
-          const statusText = status === "running"
-            ? `正在${title}`
-            : status === "failed"
-              ? `${title}失败`
-              : `已${title}`;
+          const statusText = toolStatusRuntimeText({ status, title, toolMessage });
           return (
             <div
               key={part.id}
               className={cn(
                 "mt-2 flex w-fit max-w-full items-center gap-2 rounded-md px-0 py-1 text-xs",
-                status === "failed" ? "text-red-100" : "text-muted-foreground",
+                "text-muted-foreground",
               )}
             >
               {status === "running" ? (
                 <span className="shrink-0 text-muted-foreground"><DotsIndicator dotClassName="size-1" /></span>
               ) : status === "failed" ? (
-                <AlertCircle className="size-3.5 shrink-0 text-red-400" />
+                <AlertCircle className="size-3.5 shrink-0 text-muted-foreground" />
               ) : (
                 <CheckCircle2 className="size-3.5 shrink-0 text-muted-foreground" />
               )}
@@ -4132,6 +4176,63 @@ function skillStudioInputParameterValueLabel(value: unknown): string {
   return "";
 }
 
+function skillStudioAllowedRecipeIds(skill: Record<string, unknown>): string[] {
+  return cleanStringArray(skill.allowed_recipe_ids ?? skill.allowedRecipeIds);
+}
+
+type SkillStudioReferencedRecipe = {
+  id: string;
+  name: string;
+  outputKind: string;
+  actionKeys: string[];
+  systemPrompt: string;
+  mustHaveItems: string[];
+  planningPrompt: string;
+  resultSummary: string;
+  requiresSourceMedia: boolean;
+  enabled: boolean;
+  forceEnhancement: boolean;
+  skipDetailCheck: boolean;
+  missing: boolean;
+};
+
+function skillStudioReferencedRecipes(
+  skill: Record<string, unknown>,
+  draftRecipes: Record<string, unknown>[],
+  recipeCatalog: FreezoneAgentConfigPayload[],
+): SkillStudioReferencedRecipe[] {
+  const draftRecipeIds = new Set(
+    draftRecipes.map((recipe) => textField(recipe.id)).filter(Boolean),
+  );
+  const recipeById = new Map(
+    recipeCatalog
+      .map((recipe) => [textField(recipe.id), recipe] as const)
+      .filter(([id]) => Boolean(id)),
+  );
+  return skillStudioAllowedRecipeIds(skill)
+    .filter((id) => !draftRecipeIds.has(id))
+    .map((id) => {
+      const recipe = recipeById.get(id);
+      return {
+        id,
+        name: textField(recipe?.name),
+        outputKind: textField(recipe?.output_kind),
+        actionKeys: cleanStringArray(recipe?.action_keys),
+        systemPrompt: textField(recipe?.system_prompt),
+        mustHaveItems: cleanStringArray(recipe?.must_have_items),
+        planningPrompt: textField(recipe?.planning_prompt),
+        resultSummary: textField(recipe?.result_summary),
+        requiresSourceMedia: recipe?.requires_source_media === true,
+        enabled: recipe?.enabled !== false,
+        forceEnhancement: recipe?.force_enhancement === true,
+        skipDetailCheck: recipe?.skip_detail_check === true,
+        missing: !recipe,
+      };
+    });
+}
+
+export const skillStudioReferencedRecipesForTest = skillStudioReferencedRecipes;
+
 function stringListField(...values: unknown[]): string[] {
   for (const value of values) {
     if (Array.isArray(value)) return cleanStringArray(value);
@@ -4978,7 +5079,6 @@ interface SkillStudioToolResultResponse {
 
 export function buildSkillStudioDraftCancelToolResultForTest(
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
-  draft: Record<string, unknown> = draftPayloadFromEvent(event),
 ) {
   return {
     turn_id: event.turn_id ?? undefined,
@@ -4991,7 +5091,7 @@ export function buildSkillStudioDraftCancelToolResultForTest(
     ok: true,
     action: "cancel",
     cancelled: true,
-    draft,
+    draft: null,
     saved_to_catalog: false,
     saved_skill_ids: [],
     saved_recipe_ids: [],
@@ -4999,8 +5099,15 @@ export function buildSkillStudioDraftCancelToolResultForTest(
       "用户已取消 Skill Studio 草稿保存。",
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
       "本次草稿不会写入虾画配置。",
-      "请只确认取消结果，不要自动继续创建画布、执行工作流或推进后续阶段；除非用户再次明确提出下一步。",
+      "这是用户点击取消按钮，不是修改请求，也不是重新提交请求。",
+      "请只确认取消结果，不要重新提交、重新展示、保存或修改这个草稿。",
     ].filter(Boolean).join("\n"),
+    agent_instruction: [
+      "The user clicked Cancel on the Skill Studio draft.",
+      "Do not resubmit, recreate, revise, display, or save this draft.",
+      "Do not call any Skill Studio creation, patch, finish, or save tools.",
+      "Reply only that the draft was cancelled and will not be saved.",
+    ].join(" "),
   };
 }
 
@@ -5699,6 +5806,7 @@ function AssistantClarificationInputCard({
 
 function SkillStudioDraftCard({
   event,
+  recipeCatalog = [],
   onSubmit,
   onStartRevision,
   onDraftChange,
@@ -5706,6 +5814,7 @@ function SkillStudioDraftCard({
   onPreserveScrollAnchor,
 }: {
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>;
+  recipeCatalog?: FreezoneAgentConfigPayload[];
   onSubmit?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
     draft: Record<string, unknown>,
@@ -5739,6 +5848,7 @@ function SkillStudioDraftCard({
   const recipes = Array.isArray(draftObject.recipes)
     ? draftObject.recipes.filter((recipe): recipe is Record<string, unknown> => Boolean(recipe && typeof recipe === "object" && !Array.isArray(recipe)))
     : [];
+  const referencedRecipes = skillStudioReferencedRecipes(skill, recipes, recipeCatalog);
   const triggers = getRecord(skill.triggers);
   const planning = getRecord(skill.planning);
   const evaluation = getRecord(skill.evaluation);
@@ -6114,6 +6224,152 @@ function SkillStudioDraftCard({
           </div>
         </details>
       </div>
+      {referencedRecipes.length > 0 && (
+        <div className="mt-2 overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.035]">
+          <div className="flex items-center justify-between gap-3 border-b border-white/[0.07] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
+            <span className="flex min-w-0 items-center gap-2">
+              <ListTree className="size-3.5 shrink-0" />
+              <span>复用 Recipes ({referencedRecipes.length})</span>
+            </span>
+            <span className="shrink-0 rounded-full border border-white/[0.08] bg-white/[0.04] px-2 py-0.5 text-[10px] normal-case tracking-normal text-muted-foreground">
+              只读
+            </span>
+          </div>
+          <div>
+            {referencedRecipes.map((recipe) => (
+              <details key={recipe.id} className="group border-b border-white/[0.07] last:border-b-0">
+                <summary className="flex cursor-pointer list-none items-center justify-between gap-3 px-3 py-2.5 text-xs marker:hidden">
+                  <span className="flex min-w-0 items-center gap-2">
+                    <ChevronRight className="size-3.5 shrink-0 text-muted-foreground transition-transform group-open:rotate-90" />
+                    <span className={cn(
+                      "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] leading-none",
+                      recipe.missing
+                        ? "border-amber-300/25 bg-amber-300/[0.08] text-amber-100/85"
+                        : "border-white/[0.08] bg-white/[0.04] text-muted-foreground",
+                    )}>
+                      {recipe.missing ? "未找到" : recipe.outputKind || "类型"}
+                    </span>
+                    <span className="min-w-0 truncate text-foreground/85">
+                      {recipe.name || recipe.id}
+                    </span>
+                  </span>
+                </summary>
+                <div className="space-y-2 border-t border-white/[0.06] px-3 pb-3 pt-2">
+                  {recipe.missing && (
+                    <div className="rounded-md border border-amber-400/20 bg-amber-400/[0.05] px-2 py-1.5 text-xs text-amber-100/90">
+                      当前本地 Recipe 列表里没有找到这个 ID，保存前需要确认配置是否存在。
+                    </div>
+                  )}
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.id}</span>
+                      <Input
+                        value={recipe.id}
+                        disabled
+                        readOnly
+                        className={cn(fieldClass, "font-mono")}
+                      />
+                    </label>
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.name}</span>
+                      <Input
+                        value={recipe.name}
+                        disabled
+                        readOnly
+                        placeholder="未匹配到名称"
+                        className={fieldClass}
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.output_kind}</span>
+                      <Input
+                        value={recipe.outputKind}
+                        disabled
+                        readOnly
+                        placeholder="未匹配到类型"
+                        className={fieldClass}
+                      />
+                    </label>
+                    <SkillStudioListField
+                      label={skillStudioDraftFieldLabels.recipe.action_keys}
+                      value={recipe.actionKeys}
+                      disabled
+                      onChange={() => undefined}
+                      placeholder="未匹配到动作类型"
+                    />
+                  </div>
+                  <label className="block">
+                    <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.system_prompt}</span>
+                    <Textarea
+                      value={recipe.systemPrompt}
+                      disabled
+                      readOnly
+                      placeholder="未匹配到系统提示词"
+                      className={cn(textAreaClass, "min-h-24")}
+                    />
+                  </label>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <SkillStudioListField
+                      label={skillStudioDraftFieldLabels.recipe.must_have_items}
+                      value={recipe.mustHaveItems}
+                      disabled
+                      onChange={() => undefined}
+                      placeholder="未匹配到必含项"
+                    />
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.requires_source_media}</span>
+                      <Input
+                        value={String(recipe.requiresSourceMedia)}
+                        disabled
+                        readOnly
+                        className={fieldClass}
+                      />
+                    </label>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-3">
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.enabled}</span>
+                      <Input value={String(recipe.enabled)} disabled readOnly className={fieldClass} />
+                    </label>
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.force_enhancement}</span>
+                      <Input value={String(recipe.forceEnhancement)} disabled readOnly className={fieldClass} />
+                    </label>
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.skip_detail_check}</span>
+                      <Input value={String(recipe.skipDetailCheck)} disabled readOnly className={fieldClass} />
+                    </label>
+                  </div>
+                  <div className="grid gap-2 md:grid-cols-2">
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.planning_prompt}</span>
+                      <Textarea
+                        value={recipe.planningPrompt}
+                        disabled
+                        readOnly
+                        placeholder="未匹配到规划提示"
+                        className={textAreaClass}
+                      />
+                    </label>
+                    <label>
+                      <span className={labelClass}>{skillStudioDraftFieldLabels.recipe.result_summary}</span>
+                      <Textarea
+                        value={recipe.resultSummary}
+                        disabled
+                        readOnly
+                        placeholder="未匹配到结果摘要"
+                        className={textAreaClass}
+                      />
+                    </label>
+                  </div>
+                </div>
+              </details>
+            ))}
+          </div>
+        </div>
+      )}
       {recipes.length > 0 && (
         <div className="mt-2 overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.035]">
           <div className="flex items-center gap-2 border-b border-white/[0.07] px-3 py-2 text-[11px] font-medium uppercase tracking-[0.12em] text-muted-foreground">
@@ -6354,6 +6610,7 @@ function SkillStudioStatusCard({ event }: { event: Extract<SkillStudioUiEvent, {
 
 function SkillStudioEventCard({
   event,
+  recipeCatalog = [],
   onSubmitQuestionResponse,
   onSubmitDraftResponse,
   onStartDraftRevision,
@@ -6362,6 +6619,7 @@ function SkillStudioEventCard({
   onPreserveScrollAnchor,
 }: {
   event: SkillStudioUiEvent;
+  recipeCatalog?: FreezoneAgentConfigPayload[];
   onSubmitQuestionResponse?: (
     event: Extract<SkillStudioUiEvent, { type: "skill_studio.questions" }>,
     selections: SkillStudioQuestionSelections,
@@ -6393,6 +6651,7 @@ function SkillStudioEventCard({
   return (
     <SkillStudioDraftCard
       event={event}
+      recipeCatalog={recipeCatalog}
       onSubmit={onSubmitDraftResponse}
       onStartRevision={onStartDraftRevision}
       onDraftChange={onDraftChange}
@@ -6426,6 +6685,7 @@ const MessageBubble = memo(function MessageBubble({
   onCancelSkillStudioDraft,
   onPreserveScrollAnchor,
   freezoneSkillSuggestions = [],
+  freezoneRecipeCatalog = [],
 }: {
   message: ChatMessage;
   variant?: SuperChatPanelVariant;
@@ -6469,6 +6729,7 @@ const MessageBubble = memo(function MessageBubble({
   ) => void;
   onPreserveScrollAnchor?: (anchor: HTMLElement | null) => void;
   freezoneSkillSuggestions?: FreezoneSkillSuggestion[];
+  freezoneRecipeCatalog?: FreezoneAgentConfigPayload[];
 }) {
   const isUser = message.role === "user";
   const isTool = isToolMessage(message);
@@ -6845,6 +7106,7 @@ const MessageBubble = memo(function MessageBubble({
                         <SkillStudioEventCard
                           key={part.id}
                           event={part.event as SkillStudioUiEvent}
+                          recipeCatalog={freezoneRecipeCatalog}
                           onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
                           onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
                           onStartDraftRevision={onStartSkillStudioDraftRevision}
@@ -6895,6 +7157,7 @@ const MessageBubble = memo(function MessageBubble({
                       <SkillStudioEventCard
                         key={item.key}
                         event={item.event}
+                        recipeCatalog={freezoneRecipeCatalog}
                         onSubmitQuestionResponse={onSubmitSkillStudioQuestionResponse}
                         onSubmitDraftResponse={onSubmitSkillStudioDraftResponse}
                         onStartDraftRevision={onStartSkillStudioDraftRevision}
@@ -10369,6 +10632,8 @@ export function SuperChatPanel({
   const [showScrollToBottom, setShowScrollToBottom] = useState(false);
   const [freezoneSkillCatalog, setFreezoneSkillCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
   const [freezoneSkillCatalogLoaded, setFreezoneSkillCatalogLoaded] = useState(false);
+  const [freezoneRecipeCatalog, setFreezoneRecipeCatalog] = useState<FreezoneAgentConfigPayload[]>([]);
+  const [freezoneRecipeCatalogLoaded, setFreezoneRecipeCatalogLoaded] = useState(false);
   const [freezoneSkillMenuExplicitOpen, setFreezoneSkillMenuExplicitOpen] = useState(false);
   const [freezoneSkillCreateMenuOpen, setFreezoneSkillCreateMenuOpen] = useState(false);
   const [freezoneCommunitySkillDialogOpen, setFreezoneCommunitySkillDialogOpen] = useState(false);
@@ -10507,6 +10772,7 @@ export function SuperChatPanel({
       );
       void queryClient.invalidateQueries({ queryKey: freezoneAgentConfigQueryKey("skills") });
       void queryClient.invalidateQueries({ queryKey: freezoneAgentConfigQueryKey("recipes") });
+      setFreezoneRecipeCatalogLoaded(false);
       const skills = await apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/skills");
       setFreezoneSkillCatalog(skills);
       setFreezoneSkillCatalogLoaded(true);
@@ -10577,6 +10843,27 @@ export function SuperChatPanel({
     freezoneSkillSlashQuery,
     isFreezoneLayout,
   ]);
+
+  useEffect(() => {
+    if (!isFreezoneLayout || freezoneRecipeCatalogLoaded) return;
+    let cancelled = false;
+    void apiCall<FreezoneAgentConfigPayload[]>("freezone/agent-config/recipes")
+      .then((items) => {
+        if (cancelled) return;
+        setFreezoneRecipeCatalog(items);
+      })
+      .catch(() => {
+        if (cancelled) return;
+        setFreezoneRecipeCatalog([]);
+      })
+      .finally(() => {
+        if (cancelled) return;
+        setFreezoneRecipeCatalogLoaded(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [freezoneRecipeCatalogLoaded, isFreezoneLayout]);
 
   useEffect(() => {
     if (freezoneSkillSlashQuery !== null) {
@@ -12611,6 +12898,9 @@ export function SuperChatPanel({
           queryKey: freezoneAgentConfigQueryKey(kind),
         });
       }
+      if (savedKinds.has("recipes")) {
+        setFreezoneRecipeCatalogLoaded(false);
+      }
       if (savedKinds.has("skills")) {
         void apiCall<FreezoneAgentConfigPayload[]>("freezone/hermes-workflow-skills")
           .then((skills) => {
@@ -12761,7 +13051,7 @@ export function SuperChatPanel({
       return;
     }
     const payload = {
-      ...buildSkillStudioDraftCancelToolResultForTest(event, draftPayload),
+      ...buildSkillStudioDraftCancelToolResultForTest(event),
       client_debug: skillStudioResultClientDebug(event, "draft_cancel_button_ws", {
         active_turn_id: chat.activeTurnId,
         chat_busy: chat.busy,
@@ -12781,7 +13071,7 @@ export function SuperChatPanel({
       agent_id: event.agent_id ?? effectiveFreezoneAgentId,
       anchor_text_prefix: event.anchor_text_prefix ?? null,
       received_at: receivedAt,
-      draft: payload.draft,
+      draft: draftPayload,
       cancelled: true,
     };
     updateChatUiEvent(
@@ -12790,7 +13080,7 @@ export function SuperChatPanel({
       (candidate) => ({
         ...(candidate as Record<string, unknown>),
         received_at: uiEventFirstReceivedAt(candidate, event),
-        draft: payload.draft,
+        draft: draftPayload,
         cancelled: true,
       }),
     );
@@ -13117,6 +13407,7 @@ export function SuperChatPanel({
                       onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                       onPreserveScrollAnchor={preserveScrollAnchor}
                       freezoneSkillSuggestions={freezoneSkillSuggestions}
+                      freezoneRecipeCatalog={freezoneRecipeCatalog}
                     />
                   </div>
                 ))}
@@ -13143,6 +13434,7 @@ export function SuperChatPanel({
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
                     freezoneSkillSuggestions={freezoneSkillSuggestions}
+                    freezoneRecipeCatalog={freezoneRecipeCatalog}
                   />
                 )}
                 {orphanCanvasCommandSurfaces.map((surface) => (
@@ -13189,6 +13481,7 @@ export function SuperChatPanel({
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
                     freezoneSkillSuggestions={freezoneSkillSuggestions}
+                    freezoneRecipeCatalog={freezoneRecipeCatalog}
                   />
                 ))}
                 {thinkingCanvasContextActivity && !thinkingCanvasContextMessageId && (
@@ -13215,6 +13508,7 @@ export function SuperChatPanel({
                     onCancelSkillStudioDraft={handleCancelSkillStudioDraft}
                     onPreserveScrollAnchor={preserveScrollAnchor}
                     freezoneSkillSuggestions={freezoneSkillSuggestions}
+                    freezoneRecipeCatalog={freezoneRecipeCatalog}
                   />
                 )}
               </div>
