@@ -9,6 +9,7 @@ import type {
   AssetBoardReference,
 } from '@/features/canvas/domain/assetBoard';
 import {
+  isExportImageNode,
   isImageEditNode,
   isImageGenNode,
   isVideoNode,
@@ -33,6 +34,7 @@ import {
 } from './AssetBoardDetailToolbar';
 import { AssetBoardDetailTextSection } from './AssetBoardDetailTextSection';
 import { AssetBoardImageGenForm } from './AssetBoardImageGenForm';
+import { AssetBoardUpscaleForm } from './AssetBoardUpscaleForm';
 import { AssetBoardVideoGenForm } from './AssetBoardVideoGenForm';
 import { AssetBoardPromptText } from './AssetBoardPromptText';
 import { AssetBoardReferenceThumbMenu } from './AssetBoardReferenceThumbMenu';
@@ -72,16 +74,28 @@ function promptOf(node: CanvasNode): string | null {
   return null;
 }
 
+/** 图片高清结果节点：「编辑 → 高清」预建出来的 resultKind:'upscale' 占位/结果节点。 */
+function isImageUpscaleNode(node: CanvasNode): boolean {
+  return (
+    isExportImageNode(node)
+    && (node.data as { resultKind?: unknown }).resultKind === 'upscale'
+  );
+}
+
 /**
  * 详情媒体区下方要挂哪种生成表单（null = 不挂，走只读展示）。
+ *
+ * 图片高清结果节点挂的是高清编辑器（模型/画质/放大倍数 + ↑），不是常规图片生成
+ * 表单——它没有提示词，参数也持久化在自己的 node.data 上。
  *
  * 视频侧的排除项与工作流 VideoNode 的 `showVideoOpsPanel` 同口径：
  * - `videoCompose` 走剪辑合成，不是生成节点（isVideoNode 只认 video，天然不命中）；
  * - `referenceOnly`：资产库选进来的引用素材，本身不生成；
- * - `isUpscaleNode`：高清节点有自己的配置面板，不走常规生成表单。
+ * - `isUpscaleNode`：视频高清节点有自己的配置面板，不走常规生成表单。
  */
-function generationFormKindOf(node: CanvasNode): 'image' | 'video' | null {
+function generationFormKindOf(node: CanvasNode): 'image' | 'video' | 'upscale' | null {
   if (isImageGenNode(node)) return 'image';
+  if (isImageUpscaleNode(node)) return 'upscale';
   if (isVideoNode(node)) {
     return node.data.referenceOnly || node.data.isUpscaleNode ? null : 'video';
   }
@@ -231,9 +245,8 @@ function MediaBody({
 
       {/* key={node.id}：切换详情项时强制换实例——表单持有 prompt 草稿 / 输入法合成态，
           复用同位实例会把 A 的草稿带进 B。
-          与头部那条视频工具条（剪辑/解析/截帧/替换/去字幕）分工明确：工具条只处理
-          「已有片子」的后期操作，挂在媒体区上方；生成表单负责「再出一条」，挂在媒体
-          区下方，两者不重叠。 */}
+          与头部那条视频工具条（剪辑/高清/下载/全屏）分工明确：工具条只处理「已有片子」
+          的后期操作，挂在头部；生成表单负责「再出一条」，挂在媒体区下方，两者不重叠。 */}
       {/* fill 布局下表单钉底不压缩：高度不够时先让上面的媒体区缩（shrink），
           而不是把生成条挤变形。 */}
       {generationFormKind === 'image' && (
@@ -244,6 +257,14 @@ function MediaBody({
       {generationFormKind === 'video' && (
         <div className={cn(fill && 'shrink-0')}>
           <AssetBoardVideoGenForm key={node.id} nodeId={node.id} />
+        </div>
+      )}
+      {/* 高清结果节点：下方挂高清编辑器——「编辑 → 高清」建好节点就把详情切到这里，
+          选完模型/画质/倍数按 ↑ 才提交（对标 liblib）。提交前媒体区是「待确认后生成」
+          空态，不拿待放大的源图充数（见 isPendingUpscaleNode）。 */}
+      {generationFormKind === 'upscale' && (
+        <div className={cn(fill && 'shrink-0')}>
+          <AssetBoardUpscaleForm key={node.id} nodeId={node.id} />
         </div>
       )}
 
@@ -498,7 +519,10 @@ export function AssetBoardDetail({
   return (
     <section
       aria-label="资产详情"
-      className="flex min-h-0 min-w-0 flex-1 flex-col rounded-lg rounded-b-none border border-white/5 bg-[#262626]"
+      // group/detail：头部那条视频工具条「hover 到详情才浮现」的悬停源。**具名** group
+      // 是必须的——详情子树里已经有一堆匿名 group-hover 的消费者（图片操作 chip、音频
+      // 条、卡片……），挂匿名 group 会让它们在鼠标进详情任意位置时一起误触发。
+      className="group/detail flex min-h-0 min-w-0 flex-1 flex-col rounded-lg rounded-b-none border border-white/5 bg-[#262626]"
     >
       <header className="flex shrink-0 items-center gap-1.5 px-3 py-2.5">
         <button type="button" aria-label="返回" title="返回" onClick={onBack} className={HEADER_ICON_BUTTON_CLASS}>
@@ -507,7 +531,17 @@ export function AssetBoardDetail({
         {showHeaderTitle && (
           <h3 className="min-w-0 truncate text-sm font-medium text-foreground">{item.title}</h3>
         )}
-        <div className="flex-1" />
+        {/* 视频那四颗操作（剪辑/高清/下载/全屏）落在头部标题与右侧图标之间这段空白里，
+            而不是压在画面上——浮在播放器上方会把视频挡掉一截（用户反馈）。
+            key={node.id}：左列切换详情项时强制换实例——工具条持有本地 state（高清参数、
+            busy 态），复用同位实例会把 A 的状态带到 B。 */}
+        {!missing && item.column === 'video' && hasVideoDetailActions(node) ? (
+          <div className="flex min-w-0 flex-1 justify-center px-2">
+            <AssetBoardVideoDetailToolbar key={node.id} node={node} playerRef={videoRef} />
+          </div>
+        ) : (
+          <div className="flex-1" />
+        )}
         {/* 「添加到对话」：与卡片右上角、画布节点同一个入口（只发事件，选中 + 展开
             聊天由 FreezoneShell 统一落地）。挂头部而不是下面那条工具条——四栏一视
             同仁，且引用一个空节点也成立，不该被「有没有出图出片」的门槛挡掉。 */}
@@ -594,13 +628,8 @@ export function AssetBoardDetail({
           />
         </div>
       )}
-      {!missing && item.column === 'video' && hasVideoDetailActions(node) && (
-        <div className="shrink-0 px-4 pb-2">
-          {/* playerRef 是正文那个大播放器：截帧的「当前帧」要读它的 currentTime，
-              「尾帧」优先读它报的 duration（比节点 data.durationMs 准）。 */}
-          <AssetBoardVideoDetailToolbar key={node.id} node={node} playerRef={videoRef} />
-        </div>
-      )}
+      {/* 视频没有这条槽位：它那四颗操作（剪辑/高清/下载/全屏）已改成浮在播放器
+          上方、hover 才出现的胶囊，挂在正文的媒体区里（见 MediaBody）。 */}
       <div
         className={cn(
           'min-h-0 flex-1 overflow-y-auto px-6 pb-6 pt-2',

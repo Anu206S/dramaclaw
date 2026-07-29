@@ -44,7 +44,7 @@ import type {
   ReactNode,
 } from "react";
 import { createPortal } from "react-dom";
-import ReactMarkdown from "react-markdown";
+import ReactMarkdown, { type Components as MarkdownComponents } from "react-markdown";
 import { useTranslation } from "react-i18next";
 import type { TFunction } from "i18next";
 import { useParams } from "@tanstack/react-router";
@@ -525,7 +525,47 @@ function normalizeMessageText(text: string): string {
   return text.trim().replace(/\n{3,}/g, "\n\n");
 }
 
-function PlainMessageText({ text }: { text: string }) {
+// 这两个必须是模块级常量：react-markdown 会把 components 里的函数当组件类型用，
+// 每渲染一次就新建一份的话 React 认不出是同一个类型，会把整棵 markdown 子树卸载重挂。
+// 消息列表一有重渲染（任务流 30s 看门狗、流式输出……）整列消息就会重建 DOM 闪一下，
+// 而输入框压在上面带 backdrop-blur，背景重采样会让框内跟着闪。
+const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
+
+const MARKDOWN_COMPONENTS: MarkdownComponents = {
+  h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-semibold leading-7 first:mt-0">{children}</h1>,
+  h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-semibold leading-6 first:mt-0">{children}</h2>,
+  h3: ({ children }) => <h3 className="mb-1.5 mt-2.5 text-sm font-semibold leading-6 first:mt-0">{children}</h3>,
+  p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>,
+  ul: ({ children }) => <ul className="my-1.5 list-disc space-y-1 pl-5">{children}</ul>,
+  ol: ({ children }) => <ol className="my-1.5 list-decimal space-y-1 pl-5">{children}</ol>,
+  li: ({ children }) => <li className="pl-0.5">{children}</li>,
+  strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+  em: ({ children }) => <em className="italic">{children}</em>,
+  a: ({ children, href }) => (
+    <a
+      href={href}
+      target="_blank"
+      rel="noreferrer"
+      className="text-primary underline underline-offset-2"
+    >
+      {children}
+    </a>
+  ),
+  code: ({ children }) => (
+    <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">{children}</code>
+  ),
+  pre: ({ children }) => (
+    <pre className="my-2 max-w-full overflow-x-auto rounded-md border border-border/70 bg-muted/35 p-2 text-xs leading-5">
+      {children}
+    </pre>
+  ),
+  hr: () => <hr className="my-4 border-0 border-t border-white/[0.08]" />,
+  blockquote: ({ children }) => (
+    <blockquote className="my-2 border-l-2 border-border pl-3 text-muted-foreground">{children}</blockquote>
+  ),
+};
+
+const PlainMessageText = memo(function PlainMessageText({ text }: { text: string }) {
   const paragraphs = normalizeMessageText(text)
     .split(/\n{2}/)
     .map((paragraph) => paragraph.trim())
@@ -542,53 +582,18 @@ function PlainMessageText({ text }: { text: string }) {
       ))}
     </div>
   );
-}
+});
 
-function MarkdownMessageText({ text }: { text: string }) {
+const MarkdownMessageText = memo(function MarkdownMessageText({ text }: { text: string }) {
   const normalized = normalizeMessageText(text);
   if (!normalized) return null;
 
   return (
-    <ReactMarkdown
-      remarkPlugins={[remarkGfm, remarkBreaks]}
-      components={{
-        h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-semibold leading-7 first:mt-0">{children}</h1>,
-        h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-semibold leading-6 first:mt-0">{children}</h2>,
-        h3: ({ children }) => <h3 className="mb-1.5 mt-2.5 text-sm font-semibold leading-6 first:mt-0">{children}</h3>,
-        p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>,
-        ul: ({ children }) => <ul className="my-1.5 list-disc space-y-1 pl-5">{children}</ul>,
-        ol: ({ children }) => <ol className="my-1.5 list-decimal space-y-1 pl-5">{children}</ol>,
-        li: ({ children }) => <li className="pl-0.5">{children}</li>,
-        strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
-        em: ({ children }) => <em className="italic">{children}</em>,
-        a: ({ children, href }) => (
-          <a
-            href={href}
-            target="_blank"
-            rel="noreferrer"
-            className="text-primary underline underline-offset-2"
-          >
-            {children}
-          </a>
-        ),
-        code: ({ children }) => (
-          <code className="rounded bg-muted px-1 py-0.5 font-mono text-[0.92em]">{children}</code>
-        ),
-        pre: ({ children }) => (
-          <pre className="my-2 max-w-full overflow-x-auto rounded-md border border-border/70 bg-muted/35 p-2 text-xs leading-5">
-            {children}
-          </pre>
-        ),
-        hr: () => <hr className="my-4 border-0 border-t border-white/[0.08]" />,
-        blockquote: ({ children }) => (
-          <blockquote className="my-2 border-l-2 border-border pl-3 text-muted-foreground">{children}</blockquote>
-        ),
-      }}
-    >
+    <ReactMarkdown remarkPlugins={MARKDOWN_REMARK_PLUGINS} components={MARKDOWN_COMPONENTS}>
       {normalized}
     </ReactMarkdown>
   );
-}
+});
 
 function MessageText({
   text,
