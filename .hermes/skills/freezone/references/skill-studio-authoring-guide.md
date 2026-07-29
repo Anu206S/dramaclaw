@@ -92,7 +92,13 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 
 outline 是写 JSON 前的架构拆分，不是用户可见文案。包含 Recipe 的新草稿必须先调用 `freezone_put_agent_catalog_draft_outline`，再调用 `freezone_begin_agent_catalog_draft`。不要跳过 outline 直接 begin。复用已有 Recipe 时，只把它的 id 写进 Skill 的 `allowed_recipe_ids`，不要再调用 `freezone_put_agent_catalog_recipe` 提交一遍；`expected_recipe_count` 只统计本次需要新建的 Recipe chunk。
 
-outline 中每个 `reuse=new` 阶段必须写 `new_recipe_craft_gap`。这个字段只写“为什么现有 Recipe 的执行工艺不够”，不要写“因为当前 Skill 风格/题材/品牌不同”。有效的 craft gap 应说明至少两类差异：输入结构、输出结构、必须包含项、质量检查、失败边界或执行阶段差异。如果去掉当前风格、题材、品牌和一次性案例变量后说不出这些差异，就应复用已有 Recipe，把风格和领域约束写进 Skill。
+outline 中每个 `reuse=new` 阶段必须写 `new_recipe_craft_gap`。这个字段只写“为什么现有 Recipe 的执行工艺不够”，不要写“因为当前 Skill 风格/题材/品牌不同”。有效的 craft gap 应说明已有 Recipe 在加工对象、加工动作、产物形态、关键结构、约束边界或下游用途上哪里不匹配。如果去掉当前风格、题材、品牌和一次性案例变量后说不出这些差异，就应复用已有 Recipe，把风格和领域约束写进 Skill。
+
+`reuse=existing` 不是默认选择。复用已有 Recipe 前，必须先确认当前阶段和已有 Recipe 的执行工艺一致：它们处理的是同类对象，做的是同类加工，产出的是同类中间产物，并以相同方式供下游使用。名称相似、节点类型相同、都属于角色/道具/分镜，不能单独作为复用依据。若当前阶段需要“单张可引用锚点”，而已有 Recipe 产出“多角度模卡/多视角参考图”，这是产物形态和下游用途不同，应新建更匹配的 Recipe 或选择其他 Recipe。
+
+outline 里的 `id` 是阶段 ID，`recipe_id` 是这个阶段对应的 Catalog Recipe ID。两者都必须保持工艺化和中性：描述加工对象、加工动作或产物形态，不要写当前 Skill 的视觉风格、题材、品牌、角色名、产品名或一次性案例。`reuse=existing` 时，`recipe_id` 必须精确写已有 Recipe ID；`reuse=new` 时，`recipe_id` 是准备新建的 Recipe ID，也必须按可复用工艺命名。
+
+outline 里的新建 Recipe 名称、reason 和 `new_recipe_craft_gap` 也必须只描述工艺，不要把 Skill 的视觉风格、题材或一次性案例写进 Recipe。风格应写进 Skill 的 `planning.prompt_guide`、`planning.conduct_rules` 和 `evaluation`。Recipe 名称应描述加工对象、产物形态或使用场景，而不是描述当前 Skill 的审美身份。
 
 坏输出通常长这样：
 
@@ -254,15 +260,18 @@ Recipe 的边界应对应可复用能力模块。生成草稿前先看当前已�
 
 1. 先列出本 Skill 真正需要的执行阶段。
 2. 再对照现有 Recipe 的 name、output_kind、action_keys、planning_prompt 和 result_summary。
-3. 工艺相同就复用已有 Recipe；风格、题材、品牌不同，不等于必须新建 Recipe。
-4. 只有现有 Recipe 无法表达这个阶段，或强行复用会让 Recipe 变得含糊、误导、过度泛化时，才新建 Recipe。
-5. 每个新建 Recipe 决策都要在 outline 的 `new_recipe_craft_gap` 写清工艺缺口；没有具体缺口就改为复用已有 Recipe。
-6. `allowed_recipe_ids` 只写本 Skill 实际可执行链路需要的 Recipe id。它是运行白名单，不是“相关 Recipe 大合集”。
+3. 比较执行工艺，而不是只比较名称、节点类型或大类标签。工艺包括：加工对象、加工动作、产物形态、关键结构、约束边界和下游用途。
+4. 工艺相同就复用已有 Recipe；风格、题材、品牌不同，不等于必须新建 Recipe。
+5. 工艺不同就不要复用。典型不匹配包括：当前需要单张锚点图，但已有 Recipe 产出多角度模卡；当前需要品牌道具展示图，但已有 Recipe 产出道具多视角设定图；当前需要逐镜视频提示词，但已有 Recipe 负责整体视频规划。
+6. 只有现有 Recipe 无法表达这个阶段，或强行复用会让 Recipe 变得含糊、误导、过度泛化时，才新建 Recipe。
+7. 每个新建 Recipe 决策都要在 outline 的 `new_recipe_craft_gap` 写清工艺缺口；没有具体缺口就改为复用已有 Recipe。
+8. `allowed_recipe_ids` 只写本 Skill 实际可执行链路需要的 Recipe id。它是运行白名单，不是“相关 Recipe 大合集”。
 
 Skill 和 Recipe 的分工：
 
 - Skill 负责风格身份、领域规则、开始前选项、执行阶段、审核闸门、素材继承、返工边界和允许使用哪些 Recipe。
 - Recipe 负责一个阶段的提示词/指令生成工艺，例如如何把上游角色设定整理成角色锚点提示词，如何把分镜表转成逐镜视频提示词。
+- Recipe 不负责保存本 Skill 的视觉风格。新建 Recipe 的 `id`、`name`、`system_prompt`、`must_have_items`、`planning_prompt` 和 `result_summary` 都不要写当前 Skill 的风格词、审美词、题材名或案例变量；它们会在运行时从 Skill 的 `prompt_guide`、`conduct_rules`、用户输入和上游节点继承。
 - Recipe 文案里不要写“不要覆盖 Skill 注入的风格约束”“这个 Recipe 只负责……”这类内部协作话术。应该直接写任务语言：输入什么、输出什么、必须包含什么、什么算失败。
 - Recipe 的 id 和名称必须匹配真实颗粒度。不要把包含领域规则的 Recipe 命名成过度通用的阶段名。
 
@@ -294,6 +303,16 @@ Recipe 不是越通用越好。抽象时先问：去掉当前 Skill 的风格、
 - 如果剩下的只有“稳定、清晰、可复用、质量好”这类虚词，说明抽太空了，应保留更具体的 Recipe 边界。
 - 如果 Recipe 内容包含明确领域规则，ID 和名称必须体现这个可复用范围，不要假装成全平台通用能力。
 - 如果未来可能会出现更通用版本，也不要先占用过泛 ID；当前 Recipe 先按真实职责命名，未来再新增真正通用的版本。
+
+复用已有 Recipe 时同样按工艺判断。先用一句内部判断说清：这个阶段要把什么对象加工成什么产物，以及这个产物后面怎么用。再对照候选 Recipe 的 `planning_prompt`、`result_summary` 和 `must_have_items`。如果候选 Recipe 的产物形态、关键结构或下游用途不同，即使名字很像，也不要复用。
+
+复用已有 Recipe 前，必须先过三问：
+
+1. **输出是不是同一种东西？** 例如单张锚点图、三视图模卡、多宫格分镜、单段视频提示词、音频层提示词、计划文本，这些不是同一种输出。
+2. **下游是不是用同一种方式使用它？** 例如全链路锁定源、普通参考图、分镜依据、视频素材输入、音频层或终端结果，这些用途不同会改变工艺。
+3. **Recipe 自己是否必须写入当前 Skill 的风格、题材或案例才成立？** 如果必须写入，先把这些内容移回 Skill 的 `planning.prompt_guide`、`planning.conduct_rules` 或 `evaluation`，再判断剩下的工艺是否仍匹配。
+
+三问里任意一个答案是否定，就不要写 `reuse=existing`。`reuse=existing` 的 `reason` 必须能说明这三问的匹配点，不能只写“同工艺”“同为角色/道具/分镜/视频”“已有类似 Recipe”。
 
 ## 9. domain_contract / creative_contract 写法
 
@@ -483,6 +502,8 @@ Skill 草稿必须提供足够明确的规划约束：
 | `result_summary` | 一句或短语说明该 Recipe 输出什么业务结果。 | 不要写“送入 imageGeneration 节点”“供下游执行”等机制话。 |
 | `requires_source_media` | 这个阶段必须引用图片/视频/音频素材时为 `true`，例如逐镜视频需要分镜/角色/道具参考。纯文本规划通常为 `false`。 | 不要因为可能有参考素材就设 true；只有缺素材会无法正确执行时才设 true。 |
 
+Recipe 字段不要承载 Skill 风格。凡是换一个视觉风格、审美、题材或案例后就要改的内容，优先放到 Skill 的 `planning.prompt_guide`、`planning.conduct_rules` 或 `evaluation`。Recipe 只写这个阶段如何加工输入、输出什么结构、什么算失败。`id/name` 可体现稳定的领域工艺、产物形态或使用场景，但不要体现当前 Skill 专属的风格身份。
+
 ### Recipe `system_prompt` 的推荐骨架
 
 ```text
@@ -526,6 +547,7 @@ Skill 草稿必须提供足够明确的规划约束：
 - 音频 Recipe 是否只负责旁白、音效、BGM 等音频层；不要把最终视频合成写进音频 Recipe。
 - Skill 已经有开始前选项时，Recipe 不要写死对应数量、比例、时长等可变值。
 - 风格、题材、品牌、角色身份和全局质量口径是否放在 Skill；Recipe 只保留本阶段输入、输出结构、质量标准和失败边界。
+- 新建 Recipe 的 id/name/result_summary 是否没有夹带当前 Skill 的风格身份。若名称换一种风格就必须改，说明它写进了 Skill 风格，应改成描述工艺的名称，把风格移回 Skill。
 - 如果 Recipe 抽象后只剩“稳定、清晰、可复用、高质量”等虚词，说明抽得太空，应保留更具体的领域边界和名称。
 
 字段落地时始终遵守这条线：**厚 Skill 写观感、资产策略、阶段原则和质量标准；Recipe 写可复用阶段工艺；Schema 保持薄，不新增字段。**

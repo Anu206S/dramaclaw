@@ -510,6 +510,7 @@ def test_resolve_saved_skill_studio_tool_result_tells_agent_catalog_is_formal(mo
     assert resolved["saved_to_catalog"] is True
     assert resolved["saved_skill_ids"] == ["home-culture-poster"]
     assert resolved["saved_recipe_ids"] == ["home-culture-poster-image"]
+    assert resolved["draft"] is None
     assert "saved" in resolved["agent_instruction"]
     assert "not the user saying 'ok'" in resolved["agent_instruction"]
     assert "Do not apply user-profile rules for short 'ok' replies" in resolved["agent_instruction"]
@@ -541,8 +542,9 @@ def test_resolve_cancelled_skill_studio_tool_result_stops_flow(monkeypatch, tmp_
     assert resolved["ok"] is True
     assert resolved["skill_studio_status"] == "catalog_cancelled"
     assert resolved["saved_to_catalog"] is False
-    assert "Do not continue" in resolved["agent_instruction"]
-    assert "canvas" in resolved["agent_instruction"]
+    assert resolved["draft"] is None
+    assert "Do not resubmit" in resolved["agent_instruction"]
+    assert "Do not call any Skill Studio" in resolved["agent_instruction"]
     assert "Continue the Skill Studio flow" not in resolved["agent_instruction"]
     assert wait_skill_studio_result("skill-key-3", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
 

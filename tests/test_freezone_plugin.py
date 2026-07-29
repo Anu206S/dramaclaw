@@ -1228,8 +1228,11 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     assert skill["ok"] is True
     assert "remaining Recipe chunks: 2" in skill["agent_instruction"]
     assert "Next call MUST be freezone_put_agent_catalog_recipe with index=0" in skill["agent_instruction"]
+    assert "neutral craft-level recipe_id" in skill["agent_instruction"]
+    assert "Do not add Skill style" in skill["agent_instruction"]
     assert "Do not call freezone_finish_agent_catalog_draft yet" in skill["agent_instruction"]
     assert recipe_1["ok"] is True
+    assert "neutral craft-level recipe_id" in recipe_1["agent_instruction"]
     assert recipe_2["ok"] is True
     assert finished["ok"] is True
     assert wait_keys == [("skill-studio-6", 600)]
@@ -2167,6 +2170,7 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     draft_schema = schemas["freezone_present_agent_catalog_draft"]["parameters"]
     begin_schema = schemas["freezone_begin_agent_catalog_draft"]["parameters"]
     put_recipe_schema = schemas["freezone_put_agent_catalog_recipe"]["parameters"]
+    outline_schema = schemas["freezone_put_agent_catalog_draft_outline"]["parameters"]
     patch_schema = schemas["freezone_patch_agent_catalog_draft"]["parameters"]
     patch_description = schemas["freezone_patch_agent_catalog_draft"]["description"]
     finish_schema = schemas["freezone_finish_agent_catalog_draft"]["parameters"]
@@ -2191,6 +2195,14 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     assert "do not use operation, operations, or patches" in patch_field_description
     assert 'patch=[{"op":"remove","path":""}]' in patch_field_description
     assert "top-level recipes parameter" in draft_schema["properties"]["recipes"]["description"]
+    outline_stage_schema = outline_schema["properties"]["stages"]["items"]
+    assert "neutral craft/stage id" in outline_stage_schema["properties"]["id"]["description"]
+    assert "operation or output shape only" in outline_stage_schema["properties"]["name"]["description"]
+    assert "reusable craft-level Recipe id" in outline_stage_schema["properties"]["recipe_id"]["description"]
+    assert "same input object, processing action, output shape" in outline_stage_schema["properties"]["reuse"]["description"]
+    assert "Do not cite style/theme/brand/aesthetic difference" in outline_stage_schema["properties"]["reason"]["description"]
+    assert "Do not write only 'same craft'" in outline_stage_schema["properties"]["reason"]["description"]
+    assert "Do not include the current Skill's visual style" in outline_stage_schema["properties"]["new_recipe_craft_gap"]["description"]
     assert begin_schema["required"] == ["skill_studio_session_id", "mode", "expected_recipe_count"]
     assert put_recipe_schema["required"] == ["skill_studio_session_id", "recipe"]
     assert patch_schema["required"] == ["skill_studio_session_id", "target", "patch"]
