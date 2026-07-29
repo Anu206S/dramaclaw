@@ -161,6 +161,7 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.community.open": "社区 Skill",
         "settings.freezoneCatalog.new": "新增",
         "settings.freezoneCatalog.selectAll": "全选",
+        "settings.freezoneCatalog.backToTop": "顶部",
         "settings.freezoneCatalog.readOnly": "只读",
         "settings.freezoneCatalog.builtIn": "内置",
         "settings.freezoneCatalog.customized": "已定制",
