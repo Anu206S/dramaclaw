@@ -5,6 +5,9 @@ import {
   type CanvasNode,
   type CanvasNodeData,
   type CanvasNodeType,
+  isGroupNode,
+  isProtectedProjectionGroupNode,
+  isStoryboardGroupNode,
 } from "@/features/canvas/domain/canvasNodes";
 import {
   getDownstreamSpawnTypes,
@@ -1251,11 +1254,31 @@ function projectionKeyFromNode(node: CanvasNode): string | null {
 }
 
 function layoutNodes(nodeIds: string[], mode: "horizontal" | "vertical" | "grid"): void {
-  const nodesById = new Map(useCanvasStore.getState().nodes.map((node) => [node.id, node] as const));
+  const store = useCanvasStore.getState();
+  const nodesById = new Map(store.nodes.map((node) => [node.id, node] as const));
   const nodes = nodeIds
     .map((nodeId) => nodesById.get(nodeId))
     .filter((node): node is CanvasNode => Boolean(node));
   if (nodes.length < 2) return;
+
+  const parentIds = new Set(nodes.map((node) => node.parentId).filter(Boolean));
+  if (parentIds.size === 1) {
+    const groupId = [...parentIds][0] as string;
+    const group = nodesById.get(groupId);
+    const targetIds = new Set(nodes.map((node) => node.id));
+    const groupChildren = store.nodes.filter((node) => node.parentId === groupId);
+    const targetsWholePlainGroup =
+      isGroupNode(group) &&
+      !isProtectedProjectionGroupNode(group) &&
+      !isStoryboardGroupNode(group) &&
+      groupChildren.length === targetIds.size &&
+      groupChildren.every((node) => targetIds.has(node.id));
+    if (targetsWholePlainGroup) {
+      store.arrangeGroupChildren(groupId, mode);
+      return;
+    }
+  }
+
   const ordered = nodes;
   const minX = Math.min(...ordered.map((node) => node.position.x));
   const minY = Math.min(...ordered.map((node) => node.position.y));
@@ -1278,7 +1301,7 @@ function layoutNodes(nodeIds: string[], mode: "horizontal" | "vertical" | "grid"
       };
     });
   }
-  useCanvasStore.getState().setNodePositions(positions);
+  store.setNodePositions(positions);
 }
 
 function moveNodes(

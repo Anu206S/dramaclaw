@@ -2179,6 +2179,61 @@ describe("canvas chat commands", () => {
     expect(positions.get(thirdId)?.y).toBe(0);
   });
 
+  it("uses the node group menu layout for a grouped workflow grid", () => {
+    const store = useCanvasStore.getState();
+    store.setCanvasData(
+      [
+        { id: "a", position: { x: 0, y: 0 } },
+        { id: "b", position: { x: 400, y: 0 } },
+        { id: "c", position: { x: 0, y: 300 } },
+        { id: "d", position: { x: 400, y: 300 } },
+      ].map((node) => ({
+        ...node,
+        type: CANVAS_NODE_TYPES.imageEdit,
+        width: 200,
+        height: 150,
+        style: { width: 200, height: 150 },
+        data: { imageUrl: `${node.id}.png` },
+      })),
+      [
+        { id: "a-b", source: "a", target: "b" },
+        { id: "b-c", source: "b", target: "c" },
+        { id: "c-d", source: "c", target: "d" },
+      ],
+    );
+    const groupId = store.groupNodes(["a", "b", "c", "d"]);
+    expect(groupId).not.toBeNull();
+
+    const result = applyCanvasChatCommands(
+      extractCanvasChatCommandEnvelopes([
+        {
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [
+            {
+              type: "layout_nodes",
+              node_ids: ["a", "b", "c", "d"],
+              mode: "grid",
+            },
+          ],
+        },
+      ]),
+    );
+
+    expect(result.errors).toEqual([]);
+    const positions = new Map(
+      useCanvasStore.getState().nodes.map((node) => [node.id, node.position]),
+    );
+    const [a, b, c, d] = ["a", "b", "c", "d"].map(
+      (nodeId) => positions.get(nodeId)!,
+    );
+    expect(a.x).toBeLessThan(b.x);
+    expect(b.x).toBeLessThan(c.x);
+    expect(c.x).toBeLessThan(d.x);
+    expect(new Set([a.y, b.y, c.y, d.y]).size).toBe(1);
+    expect(Math.min(a.x, b.x, c.x, d.x)).toBe(20);
+    expect(a.y).toBe(34);
+  });
+
   it("treats an immediate unknown select_nodes id as an implicit client id for a created node", () => {
     const envelopes = extractCanvasChatCommandEnvelopes([
       {
