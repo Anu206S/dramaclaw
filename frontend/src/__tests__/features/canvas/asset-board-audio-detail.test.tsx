@@ -3,7 +3,7 @@
 import { fireEvent, render, screen, waitFor, within } from '@testing-library/react';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { submitFreezoneAudioSpeech } from '@/api/ops';
+import { submitFreezoneAudioMusic, submitFreezoneAudioSpeech } from '@/api/ops';
 import { CANVAS_NODE_TYPES, type CanvasNode } from '@/features/canvas/domain/canvasNodes';
 import {
   __resetAssetBoardAudioOpsStateForTest,
@@ -96,8 +96,8 @@ describe('AssetBoard 音频进主从详情', () => {
     const detail = detailPanel();
     // 中间：大波形播放器（scrubber）。
     expect(within(detail).getByRole('slider', { name: 'Audio waveform scrubber' })).toBeInTheDocument();
-    // 底部：可编辑的生成表单（对齐 liblib——已有音频也能改合成文本/声线后重新生成）。
-    expect(within(detail).getByPlaceholderText('输入要合成的文本')).toBeInTheDocument();
+    // 底部：可编辑的生成表单（背景音乐节点按音乐语义展示）。
+    expect(within(detail).getByPlaceholderText('描述想要的音乐：风格、乐器、节奏、氛围…')).toBeInTheDocument();
     expect(within(detail).getByRole('button', { name: /重新生成/ })).toBeInTheDocument();
     // 定位入口已从详情面板整体移除。
     expect(within(detail).queryByRole('button', { name: /在画布中定位/ })).not.toBeInTheDocument();
@@ -120,34 +120,33 @@ describe('AssetBoard 音频进主从详情', () => {
     expect(within(detail).queryByRole('slider', { name: 'Audio waveform scrubber' })).not.toBeInTheDocument();
     expect(within(detail).getByText('待确认后生成')).toBeInTheDocument();
     // 表单照旧在，按钮语义是「生成」（未生成过）。
-    expect(within(detail).getByPlaceholderText('输入要合成的文本')).toBeInTheDocument();
+    expect(within(detail).getByPlaceholderText('描述想要的音乐：风格、乐器、节奏、氛围…')).toBeInTheDocument();
     expect(within(detail).getByRole('button', { name: /^生成$/ })).toBeInTheDocument();
   });
 
-  it('填了文本 → 点「生成」走 useAudioGeneration 提交，在途登记表记 generate', async () => {
+  it('背景音乐填了文本 → 点「生成」走音乐生成提交，在途登记表记 generate', async () => {
     seed([audioNode({ audioUrl: null, text: '你好' })]);
     render(<AssetBoardView visible onLocateNode={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '背景音乐' }));
 
     fireEvent.click(within(detailPanel()).getByRole('button', { name: /^生成$/ }));
 
-    await waitFor(() => expect(submitFreezoneAudioSpeech).toHaveBeenCalled());
-    const [project, payload] = vi.mocked(submitFreezoneAudioSpeech).mock.calls[0];
+    await waitFor(() => expect(submitFreezoneAudioMusic).toHaveBeenCalled());
+    const [project, payload] = vi.mocked(submitFreezoneAudioMusic).mock.calls[0];
     expect(project).toBe('demo-project');
-    expect(payload.text).toBe('你好');
-    expect(payload.speechMode).toBe('preset');
-    expect(payload.voiceRef).toBeNull();
+    expect(payload.prompt).toBe('你好');
     // 详情按 key=nodeId 重挂也不重复提交：在途态放模块级登记表。
     await waitFor(() => expect(inFlightAudioOps.get('audio-1')).toBe('generate'));
   });
 
   it('语音生成只提交可朗读正文，不朗读时长和音效说明', async () => {
     seed([audioNode({
+      displayName: '旁白',
       audioUrl: null,
       text: '【时长】79s\n【旁白】（低沉）真正的旁白。\n【音效】雷声',
     })]);
     render(<AssetBoardView visible onLocateNode={vi.fn()} />);
-    fireEvent.click(screen.getByRole('button', { name: '背景音乐' }));
+    fireEvent.click(screen.getByRole('button', { name: '旁白' }));
 
     fireEvent.click(within(detailPanel()).getByRole('button', { name: /^生成$/ }));
 
