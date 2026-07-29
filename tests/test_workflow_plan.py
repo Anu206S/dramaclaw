@@ -1058,6 +1058,7 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert skills["pixar-ip-ad-video"]["name"] == "皮克斯 IP 品牌广告短片"
     assert skills["lego-minifigure-animation-video"]["name"] == "乐高小人动画短片"
     assert skills["retro-hong-kong-kungfu-comedy-video"]["name"] == "港风功夫萌宠短片"
+    assert skills["outdoor-stage-duel-video"]["name"] == "户外舞台双人能力秀"
     assert "pixar-ip-brand-ad-short-film" not in skills
     assert skills["pixar-ip-ad-video"]["allowed_recipe_ids"] == [
         "ad-ip-character-anchor",
@@ -1081,6 +1082,12 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "anthropomorphic-kungfu-shot-video",
         "video-audio-layer",
     ]
+    assert skills["outdoor-stage-duel-video"]["allowed_recipe_ids"] == [
+        "outdoor-stage-duel-storyboard",
+        "outdoor-stage-duel-key-elements",
+        "outdoor-stage-duel-shot-video",
+        "outdoor-stage-duel-audio-layers",
+    ]
     assert "ad-ip-character-anchor" in recipes
     assert "ad-product-prop-anchor" in recipes
     assert "workflow-input-analysis" in recipes
@@ -1089,6 +1096,10 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "storyboard-plan" in recipes
     assert "anthropomorphic-kungfu-key-elements" in recipes
     assert "anthropomorphic-kungfu-shot-video" in recipes
+    assert "outdoor-stage-duel-storyboard" in recipes
+    assert "outdoor-stage-duel-key-elements" in recipes
+    assert "outdoor-stage-duel-shot-video" in recipes
+    assert "outdoor-stage-duel-audio-layers" in recipes
     assert "visual-key-elements" in recipes
     assert "storyboard-shot-video" in recipes
     assert "video-audio-layer" in recipes
@@ -1116,6 +1127,7 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "retro-kungfu-key-elements" not in recipes
     assert "retro-kungfu-shot-video" not in recipes
     assert "retro-kungfu-bgm" not in recipes
+    assert "outdoor-stage-duel-video-spec" not in recipes
 
 
 def test_pixar_skill_keeps_methodology_while_recipes_stay_stage_focused(monkeypatch):
@@ -1358,6 +1370,61 @@ def test_retro_kungfu_skill_keeps_style_while_recipes_stay_stage_focused(monkeyp
     assert "旧胶片" not in shot_text
 
 
+def test_outdoor_stage_duel_skill_keeps_global_spec_in_skill(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    skills = {item["id"]: item for item in catalog._load_skills()}
+    recipes = {
+        item["id"]: item
+        for item in catalog._load_agent_config_items("recipes", catalog._RECIPES_DIR)
+    }
+    skill = skills["outdoor-stage-duel-video"]
+    planning = skill["planning"]
+    planning_text = "\n".join(
+        [
+            planning["planning_notes"],
+            planning["prompt_guide"],
+            "\n".join(planning["conduct_rules"]),
+            "\n".join(skill["evaluation"]["domain_constraints"]),
+        ]
+    )
+
+    assert "观众第一人称" in planning["prompt_guide"]
+    assert "双角色 A/B" in planning["planning_notes"]
+    assert "这个规格不创建独立节点" in planning["planning_notes"]
+    assert "分镜" in planning["planning_notes"]
+    assert "关键元素" in planning["planning_notes"]
+    assert "单镜视频" in planning["planning_notes"]
+    assert "音频层" in planning["planning_notes"]
+    assert "Final_Video_Spec" not in planning_text
+    assert "outdoor-stage-duel-video-spec" not in planning_text
+
+    recipe_text = "\n".join(
+        item
+        for recipe_id in [
+            "outdoor-stage-duel-storyboard",
+            "outdoor-stage-duel-key-elements",
+            "outdoor-stage-duel-shot-video",
+            "outdoor-stage-duel-audio-layers",
+        ]
+        for item in [
+            recipes[recipe_id]["name"],
+            recipes[recipe_id]["system_prompt"],
+            recipes[recipe_id]["planning_prompt"],
+            recipes[recipe_id]["result_summary"],
+            "\n".join(recipes[recipe_id]["must_have_items"]),
+        ]
+    )
+    assert "Final_Video_Spec" not in recipe_text
+    assert "audience POV" in recipe_text
+    assert "Element_Character_A" in recipe_text
+    assert "Element_Character_B" in recipe_text
+    assert "Beat 1" in recipe_text
+    assert "Audio_BGM" in recipe_text
+    assert "Audio_VO" in recipe_text
+
+
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
@@ -1370,6 +1437,10 @@ def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch
         "lego-minifigure-animation-video": (
             "storyboard-shot-video",
             "visual-key-elements",
+        ),
+        "outdoor-stage-duel-video": (
+            "outdoor-stage-duel-shot-video",
+            "outdoor-stage-duel-key-elements",
         ),
     }
 
