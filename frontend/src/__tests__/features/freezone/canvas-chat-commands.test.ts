@@ -4,6 +4,7 @@ import {
   createFreezoneWorkflowRun,
   updateFreezoneWorkflowRun,
 } from "@/api/canvas";
+import { getProjectTaskLimits } from "@/api/tasks";
 import { ApiError } from "@/api/client";
 import { CANVAS_NODE_TYPES } from "@/features/canvas/domain/canvasNodes";
 import { canvasEventBus } from "@/features/canvas/application/canvasServices";
@@ -76,6 +77,14 @@ vi.mock("@/api/canvas", async (importOriginal) => {
   };
 });
 
+vi.mock("@/api/tasks", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@/api/tasks")>();
+  return {
+    ...actual,
+    getProjectTaskLimits: vi.fn(),
+  };
+});
+
 vi.mock("@/features/freezone/openPresetProjection", () => ({
   openPresetProjectionInMyCanvas: vi.fn(async () => "user_canvas"),
 }));
@@ -87,6 +96,41 @@ describe("canvas chat commands", () => {
     vi.mocked(openPresetProjectionInMyCanvas).mockClear();
     vi.mocked(createFreezoneWorkflowRun).mockClear();
     vi.mocked(updateFreezoneWorkflowRun).mockClear();
+    vi.mocked(getProjectTaskLimits).mockReset();
+    vi.mocked(getProjectTaskLimits).mockResolvedValue({
+      default: {
+        limit: 12,
+        active: 0,
+        remaining: 12,
+        user_limit: 3,
+        user_active: 0,
+        user_remaining: 3,
+      },
+      video: {
+        limit: 4,
+        active: 0,
+        remaining: 4,
+        user_limit: 3,
+        user_active: 0,
+        user_remaining: 3,
+      },
+      world: {
+        limit: 2,
+        active: 0,
+        remaining: 2,
+        user_limit: 1,
+        user_active: 0,
+        user_remaining: 1,
+      },
+      ffmpeg: {
+        limit: 2,
+        active: 0,
+        remaining: 2,
+        user_limit: 1,
+        user_active: 0,
+        user_remaining: 1,
+      },
+    });
   });
 
   it("dispatches approval events even when an in-memory subscriber handles them", () => {
@@ -5745,6 +5789,101 @@ describe("canvas chat commands", () => {
 
       const result = await resultPromise;
       expect(result.errors).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("uses the backend video capacity when it is lower than the frontend limit", async () => {
+    vi.mocked(getProjectTaskLimits).mockResolvedValue({
+      default: {
+        limit: 12,
+        active: 0,
+        remaining: 12,
+        user_limit: 3,
+        user_active: 0,
+        user_remaining: 3,
+      },
+      video: {
+        limit: 4,
+        active: 0,
+        remaining: 4,
+        user_limit: 1,
+        user_active: 0,
+        user_remaining: 1,
+      },
+      world: {
+        limit: 2,
+        active: 0,
+        remaining: 2,
+        user_limit: 1,
+        user_active: 0,
+        user_remaining: 1,
+      },
+      ffmpeg: {
+        limit: 2,
+        active: 0,
+        remaining: 2,
+        user_limit: 1,
+        user_active: 0,
+        user_remaining: 1,
+      },
+    });
+    const store = useCanvasStore.getState();
+    const nodeIds = Array.from({ length: 3 }, (_, index) => store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: index * 360, y: 0 },
+      { prompt: `广告镜头 ${index + 1}` },
+    ));
+    const events: Array<{ nodeId: string; requestId?: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push({ nodeId: payload.nodeId, requestId: payload.requestId });
+    });
+    const completeAction = (event: { nodeId: string; requestId?: string }) => {
+      if (!event.requestId) throw new Error("expected video request id");
+      useCanvasStore.getState().updateNodeData(event.nodeId, {
+        videoUrl: `/static/${event.nodeId}.mp4`,
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: event.requestId,
+        nodeId: event.nodeId,
+        action: "generate_video",
+        status: "success",
+      });
+    };
+
+    try {
+      const resultPromise = applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: nodeIds.map((nodeId) => ({
+            type: "run_node_action" as const,
+            node_id: nodeId,
+            action: "generate_video",
+          })),
+        }]),
+        {
+          projectId: "project-a",
+          canvasId: "canvas-a",
+          actionTimeoutMs: 1_000,
+        },
+      );
+
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+      expect(events[0].nodeId).toBe(nodeIds[0]);
+
+      completeAction(events[0]);
+      await vi.waitFor(() => expect(events).toHaveLength(2));
+      expect(events[1].nodeId).toBe(nodeIds[1]);
+
+      completeAction(events[1]);
+      await vi.waitFor(() => expect(events).toHaveLength(3));
+      expect(events[2].nodeId).toBe(nodeIds[2]);
+      completeAction(events[2]);
+
+      const result = await resultPromise;
+      expect(result.errors).toEqual([]);
+      expect(getProjectTaskLimits).toHaveBeenCalledWith("project-a");
     } finally {
       unsubscribe();
     }

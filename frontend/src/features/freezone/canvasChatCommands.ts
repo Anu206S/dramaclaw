@@ -28,6 +28,10 @@ import {
   type FreezonePresetCanvasRequest,
   type WorkflowRunActionStatus,
 } from "@/api/canvas";
+import {
+  getProjectTaskLimits,
+  type ProjectTaskLimits,
+} from "@/api/tasks";
 import { ApiError } from "@/api/client";
 import { isAgentCreatableCanvasNodeType } from "@/features/freezone/agentCreatableNodeTypes";
 import { buildCanvasNodeActionCatalog } from "@/features/freezone/canvasNodeActionCatalog";
@@ -454,6 +458,7 @@ const canvasNodeActionQueues = new Map<string, Promise<void>>();
 let nodeActionMountQueue: Promise<void> = Promise.resolve();
 const WORKFLOW_ACTION_CONCURRENCY = 3;
 const WORKFLOW_ACTION_MAX_RETRIES = 2;
+const WORKFLOW_CAPACITY_POLL_INTERVAL_MS = 2_000;
 const WORKFLOW_ACTION_LANE_LIMITS = {
   default: 3,
   video: 3,
@@ -463,6 +468,7 @@ const WORKFLOW_ACTION_LANE_LIMITS = {
 type WorkflowActionLane = keyof typeof WORKFLOW_ACTION_LANE_LIMITS;
 type WorkflowActionSlotWaiter = {
   lane: WorkflowActionLane;
+  laneLimit: number;
   resolve: (release: () => void) => void;
 };
 const workflowActionSlotWaiters: WorkflowActionSlotWaiter[] = [];
@@ -484,7 +490,9 @@ function workflowActionLane(action: string): WorkflowActionLane {
 function drainWorkflowActionSlots(): void {
   while (activeWorkflowActions < WORKFLOW_ACTION_CONCURRENCY) {
     const waiterIndex = workflowActionSlotWaiters.findIndex(
-      ({ lane }) => activeWorkflowActionsByLane[lane] < WORKFLOW_ACTION_LANE_LIMITS[lane],
+      ({ lane, laneLimit }) =>
+        activeWorkflowActionsByLane[lane] <
+        Math.min(WORKFLOW_ACTION_LANE_LIMITS[lane], laneLimit),
     );
     if (waiterIndex < 0) return;
     const [waiter] = workflowActionSlotWaiters.splice(waiterIndex, 1);
@@ -504,11 +512,58 @@ function drainWorkflowActionSlots(): void {
   }
 }
 
-function acquireWorkflowActionSlot(action: string): Promise<() => void> {
+function acquireWorkflowActionSlot(
+  action: string,
+  laneLimit: number = WORKFLOW_ACTION_LANE_LIMITS[workflowActionLane(action)],
+): Promise<() => void> {
   return new Promise((resolve) => {
-    workflowActionSlotWaiters.push({ lane: workflowActionLane(action), resolve });
+    workflowActionSlotWaiters.push({
+      lane: workflowActionLane(action),
+      laneLimit: Math.max(1, laneLimit),
+      resolve,
+    });
     drainWorkflowActionSlots();
   });
+}
+
+function availableWorkflowLaneCapacity(
+  limits: ProjectTaskLimits,
+  lane: WorkflowActionLane,
+): number | null {
+  const laneLimits = limits[lane];
+  if (!laneLimits) return null;
+  const finiteRemaining = [laneLimits.remaining, laneLimits.user_remaining]
+    .filter((value): value is number => typeof value === "number");
+  if (finiteRemaining.length === 0) return null;
+  return Math.max(Math.min(...finiteRemaining), 0);
+}
+
+async function fetchWorkflowLaneCapacity(
+  projectId: string,
+  lane: WorkflowActionLane,
+): Promise<number | null> {
+  try {
+    return availableWorkflowLaneCapacity(await getProjectTaskLimits(projectId), lane);
+  } catch {
+    // Older CE backends may not expose task limits. Preserve the existing scheduler.
+    return null;
+  }
+}
+
+async function waitForWorkflowLaneCapacity(
+  projectId: string,
+  lane: WorkflowActionLane,
+  timeoutMs: number,
+  shouldStop: () => boolean,
+): Promise<boolean> {
+  const startedAt = Date.now();
+  while (!shouldStop()) {
+    const capacity = await fetchWorkflowLaneCapacity(projectId, lane);
+    if (capacity === null || capacity > 0) return true;
+    if (Date.now() - startedAt >= timeoutMs) return false;
+    await new Promise((resolve) => setTimeout(resolve, WORKFLOW_CAPACITY_POLL_INTERVAL_MS));
+  }
+  return false;
 }
 
 function workflowGraphSignature(actions: PendingNodeAction[]): string {
@@ -548,7 +603,19 @@ function isRetryableWorkflowActionError(error: string | null | undefined): boole
   ) {
     return false;
   }
-  return ["429", "502", "503", "504", "econnreset", "connection reset", "bad_response_body"]
+  return [
+    "429",
+    "502",
+    "503",
+    "504",
+    "econnreset",
+    "connection reset",
+    "bad_response_body",
+    "队列已满",
+    "队列的任务已达",
+    "queue is full",
+    "lane is full",
+  ]
     .some((marker) => normalized.includes(marker));
 }
 
@@ -2258,6 +2325,25 @@ async function executeQueuedNodeActions(
     const initialGraphSignature = workflowGraphSignature(pendingActions);
     const settledActionKeys = new Set<string>();
     const blockedNodeIds = new Set<string>();
+    const workflowLaneLimits: Record<WorkflowActionLane, number> = {
+      ...WORKFLOW_ACTION_LANE_LIMITS,
+    };
+    if (projectId) {
+      try {
+        const backendLimits = await getProjectTaskLimits(projectId);
+        for (const lane of Object.keys(workflowLaneLimits) as WorkflowActionLane[]) {
+          const available = availableWorkflowLaneCapacity(backendLimits, lane);
+          if (available !== null) {
+            workflowLaneLimits[lane] = Math.max(
+              1,
+              Math.min(workflowLaneLimits[lane], available),
+            );
+          }
+        }
+      } catch {
+        // Keep CE compatibility when task admission reporting is unavailable.
+      }
+    }
     const generationActions = pendingActions.filter((action) =>
       GENERATION_NODE_ACTIONS.has(action.action));
     const generationCountByLane = generationActions.reduce<Record<WorkflowActionLane, number>>(
@@ -2311,21 +2397,41 @@ async function executeQueuedNodeActions(
           };
         }
 
-        const releaseActionSlot = await acquireWorkflowActionSlot(action.action);
+        const lane = workflowActionLane(action.action);
+        const releaseActionSlot = await acquireWorkflowActionSlot(
+          action.action,
+          workflowLaneLimits[lane],
+        );
         try {
           for (
             let retryCount = 0;
             retryCount <= WORKFLOW_ACTION_MAX_RETRIES;
             retryCount += 1
           ) {
-            const lane = workflowActionLane(action.action);
             const mustHoldCapacityUntilCompleted = GENERATION_NODE_ACTIONS.has(action.action) && (
               generationActions.length > WORKFLOW_ACTION_CONCURRENCY ||
-              generationCountByLane[lane] > WORKFLOW_ACTION_LANE_LIMITS[lane]
+              generationCountByLane[lane] > workflowLaneLimits[lane]
             );
             const executionMode = mustHoldCapacityUntilCompleted
               ? "workflow"
               : action.executionMode;
+            if (projectId && GENERATION_NODE_ACTIONS.has(action.action)) {
+              const capacityReady = await waitForWorkflowLaneCapacity(
+                projectId,
+                lane,
+                options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
+                () => workflowLeaseLost,
+              );
+              if (!capacityReady) {
+                return {
+                  action,
+                  failed: workflowLeaseLost
+                    ? "工作流执行租约已失效，已停止等待任务队列。"
+                    : `${lane} 任务队列长时间没有可用容量，请稍后继续工作流。`,
+                  retryCount,
+                };
+              }
+            }
             await persistRunUpdate([{
               node_id: action.nodeId,
               action: action.action,
