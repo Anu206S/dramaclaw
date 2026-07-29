@@ -3152,6 +3152,15 @@
       "title": "Quality"
     }
   },
+  "cropEditor": {
+    "title": "Crop",
+    "exit": "Exit crop",
+    "aspectLabel": "Crop ratio",
+    "aspectOriginal": "Original ratio",
+    "confirm": "Confirm",
+    "saving": "Saving...",
+    "resultTitle": "Crop Result"
+  },
   "rotateEditor": {
     "title": "Rotate & Mirror",
     "exit": "Exit rotate & mirror",

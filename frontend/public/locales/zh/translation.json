@@ -3152,6 +3152,15 @@
       "title": "画质"
     }
   },
+  "cropEditor": {
+    "title": "裁剪",
+    "exit": "退出裁剪",
+    "aspectLabel": "裁剪比例",
+    "aspectOriginal": "原图比例",
+    "confirm": "确认",
+    "saving": "保存中...",
+    "resultTitle": "裁剪结果"
+  },
   "rotateEditor": {
     "title": "旋转与镜像",
     "exit": "退出旋转与镜像",

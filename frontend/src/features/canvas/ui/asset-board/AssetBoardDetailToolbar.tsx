@@ -11,39 +11,33 @@ import {
   type ReactElement,
   type RefObject,
 } from 'react';
+import { createPortal } from 'react-dom';
 import {
   ChevronDown,
   ChevronRight,
-  Crop,
   Download,
-  Eraser,
   FastForward,
   Film,
   Grid2x2,
   Grid3x3,
-  History,
   ImageUpscale,
-  Languages,
   LayoutDashboard,
   LayoutGrid,
   Loader2,
+  Maximize2,
   MoreHorizontal,
   Mountain,
   Package,
-  PenLine,
   RefreshCw,
   Rewind,
   Scissors,
-  Shapes,
   Star,
   User,
   Users,
   Wand2,
-  X,
   type LucideIcon,
 } from 'lucide-react';
 
-import type { FreezoneGenerationHistoryRecord } from '@/api/ops';
 import type {
   FreezoneVideoUpscaleDenoise,
   FreezoneVideoUpscaleResolution,
@@ -55,16 +49,12 @@ import {
   DropdownMenuTrigger,
 } from '@/components/shadcn/dropdown-menu';
 import { spawnAssetBoardImageOpNode } from '@/features/canvas/application/assetBoardImageOps';
-import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { type GridActionKey } from '@/features/canvas/application/gridTemplateAction';
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
-import { matteImage } from '@/features/canvas/application/matteImage';
 import {
   canRegenerateExportImageNode,
   regenerateExportImageNode,
 } from '@/features/canvas/application/regenerateExportNode';
-import { translateNodeText } from '@/features/canvas/application/translateText';
-import { runVideoSubtitleErase } from '@/features/canvas/application/videoSubtitleErase';
 import {
   createVideoUpscaleResultNode,
   submitVideoUpscale,
@@ -74,31 +64,25 @@ import {
 } from '@/features/canvas/application/videoUpscale';
 import {
   CANVAS_NODE_TYPES,
-  NODE_TOOL_TYPES,
   isAudioNode,
   isImageEditNode,
+  isPendingUpscaleNode,
   isVideoComposeNode,
   isVideoNode,
   resolveNodeSourceImageUrl,
   type CanvasNode,
   type CanvasNodeData,
-  type NodeToolType,
 } from '@/features/canvas/domain/canvasNodes';
 import {
   KEY_ELEMENT_CATEGORY_KEYS,
   KEY_ELEMENT_CATEGORY_LABEL,
   readKeyElementCategory,
-  type KeyElementCategory,
 } from '@/features/canvas/domain/keyElements';
-import { useNodeGenerationHistory } from '@/features/canvas/hooks/useNodeGenerationHistory';
-import { getNodeToolPlugins } from '@/features/canvas/tools';
+import { CANVAS_NODE_TOOLBAR_SURFACE_CLASS } from '@/features/canvas/ui/nodeFrameStyles';
 import {
-  NodeGenerationHistory,
-  hasCompletedHistoryRecords,
-  historyRecordOutputUrl,
-} from '@/features/canvas/ui/NodeGenerationHistory';
-import { AssetBoardImageOps } from './AssetBoardImageEditMenu';
-import { AssetBoardVideoOps } from './AssetBoardVideoOpsMenu';
+  AssetBoardImageOps,
+  useAssetBoardImageEditActions,
+} from './AssetBoardImageEditMenu';
 import {
   DetailToolbarButton,
   DETAIL_TOOLBAR_BUTTON_CLASS,
@@ -117,7 +101,7 @@ export { DetailToolbarButton };
 const MORE_MENU_ITEM_CLASS =
   'flex w-full items-center gap-2 rounded-[6px] px-2.5 py-1.5 text-left text-[12px] text-white/80 transition-colors hover:bg-white/5 hover:text-white disabled:cursor-not-allowed disabled:opacity-45';
 
-/** 「...」更多菜单里的叶子动作项（抠图/裁剪/标注/分格抽取/历史）。 */
+/** 「...」更多菜单里的叶子动作项（图片是高清/裁剪/旋转，视频头部是节点操作）。 */
 interface MoreMenuAction {
   kind: 'action';
   key: string;
@@ -139,11 +123,11 @@ interface MoreMenuSubmenu {
   /** 有在途提交时展示的替代文案（如「多机位九宫格」）；非空即显示 spinner。 */
   pendingLabel?: string | null;
   disabled?: boolean;
+  /** 子项只有文字 + 右侧灰字：飞出面板窄（140px），再塞图标会把标签挤成两行。 */
   children: Array<{
     key: string;
-    icon: LucideIcon;
     label: string;
-    /** 右侧灰字（如「14 算力」）。 */
+    /** 右侧灰字（如「当前」）。 */
     hint?: string;
     onSelect: () => void;
   }>;
@@ -153,13 +137,36 @@ export type MoreMenuEntry = MoreMenuAction | MoreMenuSubmenu;
 
 const MORE_MENU_CLOSE_DELAY_MS = 140;
 
-/** 关键元素分类图标（设置关键元素子菜单用）。 */
-const KEY_ELEMENT_CATEGORY_ICON: Record<KeyElementCategory, LucideIcon> = {
-  character: User,
-  scene: Mountain,
-  object: Package,
-  other: Shapes,
-};
+/** 二级菜单飞出面板的最小宽度与它跟父项之间的缝（算坐标要用，所以是数字不是 class）。 */
+const SUBMENU_MIN_WIDTH = 140;
+const SUBMENU_GAP = 6;
+
+/** 展开中的二级菜单：哪一项 + 飞出面板的 fixed 坐标。 */
+interface SubmenuPlacement {
+  key: string;
+  top: number;
+  left: number;
+}
+
+/**
+ * 算二级菜单飞出面板的位置：顶边与父项对齐，默认往**右**开（用户指定的方向）。
+ *
+ * 之所以要算而不是 `absolute left-full`：故事板 overlay 自己是 z-30 的定位层，
+ * 里面再高的 z-index 也翻不过右侧 z-45 的对话抽屉——纯 CSS 定位的面板一开到右边
+ * 就被抽屉盖住（用户反馈「被挡住了」）。所以面板 portal 到 body、用 fixed 坐标摆，
+ * 才能浮在抽屉之上。
+ *
+ * 右边真的顶到视口边（窄窗口）时翻到左边，宁可换向也不要半截露在屏幕外。
+ */
+function placeSubmenu(key: string, anchor: HTMLElement): SubmenuPlacement {
+  const rect = anchor.getBoundingClientRect();
+  const right = rect.right + SUBMENU_GAP;
+  const left =
+    right + SUBMENU_MIN_WIDTH > window.innerWidth
+      ? Math.max(SUBMENU_GAP, rect.left - SUBMENU_GAP - SUBMENU_MIN_WIDTH)
+      : right;
+  return { key, top: rect.top, left };
+}
 
 /**
  * 「设置关键元素」子菜单项：把本节点标记为关键元素并归类（人物/场景/物品/其他）
@@ -180,7 +187,6 @@ export function keyElementMenuEntry(
     children: [
       ...KEY_ELEMENT_CATEGORY_KEYS.map((category) => ({
         key: `key-${category}`,
-        icon: KEY_ELEMENT_CATEGORY_ICON[category],
         label: KEY_ELEMENT_CATEGORY_LABEL[category],
         hint: current === category ? '当前' : undefined,
         onSelect: () =>
@@ -190,7 +196,6 @@ export function keyElementMenuEntry(
         ? [
             {
               key: 'key-clear',
-              icon: X,
               label: '取消关键元素',
               onSelect: () =>
                 updateNodeData(node.id, { keyElementCategory: null } as Partial<CanvasNodeData>),
@@ -202,17 +207,19 @@ export function keyElementMenuEntry(
 }
 
 /**
- * 图片详情工具条的「...」更多菜单：把抠图/裁剪/标注/分格抽取/历史 从常显按钮收进一个
- * 悬停展开的下拉面板（入口与动作与原来完全等价，只是从常显移进菜单）。宫格模板不在此列
- * ——它已挪回常显工具条做独立下拉按钮（用户要求）。
+ * 详情里的「...」更多菜单：把低频操作从常显按钮收进一个悬停展开的下拉面板。图片工具条
+ * 那颗装编辑三项（高清/裁剪/旋转），详情头部那颗装节点级操作（设置关键元素等）。宫格
+ * 模板不在此列——它是常显工具条上的独立下拉按钮（用户要求）。
  *
  * - hover 为主：移入图标或面板都保持打开，移出延迟 {@link MORE_MENU_CLOSE_DELAY_MS}ms
  *   收起（防抖，避免掠过即闪）；点击图标也可切换开关。
  * - 键盘可达：focus 落到触发器/任一项即展开（onFocus 冒泡），焦点整体离开则收起，
  *   Esc 收起并把焦点还给触发器。
  * - 面板绝对定位于触发器下方、右对齐，z-50 高于详情正文；样式对齐本分支体系。
- * - 叶子项点击后不主动关闭（悬停菜单惯例：移开/Esc 才收），保证连续操作与在途反馈可见；
- *   历史点击仍切换下方历史列表。仍保留 submenu 渲染分支（通用能力），当前无条目使用。
+ * - 二级菜单（submenu）向**右侧**飞出成独立面板、顶边与父项对齐，而不是就地把子项撑
+ *   在父项下面（用户指定的参照样式与方向）。面板 portal 到 body 用 fixed 坐标摆，
+ *   见 {@link placeSubmenu}——留在这棵树里会被右侧对话抽屉盖住。
+ * - 叶子项点击后不主动关闭（悬停菜单惯例：移开/Esc 才收），保证连续操作与在途反馈可见。
  */
 export function DetailMoreMenu({
   entries,
@@ -230,9 +237,10 @@ export function DetailMoreMenu({
   triggerLabel?: string;
 }): ReactElement {
   const [open, setOpen] = useState(false);
-  const [expandedKey, setExpandedKey] = useState<string | null>(null);
+  const [submenu, setSubmenu] = useState<SubmenuPlacement | null>(null);
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const submenuRef = useRef<HTMLDivElement | null>(null);
 
   const clearCloseTimer = useCallback(() => {
     if (closeTimerRef.current) {
@@ -247,24 +255,32 @@ export function DetailMoreMenu({
   const closeNow = useCallback(() => {
     clearCloseTimer();
     setOpen(false);
-    setExpandedKey(null);
+    setSubmenu(null);
   }, [clearCloseTimer]);
   const scheduleClose = useCallback(() => {
     clearCloseTimer();
     closeTimerRef.current = setTimeout(() => {
       setOpen(false);
-      setExpandedKey(null);
+      setSubmenu(null);
     }, MORE_MENU_CLOSE_DELAY_MS);
   }, [clearCloseTimer]);
   // 卸载时清掉未触发的收起定时器（详情按 key={node.id} 整体重挂载会走这里）。
   useEffect(() => clearCloseTimer, [clearCloseTimer]);
 
+  /** 展开某个二级菜单，并按锚点当场算好它的 fixed 坐标（见 placeSubmenu）。 */
+  const openSubmenu = useCallback((key: string, anchor: HTMLElement) => {
+    setSubmenu(placeSubmenu(key, anchor));
+  }, []);
+
   const handleBlur = useCallback(
     (event: FocusEvent<HTMLDivElement>) => {
-      // 焦点整体离开菜单（下一焦点不在 wrapper 内）→ 收起，不抢焦点。
-      if (!event.currentTarget.contains(event.relatedTarget as Node | null)) {
-        closeNow();
-      }
+      // 焦点整体离开菜单（下一焦点既不在 wrapper 内、也不在飞出的二级面板内）→
+      // 收起。二级面板 portal 到了 body，DOM 上不再是 wrapper 的后代，所以要单独问
+      // 它一句，否则 Tab 进子项的瞬间菜单就自己关了。
+      const next = event.relatedTarget as Node | null;
+      if (event.currentTarget.contains(next)) return;
+      if (submenuRef.current?.contains(next)) return;
+      closeNow();
     },
     [closeNow],
   );
@@ -309,17 +325,24 @@ export function DetailMoreMenu({
           {entries.map((entry) => {
             if (entry.kind === 'submenu') {
               const Icon = entry.icon;
-              const expanded = expandedKey === entry.key;
+              const placement = submenu?.key === entry.key ? submenu : null;
               const pending = Boolean(entry.pendingLabel);
               return (
-                <div key={entry.key} onMouseEnter={() => !entry.disabled && setExpandedKey(entry.key)}>
+                <div
+                  key={entry.key}
+                  onMouseEnter={(event) => !entry.disabled && openSubmenu(entry.key, event.currentTarget)}
+                >
                   <button
                     type="button"
                     aria-haspopup="true"
-                    aria-expanded={expanded}
+                    aria-expanded={placement !== null}
                     disabled={entry.disabled}
-                    onClick={() => setExpandedKey((current) => (current === entry.key ? null : entry.key))}
-                    className={MORE_MENU_ITEM_CLASS}
+                    onClick={(event) =>
+                      placement
+                        ? setSubmenu(null)
+                        : openSubmenu(entry.key, event.currentTarget)
+                    }
+                    className={`${MORE_MENU_ITEM_CLASS} ${placement ? 'bg-white/5 text-white' : ''}`}
                   >
                     {pending ? (
                       <Loader2 className="h-4 w-4 shrink-0 animate-spin" />
@@ -327,31 +350,43 @@ export function DetailMoreMenu({
                       <Icon className="h-4 w-4 shrink-0" />
                     )}
                     <span className="flex-1">{entry.pendingLabel ?? entry.label}</span>
-                    <ChevronRight
-                      className={`h-3.5 w-3.5 shrink-0 text-white/40 transition-transform ${expanded ? 'rotate-90' : ''}`}
-                    />
+                    {/* 箭头不随展开转 90°：面板是侧边飞出的，朝右的箭头本来就指着它去的方向。 */}
+                    <ChevronRight className="h-3.5 w-3.5 shrink-0 text-white/40" />
                   </button>
-                  {expanded && (
-                    <div className="mt-0.5 space-y-0.5 border-l border-white/10 pl-2">
-                      {entry.children.map((child) => {
-                        const ChildIcon = child.icon;
-                        return (
+                  {placement &&
+                    createPortal(
+                      // portal 到 body + fixed 坐标：故事板 overlay 是 z-30 的定位层，
+                      // 留在里面的面板翻不过右侧 z-45 的对话抽屉（见 placeSubmenu）。
+                      // 鼠标从父项横穿那道缝进面板会先触发 wrapper 的 onMouseLeave，
+                      // 所以这里自己接住 enter/leave，把收起定时器按掉。
+                      <div
+                        ref={submenuRef}
+                        aria-label={entry.label}
+                        onMouseEnter={clearCloseTimer}
+                        onMouseLeave={scheduleClose}
+                        style={{
+                          top: placement.top,
+                          left: placement.left,
+                          minWidth: SUBMENU_MIN_WIDTH,
+                        }}
+                        className="fixed z-[60] rounded-lg border border-white/10 bg-[#2e2e2e] p-1 text-white/85 shadow-xl"
+                      >
+                        {entry.children.map((child) => (
                           <button
                             key={child.key}
                             type="button"
                             onClick={child.onSelect}
                             className={MORE_MENU_ITEM_CLASS}
                           >
-                            <ChildIcon className="h-4 w-4 shrink-0" />
                             <span className="flex-1">{child.label}</span>
                             {child.hint && (
                               <span className="text-[10px] text-white/40">{child.hint}</span>
                             )}
                           </button>
-                        );
-                      })}
-                    </div>
-                  )}
+                        ))}
+                      </div>,
+                      document.body,
+                    )}
                 </div>
               );
             }
@@ -379,51 +414,13 @@ export function DetailMoreMenu({
   );
 }
 
-/**
- * 折叠的「历史」区：查看 + 恢复的最简列表（复用工作流节点内的 NodeGenerationHistory
- * 条）。restore 语义由宿主注入（图片/视频回填字段不同）；生成中禁恢复（节点内是
- * 非破坏性预览，详情本批直接禁用，避免误覆写在途结果）。
- */
-function DetailHistorySection({
-  nodeId,
-  restoreDisabled,
-  onRestore,
-}: {
-  nodeId: string;
-  restoreDisabled: boolean;
-  onRestore: (record: FreezoneGenerationHistoryRecord) => void;
-}): ReactElement {
-  const { records, isLoading, refresh } = useNodeGenerationHistory(nodeId);
-  const handleRestore = useCallback(
-    (record: FreezoneGenerationHistoryRecord) => {
-      if (restoreDisabled) return;
-      onRestore(record);
-    },
-    [onRestore, restoreDisabled],
-  );
-  return (
-    <div className="rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-      <NodeGenerationHistory
-        records={records}
-        isLoading={isLoading}
-        onRestore={handleRestore}
-        onRefresh={() => void refresh()}
-        disabled={restoreDisabled}
-      />
-      {!isLoading && !hasCompletedHistoryRecords(records) && (
-        <p className="py-1 text-[12px] text-white/40">暂无生成历史</p>
-      )}
-    </div>
-  );
-}
-
 // 宫格模板清单（与 NodeActionToolbar.gridActions 同源：label 即 zh 翻译值，提交时
 // label 同时作为展示 prompt 下发——真正的模板由 key→mode 映射决定）。
 // 这里不挂算力：点一项只是**建节点**，不花钱；价钱在新节点的 ↑ 按钮上按当前
 // 模型/参数活价显示（AssetBoardImageGenForm），在这儿标价反而像是点了就扣。
 const GRID_ACTION_DEFS: Array<{
   key: GridActionKey;
-  icon: typeof Crop;
+  icon: LucideIcon;
   label: string;
 }> = [
   { key: 'multiCameraGrid', icon: Grid3x3, label: '多机位九宫格' },
@@ -439,11 +436,17 @@ const GRID_ACTION_DEFS: Array<{
 ];
 
 /**
- * 图片详情工具条。常显：下载 / 失败重试 / 编辑下拉 / 全景 / 多角度 / 重打光 / 宫格模板；
- * 抠图 / 裁剪 / 标注 / 分格抽取 / 历史 收进「...」更多菜单（悬停展开）。
+ * 图片详情工具条。常显：下载 / 失败重试 / 全景 / 多角度 / 重打光 / 宫格模板；
+ * **高清 / 裁剪 / 旋转** 收进最右那颗「...」更多菜单（悬停展开）。
+ *
+ * 用户拍板的两处删减：
+ * - 原来那颗「编辑」下拉没了，它的三项就是现在「...」里的内容；
+ * - 原来「...」里的 抠图 / 裁剪(工具弹窗) / 标注 / 分格抽取 / 历史 全部移除。
+ *   注意「历史」一并没了 —— 生成失败的节点从此没有「回到上一次成功结果」的入口。
  *
  * @param onOpenNode 建出新节点后把详情切过去（同头部「创建副本」那条路径）。
- *   宫格模板现在是「先建节点、按 ↑ 才提交」，不切详情用户就看不出发生了什么。
+ *   宫格模板与「... → 高清」都是「先建节点、按 ↑ 才提交」，不切详情用户就
+ *   看不出发生了什么。
  */
 export function AssetBoardImageDetailToolbar({
   node,
@@ -452,21 +455,20 @@ export function AssetBoardImageDetailToolbar({
   node: CanvasNode;
   onOpenNode?: (nodeId: string) => void;
 }): ReactElement {
-  const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const data = node.data as Record<string, unknown>;
   const imageSource = useMemo(() => resolveNodeSourceImageUrl(node), [node]);
-  const tools = useMemo(() => getNodeToolPlugins(node), [node]);
   const isImageEdit = isImageEditNode(node);
   const isGenerating = data.isGenerating === true;
   const canRegenerate = canRegenerateExportImageNode(data);
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
-  const [isMatting, setIsMatting] = useState(false);
 
-  const hasTool = useCallback(
-    (type: NodeToolType) => tools.some((tool) => tool.type === type),
-    [tools],
-  );
+  // 编辑三项（高清/裁剪/旋转）：条目进下面的「...」，编辑器弹窗随 overlays 挂出。
+  // imageEdit 节点不给图片编辑入口（同工作流 NodeActionToolbar 的显隐语义）。
+  const { entries: editEntries, overlays: editOverlays } = useAssetBoardImageEditActions({
+    node,
+    imageSource: isImageEdit ? null : imageSource,
+    onOpenNode,
+  });
 
   // 文件名推断沿用 NodeActionToolbar.resolveImageDownloadFilename 的规则。
   const handleDownload = useCallback(async () => {
@@ -484,30 +486,6 @@ export function AssetBoardImageDetailToolbar({
       setIsDownloading(false);
     }
   }, [data.displayName, data.sourceFileName, imageSource, isDownloading, node.id]);
-
-  const openToolDialog = useCallback(
-    (toolType: NodeToolType) => {
-      // NodeToolDialog 全局挂载在保活的 Canvas 树里（Canvas.tsx），故事板模式下
-      // 事件仍会被消费；crop/annotate/split 三类均走 portal 到 body 的 z-[300]
-      // 弹窗，高于故事板 z-30。
-      canvasEventBus.publish('tool-dialog/open', { nodeId: node.id, toolType });
-    },
-    [node.id],
-  );
-
-  // 进行中反馈：结果虽落在新建的画布节点上，触发按钮也要有 busy 态——
-  // 用 matteImage 返回的后台链 completion 收口（settle 后恢复可点）。
-  const handleMatte = useCallback(() => {
-    if (!imageSource || isMatting) return;
-    const result = matteImage(node.id, imageSource, { displayName: '抠图' });
-    if (!result) return;
-    setIsMatting(true);
-    // 低成本视口预定位（M7）：结果节点已同步建好，立即让保活挂载的 Canvas 把
-    // 视口对准它——即便画布当前 suspended（故事板可见），pendingFocusNodeId 的
-    // 消费 effect 不受 suspended 门控，用户切回工作流时视口已就位。
-    useCanvasStore.getState().requestFocusNode(result.nodeId);
-    void result.completion.finally(() => setIsMatting(false));
-  }, [imageSource, isMatting, node.id]);
 
   // 点功能 = **先建节点、不提交**（对标 liblib）：在下游建一个空的图片生成节点，
   // 节点名 = 功能名，输入框里带一枚可关可切的功能 chip；详情随即切到新节点，
@@ -528,76 +506,11 @@ export function AssetBoardImageDetailToolbar({
     [imageSource, node.id, onOpenNode],
   );
 
-  const handleRestoreHistory = useCallback(
-    (record: FreezoneGenerationHistoryRecord) => {
-      const url = historyRecordOutputUrl(record);
-      if (!url) return;
-      // 与 ImageGenNode 非生成态恢复同语义（生成中在 DetailHistorySection 已被禁用）。
-      updateNodeData(node.id, {
-        imageUrl: url,
-        previewImageUrl: url,
-        isGenerating: false,
-        generationStartedAt: null,
-        generationBatch: null,
-      } as Partial<CanvasNodeData>);
-    },
-    [node.id, updateNodeData],
-  );
-
-  // 「...」更多菜单条目：抠图 / 裁剪 / 标注 / 分格抽取 / 宫格模板 / 历史。显隐条件与
-  // 原常显按钮逐条同源（imageEdit 节点不给编辑类入口、需对应工具插件、需有图源），
-  // 触发的动作也完全一致——只是入口从常显按钮移进了菜单。历史恒有（imageEdit 也有）。
-  const moreEntries: MoreMenuEntry[] = [];
-  if (!isImageEdit && imageSource) {
-    moreEntries.push({
-      kind: 'action',
-      key: 'matte',
-      icon: Scissors,
-      label: '抠图',
-      busy: isMatting,
-      onSelect: handleMatte,
-    });
-  }
-  if (!isImageEdit && hasTool(NODE_TOOL_TYPES.crop)) {
-    moreEntries.push({
-      kind: 'action',
-      key: 'crop',
-      icon: Crop,
-      label: '裁剪',
-      onSelect: () => openToolDialog(NODE_TOOL_TYPES.crop),
-    });
-  }
-  if (!isImageEdit && hasTool(NODE_TOOL_TYPES.annotate)) {
-    moreEntries.push({
-      kind: 'action',
-      key: 'annotate',
-      icon: PenLine,
-      label: '标注',
-      onSelect: () => openToolDialog(NODE_TOOL_TYPES.annotate),
-    });
-  }
-  if (!isImageEdit && hasTool(NODE_TOOL_TYPES.splitStoryboard)) {
-    moreEntries.push({
-      kind: 'action',
-      key: 'split',
-      icon: Grid3x3,
-      label: '分格抽取',
-      onSelect: () => openToolDialog(NODE_TOOL_TYPES.splitStoryboard),
-    });
-  }
-  // 宫格模板已挪到常显工具条（独立下拉按钮，见下方 return），不再进「...」菜单。
-
-  // 「设置关键元素」不在这条工具条里——它是节点级操作，已统一挪到详情头部那颗
-  // 「...」（四栏一致，见 AssetBoardDetail）。这里只留与图片素材本身相关的操作。
-
-  moreEntries.push({
-    kind: 'action',
-    key: 'history',
-    icon: History,
-    label: '历史',
-    active: historyOpen,
-    onSelect: () => setHistoryOpen((open) => !open),
-  });
+  // 「...」更多菜单的条目就是编辑三项（高清/裁剪/旋转），全部来自
+  // useAssetBoardImageEditActions。原来住在这里的 抠图 / 裁剪(工具弹窗) / 标注 /
+  // 分格抽取 / 历史 已按用户要求整体移除（能力本身仍在工作流侧 NodeActionToolbar）。
+  // 宫格模板是常显下拉按钮，不进菜单；「设置关键元素」是节点级操作，在详情头部那颗
+  // 「...」里（四栏一致，见 AssetBoardDetail）。
 
   return (
     <div className="flex flex-col gap-2">
@@ -620,9 +533,9 @@ export function AssetBoardImageDetailToolbar({
             onClick={() => void regenerateExportImageNode(node.id)}
           />
         )}
-        {/* 常显第二批图片操作（编辑下拉：重绘/擦除/高清/扩图/旋转 + 全景/多角度/重打光）。
-            按钮落在本行，展开的平面配置行用 w-full 自动换到下一行。显隐与工作流
-            NodeActionToolbar 同源：imageEdit 节点不给图片编辑入口，无图源不显示。 */}
+        {/* 常显第二批图片操作（全景 / 多角度 / 重打光）。按钮落在本行，失败兜底文案
+            用 w-full 自动换到下一行。显隐与工作流 NodeActionToolbar 同源：imageEdit
+            节点不给图片编辑入口，无图源不显示。 */}
         {!isImageEdit && imageSource && (
           <AssetBoardImageOps node={node} imageSource={imageSource} />
         )}
@@ -663,16 +576,13 @@ export function AssetBoardImageDetailToolbar({
             </DropdownMenuContent>
           </DropdownMenu>
         )}
-        {/* 「...」更多菜单：抠图/裁剪/标注/分格抽取/历史（悬停展开，见组件注释）。 */}
-        <DetailMoreMenu entries={moreEntries} />
+        {/* 「...」更多菜单：高清 / 裁剪 / 旋转（悬停展开，见组件注释）。
+            条目被 preset_managed 过滤到一个不剩、或本身没图可编辑时整颗不渲染
+            ——否则点开是个空面板。 */}
+        {editEntries.length > 0 && <DetailMoreMenu entries={editEntries} />}
       </div>
-      {historyOpen && (
-        <DetailHistorySection
-          nodeId={node.id}
-          restoreDisabled={isGenerating}
-          onRestore={handleRestoreHistory}
-        />
-      )}
+      {/* 裁剪 / 旋转编辑器（portal 弹窗），跟着上面那三项一起来自同一个 hook。 */}
+      {editOverlays}
     </div>
   );
 }
@@ -685,7 +595,7 @@ function videoSourceUrlOf(node: CanvasNode): string | null {
   return null;
 }
 
-/** 生成失败过的节点：没产物但「历史」里可能存着上一次成功的结果，工具条得留着。 */
+/** 生成失败过的节点。 */
 function hasFailedGeneration(node: CanvasNode): boolean {
   const data = node.data as Record<string, unknown>;
   return typeof data.generationError === 'string' && data.generationError.trim().length > 0;
@@ -696,10 +606,15 @@ function hasFailedGeneration(node: CanvasNode): boolean {
  * 下载/编辑/宫格全要图源，摆一排灰按钮只是噪音（用户要求）。
  * 两个例外：
  * - 导出图节点生成失败时没图源，但「重新生成」正是这时候要点的；
- * - 生成失败的节点没图源，可「历史」（在「...」菜单里，本身不要求图源）是用户
- *   回到上一次成功结果的唯一入口，整条藏掉等于把恢复路径也藏了。
+ * - 其余生成失败的节点同样留着整条，让「重新生成」一类不吃图源的入口有地方待。
+ *   注意「历史」已随「...」菜单改版整体移除（用户要求），失败节点从此没有
+ *   「回到上一次成功结果」的入口——同视频侧的取舍。
  */
 export function hasImageDetailActions(node: CanvasNode): boolean {
+  // 还没出图的高清结果节点：resolveNodeSourceImageUrl 会摸到它存的**源图**
+  // （previewImageUrl），据此摆出一排「下载/编辑/全景…」等于把待放大的原图当成
+  // 这个节点的产物在操作。这里先短路——它眼下唯一该做的事是下方那张卡片按 ↑。
+  if (isPendingUpscaleNode(node)) return false;
   return (
     Boolean(resolveNodeSourceImageUrl(node)) ||
     canRegenerateExportImageNode(node.data as Record<string, unknown>) ||
@@ -709,26 +624,79 @@ export function hasImageDetailActions(node: CanvasNode): boolean {
 
 /**
  * 视频详情工具条有没有可用操作。同上：没片源的视频节点整条不渲染。
- * 两个例外：
- * - 合成节点的「剪辑」靠的是上游素材而非自身片源，它自己还没出片也留着
- *   （素材不够时按钮自带「需要至少 2 个已就绪的上游视频素材」的说明）；
- * - 生成失败的节点片源为空，但「历史」不要求片源，是恢复上一次成功结果的唯一入口。
+ * 唯一的例外是合成节点——它的「剪辑」靠上游素材而非自身片源，自己还没出片也留着
+ * （素材不够时按钮自带「需要至少 2 个已就绪的上游视频素材」的说明）。
+ *
+ * 生成失败的节点不再是例外：工具条砍到「剪辑/高清/下载/全屏」四项后（用户要求），
+ * 不要求片源的「历史」没了，留下来也只是四颗全灰的按钮。
  */
 export function hasVideoDetailActions(node: CanvasNode): boolean {
-  return Boolean(videoSourceUrlOf(node)) || isVideoComposeNode(node) || hasFailedGeneration(node);
+  return Boolean(videoSourceUrlOf(node)) || isVideoComposeNode(node);
 }
 
 /**
- * 视频详情工具条：剪辑（合成时间线）/ 高清 / 智能去字幕 / 翻译提示词 / 下载 / 历史，
- * 外加第二批视频操作（剪辑轨道 / 解析 / 分离音视频 / 截帧 / 替换视频 / 框选擦除，
- * 见 AssetBoardVideoOps）。
+ * 工具条外壳：与画布节点工具条同一表面（CANVAS_NODE_TOOLBAR_SURFACE_CLASS），只是
+ * 内边距收一档——它要塞进详情头部那行。圆角同样按 10px 走，不做全胶囊（用户反馈）。
+ */
+const VIDEO_FLOAT_PILL_CLASS =
+  `flex items-center gap-0.5 rounded-[10px] p-1 ${CANVAS_NODE_TOOLBAR_SURFACE_CLASS}`;
+
+/** 工具条里的按钮：无边框（外壳已提供表面），图标可单独成键；h-6 让整条贴着头部行高。 */
+const VIDEO_FLOAT_BUTTON_CLASS =
+  'inline-flex h-6 items-center gap-1.5 rounded-[7px] px-2.5 text-[12px] text-white/80 transition-colors hover:bg-white/10 hover:text-white disabled:cursor-not-allowed disabled:opacity-40';
+
+/** 浮动工具条上的一颗按钮（label 只在 showLabel 时出字，否则退化成纯图标键）。 */
+function VideoFloatButton({
+  icon: Icon,
+  label,
+  showLabel = false,
+  busy = false,
+  disabled = false,
+  title,
+  onClick,
+}: {
+  icon: LucideIcon;
+  label: string;
+  showLabel?: boolean;
+  busy?: boolean;
+  disabled?: boolean;
+  title?: string;
+  onClick?: () => void;
+}): ReactElement {
+  return (
+    <button
+      type="button"
+      // 纯图标键没有可见文案，aria-label 兜住读屏与测试的可及名。
+      aria-label={label}
+      title={title ?? label}
+      disabled={disabled || busy}
+      onClick={onClick}
+      className={VIDEO_FLOAT_BUTTON_CLASS}
+    >
+      {busy ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : <Icon className="h-3.5 w-3.5" />}
+      {showLabel && label}
+    </button>
+  );
+}
+
+/**
+ * 视频详情的浮动工具条：**剪辑 / 高清 / 下载 / 全屏** 四项（用户要求砍到这四个，
+ * 其余视频功能——智能去字幕 / 翻译提示词 / 历史 / 剪辑轨道 / 解析 / 分离音视频 /
+ * 截帧 / 替换视频 / 框选擦除——已从故事板移除，工作流侧 NodeActionToolbar 不受影响）。
+ *
+ * 形态也跟着换了：不再是详情头部下方那条常显按钮行，而是一颗居中的胶囊
+ * （对齐 liblib），**hover 到视频详情才浮现**。它落在详情头部标题与右侧图标之间那段
+ * 空白里——压在画面上会把视频挡掉一截（用户反馈）。悬停上下文由 AssetBoardDetail
+ * 的根 `group/detail` 给（具名 group：详情里还有别的 group-hover，共用匿名 group
+ * 会互相误触发）；配置面板或合成弹窗开着时钉住不隐藏，否则鼠标一移开，正在填的
+ * 高清参数就跟着消失。
  */
 export function AssetBoardVideoDetailToolbar({
   node,
   playerRef,
 }: {
   node: CanvasNode;
-  /** 详情正文里那个活的 <video>：截帧的「当前帧/尾帧」要读它的进度与时长。 */
+  /** 详情正文里那个活的 <video>：「全屏」直接对它发 requestFullscreen。 */
   playerRef?: RefObject<HTMLVideoElement | null>;
 }): ReactElement {
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
@@ -736,16 +704,11 @@ export function AssetBoardVideoDetailToolbar({
   const isVideo = isVideoNode(node);
   const isCompose = isVideoComposeNode(node);
   const videoUrl = videoSourceUrlOf(node);
-  const prompt = typeof data.prompt === 'string' ? data.prompt : '';
-  const isGenerating = data.isGenerating === true;
 
-  const [historyOpen, setHistoryOpen] = useState(false);
   const [upscaleOpen, setUpscaleOpen] = useState(false);
   const [upscaleResolution, setUpscaleResolution] =
     useState<FreezoneVideoUpscaleResolution>('1080p');
   const [upscaleDenoise, setUpscaleDenoise] = useState<FreezoneVideoUpscaleDenoise>('1x');
-  const [isErasing, setIsErasing] = useState(false);
-  const [isTranslating, setIsTranslating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [isSubmittingUpscale, setIsSubmittingUpscale] = useState(false);
   const [composeSeeds, setComposeSeeds] = useState<string[] | null>(null);
@@ -863,195 +826,133 @@ export function AssetBoardVideoDetailToolbar({
     }).finally(() => setIsSubmittingUpscale(false));
   }, [isSubmittingUpscale, node.id, upscaleDenoise, upscaleResolution, videoUrl]);
 
-  const handleSmartErase = useCallback(async () => {
-    if (!videoUrl || isErasing) return;
-    if (!project) {
-      console.error('[asset-board] subtitle erase: no project in URL');
+  // 全屏：直接对正文那个活的播放器发 requestFullscreen（不是把详情面板整块放大——
+  // 用户要的是「看片」）。iOS Safari 的 <video> 没有标准 API，退到它自家的
+  // webkitEnterFullscreen。
+  const handleFullscreen = useCallback(() => {
+    const player = playerRef?.current;
+    if (!player) return;
+    if (document.fullscreenElement) {
+      void document.exitFullscreen().catch(() => {});
       return;
     }
-    setIsErasing(true);
-    try {
-      const result = await runVideoSubtitleErase(project, {
-        sourceUrl: videoUrl,
-        mode: 'smart_subtitle',
-        box: null,
+    if (typeof player.requestFullscreen === 'function') {
+      void player.requestFullscreen().catch((error: unknown) => {
+        console.error('[asset-board] video fullscreen failed', error);
       });
-      if (result.url) {
-        updateNodeData(node.id, { videoUrl: result.url } as Partial<CanvasNodeData>);
-      } else {
-        console.warn('[asset-board] subtitle erase completed without url', result);
-      }
-    } catch (error) {
-      console.error('[asset-board] subtitle erase failed', error);
-    } finally {
-      setIsErasing(false);
-    }
-  }, [isErasing, node.id, project, updateNodeData, videoUrl]);
-
-  const handleTranslate = useCallback(async () => {
-    if (isTranslating || prompt.trim().length === 0) return;
-    if (!project) {
-      console.error('[asset-board] translate: no project in URL');
       return;
     }
-    setIsTranslating(true);
-    try {
-      const translated = await translateNodeText(project, {
-        text: prompt,
-        nodeId: node.id,
-        nodeType: 'video',
-      });
-      if (translated) {
-        updateNodeData(node.id, { prompt: translated } as Partial<CanvasNodeData>);
-      }
-    } catch (error) {
-      console.error('[asset-board] translate failed', error);
-    } finally {
-      setIsTranslating(false);
-    }
-  }, [isTranslating, node.id, project, prompt, updateNodeData]);
+    (player as HTMLVideoElement & { webkitEnterFullscreen?: () => void }).webkitEnterFullscreen?.();
+  }, [playerRef]);
 
-  const handleRestoreHistory = useCallback(
-    (record: FreezoneGenerationHistoryRecord) => {
-      const url = historyRecordOutputUrl(record);
-      if (!url) return;
-      // 与 VideoNode 非生成态恢复同语义。
-      updateNodeData(node.id, {
-        videoUrl: url,
-        isGenerating: false,
-        generationStartedAt: null,
-        sourceFileName: null,
-        generationError: null,
-        generationErrorDetails: null,
-        generationErrorRequestId: null,
-        generationBatch: null,
-      } as Partial<CanvasNodeData>);
-    },
-    [node.id, updateNodeData],
-  );
+  // 配置面板 / 合成弹窗开着时，工具条从「hover 才出现」切成钉住常显。
+  const pinned = upscaleOpen || composeSeeds !== null;
 
   return (
-    <div className="flex flex-col gap-2">
-      {/* 居中：工具条是详情的操作行，媒体本身也是居中的，左对齐会让这行孤零零
-          吊在左上角（用户要求）。 */}
-      <div className="flex flex-wrap items-center justify-center gap-1.5">
-        <DetailToolbarButton
-          icon={Film}
-          label="剪辑"
-          disabled={!project || !canOpenCompose}
-          title={
-            isCompose && !canOpenCompose
-              ? '需要至少 2 个已就绪的上游视频素材'
-              : '打开视频合成时间线'
-          }
-          onClick={openCompose}
-        />
-        {isVideo && (
-          <DetailToolbarButton
-            icon={ImageUpscale}
-            label="高清"
-            busy={isSubmittingUpscale}
+    <>
+      {/* 默认透明 + 不吃指针，鼠标移进详情面板或键盘焦点落进来才浮现。opacity 而非
+          hidden——visibility:hidden 会让按钮 Tab 不到，键盘用户就再也够不着这四个功能；
+          也正因为占位不变，浮现/隐藏不会把头部撑一下。 */}
+      <div
+        className={`relative shrink-0 transition-opacity duration-150 ${
+          pinned
+            ? 'pointer-events-auto opacity-100'
+            : 'pointer-events-none opacity-0 focus-within:pointer-events-auto focus-within:opacity-100 group-hover/detail:pointer-events-auto group-hover/detail:opacity-100'
+        }`}
+      >
+        <div className={VIDEO_FLOAT_PILL_CLASS}>
+          <VideoFloatButton
+            icon={Scissors}
+            label="剪辑"
+            showLabel
+            disabled={!project || !canOpenCompose}
+            title={
+              isCompose && !canOpenCompose
+                ? '需要至少 2 个已就绪的上游视频素材'
+                : '打开视频合成时间线'
+            }
+            onClick={openCompose}
+          />
+          {isVideo && (
+            <VideoFloatButton
+              icon={ImageUpscale}
+              label="高清"
+              showLabel
+              busy={isSubmittingUpscale}
+              disabled={!videoUrl}
+              title="放大分辨率（在画布上新建高清结果节点）"
+              onClick={() => setUpscaleOpen((open) => !open)}
+            />
+          )}
+          <span aria-hidden className="mx-0.5 h-4 w-px shrink-0 bg-white/12" />
+          <VideoFloatButton
+            icon={Download}
+            label="下载"
+            busy={isDownloading}
             disabled={!videoUrl}
-            onClick={() => setUpscaleOpen((open) => !open)}
-            trailing={<ChevronDown className="h-3 w-3" />}
+            onClick={() => void handleDownload()}
           />
-        )}
-        {isVideo && (
-          <DetailToolbarButton
-            icon={Eraser}
-            label="智能去字幕"
-            busy={isErasing}
+          <VideoFloatButton
+            icon={Maximize2}
+            label="全屏"
             disabled={!videoUrl}
-            title="smart 档：整段智能擦除字幕，完成后替换本视频"
-            onClick={() => void handleSmartErase()}
+            title="全屏播放"
+            onClick={handleFullscreen}
           />
-        )}
-        {/* 第二批视频操作（剪辑轨道 / 解析 / 分离音视频 / 截帧 / 替换视频 / 框选擦除）。
-            按钮落在本行，展开的面板用 w-full 自动换到下一行。显隐与工作流
-            NodeActionToolbar 的 isVideoNode 分支同源：videoCompose 节点不是视频节点，
-            只保留「剪辑（合成时间线）」与下载；无片源时整组不出。 */}
-        {isVideo && videoUrl && (
-          <AssetBoardVideoOps node={node} videoUrl={videoUrl} playerRef={playerRef} />
-        )}
-        {isVideo && prompt.trim().length > 0 && (
-          <DetailToolbarButton
-            icon={Languages}
-            label="翻译提示词"
-            busy={isTranslating}
-            onClick={() => void handleTranslate()}
-          />
-        )}
-        <DetailToolbarButton
-          icon={Download}
-          label="下载"
-          busy={isDownloading}
-          disabled={!videoUrl}
-          onClick={() => void handleDownload()}
-        />
-        {isVideo && (
-          <DetailToolbarButton
-            icon={History}
-            label="历史"
-            onClick={() => setHistoryOpen((open) => !open)}
-          />
+        </div>
+
+        {/* 高清配置：吊在胶囊正下方的浮层（原来是详情里独占一行的配置行——工具条
+            挪进头部之后，那一行没地方摆了）。z-50 压过下方正文。 */}
+        {upscaleOpen && isVideo && (
+          <div className="absolute left-1/2 top-full z-50 mt-2 flex -translate-x-1/2 flex-wrap items-center justify-center gap-3 whitespace-nowrap rounded-xl border border-white/10 bg-[#282828] px-3 py-2 shadow-[0_10px_24px_rgba(0,0,0,0.32)]">
+            <span className="text-[12px] text-white/40">分辨率</span>
+            <div className="inline-flex items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.04] p-0.5">
+              {VIDEO_UPSCALE_RESOLUTIONS.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setUpscaleResolution(value)}
+                  className={`rounded px-2 py-0.5 text-[12px] transition-colors ${
+                    upscaleResolution === value
+                      ? 'bg-white/15 text-white'
+                      : 'text-white/50 hover:bg-white/5 hover:text-white/80'
+                  }`}
+                >
+                  {VIDEO_UPSCALE_RESOLUTION_LABEL[value]}
+                </button>
+              ))}
+            </div>
+            <span className="text-[12px] text-white/40">降噪</span>
+            <div className="inline-flex items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.04] p-0.5">
+              {VIDEO_UPSCALE_DENOISE_OPTIONS.map((value) => (
+                <button
+                  key={value}
+                  type="button"
+                  onClick={() => setUpscaleDenoise(value)}
+                  className={`rounded px-2 py-0.5 text-[12px] transition-colors ${
+                    upscaleDenoise === value
+                      ? 'bg-white/15 text-white'
+                      : 'text-white/50 hover:bg-white/5 hover:text-white/80'
+                  }`}
+                >
+                  {value === 'none' ? '无' : value}
+                </button>
+              ))}
+            </div>
+            <DetailToolbarButton
+              icon={Wand2}
+              label="提交高清"
+              busy={isSubmittingUpscale}
+              disabled={!videoUrl}
+              title="在画布上新建高清结果节点并提交任务"
+              onClick={handleUpscaleSubmit}
+            />
+          </div>
         )}
       </div>
 
-      {upscaleOpen && isVideo && (
-        <div className="flex flex-wrap items-center gap-3 rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2">
-          <span className="text-[12px] text-white/40">分辨率</span>
-          <div className="inline-flex items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.04] p-0.5">
-            {VIDEO_UPSCALE_RESOLUTIONS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setUpscaleResolution(value)}
-                className={`rounded px-2 py-0.5 text-[12px] transition-colors ${
-                  upscaleResolution === value
-                    ? 'bg-white/15 text-white'
-                    : 'text-white/50 hover:bg-white/5 hover:text-white/80'
-                }`}
-              >
-                {VIDEO_UPSCALE_RESOLUTION_LABEL[value]}
-              </button>
-            ))}
-          </div>
-          <span className="text-[12px] text-white/40">降噪</span>
-          <div className="inline-flex items-center gap-0.5 rounded-md border border-white/10 bg-white/[0.04] p-0.5">
-            {VIDEO_UPSCALE_DENOISE_OPTIONS.map((value) => (
-              <button
-                key={value}
-                type="button"
-                onClick={() => setUpscaleDenoise(value)}
-                className={`rounded px-2 py-0.5 text-[12px] transition-colors ${
-                  upscaleDenoise === value
-                    ? 'bg-white/15 text-white'
-                    : 'text-white/50 hover:bg-white/5 hover:text-white/80'
-                }`}
-              >
-                {value === 'none' ? '无' : value}
-              </button>
-            ))}
-          </div>
-          <DetailToolbarButton
-            icon={Wand2}
-            label="提交高清"
-            busy={isSubmittingUpscale}
-            disabled={!videoUrl}
-            title="在画布上新建高清结果节点并提交任务"
-            onClick={handleUpscaleSubmit}
-          />
-        </div>
-      )}
-
-      {historyOpen && isVideo && (
-        <DetailHistorySection
-          nodeId={node.id}
-          restoreDisabled={isGenerating}
-          onRestore={handleRestoreHistory}
-        />
-      )}
-
+      {/* 弹窗留在悬停层之外：它是全屏 portal 级的东西，跟着工具条一起淡入淡出
+          没有意义，也不该被 pointer-events 的开关波及。 */}
       {composeSeeds !== null && project && (
         <VideoComposeModal
           project={project}
@@ -1070,6 +971,6 @@ export function AssetBoardVideoDetailToolbar({
           onComposed={handleComposed}
         />
       )}
-    </div>
+    </>
   );
 }
