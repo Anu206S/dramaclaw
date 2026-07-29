@@ -305,7 +305,7 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
             {
                 "type": "layout_nodes",
                 "node_ids": node_ids,
-                "mode": "horizontal",
+                "mode": "grid",
             }
         )
     commands.append(
