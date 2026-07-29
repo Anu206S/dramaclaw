@@ -3921,6 +3921,7 @@
         "featured": "推荐",
         "searchPlaceholder": "搜索 Skill",
         "filters": {
+          "all": "全部",
           "recommended": "推荐",
           "video": "视频",
           "image": "图片",
@@ -3941,6 +3942,7 @@
       },
       "new": "新增",
       "selectAll": "全选",
+      "backToTop": "顶部",
       "readOnly": "只读",
       "builtIn": "内置",
       "customized": "已定制",

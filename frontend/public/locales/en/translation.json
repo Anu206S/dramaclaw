@@ -3921,6 +3921,7 @@
         "featured": "Featured",
         "searchPlaceholder": "Search Skill",
         "filters": {
+          "all": "All",
           "recommended": "Recommended",
           "video": "Video",
           "image": "Image",
@@ -3941,6 +3942,7 @@
       },
       "new": "New",
       "selectAll": "Select all",
+      "backToTop": "Top",
       "readOnly": "Read-only",
       "builtIn": "Built-in",
       "customized": "Customized",

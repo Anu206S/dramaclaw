@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -149,6 +149,9 @@ export function FreezoneSkillRecipeSettings({
   const [communityCatalogOpen, setCommunityCatalogOpen] = useState(false);
   const [communityCatalogMode, setCommunityCatalogMode] = useState<"community" | "mine">("community");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollViewportRef = useRef<HTMLElement | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const bundleImportInputRef = useRef<HTMLInputElement | null>(null);
   const catalogQuery = useFreezoneAgentConfigItems(kind);
@@ -193,6 +196,28 @@ export function FreezoneSkillRecipeSettings({
   useEffect(() => {
     setSelectedIds(new Set());
   }, [kind]);
+
+  useEffect(() => {
+    const viewport = sectionRef.current?.closest<HTMLElement>("[data-slot='scroll-area-viewport']") ?? null;
+    scrollViewportRef.current = viewport;
+    if (!viewport) return;
+
+    const updateBackToTop = () => {
+      setShowBackToTop(viewport.scrollTop > 180);
+    };
+    updateBackToTop();
+    viewport.addEventListener("scroll", updateBackToTop, { passive: true });
+    return () => {
+      viewport.removeEventListener("scroll", updateBackToTop);
+      if (scrollViewportRef.current === viewport) {
+        scrollViewportRef.current = null;
+      }
+    };
+  }, [kind]);
+
+  const scrollToCatalogTop = () => {
+    scrollViewportRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const saveItem = async (payload: FreezoneAgentConfigPayload) => {
     const cleanPayload = stripCatalogMetadata(payload);
@@ -434,7 +459,7 @@ export function FreezoneSkillRecipeSettings({
 
   return (
     <>
-      <section className="px-5 py-5">
+      <section ref={sectionRef} className="px-5 py-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="font-heading text-sm font-medium text-foreground">
@@ -576,11 +601,13 @@ export function FreezoneSkillRecipeSettings({
           onDeleteSelected={() => void deleteSelectedItems()}
           onExport={() => void exportSelectedSkillBundle()}
           onToggleAll={toggleAllSelected}
+          onBackToTop={scrollToCatalogTop}
           exportLabel={t(
             isSkills
               ? "settings.freezoneCatalog.exportBundle"
               : "settings.freezoneCatalog.export",
           )}
+          showBackToTop={showBackToTop}
         />
         <CatalogList
           kind={kind}
@@ -1075,7 +1102,7 @@ function NewSkillEditor({
         </DialogHeader>
 
         <div className="min-h-0 overflow-y-auto px-6 py-5">
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-3">
             <EditorField
               required
               label={t("settings.freezoneCatalog.newSkill.id")}
@@ -1099,6 +1126,7 @@ function NewSkillEditor({
             />
             <EditorField
               required
+              className="md:col-span-3"
               label={t("settings.freezoneCatalog.newSkill.description")}
               placeholder={t("settings.freezoneCatalog.newSkill.descriptionPlaceholder")}
               value={skillDraft.description}
@@ -2486,11 +2514,69 @@ export function CommunitySkillDialog({
   const { t } = useTranslation();
   const isMine = mode === "mine";
   const showMineTab = typeof onModeChange === "function";
+  const [skillQuery, setSkillQuery] = useState("");
+  const [activeFilter, setActiveFilter] = useState("all");
+  const localFilterOptions = useMemo(() => {
+    const categories = Array.from(
+      new Set(
+        localItems
+          .map((item) => item.category?.trim())
+          .filter((category): category is string => Boolean(category)),
+      ),
+    );
+    return ["all", ...categories];
+  }, [localItems]);
+  const communityFilterOptions = useMemo(() => {
+    const tags = Array.from(new Set(items.flatMap((item) => item.tags.map((tag) => tag.trim()).filter(Boolean))));
+    return ["recommended", ...tags].slice(0, 8);
+  }, [items]);
+  const filterOptions = isMine ? localFilterOptions : communityFilterOptions;
+  const normalizedSkillQuery = skillQuery.trim().toLowerCase();
+  const visibleLocalItems = useMemo(
+    () =>
+      localItems.filter((item) => {
+        const categoryMatched = activeFilter === "all" || item.category === activeFilter;
+        if (!categoryMatched) return false;
+        if (!normalizedSkillQuery) return true;
+        return [item.id, item.label, item.category, item.description]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedSkillQuery);
+      }),
+    [activeFilter, localItems, normalizedSkillQuery],
+  );
+  const visibleCommunityItems = useMemo(
+    () =>
+      items.filter((item) => {
+        const filterMatched =
+          activeFilter === "recommended" || activeFilter === "all" || item.tags.includes(activeFilter);
+        if (!filterMatched) return false;
+        if (!normalizedSkillQuery) return true;
+        return [item.id, item.name, item.description, item.author, ...item.tags]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedSkillQuery);
+      }),
+    [activeFilter, items, normalizedSkillQuery],
+  );
+
+  useEffect(() => {
+    setActiveFilter(mode === "mine" ? "all" : "recommended");
+    setSkillQuery("");
+  }, [mode, open]);
+
+  useEffect(() => {
+    if (!filterOptions.includes(activeFilter)) {
+      setActiveFilter(filterOptions[0] ?? (isMine ? "all" : "recommended"));
+    }
+  }, [activeFilter, filterOptions, isMine]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="h-[min(760px,86vh)] !w-[min(1120px,calc(100vw-40px))] !max-w-[min(1120px,calc(100vw-40px))] gap-0 overflow-hidden rounded-lg border-border/75 bg-[#070808] p-0 shadow-2xl sm:!max-w-[min(1120px,calc(100vw-40px))]"
+        className="grid h-[min(760px,86vh)] !w-[min(1120px,calc(100vw-40px))] !max-w-[min(1120px,calc(100vw-40px))] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-lg border-border/75 bg-[#070808] p-0 shadow-2xl sm:!max-w-[min(1120px,calc(100vw-40px))]"
         showCloseButton={false}
       >
         <DialogHeader className="border-b border-border/45 px-5 py-4">
@@ -2555,30 +2641,40 @@ export function CommunitySkillDialog({
             </div>
           </div>
           <div className="mt-4 flex items-center gap-2">
-            {["recommended", "video", "image", "workflow", "general"].map((key) => (
-              <span
-                key={key}
-                className={cn(
-                  // 圆角写死 px：本项目 --radius=1rem，rounded-md 实际 14px，
-                  // 这排小筛选片会圆成胶囊（用户要求收小）。
-                  "rounded-[6px] border px-3 py-1.5 text-xs",
-                  key === "recommended"
-                    ? "border-border bg-white/[0.08] text-white"
-                    : "border-border/60 bg-white/[0.02] text-white/62",
-                )}
-              >
-                {t(`settings.freezoneCatalog.community.filters.${key}`)}
-              </span>
-            ))}
+            {filterOptions.map((key) => {
+              const active = key === activeFilter;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setActiveFilter(key)}
+                  className={cn(
+                    // 圆角写死 px：本项目 --radius=1rem，rounded-md 实际 14px，
+                    // 这排小筛选片会圆成胶囊（用户要求收小）。
+                    "rounded-[6px] border px-3 py-1.5 text-xs transition-colors",
+                    active
+                      ? "border-border bg-white/[0.08] text-white"
+                      : "border-border/60 bg-white/[0.02] text-white/62 hover:border-white/20 hover:bg-white/[0.055] hover:text-white/85",
+                  )}
+                >
+                  {isMine && key !== "all"
+                    ? key
+                    : t(`settings.freezoneCatalog.community.filters.${key}`, { defaultValue: key })}
+                </button>
+              );
+            })}
             <div className="relative ml-auto w-[min(340px,36vw)]">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-white/45" />
-              <div className="h-9 rounded-[8px] border border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs leading-9 text-white/50">
-                {t("settings.freezoneCatalog.community.searchPlaceholder")}
-              </div>
+              <Input
+                value={skillQuery}
+                onChange={(event) => setSkillQuery(event.target.value)}
+                placeholder={t("settings.freezoneCatalog.community.searchPlaceholder")}
+                className="h-9 rounded-[8px] border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs text-white/80 placeholder:text-white/45 focus-visible:border-white/25 focus-visible:ring-1 focus-visible:ring-white/10"
+              />
             </div>
           </div>
         </DialogHeader>
-        <div className="h-[calc(100%-96px)] overflow-y-auto px-5 py-4">
+        <div className="min-h-0 overflow-y-auto px-5 py-4">
           {loading ? (
             <div className="grid h-full min-h-80 place-items-center text-sm text-white/70">
               <div className="flex items-center gap-2">
@@ -2601,7 +2697,7 @@ export function CommunitySkillDialog({
               </div>
             </div>
           ) : isMine ? (
-            localItems.length === 0 ? (
+            visibleLocalItems.length === 0 ? (
               <div className="grid h-full min-h-80 place-items-center text-center">
                 <div>
                   <p className="text-sm font-medium text-white">
@@ -2614,7 +2710,7 @@ export function CommunitySkillDialog({
               </div>
             ) : (
               <div className="grid gap-3 lg:grid-cols-2">
-                {localItems.map((item) => (
+                {visibleLocalItems.map((item) => (
                   <article
                     key={item.id}
                     // hover 整条给反馈（用户要求）：只提亮底色和描边，不换指针——
@@ -2654,7 +2750,7 @@ export function CommunitySkillDialog({
                 ))}
               </div>
             )
-          ) : items.length === 0 ? (
+          ) : visibleCommunityItems.length === 0 ? (
             <div className="grid h-full min-h-80 place-items-center text-center">
               <div>
                 <p className="text-sm font-medium text-white">
@@ -2667,7 +2763,7 @@ export function CommunitySkillDialog({
             </div>
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
-              {items.map((item) => {
+              {visibleCommunityItems.map((item) => {
                 const installed = installedSkillIds.has(item.id);
                 const itemInstalling = installing && installingBundleUrl === item.bundle_url;
                 return (
@@ -2756,24 +2852,35 @@ function CatalogSelectionBar({
   count,
   exportLabel,
   label,
+  onBackToTop,
   onDeleteSelected,
   onExport,
   onToggleAll,
   selectedCount,
+  showBackToTop,
 }: {
   allSelected: boolean;
   count: number;
   exportLabel: string;
   label: string;
+  onBackToTop: () => void;
   onDeleteSelected: () => void;
   onExport: () => void;
   onToggleAll: (checked: boolean) => void;
   selectedCount: number;
+  showBackToTop: boolean;
 }) {
   const { t } = useTranslation();
 
   return (
-    <div className="mt-3 flex h-9 items-center justify-between rounded-md border border-border/70 bg-white/[0.018] px-3">
+    <div
+      className={cn(
+        "sticky top-0 z-10 mt-3 flex h-9 items-center justify-between rounded-md border border-border/70 px-3 backdrop-blur transition-[background-color,box-shadow]",
+        showBackToTop
+          ? "bg-background/95 shadow-[0_8px_18px_rgba(0,0,0,0.18)]"
+          : "bg-white/[0.018]",
+      )}
+    >
       <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
         <Checkbox
           checked={allSelected}
@@ -2786,6 +2893,18 @@ function CatalogSelectionBar({
         </span>
       </label>
       <div className="flex items-center gap-2">
+        {showBackToTop ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+            onClick={onBackToTop}
+          >
+            <ArrowUp className="size-3.5" />
+            {t("settings.freezoneCatalog.backToTop")}
+          </Button>
+        ) : null}
         {selectedCount > 0 ? (
           <Button
             type="button"
