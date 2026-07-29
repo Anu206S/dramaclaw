@@ -1057,6 +1057,7 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert skills["short-drama-quick"]["name"] == "短剧（快速测试）"
     assert skills["pixar-ip-ad-video"]["name"] == "皮克斯 IP 品牌广告短片"
     assert skills["lego-minifigure-animation-video"]["name"] == "乐高小人动画短片"
+    assert skills["retro-hong-kong-kungfu-comedy-video"]["name"] == "港风功夫萌宠短片"
     assert "pixar-ip-brand-ad-short-film" not in skills
     assert skills["pixar-ip-ad-video"]["allowed_recipe_ids"] == [
         "ad-ip-character-anchor",
@@ -1073,11 +1074,21 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "storyboard-shot-video",
         "video-audio-layer",
     ]
+    assert skills["retro-hong-kong-kungfu-comedy-video"]["allowed_recipe_ids"] == [
+        "four-act-comedy-story-outline",
+        "storyboard-plan",
+        "anthropomorphic-kungfu-key-elements",
+        "anthropomorphic-kungfu-shot-video",
+        "video-audio-layer",
+    ]
     assert "ad-ip-character-anchor" in recipes
     assert "ad-product-prop-anchor" in recipes
     assert "workflow-input-analysis" in recipes
     assert "short-film-script-outline" in recipes
+    assert "four-act-comedy-story-outline" in recipes
     assert "storyboard-plan" in recipes
+    assert "anthropomorphic-kungfu-key-elements" in recipes
+    assert "anthropomorphic-kungfu-shot-video" in recipes
     assert "visual-key-elements" in recipes
     assert "storyboard-shot-video" in recipes
     assert "video-audio-layer" in recipes
@@ -1099,6 +1110,12 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "lego-minifig-key-elements" not in recipes
     assert "lego-minifig-shot-video" not in recipes
     assert "lego-minifig-audio-layers" not in recipes
+    assert "retro-kungfu-video-spec" not in recipes
+    assert "retro-kungfu-story-outline" not in recipes
+    assert "retro-kungfu-shot-list" not in recipes
+    assert "retro-kungfu-key-elements" not in recipes
+    assert "retro-kungfu-shot-video" not in recipes
+    assert "retro-kungfu-bgm" not in recipes
 
 
 def test_pixar_skill_keeps_methodology_while_recipes_stay_stage_focused(monkeypatch):
@@ -1243,9 +1260,102 @@ def test_lego_skill_keeps_style_while_recipes_are_shared_workflow_stages(monkeyp
     assert "official LEGO style" not in recipe_text
     assert "ABS plastic material" not in recipe_text
     assert "Final_Video_Spec" not in recipe_text
+
+
+def test_retro_kungfu_skill_keeps_style_while_recipes_stay_stage_focused(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    skills = {item["id"]: item for item in catalog._load_skills()}
+    recipes = {
+        item["id"]: item
+        for item in catalog._load_agent_config_items("recipes", catalog._RECIPES_DIR)
+    }
+    retro_skill = skills["retro-hong-kong-kungfu-comedy-video"]
+    planning = retro_skill["planning"]
+    planning_text = "\n".join(
+        [
+            planning["planning_notes"],
+            planning["prompt_guide"],
+            "\n".join(planning["conduct_rules"]),
+            "\n".join(retro_skill["evaluation"]["domain_constraints"]),
+        ]
+    )
+
+    assert "1980s 复古香港功夫喜剧" in planning["prompt_guide"]
+    assert "35mm 旧胶片颗粒" in planning["prompt_guide"]
+    assert "港式普通话口音" in planning["prompt_guide"]
+    assert "剧本大纲" in planning["planning_notes"]
+    assert "分镜规划" in planning["planning_notes"]
+    assert "拟人功夫关键元素图" in planning["planning_notes"]
+    assert "拟人功夫单段视频" in planning["planning_notes"]
+    assert "视频音频层" in planning["planning_notes"]
+    assert "Final_Video_Spec" not in planning_text
+    assert "retro-kungfu" not in planning_text
+    assert "four-act-comedy-story-outline" not in planning_text
+    assert "storyboard-plan" not in planning_text
+    assert "anthropomorphic-kungfu-shot-video" not in planning_text
+    assert "video-audio-layer" not in planning_text
+
+    recipe = recipes["anthropomorphic-kungfu-key-elements"]
+    recipe_text = "\n".join(
+        [
+            recipe["name"],
+            recipe["system_prompt"],
+            recipe["planning_prompt"],
+            recipe["result_summary"],
+            "\n".join(recipe["must_have_items"]),
+        ]
+    )
+    assert "拟人功夫" in recipe_text
+    assert "参考来源" in recipe_text
+    assert "后续引用方式" in recipe_text
+    assert "35mm" not in recipe_text
+    assert "港风" not in recipe_text
+    assert "香港" not in recipe_text
+    assert "80s" not in recipe_text
+    assert "旧胶片" not in recipe_text
+    assert "Final_Video_Spec" not in recipe_text
     assert "Skill 输入参数" not in recipe_text
     assert "覆盖 Skill" not in recipe_text
     assert "Recipe 内" not in recipe_text
+
+    story_recipe = recipes["four-act-comedy-story-outline"]
+    story_text = "\n".join(
+        [
+            story_recipe["name"],
+            story_recipe["system_prompt"],
+            story_recipe["planning_prompt"],
+            story_recipe["result_summary"],
+            "\n".join(story_recipe["must_have_items"]),
+        ]
+    )
+    assert "四幕" in story_text
+    assert "喜剧反差" in story_text
+    assert "三幕结构" not in story_text
+    assert "港风" not in story_text
+    assert "香港" not in story_text
+
+    shot_recipe = recipes["anthropomorphic-kungfu-shot-video"]
+    shot_text = "\n".join(
+        [
+            shot_recipe["name"],
+            shot_recipe["system_prompt"],
+            shot_recipe["planning_prompt"],
+            shot_recipe["result_summary"],
+            "\n".join(shot_recipe["must_have_items"]),
+        ]
+    )
+    assert "Anticipation" in shot_text
+    assert "Movement" in shot_text
+    assert "Completion" in shot_text
+    assert "动物本能" in shot_text
+    assert "no background music" in shot_text
+    assert "35mm" not in shot_text
+    assert "港风" not in shot_text
+    assert "香港" not in shot_text
+    assert "80s" not in shot_text
+    assert "旧胶片" not in shot_text
 
 
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
