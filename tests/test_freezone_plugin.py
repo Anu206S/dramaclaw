@@ -621,6 +621,14 @@ def test_workflow_graph_can_run_validated_nodes_after_create():
     assert {
         command["data"]["workflowInstanceId"] for command in create_commands
     } == {built["workflow_instance_id"]}
+    layout_command = next(
+        command for command in built["commands"] if command["type"] == "layout_nodes"
+    )
+    assert layout_command == {
+        "type": "layout_nodes",
+        "node_ids": ["brief", "image"],
+        "mode": "grid",
+    }
     assert built["commands"][-1] == {
         "type": "run_workflow",
         "node_ids": ["brief", "image"],
