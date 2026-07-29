@@ -3921,6 +3921,7 @@
         "featured": "推荐",
         "searchPlaceholder": "搜索 Skill",
         "filters": {
+          "all": "全部",
           "recommended": "推荐",
           "video": "视频",
           "image": "图片",
