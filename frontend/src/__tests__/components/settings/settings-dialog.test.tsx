@@ -797,6 +797,7 @@ describe("SettingsDialog pages", () => {
       target: { value: "故事" },
     });
     fireEvent.keyDown(screen.getByPlaceholderText("输入关键词"), { key: "Enter" });
+    fireEvent.click(screen.getByRole("button", { name: "添加 Recipe" }));
     fireEvent.change(screen.getByPlaceholderText("输入 Recipe ID"), {
       target: { value: "story-recipe" },
     });
