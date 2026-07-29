@@ -530,6 +530,7 @@ def compile_workflow_intent(intent: Any) -> dict[str, Any]:
                 intent=compiled_intent,
                 skill_id=skill_id,
                 user_goal=user_goal,
+                resolved_inputs=input_contract["resolved"],
             )
         )
         if planner_error is not None:
@@ -553,7 +554,7 @@ def _standard_skill_items(
     skill_id: str,
     deliverable: str,
     include_audio: bool,
-    units: list[dict[str, str]],
+    units: list[dict[str, Any]],
     user_goal: str,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = []
@@ -600,6 +601,7 @@ def _standard_skill_items(
                         depends_on=[image_id],
                         stage="video",
                         timeline_role="visual",
+                        duration_seconds=unit.get("duration_seconds"),
                     )
                 )
             if include_audio:
@@ -666,6 +668,7 @@ def _standard_skill_items(
                 depends_on=[source_id],
                 stage="video",
                 timeline_role="visual",
+                duration_seconds=unit.get("duration_seconds"),
             )
         )
         if include_audio and skill_id in {"video-tutorial", "short-drama-quick"}:
@@ -705,10 +708,11 @@ def _standard_planner_units(
     planner: dict[str, Any],
     item_count: int,
     user_goal: str,
-) -> list[dict[str, str]]:
+    resolved_inputs: dict[str, Any],
+) -> list[dict[str, Any]]:
     raw_units = planner.get("units")
     source_units = raw_units if isinstance(raw_units, list) else []
-    units: list[dict[str, str]] = []
+    units: list[dict[str, Any]] = []
     for index in range(item_count):
         raw_unit = source_units[index] if index < len(source_units) else {}
         if isinstance(raw_unit, str):
@@ -735,7 +739,43 @@ def _standard_planner_units(
             )
             or title
         )
-        units.append({"title": title, "prompt": prompt, "narration": narration})
+        duration_seconds = _positive_duration_seconds(
+            raw_unit.get("duration_seconds")
+            or raw_unit.get("durationSeconds")
+            or raw_unit.get("duration")
+        )
+        units.append(
+            {
+                "title": title,
+                "prompt": prompt,
+                "narration": narration,
+                **(
+                    {"duration_seconds": duration_seconds}
+                    if duration_seconds is not None
+                    else {}
+                ),
+            }
+        )
+
+    total_duration_seconds = _planner_total_duration_seconds(
+        planner=planner,
+        resolved_inputs=resolved_inputs,
+        user_goal=user_goal,
+    )
+    if total_duration_seconds is not None:
+        missing_indices = [
+            index for index, unit in enumerate(units) if "duration_seconds" not in unit
+        ]
+        explicit_total = sum(
+            int(unit["duration_seconds"])
+            for unit in units
+            if "duration_seconds" in unit
+        )
+        remaining = total_duration_seconds - explicit_total
+        if missing_indices and remaining >= len(missing_indices):
+            base, extra = divmod(remaining, len(missing_indices))
+            for offset, index in enumerate(missing_indices):
+                units[index]["duration_seconds"] = base + (1 if offset < extra else 0)
     return units
 
 
@@ -749,6 +789,7 @@ def _planned_item(
     stage: str,
     narration: str = "",
     timeline_role: str = "",
+    duration_seconds: int | None = None,
 ) -> dict[str, Any]:
     return {
         "id": item_id,
@@ -759,6 +800,11 @@ def _planned_item(
         "stage": stage,
         **({"narration": narration} if narration else {}),
         **({"timeline_role": timeline_role} if timeline_role else {}),
+        **(
+            {"duration_seconds": duration_seconds}
+            if duration_seconds is not None
+            else {}
+        ),
     }
 
 
@@ -767,6 +813,7 @@ def _expand_standard_skill_intent(
     intent: dict[str, Any],
     skill_id: str,
     user_goal: str,
+    resolved_inputs: dict[str, Any],
 ) -> tuple[dict[str, Any], dict[str, Any] | None, dict[str, Any] | None]:
     profile = _DETERMINISTIC_SKILL_PLANNERS.get(skill_id)
     if profile is None:
@@ -861,6 +908,7 @@ def _expand_standard_skill_intent(
         planner=planner,
         item_count=item_count,
         user_goal=user_goal,
+        resolved_inputs=resolved_inputs,
     )
     items = _standard_skill_items(
         skill_id=skill_id,
@@ -1275,6 +1323,48 @@ def _duration_ms(value: Any) -> int | None:
     return None
 
 
+def _positive_duration_seconds(value: Any) -> int | None:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)) and value > 0:
+        return max(1, min(int(round(float(value))), 600))
+    text = _text(value)
+    if not text:
+        return None
+    if re.fullmatch(r"\d+(?:\.\d+)?", text):
+        return max(1, min(int(round(float(text))), 600))
+    parsed_ms = _duration_ms(text)
+    if parsed_ms is None:
+        return None
+    return max(1, min(int(round(parsed_ms / 1000)), 600))
+
+
+def _planner_total_duration_seconds(
+    *,
+    planner: dict[str, Any],
+    resolved_inputs: dict[str, Any],
+    user_goal: str,
+) -> int | None:
+    for key in (
+        "total_duration_seconds",
+        "totalDurationSeconds",
+        "target_duration_seconds",
+        "targetDurationSeconds",
+        "duration_seconds",
+        "durationSeconds",
+        "duration",
+    ):
+        parsed = _positive_duration_seconds(planner.get(key))
+        if parsed is not None:
+            return parsed
+    for key in ("total_duration", "target_duration", "video_duration", "duration"):
+        parsed = _positive_duration_seconds(resolved_inputs.get(key))
+        if parsed is not None:
+            return parsed
+    parsed_ms = _duration_ms(user_goal)
+    return int(round(parsed_ms / 1000)) if parsed_ms is not None else None
+
+
 def _intent_music_length_ms(
     item: dict[str, Any],
     user_goal: str,
@@ -1365,6 +1455,13 @@ def _intent_items(intent: dict[str, Any]) -> list[dict[str, Any]]:
                 or raw_item.get("speechText")
             )
             step_id = _text(raw_item.get("step_id") or raw_item.get("stepId"))
+            duration_seconds = _positive_duration_seconds(
+                raw_item.get("duration_seconds")
+                or raw_item.get("durationSeconds")
+                or raw_item.get("duration")
+            )
+            if duration_seconds is None:
+                duration_seconds = _positive_duration_seconds(prompt)
             if title or prompt or narration:
                 items.append(
                     {
@@ -1446,6 +1543,11 @@ def _intent_items(intent: dict[str, Any]) -> list[dict[str, Any]]:
                                 or raw_item.get("musicLengthMs"),
                                 bool,
                             )
+                            else {}
+                        ),
+                        **(
+                            {"duration_seconds": duration_seconds}
+                            if duration_seconds is not None
                             else {}
                         ),
                     }
@@ -1562,6 +1664,10 @@ def _intent_item_node(
     aspect_ratio = _text(resolved_inputs.get("aspect_ratio"))
     if aspect_ratio and node_type in {"imageGenNode", "videoNode"}:
         data["aspectRatio"] = aspect_ratio
+    if node_type == "videoNode":
+        duration_seconds = _positive_duration_seconds(item.get("duration_seconds"))
+        if duration_seconds is not None:
+            data["durationSec"] = duration_seconds
     if node_type == "audioNode":
         data["text"] = prompt
         if audio_kind == "music":

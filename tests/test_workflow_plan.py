@@ -105,12 +105,95 @@ def test_standard_ecommerce_image_planner_omits_audio_video_and_compose(monkeypa
         }
     )
 
-    assert result["ok"] is True
+    assert result["ok"] is True, result
     assert result["planner"]["include_audio"] is False
     node_types = {node["node_type"] for node in result["plan"]["nodes"]}
     assert "audioNode" not in node_types
     assert "videoNode" not in node_types
     assert "videoComposeNode" not in node_types
+
+
+def test_standard_video_planner_distributes_target_duration_across_clips(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    result = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-ad",
+            "user_goal": "制作一条 30 秒竖屏香水广告",
+            "planner": {
+                "mode": "standard",
+                "deliverable": "video",
+                "item_count": 5,
+                "total_duration_seconds": 30,
+                "include_audio": False,
+                "units": [
+                    {"title": f"镜头 {index}", "prompt": f"香水镜头 {index}"}
+                    for index in range(1, 6)
+                ],
+            },
+        }
+    )
+
+    assert result["ok"] is True
+    video_nodes = [
+        node for node in result["plan"]["nodes"] if node["node_type"] == "videoNode"
+    ]
+    assert len(video_nodes) == 5
+    assert [node["data"]["durationSec"] for node in video_nodes] == [6, 6, 6, 6, 6]
+    assert sum(node["data"]["durationSec"] for node in video_nodes) == 30
+
+
+def test_custom_video_item_keeps_structured_or_prompt_duration(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    result = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-ad",
+            "user_goal": "制作一条 30 秒竖屏香水广告",
+            "items": [
+                {
+                    "id": "product_anchor",
+                    "title": "商品参考图",
+                    "prompt": "透明玻璃香水瓶",
+                    "recipe_id": "general-image",
+                },
+                {
+                    "id": "clip_explicit",
+                    "title": "商品特写",
+                    "prompt": "镜头缓慢推近香水瓶",
+                    "duration_seconds": 7,
+                    "recipe_id": "video-clip-generation",
+                    "depends_on": ["product_anchor"],
+                },
+                {
+                    "id": "clip_legacy",
+                    "title": "品牌收尾",
+                    "prompt": "香水瓶缓缓旋转，6秒，9:16竖屏",
+                    "recipe_id": "video-clip-generation",
+                    "depends_on": ["product_anchor"],
+                },
+            ],
+            "include_audio": False,
+            "include_compose": True,
+        }
+    )
+
+    assert result["ok"] is True, result
+    video_nodes = {
+        node["id"]: node
+        for node in result["plan"]["nodes"]
+        if node["node_type"] == "videoNode"
+    }
+    assert video_nodes["clip_explicit"]["data"]["durationSec"] == 7
+    assert video_nodes["clip_legacy"]["data"]["durationSec"] == 6
+    assert (
+        video_nodes["clip_legacy"]["data"]["workflowCatalog"]["promptBuilder"][
+            "planItem"
+        ]["duration_seconds"]
+        == 6
+    )
 
 
 def test_standard_skill_planners_expand_without_agent_authored_topology(monkeypatch):

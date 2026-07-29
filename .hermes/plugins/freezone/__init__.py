@@ -3768,6 +3768,15 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
                     "enum": ["images", "video", "mixed"],
                 },
                 "item_count": {"type": "integer", "minimum": 1, "maximum": 12},
+                "total_duration_seconds": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 600,
+                    "description": (
+                        "Target duration of the complete video. The compiler distributes it "
+                        "across units that omit duration_seconds."
+                    ),
+                },
                 "include_audio": {"type": "boolean"},
                 "units": {
                     "type": "array",
@@ -3778,6 +3787,12 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
                             "title": {"type": "string"},
                             "prompt": {"type": "string"},
                             "narration": {"type": "string"},
+                            "duration_seconds": {
+                                "type": "integer",
+                                "minimum": 1,
+                                "maximum": 600,
+                                "description": "Duration of this unit's generated video clip.",
+                            },
                         },
                         "required": ["title"],
                     },
@@ -3814,6 +3829,15 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
                         "type": "integer",
                         "minimum": 3000,
                         "maximum": 600000,
+                    },
+                    "duration_seconds": {
+                        "type": "integer",
+                        "minimum": 1,
+                        "maximum": 600,
+                        "description": (
+                            "Required for video items when a target duration was requested. "
+                            "The sum of visual item durations should equal the target duration."
+                        ),
                     },
                     "recipe_id": {"type": "string"},
                     "depends_on": {
