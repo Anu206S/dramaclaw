@@ -4,8 +4,8 @@ import { fireEvent, render, screen, within } from '@testing-library/react';
 import userEvent from '@testing-library/user-event';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { CANVAS_NODE_TYPES, type CanvasEdge, type CanvasNode } from '@/features/canvas/domain/canvasNodes';
+import { __resetAssetBoardImageOpsStateForTest } from '@/features/canvas/ui/asset-board/AssetBoardImageEditMenu';
 import { AssetBoardView } from '@/features/canvas/ui/asset-board/AssetBoardView';
 import { useCanvasStore } from '@/stores/canvasStore';
 
@@ -32,10 +32,10 @@ vi.mock('react-i18next', () => ({
   }),
 }));
 
-// busy 态隔离测试用：返回可控的 { nodeId, completion }，避免真实抠图链（fetch/worker）。
-const matteImageMock = vi.hoisted(() => vi.fn());
-vi.mock('@/features/canvas/application/matteImage', () => ({
-  matteImage: matteImageMock,
+// busy 态隔离测试用：返回可控的 { nodeId, completion }，避免真实全景生成链（网络）。
+const scene360ImageMock = vi.hoisted(() => vi.fn());
+vi.mock('@/features/canvas/application/imageScene360', () => ({
+  scene360Image: scene360ImageMock,
 }));
 
 // 宫格活价（M2）用了 react-query 的 useGenerationCreditCost，测试树没有
@@ -125,62 +125,46 @@ function detailPanel() {
   return screen.getByRole('region', { name: '资产详情' });
 }
 
-// 抠图/裁剪/标注/分格抽取/历史 已从常显按钮收进「...」更多菜单——先展开它。
-// （宫格模板已挪回常显工具条做独立下拉，不在此菜单内。）
+// 编辑三项（高清/裁剪/旋转）住在「...」更多菜单里——先展开它。
+// （宫格模板是常显工具条上的独立下拉，不在此菜单内。）
 function openMoreMenu(detail: HTMLElement) {
   fireEvent.click(within(detail).getByRole('button', { name: '更多' }));
 }
 
 describe('AssetBoard 详情工具条（第一批装配）', () => {
   beforeEach(() => {
-    matteImageMock.mockReset();
+    scene360ImageMock.mockReset();
+    // busy 登记表是模块级的（跨重挂载存活），用例间不清会串态。
+    __resetAssetBoardImageOpsStateForTest();
     seedBoard();
   });
 
-  it('图片详情：常显 下载/编辑/全景/多角度/重打光/宫格模板，其余收进「...」更多菜单', () => {
+  it('图片详情：常显 下载/全景/多角度/重打光/宫格模板，编辑三项收进「...」更多菜单', () => {
     render(<AssetBoardView visible onLocateNode={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '上传图' }));
 
     const detail = detailPanel();
     // 常显项直接可见（宫格模板已从「...」挪到常显下拉）。
-    for (const label of ['下载', '编辑', '全景', '多角度', '重打光', '宫格模板', '更多']) {
+    for (const label of ['下载', '全景', '多角度', '重打光', '宫格模板', '更多']) {
       expect(within(detail).getByRole('button', { name: label })).toBeInTheDocument();
     }
-    // 收进「...」的项在展开前不可见（不再含宫格模板）。
-    for (const label of ['抠图', '裁剪', '标注', '分格抽取', '历史']) {
+    // 「编辑」下拉已删除，它的三项就是现在「...」里的内容。
+    expect(within(detail).queryByRole('button', { name: '编辑' })).not.toBeInTheDocument();
+    // 收进「...」的项在展开前不可见。
+    for (const label of ['高清', '裁剪', '旋转']) {
       expect(within(detail).queryByRole('button', { name: label })).not.toBeInTheDocument();
     }
     // 展开「...」更多菜单后，这些项可达。
     openMoreMenu(detail);
-    for (const label of ['抠图', '裁剪', '标注', '分格抽取', '历史']) {
+    for (const label of ['高清', '裁剪', '旋转']) {
       expect(within(detail).getByRole('button', { name: label })).toBeInTheDocument();
+    }
+    // 用户拍板移除的旧菜单项（能力仍在工作流侧 NodeActionToolbar）一个都不该在。
+    for (const label of ['抠图', '标注', '分格抽取', '历史']) {
+      expect(within(detail).queryByRole('button', { name: label })).not.toBeInTheDocument();
     }
     // 上传图节点没有可重试的生成 payload → 不显示重新生成。
     expect(within(detail).queryByRole('button', { name: '重新生成' })).not.toBeInTheDocument();
-  });
-
-  it('图片详情：「...」菜单里 裁剪/标注/分格抽取 publish tool-dialog/open（NodeToolDialog 在保活 Canvas 树消费）', () => {
-    const events: Array<{ nodeId: string; toolType: string }> = [];
-    const unsubscribe = canvasEventBus.subscribe('tool-dialog/open', (payload) => {
-      events.push(payload as { nodeId: string; toolType: string });
-    });
-    try {
-      render(<AssetBoardView visible onLocateNode={vi.fn()} />);
-      fireEvent.click(screen.getByRole('button', { name: '上传图' }));
-      const detail = detailPanel();
-      // 悬停菜单叶子项点击后不主动收起，展开一次即可连点。
-      openMoreMenu(detail);
-      fireEvent.click(within(detail).getByRole('button', { name: '裁剪' }));
-      fireEvent.click(within(detail).getByRole('button', { name: '标注' }));
-      fireEvent.click(within(detail).getByRole('button', { name: '分格抽取' }));
-    } finally {
-      unsubscribe();
-    }
-    expect(events).toEqual([
-      { nodeId: 'img-up', toolType: 'crop' },
-      { nodeId: 'img-up', toolType: 'annotate' },
-      { nodeId: 'img-up', toolType: 'split-storyboard' },
-    ]);
   });
 
   it('图片详情：常显「宫格模板」下拉展开 9 个模板项', async () => {
@@ -206,13 +190,14 @@ describe('AssetBoard 详情工具条（第一批装配）', () => {
     const header = within(detailPanel()).getByRole('banner', { hidden: true });
     fireEvent.click(within(header).getByRole('button', { name: '节点操作' }));
     fireEvent.click(within(header).getByRole('button', { name: /设置关键元素/ }));
-    fireEvent.click(within(header).getByRole('button', { name: '人物' }));
+    // 二级菜单 portal 到 body（要浮在右侧对话抽屉之上），所以从 screen 上找子项。
+    fireEvent.click(screen.getByRole('button', { name: '人物' }));
     expect(
       useCanvasStore.getState().nodes.find((n) => n.id === 'img-up')?.data.keyElementCategory,
     ).toBe('character');
 
     // 标记后子菜单标题变成「关键元素 · 人物」，并多出「取消关键元素」。点它清空。
-    fireEvent.click(within(header).getByRole('button', { name: '取消关键元素' }));
+    fireEvent.click(screen.getByRole('button', { name: '取消关键元素' }));
     expect(
       useCanvasStore.getState().nodes.find((n) => n.id === 'img-up')?.data.keyElementCategory,
     ).toBeNull();
@@ -227,13 +212,27 @@ describe('AssetBoard 详情工具条（第一批装配）', () => {
     expect(within(detail).queryByRole('button', { name: /设置关键元素/ })).not.toBeInTheDocument();
   });
 
-  it('视频详情：渲染 剪辑/高清/智能去字幕/翻译提示词/下载/历史；高清展开配置行', () => {
+  it('视频详情：只剩 剪辑/高清/下载/全屏 四项；高清展开配置浮层', () => {
     render(<AssetBoardView visible onLocateNode={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '成片视频' }));
 
     const detail = detailPanel();
-    for (const label of ['剪辑', '高清', '智能去字幕', '翻译提示词', '下载', '历史']) {
+    for (const label of ['剪辑', '高清', '下载', '全屏']) {
       expect(within(detail).getByRole('button', { name: label })).toBeInTheDocument();
+    }
+    // 其余视频功能已从故事板移除（用户要求砍到四项）。
+    for (const label of [
+      '智能去字幕',
+      '翻译提示词',
+      '历史',
+      '剪辑轨道',
+      '解析',
+      '分离音视频',
+      '截帧',
+      '替换视频',
+      '框选擦除',
+    ]) {
+      expect(within(detail).queryByRole('button', { name: label })).not.toBeInTheDocument();
     }
 
     fireEvent.click(within(detail).getByRole('button', { name: '高清' }));
@@ -248,7 +247,7 @@ describe('AssetBoard 详情工具条（第一批装配）', () => {
     fireEvent.click(screen.getByRole('button', { name: '空视频' }));
 
     const detail = detailPanel();
-    for (const label of ['剪辑', '高清', '智能去字幕', '下载', '历史']) {
+    for (const label of ['剪辑', '高清', '下载', '全屏']) {
       expect(within(detail).queryByRole('button', { name: label })).not.toBeInTheDocument();
     }
   });
@@ -262,13 +261,16 @@ describe('AssetBoard 详情工具条（第一批装配）', () => {
     expect(within(detail).queryByRole('button', { name: '更多' })).not.toBeInTheDocument();
   });
 
-  it('生成失败的视频节点仍出工具条：「历史」是回到上一次成功结果的唯一入口', () => {
+  it('生成失败的视频节点：工具条不渲染（四项操作全要片源，摆一排灰按钮只是噪音）', () => {
     render(<AssetBoardView visible onLocateNode={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '失败视频' }));
 
     const detail = detailPanel();
-    // 片源为空，但整条工具条不能藏——藏了「历史」就没了入口，失败即无法恢复。
-    expect(within(detail).getByRole('button', { name: '历史' })).toBeInTheDocument();
+    // 失败原因仍由头部下方的红色横条给出（见 AssetBoardDetail）。
+    expect(within(detail).getByText('算力不足，生成失败')).toBeInTheDocument();
+    for (const label of ['剪辑', '高清', '下载', '全屏']) {
+      expect(within(detail).queryByRole('button', { name: label })).not.toBeInTheDocument();
+    }
   });
 
   it('有片源的视频节点仍照常出工具条（空态判定不误伤已出片的）', () => {
@@ -288,8 +290,10 @@ describe('AssetBoard 详情工具条（第一批装配）', () => {
     }
 
     // 展开子菜单选「人物」→ 写节点标记；菜单标题随之变成「关键元素 · 人物」。
+    // 子项从 screen 找而不是 within(header)：飞出的二级面板 portal 到了 body（不这么做
+    // 会被右侧对话抽屉盖住，见 DetailMoreMenu 的 placeSubmenu），DOM 上不在头部子树里。
     fireEvent.click(within(header).getByRole('button', { name: /设置关键元素/ }));
-    fireEvent.click(within(header).getByRole('button', { name: '人物' }));
+    fireEvent.click(screen.getByRole('button', { name: '人物' }));
     expect(
       useCanvasStore.getState().nodes.find((n) => n.id === 'vid-empty')?.data.keyElementCategory,
     ).toBe('character');
@@ -372,27 +376,27 @@ describe('AssetBoard 详情工具条（第一批装配）', () => {
     expect(nodeB?.data).toMatchObject({ content: '乙内容' });
   });
 
-  it('切换详情项 → 工具条 busy 态复位（A 的抠图 spinner 不带到 B）', () => {
-    // completion 永不 settle：A 的抠图停留在 busy 态。
-    matteImageMock.mockReturnValue({
-      nodeId: 'matte-result',
+  it('切换详情项 → 工具条 busy 态复位（A 的全景 spinner 不带到 B）', () => {
+    // completion 永不 settle：A 的全景停留在 busy 态。
+    scene360ImageMock.mockReturnValue({
+      nodeId: 'pano-result',
       completion: new Promise(() => {}),
     });
+    const confirmSpy = vi.spyOn(window, 'confirm').mockReturnValue(true);
     render(<AssetBoardView visible onLocateNode={vi.fn()} />);
     fireEvent.click(screen.getByRole('button', { name: '上传图' }));
 
-    // 抠图移进「...」菜单：展开后点击（悬停菜单点叶子不自动收起，busy 态原地可见）。
-    openMoreMenu(detailPanel());
-    fireEvent.click(within(detailPanel()).getByRole('button', { name: '抠图' }));
-    expect(matteImageMock).toHaveBeenCalledWith('img-up', '/static/up.png', {
-      displayName: '抠图',
+    fireEvent.click(within(detailPanel()).getByRole('button', { name: '全景' }));
+    expect(scene360ImageMock).toHaveBeenCalledWith('img-up', '/static/up.png', {
+      displayName: '360°全景图',
+      aspectRatio: '2:1',
     });
-    expect(within(detailPanel()).getByRole('button', { name: '抠图' })).toBeDisabled();
+    expect(within(detailPanel()).getByRole('button', { name: '全景' })).toBeDisabled();
 
-    // 切到另一张图：新实例的菜单是全新的（收起态），展开后抠图不应继承 A 的 busy 态。
+    // 切到另一张图：busy 登记表按 nodeId 记，B 不该继承 A 的 busy 态。
     fireEvent.click(screen.getByRole('button', { name: '第二上传图' }));
-    openMoreMenu(detailPanel());
-    expect(within(detailPanel()).getByRole('button', { name: '抠图' })).not.toBeDisabled();
+    expect(within(detailPanel()).getByRole('button', { name: '全景' })).not.toBeDisabled();
+    confirmSpy.mockRestore();
   });
 
   it('音频 chip：点击打开详情（不再定位），右侧出现下载按钮', () => {
