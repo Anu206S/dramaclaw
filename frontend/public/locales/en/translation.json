@@ -3921,6 +3921,7 @@
         "featured": "Featured",
         "searchPlaceholder": "Search Skill",
         "filters": {
+          "all": "All",
           "recommended": "Recommended",
           "video": "Video",
           "image": "Image",

@@ -2514,11 +2514,69 @@ export function CommunitySkillDialog({
   const { t } = useTranslation();
   const isMine = mode === "mine";
   const showMineTab = typeof onModeChange === "function";
+  const [skillQuery, setSkillQuery] = useState("");
+  const [activeFilter, setActiveFilter] = useState("all");
+  const localFilterOptions = useMemo(() => {
+    const categories = Array.from(
+      new Set(
+        localItems
+          .map((item) => item.category?.trim())
+          .filter((category): category is string => Boolean(category)),
+      ),
+    );
+    return ["all", ...categories];
+  }, [localItems]);
+  const communityFilterOptions = useMemo(() => {
+    const tags = Array.from(new Set(items.flatMap((item) => item.tags.map((tag) => tag.trim()).filter(Boolean))));
+    return ["recommended", ...tags].slice(0, 8);
+  }, [items]);
+  const filterOptions = isMine ? localFilterOptions : communityFilterOptions;
+  const normalizedSkillQuery = skillQuery.trim().toLowerCase();
+  const visibleLocalItems = useMemo(
+    () =>
+      localItems.filter((item) => {
+        const categoryMatched = activeFilter === "all" || item.category === activeFilter;
+        if (!categoryMatched) return false;
+        if (!normalizedSkillQuery) return true;
+        return [item.id, item.label, item.category, item.description]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedSkillQuery);
+      }),
+    [activeFilter, localItems, normalizedSkillQuery],
+  );
+  const visibleCommunityItems = useMemo(
+    () =>
+      items.filter((item) => {
+        const filterMatched =
+          activeFilter === "recommended" || activeFilter === "all" || item.tags.includes(activeFilter);
+        if (!filterMatched) return false;
+        if (!normalizedSkillQuery) return true;
+        return [item.id, item.name, item.description, item.author, ...item.tags]
+          .filter(Boolean)
+          .join(" ")
+          .toLowerCase()
+          .includes(normalizedSkillQuery);
+      }),
+    [activeFilter, items, normalizedSkillQuery],
+  );
+
+  useEffect(() => {
+    setActiveFilter(mode === "mine" ? "all" : "recommended");
+    setSkillQuery("");
+  }, [mode, open]);
+
+  useEffect(() => {
+    if (!filterOptions.includes(activeFilter)) {
+      setActiveFilter(filterOptions[0] ?? (isMine ? "all" : "recommended"));
+    }
+  }, [activeFilter, filterOptions, isMine]);
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent
-        className="h-[min(760px,86vh)] !w-[min(1120px,calc(100vw-40px))] !max-w-[min(1120px,calc(100vw-40px))] gap-0 overflow-hidden rounded-lg border-border/75 bg-[#070808] p-0 shadow-2xl sm:!max-w-[min(1120px,calc(100vw-40px))]"
+        className="grid h-[min(760px,86vh)] !w-[min(1120px,calc(100vw-40px))] !max-w-[min(1120px,calc(100vw-40px))] grid-rows-[auto_minmax(0,1fr)] gap-0 overflow-hidden rounded-lg border-border/75 bg-[#070808] p-0 shadow-2xl sm:!max-w-[min(1120px,calc(100vw-40px))]"
         showCloseButton={false}
       >
         <DialogHeader className="border-b border-border/45 px-5 py-4">
@@ -2583,30 +2641,40 @@ export function CommunitySkillDialog({
             </div>
           </div>
           <div className="mt-4 flex items-center gap-2">
-            {["recommended", "video", "image", "workflow", "general"].map((key) => (
-              <span
-                key={key}
-                className={cn(
-                  // 圆角写死 px：本项目 --radius=1rem，rounded-md 实际 14px，
-                  // 这排小筛选片会圆成胶囊（用户要求收小）。
-                  "rounded-[6px] border px-3 py-1.5 text-xs",
-                  key === "recommended"
-                    ? "border-border bg-white/[0.08] text-white"
-                    : "border-border/60 bg-white/[0.02] text-white/62",
-                )}
-              >
-                {t(`settings.freezoneCatalog.community.filters.${key}`)}
-              </span>
-            ))}
+            {filterOptions.map((key) => {
+              const active = key === activeFilter;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setActiveFilter(key)}
+                  className={cn(
+                    // 圆角写死 px：本项目 --radius=1rem，rounded-md 实际 14px，
+                    // 这排小筛选片会圆成胶囊（用户要求收小）。
+                    "rounded-[6px] border px-3 py-1.5 text-xs transition-colors",
+                    active
+                      ? "border-border bg-white/[0.08] text-white"
+                      : "border-border/60 bg-white/[0.02] text-white/62 hover:border-white/20 hover:bg-white/[0.055] hover:text-white/85",
+                  )}
+                >
+                  {isMine && key !== "all"
+                    ? key
+                    : t(`settings.freezoneCatalog.community.filters.${key}`, { defaultValue: key })}
+                </button>
+              );
+            })}
             <div className="relative ml-auto w-[min(340px,36vw)]">
               <Search className="pointer-events-none absolute top-1/2 left-3 size-3.5 -translate-y-1/2 text-white/45" />
-              <div className="h-9 rounded-[8px] border border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs leading-9 text-white/50">
-                {t("settings.freezoneCatalog.community.searchPlaceholder")}
-              </div>
+              <Input
+                value={skillQuery}
+                onChange={(event) => setSkillQuery(event.target.value)}
+                placeholder={t("settings.freezoneCatalog.community.searchPlaceholder")}
+                className="h-9 rounded-[8px] border-border/60 bg-white/[0.03] pl-9 pr-3 text-xs text-white/80 placeholder:text-white/45 focus-visible:border-white/25 focus-visible:ring-1 focus-visible:ring-white/10"
+              />
             </div>
           </div>
         </DialogHeader>
-        <div className="h-[calc(100%-96px)] overflow-y-auto px-5 py-4">
+        <div className="min-h-0 overflow-y-auto px-5 py-4">
           {loading ? (
             <div className="grid h-full min-h-80 place-items-center text-sm text-white/70">
               <div className="flex items-center gap-2">
@@ -2629,7 +2697,7 @@ export function CommunitySkillDialog({
               </div>
             </div>
           ) : isMine ? (
-            localItems.length === 0 ? (
+            visibleLocalItems.length === 0 ? (
               <div className="grid h-full min-h-80 place-items-center text-center">
                 <div>
                   <p className="text-sm font-medium text-white">
@@ -2642,7 +2710,7 @@ export function CommunitySkillDialog({
               </div>
             ) : (
               <div className="grid gap-3 lg:grid-cols-2">
-                {localItems.map((item) => (
+                {visibleLocalItems.map((item) => (
                   <article
                     key={item.id}
                     // hover 整条给反馈（用户要求）：只提亮底色和描边，不换指针——
@@ -2682,7 +2750,7 @@ export function CommunitySkillDialog({
                 ))}
               </div>
             )
-          ) : items.length === 0 ? (
+          ) : visibleCommunityItems.length === 0 ? (
             <div className="grid h-full min-h-80 place-items-center text-center">
               <div>
                 <p className="text-sm font-medium text-white">
@@ -2695,7 +2763,7 @@ export function CommunitySkillDialog({
             </div>
           ) : (
             <div className="grid gap-3 lg:grid-cols-2">
-              {items.map((item) => {
+              {visibleCommunityItems.map((item) => {
                 const installed = installedSkillIds.has(item.id);
                 const itemInstalling = installing && installingBundleUrl === item.bundle_url;
                 return (

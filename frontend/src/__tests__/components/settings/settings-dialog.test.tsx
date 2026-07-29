@@ -159,6 +159,7 @@ vi.mock("react-i18next", () => ({
         "settings.freezoneCatalog.export": "导出",
         "settings.freezoneCatalog.exportBundle": "导出 Skill",
         "settings.freezoneCatalog.community.open": "社区 Skill",
+        "settings.freezoneCatalog.community.filters.all": "全部",
         "settings.freezoneCatalog.new": "新增",
         "settings.freezoneCatalog.selectAll": "全选",
         "settings.freezoneCatalog.backToTop": "顶部",
