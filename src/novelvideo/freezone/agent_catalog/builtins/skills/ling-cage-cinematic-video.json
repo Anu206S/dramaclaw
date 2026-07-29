@@ -4,7 +4,7 @@
   "version": "1.0.0",
   "enabled": true,
   "name": "灵笼风格科幻短片",
-  "description": "把灵感、角色设定、参考素材或脚本发展成半写实 3D 末世科幻动画短片，按故事脚本、全局规格、分镜、关键元素、逐镜视频和音频层分阶段推进。",
+  "description": "把灵感、角色设定、参考素材或脚本发展成灵笼风格半写实 3D 末世科幻动画短片，按故事脚本、分镜、关键元素、逐镜视频和音频层分阶段推进。",
   "category": "video",
   "triggers": {
     "keywords": [
@@ -100,18 +100,17 @@
     }
   ],
   "allowed_recipe_ids": [
-    "ling-cage-story-script",
-    "ling-cage-video-spec",
-    "ling-cage-storyboard",
-    "ling-cage-key-elements",
-    "ling-cage-shot-video",
-    "ling-cage-audio-layers"
+    "sci-fi-survival-story-script",
+    "sci-fi-survival-storyboard",
+    "sci-fi-survival-key-elements",
+    "sci-fi-survival-shot-video",
+    "sci-fi-survival-audio-layers"
   ],
   "planning": {
-    "planning_notes": "动态执行路径：先根据 total_duration、output_language、director_style、asset_mode、audio_mode、execution_mode、用户输入和画布/上传素材判断入口。若用户只有关键词或灵感，先创建 textGeneration/ling-cage-story-script 产出多个故事方向供选择，再扩展逐场脚本并等待确认；若用户已有完整脚本，可跳过方向选择但必须做结构化提取。确认后创建 textGeneration/ling-cage-video-spec 锁定 Final_Video_Spec：16:9、24fps、720p、目标时长、输出语言和视觉风格。然后创建 textGeneration/ling-cage-storyboard 生成 key_element、shot list 和 audio_layer，并检查每个镜头是否绑定场景、角色、动作、对白/旁白、时长和转场意图。分镜确认后创建 imageGeneration/ling-cage-key-elements：角色三视图 16:9，场景 4:3 2x2 无角色，怪物/道具 4:3；优先绑定用户素材，不匹配时按原素材重制风格。关键元素批量确认后按镜头或场景段创建 videoGeneration/ling-cage-shot-video，单镜 4-15 秒，每镜引用图不超过 9 张、音频不超过 3 条，只在强连续时引用上一镜视频。若 audio_mode 不是“仅画面不生成音频”，创建 audioGeneration/ling-cage-audio-layers 生成旁白、BGM、环境声和动作音效提示。最后提醒用户可在画布上进行最终合成，并询问是否需要超分；不创建最终合成 Recipe。",
-    "prompt_guide": "输出使用清晰中文 Markdown。核心风格为半写实 3D CG 电影感末世科幻：写实级渲染、轻微动画化审美、压抑暗色、废土诗意、脏旧材质、体积光、丁达尔效应、真实皮肤和战损装备。Shot 层禁止默认字幕；旁白和对白不得重叠；用户素材优先绑定，缺失或风格不匹配才生成/重制。",
+    "planning_notes": "动态执行路径：先根据 total_duration、output_language、director_style、asset_mode、audio_mode、execution_mode、用户输入和画布/上传素材判断入口，并在 Skill 层锁定创意规格：默认 16:9、24fps、720p、目标时长、输出语言、导演风格、素材策略、音频策略和视觉风格；这个规格不创建独立节点。若用户只有关键词或灵感，先产出多个故事方向供选择，再扩展逐场脚本并等待确认；若用户已有完整脚本，可跳过方向选择但必须做结构化提取。故事确认后生成分镜，输出 Key Elements、Shot List 和 audio_layer，并检查每个镜头是否绑定场景、角色、动作、对白/旁白、时长和转场意图。分镜确认后生成关键元素图：角色三视图、场景 2x2 无角色四宫格、怪物/道具结构图；优先绑定用户素材，不匹配时按原素材重制风格。关键元素批量确认后按镜头或场景段创建单镜视频，单镜 4-15 秒，每镜引用图不超过 9 张、音频不超过 3 条，只在强连续时引用上一镜视频。若 audio_mode 不是“仅画面不生成音频”，生成旁白、BGM、环境声和动作音效提示。最后提醒用户可在画布上进行最终合成，并询问是否需要超分；最终合成和超分不作为 Recipe。",
+    "prompt_guide": "输出使用清晰中文 Markdown。核心风格为灵笼气质的半写实 3D CG 电影感末世科幻：写实级渲染、轻微动画化审美、压抑暗色、废土诗意、脏旧材质、体积光、丁达尔效应、真实皮肤和战损装备。场景方向可围绕地表废土、灯塔内部、玛娜生态、龙骨村等空间展开，并保持空间关系、光色、活动区域和环境状态连续。Shot 层禁止默认字幕；旁白和对白不得重叠；用户素材优先绑定，缺失或风格不匹配才生成/重制。",
     "conduct_rules": [
-      "不要一次性跑完整流程；Spec、Storyboard、关键元素批、场景段视频、音频层完成后必须暂停给用户确认。",
+      "不要一次性跑完整流程；故事方向/脚本、创意规格、分镜、关键元素批、场景段视频、音频层完成后必须暂停给用户确认。",
       "默认 16:9、24fps、720p；目标时长按 input total_duration，默认 1-3 分钟范围。",
       "角色必须是半写实 3D CG，战术装备、划痕、灰尘、血污和真实材质明确；禁止日漫平涂、Q版、明亮干净和过度赛博霓虹。",
       "场景必须区分地表废土、灯塔内部、玛娜生态、龙骨村，并标注光色、空间关系和活动区域。",
@@ -119,7 +118,7 @@
       "视频生成前逐镜检查：场景参考、角色参考、对白完整、旁白完整、关键动作、图片引用 <=9、音频引用 <=3。",
       "角色伤口、装备破损和环境状态必须跨镜连续，不得自动重置。",
       "旁白与角色对白必须错开，不能语义重复；对白密集镜头通常不加旁白。",
-      "最终合成和超分不作为 Recipe；流程结束时只提醒用户在画布合成，并询问是否需要超分。"
+      "创意规格、最终合成和超分不作为 Recipe；流程结束时只提醒用户在画布合成，并询问是否需要超分。"
     ]
   },
   "evaluation": {

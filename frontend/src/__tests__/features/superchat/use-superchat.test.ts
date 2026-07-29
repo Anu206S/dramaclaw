@@ -4381,6 +4381,46 @@ describe("tool status parts", () => {
     })).toBe("待重新整理 Skill 方案");
   });
 
+  it("uses friendly labels for Workflow Skill draft tool status", () => {
+    const prepareCompleted = (toolStatusPartForTest("agent.tool.updated", {
+      type: "agent.tool.updated",
+      turn_id: "turn-a",
+      call_id: "call-prepare",
+      name: "freezone_prepare_workflow_draft",
+      status: "completed",
+    }, "turn-a") as { event: ChatMessage }).event;
+    const prepareFailed = (toolStatusPartForTest("agent.tool.updated", {
+      type: "agent.tool.updated",
+      turn_id: "turn-a",
+      call_id: "call-prepare-failed",
+      name: "freezone_prepare_workflow_draft",
+      status: "failed",
+    }, "turn-a") as { event: ChatMessage }).event;
+    const confirmCompleted = (toolStatusPartForTest("agent.tool.updated", {
+      type: "agent.tool.updated",
+      turn_id: "turn-a",
+      call_id: "call-confirm",
+      name: "freezone_confirm_workflow_draft",
+      status: "completed",
+    }, "turn-a") as { event: ChatMessage }).event;
+
+    expect(toolStatusRuntimeTextForTest({
+      status: "done",
+      title: genericToolTitleForTest(prepareCompleted),
+      toolMessage: prepareCompleted,
+    })).toBe("已生成工作流草稿");
+    expect(toolStatusRuntimeTextForTest({
+      status: "failed",
+      title: genericToolTitleForTest(prepareFailed),
+      toolMessage: prepareFailed,
+    })).toBe("待重新生成工作流草稿");
+    expect(toolStatusRuntimeTextForTest({
+      status: "done",
+      title: genericToolTitleForTest(confirmCompleted),
+      toolMessage: confirmCompleted,
+    })).toBe("已提交到画布");
+  });
+
   it("hides non-failed tool status parts when replaying historical runtime activity", () => {
     const runningTool = {
       ...toolStatusPartForTest("agent.tool.updated", {
@@ -4475,6 +4515,59 @@ describe("tool status parts", () => {
     ).map((part) => part.id)).toEqual([
       "tool_status:turn-a:call-catalog",
       "tool_status:turn-a:call-outline",
+    ]);
+  });
+
+  it("keeps settled Workflow Skill tool status visible after the response completes", () => {
+    const nativeSkillTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-native-skill",
+        name: "skill",
+        status: "completed",
+      }, "turn-a"),
+      seq: 1,
+    };
+    const workflowSkillTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-skill",
+        name: "freezone_get_workflow_skill",
+        status: "completed",
+      }, "turn-a"),
+      seq: 2,
+    };
+    const prepareWorkflowTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-prepare",
+        name: "freezone_prepare_workflow_draft",
+        status: "completed",
+      }, "turn-a"),
+      seq: 3,
+    };
+    const confirmWorkflowTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-confirm",
+        name: "freezone_confirm_workflow_draft",
+        status: "completed",
+      }, "turn-a"),
+      seq: 4,
+    };
+
+    expect(agentRuntimeDisplayPartsForTest(
+      [nativeSkillTool, workflowSkillTool, prepareWorkflowTool, confirmWorkflowTool],
+      { streaming: false },
+    ).map((part) => part.id)).toEqual([
+      "tool_status:turn-a:call-native-skill",
+      "tool_status:turn-a:call-skill",
+      "tool_status:turn-a:call-prepare",
+      "tool_status:turn-a:call-confirm",
     ]);
   });
 
