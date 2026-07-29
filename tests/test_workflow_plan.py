@@ -1466,9 +1466,9 @@ def test_ling_cage_skill_keeps_style_while_recipes_are_survival_sci_fi_stages(mo
 
     assert "灵笼气质" in planning["prompt_guide"]
     assert "半写实 3D CG" in planning_text
-    assert "GPT Image 2" in planning_text
-    assert "Seedance 2.0" in planning_text
-    assert "同模型失败自动重试一次" in planning_text
+    assert "GPT Image 2" not in planning_text
+    assert "Seedance 2.0" not in planning_text
+    assert "同模型失败自动重试一次" not in planning_text
     assert "这个规格不创建独立节点" in planning["planning_notes"]
     assert "故事方向" in planning["planning_notes"]
     assert "分镜" in planning["planning_notes"]
