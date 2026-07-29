@@ -1,162 +1,43 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useCallback, useMemo, useState, type ReactElement, type ReactNode } from 'react';
-import {
-  Boxes,
-  ChevronDown,
-  Eraser,
-  Expand,
-  Globe2,
-  ImageUpscale,
-  Lightbulb,
-  Loader2,
-  Pencil,
-  RotateCw,
-  Wand2,
-} from 'lucide-react';
+import { useCallback, useMemo, useState, type ReactElement } from 'react';
+import { Boxes, Crop, Globe2, ImageUpscale, Lightbulb, RotateCw } from 'lucide-react';
 
 import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@/components/shadcn/dropdown-menu';
-import type {
-  FreezoneOutpaintAspectRatio,
-  FreezoneUpscaleScaleFactor,
-} from '@/api/ops';
-import { outpaintImage } from '@/features/canvas/application/imageOutpaint';
+  createCropResultNode,
+  discardCropResultNode,
+} from '@/features/canvas/application/imageCrop';
 import {
   createRotateResultNode,
   discardRotateResultNode,
-  rotateImageInPlace,
 } from '@/features/canvas/application/imageRotate';
 import { scene360Image } from '@/features/canvas/application/imageScene360';
-import {
-  createUpscaleResultNode,
-  submitImageUpscale,
-  UPSCALE_IMAGE_SIZES,
-  UPSCALE_SCALE_FACTORS,
-  type UpscaleImageSize,
-} from '@/features/canvas/application/imageUpscale';
-import { OUTPAINT_IMAGE_SIZES, type OutpaintImageSize } from '@/features/canvas/application/imageOutpaint';
+import { createUpscaleResultNode } from '@/features/canvas/application/imageUpscale';
 import { nodeMainlineFlags } from '@/features/canvas/domain/mainlineNodeFlags';
 import { type CanvasNode } from '@/features/canvas/domain/canvasNodes';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
-import { EraseOverlay } from '@/features/canvas/ui/EraseOverlay';
 import {
   DEFAULT_SHARED_MODEL_ID,
   SHARED_MODELS,
 } from '@/features/canvas/ui/ProviderModelPicker';
-import { RedrawOverlay } from '@/features/canvas/ui/RedrawOverlay';
 import { useCanvasStore } from '@/stores/canvasStore';
 
+import { AssetBoardCropDialog } from './AssetBoardCropDialog';
 import { AssetBoardMultiAngleDialog } from './AssetBoardMultiAngleDialog';
 import { AssetBoardRelightDialog } from './AssetBoardRelightDialog';
+import { AssetBoardRotateDialog } from './AssetBoardRotateDialog';
 import { createAssetBoardOpsRegistry } from './assetBoardOpsState';
-import {
-  DetailToolbarButton,
-  DETAIL_TOOLBAR_BUTTON_CLASS,
-} from './AssetBoardToolbarButton';
+import { DetailToolbarButton } from './AssetBoardToolbarButton';
+// 仅类型（编译期擦除），不构成与 AssetBoardDetailToolbar 的运行时循环 import。
+import type { MoreMenuEntry } from './AssetBoardDetailToolbar';
 
 /**
- * 详情里展开的平面配置行：与视频「高清」配置行同一视觉族（细边框 + 极暗底）。
- * `w-full` 让它在外层 flex-wrap 工具条里独占一行（排在触发按钮下方）。
+ * 进行中的生成类操作（触发按钮转 spinner，settle 后恢复）。
+ *
+ * 高清不在此列：它改成先建节点再在那个节点的详情里按 ↑ 提交，进行中反馈落在结果
+ * 节点自己身上（isGenerating → 详情媒体区的「生成中 X%」），源节点这边无事可等。
  */
-function ConfigRow({ children }: { children: ReactNode }): ReactElement {
-  return (
-    <div className="flex w-full flex-wrap items-center gap-3 rounded-[6px] border border-white/10 bg-white/[0.03] px-3 py-2">
-      {children}
-    </div>
-  );
-}
-
-function RowLabel({ children }: { children: ReactNode }): ReactElement {
-  return <span className="text-[12px] text-white/40">{children}</span>;
-}
-
-/** 分段按钮组（同视频高清配置行的分辨率/降噪选择器）。 */
-function SegmentedGroup<T extends string | number>({
-  value,
-  options,
-  renderLabel,
-  onChange,
-}: {
-  value: T;
-  options: readonly T[];
-  renderLabel?: (value: T) => string;
-  onChange: (next: T) => void;
-}): ReactElement {
-  return (
-    <div className="inline-flex items-center gap-0.5 rounded-[6px] border border-white/10 bg-white/[0.04] p-0.5">
-      {options.map((option) => (
-        <button
-          key={String(option)}
-          type="button"
-          onClick={() => onChange(option)}
-          className={`rounded-[6px] px-2 py-0.5 text-[12px] transition-colors ${
-            option === value
-              ? 'bg-white/15 text-white'
-              : 'text-white/50 hover:bg-white/5 hover:text-white/80'
-          }`}
-        >
-          {renderLabel ? renderLabel(option) : String(option)}
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/** 开关型 chip（镜像 / 轮廓光）。 */
-function ToggleChip({
-  active,
-  label,
-  onClick,
-}: {
-  active: boolean;
-  label: string;
-  onClick: () => void;
-}): ReactElement {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      aria-pressed={active}
-      className={`rounded-[6px] border px-2 py-0.5 text-[12px] transition-colors ${
-        active
-          ? 'border-white/25 bg-white/15 text-white'
-          : 'border-white/10 bg-white/[0.04] text-white/50 hover:bg-white/5 hover:text-white/80'
-      }`}
-    >
-      {label}
-    </button>
-  );
-}
-
-const OUTPAINT_ASPECT_LABEL: Record<FreezoneOutpaintAspectRatio, string> = {
-  original: '原比例',
-  '1:1': '1:1',
-  '4:3': '4:3',
-  '3:4': '3:4',
-  '16:9': '16:9',
-  '9:16': '9:16',
-};
-const OUTPAINT_ASPECTS: readonly FreezoneOutpaintAspectRatio[] = [
-  'original',
-  '1:1',
-  '4:3',
-  '3:4',
-  '16:9',
-  '9:16',
-];
-const OUTPAINT_NUM_IMAGES = [1, 2, 3, 4] as const;
-
-const ROTATE_ANGLES = [90, 180, 270] as const;
-
-/** 当前展开的配置行（互斥，同一时刻只展开一条）。多角度/重打光已改为独立弹窗，不占配置行。 */
-type OpenPanel = 'hd' | 'outpaint' | 'rotate' | null;
-/** 进行中的生成类操作（触发按钮转 spinner，settle 后恢复）。 */
-type BusyOp = 'hd' | 'outpaint' | 'rotate' | 'pano' | null;
+type BusyOp = 'crop' | 'rotate' | 'pano' | null;
 
 /**
  * 跨重挂载存活的「进行中操作 + 失败反馈」登记表。实现与设计理由已上提到
@@ -183,6 +64,200 @@ export function __resetAssetBoardImageOpsStateForTest(): void {
   imageOpsRegistry.resetForTest();
 }
 
+/**
+ * 生成类操作的统一收尾：结果节点已同步建好 → 立即请求视口预定位（切回工作流
+ * 时视口已就位，见 Task 10），并把源节点的触发入口置 busy 直到后台链 settle。
+ *
+ * 模块级函数而不是组件内 useCallback：编辑三项（高清/裁剪/旋转）已拆到
+ * {@link useAssetBoardImageEditActions}，与仍在 {@link AssetBoardImageOps} 里的
+ * 全景共用同一份收尾逻辑，两边都只依赖 nodeId。
+ */
+function trackSpawn(
+  sourceNodeId: string,
+  op: Exclude<BusyOp, null>,
+  resultNodeId: string,
+  completion: Promise<void>,
+): void {
+  useCanvasStore.getState().requestFocusNode(resultNodeId);
+  markOpStart(sourceNodeId, op);
+  void completion.finally(() => {
+    markOpSettled(sourceNodeId);
+    // 失败只写到了新建的结果节点上（generationError），源节点这边补一行
+    // 红色提示——否则用户停在源节点详情面板，完全看不到刚才那次操作失败了。
+    const resultNode = useCanvasStore.getState().nodes.find((n) => n.id === resultNodeId);
+    const errorMessage = (resultNode?.data as { generationError?: unknown } | undefined)
+      ?.generationError;
+    if (typeof errorMessage === 'string' && errorMessage) {
+      reportOpFailure(sourceNodeId, errorMessage);
+    }
+  });
+}
+
+/**
+ * 图片「编辑」三项——**高清 / 裁剪 / 旋转**——的菜单条目与它们的编辑器弹窗。
+ *
+ * 为什么是 hook 而不是组件：用户要求删掉工具条上那颗「编辑」下拉，把这三项搬进最
+ * 右边的「...」菜单；而「...」由 AssetBoardImageDetailToolbar 渲染、且必须排在「宫格
+ * 模板」之后。菜单条目只能交给调用方拼装，弹窗与 cropNodeId/rotateNodeId 这类状态则
+ * 连同 `overlays` 一起吐回去挂载。
+ *
+ * - 高清「先建节点、不提交」（对标 liblib）：在下游建一个空的高清结果节点并把详情
+ *   切过去，参数在新节点详情下方的高清编辑器里调、按 ↑ 才提交（AssetBoardUpscaleForm）。
+ * - 裁剪 / 旋转都走大图实时预览编辑器：先预建结果节点，编辑器在它身上本地变换后
+ *   写回，取消则回收。编排都走 application/image*（与工作流 overlay 同源，语义一致）。
+ *
+ * 不含工作流那边的重绘 / 擦除（要在图上刷蒙版，故事板详情不做）与扩图（位置让给
+ * 裁剪），都属于用户拍过板的取舍。
+ */
+export function useAssetBoardImageEditActions({
+  node,
+  imageSource,
+  onOpenNode,
+}: {
+  node: CanvasNode;
+  /** 已由调用方解析的图源；为空表示这个节点还没图可编辑，返回空条目。 */
+  imageSource: string | null;
+  /**
+   * 建出新节点后把详情切过去（同宫格模板 / 头部「创建副本」那条路径）。高清就是
+   * 靠它把用户带到新建的高清节点详情里去调参数——不切详情用户看不出发生了什么。
+   */
+  onOpenNode?: (nodeId: string) => void;
+}): { entries: MoreMenuEntry[]; overlays: ReactElement | null } {
+  const busyOp = useInFlightOp(node.id);
+  // 裁剪 / 旋转：进入编辑器前就把结果节点建好（同工作流 SelectedNodeOverlay），
+  // 编辑器实时预览、保存时把结果写回这个节点；取消则回收它。
+  const [cropNodeId, setCropNodeId] = useState<string | null>(null);
+  const [rotateNodeId, setRotateNodeId] = useState<string | null>(null);
+
+  const { models: imageModels } = useFreezoneImageModels();
+  // 模型选择优先级同工作流 UpscaleEditorOverlay / OutpaintEditorOverlay：优先取
+  // 默认共享模型（DEFAULT_SHARED_MODEL_ID），可用列表里没有再退到首个可用模型，
+  // 都拿不到才退到硬编码 SHARED_MODELS 兜底。
+  const selectedModelId =
+    (imageModels.find((model) => model.id === DEFAULT_SHARED_MODEL_ID)
+      ?? imageModels[0]
+      ?? SHARED_MODELS.find((model) => model.id === DEFAULT_SHARED_MODEL_ID))?.id
+    ?? DEFAULT_SHARED_MODEL_ID;
+
+  // 与工作流 NodeActionToolbar 同源的显隐语义：preset_managed（主线投影锁定）节点
+  // 隐藏「原地改写源图」的入口——高清与旋转都是 updateNodeData 回写，会破坏
+  // canonical 不可变性；裁剪 spawn 出的是 user_spawned 子节点，锁定态下照常可用。
+  const isPresetLocked = useMemo(() => nodeMainlineFlags(node).isPresetManaged, [node]);
+
+  /**
+   * 高清 = **先建节点、不提交**（对标 liblib，与宫格模板同一条路径）：在源图下游建
+   * 一个空的高清结果节点，详情随即切过去，用户在新节点详情下方的高清编辑器里选
+   * 模型/画质/倍数、按 ↑ 才真正提交（AssetBoardUpscaleForm）。
+   *
+   * 这里不再当场 submit，所以也不挂源节点的 busy 态——在途反馈落在结果节点自己
+   * 身上（isGenerating → 详情媒体区的「生成中 X%」）。
+   */
+  const handleOpenHd = useCallback(() => {
+    if (busyOp) return;
+    const resultNodeId = createUpscaleResultNode(node.id, {
+      displayName: '高清放大',
+      modelId: selectedModelId,
+    });
+    if (!resultNodeId) return;
+    // 低成本视口预定位（M7）：结果节点已同步建好，保活挂载的 Canvas 先把视口对准
+    // 它，用户切回工作流时不用自己找。
+    useCanvasStore.getState().requestFocusNode(resultNodeId);
+    onOpenNode?.(resultNodeId);
+  }, [busyOp, node.id, onOpenNode, selectedModelId]);
+
+  /**
+   * 打开裁剪编辑器：与旋转同一条路——先把「裁剪结果」节点建出来（源图保持不动），
+   * 编辑器直接在这个节点上写回结果。用户取消时由 handleCloseCrop 回收。
+   */
+  const handleOpenCrop = useCallback(() => {
+    if (busyOp) return;
+    const resultNodeId = createCropResultNode(node.id, { displayName: '裁剪结果' });
+    if (!resultNodeId) return;
+    setCropNodeId(resultNodeId);
+  }, [busyOp, node.id]);
+
+  const handleCloseCrop = useCallback(
+    (committed: boolean) => {
+      // 未提交（退出 / Esc / 取景框就是整张图）→ 回收预建的结果节点。
+      if (!committed && cropNodeId) discardCropResultNode(cropNodeId);
+      setCropNodeId(null);
+    },
+    [cropNodeId],
+  );
+
+  const handleCropCommitted = useCallback(
+    (completion: Promise<void>) => {
+      if (cropNodeId) trackSpawn(node.id, 'crop', cropNodeId, completion);
+    },
+    [cropNodeId, node.id],
+  );
+
+  /**
+   * 打开旋转编辑器：与工作流一致，先把「旋转结果」节点建出来（源图保持不动），
+   * 编辑器直接在这个节点上写回结果。用户取消时由 handleCloseRotate 回收。
+   */
+  const handleOpenRotate = useCallback(() => {
+    if (busyOp) return;
+    const resultNodeId = createRotateResultNode(node.id, { displayName: '旋转结果' });
+    if (!resultNodeId) return;
+    setRotateNodeId(resultNodeId);
+  }, [busyOp, node.id]);
+
+  const handleCloseRotate = useCallback(
+    (committed: boolean) => {
+      // 未提交（退出 / Esc / 没做任何变换）→ 回收预建的结果节点，避免凭空多出一个空节点。
+      if (!committed && rotateNodeId) discardRotateResultNode(rotateNodeId);
+      setRotateNodeId(null);
+    },
+    [rotateNodeId],
+  );
+
+  const handleRotateCommitted = useCallback(
+    (completion: Promise<void>) => {
+      if (rotateNodeId) trackSpawn(node.id, 'rotate', rotateNodeId, completion);
+    },
+    [node.id, rotateNodeId],
+  );
+
+  const entries: MoreMenuEntry[] = !imageSource
+    ? []
+    : (
+        [
+          { kind: 'action', key: 'hd', icon: ImageUpscale, label: '高清', onSelect: handleOpenHd },
+          { kind: 'action', key: 'crop', icon: Crop, label: '裁剪', busy: busyOp === 'crop', onSelect: handleOpenCrop },
+          { kind: 'action', key: 'rotate', icon: RotateCw, label: '旋转', busy: busyOp === 'rotate', onSelect: handleOpenRotate },
+        ] satisfies MoreMenuEntry[]
+      ).filter((entry) => !(isPresetLocked && (entry.key === 'hd' || entry.key === 'rotate')));
+
+  const overlays =
+    !imageSource || (!cropNodeId && !rotateNodeId) ? null : (
+      <>
+        {/* 裁剪：大图 + 取景框 + 悬浮控制条（liblib 同款）。纯本地 canvas 切图，
+            不走生成接口。 */}
+        {cropNodeId && (
+          <AssetBoardCropDialog
+            nodeId={cropNodeId}
+            imageSource={imageSource}
+            onClose={handleCloseCrop}
+            onCommitted={handleCropCommitted}
+          />
+        )}
+        {/* 旋转：大图实时预览 + 悬浮控制条（libtv 同款），与工作流 RotateEditorOverlay
+            共用同一套内容层，只是外壳换成 portal 弹窗。 */}
+        {rotateNodeId && (
+          <AssetBoardRotateDialog
+            nodeId={rotateNodeId}
+            imageSource={imageSource}
+            onClose={handleCloseRotate}
+            onCommitted={handleRotateCommitted}
+          />
+        )}
+      </>
+    );
+
+  return { entries, overlays };
+}
+
 interface AssetBoardImageOpsProps {
   node: CanvasNode;
   /** 已由调用方用 resolveNodeSourceImageUrl 解析的图源（无图源时调用方不渲染本组件）。 */
@@ -190,169 +265,33 @@ interface AssetBoardImageOpsProps {
 }
 
 /**
- * 故事板详情的图片编辑/生成操作区（工作流第二批：重绘/擦除/高清/扩图/旋转 +
- * 全景/多角度/重打光）。
+ * 故事板详情的图片生成操作区：**全景 / 多角度 / 重打光** 三颗常显按钮。
  *
- * - 重绘 / 擦除整组件复用工作流的 RedrawOverlay / EraseOverlay（两者都 portal 到
- *   document.body 的 z-[300] 全屏层，不依赖 React Flow，详情传 node + imageSource 即可）。
- * - 高清 / 扩图 / 旋转在详情内用平面配置行选参数后直接提交，编排走
- *   application/image*（与工作流 overlay 同源，语义一致）。
+ * 编辑三项（高清/裁剪/旋转）不在这里——它们已搬进工具条最右那颗「...」菜单，由
+ * {@link useAssetBoardImageEditActions} 提供条目与弹窗（用户要求删掉「编辑」下拉）。
+ *
  * - 多角度 / 重打光打开工作流那套完整弹窗编辑器（AssetBoardMultiAngleDialog /
  *   AssetBoardRelightDialog，同样 portal 到 document.body），球体选角/光球方向、
  *   滑杆、画质、提示词开关、算力与提交都在弹窗内容层自理。
  * - 全景无必选参数，直接确认后提交。
  *
- * 返回的是 fragment：按钮直接落在调用方的 flex-wrap 工具条里，配置行用 `w-full`
- * 自动换到下一行。
+ * 返回的是 fragment：按钮直接落在调用方的 flex-wrap 工具条里，参数弹窗都 portal
+ * 到 body，不再占工具条的版面。失败兜底文案（含裁剪/旋转的失败）也挂在这里——
+ * 三处操作共用同一张按 nodeId 记的登记表。
  */
 export function AssetBoardImageOps({
   node,
   imageSource,
 }: AssetBoardImageOpsProps): ReactElement {
-  const [openPanel, setOpenPanel] = useState<OpenPanel>(null);
   // busy 态跨重挂载存活（详情工具条按 key={node.id} 整体重挂载），不是组件局部
   // state——见 inFlightImageOps 的说明。
   const busyOp = useInFlightOp(node.id);
   const opFailure = useOpFailure(node.id);
-  const [redrawOpen, setRedrawOpen] = useState(false);
-  const [eraseOpen, setEraseOpen] = useState(false);
   // 多角度 / 重打光：不再是内联配置行，改成打开工作流那套完整弹窗编辑器
   // （AssetBoardMultiAngleDialog / AssetBoardRelightDialog）；busy/算力/提交都在
   // 弹窗内容层自理，这里只管开关。
   const [multiAngleOpen, setMultiAngleOpen] = useState(false);
   const [relightOpen, setRelightOpen] = useState(false);
-
-  // 高清参数（工作流 UpscaleEditorOverlay 的画质 + 放大倍数；模型走可用模型首选）。
-  const [hdImageSize, setHdImageSize] = useState<UpscaleImageSize>('2K');
-  const [hdScaleFactor, setHdScaleFactor] = useState<FreezoneUpscaleScaleFactor>(2);
-  // 扩图参数（目标比例决定往哪个方向扩：比原图更宽→横向扩，更高→纵向扩）。
-  const [outpaintAspect, setOutpaintAspect] =
-    useState<FreezoneOutpaintAspectRatio>('original');
-  const [outpaintSize, setOutpaintSize] = useState<OutpaintImageSize>('2K');
-  const [outpaintCount, setOutpaintCount] = useState<number>(1);
-  // 旋转参数（本地 canvas 变换，无后端生成）。
-  const [rotateAngle, setRotateAngle] = useState<number>(90);
-  const [rotateMirrorH, setRotateMirrorH] = useState(false);
-  const [rotateMirrorV, setRotateMirrorV] = useState(false);
-
-  const { models: imageModels } = useFreezoneImageModels();
-  // 模型选择优先级同工作流 UpscaleEditorOverlay / OutpaintEditorOverlay：优先取
-  // 默认共享模型（DEFAULT_SHARED_MODEL_ID），可用列表里没有再退到首个可用模型，
-  // 都拿不到才退到硬编码 SHARED_MODELS 兜底。
-  const selectedModel =
-    imageModels.find((model) => model.id === DEFAULT_SHARED_MODEL_ID)
-    ?? imageModels[0]
-    ?? SHARED_MODELS.find((model) => model.id === DEFAULT_SHARED_MODEL_ID);
-  const apiModel = selectedModel?.apiModel ?? '';
-  const selectedModelId = selectedModel?.id ?? DEFAULT_SHARED_MODEL_ID;
-
-  // 与工作流 NodeActionToolbar 同源的显隐语义：preset_managed（主线投影锁定）节点
-  // 隐藏「原地改写源图」的入口——高清与旋转都是 updateNodeData 回写，会破坏
-  // canonical 不可变性；其余（重绘/擦除/扩图/全景/多角度/打光）都是 spawn 出
-  // user_spawned 子节点，锁定态下照常可用。
-  const isPresetLocked = useMemo(() => nodeMainlineFlags(node).isPresetManaged, [node]);
-
-  const togglePanel = useCallback((panel: Exclude<OpenPanel, null>) => {
-    setOpenPanel((current) => (current === panel ? null : panel));
-  }, []);
-
-  /**
-   * 生成类操作的统一收尾：结果节点已同步建好 → 立即请求视口预定位（切回工作流
-   * 时视口已就位，见 Task 10），收起配置行，并把触发按钮置 busy 直到后台链 settle。
-   */
-  const trackSpawn = useCallback(
-    (op: Exclude<BusyOp, null>, nodeId: string, completion: Promise<void>) => {
-      useCanvasStore.getState().requestFocusNode(nodeId);
-      setOpenPanel(null);
-      markOpStart(node.id, op);
-      void completion.finally(() => {
-        markOpSettled(node.id);
-        // 失败只写到了新建的结果节点上（generationError），源节点这边补一行
-        // 红色提示——否则用户停在源节点详情面板，完全看不到刚才那次操作失败了。
-        const resultNode = useCanvasStore.getState().nodes.find((n) => n.id === nodeId);
-        const errorMessage = (resultNode?.data as { generationError?: unknown } | undefined)
-          ?.generationError;
-        if (typeof errorMessage === 'string' && errorMessage) {
-          reportOpFailure(node.id, errorMessage);
-        }
-      });
-    },
-    [node.id],
-  );
-
-  const handleHdSubmit = useCallback(() => {
-    if (busyOp) return;
-    const resultNodeId = createUpscaleResultNode(node.id, {
-      displayName: `高清放大（${hdImageSize} · ${hdScaleFactor}x）`,
-      modelId: selectedModelId,
-      imageSize: hdImageSize,
-      scaleFactor: hdScaleFactor,
-    });
-    if (!resultNodeId) return;
-    const completion = submitImageUpscale(resultNodeId, {
-      sourceUrl: imageSource,
-      scaleFactor: hdScaleFactor,
-      imageSize: hdImageSize,
-      model: apiModel,
-    });
-    if (!completion) {
-      // 缺 project 起不了任务 —— 回收刚预建的占位节点，避免凭空多出一个空节点
-      // （同 handleRotateSubmit 的 discardRotateResultNode 处理，upscale 侧没有
-      // 对称的具名 helper，直接调 store 的 deleteNode）。
-      useCanvasStore.getState().deleteNode(resultNodeId);
-      return;
-    }
-    trackSpawn('hd', resultNodeId, completion);
-  }, [
-    apiModel,
-    busyOp,
-    hdImageSize,
-    hdScaleFactor,
-    imageSource,
-    node.id,
-    selectedModelId,
-    trackSpawn,
-  ]);
-
-  const handleOutpaintSubmit = useCallback(() => {
-    if (busyOp) return;
-    const result = outpaintImage(node.id, imageSource, {
-      displayName: '扩图',
-      targetAspectRatio: outpaintAspect,
-      imageSize: outpaintSize,
-      numImages: outpaintCount,
-      model: apiModel,
-    });
-    if (!result) return;
-    trackSpawn('outpaint', result.nodeIds[0], result.completion);
-  }, [
-    apiModel,
-    busyOp,
-    imageSource,
-    node.id,
-    outpaintAspect,
-    outpaintCount,
-    outpaintSize,
-    trackSpawn,
-  ]);
-
-  const handleRotateSubmit = useCallback(() => {
-    if (busyOp) return;
-    // 与工作流一致：旋转写到新建的「旋转结果」节点上，源图保持不动。
-    const resultNodeId = createRotateResultNode(node.id, { displayName: '旋转结果' });
-    if (!resultNodeId) return;
-    const completion = rotateImageInPlace(resultNodeId, imageSource, {
-      angleDeg: rotateAngle,
-      mirrorH: rotateMirrorH,
-      mirrorV: rotateMirrorV,
-    });
-    if (!completion) {
-      // 缺 project 起不了任务 —— 回收刚预建的节点，避免凭空多出一个空节点。
-      discardRotateResultNode(resultNodeId);
-      return;
-    }
-    trackSpawn('rotate', resultNodeId, completion);
-  }, [busyOp, imageSource, node.id, rotateAngle, rotateMirrorH, rotateMirrorV, trackSpawn]);
 
   const handlePanoSubmit = useCallback(() => {
     if (busyOp) return;
@@ -362,59 +301,11 @@ export function AssetBoardImageOps({
       aspectRatio: '2:1',
     });
     if (!result) return;
-    trackSpawn('pano', result.nodeId, result.completion);
-  }, [busyOp, imageSource, node.id, trackSpawn]);
-
-  // 编辑下拉的条目（对齐工作流 NodeActionToolbar 的编辑下拉结构）。
-  const editActions = [
-    { key: 'repaint', icon: Wand2, label: '重绘', run: () => setRedrawOpen(true) },
-    { key: 'erase', icon: Eraser, label: '擦除', run: () => setEraseOpen(true) },
-    { key: 'hd', icon: ImageUpscale, label: '高清', run: () => togglePanel('hd') },
-    { key: 'outpaint', icon: Expand, label: '扩图', run: () => togglePanel('outpaint') },
-    { key: 'rotate', icon: RotateCw, label: '旋转', run: () => togglePanel('rotate') },
-  ]
-    // 高清 / 旋转原地改写图片 → preset_managed 节点上隐藏（同工作流语义）。
-    .filter((action) => !(isPresetLocked && (action.key === 'hd' || action.key === 'rotate')));
+    trackSpawn(node.id, 'pano', result.nodeId, result.completion);
+  }, [busyOp, imageSource, node.id]);
 
   return (
     <>
-      <DropdownMenu>
-        <DropdownMenuTrigger asChild>
-          <button
-            type="button"
-            disabled={busyOp !== null}
-            className={DETAIL_TOOLBAR_BUTTON_CLASS}
-          >
-            {busyOp === 'hd' || busyOp === 'outpaint' || busyOp === 'rotate' ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
-            ) : (
-              <Pencil className="h-3.5 w-3.5" />
-            )}
-            编辑
-            <ChevronDown className="h-3 w-3" />
-          </button>
-        </DropdownMenuTrigger>
-        <DropdownMenuContent
-          align="start"
-          sideOffset={6}
-          className="z-50 min-w-[160px] border-white/10 bg-[#2e2e2e] text-white/85 shadow-xl"
-        >
-          {editActions.map((action) => {
-            const Icon = action.icon;
-            return (
-              <DropdownMenuItem
-                key={action.key}
-                className="gap-2 rounded-[6px] text-white/80 focus:bg-white/[0.08] focus:text-white"
-                onSelect={() => action.run()}
-              >
-                <Icon className="h-4 w-4" />
-                {action.label}
-              </DropdownMenuItem>
-            );
-          })}
-        </DropdownMenuContent>
-      </DropdownMenu>
-
       <DetailToolbarButton
         icon={Globe2}
         label="全景"
@@ -448,111 +339,6 @@ export function AssetBoardImageOps({
         >
           {opFailure}
         </div>
-      )}
-
-      {openPanel === 'hd' && (
-        <ConfigRow>
-          <RowLabel>画质</RowLabel>
-          <SegmentedGroup
-            value={hdImageSize}
-            options={UPSCALE_IMAGE_SIZES}
-            onChange={setHdImageSize}
-          />
-          <RowLabel>放大倍数</RowLabel>
-          <SegmentedGroup
-            value={hdScaleFactor}
-            options={UPSCALE_SCALE_FACTORS}
-            renderLabel={(factor) => `${factor}x`}
-            onChange={setHdScaleFactor}
-          />
-          <DetailToolbarButton
-            icon={Wand2}
-            label="提交高清"
-            busy={busyOp === 'hd'}
-            title="在画布上新建高清结果节点并提交任务"
-            onClick={handleHdSubmit}
-          />
-        </ConfigRow>
-      )}
-
-      {openPanel === 'outpaint' && (
-        <ConfigRow>
-          {/* 目标比例即扩图方向：比原图更宽 → 左右扩，更高 → 上下扩。 */}
-          <RowLabel>扩图比例</RowLabel>
-          <SegmentedGroup
-            value={outpaintAspect}
-            options={OUTPAINT_ASPECTS}
-            renderLabel={(aspect) => OUTPAINT_ASPECT_LABEL[aspect]}
-            onChange={setOutpaintAspect}
-          />
-          <RowLabel>分辨率</RowLabel>
-          <SegmentedGroup
-            value={outpaintSize}
-            options={OUTPAINT_IMAGE_SIZES}
-            onChange={setOutpaintSize}
-          />
-          <RowLabel>张数</RowLabel>
-          <SegmentedGroup
-            value={outpaintCount}
-            options={OUTPAINT_NUM_IMAGES}
-            renderLabel={(count) => `${count} 张`}
-            onChange={setOutpaintCount}
-          />
-          <DetailToolbarButton
-            icon={Wand2}
-            label="提交扩图"
-            busy={busyOp === 'outpaint'}
-            title="在画布上新建扩图结果节点并提交任务"
-            onClick={handleOutpaintSubmit}
-          />
-        </ConfigRow>
-      )}
-
-      {openPanel === 'rotate' && (
-        <ConfigRow>
-          <RowLabel>角度</RowLabel>
-          <SegmentedGroup
-            value={rotateAngle}
-            options={ROTATE_ANGLES}
-            renderLabel={(angle) => `${angle}°`}
-            onChange={setRotateAngle}
-          />
-          <RowLabel>镜像</RowLabel>
-          <ToggleChip
-            active={rotateMirrorH}
-            label="水平"
-            onClick={() => setRotateMirrorH((prev) => !prev)}
-          />
-          <ToggleChip
-            active={rotateMirrorV}
-            label="垂直"
-            onClick={() => setRotateMirrorV((prev) => !prev)}
-          />
-          <DetailToolbarButton
-            icon={RotateCw}
-            label="应用旋转"
-            busy={busyOp === 'rotate'}
-            title="在画布上新建旋转结果节点（源图保持不变）"
-            onClick={handleRotateSubmit}
-          />
-        </ConfigRow>
-      )}
-
-      {/* 重绘 / 擦除：整组件复用工作流 overlay（自带 portal 到 body 的 z-[300] 全屏层，
-          高于故事板 z-30；提交后自己在画布上建结果节点并选中）。 */}
-      {redrawOpen && (
-        <RedrawOverlay
-          node={node}
-          imageSource={imageSource}
-          onClose={() => setRedrawOpen(false)}
-        />
-      )}
-      {eraseOpen && (
-        <EraseOverlay
-          node={node}
-          imageSource={imageSource}
-          onClose={() => setEraseOpen(false)}
-        />
       )}
 
       {/* 多角度 / 重打光：工作流那套完整弹窗编辑器（球体选角/光球方向 + 滑杆 +

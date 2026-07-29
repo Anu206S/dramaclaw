@@ -12,6 +12,7 @@ import {
   Search,
   Workflow,
 } from "lucide-react";
+import type { LucideIcon } from "lucide-react";
 import { Canvas } from "@/features/canvas/Canvas";
 import { NodeReplaceDragPreview } from "@/features/canvas/ui/NodeReplaceDragPreview";
 import { AssetBoardView } from "@/features/canvas/ui/asset-board/AssetBoardView";
@@ -109,6 +110,12 @@ import {
   useFreezoneViewMode,
   type FreezoneViewMode,
 } from "@/features/freezone/useFreezoneViewMode";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import type { CanvasEdge, CanvasNode } from "@/stores/canvasStore";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import {
@@ -193,6 +200,20 @@ const CHAT_PANE_WIDTH_VAR = "--freezone-chat-pane-width";
 const AGENT_HISTORY_PANE_WIDTH_VAR = "--freezone-agent-history-pane-width";
 const EXTERNAL_CANVAS_COMMAND_POLL_MS = 800;
 const EXTERNAL_CANVAS_REVISION_POLL_MS = 2_000;
+
+/**
+ * 左上角「工作流 / 故事板」切换开关的两颗键。
+ * 只画图标，文案走 hover 提示 + aria-label（用户要求：文字胶囊太占画布）。
+ * 顺序即视觉顺序——滑块位移按下标算（第 2 颗 translate-x-7）。
+ */
+const FREEZONE_VIEW_MODE_TABS: ReadonlyArray<{
+  mode: FreezoneViewMode;
+  icon: LucideIcon;
+  label: string;
+}> = [
+  { mode: "workflow", icon: Workflow, label: "工作流" },
+  { mode: "board", icon: Clapperboard, label: "故事板" },
+];
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value && typeof value === "object" && !Array.isArray(value));
@@ -2043,65 +2064,60 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
               onLocateNode={handleLocateNode}
             />
           )}
-          {/* 工作流/故事板 切换开关：顶部居中悬浮，压在故事板 overlay(z-30) 之上。
-              选中态样式对齐头部「虾画/虾集」产品切换（project-header-navigation.tsx
-              的 ProjectHeaderNavigation）：该开关是手写的胶囊 + 滑块，并非
-              components/nav/sliding-tabs.tsx 的 SlidingTabs，因此这里直接复刻同一套
-              容器/选中/未选中类，而不是套用 shadcn Tabs 默认的深色选中态。
-              容器底色沿用本任务前一步确定的硬编码 #262626（与故事板背景同色）。
-              top-1.5：与顶栏 虾画/虾集 的间距对齐虾集子菜单的紧凑距离（用户指定）。
+          {/* 工作流/故事板 切换开关：左上角悬浮，压在故事板 overlay(z-30) 之上。
+              只留图标、不带文字（用户要求）——原来是两颗 88px 宽的文字胶囊悬在画布
+              正上方，把画面正中那一条压掉了；文案改由 hover 提示给出，读屏走
+              aria-label。提示用 shadcn Tooltip 而不是原生 title：原生要悬停约一秒才
+              出，样式也和产品其它悬浮说明不统一（同 AddNodeToChatButton 的取舍）。
 
-              居中基准是**「抽屉左边还剩多少」**，不是这块内容区、也不是整个视口：
-              顶栏的 虾画/虾集 会被 --freezone-dock-width 挤到剩余宽度里居中（见
-              dockOffset），这里用同一个式子算，两颗胶囊才始终对齐——工作流态抽屉
-              浮在画布上（<main> 不变窄）、故事板态被挤窄，两种情况都成立，因为
-              <main> 左边缘恒在 x=0，这里的 left 就是绝对横坐标。
-              过渡与让位同步：抽屉开合时 300ms 缓着走，拖宽时那个变量是 0ms，跟手。 */}
+              left-4：对齐故事板内容区的 px-4 左内边距，两个视图切来切去开关不跳位；
+              工作流态那侧素材抽屉的把手/卡片已下移让开这条顶部窄带（AssetLibraryPanel）。
+              选中态样式仍对齐头部「虾画/虾集」产品切换（project-header-navigation.tsx
+              的 ProjectHeaderNavigation）：手写胶囊 + 滑块，滑块宽度跟着按钮收成 44px。
+              容器底色沿用硬编码 #262626（与故事板背景同色），圆角按 10px 走圆角矩形。 */}
           {!showBlockingLoading && (
-            <div
-              className="absolute top-1.5 z-40 -translate-x-1/2"
-              style={{
-                left: `calc((100vw - var(${FREEZONE_DOCK_WIDTH_VAR}, 0px)) / 2)`,
-                transitionProperty: "left",
-                transitionTimingFunction: "cubic-bezier(0.22, 1, 0.36, 1)",
-                transitionDuration: `var(${FREEZONE_DOCK_TRANSITION_VAR}, 300ms)`,
-              }}
-            >
-              <nav aria-label="画布视图切换" className="relative flex h-8 items-center rounded-full bg-[#262626] shadow-lg">
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    "absolute left-0 top-1/2 h-7 w-[88px] -translate-y-1/2 rounded-full bg-foreground transition-transform duration-300 ease-[var(--ease-out-quint)]",
-                    viewMode === "board" && "translate-x-[88px]",
-                  )}
-                />
-                <button
-                  type="button"
-                  data-testid="freezone-view-workflow"
-                  onClick={() => handleViewModeChange("workflow")}
-                  className={cn(
-                    "relative z-10 inline-flex h-8 w-[88px] items-center justify-center gap-1.5 rounded-full text-xs font-semibold transition-colors",
-                    viewMode === "workflow" ? "text-background" : "text-muted-foreground hover:text-foreground",
-                  )}
-                  aria-pressed={viewMode === "workflow"}
+            <div className="absolute left-4 top-1.5 z-40">
+              <TooltipProvider delay={80}>
+                <nav
+                  aria-label="画布视图切换"
+                  className="relative flex h-8 items-center rounded-[10px] bg-[#262626] p-0.5 shadow-lg"
                 >
-                  <Workflow className="size-3.5" />
-                  工作流
-                </button>
-                <button
-                  type="button"
-                  data-testid="freezone-view-board"
-                  onClick={() => handleViewModeChange("board")}
-                  className={cn(
-                    "relative z-10 inline-flex h-8 w-[88px] items-center justify-center gap-1.5 rounded-full text-xs font-semibold transition-colors",
-                    viewMode === "board" ? "text-background" : "text-muted-foreground hover:text-foreground",
-                  )}
-                  aria-pressed={viewMode === "board"}
-                >
-                  <Clapperboard className="size-3.5" />
-                  故事板
-                </button>
-              </nav>
+                  <span
+                    aria-hidden="true"
+                    className={cn(
+                      "absolute left-0.5 top-1/2 h-7 w-11 -translate-y-1/2 rounded-[8px] bg-foreground transition-transform duration-300 ease-[var(--ease-out-quint)]",
+                      viewMode === "board" && "translate-x-11",
+                    )}
+                  />
+                  {FREEZONE_VIEW_MODE_TABS.map(({ mode, icon: Icon, label }) => (
+                    <Tooltip key={mode}>
+                      <TooltipTrigger
+                        render={
+                          <button
+                            type="button"
+                            data-testid={`freezone-view-${mode}`}
+                            onClick={() => handleViewModeChange(mode)}
+                            aria-label={label}
+                            aria-pressed={viewMode === mode}
+                            className={cn(
+                              // w-11：只有图标不代表要挤成 28px 方块——键位宽一点更好点、
+                              // 也更像一条分段控件（用户反馈「胶囊宽度要宽一点」）。
+                              "relative z-10 inline-flex h-7 w-11 items-center justify-center rounded-[8px] transition-colors",
+                              viewMode === mode
+                                ? "text-background"
+                                : "text-muted-foreground hover:text-foreground",
+                            )}
+                          />
+                        }
+                      >
+                        <Icon className="size-4" />
+                      </TooltipTrigger>
+                      {/* side=bottom：开关贴着内容区顶边，提示朝上会被顶栏盖住。 */}
+                      <TooltipContent side="bottom">{label}</TooltipContent>
+                    </Tooltip>
+                  ))}
+                </nav>
+              </TooltipProvider>
             </div>
           )}
         </main>
