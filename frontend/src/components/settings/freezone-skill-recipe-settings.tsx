@@ -11,7 +11,7 @@ import {
 } from "react";
 import { useTranslation } from "react-i18next";
 import { toast } from "sonner";
-import { ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
+import { ArrowUp, ChevronDown, ChevronRight, Copy, Download, Pencil, Plus, RefreshCw, Search, Trash2, Upload, X } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -149,6 +149,9 @@ export function FreezoneSkillRecipeSettings({
   const [communityCatalogOpen, setCommunityCatalogOpen] = useState(false);
   const [communityCatalogMode, setCommunityCatalogMode] = useState<"community" | "mine">("community");
   const [selectedIds, setSelectedIds] = useState<Set<string>>(() => new Set());
+  const [showBackToTop, setShowBackToTop] = useState(false);
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const scrollViewportRef = useRef<HTMLElement | null>(null);
   const importInputRef = useRef<HTMLInputElement | null>(null);
   const bundleImportInputRef = useRef<HTMLInputElement | null>(null);
   const catalogQuery = useFreezoneAgentConfigItems(kind);
@@ -193,6 +196,28 @@ export function FreezoneSkillRecipeSettings({
   useEffect(() => {
     setSelectedIds(new Set());
   }, [kind]);
+
+  useEffect(() => {
+    const viewport = sectionRef.current?.closest<HTMLElement>("[data-slot='scroll-area-viewport']") ?? null;
+    scrollViewportRef.current = viewport;
+    if (!viewport) return;
+
+    const updateBackToTop = () => {
+      setShowBackToTop(viewport.scrollTop > 180);
+    };
+    updateBackToTop();
+    viewport.addEventListener("scroll", updateBackToTop, { passive: true });
+    return () => {
+      viewport.removeEventListener("scroll", updateBackToTop);
+      if (scrollViewportRef.current === viewport) {
+        scrollViewportRef.current = null;
+      }
+    };
+  }, [kind]);
+
+  const scrollToCatalogTop = () => {
+    scrollViewportRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+  };
 
   const saveItem = async (payload: FreezoneAgentConfigPayload) => {
     const cleanPayload = stripCatalogMetadata(payload);
@@ -434,7 +459,7 @@ export function FreezoneSkillRecipeSettings({
 
   return (
     <>
-      <section className="px-5 py-5">
+      <section ref={sectionRef} className="px-5 py-5">
         <div className="flex items-start justify-between gap-4">
           <div>
             <h3 className="font-heading text-sm font-medium text-foreground">
@@ -576,11 +601,13 @@ export function FreezoneSkillRecipeSettings({
           onDeleteSelected={() => void deleteSelectedItems()}
           onExport={() => void exportSelectedSkillBundle()}
           onToggleAll={toggleAllSelected}
+          onBackToTop={scrollToCatalogTop}
           exportLabel={t(
             isSkills
               ? "settings.freezoneCatalog.exportBundle"
               : "settings.freezoneCatalog.export",
           )}
+          showBackToTop={showBackToTop}
         />
         <CatalogList
           kind={kind}
@@ -1075,7 +1102,7 @@ function NewSkillEditor({
         </DialogHeader>
 
         <div className="min-h-0 overflow-y-auto px-6 py-5">
-          <div className="grid gap-3 md:grid-cols-4">
+          <div className="grid gap-3 md:grid-cols-3">
             <EditorField
               required
               label={t("settings.freezoneCatalog.newSkill.id")}
@@ -1099,6 +1126,7 @@ function NewSkillEditor({
             />
             <EditorField
               required
+              className="md:col-span-3"
               label={t("settings.freezoneCatalog.newSkill.description")}
               placeholder={t("settings.freezoneCatalog.newSkill.descriptionPlaceholder")}
               value={skillDraft.description}
@@ -2756,24 +2784,35 @@ function CatalogSelectionBar({
   count,
   exportLabel,
   label,
+  onBackToTop,
   onDeleteSelected,
   onExport,
   onToggleAll,
   selectedCount,
+  showBackToTop,
 }: {
   allSelected: boolean;
   count: number;
   exportLabel: string;
   label: string;
+  onBackToTop: () => void;
   onDeleteSelected: () => void;
   onExport: () => void;
   onToggleAll: (checked: boolean) => void;
   selectedCount: number;
+  showBackToTop: boolean;
 }) {
   const { t } = useTranslation();
 
   return (
-    <div className="mt-3 flex h-9 items-center justify-between rounded-md border border-border/70 bg-white/[0.018] px-3">
+    <div
+      className={cn(
+        "sticky top-0 z-10 mt-3 flex h-9 items-center justify-between rounded-md border border-border/70 px-3 backdrop-blur transition-[background-color,box-shadow]",
+        showBackToTop
+          ? "bg-background/95 shadow-[0_8px_18px_rgba(0,0,0,0.18)]"
+          : "bg-white/[0.018]",
+      )}
+    >
       <label className="flex min-w-0 items-center gap-2 text-xs text-muted-foreground">
         <Checkbox
           checked={allSelected}
@@ -2786,6 +2825,18 @@ function CatalogSelectionBar({
         </span>
       </label>
       <div className="flex items-center gap-2">
+        {showBackToTop ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-7 px-2 text-xs text-muted-foreground hover:bg-white/[0.05] hover:text-foreground"
+            onClick={onBackToTop}
+          >
+            <ArrowUp className="size-3.5" />
+            {t("settings.freezoneCatalog.backToTop")}
+          </Button>
+        ) : null}
         {selectedCount > 0 ? (
           <Button
             type="button"

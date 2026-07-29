@@ -3941,6 +3941,7 @@
       },
       "new": "新增",
       "selectAll": "全选",
+      "backToTop": "顶部",
       "readOnly": "只读",
       "builtIn": "内置",
       "customized": "已定制",
