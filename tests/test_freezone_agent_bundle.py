@@ -228,7 +228,7 @@ def test_export_agent_bundle_uses_current_version_when_minimum_is_missing(
     isolated_catalog: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr(agent_bundle_store, "CURRENT_DRAMACLAW_VERSION", "1.1.2")
+    monkeypatch.setattr(agent_bundle_store, "current_dramaclaw_version", lambda: "1.1.2")
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="recipes",
