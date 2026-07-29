@@ -67,15 +67,19 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
       updateNodeData(nodeId, {
         audioKind: 'music',
         model: 'suno_music',
-        audioUrl: null,
-        durationMs: null,
-        generationError: '背景音乐节点已修正，请重新生成音乐',
-        workflowResultStale: true,
-        workflowInvalidatedAt: new Date().toISOString(),
-        workflowInvalidationReason: '音频类型由语音修正为背景音乐',
+        ...(data.audioUrl
+          ? {}
+          : {
+              audioUrl: null,
+              durationMs: null,
+              generationError: '背景音乐节点已修正，请重新生成音乐',
+              workflowResultStale: true,
+              workflowInvalidatedAt: new Date().toISOString(),
+              workflowInvalidationReason: '音频类型由语音修正为背景音乐',
+            }),
       });
     }
-  }, [data.audioKind, nodeId, resolvedAudioKind, updateNodeData]);
+  }, [data.audioKind, data.audioUrl, nodeId, resolvedAudioKind, updateNodeData]);
   useEffect(() => {
     if (
       isMusic

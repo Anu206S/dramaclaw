@@ -422,11 +422,14 @@ const FREEZONE_TOOL_DISPLAY: Record<string, { title: string; description: string
 };
 
 const AGENT_TOOL_TITLE_OVERRIDES: Record<string, string> = {
+  skill: "加载 Skill",
   list_workflows: "读取可用工作流",
   "list workflows": "读取可用工作流",
   freezone_get_workflow_skill: "加载 Workflow Skill",
   get_workflow_skill: "加载 Workflow Skill",
   "get workflow skill": "加载 Workflow Skill",
+  freezone_prepare_workflow_draft: "生成工作流草稿",
+  freezone_confirm_workflow_draft: "提交到画布",
   freezone_list_agent_catalog: "读取 Skill / Recipe 列表",
   freezone_get_saved_skill: "读取 Skill 配置",
   freezone_get_saved_recipe: "读取 Recipe 配置",
@@ -1927,6 +1930,10 @@ type ToolStatusRuntimePart = ChatMessagePart & {
 type RuntimeDisplayPart = ChatMessagePart & { repeatCount?: number };
 
 const PERSISTENT_SETTLED_TOOL_STATUS_NAMES = new Set<string>([
+  "skill",
+  "freezone_get_workflow_skill",
+  "freezone_prepare_workflow_draft",
+  "freezone_confirm_workflow_draft",
   "freezone_list_agent_catalog",
   "freezone_get_saved_skill",
   "freezone_get_saved_recipe",
@@ -1961,6 +1968,14 @@ function toolStatusRuntimeText(params: {
       raw?.toolName === "freezone_put_agent_catalog_draft_outline")
   ) {
     return "待重新整理 Skill 方案";
+  }
+  if (
+    status === "failed" &&
+    (raw?.name === "freezone_prepare_workflow_draft" ||
+      raw?.tool_name === "freezone_prepare_workflow_draft" ||
+      raw?.toolName === "freezone_prepare_workflow_draft")
+  ) {
+    return "待重新生成工作流草稿";
   }
   if (status === "running") return `正在${title}`;
   if (status === "failed") return `${title}失败`;
