@@ -1132,6 +1132,8 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
             "Do not repeat tool fields to the user. "
             "Do not call skill_view, skills_list, tool_search, or tool_describe. "
             "Do not handle slash commands or internal status names. "
+            "When submitting new Recipe chunks, use the neutral craft-level recipe_id from the outline. "
+            "Do not add Skill style, theme, brand, character, product, or one-off case terms to Recipe id/name/content. "
             "Do not call freezone_finish_agent_catalog_draft yet. "
             f"Next call MUST be freezone_put_agent_catalog_recipe with index=0 "
             f"and skill_studio_session_id={session_id}."
@@ -1212,6 +1214,8 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
                 "Do not repeat tool fields to the user. "
                 "Do not call skill_view, skills_list, tool_search, or tool_describe. "
                 "Do not handle slash commands or internal status names. "
+                "When submitting new Recipe chunks, use the neutral craft-level recipe_id from the outline. "
+                "Do not add Skill style, theme, brand, character, product, or one-off case terms to Recipe id/name/content. "
                 "Do not call freezone_finish_agent_catalog_draft yet. "
                 f"Next call MUST be freezone_put_agent_catalog_recipe with index={next_missing_index} "
                 f"and skill_studio_session_id={session_id}."
@@ -4236,15 +4240,26 @@ _SKILL_STUDIO_DRAFT_OUTLINE_STAGE_SCHEMA = {
     "properties": {
         "id": {
             "type": "string",
-            "description": "Stable planned stage id.",
+            "description": (
+                "Stable planned stage id. Use a neutral craft/stage id, such as character-portrait, "
+                "prop-anchor, storyboard-grid, or shot-video. Do not include the current Skill style, "
+                "theme, brand, character, product, or one-off case name."
+            ),
         },
         "name": {
             "type": "string",
-            "description": "Short stage name.",
+            "description": (
+                "Short user-readable stage name. Describe the operation or output shape only. "
+                "Do not include the current Skill style, theme, brand, character, product, or one-off case terms."
+            ),
         },
         "recipe_id": {
             "type": "string",
-            "description": "Planned Recipe id for this executable stage.",
+            "description": (
+                "Catalog Recipe id used by this stage. For reuse=existing, use the existing saved Recipe id exactly. "
+                "For reuse=new, propose a reusable craft-level Recipe id based on the operation and output shape, "
+                "not the current Skill style, theme, brand, character, product, or case."
+            ),
         },
         "output_kind": {
             "type": "string",
@@ -4254,18 +4269,26 @@ _SKILL_STUDIO_DRAFT_OUTLINE_STAGE_SCHEMA = {
         "reuse": {
             "type": "string",
             "enum": ["existing", "new"],
-            "description": "Whether this stage reuses a saved Recipe or needs a new Recipe.",
+            "description": (
+                "Whether this stage reuses a saved Recipe or needs a new Recipe. Use existing only when the "
+                "existing Recipe has the same executable craft: same input object, processing action, output shape, "
+                "downstream usage, and quality boundary. Use new only when those craft dimensions do not match."
+            ),
         },
         "reason": {
             "type": "string",
-            "description": "Short internal reason for the boundary and reuse decision.",
+            "description": (
+                "Short internal reason for the reuse decision. For reuse=existing, explain the craft match. "
+                "For reuse=new, summarize the craft mismatch. Do not write only 'same craft', 'same role/prop/video', "
+                "or 'similar Recipe'. Do not cite style/theme/brand/aesthetic difference as the reason."
+            ),
         },
         "new_recipe_craft_gap": {
             "type": "string",
             "description": (
-                "Required when reuse=new. Explain the executable craft gap missing from existing Recipes: "
-                "input structure, output structure, required items, quality checks, failure boundaries, "
-                "or execution-stage differences. Style/theme/brand/aesthetic difference alone is not a craft gap."
+                "Required when reuse=new. Explain the reusable executable craft gap missing from existing Recipes: "
+                "input object, processing action, output shape, downstream usage, quality checks, or failure boundary. "
+                "Do not include the current Skill's visual style, theme, brand, character name, product name, or one-off case details."
             ),
         },
     },

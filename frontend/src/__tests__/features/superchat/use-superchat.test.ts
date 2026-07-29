@@ -69,6 +69,7 @@ import {
   assistantRuntimeShouldHideSettledToolStatusForTest,
   agentThoughtRuntimePresentationForTest,
   genericToolTitleForTest,
+  toolStatusRuntimeTextForTest,
   messageIsWaitingForUserReplyForTest,
   messageHasSkillStudioUiEventForTest,
   messageHasAgentRuntimeActivityForTest,
@@ -79,6 +80,7 @@ import {
   shouldHideSkillStudioStatusOnlyMessageForTest,
   shouldShowComposerWaitingIndicator,
   skillStudioEvaluationDraftFieldsForTest,
+  skillStudioReferencedRecipesForTest,
   skillStudioEventsFromUiEventsForTest,
   visibleCanvasContextActivitiesForMessageForTest,
   visibleAssistantOrderedPartsForMessageForTest,
@@ -2676,13 +2678,16 @@ describe("Skill Studio draft response", () => {
       action: "cancel",
       skill_studio_status: "catalog_cancelled",
       cancelled: true,
+      draft: null,
       saved_to_catalog: false,
       saved_skill_ids: [],
       saved_recipe_ids: [],
     });
     expect(payload.message).toContain("用户已取消 Skill Studio 草稿保存");
     expect(payload.message).toContain("本次草稿不会写入虾画配置");
-    expect(payload.message).toContain("不要自动继续创建画布");
+    expect(payload.message).toContain("不要重新提交");
+    expect(payload.agent_instruction).toContain("Do not resubmit");
+    expect(payload.agent_instruction).toContain("Do not call any Skill Studio");
     expect(payload.message).not.toContain("继续回复");
   });
 
@@ -4359,6 +4364,23 @@ describe("tool status parts", () => {
     expect(genericToolTitleForTest((part as { event: ChatMessage }).event)).toBe("整理 Skill 方案");
   });
 
+  it("uses a lightweight retry label for failed Skill Studio outline status", () => {
+    const part = toolStatusPartForTest("agent.tool.updated", {
+      type: "agent.tool.updated",
+      turn_id: "turn-a",
+      call_id: "call-1",
+      name: "freezone_put_agent_catalog_draft_outline",
+      status: "failed",
+    }, "turn-a");
+    const toolMessage = (part as { event: ChatMessage }).event;
+
+    expect(toolStatusRuntimeTextForTest({
+      status: "failed",
+      title: genericToolTitleForTest(toolMessage),
+      toolMessage,
+    })).toBe("待重新整理 Skill 方案");
+  });
+
   it("hides non-failed tool status parts when replaying historical runtime activity", () => {
     const runningTool = {
       ...toolStatusPartForTest("agent.tool.updated", {
@@ -4412,6 +4434,47 @@ describe("tool status parts", () => {
       "tool_status:turn-a:call-running+tool_status:turn-a:call-completed",
       "tool_status:turn-a:call-failed",
       "thought-a",
+    ]);
+  });
+
+  it("keeps settled Skill Studio catalog tool status visible after the response completes", () => {
+    const regularCompletedTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-regular",
+        name: "read_file",
+        status: "completed",
+      }, "turn-a"),
+      seq: 1,
+    };
+    const catalogCompletedTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-catalog",
+        name: "freezone_list_agent_catalog",
+        status: "completed",
+      }, "turn-a"),
+      seq: 2,
+    };
+    const outlineCompletedTool = {
+      ...toolStatusPartForTest("agent.tool.updated", {
+        type: "agent.tool.updated",
+        turn_id: "turn-a",
+        call_id: "call-outline",
+        name: "freezone_put_agent_catalog_draft_outline",
+        status: "completed",
+      }, "turn-a"),
+      seq: 3,
+    };
+
+    expect(agentRuntimeDisplayPartsForTest(
+      [regularCompletedTool, catalogCompletedTool, outlineCompletedTool],
+      { streaming: false },
+    ).map((part) => part.id)).toEqual([
+      "tool_status:turn-a:call-catalog",
+      "tool_status:turn-a:call-outline",
     ]);
   });
 
@@ -4507,6 +4570,90 @@ describe("tool status parts", () => {
     expect(visibleAssistantOrderedPartsForMessageForTest(assistant).map((part) => part.id)).toEqual([
       "text-1",
       "skill-draft-1",
+    ]);
+  });
+
+  it("resolves reused Skill Studio recipes from allowed ids without duplicating draft recipes", () => {
+    const referenced = skillStudioReferencedRecipesForTest(
+      {
+        allowed_recipe_ids: [
+          "drama-character-turnaround",
+          "video-storyboard-grid",
+          "new-recipe",
+          "missing-recipe",
+        ],
+      },
+      [{ id: "new-recipe", name: "新建 Recipe" }],
+      [
+        {
+          id: "drama-character-turnaround",
+          name: "角色多角度立绘",
+          description: "角色设定与转面图",
+          output_kind: "image",
+          action_keys: ["character-turnaround"],
+          system_prompt: "生成角色多角度模板",
+          must_have_items: ["正面", "侧面"],
+          planning_prompt: "整理角色外观",
+          result_summary: "角色模板",
+          requires_source_media: true,
+          force_enhancement: true,
+          skip_detail_check: true,
+        },
+        {
+          id: "video-storyboard-grid",
+          name: "多宫格分镜图",
+          result_summary: "分镜草图",
+          output_kind: "image",
+        },
+      ],
+    );
+
+    expect(referenced).toEqual([
+      {
+        id: "drama-character-turnaround",
+        name: "角色多角度立绘",
+        outputKind: "image",
+        actionKeys: ["character-turnaround"],
+        systemPrompt: "生成角色多角度模板",
+        mustHaveItems: ["正面", "侧面"],
+        planningPrompt: "整理角色外观",
+        resultSummary: "角色模板",
+        requiresSourceMedia: true,
+        enabled: true,
+        forceEnhancement: true,
+        skipDetailCheck: true,
+        missing: false,
+      },
+      {
+        id: "video-storyboard-grid",
+        name: "多宫格分镜图",
+        outputKind: "image",
+        actionKeys: [],
+        systemPrompt: "",
+        mustHaveItems: [],
+        planningPrompt: "",
+        resultSummary: "分镜草图",
+        requiresSourceMedia: false,
+        enabled: true,
+        forceEnhancement: false,
+        skipDetailCheck: false,
+        missing: false,
+      },
+      {
+        id: "missing-recipe",
+        name: "",
+        outputKind: "",
+        actionKeys: [],
+        systemPrompt: "",
+        mustHaveItems: [],
+        planningPrompt: "",
+        resultSummary: "",
+        requiresSourceMedia: false,
+        enabled: true,
+        forceEnhancement: false,
+        skipDetailCheck: false,
+        missing: true,
+      },
     ]);
   });
 

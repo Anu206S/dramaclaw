@@ -194,6 +194,7 @@ class SkillStudioToolResultIn(BaseModel):
     saved_recipe_ids: list[str] = Field(default_factory=list)
     errors: list[str] = []
     message: str | None = None
+    agent_instruction: str | None = None
     client_debug: dict[str, Any] = Field(default_factory=dict)
 
 
@@ -669,9 +670,10 @@ def _resolve_skill_studio_tool_result_payload(
         elif cancelled:
             agent_instruction = (
                 "The user cancelled saving this Skill/Recipe draft. "
-                "Do not continue this Skill Studio flow; acknowledge the cancellation and stop. "
-                "Do not create canvas nodes, do not execute workflows, and do not continue to another stage "
-                "unless the user explicitly asks for a next step."
+                "This is not a revision request and not a resubmission request. "
+                "Do not resubmit, recreate, revise, display, or save this draft. "
+                "Do not call any Skill Studio creation, patch, finish, or save tools. "
+                "Acknowledge the cancellation and stop unless the user explicitly asks for a next step."
             )
             message = payload.message or "Frontend reported that the user cancelled saving the Skill/Recipe draft."
         elif revision_started:
@@ -683,6 +685,7 @@ def _resolve_skill_studio_tool_result_payload(
     else:
         agent_instruction = "Do not continue the Skill Studio flow; handle the frontend error or ask the user to retry."
         message = payload.message or "Frontend reported that the Skill Studio interaction failed."
+    agent_visible_draft = None if saved_to_catalog or cancelled else payload.draft
     result = {
         "ok": ok,
         "turn_id": payload.turn_id,
@@ -690,7 +693,7 @@ def _resolve_skill_studio_tool_result_payload(
         "skill_studio_status": payload.skill_studio_status,
         "action": payload.action,
         "selections": payload.selections,
-        "draft": payload.draft,
+        "draft": agent_visible_draft,
         "saved_to_catalog": saved_to_catalog,
         "saved_skill_ids": saved_skill_ids,
         "saved_recipe_ids": saved_recipe_ids,
