@@ -1403,6 +1403,7 @@ async def run_freezone_analyze_shots(
     import json
 
     from novelvideo.freezone.vision_gateway import (
+        FREEZONE_VIDEO_ANALYSIS_TIMEOUT_SECONDS,
         VisionInput,
         call_freezone_vision_model,
         image_media_type,
@@ -1439,6 +1440,7 @@ async def run_freezone_analyze_shots(
             if Path(path).exists()
         ],
         model_override=model,
+        timeout_seconds=FREEZONE_VIDEO_ANALYSIS_TIMEOUT_SECONDS,
     )
     used_provider = "newapi"
 
