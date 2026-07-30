@@ -2307,16 +2307,23 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
     @staticmethod
     def _extract_video_url(task: dict) -> str:
-        metadata = task.get("metadata") if isinstance(task, dict) else None
+        if not isinstance(task, dict):
+            return ""
+
+        result_url = task.get("result_url")
+        if isinstance(result_url, str) and result_url.strip():
+            return result_url.strip()
+
+        metadata = task.get("metadata")
         if isinstance(metadata, dict):
             for key in ("url", "video_url"):
                 value = metadata.get(key)
-                if isinstance(value, str) and value:
-                    return value
+                if isinstance(value, str) and value.strip():
+                    return value.strip()
         for key in ("url", "video_url"):
-            value = task.get(key) if isinstance(task, dict) else None
-            if isinstance(value, str) and value:
-                return value
+            value = task.get(key)
+            if isinstance(value, str) and value.strip():
+                return value.strip()
         return ""
 
     @staticmethod
@@ -2888,7 +2895,14 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                         duration_seconds=float(duration),
                     )
 
-                if status in {"failed", "error", "canceled", "cancelled", "expired"}:
+                if status in {
+                    "failure",
+                    "failed",
+                    "error",
+                    "canceled",
+                    "cancelled",
+                    "expired",
+                }:
                     error = (
                         task.get("error") or task.get("fail_reason") or "DramaClawAPI video task failed"
                     )
