@@ -118,7 +118,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 | 默认创建 `videoComposeNode` | 默认用 `videoNode`；`videoComposeNode` 只在明确要合成时创建 |
 | 把连线当执行顺序 | 连线只表示输入/参考/上下文关系 |
 | 没有视频片段时提前创建 `videoComposeNode` | 先创建 `videoNode` 生成视频片段，再考虑合成 |
-| 自造节点类型或字段名 | 只用前端支持的节点类型，字段用 `editable_fields` 中列出的 |
+| 自造节点类型或字段名 | 只用前端支持的节点类型，字段用 `freezone_get_node_detail` 返回的 `parameters` 中列出的 |
 | 用 `node_0` / `node_1` 连向刚创建的节点 | 给 `create_node` 写显式 `client_id`，后续引用该 `client_id` |
 | 用户要求操作画布时先说“好的 / 我会 / 已完成” | 第一输出必须是 Freezone 写入工具调用 |
 | 向用户叙述工具调用过程（"我将调用 xxx 获取 schema → 验证 → 创建"） | 工具调用过程只在内部完成；成功后只给产品层结果 |

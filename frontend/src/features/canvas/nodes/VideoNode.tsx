@@ -59,6 +59,11 @@ import {
   resolveCaptureSeekSec,
 } from "@/features/canvas/application/videoCaptureFrame";
 import { submitVideoClip } from "@/features/canvas/application/videoClipSubmit";
+import {
+  submitVideoUpscale,
+  VIDEO_UPSCALE_DENOISE_OPTIONS,
+  VIDEO_UPSCALE_RESOLUTIONS,
+} from "@/features/canvas/application/videoUpscale";
 import { replaceNodeVideo } from "@/features/canvas/application/videoReplaceUpload";
 import {
   computeDisplayedVideoRect,
@@ -121,7 +126,11 @@ import {
   hasCompletedHistoryRecords,
   historyRecordOutputUrl,
 } from "@/features/canvas/ui/NodeGenerationHistory";
-import type { FreezoneGenerationHistoryRecord } from "@/api/ops";
+import type {
+  FreezoneGenerationHistoryRecord,
+  FreezoneVideoUpscaleDenoise,
+  FreezoneVideoUpscaleResolution,
+} from "@/api/ops";
 import { readUrl } from "@/lib/url-params";
 import { CreditCostPill } from "@/components/credits/credit-visual";
 import {
@@ -803,6 +812,38 @@ export const VideoNode = memo(
       return subscribeNodeAction(({ nodeId, action, executionMode, requestId }) => {
         if (nodeId !== id || action !== "generate_video") return;
         publishNodeActionAccepted(requestId, id, action);
+        const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
+        const latestData = isVideoNode(latest) ? latest.data : data;
+        if (latestData.isUpscaleNode === true) {
+          const sourceUrl = typeof latestData.upscaleSourceUrl === "string" ? latestData.upscaleSourceUrl : "";
+          const resolution =
+            typeof latestData.upscaleResolution === "string" &&
+            VIDEO_UPSCALE_RESOLUTIONS.includes(latestData.upscaleResolution as FreezoneVideoUpscaleResolution)
+              ? (latestData.upscaleResolution as FreezoneVideoUpscaleResolution)
+              : "1080p";
+          const denoise =
+            typeof latestData.upscaleDenoise === "string" &&
+            VIDEO_UPSCALE_DENOISE_OPTIONS.includes(latestData.upscaleDenoise as FreezoneVideoUpscaleDenoise)
+              ? (latestData.upscaleDenoise as FreezoneVideoUpscaleDenoise)
+              : "1x";
+          if (!sourceUrl) {
+            publishNodeActionError(requestId, id, action, new Error("缺少高清视频源"));
+            return;
+          }
+          void submitVideoUpscale(id, { sourceUrl, resolution, denoise })
+            .then(() => {
+              const finished = useCanvasStore.getState().nodes.find((node) => node.id === id);
+              const finishedVideoUrl = isVideoNode(finished) && typeof finished.data.videoUrl === "string"
+                ? finished.data.videoUrl
+                : undefined;
+              publishNodeActionSuccess(requestId, id, action, {
+                ...(finishedVideoUrl ? { videoUrl: finishedVideoUrl } : {}),
+                ...(executionMode === "single" ? { submitted: true } : {}),
+              });
+            })
+            .catch((error) => publishNodeActionError(requestId, id, action, error));
+          return;
+        }
         void handleSubmit()
           .then((output) => {
             const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
@@ -817,7 +858,7 @@ export const VideoNode = memo(
           })
           .catch((error) => publishNodeActionError(requestId, id, action, error));
       });
-    }, [handleSubmit, id]);
+    }, [data, handleSubmit, id]);
 
     const hasMainlineContext = hasMainlineContexts(
       (data as { mainline_context?: unknown }).mainline_context,

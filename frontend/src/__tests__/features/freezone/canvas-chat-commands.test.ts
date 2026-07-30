@@ -3494,11 +3494,10 @@ describe("canvas chat commands", () => {
       envelopes,
     });
 
-    expect(response).toContain(
-      '"editable_fields":["visual_description","scene_ref","time_of_day"]',
-    );
+    expect(response).not.toContain('"editable_fields"');
+    expect(response).not.toContain('"editable_schema"');
     expect(response).toContain("sync_beat_context_to_mainline");
-    expect(response).toContain("出场身份和出场道具不开放给 agent 编辑");
+    expect(response).toContain("For node editable parameters");
 
     useCanvasStore.getState().setCanvasData([node], []);
     const result = applyCanvasChatCommands(
@@ -3815,10 +3814,14 @@ describe("canvas chat commands", () => {
           nodes?: Array<{
             action_catalog?: unknown;
             action_summary?: unknown;
+            parameters?: Record<string, unknown>;
             text_content?: unknown;
             text_preview?: unknown;
           }>;
           display_nodes?: unknown[];
+          actions?: Array<{ action?: string }>;
+          instruction?: string;
+          editable_schema?: unknown;
         };
       }>;
     };
@@ -3827,10 +3830,221 @@ describe("canvas chat commands", () => {
     );
     expect(nodeDetail?.data?.nodes).toHaveLength(1);
     expect(nodeDetail?.data?.nodes?.[0]?.action_summary).toBeTruthy();
+    expect(nodeDetail?.data?.nodes?.[0]?.parameters?.prompt).toMatchObject({
+      label: "提示词",
+      type: "string",
+      current_value: "A city at dusk",
+    });
     expect(nodeDetail?.data?.nodes?.[0]?.action_catalog).toBeUndefined();
     expect(nodeDetail?.data?.nodes?.[0]?.text_content).toBeUndefined();
     expect(nodeDetail?.data?.nodes?.[0]?.text_preview).toBe("A city at dusk");
+    expect(nodeDetail?.data?.instruction).toContain(
+      "Node parameters are not toolbar/action/tool parameters",
+    );
     expect(nodeDetail?.data).not.toHaveProperty("display_nodes");
+
+    const nodeActionCatalog = responsePayload.responses?.find(
+      (item) => item.type === "node_action_catalog",
+    );
+    expect(nodeActionCatalog?.data?.editable_schema).toBeUndefined();
+    expect(nodeActionCatalog?.data?.actions?.length).toBeGreaterThan(1);
+  });
+
+  it("returns only one requested action detail when node_action_catalog includes action", async () => {
+    const imageId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      {
+        displayName: "角色图",
+        imageUrl: "/static/project/character.png",
+        prompt: "A bright character portrait",
+      },
+    );
+    const envelopes = extractCanvasContextRequestEnvelopes([
+      {
+        schema_version: "canvas_context_request.v1",
+        requests: [
+          {
+            type: "node_action_catalog",
+            node_id: imageId,
+            action: "run_matting_tool",
+          },
+        ],
+      },
+    ]);
+
+    const response = await buildCanvasContextRequestResponse({
+      project: "project-a",
+      canvasId: "canvas-a",
+      nodes: useCanvasStore.getState().nodes,
+      edges: [],
+      ontologyContext: null,
+      selectedNodeIds: [],
+      envelopes,
+    });
+    const responsePayload = JSON.parse(response?.split("\n")[2] ?? "{}") as {
+      responses?: Array<{
+        type?: string;
+        data?: {
+          actions?: Array<{ action?: string }>;
+          editable_schema?: unknown;
+        };
+      }>;
+    };
+    const nodeActionCatalog = responsePayload.responses?.find(
+      (item) => item.type === "node_action_catalog",
+    );
+
+    expect(nodeActionCatalog?.data?.actions).toEqual([
+      expect.objectContaining({ action: "run_matting_tool" }),
+    ]);
+    expect(nodeActionCatalog?.data?.editable_schema).toBeUndefined();
+  });
+
+  it("returns requested video upscale action detail without source node parameters", async () => {
+    const videoId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 0, y: 0 },
+      {
+        displayName: "镜头视频",
+        videoUrl: "/static/project/shot.mp4",
+        quality: "720P",
+        durationSec: 5,
+      },
+    );
+    const envelopes = extractCanvasContextRequestEnvelopes([
+      {
+        schema_version: "canvas_context_request.v1",
+        requests: [
+          {
+            type: "node_action_catalog",
+            node_id: videoId,
+            action: "open_video_upscale_tool",
+          },
+        ],
+      },
+    ]);
+
+    const response = await buildCanvasContextRequestResponse({
+      project: "project-a",
+      canvasId: "canvas-a",
+      nodes: useCanvasStore.getState().nodes,
+      edges: [],
+      ontologyContext: null,
+      selectedNodeIds: [],
+      envelopes,
+    });
+    const responsePayload = JSON.parse(response?.split("\n")[2] ?? "{}") as {
+      responses?: Array<{
+        type?: string;
+        data?: {
+          actions?: Array<{
+            action?: string;
+            parameters?: Record<string, unknown>;
+            result_effect?: Record<string, unknown>;
+          }>;
+          instruction?: string;
+          editable_schema?: unknown;
+        };
+      }>;
+    };
+    const nodeActionCatalog = responsePayload.responses?.find(
+      (item) => item.type === "node_action_catalog",
+    );
+
+    expect(nodeActionCatalog?.data?.actions).toEqual([
+      expect.objectContaining({
+        action: "open_video_upscale_tool",
+        parameters: expect.objectContaining({
+          parameter_schema: expect.objectContaining({
+            resolution: expect.objectContaining({
+              options: ["1080p", "2k", "4k"],
+            }),
+            denoise: expect.objectContaining({
+              options: ["none", "1x", "2x"],
+            }),
+          }),
+        }),
+        result_effect: expect.objectContaining({
+          target: "downstream video upscale node",
+        }),
+      }),
+    ]);
+    expect(nodeActionCatalog?.data?.editable_schema).toBeUndefined();
+    expect(nodeActionCatalog?.data?.instruction).toContain(
+      "do not answer from the source node parameters",
+    );
+  });
+
+  it("returns video upscale node parameters instead of normal video generation parameters", async () => {
+    const sourceVideoId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 0, y: 0 },
+      {
+        displayName: "源视频",
+        videoUrl: "/static/project/source.mp4",
+      },
+    );
+    const upscaleId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        displayName: "高清（1080P）",
+        isUpscaleNode: true,
+        upscaleSourceUrl: "/static/project/source.mp4",
+        upscaleResolution: "1080p",
+        upscaleDenoise: "1x",
+        videoUrl: null,
+        quality: "720P",
+        durationSec: 5,
+      },
+    );
+    useCanvasStore.getState().addEdge(sourceVideoId, upscaleId);
+    const envelopes = extractCanvasContextRequestEnvelopes([
+      {
+        schema_version: "canvas_context_request.v1",
+        requests: [{ type: "node_detail", node_id: upscaleId }],
+      },
+    ]);
+
+    const response = await buildCanvasContextRequestResponse({
+      project: "project-a",
+      canvasId: "canvas-a",
+      nodes: useCanvasStore.getState().nodes,
+      edges: useCanvasStore.getState().edges,
+      ontologyContext: null,
+      selectedNodeIds: [],
+      envelopes,
+    });
+    const responsePayload = JSON.parse(response?.split("\n")[2] ?? "{}") as {
+      responses?: Array<{
+        type?: string;
+        data?: {
+          nodes?: Array<{
+            parameters?: Record<string, { current_value?: unknown; options?: unknown[] }>;
+          }>;
+        };
+      }>;
+    };
+    const nodeDetail = responsePayload.responses?.find(
+      (item) => item.type === "node_detail",
+    );
+    const parameters = nodeDetail?.data?.nodes?.[0]?.parameters ?? {};
+
+    expect(parameters.upscaleResolution).toMatchObject({
+      label: "分辨率",
+      current_value: "1080p",
+      options: ["1080p", "2k", "4k"],
+    });
+    expect(parameters.upscaleDenoise).toMatchObject({
+      label: "降噪",
+      current_value: "1x",
+      options: ["none", "1x", "2x"],
+    });
+    expect(parameters.model).toBeUndefined();
+    expect(parameters.quality).toBeUndefined();
+    expect(parameters.durationSec).toBeUndefined();
+    expect(parameters.generateAudio).toBeUndefined();
   });
 
   it("returns ordered reference media in node detail for generator prompts", async () => {
@@ -4151,6 +4365,10 @@ describe("canvas chat commands", () => {
               downstream_spawn_types?: unknown[];
               actions?: Array<{ action?: string }>;
             };
+            parameters?: Record<
+              string,
+              { current_value?: unknown } & Record<string, unknown>
+            >;
             text_content?: unknown;
             text_preview?: string;
           }>;
@@ -4181,6 +4399,9 @@ describe("canvas chat commands", () => {
     );
     expect(detailNodes.some((node) => Boolean(node.text_content))).toBe(false);
     expect(imageDetail?.text_preview).toContain("系统生成提示词");
+    expect(imageDetail?.parameters?.prompt?.current_value).toBe(
+      imageDetail?.text_preview,
+    );
     expect(response).not.toContain(longPrompt);
     expect(nodeDetail?.data).not.toHaveProperty("display_nodes");
   });
