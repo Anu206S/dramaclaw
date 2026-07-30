@@ -1069,7 +1069,6 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "video-audio-layer",
     ]
     assert skills["lego-minifigure-animation-video"]["allowed_recipe_ids"] == [
-        "workflow-input-analysis",
         "short-film-script-outline",
         "storyboard-plan",
         "visual-key-elements",
@@ -1252,7 +1251,8 @@ def test_lego_skill_keeps_style_while_recipes_are_shared_workflow_stages(monkeyp
     assert "LEGO Minifigure animation" in planning["prompt_guide"]
     assert "ABS 塑料材质" in planning["prompt_guide"]
     assert "LEGO building logic" in planning["prompt_guide"]
-    assert "输入分析" in planning["planning_notes"]
+    assert "开始前" in planning["planning_notes"]
+    assert "已确认信息" in planning["planning_notes"]
     assert "剧本大纲" in planning["planning_notes"]
     assert "三层分镜" in planning["planning_notes"]
     assert "视觉关键元素" in planning["planning_notes"]
@@ -1272,7 +1272,6 @@ def test_lego_skill_keeps_style_while_recipes_are_shared_workflow_stages(monkeyp
     recipe_text = "\n".join(
         item
         for recipe_id in [
-            "workflow-input-analysis",
             "short-film-script-outline",
             "storyboard-plan",
             "visual-key-elements",
