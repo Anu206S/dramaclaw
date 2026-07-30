@@ -3138,6 +3138,14 @@ function canvasCommandFeedbackIsInvalidCommand(feedback: CanvasCommandFeedback):
   return (feedback.commandResults ?? []).some((step) => step.label === "画布命令无效");
 }
 
+function canvasCommandFeedbackIsUserCancelled(feedback: CanvasCommandFeedback): boolean {
+  return feedback.cancelled === true && feedback.cancelReason !== "timeout";
+}
+
+function canvasCommandFeedbackIsTimeoutCancelled(feedback: CanvasCommandFeedback): boolean {
+  return feedback.cancelled === true && feedback.cancelReason === "timeout";
+}
+
 type CanvasFeedbackVisualTone = "muted" | "warning" | "destructive" | "success";
 
 const EMPTY_AGENT_REPLY_TEXT = "这轮操作没有收到虾导的有效回复，请稍后重试。";
@@ -3154,6 +3162,8 @@ export const canvasContextActivityVisualToneForTest = canvasContextActivityVisua
 function canvasCommandFeedbackVisualTone(feedback: CanvasCommandFeedback): CanvasFeedbackVisualTone {
   const failed = canvasCommandFeedbackHasFailure(feedback);
   if (!failed) return "success";
+  if (canvasCommandFeedbackIsUserCancelled(feedback)) return "muted";
+  if (canvasCommandFeedbackIsTimeoutCancelled(feedback)) return "warning";
   return canvasCommandFeedbackIsValidationOnly(feedback) ? "muted" : "destructive";
 }
 
@@ -3162,7 +3172,8 @@ export const canvasCommandFeedbackVisualToneForTest = canvasCommandFeedbackVisua
 function canvasCommandFeedbackCompactTitle(feedback: CanvasCommandFeedback): string {
   const firstFailedStep = (feedback.commandResults ?? []).find((step) => step.status !== "success");
   const firstPlan = feedback.plans?.[0];
-  if (firstFailedStep?.label === "已取消") return "画布操作已取消";
+  if (canvasCommandFeedbackIsTimeoutCancelled(feedback)) return "画布操作已过期";
+  if (firstFailedStep?.label === "已取消" || canvasCommandFeedbackIsUserCancelled(feedback)) return "画布操作已取消";
   if (firstPlan?.type === "run_node_action" && firstPlan.label.includes("生成图片")) return "生成图片失败";
   if (firstPlan?.type === "run_node_action" && firstPlan.label.includes("生成视频")) return "生成视频失败";
   if (firstFailedStep?.label) return firstFailedStep.label;
@@ -3210,6 +3221,7 @@ function CanvasCommandFeedbackCard({
   const invalidCommand = canvasCommandFeedbackIsInvalidCommand(feedback);
   const visualTone = canvasCommandFeedbackVisualTone(feedback);
   const mutedFailure = failed && visualTone === "muted";
+  const warningFailure = failed && visualTone === "warning";
   const initiallyCompact = failed && successfulCount === 0;
   const collapseSuccessfulDetails = !failed && steps.length > 2;
   const compactTitle = canvasCommandFeedbackCompactTitle(feedback);
@@ -3234,7 +3246,7 @@ function CanvasCommandFeedbackCard({
             ? "text-emerald-300/90 hover:text-emerald-200"
             : mutedFailure
               ? "text-muted-foreground hover:text-foreground/80"
-              : invalidCommand
+              : invalidCommand || warningFailure
                 ? "text-amber-300/90 hover:text-amber-200"
                 : "text-destructive/90 hover:text-destructive",
         )}
@@ -3251,7 +3263,7 @@ function CanvasCommandFeedbackCard({
         "mt-3 w-full min-w-0 overflow-hidden rounded-xl border text-xs text-muted-foreground",
         mutedFailure
           ? "border-white/[0.10] bg-background/80 backdrop-blur-sm"
-          : invalidCommand
+          : invalidCommand || warningFailure
             ? "border-amber-400/20 bg-amber-400/[0.035]"
             : failed
               ? "border-destructive/20 bg-destructive/[0.035]"
@@ -3275,7 +3287,7 @@ function CanvasCommandFeedbackCard({
             "mb-1 rounded-md px-2 py-1.5 leading-5",
             mutedFailure
               ? "bg-white/[0.035] text-muted-foreground"
-              : invalidCommand
+              : invalidCommand || warningFailure
                 ? "bg-amber-400/[0.06] text-amber-100/90"
                 : "bg-destructive/[0.06] text-destructive",
           )}>
@@ -3286,15 +3298,15 @@ function CanvasCommandFeedbackCard({
           const ok = step.status === "success";
           return (
             <div key={`${step.commandIndex}-${step.type}-${step.nodeId ?? ""}-${step.action ?? ""}-${index}`} className="flex items-start gap-2 leading-5">
-              {ok ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-400" /> : <AlertCircle className={cn("mt-0.5 size-3.5 shrink-0", mutedFailure ? "text-muted-foreground" : invalidCommand ? "text-amber-300" : "text-destructive")} />}
+              {ok ? <CheckCircle2 className="mt-0.5 size-3.5 shrink-0 text-emerald-400" /> : <AlertCircle className={cn("mt-0.5 size-3.5 shrink-0", mutedFailure ? "text-muted-foreground" : invalidCommand || warningFailure ? "text-amber-300" : "text-destructive")} />}
               <div className="min-w-0 flex-1">
-                <div className={cn("font-medium", ok ? "text-foreground/90" : mutedFailure ? "text-muted-foreground" : invalidCommand ? "text-amber-300" : "text-destructive")}>{step.label}</div>
+                <div className={cn("font-medium", ok ? "text-foreground/90" : mutedFailure ? "text-muted-foreground" : invalidCommand || warningFailure ? "text-amber-300" : "text-destructive")}>{step.label}</div>
                 {(step.createdNodeId || step.nodeId || step.action || step.error) && (
                   <div className="mt-0.5 space-y-0.5 break-words text-[11px] text-muted-foreground">
                     {step.createdNodeId && <div>新节点：{step.createdNodeId}</div>}
                     {!step.createdNodeId && step.nodeId && <div>节点：{step.nodeId}</div>}
                     {step.action && <div>动作：{step.action}</div>}
-                    {step.error && ok && <div className={invalidCommand ? "text-amber-200/80" : "text-destructive"}>{step.error}</div>}
+                    {step.error && ok && <div className={invalidCommand || warningFailure ? "text-amber-200/80" : "text-destructive"}>{step.error}</div>}
                   </div>
                 )}
               </div>
@@ -3308,7 +3320,7 @@ function CanvasCommandFeedbackCard({
           </div>
         )}
         {feedback.errors.length > 0 && steps.length === 0 && !userFailureMessage && (
-          <div className={cn("break-words", invalidCommand ? "text-amber-200/80" : "text-destructive")}>{feedback.errors.join("; ")}</div>
+          <div className={cn("break-words", invalidCommand || warningFailure ? "text-amber-200/80" : "text-destructive")}>{feedback.errors.join("; ")}</div>
         )}
       </div>
       {canRetry && onRetry ? (
@@ -9954,7 +9966,10 @@ function canvasCommandSurfaceEventAnchorEndIndex(text: string, event: CanvasComm
   if (
     event.kind === "feedback" &&
     event.anchorTextPrefix == null &&
-    event.feedback.applied + event.feedback.openedUiActions > 0
+    (
+      event.feedback.applied + event.feedback.openedUiActions > 0 ||
+      event.feedback.cancelled === true
+    )
   ) {
     return 0;
   }
