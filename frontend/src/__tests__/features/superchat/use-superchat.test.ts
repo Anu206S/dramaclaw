@@ -1314,6 +1314,84 @@ describe("upsertServerAssistantMessage", () => {
     expect(assistant?.uiEvents).toEqual([uiEvent]);
   });
 
+  it("keeps transient cancelled canvas feedback before final assistant text", () => {
+    const current: ChatMessage[] = [
+      {
+        id: "assistant-turn-canvas-timeout",
+        role: "assistant",
+        text: "",
+        timestamp: 20,
+        turnId: "turn-canvas-timeout",
+        parts: [
+          {
+            id: "canvas_feedback:bridge-timeout",
+            type: "canvas_feedback",
+            seq: 1,
+            event: {
+              key: "bridge-timeout",
+              applied: 0,
+              openedUiActions: 0,
+              errors: ["画布操作等待超时，已自动取消"],
+              commandResults: [
+                {
+                  commandIndex: -1,
+                  type: "validate",
+                  status: "error",
+                  label: "已取消",
+                  error: "画布操作等待超时，已自动取消",
+                },
+              ],
+              cancelled: true,
+              cancelReason: "timeout",
+            },
+          },
+        ],
+        uiEvents: [
+          {
+            type: "canvas_command_result",
+            bridge_key: "bridge-timeout",
+            result: {
+              applied: 0,
+              openedUiActions: 0,
+              errors: ["画布操作等待超时，已自动取消"],
+              commandResults: [
+                {
+                  commandIndex: -1,
+                  type: "validate",
+                  status: "error",
+                  label: "已取消",
+                  error: "画布操作等待超时，已自动取消",
+                },
+              ],
+            },
+            cancelled: true,
+            cancel_reason: "timeout",
+            received_at: 1,
+          },
+        ],
+      },
+    ];
+
+    const merged = upsertServerAssistantMessageForTest(
+      current,
+      {
+        id: 9,
+        role: "assistant",
+        content: "生成请求提交超时，可能是画布连接暂时中断。请在画布上直接点击该节点的生成按钮重试。",
+        turn_id: "turn-canvas-timeout",
+        created_at: "2026-07-30T07:00:00+00:00",
+      },
+      "turn-canvas-timeout",
+    );
+
+    const assistant = merged.find((item) => item.role === "assistant");
+    expect(assistant?.parts?.map((part) => part.type)).toEqual(["canvas_feedback", "text"]);
+    expect(visibleAssistantOrderedPartsForMessageForTest(assistant as ChatMessage).map((part) => part.type)).toEqual([
+      "canvas_feedback",
+      "text",
+    ]);
+  });
+
   it("merges same draft ui event when the final assistant message arrives", () => {
     const current: ChatMessage[] = [
       message("user-turn-1", "user", "创建 Skill", 10, "turn-1"),

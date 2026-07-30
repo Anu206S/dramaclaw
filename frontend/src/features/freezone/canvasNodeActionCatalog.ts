@@ -14,6 +14,11 @@ import {
 import { getFreezoneImageModelsSnapshot } from "@/features/canvas/hooks/useFreezoneImageModels";
 import { getFreezoneVideoModelsSnapshot } from "@/features/canvas/hooks/useFreezoneVideoModels";
 import type { ModelOption } from "@/features/canvas/ui/ProviderModelPicker";
+import {
+  VIDEO_UPSCALE_DENOISE_OPTIONS,
+  VIDEO_UPSCALE_RESOLUTIONS,
+  VIDEO_UPSCALE_RESOLUTION_LABEL,
+} from "@/features/canvas/application/videoUpscale";
 import { BEAT_CONTEXT_AGENT_EDITABLE_FIELDS } from "@/features/freezone/canvasCommandNodeData";
 import { isCommitCandidateData } from "@/features/freezone/commit/commitEligibility";
 import { resolveInputsForSkill } from "@/features/freezone/context/skillNodeInputs";
@@ -32,6 +37,7 @@ export type CanvasNodeActionCatalogEntry = {
   blocked_reasons?: string[];
   instruction?: string;
   parameters?: Record<string, unknown>;
+  result_effect?: Record<string, unknown>;
 };
 
 export type CanvasEditableFieldSchema = {
@@ -185,6 +191,61 @@ const OUTPAINT_PARAMETER_SCHEMA = {
     return imageModelParameterSchema();
   },
 };
+
+const VIDEO_UPSCALE_PARAMETER_SCHEMA = {
+  resolution: {
+    type: "enum",
+    label: "分辨率",
+    options: VIDEO_UPSCALE_RESOLUTIONS,
+    option_labels: {
+      "1080p": "1080P",
+      "2k": "2K",
+      "4k": "4K",
+    },
+    description: "默认 1080p。",
+  },
+  denoise: {
+    type: "enum",
+    label: "降噪",
+    options: VIDEO_UPSCALE_DENOISE_OPTIONS,
+    option_labels: {
+      none: "不降噪",
+      "1x": "1x",
+      "2x": "2x",
+    },
+    description: "默认 1x。",
+  },
+};
+
+function videoUpscaleEditableSchema(node: CanvasNode): Record<string, CanvasEditableFieldSchema> {
+  const data = node.data as {
+    upscaleResolution?: unknown;
+    upscaleDenoise?: unknown;
+  };
+  return {
+    displayName: { type: "string", label: "显示名称" },
+    upscaleResolution: {
+      type: "enum",
+      label: "分辨率",
+      options: VIDEO_UPSCALE_RESOLUTIONS,
+      option_labels: VIDEO_UPSCALE_RESOLUTION_LABEL,
+      current_value: typeof data.upscaleResolution === "string" ? data.upscaleResolution : "1080p",
+      description: "视频高清处理面板里的目标分辨率；修改高清分辨率时更新 upscaleResolution。",
+    },
+    upscaleDenoise: {
+      type: "enum",
+      label: "降噪",
+      options: VIDEO_UPSCALE_DENOISE_OPTIONS,
+      option_labels: {
+        none: "不降噪",
+        "1x": "1x",
+        "2x": "2x",
+      },
+      current_value: typeof data.upscaleDenoise === "string" ? data.upscaleDenoise : "1x",
+      description: "视频高清处理面板里的降噪强度；修改降噪时更新 upscaleDenoise。",
+    },
+  };
+}
 
 function uploadPickerAcceptForNode(node: CanvasNode): string {
   const data = recordOrNull(node.data) ?? {};
@@ -718,6 +779,9 @@ function editableSchemaForNode(node: CanvasNode): Record<string, CanvasEditableF
         count: { type: "enum", label: "生成数量", options: [...IMAGE_COUNT_OPTIONS] },
       };
     case CANVAS_NODE_TYPES.video:
+      if ((node.data as { isUpscaleNode?: unknown }).isUpscaleNode === true) {
+        return videoUpscaleEditableSchema(node);
+      }
       return {
         displayName: { type: "string", label: "显示名称" },
         prompt: { type: "string", label: "提示词", description: GENERATOR_PROMPT_DESCRIPTION },
@@ -1373,8 +1437,17 @@ function addMediaActions(node: CanvasNode, actions: CanvasNodeActionCatalogEntry
       action: "open_video_upscale_tool",
       execution: "manual_ui",
       command_type: "run_node_action",
-      description: "Create and select a downstream video upscale node, matching the toolbar HD action.",
-      parameters: { node_id: node.id },
+      description:
+        "Open the toolbar HD/upscale flow for this video. This creates or selects a downstream video upscale node/panel; it does not use this source video node's editable parameters as upscale settings.",
+      parameters: {
+        node_id: node.id,
+        parameter_schema: VIDEO_UPSCALE_PARAMETER_SCHEMA,
+      },
+      result_effect: {
+        target: "downstream video upscale node",
+        next_step:
+          "After opening, inspect the selected/new upscale node with freezone_get_node_detail if editable HD settings are needed.",
+      },
     });
     actions.push({
       action: "run_video_analyze_story",
