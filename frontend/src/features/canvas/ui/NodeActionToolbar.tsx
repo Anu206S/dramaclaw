@@ -110,7 +110,16 @@ import { useCanvasProjectionStatus } from "@/features/freezone/projectionStatusS
 import { preloadMatteWorker } from "@/features/canvas/application/matteClient";
 import { matteImage } from "@/features/canvas/application/matteImage";
 import { downloadAudioAs } from "@/features/canvas/application/audioDownload";
-import { createVideoUpscaleResultNode } from "@/features/canvas/application/videoUpscale";
+import {
+  createVideoUpscaleResultNode,
+  VIDEO_UPSCALE_DENOISE_OPTIONS,
+  VIDEO_UPSCALE_RESOLUTIONS,
+  VIDEO_UPSCALE_RESOLUTION_LABEL,
+} from "@/features/canvas/application/videoUpscale";
+import type {
+  FreezoneVideoUpscaleDenoise,
+  FreezoneVideoUpscaleResolution,
+} from "@/api/ops";
 import { getNodeToolPlugins } from "@/features/canvas/tools";
 import type { ToolIconKey } from "@/features/canvas/tools";
 import { UiChipButton, UiPanel } from "@/components/ui";
@@ -903,13 +912,28 @@ export const NodeActionToolbar = memo(
       updateNodeData,
     ]);
 
-    const handleOpenVideoUpscale = useCallback(() => {
+    const resolveVideoUpscaleParams = useCallback((parameters?: Record<string, unknown>) => {
+      const resolution =
+        typeof parameters?.resolution === "string" &&
+        VIDEO_UPSCALE_RESOLUTIONS.includes(parameters.resolution as FreezoneVideoUpscaleResolution)
+          ? (parameters.resolution as FreezoneVideoUpscaleResolution)
+          : "1080p";
+      const denoise =
+        typeof parameters?.denoise === "string" &&
+        VIDEO_UPSCALE_DENOISE_OPTIONS.includes(parameters.denoise as FreezoneVideoUpscaleDenoise)
+          ? (parameters.denoise as FreezoneVideoUpscaleDenoise)
+          : "1x";
+      return { resolution, denoise };
+    }, []);
+
+    const handleOpenVideoUpscale = useCallback((parameters?: Record<string, unknown>) => {
       const url = requireVideoUrl();
+      const { resolution, denoise } = resolveVideoUpscaleParams(parameters);
       const upscaleNodeId = createVideoUpscaleResultNode(node.id, {
         sourceUrl: url,
-        displayName: `${t("node.videoUpscale.nodeTitle")}（1080P）`,
-        resolution: "1080p",
-        denoise: "1x",
+        displayName: `${t("node.videoUpscale.nodeTitle")}（${VIDEO_UPSCALE_RESOLUTION_LABEL[resolution]}）`,
+        resolution,
+        denoise,
       });
       if (!upscaleNodeId) {
         throw new Error("无法创建视频高清节点");
@@ -920,7 +944,15 @@ export const NodeActionToolbar = memo(
       ]);
       setSelectedNode(upscaleNodeId);
       requestFocusNode(upscaleNodeId);
-    }, [node.id, onNodesChange, requestFocusNode, requireVideoUrl, setSelectedNode, t]);
+    }, [
+      node.id,
+      onNodesChange,
+      requestFocusNode,
+      requireVideoUrl,
+      resolveVideoUpscaleParams,
+      setSelectedNode,
+      t,
+    ]);
 
     const handleAnalyzeVideo = useCallback(() => {
       const url = requireVideoUrl();
@@ -1097,7 +1129,7 @@ export const NodeActionToolbar = memo(
     }, [closeDownloadMenu, imageSource, node.id, t]);
 
     useEffect(() => {
-      return subscribeNodeAction(({ nodeId, action, requestId }) => {
+      return subscribeNodeAction(({ nodeId, action, requestId, parameters }) => {
         if (nodeId !== node.id) return;
         if (action === "run_matting_tool") {
           publishNodeActionAccepted(requestId, node.id, action);
@@ -1150,7 +1182,7 @@ export const NodeActionToolbar = memo(
         if (action === "open_video_upscale_tool") {
           try {
             publishNodeActionAccepted(requestId, node.id, action);
-            handleOpenVideoUpscale();
+            handleOpenVideoUpscale(parameters);
             publishNodeActionSuccess(requestId, node.id, action, { openedUiAction: true });
           } catch (error) {
             publishNodeActionError(requestId, node.id, action, error);

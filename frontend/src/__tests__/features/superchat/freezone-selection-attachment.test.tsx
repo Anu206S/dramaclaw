@@ -1637,7 +1637,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     );
 
     expect(screen.queryByText("这轮操作没有收到虾导的有效回复，请稍后重试。")).not.toBeInTheDocument();
-    fireEvent.click(await screen.findByText("画布操作已取消"));
+    fireEvent.click(await screen.findByText("画布操作已过期"));
     fireEvent.click(screen.getByRole("button", { name: "重新执行" }));
 
     await waitFor(() => {
@@ -1920,7 +1920,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
 
     expect(screen.getByText("视频生成请求超时了，前端尚未返回结果。")).toBeInTheDocument();
     expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument();
-    expect(screen.getByText("画布操作已取消")).toBeInTheDocument();
+    expect(screen.getByText("画布操作已过期")).toBeInTheDocument();
   });
 
   it("renders Freezone tool calls as activity cards", async () => {
