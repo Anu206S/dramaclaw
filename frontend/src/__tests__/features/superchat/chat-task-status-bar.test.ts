@@ -5,6 +5,7 @@ import { describe, expect, it } from "vitest";
 import {
   applyOptimisticWorkflowRunUpdate,
   mergeWorkflowRunUpdate,
+  resolveWorkflowRunDisplayCompletion,
   selectChatTaskItems,
   selectChatWorkflowRun,
   selectWorkflowActivityLabels,
@@ -187,6 +188,41 @@ describe("selectChatWorkflowRun", () => {
     });
 
     expect(selectChatWorkflowRun([interrupted], NOW)?.run_id).toBe("run-1");
+  });
+});
+
+describe("resolveWorkflowRunDisplayCompletion", () => {
+  it("presents a running workflow as complete when its last verified result is ready", () => {
+    const run = workflowRun({
+      actions: [
+        { node_id: "done", action: "generate_video", status: "completed" },
+        { node_id: "compose", action: "auto_compose_video", status: "running" },
+      ],
+    });
+
+    const resolved = resolveWorkflowRunDisplayCompletion(
+      run,
+      (nodeId) => nodeId === "compose",
+      "2026-07-27T08:00:00.000Z",
+    );
+
+    expect(resolved?.status).toBe("completed");
+    expect(resolved?.actions.map((action) => action.status)).toEqual([
+      "completed",
+      "completed",
+    ]);
+  });
+
+  it("keeps running when the visible result is not verified for this workflow", () => {
+    const run = workflowRun({
+      actions: [{
+        node_id: "compose",
+        action: "auto_compose_video",
+        status: "running",
+      }],
+    });
+
+    expect(resolveWorkflowRunDisplayCompletion(run, () => false)).toBe(run);
   });
 });
 

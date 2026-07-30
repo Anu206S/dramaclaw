@@ -47,6 +47,7 @@ import {
 import {
   audioReferenceDurationRejection,
   formatAudioDurationClips,
+  isCompositionTimelineAudioData,
   isHappyHorseVideoModel,
   isSeedance2VideoModel,
   isVideoModeSupportedByModel,
@@ -57,6 +58,7 @@ import {
   videoSubmitMediaRejectionReason,
   videoUpstreamImageDefaultMode,
 } from "@/features/canvas/nodes/shared/videoModelCapabilities";
+import { normalizeCanvasEdgeSemanticKind } from "@/features/freezone/canvasEdgeSemantics";
 import type { VideoGenerationFormProps } from "@/features/canvas/nodes/shared/VideoGenerationForm";
 import { setAlbumPendingTotal } from "@/features/canvas/nodes/shared/albumPendingTotals";
 import { useReferenceMentionSync } from "@/features/canvas/nodes/useReferenceMentionSync";
@@ -182,22 +184,7 @@ function probeAudioDurationMs(url: string): Promise<number | null> {
 }
 
 function isCompositionTimelineAudioNode(node: CanvasNode): boolean {
-  if (!isAudioNode(node)) return false;
-  const catalog = (
-    node.data as { workflowCatalog?: unknown }
-  ).workflowCatalog;
-  if (!catalog || typeof catalog !== "object") return false;
-  const role = String(
-    (catalog as { timelineRole?: unknown }).timelineRole ?? "",
-  ).trim().toLowerCase();
-  return [
-    "voiceover",
-    "narration",
-    "shot_voice",
-    "music",
-    "bgm",
-    "background_music",
-  ].includes(role);
+  return isAudioNode(node) && isCompositionTimelineAudioData(node.data);
 }
 
 function isSeedance2ValueModel(modelId: string | null | undefined): boolean {
@@ -1099,8 +1086,15 @@ export function useVideoGenerationForm(
       // 但后连线的节点会排到 references 前面，@图片N 在后端就指向错位的图。
       const collectUpstream = () => {
         const state = useCanvasStore.getState();
+        const inputEdges = state.edges.filter((edge) => {
+          const edgeData =
+            edge.data && typeof edge.data === "object"
+              ? edge.data as Record<string, unknown>
+              : null;
+          return normalizeCanvasEdgeSemanticKind(edgeData?.link_type) !== "dependency_for";
+        });
         return sortUpstreamByReferenceOrder(
-          upstreamNodesInEdgeOrder(state.nodes, state.edges, id)
+          upstreamNodesInEdgeOrder(state.nodes, inputEdges, id)
             .filter((node) => !isCompositionTimelineAudioNode(node)),
           data.referenceOrder,
         );

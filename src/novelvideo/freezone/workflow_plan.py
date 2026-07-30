@@ -22,6 +22,7 @@ ALLOWED_NODE_TYPES = {
 ALLOWED_LINK_TYPES = {
     "context_for",
     "prompt_for",
+    "dependency_for",
     "media_input_for",
     "derived_from",
     "composition_input_for",
@@ -42,6 +43,10 @@ _LINK_RULES = {
     "prompt_for": (
         {"TextNode", "ScriptNode"},
         {"ImageNode", "VideoNode", "AudioNode", "ScriptNode"},
+    ),
+    "dependency_for": (
+        {"TextNode", "ScriptNode", "ImageNode", "VideoNode", "AudioNode"},
+        {"TextNode", "ScriptNode", "ImageNode", "VideoNode", "AudioNode"},
     ),
     "media_input_for": (
         {"ImageNode", "VideoNode", "AudioNode"},

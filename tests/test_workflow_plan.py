@@ -818,6 +818,116 @@ def test_compiler_keeps_timeline_audio_out_of_video_references(monkeypatch):
     }
 
 
+def test_compiler_uses_execution_only_edge_between_generated_video_steps(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "制作两个连续教程镜头",
+            "items": [
+                {
+                    "id": "clip_1",
+                    "title": "镜头一",
+                    "prompt": "展示操作入口",
+                    "recipe_id": "general-video",
+                    "timeline_role": "visual",
+                },
+                {
+                    "id": "clip_2",
+                    "title": "镜头二",
+                    "prompt": "展示操作结果",
+                    "recipe_id": "general-video",
+                    "depends_on": ["clip_1"],
+                    "timeline_role": "visual",
+                },
+            ],
+        }
+    )
+
+    assert compiled["ok"] is True
+    assert {
+        (edge["source"], edge["target"], edge["link_type"])
+        for edge in compiled["plan"]["edges"]
+    } >= {
+        ("clip_1", "clip_2", "dependency_for"),
+        ("clip_1", "final_compose", "composition_input_for"),
+        ("clip_2", "final_compose", "composition_input_for"),
+    }
+
+
+def test_compiler_keeps_explicit_video_reference_as_media_input(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "参考动作视频生成新镜头",
+            "items": [
+                {
+                    "id": "motion_reference",
+                    "title": "动作参考",
+                    "prompt": "参考动作",
+                    "recipe_id": "general-video",
+                },
+                {
+                    "id": "clip",
+                    "title": "新镜头",
+                    "prompt": "沿用动作节奏",
+                    "recipe_id": "general-video",
+                    "reference_inputs": ["motion_reference"],
+                },
+            ],
+        }
+    )
+
+    assert compiled["ok"] is True
+    assert (
+        "motion_reference",
+        "clip",
+        "media_input_for",
+    ) in {
+        (edge["source"], edge["target"], edge["link_type"])
+        for edge in compiled["plan"]["edges"]
+    }
+
+
+def test_compiler_replaces_recipe_backed_final_compose_with_compose_node(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "制作教程并合成成片",
+            "items": [
+                {
+                    "id": "clip",
+                    "title": "教程镜头",
+                    "prompt": "展示操作",
+                    "recipe_id": "general-video",
+                },
+                {
+                    "id": "final-compose",
+                    "title": "最终合成",
+                    "prompt": "合成全部镜头和音频",
+                    "recipe_id": "general-video",
+                    "depends_on": ["clip"],
+                },
+            ],
+        }
+    )
+
+    assert compiled["ok"] is True
+    plan = compiled["plan"]
+    assert not any(node["id"] == "final-compose" for node in plan["nodes"])
+    assert sum(
+        node["node_type"] == "videoComposeNode" for node in plan["nodes"]
+    ) == 1
+
+
 def test_compiler_respects_explicit_audio_kind_for_ambiguous_general_audio(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)

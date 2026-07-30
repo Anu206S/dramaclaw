@@ -7872,6 +7872,89 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("skips a legacy final-compose video generator and runs the real compose node", async () => {
+    const store = useCanvasStore.getState();
+    const videoNodeId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        prompt: "商品镜头",
+        videoUrl: "/static/project/video.mp4",
+      },
+    );
+    const audioNodeId = store.addNode(
+      CANVAS_NODE_TYPES.audio,
+      { x: 360, y: 260 },
+      {
+        text: "商品口播",
+        audioUrl: "/static/project/audio.wav",
+      },
+    );
+    const legacyComposeGeneratorId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 720, y: 0 },
+      {
+        displayName: "最终合成",
+        prompt: "合成全部镜头",
+        genMode: "allReference",
+        workflowCatalog: { stepId: "final-compose" },
+      },
+    );
+    const composeNodeId = store.addNode(
+      CANVAS_NODE_TYPES.videoCompose,
+      { x: 1080, y: 0 },
+      {
+        title: "成片合成",
+      },
+    );
+    store.addEdge(videoNodeId, legacyComposeGeneratorId);
+    store.addEdge(videoNodeId, composeNodeId);
+    store.addEdge(audioNodeId, composeNodeId);
+    store.addEdge(legacyComposeGeneratorId, composeNodeId);
+
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId || payload.nodeId !== composeNodeId) return;
+        useCanvasStore.getState().updateNodeData(composeNodeId, {
+          resultVideoUrl: "/static/project/final.mp4",
+        });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+          output: { videoUrl: "/static/project/final.mp4" },
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [{
+              type: "run_workflow",
+              node_ids: [legacyComposeGeneratorId],
+              direction: "connected",
+            }],
+          },
+        ]),
+        { canvasId: "canvas-a", actionTimeoutMs: 100 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events).toEqual([
+        { nodeId: composeNodeId, action: "auto_compose_video" },
+      ]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("runs explicitly requested missing audio before an already satisfiable compose node", async () => {
     const store = useCanvasStore.getState();
     const videoNodeId = store.addNode(

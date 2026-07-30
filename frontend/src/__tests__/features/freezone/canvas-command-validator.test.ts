@@ -26,11 +26,16 @@ describe("canvas command validator", () => {
     });
   });
 
-  it("explains edges are consumed inputs rather than visual association lines", () => {
+  it("distinguishes consumed inputs and execution dependencies from visual association lines", () => {
     const catalogText = canvasLinkTypeCatalogText();
     const promptLinkType = canvasLinkTypeCatalogJson().find((item) => item.link_type === "prompt_for");
 
-    expect(catalogText).toContain("Edges are data or semantic input relationships");
+    expect(catalogText).toContain(
+      "Edges are data, semantic input, or explicit execution-order relationships",
+    );
+    expect(catalogText).toContain(
+      "Use dependency_for only when the target must wait without consuming the source output",
+    );
     expect(catalogText).toContain("use group_nodes or layout_nodes instead of create_edge");
     expect(promptLinkType?.source_object_types).toEqual(["TextNode"]);
     expect(promptLinkType?.instruction).toContain("upstream text is direct generation input");
@@ -476,7 +481,7 @@ describe("canvas command validator", () => {
 
     expect(result.ok).toBe(false);
     expect(result.issues.map((issue) => issue.message)).toContain(
-      "create_edge.link_type is required and must be one of: context_for, prompt_for, media_input_for, derived_from, composition_input_for",
+      "create_edge.link_type is required and must be one of: context_for, prompt_for, dependency_for, media_input_for, derived_from, composition_input_for",
     );
   });
 
