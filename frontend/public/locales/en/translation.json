@@ -1591,7 +1591,45 @@
       "waiting": "{{count}} queued",
       "completed": "{{count}} completed",
       "failed": "{{count}} failed",
-      "locateNode": "Locate canvas node"
+      "locateNode": "Locate canvas node",
+      "workflowProgress": "Workflow running · {{completed}}/{{total}}",
+      "workflowCompleted": "Workflow completed",
+      "workflowFailed": "Workflow failed",
+      "workflowShort": "Workflow · {{completed}}/{{total}} complete",
+      "workflowCompletedShort": "Workflow complete · {{completed}}/{{total}}",
+      "inProgressShort": "{{count}} active",
+      "waitingShort": "{{count}} waiting",
+      "failedShort": "{{count}} failed",
+      "interruptedShort": "Paused",
+      "stoppedShort": "Stopped",
+      "resume": "Resume",
+      "resuming": "Resuming",
+      "resumeSucceeded": "Workflow resumed",
+      "resumeFailed": "Failed to resume workflow: {{message}}",
+      "resumeFailedFallback": "Workflow recovery failed",
+      "workflowActivity": {
+        "preparing": "Preparing: {{name}}",
+        "compiling_recipe": "Preparing: {{name}}",
+        "submitting": "Submitting: {{name}}",
+        "generating": "Generating: {{name}}",
+        "syncing_result": "Syncing: {{name}}",
+        "retrying": "Retrying: {{name}}"
+      },
+      "workflowPhase": {
+        "waiting_dependencies": "Waiting for upstream results",
+        "waiting_slot": "Waiting for an execution slot",
+        "waiting_capacity": "Waiting for generation capacity",
+        "preparing": "Preparing node",
+        "compiling_recipe": "Compiling Recipe",
+        "submitting": "Submitting generation task",
+        "generating": "Generating",
+        "syncing_result": "Syncing generated result",
+        "retrying": "Retrying",
+        "completed": "Completed",
+        "failed": "Failed",
+        "blocked": "Blocked by upstream failure",
+        "skipped": "Skipped"
+      }
     },
     "relative": {
       "justNow": "just now"

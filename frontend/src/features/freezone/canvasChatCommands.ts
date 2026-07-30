@@ -51,11 +51,17 @@ import {
 } from "@/features/freezone/canvasEdgeSemantics";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { deterministicNodeOutputIssue } from "@/features/freezone/workflowQualityGate";
+import {
+  WORKFLOW_EXECUTION_ACTIVITY_EVENT,
+  WORKFLOW_RUN_UPDATED_EVENT,
+  type WorkflowExecutionActivityDetail,
+  type WorkflowRunActionUpdate,
+} from "@/features/canvas/application/workflowExecutionActivity";
 
 export const CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1";
 export const FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT = "freezone/canvas-command-approval";
 export const FREEZONE_CANVAS_COMMAND_RESULT_EVENT = "freezone/canvas-command-result";
-export const FREEZONE_WORKFLOW_RUN_UPDATED_EVENT = "freezone/workflow-run-updated";
+export const FREEZONE_WORKFLOW_RUN_UPDATED_EVENT = WORKFLOW_RUN_UPDATED_EVENT;
 
 type JsonRecord = Record<string, unknown>;
 type MainlineProjectionScope = "episode" | "beat" | "asset";
@@ -461,6 +467,12 @@ const canvasNodeActionQueues = new Map<string, Promise<void>>();
 let nodeActionMountQueue: Promise<void> = Promise.resolve();
 const WORKFLOW_ACTION_CONCURRENCY = 3;
 const WORKFLOW_ACTION_MAX_RETRIES = 2;
+const TERMINAL_WORKFLOW_ACTION_STATUSES = new Set<WorkflowRunActionStatus>([
+  "completed",
+  "failed",
+  "blocked",
+  "skipped",
+]);
 const WORKFLOW_CAPACITY_POLL_INTERVAL_MS = 2_000;
 const WORKFLOW_ACTION_LANE_LIMITS = {
   default: 3,
@@ -558,11 +570,17 @@ async function waitForWorkflowLaneCapacity(
   lane: WorkflowActionLane,
   timeoutMs: number,
   shouldStop: () => boolean,
+  onWaiting?: () => void,
 ): Promise<boolean> {
   const startedAt = Date.now();
+  let waitingReported = false;
   while (!shouldStop()) {
     const capacity = await fetchWorkflowLaneCapacity(projectId, lane);
     if (capacity === null || capacity > 0) return true;
+    if (!waitingReported) {
+      waitingReported = true;
+      onWaiting?.();
+    }
     if (Date.now() - startedAt >= timeoutMs) return false;
     await new Promise((resolve) => setTimeout(resolve, WORKFLOW_CAPACITY_POLL_INTERVAL_MS));
   }
@@ -1856,6 +1874,72 @@ function submittedGenerationOutputFromNode(nodeId: string): Record<string, unkno
   };
 }
 
+function generatedResultOutputFromNode(
+  nodeId: string,
+  action: string,
+): Record<string, unknown> | null {
+  const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
+  if (!data) return null;
+  if (action === "generate_text") {
+    const content = nonEmptyString(data.content);
+    return content ? { content } : null;
+  }
+  if (action === "generate_story_script") {
+    return isRecord(data.scriptResult) && Array.isArray(data.scriptResult.rows)
+      ? { scriptResult: data.scriptResult }
+      : null;
+  }
+  if (action === "generate_image") {
+    const imageUrl = nonEmptyString(data.imageUrl) ?? nonEmptyString(data.image_url);
+    return imageUrl ? { imageUrl } : null;
+  }
+  if (action === "generate_video" || action === "generate_text_video") {
+    const videoUrl = nonEmptyString(data.videoUrl) ?? nonEmptyString(data.video_url);
+    return videoUrl ? { videoUrl } : null;
+  }
+  if (action === "auto_compose_video") {
+    const videoUrl = nonEmptyString(data.resultVideoUrl);
+    return videoUrl ? { videoUrl, output_url: videoUrl } : null;
+  }
+  if (action === "generate_audio") {
+    const audioUrl = nonEmptyString(data.audioUrl) ?? nonEmptyString(data.audio_url);
+    return audioUrl ? { audioUrl } : null;
+  }
+  if (action === "generate_3gs_world") {
+    const plyUrl = nonEmptyString(data.plyUrl);
+    if (plyUrl) return { plyUrl };
+    return Array.isArray(data.sources) && data.sources.length > 0
+      ? { sources: data.sources }
+      : null;
+  }
+  return null;
+}
+
+function generatedResultToken(
+  nodeId: string,
+  action: string,
+): string | null {
+  const output = generatedResultOutputFromNode(nodeId, action);
+  return output ? JSON.stringify(output) : null;
+}
+
+async function waitForChangedGeneratedResultFromNode(
+  nodeId: string,
+  action: string,
+  initialToken: string | null,
+  timeoutMs: number,
+  shouldStop?: () => boolean,
+): Promise<Record<string, unknown> | null> {
+  const startedAt = Date.now();
+  while (Date.now() - startedAt < timeoutMs && !shouldStop?.()) {
+    const output = generatedResultOutputFromNode(nodeId, action);
+    if (output && JSON.stringify(output) !== initialToken) return output;
+    if (nodeGenerationError(nodeId)) return null;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+  return null;
+}
+
 function workflowTaskReference(
   output: Record<string, unknown> | null | undefined,
 ): { task_key?: string; task_type?: string; job_id?: string } {
@@ -2233,6 +2317,23 @@ async function executeQueuedNodeActions(
         : `canvas-runner:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
     let workflowLeaseLost = false;
     let workflowHeartbeat: ReturnType<typeof setInterval> | null = null;
+    let workflowHeartbeatQueue: Promise<void> = Promise.resolve();
+    let workflowPersistenceDrain: Promise<void> | null = null;
+    const pendingWorkflowUpdates = new Map<string, WorkflowRunActionUpdate>();
+    let pendingWorkflowStatus: "completed" | "failed" | undefined;
+    const workflowActionStatuses = new Map(
+      pendingActions.map((action) => [
+        `${action.nodeId}:${action.action}`,
+        "pending" as WorkflowRunActionStatus,
+      ]),
+    );
+    const enqueueWorkflowHeartbeat = (operation: () => Promise<void>): Promise<void> => {
+      const queued = workflowHeartbeatQueue
+        .catch(() => undefined)
+        .then(operation);
+      workflowHeartbeatQueue = queued.catch(() => undefined);
+      return queued;
+    };
     const stopWorkflowHeartbeat = () => {
       if (workflowHeartbeat !== null) clearInterval(workflowHeartbeat);
       workflowHeartbeat = null;
@@ -2243,18 +2344,32 @@ async function executeQueuedNodeActions(
           typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
             ? `canvas-run:${crypto.randomUUID()}`
             : `canvas-run:${Date.now().toString(36)}:${Math.random().toString(36).slice(2, 10)}`;
-        workflowRunId = (await createFreezoneWorkflowRun(
+        const createdRun = await createFreezoneWorkflowRun(
           projectId,
           canvasId,
           pendingActions.map((action) => ({ node_id: action.nodeId, action: action.action })),
           workflowRunIdempotencyKey,
           workflowRunnerId,
-        )).run_id;
+        );
+        workflowRunId = createdRun.run_id;
+        if (typeof window !== "undefined") {
+          window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
+            detail: {
+              projectId,
+              canvasId,
+              runId: workflowRunId,
+              status: "running",
+              run: createdRun,
+            },
+          }));
+        }
         const runId = workflowRunId;
         workflowHeartbeat = setInterval(() => {
-          void updateFreezoneWorkflowRun(projectId, canvasId, runId, {
-            status: "running",
-            runner_id: workflowRunnerId,
+          void enqueueWorkflowHeartbeat(async () => {
+            await updateFreezoneWorkflowRun(projectId, canvasId, runId, {
+              status: "running",
+              runner_id: workflowRunnerId,
+            });
           }).catch((error) => {
             if (error instanceof ApiError && error.status === 409) workflowLeaseLost = true;
           });
@@ -2279,43 +2394,83 @@ async function executeQueuedNodeActions(
         // Execution records are additive. A persistence outage must not block generation.
       }
     }
+    const drainWorkflowPersistence = (): Promise<void> => {
+      if (workflowPersistenceDrain) return workflowPersistenceDrain;
+      if (!projectId || !canvasId || !workflowRunId) return Promise.resolve();
+      const runId = workflowRunId;
+      workflowPersistenceDrain = (async () => {
+        while (pendingWorkflowUpdates.size > 0 || pendingWorkflowStatus) {
+          const actionUpdates = [...pendingWorkflowUpdates.values()];
+          const status = pendingWorkflowStatus;
+          pendingWorkflowUpdates.clear();
+          pendingWorkflowStatus = undefined;
+          try {
+            const updatedRun = await updateFreezoneWorkflowRun(projectId, canvasId, runId, {
+              ...(actionUpdates.length > 0 ? { action_updates: actionUpdates } : {}),
+              ...(status ? { status } : {}),
+              runner_id: workflowRunnerId,
+            });
+            if (typeof window !== "undefined") {
+              window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
+                detail: {
+                  projectId,
+                  canvasId,
+                  runId,
+                  ...(status ? { status } : {}),
+                  run: updatedRun,
+                },
+              }));
+            }
+          } catch (error) {
+            if (error instanceof ApiError && error.status === 409) workflowLeaseLost = true;
+            // Keep the established in-browser runner available when persistence is unavailable.
+          }
+        }
+      })().finally(() => {
+        workflowPersistenceDrain = null;
+      });
+      return workflowPersistenceDrain;
+    };
     const persistRunUpdate = async (
-      updates: Array<{
-        node_id: string;
-        action: string;
-        status: WorkflowRunActionStatus;
-        error?: string | null;
-        task_key?: string | null;
-        task_type?: string | null;
-        job_id?: string | null;
-        retry_count?: number;
-      }>,
+      updates: WorkflowRunActionUpdate[],
       status?: "completed" | "failed",
     ): Promise<void> => {
       if (!projectId || !canvasId || !workflowRunId) return;
-      try {
-        await updateFreezoneWorkflowRun(projectId, canvasId, workflowRunId, {
-          ...(updates.length > 0 ? { action_updates: updates } : {}),
-          ...(status ? { status } : {}),
-          runner_id: workflowRunnerId,
-        });
+      const acceptedUpdates = updates.filter((update) => {
+        const key = `${update.node_id}:${update.action}`;
+        const current = workflowActionStatuses.get(key);
         if (
-          typeof window !== "undefined" &&
-          (Boolean(status) || updates.some((update) => Boolean(update.task_key)))
+          current &&
+          TERMINAL_WORKFLOW_ACTION_STATUSES.has(current) &&
+          update.status !== current
         ) {
-          window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
-            detail: {
-              projectId,
-              canvasId,
-              runId: workflowRunId,
-              ...(status ? { status } : {}),
-            },
-          }));
+          return false;
         }
-      } catch (error) {
-        if (error instanceof ApiError && error.status === 409) workflowLeaseLost = true;
-        // Keep the established in-browser runner available when persistence is unavailable.
+        workflowActionStatuses.set(key, update.status);
+        return true;
+      });
+      if (acceptedUpdates.length === 0 && !status) return;
+      const runId = workflowRunId;
+      for (const update of acceptedUpdates) {
+        const key = `${update.node_id}:${update.action}`;
+        pendingWorkflowUpdates.set(key, {
+          ...pendingWorkflowUpdates.get(key),
+          ...update,
+        });
       }
+      if (status) pendingWorkflowStatus = status;
+      if (typeof window !== "undefined") {
+        window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
+          detail: {
+            projectId,
+            canvasId,
+            runId,
+            ...(status ? { status } : {}),
+            ...(acceptedUpdates.length > 0 ? { actionUpdates: acceptedUpdates } : {}),
+          },
+        }));
+      }
+      await drainWorkflowPersistence();
     };
     const { levels, dependenciesByNodeId, cycleError } = orderedNodeActionsByCanvasEdges(pendingActions);
     if (cycleError) {
@@ -2331,6 +2486,8 @@ async function executeQueuedNodeActions(
           error: cycleError,
         });
       }
+      stopWorkflowHeartbeat();
+      await workflowHeartbeatQueue;
       await persistRunUpdate(
         pendingActions.map((action) => ({
           node_id: action.nodeId,
@@ -2340,7 +2497,6 @@ async function executeQueuedNodeActions(
         })),
         "failed",
       );
-      stopWorkflowHeartbeat();
       return;
     }
     invalidateWorkflowActionResults(pendingActions);
@@ -2377,8 +2533,26 @@ async function executeQueuedNodeActions(
       },
       { default: 0, video: 0, world: 0, ffmpeg: 0 },
     );
+    const actionByNodeId = new Map(
+      pendingActions.map((action) => [action.nodeId, action]),
+    );
+    const handleWorkflowActivity = (event: Event) => {
+      const detail = (event as CustomEvent<WorkflowExecutionActivityDetail>).detail;
+      const action = actionByNodeId.get(detail?.nodeId);
+      if (!action || !detail?.phase) return;
+      void persistRunUpdate([{
+        node_id: action.nodeId,
+        action: action.action,
+        status: "running",
+        phase: detail.phase,
+      }]);
+    };
+    if (typeof window !== "undefined") {
+      window.addEventListener(WORKFLOW_EXECUTION_ACTIVITY_EVENT, handleWorkflowActivity);
+    }
     let runFailed = false;
-    for (const level of levels) {
+    try {
+      for (const level of levels) {
       if (workflowLeaseLost) {
         runFailed = true;
         result.errors.push("工作流执行租约已失效，已停止启动后续节点。");
@@ -2410,7 +2584,14 @@ async function executeQueuedNodeActions(
         })));
         break;
       }
+      await persistRunUpdate(level.map((action) => ({
+        node_id: action.nodeId,
+        action: action.action,
+        status: "pending",
+        phase: "waiting_slot",
+      })));
       const levelResults = await Promise.all(level.map(async (action) => {
+        const settled = await (async () => {
         const blockedUpstream = [...(dependenciesByNodeId.get(action.nodeId) ?? [])]
           .find((nodeId) => blockedNodeIds.has(nodeId));
         if (blockedUpstream) {
@@ -2444,6 +2625,14 @@ async function executeQueuedNodeActions(
                 lane,
                 options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
                 () => workflowLeaseLost,
+                () => {
+                  void persistRunUpdate([{
+                    node_id: action.nodeId,
+                    action: action.action,
+                    status: "running",
+                    phase: "waiting_capacity",
+                  }]);
+                },
               );
               if (!capacityReady) {
                 return {
@@ -2459,6 +2648,7 @@ async function executeQueuedNodeActions(
               node_id: action.nodeId,
               action: action.action,
               status: "running",
+              phase: "preparing",
               retry_count: retryCount,
             }]);
 
@@ -2487,6 +2677,10 @@ async function executeQueuedNodeActions(
               ...(action.parameters ? { parameters: action.parameters } : {}),
               requestId,
             });
+            const initialGeneratedResultToken = generatedResultToken(
+              action.nodeId,
+              action.action,
+            );
             markNodeActionRunning(action.nodeId, action.action);
             let handlerCount = 0;
             const accepted = requiresAcceptedSignal
@@ -2553,6 +2747,7 @@ async function executeQueuedNodeActions(
                     node_id: action.nodeId,
                     action: action.action,
                     status: "running",
+                    phase: "generating",
                     ...taskReference,
                   }]);
                 })
@@ -2576,14 +2771,43 @@ async function executeQueuedNodeActions(
                   return waiting;
                 })
                 : null;
+            const changedGeneratedResult =
+              firstSignal.kind === "accepted" && GENERATION_NODE_ACTIONS.has(action.action)
+                ? waitForChangedGeneratedResultFromNode(
+                  action.nodeId,
+                  action.action,
+                  initialGeneratedResultToken,
+                  options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
+                  () => actionSettled || workflowLeaseLost,
+                ).then((output): NodeActionResult | Promise<NodeActionResult> => {
+                  if (output) {
+                    return {
+                      requestId,
+                      nodeId: action.nodeId,
+                      action: action.action,
+                      status: "success" as const,
+                      output,
+                    };
+                  }
+                  return waiting;
+                })
+                : null;
             const actionResult = firstSignal.kind === "result"
               ? firstSignal.actionResult
-              : singleGenerationSubmission
-                ? await Promise.race([waiting, singleGenerationSubmission])
-                : await waiting;
+              : await Promise.race([
+                  waiting,
+                  ...(singleGenerationSubmission ? [singleGenerationSubmission] : []),
+                  ...(changedGeneratedResult ? [changedGeneratedResult] : []),
+                ]);
             actionSettled = true;
             void taskReferencePersistence;
             clearPendingNodeAction(requestId);
+            await persistRunUpdate([{
+              node_id: action.nodeId,
+              action: action.action,
+              status: "running",
+              phase: "syncing_result",
+            }]);
             await requestAnimationFrameOrTimeout();
             const hasRequiredOutput = actionResult.status === "error"
               ? false
@@ -2620,6 +2844,13 @@ async function executeQueuedNodeActions(
               retryCount < WORKFLOW_ACTION_MAX_RETRIES &&
               isRetryableWorkflowActionError(failed)
             ) {
+              await persistRunUpdate([{
+                node_id: action.nodeId,
+                action: action.action,
+                status: "running",
+                phase: "retrying",
+                retry_count: retryCount + 1,
+              }]);
               await new Promise((resolve) =>
                 setTimeout(
                   resolve,
@@ -2637,6 +2868,18 @@ async function executeQueuedNodeActions(
         } finally {
           releaseActionSlot();
         }
+        })();
+        void persistRunUpdate([{
+          node_id: settled.action.nodeId,
+          action: settled.action.action,
+          status: settled.failed
+            ? settled.failed.startsWith("跳过 ") ? "blocked" : "failed"
+            : "completed",
+          ...(settled.failed ? { error: settled.failed } : {}),
+          retry_count: settled.retryCount ?? 0,
+          ...workflowTaskReference(settled.output),
+        }]);
+        return settled;
       }));
 
       for (const { action, failed, output } of levelResults) {
@@ -2669,22 +2912,19 @@ async function executeQueuedNodeActions(
           ...(output ? { output } : {}),
         });
       }
-      await persistRunUpdate(levelResults.map(({ action, failed, output, retryCount }) => ({
-        node_id: action.nodeId,
-        action: action.action,
-        status: failed
-          ? failed.startsWith("跳过 ") ? "blocked" : "failed"
-          : "completed",
-        ...(failed ? { error: failed } : {}),
-        retry_count: retryCount ?? 0,
-        ...workflowTaskReference(output),
-      })));
       for (const { action } of levelResults) {
         settledActionKeys.add(`${action.nodeId}:${action.action}`);
       }
+      }
+      stopWorkflowHeartbeat();
+      await workflowHeartbeatQueue;
+      await persistRunUpdate([], runFailed ? "failed" : "completed");
+    } finally {
+      if (typeof window !== "undefined") {
+        window.removeEventListener(WORKFLOW_EXECUTION_ACTIVITY_EVENT, handleWorkflowActivity);
+      }
+      stopWorkflowHeartbeat();
     }
-    await persistRunUpdate([], runFailed ? "failed" : "completed");
-    stopWorkflowHeartbeat();
   });
 }
 

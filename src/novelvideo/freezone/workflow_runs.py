@@ -18,6 +18,17 @@ IDEMPOTENCY_KEY_RE = re.compile(r"^[a-zA-Z0-9._:-]{1,160}$")
 RUNNER_ID_RE = re.compile(r"^[a-zA-Z0-9._:-]{1,160}$")
 RUN_STATUSES = {"running", "completed", "failed", "cancelled", "interrupted"}
 NODE_STATUSES = {"pending", "running", "completed", "failed", "blocked", "skipped"}
+NODE_PHASES = {
+    "waiting_dependencies",
+    "waiting_slot",
+    "waiting_capacity",
+    "preparing",
+    "compiling_recipe",
+    "submitting",
+    "generating",
+    "syncing_result",
+    "retrying",
+}
 RESUMABLE_RUN_STATUSES = {"running", "failed", "interrupted"}
 RESUMABLE_ACTION_STATUSES = {"pending", "running", "failed", "blocked"}
 TERMINAL_RUN_STATUSES = {"completed", "failed", "cancelled", "interrupted"}
@@ -239,6 +250,7 @@ def _normalize_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
                 "node_id": node_id,
                 "action": action,
                 "status": "pending",
+                "phase": "waiting_dependencies",
                 "updated_at": None,
                 "error": None,
                 "task_key": None,
@@ -550,6 +562,11 @@ def update_workflow_run(
             item["status"] = node_status
             item["updated_at"] = now
             item["error"] = str(update.get("error") or "").strip() or None
+            if "phase" in update:
+                phase = str(update.get("phase") or "").strip()
+                if phase and phase not in NODE_PHASES:
+                    raise ValueError(f"invalid workflow node phase: {phase!r}")
+                item["phase"] = phase or None
             if node_status == "failed":
                 category, retryable = classify_workflow_error(item["error"])
                 item["error_category"] = category

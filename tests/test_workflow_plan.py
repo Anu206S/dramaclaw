@@ -759,6 +759,65 @@ def test_compiler_routes_general_audio_bgm_to_music_generation(monkeypatch):
     assert "speechMode" not in audio_node["data"]
 
 
+def test_compiler_keeps_timeline_audio_out_of_video_references(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "制作一条 30 秒中文教程视频",
+            "items": [
+                {
+                    "id": "frame",
+                    "title": "教程画面",
+                    "prompt": "教程主画面",
+                    "recipe_id": "general-image",
+                },
+                {
+                    "id": "voice",
+                    "title": "中文女声旁白",
+                    "prompt": "欢迎观看本期教程",
+                    "narration": "欢迎观看本期教程",
+                    "recipe_id": "general-audio",
+                    "timeline_role": "voiceover",
+                },
+                {
+                    "id": "bgm",
+                    "title": "30秒背景音乐",
+                    "prompt": "轻快的纯音乐",
+                    "recipe_id": "general-audio",
+                    "audio_kind": "music",
+                    "timeline_role": "music",
+                },
+                {
+                    "id": "clip",
+                    "title": "教程视频",
+                    "prompt": "生成教程视频片段",
+                    "recipe_id": "general-video",
+                    "depends_on": ["frame", "voice", "bgm"],
+                },
+            ],
+        }
+    )
+
+    assert compiled["ok"] is True
+    edges = compiled["plan"]["edges"]
+    assert not any(
+        edge["target"] == "clip" and edge["source"] in {"voice", "bgm"}
+        for edge in edges
+    )
+    assert {
+        (edge["source"], edge["target"], edge["link_type"])
+        for edge in edges
+        if edge["target"] == "final_compose"
+    } >= {
+        ("voice", "final_compose", "composition_input_for"),
+        ("bgm", "final_compose", "composition_input_for"),
+        ("clip", "final_compose", "composition_input_for"),
+    }
+
+
 def test_compiler_respects_explicit_audio_kind_for_ambiguous_general_audio(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)

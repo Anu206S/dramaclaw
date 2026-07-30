@@ -6834,6 +6834,56 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("finishes an action when the canvas result appears after its result event is lost", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      { prompt: "商品主图" },
+    );
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      if (!payload.requestId) return;
+      canvasEventBus.publish("freezone/node-action-accepted", {
+        requestId: payload.requestId,
+        nodeId: payload.nodeId,
+        action: payload.action,
+      });
+      window.setTimeout(() => {
+        store.updateNodeData(payload.nodeId, {
+          isGenerating: false,
+          imageUrl: "/static/project/recovered-image.png",
+        });
+        // Deliberately omit freezone/node-action-result. The visible canvas
+        // result must be sufficient for the workflow runner to continue.
+      }, 10);
+    });
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{ type: "run_workflow", node_ids: [imageNodeId] }],
+        }]),
+        { projectId: "project-a", canvasId: "canvas-a", actionTimeoutMs: 500 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(result.commandResults).toContainEqual(expect.objectContaining({
+        nodeId: imageNodeId,
+        action: "generate_image",
+        status: "success",
+      }));
+      expect(updateFreezoneWorkflowRun).toHaveBeenLastCalledWith(
+        "project-a",
+        "canvas-a",
+        "run-test",
+        expect.objectContaining({ status: "completed" }),
+      );
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("deduplicates node actions when a node action and workflow overlap", async () => {
     const store = useCanvasStore.getState();
     const textNodeId = store.addNode(

@@ -634,6 +634,7 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
     }
 
     const prompt = await compileWorkflowNodePrompt({
+      nodeId: id,
       nodeData: data,
       nodeKind: 'image',
       nodePrompt: ownPrompt,

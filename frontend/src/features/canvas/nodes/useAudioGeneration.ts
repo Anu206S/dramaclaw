@@ -135,6 +135,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     try {
       const trimmed = isMusic
         ? await compileWorkflowNodePrompt({
+            nodeId,
             nodeData: data,
             nodeKind: 'audio',
             nodePrompt: ownText,

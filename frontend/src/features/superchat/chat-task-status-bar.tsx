@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import { useTranslation } from "react-i18next";
 import {
   AlertCircle,
@@ -9,11 +9,28 @@ import {
   ListTodo,
   LoaderCircle,
   LocateFixed,
+  Play,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
+import {
+  listFreezoneWorkflowRuns,
+  updateFreezoneWorkflowRun,
+  type FreezoneWorkflowRun,
+  type FreezoneWorkflowRunAction,
+} from "@/api/canvas";
+import {
+  WORKFLOW_RUN_UPDATED_EVENT,
+  type WorkflowRunUpdatedDetail,
+} from "@/features/canvas/application/workflowExecutionActivity";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import type { CanvasNode } from "@/features/canvas/domain/canvasNodes";
+import {
+  applyCanvasChatCommandsAsync,
+  CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+} from "@/features/freezone/canvasChatCommands";
+import { recoverableWorkflowNodeIds } from "@/features/freezone/WorkflowRunRecoveryBar";
 import { cn } from "@/lib/utils";
 import { useAppStore } from "@/stores/app-store";
 import { useCanvasStore } from "@/stores/canvasStore";
@@ -21,7 +38,14 @@ import { displayLabel, isActive, isTerminal } from "@/task-center/derivations";
 import { useTaskCenterStore } from "@/task-center/store";
 import type { TaskState } from "@/task-center/types";
 
-const RECENT_TERMINAL_MS = 60_000;
+const RECENT_COMPLETED_MS = 5_000;
+const RECENT_FAILED_MS = 60_000;
+const TERMINAL_ACTION_STATUSES = new Set([
+  "completed",
+  "failed",
+  "blocked",
+  "skipped",
+]);
 
 export interface ChatTaskItem {
   task: TaskState;
@@ -29,13 +53,172 @@ export interface ChatTaskItem {
   nodeLabel: string | null;
 }
 
+function timestamp(value: string | null | undefined): number {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : 0;
+}
+
 function nonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim() ? value.trim() : null;
 }
 
 function terminalTimestamp(task: TaskState): number {
-  const parsed = Date.parse(task.completed_at || task.updated_at);
-  return Number.isFinite(parsed) ? parsed : 0;
+  return timestamp(task.completed_at || task.updated_at);
+}
+
+export function selectChatWorkflowRun(
+  runs: readonly FreezoneWorkflowRun[],
+  now = Date.now(),
+): FreezoneWorkflowRun | null {
+  return [...runs]
+    .filter((run) =>
+      run.status === "running" ||
+      (
+        run.resumable &&
+        (run.status === "failed" || run.status === "interrupted")
+      ) ||
+      now - timestamp(run.completed_at || run.updated_at) <= (
+        run.status === "completed" ? RECENT_COMPLETED_MS : RECENT_FAILED_MS
+      )
+    )
+    .sort((left, right) => {
+      const priority = (run: FreezoneWorkflowRun) =>
+        run.status === "running"
+          ? 2
+          : run.resumable && (run.status === "failed" || run.status === "interrupted")
+            ? 1
+            : 0;
+      const activeDelta = priority(right) - priority(left);
+      return activeDelta || timestamp(right.updated_at) - timestamp(left.updated_at);
+    })[0] ?? null;
+}
+
+export function applyOptimisticWorkflowRunUpdate(
+  run: FreezoneWorkflowRun,
+  detail: WorkflowRunUpdatedDetail,
+  now = new Date().toISOString(),
+): FreezoneWorkflowRun {
+  if (run.run_id !== detail.runId) return run;
+  const updates = new Map(
+    (detail.actionUpdates ?? []).map((update) => [
+      `${update.node_id}:${update.action}`,
+      update,
+    ]),
+  );
+  const status = detail.status ?? run.status;
+  return {
+    ...run,
+    status,
+    resumable:
+      status === "completed" || status === "cancelled"
+        ? false
+        : status === "failed" || status === "interrupted"
+          ? true
+          : run.resumable,
+    ...(detail.status && status !== "running" ? { completed_at: now } : {}),
+    actions: run.actions.map((action) => {
+      const update = updates.get(`${action.node_id}:${action.action}`);
+      return update ? { ...action, ...update, updated_at: now } : action;
+    }),
+  };
+}
+
+export function mergeWorkflowRunUpdate(
+  previous: FreezoneWorkflowRun,
+  incoming: FreezoneWorkflowRun,
+): FreezoneWorkflowRun {
+  const previousActions = new Map(
+    previous.actions.map((action) => [`${action.node_id}:${action.action}`, action]),
+  );
+  const actions = incoming.actions.map((action) => {
+    const prior = previousActions.get(`${action.node_id}:${action.action}`);
+    return prior &&
+      TERMINAL_ACTION_STATUSES.has(prior.status) &&
+      !TERMINAL_ACTION_STATUSES.has(action.status)
+      ? { ...action, ...prior }
+      : action;
+  });
+  const preserveTerminalRun =
+    previous.status !== "running" && incoming.status === "running";
+  return {
+    ...incoming,
+    ...(preserveTerminalRun
+      ? {
+          status: previous.status,
+          resumable: previous.resumable,
+          completed_at: previous.completed_at,
+        }
+      : {}),
+    actions,
+  };
+}
+
+export function workflowStatusCounts(
+  actions: readonly FreezoneWorkflowRunAction[],
+  tasksByKey: ReadonlyMap<string, TaskState> = new Map(),
+) {
+  return actions.reduce(
+    (counts, action) => {
+      if (action.status === "completed") counts.completed += 1;
+      else if (action.status === "failed" || action.status === "blocked") {
+        counts.failed += 1;
+      } else if (action.status === "skipped") {
+        counts.skipped += 1;
+      } else {
+        const task = action.task_key ? tasksByKey.get(action.task_key) : undefined;
+        if (task && isActive(task)) {
+          if (task.status === "running") counts.inProgress += 1;
+          else counts.waiting += 1;
+          return counts;
+        }
+        if (
+          action.status === "pending" ||
+          isWaitingWorkflowAction(action)
+        ) {
+          counts.waiting += 1;
+        } else if (action.status === "running") {
+          counts.inProgress += 1;
+        }
+      }
+      return counts;
+    },
+    { completed: 0, skipped: 0, inProgress: 0, waiting: 0, failed: 0 },
+  );
+}
+
+export function workflowSettledCount(
+  actions: readonly FreezoneWorkflowRunAction[],
+): number {
+  return actions.filter(
+    (action) => action.status === "completed" || action.status === "skipped",
+  ).length;
+}
+
+function isWaitingWorkflowAction(action: FreezoneWorkflowRunAction): boolean {
+  return [
+    "waiting_dependencies",
+    "waiting_slot",
+    "waiting_capacity",
+  ].includes(action.phase ?? "waiting_dependencies");
+}
+
+export function selectWorkflowActivityLabels(
+  actions: readonly FreezoneWorkflowRunAction[],
+  nodes: readonly CanvasNode[],
+  formatLabel: (
+    nodeLabel: string,
+    phase: FreezoneWorkflowRunAction["phase"],
+  ) => string = (nodeLabel) => nodeLabel,
+): string[] {
+  const nodesById = new Map(nodes.map((node) => [node.id, node]));
+  return [...new Set(
+    actions.flatMap((action) => {
+      if (action.status !== "running" || isWaitingWorkflowAction(action)) return [];
+      const node = nodesById.get(action.node_id);
+      if (!node?.type) return [];
+      return [formatLabel(resolveNodeDisplayName(node.type, node.data), action.phase)];
+    }),
+  )];
 }
 
 export function selectChatTaskItems(
@@ -70,7 +253,12 @@ export function selectChatTaskItems(
 
     const visible =
       isActive(task) ||
-      (isTerminal(task) && now - terminalTimestamp(task) <= RECENT_TERMINAL_MS);
+      (
+        isTerminal(task) &&
+        now - terminalTimestamp(task) <= (
+          task.status === "completed" ? RECENT_COMPLETED_MS : RECENT_FAILED_MS
+        )
+      );
     if (!visible) continue;
 
     const node = mappedNode ?? nodes.find((candidate) => candidate.id === metadataNodeId) ?? null;
@@ -96,7 +284,13 @@ function taskProgress(task: TaskState): number {
   return Math.max(0, Math.min(100, Math.round((task.progress || 0) * 100)));
 }
 
-export function ChatTaskStatusBar({ canvasId }: { canvasId: string | null }) {
+export function ChatTaskStatusBar({
+  projectId,
+  canvasId,
+}: {
+  projectId: string | null;
+  canvasId: string | null;
+}) {
   const { t } = useTranslation();
   const tasks = useTaskCenterStore((state) => state.tasks);
   const nodes = useCanvasStore((state) => state.nodes);
@@ -104,47 +298,250 @@ export function ChatTaskStatusBar({ canvasId }: { canvasId: string | null }) {
   const setSelectedTask = useTaskCenterStore((state) => state.setSelected);
   const [expanded, setExpanded] = useState(false);
   const [now, setNow] = useState(() => Date.now());
+  const [workflowRuns, setWorkflowRuns] = useState<FreezoneWorkflowRun[]>([]);
+  const [resuming, setResuming] = useState(false);
 
   const items = useMemo(
     () => selectChatTaskItems(tasks.values(), nodes, canvasId, now),
     [tasks, nodes, canvasId, now],
   );
-  const hasTerminalItems = items.some(({ task }) => isTerminal(task));
+  const workflowRun = useMemo(
+    () => selectChatWorkflowRun(workflowRuns, now),
+    [now, workflowRuns],
+  );
+  const existingNodeIds = useMemo(
+    () => new Set(nodes.map((node) => node.id)),
+    [nodes],
+  );
+  const resumeNodeIds = useMemo(
+    () =>
+      workflowRun?.status === "interrupted" && workflowRun.resumable
+        ? recoverableWorkflowNodeIds(workflowRun, existingNodeIds)
+        : [],
+    [existingNodeIds, workflowRun],
+  );
+  const workflowActivityLabels = useMemo(
+    () => selectWorkflowActivityLabels(
+      workflowRun?.actions ?? [],
+      nodes,
+      (nodeLabel, phase) => t(
+        `taskCenter.chatStatus.workflowActivity.${phase ?? "preparing"}`,
+        { name: nodeLabel },
+      ),
+    ),
+    [nodes, t, workflowRun],
+  );
+  const workflowActivityLabelsKey = workflowActivityLabels.join("\u0000");
+  const [workflowActivityIndex, setWorkflowActivityIndex] = useState(0);
+  const hasTerminalItems =
+    items.some(({ task }) => isTerminal(task)) ||
+    Boolean(workflowRun && workflowRun.status !== "running");
+
+  const refreshWorkflowRuns = useCallback(async () => {
+    if (!projectId || !canvasId) {
+      setWorkflowRuns([]);
+      return;
+    }
+    try {
+      const response = await listFreezoneWorkflowRuns(projectId, canvasId);
+      setWorkflowRuns(response.runs);
+    } catch {
+      // Generation tasks remain visible even if optional workflow status is unavailable.
+    }
+  }, [canvasId, projectId]);
+
+  useEffect(() => {
+    setWorkflowRuns([]);
+    void refreshWorkflowRuns();
+  }, [refreshWorkflowRuns]);
+
+  useEffect(() => {
+    const handleRunUpdate = (event: Event) => {
+      const detail = (event as CustomEvent<WorkflowRunUpdatedDetail>).detail;
+      if (detail?.projectId && detail.projectId !== projectId) return;
+      if (detail?.canvasId && detail.canvasId !== canvasId) return;
+      if (detail?.run) {
+        setWorkflowRuns((current) => {
+          const previous = current.find((run) => run.run_id === detail.run!.run_id);
+          if (previous && timestamp(previous.updated_at) > timestamp(detail.run!.updated_at)) {
+            return current;
+          }
+          const nextRun = previous
+            ? mergeWorkflowRunUpdate(previous, detail.run!)
+            : detail.run!;
+          return [
+            nextRun,
+            ...current.filter((run) => run.run_id !== detail.run!.run_id),
+          ];
+        });
+        return;
+      }
+      if (detail?.actionUpdates?.length || detail?.status) {
+        setWorkflowRuns((current) =>
+          current.map((run) => applyOptimisticWorkflowRunUpdate(run, detail)));
+        return;
+      }
+      void refreshWorkflowRuns();
+    };
+    window.addEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdate);
+    const timer = window.setInterval(() => void refreshWorkflowRuns(), 5_000);
+    return () => {
+      window.removeEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdate);
+      window.clearInterval(timer);
+    };
+  }, [canvasId, projectId, refreshWorkflowRuns]);
 
   useEffect(() => {
     if (!hasTerminalItems) return;
-    const timer = window.setInterval(() => setNow(Date.now()), 5_000);
+    const timer = window.setInterval(() => setNow(Date.now()), 1_000);
     return () => window.clearInterval(timer);
   }, [hasTerminalItems]);
 
   useEffect(() => {
-    if (items.length === 0) setExpanded(false);
-  }, [items.length]);
+    if (items.length === 0 && !workflowRun) setExpanded(false);
+  }, [items.length, workflowRun]);
 
-  if (items.length === 0) return null;
+  useEffect(() => {
+    setWorkflowActivityIndex(0);
+    if (workflowActivityLabels.length <= 1) return;
+    const reduceMotion =
+      window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ?? false;
+    if (reduceMotion) return;
+    const timer = window.setInterval(() => {
+      setWorkflowActivityIndex((index) => (index + 1) % workflowActivityLabels.length);
+    }, 3_000);
+    return () => window.clearInterval(timer);
+  }, [workflowActivityLabels.length, workflowActivityLabelsKey]);
+
+  if (items.length === 0 && !workflowRun) return null;
 
   const activeItems = items.filter(({ task }) => isActive(task));
   const runningCount = activeItems.filter(({ task }) => task.status === "running").length;
   const waitingCount = activeItems.length - runningCount;
   const failedCount = items.filter(({ task }) => task.status === "failed").length;
   const completedCount = items.filter(({ task }) => task.status === "completed").length;
-  const leading = activeItems[0] ?? items[0];
-  const summary = activeItems.length
-    ? [
-        runningCount
-          ? t("taskCenter.chatStatus.running", { count: runningCount })
-          : null,
-        waitingCount
-          ? t("taskCenter.chatStatus.waiting", { count: waitingCount })
-          : null,
-      ].filter(Boolean).join(" · ")
-    : failedCount
-      ? t("taskCenter.chatStatus.failed", { count: failedCount })
-      : t("taskCenter.chatStatus.completed", { count: completedCount });
+  const leading = activeItems[0] ?? items[0] ?? null;
+  const workflowActions = workflowRun?.actions ?? [];
+  const workflowTasksByKey = new Map(
+    items.map(({ task }) => [task.task_key, task]),
+  );
+  const workflowCounts = workflowStatusCounts(workflowActions, workflowTasksByKey);
+  const nodeById = new Map(nodes.map((node) => [node.id, node]));
+  const workflowNodeLabel = (action: FreezoneWorkflowRunAction | null): string | null => {
+    if (!action) return null;
+    const node = nodeById.get(action.node_id);
+    return node?.type ? resolveNodeDisplayName(node.type, node.data) : null;
+  };
+  const workflowActionLabel = (action: FreezoneWorkflowRunAction): string => {
+    if (action.status === "completed") return t("taskCenter.chatStatus.workflowPhase.completed");
+    if (action.status === "failed") return t("taskCenter.chatStatus.workflowPhase.failed");
+    if (action.status === "blocked") return t("taskCenter.chatStatus.workflowPhase.blocked");
+    if (action.status === "skipped") return t("taskCenter.chatStatus.workflowPhase.skipped");
+    return t(`taskCenter.chatStatus.workflowPhase.${action.phase ?? "waiting_dependencies"}`);
+  };
+  const summary = workflowRun
+    ? workflowRun.status === "completed"
+      ? t("taskCenter.chatStatus.workflowCompletedShort", {
+          completed: workflowSettledCount(workflowActions),
+          total: workflowActions.length,
+        })
+      : [
+          t("taskCenter.chatStatus.workflowShort", {
+            completed: workflowCounts.completed,
+            total: workflowActions.length,
+          }),
+          workflowRun.status === "interrupted"
+            ? t("taskCenter.chatStatus.interruptedShort")
+            : workflowRun.status === "failed"
+              ? t("taskCenter.chatStatus.stoppedShort")
+              : null,
+          workflowCounts.inProgress > 0
+            && workflowRun.status === "running"
+            ? t("taskCenter.chatStatus.inProgressShort", {
+                count: workflowCounts.inProgress,
+              })
+            : null,
+          workflowCounts.waiting > 0
+            && workflowRun.status === "running"
+            ? t("taskCenter.chatStatus.waitingShort", {
+                count: workflowCounts.waiting,
+              })
+            : null,
+          workflowCounts.failed > 0
+            ? t("taskCenter.chatStatus.failedShort", {
+                count: workflowCounts.failed,
+              })
+            : null,
+        ].filter(Boolean).join(" · ")
+    : activeItems.length
+      ? [
+          runningCount
+            ? t("taskCenter.chatStatus.running", { count: runningCount })
+            : null,
+          waitingCount
+            ? t("taskCenter.chatStatus.waiting", { count: waitingCount })
+            : null,
+        ].filter(Boolean).join(" · ")
+      : failedCount
+        ? t("taskCenter.chatStatus.failed", { count: failedCount })
+        : t("taskCenter.chatStatus.completed", { count: completedCount });
+  const leadingLabel = workflowRun
+    ? workflowActivityLabels[
+        workflowActivityIndex % Math.max(workflowActivityLabels.length, 1)
+      ] ?? ""
+    : leading
+      ? leading.nodeLabel ?? displayLabel(leading.task, t)
+      : "";
 
   const openTask = (taskKey: string) => {
     setSelectedTask(taskKey);
     setTaskPanelOpen(true);
+  };
+  const openTaskCenter = () => {
+    if (leading) setSelectedTask(leading.task.task_key);
+    setTaskPanelOpen(true);
+  };
+  const resumeWorkflow = async () => {
+    if (
+      resuming ||
+      !projectId ||
+      !canvasId ||
+      !workflowRun ||
+      resumeNodeIds.length === 0
+    ) {
+      return;
+    }
+    setResuming(true);
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        [{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          project_id: projectId,
+          canvas_id: canvasId,
+          commands: [{
+            type: "run_workflow",
+            node_ids: resumeNodeIds,
+            direction: "downstream",
+            regenerate: false,
+          }],
+        }],
+        { projectId, canvasId },
+      );
+      if (result.errors.length > 0) {
+        throw new Error(result.errors[0] ?? t("taskCenter.chatStatus.resumeFailedFallback"));
+      }
+      await updateFreezoneWorkflowRun(projectId, canvasId, workflowRun.run_id, {
+        status: "cancelled",
+      });
+      await refreshWorkflowRuns();
+      toast.success(t("taskCenter.chatStatus.resumeSucceeded"));
+    } catch (error) {
+      toast.error(t("taskCenter.chatStatus.resumeFailed", {
+        message: error instanceof Error ? error.message : String(error),
+      }));
+    } finally {
+      setResuming(false);
+    }
   };
 
   const locateNode = (nodeId: string) => {
@@ -160,13 +557,27 @@ export function ChatTaskStatusBar({ canvasId }: { canvasId: string | null }) {
     store.setSelectedNode(nodeId);
     store.requestFocusNode(nodeId);
   };
+  const linkedWorkflowTaskKeys = new Set(
+    workflowActions.map((action) => action.task_key).filter(Boolean),
+  );
+  const standaloneItems = workflowRun
+    ? items.filter(({ task }) => !linkedWorkflowTaskKeys.has(task.task_key))
+    : items;
+  const hasActiveStatus = activeItems.length > 0 || workflowRun?.status === "running";
+  const hasFailedStatus =
+    failedCount > 0 ||
+    Boolean(
+      workflowRun &&
+      workflowRun.status !== "running" &&
+      workflowRun.status !== "completed",
+    );
 
   return (
     <section className="mx-auto mb-2 w-full overflow-hidden rounded-lg border border-white/10 bg-background/92 shadow-sm backdrop-blur-xl">
       <div className="flex h-10 min-w-0 items-center gap-2 px-2.5">
-        {activeItems.length ? (
+        {hasActiveStatus ? (
           <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />
-        ) : failedCount ? (
+        ) : hasFailedStatus ? (
           <AlertCircle className="size-4 shrink-0 text-destructive" />
         ) : (
           <CheckCircle2 className="size-4 shrink-0 text-success" />
@@ -181,7 +592,7 @@ export function ChatTaskStatusBar({ canvasId }: { canvasId: string | null }) {
             {summary}
           </span>
           <span className="truncate text-xs text-muted-foreground">
-            {leading.nodeLabel ?? displayLabel(leading.task, t)}
+            {leadingLabel}
           </span>
           <ChevronDown
             className={cn(
@@ -190,6 +601,26 @@ export function ChatTaskStatusBar({ canvasId }: { canvasId: string | null }) {
             )}
           />
         </button>
+        {workflowRun?.status === "interrupted" && resumeNodeIds.length > 0 ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            className="h-7 shrink-0 gap-1 px-2 text-xs"
+            disabled={resuming}
+            title={t("taskCenter.chatStatus.resume")}
+            onClick={() => void resumeWorkflow()}
+          >
+            {resuming ? (
+              <LoaderCircle className="size-3.5 animate-spin" />
+            ) : (
+              <Play className="size-3.5" />
+            )}
+            {resuming
+              ? t("taskCenter.chatStatus.resuming")
+              : t("taskCenter.chatStatus.resume")}
+          </Button>
+        ) : null}
         <Button
           type="button"
           size="icon"
@@ -197,7 +628,7 @@ export function ChatTaskStatusBar({ canvasId }: { canvasId: string | null }) {
           className="size-7 shrink-0"
           title={t("taskCenter.panel.open")}
           aria-label={t("taskCenter.panel.open")}
-          onClick={() => openTask(leading.task.task_key)}
+          onClick={openTaskCenter}
         >
           <ListTodo className="size-4" />
         </Button>
@@ -205,7 +636,65 @@ export function ChatTaskStatusBar({ canvasId }: { canvasId: string | null }) {
 
       {expanded ? (
         <div className="max-h-52 overflow-y-auto border-t border-white/8 px-2 py-1.5">
-          {items.map(({ task, nodeId, nodeLabel }) => {
+          {workflowRun ? workflowActions.map((action) => {
+            const task = action.task_key
+              ? workflowTasksByKey.get(action.task_key) ?? null
+              : null;
+            const progress = task
+              ? taskProgress(task)
+              : action.status === "completed" || action.status === "skipped"
+                ? 100
+                : 0;
+            const active = action.status === "running" || action.status === "pending";
+            const label = workflowNodeLabel(action) ?? action.action;
+            return (
+              <div
+                key={`${action.node_id}:${action.action}`}
+                className="flex min-h-11 items-center gap-2 border-b border-white/6 px-1.5 py-1.5 last:border-b-0"
+              >
+                <button
+                  type="button"
+                  className="min-w-0 flex-1 text-left"
+                  onClick={() => task ? openTask(task.task_key) : locateNode(action.node_id)}
+                >
+                  <span className="flex items-center justify-between gap-2 text-xs">
+                    <span className="truncate text-foreground">{label}</span>
+                    <span className="shrink-0 text-muted-foreground">
+                      {task && isActive(task)
+                        ? `${workflowActionLabel(action)} · ${progress}%`
+                        : workflowActionLabel(action)}
+                    </span>
+                  </span>
+                  <span className="mt-1 block h-1 overflow-hidden rounded-full bg-white/8">
+                    <span
+                      className={cn(
+                        "block h-full rounded-full transition-[width] duration-300",
+                        action.status === "failed" || action.status === "blocked"
+                          ? "bg-destructive"
+                          : action.status === "completed" || action.status === "skipped"
+                            ? "bg-success"
+                            : "bg-primary",
+                        active && progress === 0 && "animate-pulse",
+                      )}
+                      style={{ width: active && progress === 0 ? "32%" : `${progress}%` }}
+                    />
+                  </span>
+                </button>
+                <Button
+                  type="button"
+                  size="icon"
+                  variant="ghost"
+                  className="size-7 shrink-0"
+                  title={t("taskCenter.chatStatus.locateNode")}
+                  aria-label={t("taskCenter.chatStatus.locateNode")}
+                  onClick={() => locateNode(action.node_id)}
+                >
+                  <LocateFixed className="size-3.5" />
+                </Button>
+              </div>
+            );
+          }) : null}
+          {standaloneItems.map(({ task, nodeId, nodeLabel }) => {
             const progress = taskProgress(task);
             return (
               <div

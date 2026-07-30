@@ -1143,6 +1143,27 @@ def _compile_dynamic_recipe_items_intent(
                 normalized_dependencies.append(anchor_id)
 
         for normalized_source in normalized_dependencies:
+            source_item = item_by_id.get(normalized_source) or {}
+            source_timeline_role = _text(
+                source_item.get("timeline_role") or source_item.get("timelineRole")
+            ).lower()
+            if (
+                node_types.get(normalized_source) == "audioNode"
+                and node_types.get(item_id) == "videoNode"
+                and source_timeline_role
+                in {
+                    "voiceover",
+                    "narration",
+                    "shot_voice",
+                    "music",
+                    "bgm",
+                    "background_music",
+                }
+            ):
+                # Final narration/music belongs on the compose timeline. Feeding a
+                # full-length track to Seedance omni makes it an audio reference,
+                # whose provider limit is 1.8-15.2 seconds per clip.
+                continue
             edges.extend(
                 _intent_dependency_edges(
                     [normalized_source],

@@ -8,6 +8,7 @@ import {
 } from "@/api/canvas";
 import { applyCanvasChatCommandsAsync } from "@/features/freezone/canvasChatCommands";
 import {
+  recoverableWorkflowNodeIds,
   resumableWorkflowNodeIds,
   staleResumableWorkflowRunIds,
   WorkflowRunRecoveryBar,
@@ -93,6 +94,10 @@ describe("WorkflowRunRecoveryBar", () => {
 
   it("returns only unfinished workflow node ids", () => {
     expect(resumableWorkflowNodeIds(failedRun)).toEqual(["video-1", "compose-1"]);
+    expect(recoverableWorkflowNodeIds(
+      failedRun,
+      new Set(["image-1", "video-1", "compose-1"]),
+    )).toEqual(["video-1"]);
   });
 
   it("hides recovery records whose nodes were deleted from the canvas", async () => {

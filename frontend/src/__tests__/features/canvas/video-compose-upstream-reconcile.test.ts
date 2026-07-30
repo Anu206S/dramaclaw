@@ -131,6 +131,25 @@ describe('reconcileDraftWithUpstream', () => {
     expect(bgmTrack?.clips[0].trimEndMs).toBe(2_000);
   });
 
+  it('normalizes dynamic workflow voiceover and music timeline roles', () => {
+    const nodes = [
+      workflowNode('video-1', CANVAS_NODE_TYPES.video, 1),
+      workflowNode('voice-1', CANVAS_NODE_TYPES.audio, 1, 'voiceover'),
+      workflowNode('bgm', CANVAS_NODE_TYPES.audio, 1, 'music'),
+    ];
+    nodes[2].data.durationMs = 30_000;
+    useCanvasStore.getState().setCanvasData(nodes, []);
+
+    const result = buildInitialTimeline(nodes.map((node) => node.id));
+    const voiceTrack = result.tracks.find((track) => track.id === AUDIO_TRACK_ID);
+    const bgmTrack = result.tracks.find((track) => track.id.endsWith('background_music'));
+
+    expect(voiceTrack?.clips[0].timelineStartMs).toBe(0);
+    expect(bgmTrack?.clips[0].timelineStartMs).toBe(0);
+    expect(bgmTrack?.clips[0].volume).toBe(0.25);
+    expect(bgmTrack?.clips[0].trimEndMs).toBe(5_000);
+  });
+
   it('infers BGM from audioKind and starts global voiceover at 500ms', () => {
     const nodes = [
       workflowNode('video-1', CANVAS_NODE_TYPES.video, 1),

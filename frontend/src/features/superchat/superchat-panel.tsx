@@ -13565,7 +13565,10 @@ export function SuperChatPanel({
             />
           </div>
           {isFreezoneLayout ? (
-            <ChatTaskStatusBar canvasId={effectiveFreezoneCanvasId} />
+            <ChatTaskStatusBar
+              projectId={params.project ?? null}
+              canvasId={effectiveFreezoneCanvasId}
+            />
           ) : null}
           <div
             ref={composerShellRef}
