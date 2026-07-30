@@ -103,8 +103,8 @@ export type CanvasContextRequest =
   | { type: "validate_canvas_commands"; payload?: unknown }
   | { type: "node_detail"; node_id?: string }
   | { type: "neighbor_graph"; node_id?: string; depth?: number }
-  | { type: "node_action_catalog"; node_id?: string }
-  | { type: "action_catalog"; node_id?: string }
+  | { type: "node_action_catalog"; node_id?: string; action?: string }
+  | { type: "action_catalog"; node_id?: string; action?: string }
   | { type: "action_catalog_by_id"; action_id?: string }
   | { type: "node_create_schema"; node_type?: CanvasNodeType }
   | { type: "audio_voice_options"; node_id?: string }
@@ -215,7 +215,40 @@ function buildAgentCanvasNodeActionCatalog(
       (action) => action.action !== "add_next_node",
     ),
     instruction:
-      "这是镜头上下文节点。agent 可以修改的字段只有 editable_fields 中的 visual_description、scene_ref、time_of_day；不要修改出场身份或出场道具。修改这些字段时使用 update_node_data。需要写回主线时，先更新草稿字段，再使用 run_node_action，action 必须是 sync_beat_context_to_mainline。",
+      "这是镜头上下文节点。agent 可以修改的参数只有 node_detail.parameters 中的 visual_description、scene_ref、time_of_day；不要修改出场身份或出场道具。修改这些字段时使用 update_node_data。需要写回主线时，先更新草稿字段，再使用 run_node_action，action 必须是 sync_beat_context_to_mainline。",
+  };
+}
+
+function buildAgentNodeActionCatalogResponse(
+  node: CanvasNode,
+  context?: { nodes?: readonly CanvasNode[]; edges?: readonly CanvasEdge[] },
+  requestedAction?: string,
+): Record<string, unknown> {
+  const catalog = buildAgentCanvasNodeActionCatalog(node, context);
+  const actions = requestedAction
+    ? catalog.actions.filter((action) => action.action === requestedAction)
+    : catalog.actions;
+  return {
+    node_id: catalog.node_id,
+    node_type: catalog.node_type,
+    ...(typeof catalog.skill_id === "string" && catalog.skill_id.trim()
+      ? { skill_id: catalog.skill_id.trim() }
+      : {}),
+    downstream_spawn_types: catalog.downstream_spawn_types,
+    actions,
+    ...(requestedAction
+      ? {
+          requested_action: requestedAction,
+          action_found: actions.length > 0,
+          instruction:
+            actions.length > 0
+              ? "Use this action entry's parameters when emitting run_node_action or the listed command_type. These are action/tool parameters, not node editable data. If the action opens or creates a downstream UI/node, do not answer from the source node parameters; follow result_effect and inspect the selected/new node detail when needed."
+              : "No action with this name exists on the node. Use freezone_get_node_detail to inspect available action names.",
+        }
+      : {
+          instruction:
+            "This response lists executable node actions only. For node editable parameters, call freezone_get_node_detail. For toolbar/tool/action questions, pass action to this tool before answering exact action behavior or parameters.",
+        }),
   };
 }
 
@@ -442,6 +475,11 @@ function parseCanvasContextRequest(
       return {
         type: value.type,
         node_id: typeof value.node_id === "string" ? value.node_id : undefined,
+        ...((value.type === "node_action_catalog" || value.type === "action_catalog") &&
+        typeof value.action === "string" &&
+        value.action.trim()
+          ? { action: value.action.trim() }
+          : {}),
       };
     case "neighbor_graph":
       return {
@@ -841,8 +879,8 @@ export function buildCanvasChatCommandContext(
     "Do not claim a canvas change succeeded until a frontend write result returns success. Do not say a node was created, updated, deleted, connected, moved, or executed unless the write tool/frontend result confirms it.",
     "For uncertain command shapes, call freezone_get_canvas_command_catalog. Validate non-trivial or multi-command edits with freezone_validate_canvas_commands before emitting the final write tool.",
     "create_edge needs link_type. If link types are not present in current context, call freezone_get_link_type_catalog.",
-    "For dynamic fields such as model, size, aspectRatio, genMode, voice, templates, or create_node data, call the specific get_* schema/options tool such as freezone_get_node_create_schema instead of guessing.",
-    "Referenced nodes are attention anchors. Use their action_summary_json for quick routing; request freezone_get_node_detail or freezone_get_node_action_catalog when full editable field schema or action parameters are needed.",
+    "For dynamic fields such as model, size, aspectRatio, genMode, voice, templates, or create_node data, call the specific get_* schema/options tool such as freezone_get_node_detail or freezone_get_node_create_schema instead of guessing.",
+    "Referenced nodes are attention anchors. Use node_detail for node.parameters. For toolbar/action/panel parameters, call freezone_get_node_action_catalog with action.",
     "For workflow/group execution requests, prefer run_workflow over separate run_node_action calls.",
     "videoComposeNode is a final timeline/composition node: connect video/audio inputs to it with composition_input_for; do not connect planning text or prompts directly to videoComposeNode.",
     "If creating nodes that later commands reference in the same batch, use client_id and reuse that same client_id only inside the same envelope.",
@@ -905,7 +943,7 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
         source_node_id:
           "Existing node id or same-batch client_id to create downstream from.",
         node_type:
-          "Choose from the source node action_catalog_json.parameters.allowed_node_types and this command's allowed_node_types. Request node_create_schema for the selected node_type before filling data.",
+          "Choose from the source node action_summary_json.downstream_spawn_types and this command's allowed_node_types. Request node_create_schema for the selected node_type before filling data.",
         data: "Initial data for the new node. For dynamic/enum fields, request node_create_schema first.",
       },
       allowed_node_types: AGENT_CREATABLE_CANVAS_NODE_TYPES,
@@ -924,7 +962,7 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
       optional: [],
       field_notes: {
         node_id: "Existing node id or same-batch client_id.",
-        data: "Only editable fields to change. Inspect freezone_get_node_action_catalog when unsure.",
+        data: "Only editable node parameters to change. Inspect freezone_get_node_detail and use node.parameters when unsure.",
       },
       example: {
         type: "update_node_data",
@@ -1018,7 +1056,7 @@ function buildCanvasCommandCatalog(canvasId: string): Record<string, unknown> {
       required: ["type", "node_id", "action"],
       optional: ["parameters"],
       field_notes: {
-        action: "Exact action id from freezone_get_node_action_catalog.",
+        action: "Exact action id from node_detail.action_summary.actions. Inspect freezone_get_node_action_catalog with this action before using non-default parameters.",
         parameters:
           "Optional action parameters. Only use fields shown by that action's parameters schema.",
       },
@@ -1795,10 +1833,14 @@ export async function buildCanvasContextRequestResponses(params: {
             data: node
               ? request.type === "action_catalog" ||
                 request.type === "node_action_catalog"
-                ? buildAgentCanvasNodeActionCatalog(node, {
-                    nodes: params.nodes,
-                    edges: params.edges,
-                  })
+                ? buildAgentNodeActionCatalogResponse(
+                    node,
+                    {
+                      nodes: params.nodes,
+                      edges: params.edges,
+                    },
+                    request.action,
+                  )
                 : (() => {
                     const detailNodes =
                       node.type === CANVAS_NODE_TYPES.group
@@ -1987,15 +2029,54 @@ function compactActionSummary(
     downstream_spawn_types: Array.isArray(catalog.downstream_spawn_types)
       ? catalog.downstream_spawn_types
       : [],
-    editable_fields: Array.isArray(catalog.editable_fields)
-      ? catalog.editable_fields
-      : [],
     actions,
+    action_parameter_tool: "freezone_get_node_action_catalog(node_id, action)",
     detail_tools: [
       "freezone_get_node_detail",
       "freezone_get_node_action_catalog",
     ],
   };
+}
+
+function fallbackParameterValue(
+  node: CanvasNodeReferenceItem,
+  field: string,
+): unknown {
+  if (field === node.text_field) return node.text_content;
+  if (field === "displayName") return node.label;
+  return undefined;
+}
+
+function compactParameterCurrentValue(value: unknown): unknown {
+  return typeof value === "string" ? compactTextPreview(value) : value;
+}
+
+function compactEditableParameters(
+  node: CanvasNodeReferenceItem,
+): Record<string, unknown> | null {
+  const schema = recordOrNull(node.action_catalog.editable_schema);
+  if (!schema) return null;
+  const parameters: Record<string, unknown> = {};
+  for (const [field, value] of Object.entries(schema)) {
+    const fieldSchema = recordOrNull(value);
+    if (!fieldSchema) continue;
+    const parameter: Record<string, unknown> = {
+      ...fieldSchema,
+      editable: true,
+    };
+    if ("current_value" in parameter) {
+      parameter.current_value = compactParameterCurrentValue(
+        parameter.current_value,
+      );
+    }
+    if (!("current_value" in parameter)) {
+      const fallbackValue = fallbackParameterValue(node, field);
+      if (fallbackValue !== undefined)
+        parameter.current_value = compactParameterCurrentValue(fallbackValue);
+    }
+    parameters[field] = parameter;
+  }
+  return Object.keys(parameters).length > 0 ? parameters : null;
 }
 
 function nodeTypeCounts(
@@ -2061,6 +2142,8 @@ function compactNodeDetailItem(
   if (node.candidate_origin) item.candidate_origin = node.candidate_origin;
   if (referenceMedia && referenceMedia.length > 0)
     item.reference_media = referenceMedia;
+  const parameters = compactEditableParameters(node);
+  if (parameters) item.parameters = parameters;
   const actionSummary = compactActionSummary(node.action_catalog);
   if (actionSummary) item.action_summary = actionSummary;
   return item;
@@ -2098,7 +2181,7 @@ function buildCompactCanvasNodeDetailPayload(
     }),
     edges: Array.isArray(payload.edges) ? payload.edges : [],
     instruction:
-      "This is compact node detail. If a node includes reference_media, use mention values such as @图片1 in prompt edits; numbering matches the node's top reference thumbnails from left to right. For full editable field schema or action parameters, call freezone_get_node_action_catalog for the specific node_id. For a group child that needs inspection, call freezone_get_node_detail with that child node_id.",
+      "This is compact node detail. Use node.parameters only for editable node data fields, current values, and enum options. Node parameters are not toolbar/action/tool parameters. If the user asks about an action or panel such as HD/upscale, crop, matting, split, lighting, rotate, or download, call freezone_get_node_action_catalog with node_id and action before answering. If a node includes reference_media, use mention values such as @图片1 in prompt edits; numbering matches the node's top reference thumbnails from left to right. For a group child that needs inspection, call freezone_get_node_detail with that child node_id.",
   };
 }
 
@@ -2119,7 +2202,7 @@ export function buildCanvasNodeReferenceContext(
   const lines = [
     "[SUPERTALE_CANVAS_NODE_REFERENCES]",
     "These are compact references for the current user turn. Treat display nodes as the user's visible target; child summaries provide orientation only.",
-    "Use action_summary_json for quick routing. Request freezone_get_node_detail or freezone_get_node_action_catalog before relying on full editable field schema, dynamic options, or action parameters.",
+    "Use action_summary_json for quick routing. Request freezone_get_node_detail for node parameters and dynamic options. Node parameters are not toolbar/action/tool parameters; for questions about an action or panel, request freezone_get_node_action_catalog with action before answering.",
     "Referenced edges are only for unlink, disconnect, or remove-connection requests.",
     "Keep user-visible replies concise and non-technical. Do not mention raw JSON, schema names, field ids, action ids, command ids, or node_id unless the user asks for implementation details.",
   ];

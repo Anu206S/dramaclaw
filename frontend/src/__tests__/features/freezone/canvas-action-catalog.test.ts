@@ -355,6 +355,45 @@ describe("canvas action catalog", () => {
     );
   });
 
+  it("describes video upscale as a downstream tool action, not source node parameters", () => {
+    const video = node({
+      id: "video-upscale-a",
+      type: CANVAS_NODE_TYPES.video,
+      data: {
+        videoUrl: "/static/projects/demo/freezone/video.mp4",
+        quality: "720P",
+        durationSec: 5,
+      },
+    });
+
+    const catalog = buildCanvasNodeActionCatalog(video);
+    const action = catalog.actions.find(
+      (item) => item.action === "open_video_upscale_tool",
+    );
+
+    expect(action).toMatchObject({
+      action: "open_video_upscale_tool",
+      execution: "manual_ui",
+      command_type: "run_node_action",
+      parameters: {
+        node_id: "video-upscale-a",
+        parameter_schema: {
+          resolution: expect.objectContaining({
+            options: ["1080p", "2k", "4k"],
+          }),
+          denoise: expect.objectContaining({
+            options: ["none", "1x", "2x"],
+          }),
+        },
+      },
+      result_effect: {
+        target: "downstream video upscale node",
+      },
+    });
+    expect(action?.description).toContain("downstream video upscale node");
+    expect(action?.description).toContain("source video node's editable parameters");
+  });
+
   it("exposes automatic and manual video compose actions", () => {
     const compose = node({
       id: "compose-a",

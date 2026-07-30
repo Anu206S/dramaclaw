@@ -691,6 +691,36 @@ describe("canvas command validator", () => {
     expect(result.issues).toEqual([]);
   });
 
+  it("rejects unsupported video upscale parameters", () => {
+    const videoNode = node({
+      id: "video-node",
+      type: CANVAS_NODE_TYPES.video,
+      data: { videoUrl: "/static/video.mp4", prompt: "镜头推进" },
+    });
+    const envelope: CanvasChatCommandEnvelope = {
+      schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+      commands: [
+        {
+          type: "run_node_action",
+          node_id: "video-node",
+          action: "open_video_upscale_tool",
+          parameters: {
+            resolution: "8k",
+            denoise: "strong",
+          },
+        },
+      ],
+    };
+
+    const result = validateCanvasChatCommandEnvelopes([envelope], [videoNode], []);
+
+    expect(result.ok).toBe(false);
+    expect(result.issues.map((issue) => issue.message)).toEqual([
+      "unsupported video upscale resolution: 8k",
+      "unsupported video upscale denoise: strong",
+    ]);
+  });
+
   it("accepts audio download and rejects unsupported audio download formats", () => {
     const audioNode = node({
       id: "audio-node",
