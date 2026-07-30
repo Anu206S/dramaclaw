@@ -119,6 +119,14 @@ def _recipe_compiler_timeout_seconds() -> float:
     return min(max(value, 0.1), 120.0)
 
 
+def recipe_compiler_batch_concurrency() -> int:
+    try:
+        value = int(os.getenv("FREEZONE_RECIPE_COMPILER_BATCH_CONCURRENCY", "3"))
+    except (TypeError, ValueError):
+        value = 3
+    return min(max(value, 1), 8)
+
+
 def compose_recipe_fallback_prompt(
     *,
     recipe: dict[str, Any],
@@ -614,6 +622,25 @@ async def compile_recipe_prompt_result(
             _prompt_inflight.pop(cache_key, None)
     _cache_prompt(cache_key, compiled, username=username)
     return RecipeCompileResult(compiled, "model", recipe_ids)
+
+
+async def compile_recipe_prompt_batch(
+    compile_items: list[dict[str, Any]],
+    *,
+    concurrency: int | None = None,
+) -> list[RecipeCompileResult | Exception]:
+    """Compile independent node prompts with bounded concurrency, preserving order."""
+    limit = min(max(concurrency or recipe_compiler_batch_concurrency(), 1), 8)
+    semaphore = asyncio.Semaphore(limit)
+
+    async def compile_one(compile_args: dict[str, Any]) -> RecipeCompileResult | Exception:
+        async with semaphore:
+            try:
+                return await compile_recipe_prompt_result(**compile_args)
+            except Exception as exc:
+                return exc
+
+    return await asyncio.gather(*(compile_one(item) for item in compile_items))
 
 
 async def compile_recipe_prompt(**compile_args: Any) -> str:

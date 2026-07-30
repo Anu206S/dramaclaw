@@ -8,6 +8,7 @@ import {
 } from '@/api/ops';
 import { joinUpstreamText } from './graphContentResolver';
 import type { UpstreamContent } from './ports';
+import { reportWorkflowExecutionActivity } from './workflowExecutionActivity';
 
 interface WorkflowCatalogRuntime {
   skillId?: unknown;
@@ -25,6 +26,7 @@ interface WorkflowCatalogRuntime {
 type RecipePromptStrategy = 'template' | 'user_message' | 'previous_output' | 'llm_refine';
 
 export interface CompileWorkflowNodePromptInput {
+  nodeId?: string;
   nodeData: unknown;
   nodeKind: FreezoneRecipeNodeKind;
   nodePrompt: string;
@@ -131,22 +133,28 @@ export async function compileWorkflowNodePrompt(
   );
   const pipeline = recipePipeline(catalog?.recipePipeline);
 
-  return await compileFreezoneRecipePrompt({
-    recipeId,
-    recipeVersion: text(catalog?.recipeVersion),
-    ...(pipeline.length > 0 ? { recipePipeline: pipeline } : {}),
-    ...skillRuntimeContext(catalog),
-    nodeKind: input.nodeKind,
-    promptStrategy: promptStrategy(catalog?.promptStrategy),
-    nodePrompt: input.nodePrompt,
-    upstreamText,
-    userGoal: text(catalog?.userGoal) || text(catalog?.promptBuilder?.userGoal),
-    referenceMedia: input.referenceMedia,
-    ...(input.onCompileMetadata ? { onCompileMetadata: input.onCompileMetadata } : {}),
-  });
+  reportWorkflowExecutionActivity(input.nodeId, 'compiling_recipe');
+  try {
+    return await compileFreezoneRecipePrompt({
+      recipeId,
+      recipeVersion: text(catalog?.recipeVersion),
+      ...(pipeline.length > 0 ? { recipePipeline: pipeline } : {}),
+      ...skillRuntimeContext(catalog),
+      nodeKind: input.nodeKind,
+      promptStrategy: promptStrategy(catalog?.promptStrategy),
+      nodePrompt: input.nodePrompt,
+      upstreamText,
+      userGoal: text(catalog?.userGoal) || text(catalog?.promptBuilder?.userGoal),
+      referenceMedia: input.referenceMedia,
+      ...(input.onCompileMetadata ? { onCompileMetadata: input.onCompileMetadata } : {}),
+    });
+  } finally {
+    reportWorkflowExecutionActivity(input.nodeId, 'submitting');
+  }
 }
 
 export async function generateWorkflowText(input: {
+  nodeId?: string;
   nodeData: unknown;
   nodePrompt: string;
   upstreamText?: string;
@@ -161,6 +169,7 @@ export async function generateWorkflowText(input: {
     input.upstreamText ?? '',
   );
   const pipeline = recipePipeline(catalog?.recipePipeline);
+  reportWorkflowExecutionActivity(input.nodeId, 'generating');
   return await generateFreezoneRecipeText({
     recipeId,
     recipeVersion: text(catalog?.recipeVersion),

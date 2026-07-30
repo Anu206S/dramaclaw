@@ -1664,6 +1664,31 @@ class FreezoneRecipeCompileResponse(BaseModel):
     data: FreezoneRecipeCompileData
 
 
+class FreezoneRecipeCompileBatchItem(FreezoneRecipeCompileRequest):
+    request_id: str = Field(min_length=1, max_length=128)
+
+
+class FreezoneRecipeCompileBatchRequest(BaseModel):
+    items: list[FreezoneRecipeCompileBatchItem] = Field(min_length=1, max_length=12)
+
+
+class FreezoneRecipeCompileBatchResult(BaseModel):
+    request_id: str
+    ok: bool
+    data: FreezoneRecipeCompileData | None = None
+    error: str = ""
+    retryable: bool = False
+
+
+class FreezoneRecipeCompileBatchData(BaseModel):
+    items: list[FreezoneRecipeCompileBatchResult]
+
+
+class FreezoneRecipeCompileBatchResponse(BaseModel):
+    ok: Literal[True] = True
+    data: FreezoneRecipeCompileBatchData
+
+
 class FreezoneRecipeTextGenerateData(BaseModel):
     content: str
 

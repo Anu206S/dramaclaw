@@ -78,4 +78,148 @@ describe("freezone recipe API", () => {
       recipeIds: ["video-storyboard-grid", "cinematic-lighting"],
     });
   });
+
+  it("coalesces concurrent prompt compilations into one bounded batch request", async () => {
+    vi.mocked(apiCall).mockImplementationOnce(async (_path, options) => {
+      const body = options?.json as {
+        items: Array<{ request_id: string; recipe_id: string }>;
+      };
+      return {
+        items: body.items.map((item, index) => ({
+          request_id: item.request_id,
+          ok: true,
+          data: {
+            prompt: `compiled-${index + 1}`,
+            compile_mode: index === 0 ? "model" : "memory_cache",
+            recipe_ids: [item.recipe_id],
+          },
+        })),
+      };
+    });
+    const firstMetadata = vi.fn();
+    const secondMetadata = vi.fn();
+
+    const [first, second] = await Promise.all([
+      compileFreezoneRecipePrompt({
+        recipeId: "product-hero",
+        nodeKind: "image",
+        nodePrompt: "商品主视觉",
+        onCompileMetadata: firstMetadata,
+      }),
+      compileFreezoneRecipePrompt({
+        recipeId: "product-detail",
+        nodeKind: "image",
+        nodePrompt: "材质细节",
+        onCompileMetadata: secondMetadata,
+      }),
+    ]);
+
+    expect([first, second]).toEqual(["compiled-1", "compiled-2"]);
+    expect(apiCall).toHaveBeenCalledTimes(1);
+    expect(apiCall).toHaveBeenCalledWith(
+      "freezone/recipes/compile-batch",
+      expect.objectContaining({
+        method: "POST",
+        timeout: 10 * 60 * 1000,
+        json: expect.objectContaining({
+          items: [
+            expect.objectContaining({ recipe_id: "product-hero" }),
+            expect.objectContaining({ recipe_id: "product-detail" }),
+          ],
+        }),
+      }),
+    );
+    expect(firstMetadata).toHaveBeenCalledWith({
+      mode: "model",
+      recipeIds: ["product-hero"],
+    });
+    expect(secondMetadata).toHaveBeenCalledWith({
+      mode: "memory_cache",
+      recipeIds: ["product-detail"],
+    });
+  });
+
+  it("keeps successful batch items when another Recipe compilation fails", async () => {
+    vi.mocked(apiCall).mockImplementationOnce(async (_path, options) => {
+      const body = options?.json as {
+        items: Array<{ request_id: string }>;
+      };
+      return {
+        items: [
+          {
+            request_id: body.items[0].request_id,
+            ok: true,
+            data: {
+              prompt: "compiled-image",
+              compile_mode: "model",
+              recipe_ids: ["image"],
+            },
+          },
+          {
+            request_id: body.items[1].request_id,
+            ok: false,
+            error: "Recipe compilation failed",
+            retryable: true,
+          },
+        ],
+      };
+    });
+
+    const outcomes = await Promise.allSettled([
+      compileFreezoneRecipePrompt({
+        recipeId: "image",
+        nodeKind: "image",
+        nodePrompt: "主视觉",
+      }),
+      compileFreezoneRecipePrompt({
+        recipeId: "broken-audio",
+        nodeKind: "audio",
+        nodePrompt: "背景音乐",
+      }),
+    ]);
+
+    expect(outcomes[0]).toEqual({ status: "fulfilled", value: "compiled-image" });
+    expect(outcomes[1]).toEqual({
+      status: "rejected",
+      reason: expect.objectContaining({
+        message: "HTTP 503: Recipe compilation failed",
+      }),
+    });
+  });
+
+  it("falls back to single compilation when the backend has no batch endpoint", async () => {
+    vi.mocked(apiCall)
+      .mockRejectedValueOnce({ status: 404 })
+      .mockResolvedValueOnce({
+        prompt: "first-single",
+        compile_mode: "model",
+        recipe_ids: ["first"],
+      })
+      .mockResolvedValueOnce({
+        prompt: "second-single",
+        compile_mode: "model",
+        recipe_ids: ["second"],
+      });
+
+    const prompts = await Promise.all([
+      compileFreezoneRecipePrompt({
+        recipeId: "first",
+        nodeKind: "image",
+        nodePrompt: "第一张图",
+      }),
+      compileFreezoneRecipePrompt({
+        recipeId: "second",
+        nodeKind: "video",
+        nodePrompt: "第二段视频",
+      }),
+    ]);
+
+    expect(prompts).toEqual(["first-single", "second-single"]);
+    expect(apiCall).toHaveBeenCalledTimes(3);
+    expect(vi.mocked(apiCall).mock.calls.map(([path]) => path)).toEqual([
+      "freezone/recipes/compile-batch",
+      "freezone/recipes/compile",
+      "freezone/recipes/compile",
+    ]);
+  });
 });

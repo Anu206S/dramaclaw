@@ -235,6 +235,7 @@ export const TextAnnotationNode = memo(({
     });
     try {
       const generated = await generateWorkflowText({
+        nodeId: id,
         nodeData: data,
         nodePrompt: content,
         upstreamText: upstreamTextJoined,

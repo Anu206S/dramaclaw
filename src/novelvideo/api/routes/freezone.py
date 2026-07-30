@@ -53,6 +53,8 @@ from novelvideo.api.schemas import (
     FreezoneMarkDetectRequest,
     FreezoneMarkDetectResponse,
     FreezoneOutpaintRequest,
+    FreezoneRecipeCompileBatchRequest,
+    FreezoneRecipeCompileBatchResponse,
     FreezoneRecipeCompileRequest,
     FreezoneRecipeCompileResponse,
     FreezoneRecipeTextGenerateResponse,
@@ -156,6 +158,7 @@ from novelvideo.freezone.route_helpers import (
 )
 from novelvideo.freezone.recipe_runtime import (
     RecipeRuntimeError,
+    compile_recipe_prompt_batch,
     compile_recipe_prompt_result,
     generate_recipe_text,
 )
@@ -4073,21 +4076,7 @@ async def compile_freezone_recipe(
     """Compile an effective user Recipe without returning its internal definition."""
     username = str(user.get("username") or "")
     try:
-        compiled = await compile_recipe_prompt_result(
-            username=username,
-            recipe_id=body.recipe_id,
-            recipe_version=body.recipe_version,
-            recipe_pipeline=[item.model_dump() for item in body.recipe_pipeline],
-            skill_id=body.skill_id,
-            skill_version=body.skill_version,
-            confirmed_inputs=body.confirmed_inputs,
-            node_kind=body.node_kind,
-            node_prompt=body.node_prompt,
-            user_goal=body.user_goal,
-            upstream_text=body.upstream_text,
-            reference_media=[item.model_dump() for item in body.reference_media],
-            prompt_strategy=body.prompt_strategy,
-        )
+        compiled = await compile_recipe_prompt_result(**_recipe_compile_args(body, username))
     except RecipeRuntimeError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:
@@ -4101,6 +4090,81 @@ async def compile_freezone_recipe(
             "recipe_ids": list(compiled.recipe_ids),
         },
     }
+
+
+def _recipe_compile_args(
+    body: FreezoneRecipeCompileRequest,
+    username: str,
+) -> dict[str, Any]:
+    return {
+        "username": username,
+        "recipe_id": body.recipe_id,
+        "recipe_version": body.recipe_version,
+        "recipe_pipeline": [item.model_dump() for item in body.recipe_pipeline],
+        "skill_id": body.skill_id,
+        "skill_version": body.skill_version,
+        "confirmed_inputs": body.confirmed_inputs,
+        "node_kind": body.node_kind,
+        "node_prompt": body.node_prompt,
+        "user_goal": body.user_goal,
+        "upstream_text": body.upstream_text,
+        "reference_media": [item.model_dump() for item in body.reference_media],
+        "prompt_strategy": body.prompt_strategy,
+    }
+
+
+@router.post(
+    "/freezone/recipes/compile-batch",
+    response_model=FreezoneRecipeCompileBatchResponse,
+    tags=[TAG_FREEZONE_AGENT_CONFIG],
+)
+async def compile_freezone_recipe_batch(
+    body: FreezoneRecipeCompileBatchRequest,
+    user: dict = Depends(get_api_user),
+):
+    """Compile several independent node prompts without one failure cancelling the batch."""
+    username = str(user.get("username") or "")
+    outcomes = await compile_recipe_prompt_batch(
+        [_recipe_compile_args(item, username) for item in body.items]
+    )
+    items: list[dict[str, Any]] = []
+    for request, outcome in zip(body.items, outcomes, strict=True):
+        if isinstance(outcome, RecipeRuntimeError):
+            items.append(
+                {
+                    "request_id": request.request_id,
+                    "ok": False,
+                    "error": str(outcome),
+                }
+            )
+            continue
+        if isinstance(outcome, Exception):
+            logger.error(
+                "freezone Recipe batch item failed request_id=%s",
+                request.request_id,
+                exc_info=(type(outcome), outcome, outcome.__traceback__),
+            )
+            items.append(
+                {
+                    "request_id": request.request_id,
+                    "ok": False,
+                    "error": "Recipe compilation failed",
+                    "retryable": True,
+                }
+            )
+            continue
+        items.append(
+            {
+                "request_id": request.request_id,
+                "ok": True,
+                "data": {
+                    "prompt": outcome.prompt,
+                    "compile_mode": outcome.mode,
+                    "recipe_ids": list(outcome.recipe_ids),
+                },
+            }
+        )
+    return {"ok": True, "data": {"items": items}}
 
 
 @router.post(

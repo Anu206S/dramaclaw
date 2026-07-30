@@ -355,6 +355,47 @@ async def test_compile_recipe_prompt_skips_model_for_deterministic_strategy(
     assert result == "商品分镜\n\n镜头缓慢推进"
 
 
+@pytest.mark.asyncio
+async def test_compile_recipe_prompt_batch_preserves_order_and_bounds_concurrency(
+    monkeypatch,
+):
+    active = 0
+    max_active = 0
+
+    async def fake_compile(**kwargs):
+        nonlocal active, max_active
+        active += 1
+        max_active = max(max_active, active)
+        await asyncio.sleep(0.01)
+        active -= 1
+        if kwargs["recipe_id"] == "broken":
+            raise recipe_runtime.RecipeRuntimeError("invalid recipe")
+        return recipe_runtime.RecipeCompileResult(
+            prompt=f"compiled:{kwargs['recipe_id']}",
+            mode="model",
+            recipe_ids=(kwargs["recipe_id"],),
+        )
+
+    monkeypatch.setattr(recipe_runtime, "compile_recipe_prompt_result", fake_compile)
+    outcomes = await recipe_runtime.compile_recipe_prompt_batch(
+        [
+            {"recipe_id": "first"},
+            {"recipe_id": "broken"},
+            {"recipe_id": "third"},
+            {"recipe_id": "fourth"},
+        ],
+        concurrency=2,
+    )
+
+    assert max_active == 2
+    assert isinstance(outcomes[0], recipe_runtime.RecipeCompileResult)
+    assert outcomes[0].prompt == "compiled:first"
+    assert isinstance(outcomes[1], recipe_runtime.RecipeRuntimeError)
+    assert isinstance(outcomes[2], recipe_runtime.RecipeCompileResult)
+    assert outcomes[2].prompt == "compiled:third"
+    assert isinstance(outcomes[3], recipe_runtime.RecipeCompileResult)
+
+
 def test_recipe_pipeline_rejects_explicit_conflicts(monkeypatch):
     recipes = {
         "base": {

@@ -7,6 +7,7 @@ import {
   type FreezoneWorkflowRun,
 } from "@/api/canvas";
 import { Button } from "@/components/ui/button";
+import type { WorkflowRunUpdatedDetail } from "@/features/canvas/application/workflowExecutionActivity";
 import {
   applyCanvasChatCommandsAsync,
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
@@ -60,6 +61,15 @@ function recoverableWorkflowActions(
   return unresolvedWorkflowActions(run, existingNodeIds).filter(
     (action) => !isNodeActionGenerationPending(action.node_id, action.action),
   );
+}
+
+export function recoverableWorkflowNodeIds(
+  run: FreezoneWorkflowRun,
+  existingNodeIds: ReadonlySet<string>,
+): string[] {
+  return [...new Set(
+    recoverableWorkflowActions(run, existingNodeIds).map((action) => action.node_id),
+  )];
 }
 
 function latestResumableRun(
@@ -135,14 +145,26 @@ export function WorkflowRunRecoveryBar({
   }, [canvasId, existingNodeIds, projectId, runs]);
 
   useEffect(() => {
-    const handleRunUpdated = () => void refresh();
+    const handleRunUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<WorkflowRunUpdatedDetail>).detail;
+      if (detail?.projectId && detail.projectId !== projectId) return;
+      if (detail?.canvasId && detail.canvasId !== canvasId) return;
+      if (detail?.run) {
+        setRuns((current) => [
+          detail.run!,
+          ...current.filter((item) => item.run_id !== detail.run!.run_id),
+        ]);
+        return;
+      }
+      void refresh();
+    };
     window.addEventListener(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdated);
     const refreshInterval = window.setInterval(() => void refresh(), 15_000);
     return () => {
       window.removeEventListener(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdated);
       window.clearInterval(refreshInterval);
     };
-  }, [refresh]);
+  }, [canvasId, projectId, refresh]);
 
   useEffect(() => {
     if (trackedTaskKeys.size === 0) return;
@@ -162,9 +184,7 @@ export function WorkflowRunRecoveryBar({
   );
   const nodeIds = useMemo(
     () => run
-      ? [...new Set(
-        recoverableWorkflowActions(run, existingNodeIds).map((action) => action.node_id),
-      )]
+      ? recoverableWorkflowNodeIds(run, existingNodeIds)
       : [],
     [canvasNodes, existingNodeIds, run],
   );

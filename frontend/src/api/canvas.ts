@@ -83,11 +83,22 @@ export type WorkflowRunActionStatus =
   | "failed"
   | "blocked"
   | "skipped";
+export type WorkflowRunActionPhase =
+  | "waiting_dependencies"
+  | "waiting_slot"
+  | "waiting_capacity"
+  | "preparing"
+  | "compiling_recipe"
+  | "submitting"
+  | "generating"
+  | "syncing_result"
+  | "retrying";
 
 export interface FreezoneWorkflowRunAction {
   node_id: string;
   action: string;
   status: WorkflowRunActionStatus;
+  phase?: WorkflowRunActionPhase | null;
   updated_at?: string | null;
   error?: string | null;
   task_key?: string | null;
@@ -146,6 +157,7 @@ export async function updateFreezoneWorkflowRun(
       node_id: string;
       action: string;
       status: WorkflowRunActionStatus;
+      phase?: WorkflowRunActionPhase | null;
       error?: string | null;
       task_key?: string | null;
       task_type?: string | null;
