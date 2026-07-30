@@ -973,6 +973,7 @@ def _compile_dynamic_recipe_items_intent(
     item_by_id: dict[str, dict[str, Any]] = {}
     phases: list[str] = []
     include_audio = _intent_bool(intent, "include_audio", True)
+    include_compose = _intent_bool(intent, "include_compose", True)
 
     for index, item in enumerate(items):
         item_id = _safe_id(_text(item.get("id")) or f"item_{index + 1}")
@@ -995,6 +996,11 @@ def _compile_dynamic_recipe_items_intent(
                 path=f"items.{index}.recipe_id",
             )
         if _text(recipe.get("output_kind")) == "audio" and not include_audio:
+            continue
+        if include_compose and _is_redundant_compose_item(item_id, item):
+            # The compiler appends one real videoComposeNode below. A Recipe-backed
+            # "final compose" video item would instead call Seedance R2V with every
+            # completed clip and exceed its reference-video duration limit.
             continue
         recipe_pipeline: list[dict[str, Any]] = []
         raw_pipeline = item.get("recipe_pipeline") or item.get("recipePipeline") or []
@@ -1091,6 +1097,7 @@ def _compile_dynamic_recipe_items_intent(
     item_order = {item_id: index for index, item_id in enumerate(item_by_id)}
     for item_id, item in item_by_id.items():
         raw_dependencies = item.get("depends_on") or item.get("dependsOn") or []
+        raw_references = item.get("reference_inputs") or item.get("referenceInputs") or []
         dependencies = (
             [_text(value) for value in raw_dependencies if _text(value)]
             if isinstance(raw_dependencies, list)
@@ -1098,9 +1105,20 @@ def _compile_dynamic_recipe_items_intent(
             if _text(raw_dependencies)
             else []
         )
+        references = (
+            [_text(value) for value in raw_references if _text(value)]
+            if isinstance(raw_references, list)
+            else [_text(raw_references)]
+            if _text(raw_references)
+            else []
+        )
+        for reference_id in references:
+            if reference_id not in dependencies:
+                dependencies.append(reference_id)
         if not dependencies:
             dependencies = ["workflow_input"]
         normalized_dependencies: list[str] = []
+        normalized_references: set[str] = set()
         for source_id in dependencies:
             normalized_source = (
                 "workflow_input"
@@ -1113,6 +1131,8 @@ def _compile_dynamic_recipe_items_intent(
                     path=f"items.{item_id}.depends_on",
                 )
             normalized_dependencies.append(normalized_source)
+            if source_id in references:
+                normalized_references.add(normalized_source)
 
         has_media_dependency = any(
             node_types.get(source_id) in {"imageGenNode", "videoNode", "audioNode"}
@@ -1150,6 +1170,7 @@ def _compile_dynamic_recipe_items_intent(
             if (
                 node_types.get(normalized_source) == "audioNode"
                 and node_types.get(item_id) == "videoNode"
+                and normalized_source not in normalized_references
                 and source_timeline_role
                 in {
                     "voiceover",
@@ -1164,15 +1185,21 @@ def _compile_dynamic_recipe_items_intent(
                 # full-length track to Seedance omni makes it an audio reference,
                 # whose provider limit is 1.8-15.2 seconds per clip.
                 continue
-            edges.extend(
-                _intent_dependency_edges(
-                    [normalized_source],
-                    [item_id],
-                    node_types=node_types,
-                )
+            edges.append(
+                {
+                    "source": normalized_source,
+                    "target": item_id,
+                    "link_type": (
+                        "media_input_for"
+                        if normalized_source in normalized_references
+                        else _intent_link_type(
+                            node_types.get(normalized_source, ""),
+                            node_types.get(item_id, ""),
+                        )
+                    ),
+                }
             )
 
-    include_compose = _intent_bool(intent, "include_compose", True)
     if include_compose:
         compose_sources = [
             node_id
@@ -1523,6 +1550,20 @@ def _intent_items(intent: dict[str, Any]) -> list[dict[str, Any]]:
                             else {}
                         ),
                         **(
+                            {
+                                "reference_inputs": list(
+                                    raw_item.get("reference_inputs")
+                                    or raw_item.get("referenceInputs")
+                                )
+                            }
+                            if isinstance(
+                                raw_item.get("reference_inputs")
+                                or raw_item.get("referenceInputs"),
+                                list,
+                            )
+                            else {}
+                        ),
+                        **(
                             {"stage": _text(raw_item.get("stage"))}
                             if _text(raw_item.get("stage"))
                             else {}
@@ -1603,6 +1644,11 @@ def _intent_dependency_edges(
 def _intent_link_type(source_type: str, target_type: str) -> str:
     if target_type == "videoComposeNode":
         return "composition_input_for"
+    if source_type == "videoNode" and target_type == "videoNode":
+        # A previous generated shot may gate the next workflow step without
+        # becoming an R2V reference. Otherwise Seedance receives every prior
+        # shot and can exceed its 15.2-second total reference-video limit.
+        return "dependency_for"
     if source_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
         if target_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
             return "context_for"
@@ -1610,6 +1656,25 @@ def _intent_link_type(source_type: str, target_type: str) -> str:
     if source_type in {"imageGenNode", "videoNode", "audioNode"}:
         return "media_input_for"
     return "context_for"
+
+
+def _is_redundant_compose_item(item_id: str, item: dict[str, Any]) -> bool:
+    normalized_id = item_id.strip().lower().replace("-", "_")
+    if normalized_id in {
+        "compose",
+        "final_compose",
+        "final_composition",
+        "video_compose",
+    }:
+        return True
+    title = _text(item.get("title")).strip().lower()
+    return title in {
+        "最终合成",
+        "成片合成",
+        "最终成片合成",
+        "final compose",
+        "final composition",
+    }
 
 
 def _intent_item_node(

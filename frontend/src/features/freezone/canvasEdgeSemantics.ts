@@ -15,6 +15,7 @@ export type CanvasLinkObjectType =
 export type CanvasEdgeSemanticKind =
   | "context_for"
   | "prompt_for"
+  | "dependency_for"
   | "media_input_for"
   | "derived_from"
   | "composition_input_for";
@@ -49,6 +50,14 @@ export const CANVAS_LINK_TYPE_CATALOG: CanvasLinkTypeCatalogItem[] = [
     target_object_types: ["ImageNode", "VideoNode", "AudioNode", "ScriptNode"],
     description: "上游文本/脚本是目标生成节点的直接提示词、文案、台词或任务输入。",
     instruction: "Use when upstream text is direct generation input, such as text-to-image, text-to-video, text-to-audio, script generation, or another direct textual instruction. A plain textAnnotationNode with no semanticOutputRole may be connected with prompt_for and will be treated as direct input text for that edge. If the source text is explicitly planning_text and is only a brief, plan, requirement note, or contextual documentation, keep it as planning_text and group it with the generator instead of connecting it directly, or create a separate input_text prompt node.",
+  },
+  {
+    link_type: "dependency_for",
+    category: "context",
+    source_object_types: ["TextNode", "ImageNode", "VideoNode", "AudioNode", "ScriptNode"],
+    target_object_types: ["TextNode", "ImageNode", "VideoNode", "AudioNode", "ScriptNode"],
+    description: "上游节点只控制目标节点的执行顺序，目标节点不会消费其输出。",
+    instruction: "Use only for execution ordering when the target must wait for the source but must not send the source output to a generation provider. Never use it for actual prompts, media references, or composition inputs.",
   },
   {
     link_type: "media_input_for",
@@ -87,7 +96,7 @@ const CANVAS_EDGE_SEMANTIC_KIND_ALIASES: Record<string, CanvasEdgeSemanticKind> 
 
 export function canvasLinkTypeCatalogText(): string {
   const principle =
-    "Edges are data or semantic input relationships, not visual association lines. Create an edge only when the target should consume the source as input, reference, context, or composition material. If nodes are merely related or part of the same workflow, use group_nodes or layout_nodes instead of create_edge.";
+    "Edges are data, semantic input, or explicit execution-order relationships, not visual association lines. Use dependency_for only when the target must wait without consuming the source output. Use the other edge types only when the target consumes the source as input, reference, context, or composition material. If nodes are merely related or part of the same workflow, use group_nodes or layout_nodes instead of create_edge.";
   return `${principle} ` + CANVAS_LINK_TYPE_CATALOG.map((item) =>
     `${item.link_type}: source=[${item.source_object_types.join(", ")}], target=[${item.target_object_types.join(", ")}], ${item.description} ${item.instruction}`,
   ).join(" | ");
