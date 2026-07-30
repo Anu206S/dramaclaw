@@ -8896,7 +8896,7 @@ function CanvasNodeReferenceThumb({
       <button
         type="button"
         className="absolute right-0.5 top-0.5 z-20 flex size-4 items-center justify-center rounded-full bg-black/70 text-white/75 opacity-0 shadow-sm backdrop-blur transition hover:bg-black/85 hover:text-white group-hover:opacity-100 group-focus-within:opacity-100"
-        aria-label={`移除 ${title}`}
+        aria-label="移除画布引用"
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
