@@ -1456,6 +1456,10 @@ def _load_pending_canvas_context(path: Any) -> dict[str, Any] | None:
     }
 
 
+_PENDING_CANVAS_COMMAND_STALE_SECONDS = 75.0
+_PENDING_CANVAS_CONTEXT_STALE_SECONDS = 45.0
+
+
 def _pending_canvas_command_timed_out(path: Any, *, stale_seconds: float = 45.0) -> bool:
     try:
         return (time.time() - path.stat().st_mtime) >= stale_seconds
@@ -1480,7 +1484,10 @@ def _resolve_stale_pending_canvas_command(
     scope: ChatScope,
     turn_id: str,
 ) -> bool:
-    if not _pending_canvas_command_timed_out(path):
+    if not _pending_canvas_command_timed_out(
+        path,
+        stale_seconds=_PENDING_CANVAS_COMMAND_STALE_SECONDS,
+    ):
         return False
     envelope = pending.get("envelope") if isinstance(pending, dict) else None
     commands = envelope.get("commands") if isinstance(envelope, dict) else None
@@ -1528,7 +1535,10 @@ def _resolve_stale_pending_canvas_context(
     scope: ChatScope,
     turn_id: str,
 ) -> bool:
-    if not _pending_canvas_command_timed_out(path):
+    if not _pending_canvas_command_timed_out(
+        path,
+        stale_seconds=_PENDING_CANVAS_CONTEXT_STALE_SECONDS,
+    ):
         return False
     envelope = pending.get("envelope") if isinstance(pending, dict) else None
     requests = envelope.get("requests") if isinstance(envelope, dict) else None

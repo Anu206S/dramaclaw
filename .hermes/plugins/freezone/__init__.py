@@ -1883,10 +1883,16 @@ def _handle_node_action_catalog(args: dict[str, Any], **_: Any) -> str:
         return tool_result(
             {"ok": False, "status": "node_id_required", "error": "node_id is required"}
         )
+    action = str(
+        args.get("action") or args.get("action_name") or args.get("actionName") or ""
+    ).strip()
+    request: dict[str, Any] = {"type": "node_action_catalog", "node_id": node_id}
+    if action:
+        request["action"] = action
     return _request_canvas_context_from_frontend(
         project=project,
         canvas=canvas,
-        requests=[{"type": "node_action_catalog", "node_id": node_id}],
+        requests=[request],
     )
 
 
@@ -5093,7 +5099,7 @@ TOOLS = (
         "freezone_get_node_detail",
         _schema(
             "freezone_get_node_detail",
-            "Request detailed context for one Freezone canvas node from the frontend.",
+            "Request detailed context for one Freezone canvas node from the frontend. This returns node data parameters, not toolbar/action parameters.",
             {
                 **_SCOPE_PROPS,
                 "node_id": {"type": "string", "description": "Canvas node id."},
@@ -5125,11 +5131,17 @@ TOOLS = (
         "freezone_get_node_action_catalog",
         _schema(
             "freezone_get_node_action_catalog",
-            "Request the action catalog for one Freezone canvas node from the frontend.",
+            "Request the action catalog for one Freezone canvas node from the frontend. Use this with action before answering questions about toolbar/action parameters or behavior; node_detail.parameters are only node data.",
             {
                 **_SCOPE_PROPS,
                 "node_id": {"type": "string", "description": "Canvas node id."},
                 "nodeId": {"type": "string", "description": "Alias of node_id."},
+                "action": {
+                    "type": "string",
+                    "description": "Optional action id to return one action's exact parameters and behavior. Omit only when comparing all node actions.",
+                },
+                "action_name": {"type": "string", "description": "Alias of action."},
+                "actionName": {"type": "string", "description": "Alias of action."},
             },
             ["node_id"],
         ),
@@ -5508,7 +5520,7 @@ TOOLS = (
         "freezone_update_node_data",
         _schema(
             "freezone_update_node_data",
-            "Single-operation tool only: update editable data fields on exactly one existing Freezone node when the user explicitly asks for one node edit. For multi-node edits or mixed edit+layout/link workflows, use one freezone_emit_canvas_command batch. Inspect freezone_get_node_action_catalog first when editable fields or enum options are unclear.",
+            "Single-operation tool only: update editable data fields on exactly one existing Freezone node when the user explicitly asks for one node edit. For multi-node edits or mixed edit+layout/link workflows, use one freezone_emit_canvas_command batch. Inspect freezone_get_node_detail first when editable parameters or enum options are unclear.",
             {
                 **_SCOPE_PROPS,
                 "node_id": {"type": "string", "description": "Existing canvas node id."},
@@ -5772,7 +5784,7 @@ TOOLS = (
         "freezone_run_node_action",
         _schema(
             "freezone_run_node_action",
-            "Single-operation tool only: run or open exactly one frontend node action listed by freezone_get_node_action_catalog. For multiple actions or mixed workflows, use one freezone_emit_canvas_command batch.",
+            "Single-operation tool only: run or open exactly one frontend node action listed by node_detail action_summary. For non-default action parameters, inspect freezone_get_node_action_catalog with the specific action first. For multiple actions or mixed workflows, use one freezone_emit_canvas_command batch.",
             {
                 **_SCOPE_PROPS,
                 "node_id": {"type": "string", "description": "Existing canvas node id."},
