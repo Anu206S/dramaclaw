@@ -75,7 +75,7 @@ reference_1_canvas_id: ...
 reference_1_node_1_id: ...
 reference_1_node_1_type: ...
 reference_1_node_1_label: ...
-reference_1_node_1_action_catalog_json: {...}
+reference_1_node_1_action_summary_json: {...}
 reference_1_edge_1_id: ...
 reference_1_edge_1_source: ...
 reference_1_edge_1_target: ...
@@ -90,11 +90,14 @@ reference_1_edge_1_target: ...
 
 把引用中的 `edge_*` 当作引用节点之间的已知边。只有在断开、取消连接、删除连线请求中使用 edge 引用；不要在删除节点请求中使用 edge 引用。
 
-每个节点的 `action_catalog_json` 对以下内容具有权威性：
+每个节点的 `node_detail` 和 action 工具分工如下：
 
 - `downstream_spawn_types`：可从该节点向下游创建的节点类型。
-- `editable_fields`：可普通 patch 的 data 字段。
-- `actions`：可用动作，以及应使用的 command type。
+- `parameters`：节点自身可普通 patch 的 data 字段、当前值和可选项。
+- `action_summary.actions`：节点可用动作的轻量列表。
+- `freezone_get_node_action_catalog(node_id, action)`：某个动作的完整参数、执行方式和说明。
+
+`parameters` 不是工具栏/面板 action 的参数。用户问“这个工具有哪些参数”“高清/裁剪/抠图/打光怎么配置”时，先用 `action_summary.actions` 找到对应 action，再调用 `freezone_get_node_action_catalog(node_id, action)`；不要直接用源节点的 `parameters` 回答。
 
 对于 `execution="frontend_node"` 的动作，不要找后端 `action_id` 或 `skill_id`。使用 `run_node_action`，并传入列出的 `action` 字符串。例如，如果 `imageGenNode` 有 `action="generate_image"`，使用：
 
@@ -218,7 +221,7 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 }
 ```
 
-除非用户明确要求修改明显安全的普通显示字段，否则只更新 `editable_fields` 中列出的字段。`displayName` 是标准节点标题字段；普通节点标题不要用 `label`、`title` 或 `name`。前端会剥离保留字段，包括主线/projection 字段。
+除非用户明确要求修改明显安全的普通显示字段，否则只更新 `freezone_get_node_detail` 返回的 `parameters` 中列出的字段。`displayName` 是标准节点标题字段；普通节点标题不要用 `label`、`title` 或 `name`。前端会剥离保留字段，包括主线/projection 字段。
 
 ### create_edge
 
@@ -363,7 +366,7 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 
 ### run_node_action
 
-执行 `action_catalog_json` 中支持的节点动作。
+执行 `action_summary_json` 中支持的节点动作。需要非默认动作参数时，先调用 `freezone_get_node_action_catalog(node_id, action)` 查询该动作详情。
 
 ```json
 {
@@ -373,7 +376,7 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 }
 ```
 
-只使用该节点 `action_catalog_json.actions` 中存在的动作。
+只使用该节点 `action_summary_json.actions` 中存在的动作。
 
 已知低风险 UI 动作包括：
 
@@ -393,7 +396,7 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 
 对于 `execution="manual_ui"`，`run_node_action` 会打开 UI 或确认入口。对于 `execution="frontend_node"`，它会运行节点自己的前端行为，例如在 `imageGenNode` 上运行 `generate_image`。
 
-如果用户要求运行/执行/生成一个引用的 imageGenNode，且它的 `action_catalog_json.actions` 中包含 `generate_image`，输出且只输出一个针对该节点 id 和 action 的 `run_node_action` 命令。
+如果用户要求运行/执行/生成一个引用的 imageGenNode，且它的 `action_summary_json.actions` 中包含 `generate_image`，输出且只输出一个针对该节点 id 和 action 的 `run_node_action` 命令。
 
 ## 回复风格
 
@@ -422,7 +425,7 @@ Plan id 不是画布节点 id。如果确认后的自定义方案需要变成多
 - 对于独立创建请求，比如”添加一个图片节点”，调用 `freezone_create_node` 创建刚好一个节点，或用 `freezone_emit_canvas_command` 批量创建。
 - 对于需要已有目标的操作，比如删除、更新、添加下游、打开工具，让用户先选中节点并点击”添加到聊天”。
 
-如果用户要求的事情需要 `action_catalog_json` 中未暴露的生成能力，说明当前画布聊天可以准备/打开相关节点 UI，但还不能静默完成该生成。
+如果用户要求的事情需要 `action_summary_json` 中未暴露的生成能力，说明当前画布聊天可以准备/打开相关节点 UI，但还不能静默完成该生成。
 
 ## 硬规则
 

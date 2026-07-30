@@ -107,6 +107,10 @@ import type { ChatMessage, ChatMessagePart } from "@/features/superchat/types";
 import type { ApprovalDecision, ApprovalRequest, ChatAttachment } from "@/features/superchat/types";
 import { FormatCheckDetailsDialog } from "@/components/ingest/FormatCheckDetailsDialog";
 import type { FormatCheck, UploadResult } from "@/lib/queries/ingest";
+import type {
+  FreezoneVideoUpscaleDenoise,
+  FreezoneVideoUpscaleResolution,
+} from "@/api/ops";
 import type { ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
 import type { CanvasOntologyContext } from "@/features/canvas/ontology/canvasOntology";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
@@ -117,6 +121,11 @@ import type {
   VideoGenQuality,
 } from "@/features/canvas/domain/canvasNodes";
 import { VIDEO_GENERATION_ASPECT_RATIOS } from "@/features/canvas/application/imageData";
+import {
+  VIDEO_UPSCALE_DENOISE_OPTIONS,
+  VIDEO_UPSCALE_RESOLUTIONS,
+  VIDEO_UPSCALE_RESOLUTION_LABEL,
+} from "@/features/canvas/application/videoUpscale";
 import { useFreezoneImageModels } from "@/features/canvas/hooks/useFreezoneImageModels";
 import { useFreezoneVideoModels } from "@/features/canvas/hooks/useFreezoneVideoModels";
 import type {
@@ -2365,6 +2374,18 @@ function isCanvasApprovalVideoCount(value: unknown): value is CanvasApprovalVide
   );
 }
 
+function normalizeVideoUpscaleResolutionForApproval(value: unknown): FreezoneVideoUpscaleResolution {
+  return typeof value === "string" && VIDEO_UPSCALE_RESOLUTIONS.includes(value as FreezoneVideoUpscaleResolution)
+    ? (value as FreezoneVideoUpscaleResolution)
+    : "1080p";
+}
+
+function normalizeVideoUpscaleDenoiseForApproval(value: unknown): FreezoneVideoUpscaleDenoise {
+  return typeof value === "string" && VIDEO_UPSCALE_DENOISE_OPTIONS.includes(value as FreezoneVideoUpscaleDenoise)
+    ? (value as FreezoneVideoUpscaleDenoise)
+    : "1x";
+}
+
 function approvalNodeData(
   approval: PendingCanvasCommandApproval,
   canvasNodes: CanvasNode[],
@@ -2476,6 +2497,7 @@ function videoApprovalInitialParams(
   if (nodeIds.length !== 1) return null;
   const nodeId = nodeIds[0];
   const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
+  if (nodeData.isUpscaleNode === true) return null;
   const textValue = (value: unknown, fallback: string) =>
     typeof value === "string" && value.trim() ? value.trim() : fallback;
   const rawModel = textValue(nodeData?.model, fallbackModel);
@@ -2505,6 +2527,22 @@ function videoApprovalInitialParams(
     humanReview: requiresHumanReviewConfirmation || Boolean(nodeData?.humanReview),
     requiresHumanReviewConfirmation,
     count: countValue,
+  };
+}
+
+function videoUpscaleApprovalInitialParams(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+): CanvasApprovalVideoUpscaleParams | null {
+  const nodeIds = videoGenerateCommandNodeIds(approval.envelopes);
+  if (nodeIds.length !== 1) return null;
+  const nodeId = nodeIds[0];
+  const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
+  if (nodeData.isUpscaleNode !== true) return null;
+  return {
+    nodeId,
+    resolution: normalizeVideoUpscaleResolutionForApproval(nodeData.upscaleResolution),
+    denoise: normalizeVideoUpscaleDenoiseForApproval(nodeData.upscaleDenoise),
   };
 }
 
@@ -2612,6 +2650,43 @@ function amendCanvasApprovalWithVideoParams(
     generateAudio: params.generateAudio,
     humanReview: params.humanReview,
     count: params.count,
+  };
+  return {
+    ...approval,
+    envelopes: approval.envelopes.map((envelope) => ({
+      ...envelope,
+      commands: envelope.commands.flatMap((command) => {
+        if (
+          inserted ||
+          command.type !== "run_node_action" ||
+          command.action !== "generate_video" ||
+          command.node_id !== params.nodeId
+        ) {
+          return [command];
+        }
+        inserted = true;
+        return [
+          {
+            type: "update_node_data" as const,
+            node_id: params.nodeId,
+            data: videoData,
+          },
+          command,
+        ];
+      }),
+    })),
+  };
+}
+
+function amendCanvasApprovalWithVideoUpscaleParams(
+  approval: PendingCanvasCommandApproval,
+  params: CanvasApprovalVideoUpscaleParams | null,
+): PendingCanvasCommandApproval {
+  if (!params) return approval;
+  let inserted = false;
+  const videoData = {
+    upscaleResolution: params.resolution,
+    upscaleDenoise: params.denoise,
   };
   return {
     ...approval,
@@ -2916,8 +2991,15 @@ function CanvasCommandApprovalCard({
     ),
     [approval, canvasEdges, canvasNodes, fallbackVideoModel, videoModels.models],
   );
+  const initialVideoUpscaleParams = useMemo(
+    () => videoUpscaleApprovalInitialParams(approval, canvasNodes),
+    [approval, canvasNodes],
+  );
   const [imageParams, setImageParams] = useState<CanvasApprovalImageParams | null>(() => initialImageParams);
   const [videoParams, setVideoParams] = useState<CanvasApprovalVideoParams | null>(() => initialVideoParams);
+  const [videoUpscaleParams, setVideoUpscaleParams] = useState<CanvasApprovalVideoUpscaleParams | null>(
+    () => initialVideoUpscaleParams,
+  );
   const humanReviewNodeIds = useMemo(
     () => canvasApprovalHumanReviewNodeIds(approval, canvasNodes, canvasEdges),
     [approval, canvasEdges, canvasNodes],
@@ -2937,6 +3019,10 @@ function CanvasCommandApprovalCard({
   }, [initialVideoParams]);
 
   useEffect(() => {
+    setVideoUpscaleParams(initialVideoUpscaleParams);
+  }, [initialVideoUpscaleParams]);
+
+  useEffect(() => {
     setHumanReviewEnabled(true);
   }, [approval.id, humanReviewNodeIdsKey]);
 
@@ -2949,12 +3035,16 @@ function CanvasCommandApprovalCard({
   const amendedApproval = useMemo(() => {
     const withImageParams = amendCanvasApprovalWithImageParams(approval, imageParams);
     const withVideoParams = amendCanvasApprovalWithVideoParams(withImageParams, videoParams);
-    return amendCanvasApprovalWithHumanReview(
+    const withVideoUpscaleParams = amendCanvasApprovalWithVideoUpscaleParams(
       withVideoParams,
+      videoUpscaleParams,
+    );
+    return amendCanvasApprovalWithHumanReview(
+      withVideoUpscaleParams,
       humanReviewNodeIds,
       humanReviewEnabled,
     );
-  }, [approval, humanReviewEnabled, humanReviewNodeIds, imageParams, videoParams]);
+  }, [approval, humanReviewEnabled, humanReviewNodeIds, imageParams, videoParams, videoUpscaleParams]);
   const imageModelOptions = useMemo(() => {
     const options = imageModels.models.map((model) => ({ value: model.id, label: model.label ?? model.id }));
     if (imageParams?.model && !options.some((option) => option.value === imageParams.model)) {
@@ -2998,6 +3088,17 @@ function CanvasCommandApprovalCard({
       };
     });
   }, [videoModels.models]);
+  const updateVideoUpscaleParams = useCallback((patch: Partial<CanvasApprovalVideoUpscaleParams>) => {
+    setVideoUpscaleParams((current) => {
+      if (!current) return current;
+      return {
+        ...current,
+        ...patch,
+        resolution: normalizeVideoUpscaleResolutionForApproval(patch.resolution ?? current.resolution),
+        denoise: normalizeVideoUpscaleDenoiseForApproval(patch.denoise ?? current.denoise),
+      };
+    });
+  }, []);
 
   return (
     <div className="mt-3 w-full min-w-0 overflow-hidden rounded-xl border border-amber-400/25 bg-background/95 text-xs text-muted-foreground shadow-lg backdrop-blur-sm">
@@ -3113,6 +3214,38 @@ function CanvasCommandApprovalCard({
               value={String(videoParams.count)}
               onChange={(value) => updateVideoParams({ count: Number(value) as 1 | 2 | 4 })}
               options={CANVAS_APPROVAL_VIDEO_COUNT_OPTIONS.map((option) => ({ value: String(option), label: `${option} 个` }))}
+            />
+          </div>
+        </div>
+      )}
+      {videoUpscaleParams && (
+        <div className="border-t border-amber-400/10 px-3 py-1.5">
+          <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <CanvasApprovalImageParamSelect
+              ariaLabel="高清分辨率"
+              disabled={isExecuting}
+              value={videoUpscaleParams.resolution}
+              onChange={(value) => updateVideoUpscaleParams({
+                resolution: normalizeVideoUpscaleResolutionForApproval(value),
+              })}
+              options={VIDEO_UPSCALE_RESOLUTIONS.map((value) => ({
+                value,
+                label: VIDEO_UPSCALE_RESOLUTION_LABEL[value] ?? value,
+              }))}
+            />
+            <span className="h-4 w-px bg-white/[0.12]" />
+            <CanvasApprovalImageParamSelect
+              ariaLabel="高清降噪"
+              disabled={isExecuting}
+              value={videoUpscaleParams.denoise}
+              onChange={(value) => updateVideoUpscaleParams({
+                denoise: normalizeVideoUpscaleDenoiseForApproval(value),
+              })}
+              options={[
+                { value: "none", label: "不降噪" },
+                { value: "1x", label: "1x" },
+                { value: "2x", label: "2x" },
+              ]}
             />
           </div>
         </div>
@@ -8762,19 +8895,23 @@ function CanvasNodeReferenceThumb({
       </div>
       <button
         type="button"
-        className="absolute -right-1.5 -top-1.5 z-20 flex size-4 items-center justify-center rounded-full border border-white/15 bg-background/95 text-muted-foreground opacity-0 shadow-sm transition hover:text-foreground group-hover:opacity-100 group-focus-within:opacity-100"
+        className="absolute right-0.5 top-0.5 z-20 flex size-4 items-center justify-center rounded-full bg-black/70 text-white/75 opacity-0 shadow-sm backdrop-blur transition hover:bg-black/85 hover:text-white group-hover:opacity-100 group-focus-within:opacity-100"
         aria-label={`移除 ${title}`}
         onClick={(event) => {
           event.preventDefault();
           event.stopPropagation();
           setPreviewPosition(null);
+          if (onRemove) {
+            onRemove();
+            return;
+          }
           removeCanvasReferenceNode(node.nodeId);
         }}
         onKeyDown={(event) => {
           event.stopPropagation();
         }}
       >
-        <X className="size-2.5" />
+        <X className="size-3" />
       </button>
       {previewPosition
         ? createPortal(
@@ -8812,19 +8949,6 @@ function CanvasNodeReferenceThumb({
           document.body,
         )
         : null}
-      {onRemove && (
-        <button
-          type="button"
-          onClick={(event) => {
-            event.stopPropagation();
-            onRemove();
-          }}
-          className="pointer-events-none absolute -right-0.5 -top-0.5 z-10 rounded-full bg-background/90 p-0.5 text-muted-foreground opacity-0 shadow-sm transition group-hover:pointer-events-auto group-hover:opacity-100 group-focus-within:pointer-events-auto group-focus-within:opacity-100 hover:bg-background hover:text-foreground"
-          aria-label="移除画布引用"
-        >
-          <X className="size-3" />
-        </button>
-      )}
     </div>
   );
 }
@@ -9459,6 +9583,12 @@ type CanvasApprovalVideoParams = {
   humanReview: boolean;
   requiresHumanReviewConfirmation: boolean;
   count: 1 | 2 | 4;
+};
+
+type CanvasApprovalVideoUpscaleParams = {
+  nodeId: string;
+  resolution: FreezoneVideoUpscaleResolution;
+  denoise: FreezoneVideoUpscaleDenoise;
 };
 
 type CanvasCommandApprovalCancelReason = "user" | "timeout";

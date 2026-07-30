@@ -4,6 +4,10 @@ import {
   isPresetManagedNode,
   isSystemManagedNodeData,
 } from "@/features/canvas/domain/mainlineNodeFlags";
+import {
+  VIDEO_UPSCALE_DENOISE_OPTIONS,
+  VIDEO_UPSCALE_RESOLUTIONS,
+} from "@/features/canvas/application/videoUpscale";
 import { getDownstreamSpawnTypes } from "@/features/canvas/domain/nodeRegistry";
 import { buildCanvasNodeActionCatalog } from "@/features/freezone/context/canvasActionCatalog";
 import {
@@ -45,6 +49,8 @@ const RESERVED_DATA_KEYS = new Set([
 ]);
 
 const AUDIO_DOWNLOAD_FORMATS = new Set(["source", "mp3", "m4a", "wav"]);
+const VIDEO_UPSCALE_RESOLUTION_VALUES = new Set<string>(VIDEO_UPSCALE_RESOLUTIONS);
+const VIDEO_UPSCALE_DENOISE_VALUES = new Set<string>(VIDEO_UPSCALE_DENOISE_OPTIONS);
 
 function hasReservedKeys(value: unknown): string[] {
   if (!value || typeof value !== "object" || Array.isArray(value)) return [];
@@ -431,6 +437,28 @@ export function validateCanvasChatCommandEnvelopes(
                 : undefined;
             if (format !== undefined && (typeof format !== "string" || !AUDIO_DOWNLOAD_FORMATS.has(format))) {
               addIssue(issues, path, `unsupported audio download format: ${String(format)}`);
+            }
+          }
+          if (target.type === CANVAS_NODE_TYPES.video && command.action === "open_video_upscale_tool") {
+            const params =
+              command.parameters &&
+              typeof command.parameters === "object" &&
+              !Array.isArray(command.parameters)
+                ? (command.parameters as Record<string, unknown>)
+                : {};
+            const resolution = params.resolution;
+            if (
+              resolution !== undefined &&
+              (typeof resolution !== "string" || !VIDEO_UPSCALE_RESOLUTION_VALUES.has(resolution))
+            ) {
+              addIssue(issues, path, `unsupported video upscale resolution: ${String(resolution)}`);
+            }
+            const denoise = params.denoise;
+            if (
+              denoise !== undefined &&
+              (typeof denoise !== "string" || !VIDEO_UPSCALE_DENOISE_VALUES.has(denoise))
+            ) {
+              addIssue(issues, path, `unsupported video upscale denoise: ${String(denoise)}`);
             }
           }
           break;
