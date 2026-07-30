@@ -2,6 +2,7 @@ import {
   CANVAS_NODE_TYPES,
   DEFAULT_NODE_WIDTH,
   type BeatContextNodeData,
+  type CanvasEdge,
   type CanvasNode,
   type CanvasNodeData,
   type CanvasNodeType,
@@ -1481,6 +1482,34 @@ function defaultWorkflowActionForNode(node: CanvasNode): string | null {
   return null;
 }
 
+function isRedundantLegacyComposeGenerator(
+  node: CanvasNode,
+  nodes: CanvasNode[],
+  edges: CanvasEdge[],
+): boolean {
+  if (node.type !== CANVAS_NODE_TYPES.video) return false;
+  const data = node.data as Record<string, unknown>;
+  const catalog =
+    data.workflowCatalog && typeof data.workflowCatalog === "object"
+      ? data.workflowCatalog as Record<string, unknown>
+      : null;
+  const stepId = String(catalog?.stepId ?? "")
+    .trim()
+    .toLowerCase()
+    .replace(/-/g, "_");
+  const label = String(data.displayName ?? data.title ?? "").trim().toLowerCase();
+  const hasComposeIdentity =
+    ["compose", "final_compose", "final_composition", "video_compose"].includes(stepId)
+    || ["最终合成", "成片合成", "最终成片合成", "final compose", "final composition"].includes(label);
+  if (!hasComposeIdentity) return false;
+  const nodeByIdMap = new Map(nodes.map((candidate) => [candidate.id, candidate] as const));
+  return edges.some(
+    (edge) =>
+      edge.source === node.id
+      && nodeByIdMap.get(edge.target)?.type === CANVAS_NODE_TYPES.videoCompose,
+  );
+}
+
 function hasVideoComposeMinimumInputs(nodeId: string, allowedSourceNodeIds?: Set<string>): boolean {
   const state = useCanvasStore.getState();
   const nodeByIdMap = new Map(state.nodes.map((node) => [node.id, node] as const));
@@ -1601,6 +1630,7 @@ function workflowNodeActions(
   ].flatMap((nodeId) => {
     const node = nodeByIdMap.get(nodeId);
     if (!node || node.type === CANVAS_NODE_TYPES.group) return [];
+    if (isRedundantLegacyComposeGenerator(node, state.nodes, state.edges)) return [];
     if (node.type === CANVAS_NODE_TYPES.videoCompose) {
       return [{
         commandIndex,
@@ -1652,6 +1682,7 @@ function directNodeActionQueue(
     .flatMap((upstreamId): PendingNodeAction[] => {
       const node = nodeByIdMap.get(upstreamId);
       if (!node || node.type === CANVAS_NODE_TYPES.group) return [];
+      if (isRedundantLegacyComposeGenerator(node, state.nodes, state.edges)) return [];
       const upstreamAction = defaultWorkflowActionForNode(node);
       if (!upstreamAction || hasGeneratedResult(upstreamId, upstreamAction)) return [];
       return [{
@@ -1823,6 +1854,17 @@ export function hasGeneratedResult(
     });
   }
   return true;
+}
+
+export function hasCurrentWorkflowResult(nodeId: string, action: string): boolean {
+  if (!GENERATION_NODE_ACTIONS.has(action)) return false;
+  const data = nodeById(nodeId)?.data as Record<string, unknown> | undefined;
+  return Boolean(
+    data &&
+    data.workflowResultStale !== true &&
+    nonEmptyString(data.workflowGeneratedAt) &&
+    hasGeneratedResult(nodeId, action)
+  );
 }
 
 function hasActiveGenerationHandle(nodeId: string): boolean {
@@ -2327,6 +2369,7 @@ async function executeQueuedNodeActions(
         "pending" as WorkflowRunActionStatus,
       ]),
     );
+    let workflowCompletionPresented = false;
     const enqueueWorkflowHeartbeat = (operation: () => Promise<void>): Promise<void> => {
       const queued = workflowHeartbeatQueue
         .catch(() => undefined)
@@ -2459,13 +2502,22 @@ async function executeQueuedNodeActions(
         });
       }
       if (status) pendingWorkflowStatus = status;
+      const allActionsCompleted =
+        workflowActionStatuses.size > 0 &&
+        [...workflowActionStatuses.values()].every(
+          (actionStatus) => actionStatus === "completed" || actionStatus === "skipped",
+        );
+      const presentedStatus =
+        status ??
+        (allActionsCompleted && !workflowCompletionPresented ? "completed" : undefined);
+      if (presentedStatus === "completed") workflowCompletionPresented = true;
       if (typeof window !== "undefined") {
         window.dispatchEvent(new CustomEvent(FREEZONE_WORKFLOW_RUN_UPDATED_EVENT, {
           detail: {
             projectId,
             canvasId,
             runId,
-            ...(status ? { status } : {}),
+            ...(presentedStatus ? { status: presentedStatus } : {}),
             ...(acceptedUpdates.length > 0 ? { actionUpdates: acceptedUpdates } : {}),
           },
         }));

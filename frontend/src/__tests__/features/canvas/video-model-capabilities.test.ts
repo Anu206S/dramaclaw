@@ -8,6 +8,7 @@ import type { VideoGenMode } from "@/features/canvas/domain/canvasNodes";
 import {
   audioReferenceDurationRejection,
   formatAudioDurationClips,
+  isCompositionTimelineAudioData,
   isGrokVideoChannelModel,
   isHappyHorseVideoModel,
   isSeedance1xVideoModel,
@@ -28,6 +29,39 @@ const SEEDANCE2_VALUE = "newapi_seedance-2.0-fast-value";
 const SEEDANCE10_PRO_FAST = "newapi_seedance-1.0-pro-fast";
 const SEEDANCE15_PRO = "newapi_seedance-1.5-pro";
 const HAPPYHORSE = "newapi_happyhorse-1.0";
+
+describe("composition timeline audio detection", () => {
+  it("recognizes explicit timeline roles and legacy workflow narration/music labels", () => {
+    expect(isCompositionTimelineAudioData({
+      displayName: "中文女声旁白",
+      workflowCatalog: { timelineRole: "voiceover" },
+    })).toBe(true);
+    expect(isCompositionTimelineAudioData({
+      displayName: "轻快背景音乐",
+      workflowCatalog: { stepId: "background_music" },
+    })).toBe(true);
+    expect(isCompositionTimelineAudioData({
+      displayName: "Shot 1 配音",
+      workflowCatalog: {
+        promptBuilder: { planItem: { id: "shot_1_voice" } },
+      },
+    })).toBe(true);
+  });
+
+  it("does not hide a manually connected audio reference", () => {
+    expect(isCompositionTimelineAudioData({
+      displayName: "参考音频",
+      audioUrl: "/voice-reference.wav",
+    })).toBe(false);
+    expect(isCompositionTimelineAudioData({
+      displayName: "角色声音样本",
+      workflowCatalog: {
+        timelineRole: "voice_reference",
+        stepId: "voice_reference",
+      },
+    })).toBe(false);
+  });
+});
 
 describe("video model family detection", () => {
   it("classifies Seedance 2.0 variants (not 1.x)", () => {

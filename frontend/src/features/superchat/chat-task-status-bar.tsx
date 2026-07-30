@@ -29,6 +29,7 @@ import type { CanvasNode } from "@/features/canvas/domain/canvasNodes";
 import {
   applyCanvasChatCommandsAsync,
   CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+  hasCurrentWorkflowResult,
 } from "@/features/freezone/canvasChatCommands";
 import { recoverableWorkflowNodeIds } from "@/features/freezone/WorkflowRunRecoveryBar";
 import { cn } from "@/lib/utils";
@@ -91,6 +92,36 @@ export function selectChatWorkflowRun(
       const activeDelta = priority(right) - priority(left);
       return activeDelta || timestamp(right.updated_at) - timestamp(left.updated_at);
     })[0] ?? null;
+}
+
+export function resolveWorkflowRunDisplayCompletion(
+  run: FreezoneWorkflowRun | null,
+  hasCurrentResult: (nodeId: string, action: string) => boolean,
+  now = new Date().toISOString(),
+): FreezoneWorkflowRun | null {
+  if (!run || run.status !== "running") return run;
+  const hasFailure = run.actions.some(
+    (action) => action.status === "failed" || action.status === "blocked",
+  );
+  if (hasFailure) return run;
+  const allReady = run.actions.length > 0 && run.actions.every(
+    (action) =>
+      action.status === "completed" ||
+      action.status === "skipped" ||
+      hasCurrentResult(action.node_id, action.action),
+  );
+  if (!allReady) return run;
+  return {
+    ...run,
+    status: "completed",
+    resumable: false,
+    completed_at: now,
+    actions: run.actions.map((action) =>
+      action.status === "completed" || action.status === "skipped"
+        ? action
+        : { ...action, status: "completed", updated_at: now }
+    ),
+  };
 }
 
 export function applyOptimisticWorkflowRunUpdate(
@@ -305,10 +336,23 @@ export function ChatTaskStatusBar({
     () => selectChatTaskItems(tasks.values(), nodes, canvasId, now),
     [tasks, nodes, canvasId, now],
   );
-  const workflowRun = useMemo(
+  const selectedWorkflowRun = useMemo(
     () => selectChatWorkflowRun(workflowRuns, now),
     [now, workflowRuns],
   );
+  const resolvedWorkflowRun = useMemo(
+    () => resolveWorkflowRunDisplayCompletion(
+      selectedWorkflowRun,
+      hasCurrentWorkflowResult,
+    ),
+    [nodes, selectedWorkflowRun],
+  );
+  const workflowRun =
+    resolvedWorkflowRun?.status === "completed" &&
+    now - timestamp(resolvedWorkflowRun.completed_at || resolvedWorkflowRun.updated_at) >
+      RECENT_COMPLETED_MS
+      ? null
+      : resolvedWorkflowRun;
   const existingNodeIds = useMemo(
     () => new Set(nodes.map((node) => node.id)),
     [nodes],

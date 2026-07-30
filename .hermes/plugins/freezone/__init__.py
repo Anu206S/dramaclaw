@@ -4153,6 +4153,18 @@ _WORKFLOW_INTENT_OBJECT_SCHEMA = {
                     "depends_on": {
                         "type": "array",
                         "items": {"type": "string"},
+                        "description": (
+                            "Execution dependencies. A media dependency is not automatically "
+                            "sent to the provider as a reference."
+                        ),
+                    },
+                    "reference_inputs": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": (
+                            "Item ids whose generated media must be consumed as actual provider "
+                            "references. These also imply execution dependencies."
+                        ),
                     },
                     "stage": {"type": "string"},
                     "timeline_role": {"type": "string"},
@@ -4568,6 +4580,7 @@ _SKILL_STUDIO_RECIPE_SCHEMA = {
 _LINK_TYPE_VALUES = [
     "context_for",
     "prompt_for",
+    "dependency_for",
     "media_input_for",
     "derived_from",
     "composition_input_for",
