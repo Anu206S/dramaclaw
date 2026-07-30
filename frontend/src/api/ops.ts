@@ -50,43 +50,154 @@ export interface FreezoneRecipeCompilePayload {
 }
 
 const RECIPE_MODEL_TIMEOUT_MS = 10 * 60 * 1000;
+const RECIPE_COMPILE_BATCH_WINDOW_MS = 15;
+const RECIPE_COMPILE_BATCH_MAX_ITEMS = 12;
 
-export async function compileFreezoneRecipePrompt(
-  payload: FreezoneRecipeCompilePayload,
-): Promise<string> {
-  const data = await apiCall<{
-    prompt: string;
-    compile_mode?: FreezoneRecipeCompileMode;
-    recipe_ids?: string[];
-  }>("freezone/recipes/compile", {
-    method: "POST",
-    // Prompt compilation invokes the text model before the media task exists.
-    // Keep it aligned with Recipe text execution instead of the shared 30s timeout.
-    timeout: RECIPE_MODEL_TIMEOUT_MS,
-    json: {
-      recipe_id: payload.recipeId,
-      recipe_version: payload.recipeVersion ?? "",
-      ...(payload.recipePipeline?.length
-        ? { recipe_pipeline: payload.recipePipeline }
-        : {}),
-      skill_id: payload.skillId ?? "",
-      skill_version: payload.skillVersion ?? "",
-      confirmed_inputs: payload.confirmedInputs ?? {},
-      node_kind: payload.nodeKind,
-      prompt_strategy: payload.promptStrategy ?? "llm_refine",
-      node_prompt: payload.nodePrompt ?? "",
-      user_goal: payload.userGoal ?? "",
-      upstream_text: payload.upstreamText ?? "",
-      reference_media: payload.referenceMedia ?? [],
-    },
-  });
-  payload.onCompileMetadata?.({
+interface FreezoneRecipeCompileWireData {
+  prompt: string;
+  compile_mode?: FreezoneRecipeCompileMode;
+  recipe_ids?: string[];
+}
+
+interface PendingRecipeCompile {
+  payload: FreezoneRecipeCompilePayload;
+  resolve: (prompt: string) => void;
+  reject: (error: unknown) => void;
+}
+
+const pendingRecipeCompiles: PendingRecipeCompile[] = [];
+let recipeCompileBatchTimer: ReturnType<typeof setTimeout> | null = null;
+let recipeCompileRequestSequence = 0;
+
+function recipeCompileJson(payload: FreezoneRecipeCompilePayload) {
+  return {
+    recipe_id: payload.recipeId,
+    recipe_version: payload.recipeVersion ?? "",
+    ...(payload.recipePipeline?.length
+      ? { recipe_pipeline: payload.recipePipeline }
+      : {}),
+    skill_id: payload.skillId ?? "",
+    skill_version: payload.skillVersion ?? "",
+    confirmed_inputs: payload.confirmedInputs ?? {},
+    node_kind: payload.nodeKind,
+    prompt_strategy: payload.promptStrategy ?? "llm_refine",
+    node_prompt: payload.nodePrompt ?? "",
+    user_goal: payload.userGoal ?? "",
+    upstream_text: payload.upstreamText ?? "",
+    reference_media: payload.referenceMedia ?? [],
+  };
+}
+
+function resolveRecipeCompile(
+  pending: PendingRecipeCompile,
+  data: FreezoneRecipeCompileWireData,
+): void {
+  pending.payload.onCompileMetadata?.({
     mode: data.compile_mode ?? "model",
     recipeIds: Array.isArray(data.recipe_ids)
       ? data.recipe_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
-      : [payload.recipeId, ...(payload.recipePipeline ?? []).map((item) => item.id)],
+      : [
+          pending.payload.recipeId,
+          ...(pending.payload.recipePipeline ?? []).map((item) => item.id),
+        ],
   });
-  return data.prompt;
+  pending.resolve(data.prompt);
+}
+
+async function sendSingleRecipeCompile(pending: PendingRecipeCompile): Promise<void> {
+  try {
+    const data = await apiCall<FreezoneRecipeCompileWireData>("freezone/recipes/compile", {
+      method: "POST",
+      // Prompt compilation invokes the text model before the media task exists.
+      timeout: RECIPE_MODEL_TIMEOUT_MS,
+      json: recipeCompileJson(pending.payload),
+    });
+    resolveRecipeCompile(pending, data);
+  } catch (error) {
+    pending.reject(error);
+  }
+}
+
+async function sendRecipeCompileBatch(batch: PendingRecipeCompile[]): Promise<void> {
+  if (batch.length === 1) {
+    await sendSingleRecipeCompile(batch[0]);
+    return;
+  }
+  const requests = batch.map((pending) => ({
+    requestId: `recipe-compile:${Date.now()}:${recipeCompileRequestSequence++}`,
+    pending,
+  }));
+  try {
+    const data = await apiCall<{
+      items: Array<{
+        request_id: string;
+        ok: boolean;
+        data?: FreezoneRecipeCompileWireData | null;
+        error?: string;
+        retryable?: boolean;
+      }>;
+    }>("freezone/recipes/compile-batch", {
+      method: "POST",
+      timeout: RECIPE_MODEL_TIMEOUT_MS,
+      json: {
+        items: requests.map(({ requestId, pending }) => ({
+          request_id: requestId,
+          ...recipeCompileJson(pending.payload),
+        })),
+      },
+    });
+    const resultsById = new Map(data.items.map((item) => [item.request_id, item]));
+    for (const { requestId, pending } of requests) {
+      const result = resultsById.get(requestId);
+      if (result?.ok && result.data) {
+        resolveRecipeCompile(pending, result.data);
+      } else {
+        const message = result?.error || "Recipe batch compilation returned no result";
+        pending.reject(new Error(result?.retryable ? `HTTP 503: ${message}` : message));
+      }
+    }
+  } catch (error) {
+    const status =
+      error && typeof error === "object" && "status" in error
+        ? Number((error as { status?: unknown }).status)
+        : 0;
+    if (status === 404 || status === 405) {
+      await Promise.all(batch.map((pending) => sendSingleRecipeCompile(pending)));
+      return;
+    }
+    for (const { pending } of requests) pending.reject(error);
+  }
+}
+
+function flushRecipeCompileBatch(): void {
+  if (recipeCompileBatchTimer !== null) {
+    clearTimeout(recipeCompileBatchTimer);
+    recipeCompileBatchTimer = null;
+  }
+  const batch = pendingRecipeCompiles.splice(0, RECIPE_COMPILE_BATCH_MAX_ITEMS);
+  if (batch.length > 0) void sendRecipeCompileBatch(batch);
+  if (pendingRecipeCompiles.length > 0) scheduleRecipeCompileBatch();
+}
+
+function scheduleRecipeCompileBatch(): void {
+  if (pendingRecipeCompiles.length >= RECIPE_COMPILE_BATCH_MAX_ITEMS) {
+    flushRecipeCompileBatch();
+    return;
+  }
+  if (recipeCompileBatchTimer !== null) return;
+  recipeCompileBatchTimer = setTimeout(
+    flushRecipeCompileBatch,
+    RECIPE_COMPILE_BATCH_WINDOW_MS,
+  );
+}
+
+export function compileFreezoneRecipePrompt(
+  payload: FreezoneRecipeCompilePayload,
+): Promise<string> {
+  return new Promise((resolve, reject) => {
+    pendingRecipeCompiles.push({ payload, resolve, reject });
+    scheduleRecipeCompileBatch();
+  });
 }
 
 export async function generateFreezoneRecipeText(

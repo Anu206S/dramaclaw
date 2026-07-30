@@ -9,6 +9,10 @@ import {
   generateWorkflowText,
   selectWorkflowUpstreamText,
 } from './workflowRecipeRuntime';
+import {
+  WORKFLOW_EXECUTION_ACTIVITY_EVENT,
+  type WorkflowExecutionActivityDetail,
+} from './workflowExecutionActivity';
 
 vi.mock('@/api/ops', () => ({
   compileFreezoneRecipePrompt: vi.fn(),
@@ -72,6 +76,31 @@ describe('workflowRecipeRuntime', () => {
       userGoal: '生成三张商品图',
       referenceMedia: [{ kind: 'image', label: '产品参考图' }],
     });
+  });
+
+  it('reports Recipe compilation and task submission phases', async () => {
+    compileMock.mockResolvedValue('compiled prompt');
+    const phases: string[] = [];
+    const listener = (event: Event) => {
+      phases.push(
+        (event as CustomEvent<WorkflowExecutionActivityDetail>).detail.phase,
+      );
+    };
+    window.addEventListener(WORKFLOW_EXECUTION_ACTIVITY_EVENT, listener);
+
+    try {
+      await compileWorkflowNodePrompt({
+        nodeId: 'image-1',
+        nodeData: { workflowCatalog: { recipeId: 'product-image' } },
+        nodeKind: 'image',
+        nodePrompt: '商品图',
+        fallbackPrompt: 'fallback',
+      });
+    } finally {
+      window.removeEventListener(WORKFLOW_EXECUTION_ACTIVITY_EVENT, listener);
+    }
+
+    expect(phases).toEqual(['compiling_recipe', 'submitting']);
   });
 
   it('executes a catalog-backed text node', async () => {

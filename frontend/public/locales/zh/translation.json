@@ -1591,7 +1591,45 @@
       "waiting": "{{count}} 个排队中",
       "completed": "{{count}} 个已完成",
       "failed": "{{count}} 个失败",
-      "locateNode": "定位画布节点"
+      "locateNode": "定位画布节点",
+      "workflowProgress": "工作流执行中 · {{completed}}/{{total}}",
+      "workflowCompleted": "工作流已完成",
+      "workflowFailed": "工作流执行失败",
+      "workflowShort": "工作流 · 已完成 {{completed}}/{{total}}",
+      "workflowCompletedShort": "工作流已完成 · {{completed}}/{{total}}",
+      "inProgressShort": "进行中 {{count}}",
+      "waitingShort": "等待 {{count}}",
+      "failedShort": "失败 {{count}}",
+      "interruptedShort": "已暂停",
+      "stoppedShort": "已停止",
+      "resume": "继续",
+      "resuming": "继续中",
+      "resumeSucceeded": "工作流已继续执行",
+      "resumeFailed": "继续工作流失败：{{message}}",
+      "resumeFailedFallback": "恢复执行失败",
+      "workflowActivity": {
+        "preparing": "准备：{{name}}",
+        "compiling_recipe": "准备：{{name}}",
+        "submitting": "提交：{{name}}",
+        "generating": "生成：{{name}}",
+        "syncing_result": "同步：{{name}}",
+        "retrying": "重试：{{name}}"
+      },
+      "workflowPhase": {
+        "waiting_dependencies": "等待上游结果",
+        "waiting_slot": "等待执行名额",
+        "waiting_capacity": "等待生成队列",
+        "preparing": "准备节点",
+        "compiling_recipe": "编译 Recipe",
+        "submitting": "提交生成任务",
+        "generating": "生成中",
+        "syncing_result": "同步生成结果",
+        "retrying": "重试中",
+        "completed": "已完成",
+        "failed": "失败",
+        "blocked": "上游失败，已阻止",
+        "skipped": "已跳过"
+      }
     },
     "relative": {
       "justNow": "刚刚"

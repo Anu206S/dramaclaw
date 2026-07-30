@@ -181,6 +181,25 @@ function probeAudioDurationMs(url: string): Promise<number | null> {
   });
 }
 
+function isCompositionTimelineAudioNode(node: CanvasNode): boolean {
+  if (!isAudioNode(node)) return false;
+  const catalog = (
+    node.data as { workflowCatalog?: unknown }
+  ).workflowCatalog;
+  if (!catalog || typeof catalog !== "object") return false;
+  const role = String(
+    (catalog as { timelineRole?: unknown }).timelineRole ?? "",
+  ).trim().toLowerCase();
+  return [
+    "voiceover",
+    "narration",
+    "shot_voice",
+    "music",
+    "bgm",
+    "background_music",
+  ].includes(role);
+}
+
 function isSeedance2ValueModel(modelId: string | null | undefined): boolean {
   const normalized = String(modelId ?? "").trim().toLowerCase();
   return normalized === "newapi_seedance-2.0-value" ||
@@ -538,9 +557,13 @@ export function useVideoGenerationForm(
   // Subscribe to ONLY this node's one-hop upstream (not the whole nodes array)
   // so dragging unrelated nodes doesn't re-render this node. See useUpstreamGraph.
   const upstreamNodes = useUpstreamNodes(id);
+  const videoInputNodes = useMemo(
+    () => upstreamNodes.filter((node) => !isCompositionTimelineAudioNode(node)),
+    [upstreamNodes],
+  );
   const referenceImages = useMemo(() => {
     const upstream = sortUpstreamByReferenceOrder(
-      upstreamNodes,
+      videoInputNodes,
       data.referenceOrder,
     );
     return upstream
@@ -552,14 +575,14 @@ export function useVideoGenerationForm(
       .filter(
         (entry): entry is { nodeId: string; url: string } => entry != null,
       );
-  }, [upstreamNodes, data.referenceOrder]);
+  }, [videoInputNodes, data.referenceOrder]);
 
   // 统一的「图 / 视 / 音」上游引用条目，给 chips 行用。顺序按连接顺序
   // （与 referenceImages 同步），让 chip 编号 1/2/3... 跟可视顺序一致。
   // text 上游不进这一行 —— 上面已经单独渲染了「@文本 chip」。
   const referenceMedia = useMemo<ReferenceMediaItem[]>(() => {
     const upstream = sortUpstreamByReferenceOrder(
-      upstreamNodes,
+      videoInputNodes,
       data.referenceOrder,
     );
     const items: ReferenceMediaItem[] = [];
@@ -612,7 +635,7 @@ export function useVideoGenerationForm(
       }
     }
     return items;
-  }, [upstreamNodes, data.referenceOrder]);
+  }, [videoInputNodes, data.referenceOrder]);
 
   // 提示词里的 @图片N / @音频N 必须随「角色库」连线引用实时对应：删除 / 重排 /
   // 新增引用时角色库会重新编号（删掉图片1 后原图片2 变图片1），这里把 prompt 里的
@@ -736,8 +759,8 @@ export function useVideoGenerationForm(
   // 视频生成只用其中的 text 字段拼接到 prompt 前面；image/video/audio 仍走
   // 各自分支已有的分类逻辑（带 backend 上限校验）。
   const upstreamContents = useMemo(
-    () => upstreamNodes.map(extractUpstreamContent),
-    [upstreamNodes],
+    () => videoInputNodes.map(extractUpstreamContent),
+    [videoInputNodes],
   );
   const upstreamTextContents = useMemo(
     () =>
@@ -758,7 +781,7 @@ export function useVideoGenerationForm(
     let images = 0;
     let videos = 0;
     let audios = 0;
-    for (const node of upstreamNodes) {
+    for (const node of videoInputNodes) {
       if (referenceVideoUrl(node)) {
         // 视频节点或携带 videoUrl 的 upload 节点（资产库选入的视频）都算视频。
         videos += 1;
@@ -774,7 +797,7 @@ export function useVideoGenerationForm(
       }
     }
     return { images, videos, audios };
-  }, [upstreamNodes]);
+  }, [videoInputNodes]);
   // HappyHorse 的模式可用性由「上游节点类型」决定，而非素材是否已填。空的图片
   // 节点（尚未生成/上传图）也应让「首帧 / 图片参考」可选——用户先连节点、后填图
   // 是正常顺序。所以这里按节点类型统计，区别于 upstreamCounts 的「已解析 URL」口径。
@@ -782,7 +805,7 @@ export function useVideoGenerationForm(
     let images = 0;
     let videos = 0;
     let audios = 0;
-    for (const node of upstreamNodes) {
+    for (const node of videoInputNodes) {
       // 携带 videoUrl 的 upload 节点（资产库视频）先判为视频，避免落到下面
       // 的 isUploadNode 分支被误算成图片。空的 video 节点（尚未生成）仍按类型算视频。
       if (isVideoNode(node) || referenceVideoUrl(node)) {
@@ -800,7 +823,7 @@ export function useVideoGenerationForm(
       }
     }
     return { images, videos, audios };
-  }, [upstreamNodes]);
+  }, [videoInputNodes]);
 
   const handleTranslatePrompt = useCallback(async () => {
     if (isTranslatingPrompt || isGenerating) return;
@@ -1053,6 +1076,7 @@ export function useVideoGenerationForm(
     try {
       // 工作流配方节点用配方编译出的最终 prompt；非配方节点回落上面这段拼接。
       const composedPrompt = await compileWorkflowNodePrompt({
+        nodeId: id,
         nodeData: data,
         nodeKind: "video",
         nodePrompt: trimmedPrompt,
@@ -1076,7 +1100,8 @@ export function useVideoGenerationForm(
       const collectUpstream = () => {
         const state = useCanvasStore.getState();
         return sortUpstreamByReferenceOrder(
-          upstreamNodesInEdgeOrder(state.nodes, state.edges, id),
+          upstreamNodesInEdgeOrder(state.nodes, state.edges, id)
+            .filter((node) => !isCompositionTimelineAudioNode(node)),
           data.referenceOrder,
         );
       };

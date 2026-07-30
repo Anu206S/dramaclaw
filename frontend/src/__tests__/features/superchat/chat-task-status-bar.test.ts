@@ -2,8 +2,20 @@
 // Copyright (c) 2026 ClaymoreLab
 import { describe, expect, it } from "vitest";
 
-import { selectChatTaskItems } from "@/features/superchat/chat-task-status-bar";
-import type { CanvasNode } from "@/features/canvas/domain/canvasNodes";
+import {
+  applyOptimisticWorkflowRunUpdate,
+  mergeWorkflowRunUpdate,
+  selectChatTaskItems,
+  selectChatWorkflowRun,
+  selectWorkflowActivityLabels,
+  workflowSettledCount,
+  workflowStatusCounts,
+} from "@/features/superchat/chat-task-status-bar";
+import type { FreezoneWorkflowRun } from "@/api/canvas";
+import {
+  CANVAS_NODE_TYPES,
+  type CanvasNode,
+} from "@/features/canvas/domain/canvasNodes";
 import type { TaskState } from "@/task-center/types";
 
 const NOW = Date.parse("2026-07-27T08:00:00.000Z");
@@ -46,6 +58,27 @@ function node(overrides: Partial<CanvasNode> = {}): CanvasNode {
   } as CanvasNode;
 }
 
+function workflowRun(overrides: Partial<FreezoneWorkflowRun> = {}): FreezoneWorkflowRun {
+  return {
+    schema_version: "freezone_workflow_run.v1",
+    run_id: "run-1",
+    project_id: "project-1",
+    canvas_id: "canvas-1",
+    status: "running",
+    resumable: true,
+    created_at: "2026-07-27T07:58:00.000Z",
+    started_at: "2026-07-27T07:58:00.000Z",
+    updated_at: "2026-07-27T07:59:30.000Z",
+    actions: [{
+      node_id: "node-1",
+      action: "generate_image",
+      status: "running",
+      phase: "compiling_recipe",
+    }],
+    ...overrides,
+  };
+}
+
 describe("selectChatTaskItems", () => {
   it("matches a task through the canvas node generation key", () => {
     const result = selectChatTaskItems([task()], [node()], "canvas-1", NOW);
@@ -76,7 +109,7 @@ describe("selectChatTaskItems", () => {
     const recent = task({
       task_key: "recent",
       status: "completed",
-      completed_at: "2026-07-27T07:59:30.000Z",
+      completed_at: "2026-07-27T07:59:57.000Z",
       metadata: { canvas_id: "canvas-1" },
     });
     const expired = task({
@@ -95,7 +128,7 @@ describe("selectChatTaskItems", () => {
     const completed = task({
       task_key: "completed",
       status: "completed",
-      completed_at: "2026-07-27T07:59:50.000Z",
+      completed_at: "2026-07-27T07:59:58.000Z",
       metadata: { canvas_id: "canvas-1" },
     });
     const running = task({
@@ -110,5 +143,208 @@ describe("selectChatTaskItems", () => {
       "running",
       "completed",
     ]);
+  });
+});
+
+describe("selectChatWorkflowRun", () => {
+  it("prefers an active workflow over a newer completed workflow", () => {
+    const active = workflowRun({ run_id: "active" });
+    const completed = workflowRun({
+      run_id: "completed",
+      status: "completed",
+      updated_at: "2026-07-27T07:59:50.000Z",
+      completed_at: "2026-07-27T07:59:50.000Z",
+    });
+
+    expect(selectChatWorkflowRun([completed, active], NOW)?.run_id).toBe("active");
+  });
+
+  it("hides terminal workflows after the recent-result window", () => {
+    const expired = workflowRun({
+      status: "completed",
+      completed_at: "2026-07-27T07:58:00.000Z",
+    });
+
+    expect(selectChatWorkflowRun([expired], NOW)).toBeNull();
+  });
+
+  it("hides a successful workflow shortly after completion", () => {
+    const completed = workflowRun({
+      status: "completed",
+      resumable: false,
+      completed_at: "2026-07-27T07:59:54.000Z",
+    });
+
+    expect(selectChatWorkflowRun([completed], NOW)).toBeNull();
+  });
+
+  it("keeps an old resumable interrupted workflow visible", () => {
+    const interrupted = workflowRun({
+      status: "interrupted",
+      resumable: true,
+      updated_at: "2026-07-27T07:00:00.000Z",
+      completed_at: "2026-07-27T07:00:00.000Z",
+    });
+
+    expect(selectChatWorkflowRun([interrupted], NOW)?.run_id).toBe("run-1");
+  });
+});
+
+describe("applyOptimisticWorkflowRunUpdate", () => {
+  it("settles one action immediately without waiting for its parallel peer", () => {
+    const run = workflowRun({
+      actions: [
+        {
+          node_id: "node-1",
+          action: "generate_image",
+          status: "running",
+          phase: "generating",
+        },
+        {
+          node_id: "node-2",
+          action: "generate_image",
+          status: "running",
+          phase: "generating",
+        },
+      ],
+    });
+
+    const updated = applyOptimisticWorkflowRunUpdate(run, {
+      projectId: "project-1",
+      canvasId: "canvas-1",
+      runId: "run-1",
+      actionUpdates: [{
+        node_id: "node-1",
+        action: "generate_image",
+        status: "completed",
+      }],
+    }, "2026-07-27T08:00:00.000Z");
+
+    expect(updated.actions.map((action) => action.status)).toEqual([
+      "completed",
+      "running",
+    ]);
+    expect(workflowStatusCounts(updated.actions)).toMatchObject({
+      completed: 1,
+      inProgress: 1,
+    });
+  });
+
+  it("does not let an older server phase regress an optimistically settled action", () => {
+    const completed = workflowRun({
+      actions: [{
+        node_id: "node-1",
+        action: "generate_image",
+        status: "completed",
+      }],
+    });
+    const stale = workflowRun({
+      updated_at: "2026-07-27T08:00:01.000Z",
+      actions: [{
+        node_id: "node-1",
+        action: "generate_image",
+        status: "running",
+        phase: "generating",
+      }],
+    });
+
+    expect(mergeWorkflowRunUpdate(completed, stale).actions[0]?.status).toBe("completed");
+  });
+});
+
+describe("workflowStatusCounts", () => {
+  it("separates active, waiting and failed actions without counting skipped as completed", () => {
+    const actions: FreezoneWorkflowRun["actions"] = [
+      { node_id: "done", action: "generate_text", status: "completed" },
+      {
+        node_id: "compile",
+        action: "generate_image",
+        status: "running",
+        phase: "compiling_recipe",
+      },
+      {
+        node_id: "capacity",
+        action: "generate_video",
+        status: "running",
+        phase: "waiting_capacity",
+      },
+      {
+        node_id: "pending",
+        action: "generate_audio",
+        status: "pending",
+        phase: "waiting_dependencies",
+      },
+      { node_id: "failed", action: "generate_video", status: "failed" },
+      { node_id: "skipped", action: "generate_audio", status: "skipped" },
+    ];
+
+    expect(workflowStatusCounts(actions)).toEqual({
+      completed: 1,
+      skipped: 1,
+      inProgress: 1,
+      waiting: 2,
+      failed: 1,
+    });
+    expect(workflowSettledCount(actions)).toBe(2);
+  });
+
+  it("uses live task state instead of treating queued generation as running", () => {
+    const actions: FreezoneWorkflowRun["actions"] = [
+      {
+        node_id: "queued-node",
+        action: "generate_video",
+        status: "running",
+        phase: "generating",
+        task_key: "queued-task",
+      },
+      {
+        node_id: "running-node",
+        action: "generate_video",
+        status: "running",
+        phase: "generating",
+        task_key: "running-task",
+      },
+    ];
+    const tasks = new Map([
+      ["queued-task", task({ task_key: "queued-task", status: "queued" })],
+      ["running-task", task({ task_key: "running-task", status: "running" })],
+    ]);
+
+    expect(workflowStatusCounts(actions, tasks)).toMatchObject({
+      inProgress: 1,
+      waiting: 1,
+    });
+  });
+});
+
+describe("selectWorkflowActivityLabels", () => {
+  it("returns active node names and excludes actions that are still waiting", () => {
+    const actions: FreezoneWorkflowRun["actions"] = [
+      {
+        node_id: "node-1",
+        action: "generate_image",
+        status: "running",
+        phase: "generating",
+      },
+      {
+        node_id: "node-2",
+        action: "generate_video",
+        status: "running",
+        phase: "waiting_capacity",
+      },
+    ];
+
+    expect(selectWorkflowActivityLabels(
+      actions,
+      [
+        node(),
+        node({
+          id: "node-2",
+          type: CANVAS_NODE_TYPES.video,
+          data: { displayName: "等待中的视频" },
+        }),
+      ],
+      (label, phase) => `${phase}:${label}`,
+    )).toEqual(["generating:商品主图"]);
   });
 });

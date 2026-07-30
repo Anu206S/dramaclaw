@@ -300,7 +300,16 @@ function workflowTimelineCatalog(data: unknown): Record<string, unknown> | null 
 
 function workflowTimelineRole(data: unknown): string {
   const value = workflowTimelineCatalog(data)?.timelineRole;
-  if (typeof value === "string" && value) return value;
+  if (typeof value === "string" && value) {
+    const normalized = value.trim().toLowerCase();
+    if (["music", "bgm", "background_music"].includes(normalized)) {
+      return "background_music";
+    }
+    if (["voiceover", "narration", "shot_voice"].includes(normalized)) {
+      return "shot_voice";
+    }
+    return normalized;
+  }
   return resolveAudioKind(data as Parameters<typeof resolveAudioKind>[0]) === "music"
     ? "background_music"
     : "";

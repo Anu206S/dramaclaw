@@ -49,12 +49,18 @@ def test_workflow_run_api_lifecycle(workflow_run_client: TestClient) -> None:
         json={
             "status": "completed",
             "action_updates": [
-                {"node_id": "image-1", "action": "generate_image", "status": "completed"}
+                {
+                    "node_id": "image-1",
+                    "action": "generate_image",
+                    "status": "completed",
+                    "phase": "syncing_result",
+                }
             ],
         },
     )
     assert patched_response.status_code == 200
     assert patched_response.json()["data"]["status"] == "completed"
+    assert patched_response.json()["data"]["actions"][0]["phase"] == "syncing_result"
 
     assert workflow_run_client.get(f"{base}/{created['run_id']}").json()["data"][
         "run_id"
@@ -62,6 +68,32 @@ def test_workflow_run_api_lifecycle(workflow_run_client: TestClient) -> None:
     assert workflow_run_client.get(base).json()["data"]["runs"][0]["run_id"] == created[
         "run_id"
     ]
+
+
+def test_workflow_run_api_rejects_invalid_action_phase(
+    workflow_run_client: TestClient,
+) -> None:
+    base = "/api/v1/projects/proj_demo/freezone/canvases/default/workflow-runs"
+    created = workflow_run_client.post(
+        base,
+        json={"actions": [{"node_id": "image-1", "action": "generate_image"}]},
+    ).json()["data"]
+
+    response = workflow_run_client.patch(
+        f"{base}/{created['run_id']}",
+        json={
+            "action_updates": [
+                {
+                    "node_id": "image-1",
+                    "action": "generate_image",
+                    "status": "running",
+                    "phase": "unknown_phase",
+                }
+            ]
+        },
+    )
+
+    assert response.status_code == 400
 
 
 def test_workflow_run_api_rejects_empty_actions(workflow_run_client: TestClient) -> None:

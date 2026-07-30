@@ -410,6 +410,7 @@ export function useImageGenerationForm(
         .join('\n\n');
     // 工作流配方节点用配方编译出的最终 prompt；非配方节点回落上面这段拼接。
     const effectivePrompt = await compileWorkflowNodePrompt({
+      nodeId: id,
       nodeData: data,
       nodeKind: 'image',
       nodePrompt: ownPrompt,
@@ -531,6 +532,7 @@ export function useImageGenerationForm(
             if (runIndex === 0 && completedUrls.length === 0) {
               updateNodeData(id, { isGenerating: false, generationStartedAt: null });
             }
+            throw new Error('图片生成完成但未返回图片地址');
           }
         };
         // 'submitted'：提交即返回任务句柄，产物回填在后台继续（配方运行时按
@@ -603,7 +605,7 @@ export function useImageGenerationForm(
       }
     };
 
-    await Promise.allSettled(
+    const settledRuns = await Promise.allSettled(
       Array.from({ length: total }, (_, runIndex) => runOne(runIndex)),
     );
     // 全部尘埃落定后撤掉占位（失败的任务不留空槽，画册按实际完成数收口）。
@@ -619,6 +621,10 @@ export function useImageGenerationForm(
       };
       return actionOutput;
     }
+    const firstFailure = settledRuns.find(
+      (result): result is PromiseRejectedResult => result.status === 'rejected',
+    );
+    if (firstFailure) throw firstFailure.reason;
     if (resolvedCompletionMode === 'submitted' && submittedRefs.length > 0) {
       const firstRef = submittedRefs[0]!;
       actionOutput = {
@@ -632,6 +638,7 @@ export function useImageGenerationForm(
       };
       return actionOutput;
     }
+    throw new Error('图片生成未提交任务，也没有返回图片地址');
     } finally {
       submittingRef.current = false;
       const waiters = submitWaitersRef.current;
