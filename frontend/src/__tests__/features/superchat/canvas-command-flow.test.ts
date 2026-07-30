@@ -222,6 +222,40 @@ describe("canvas command flow placement", () => {
     });
   });
 
+  it("places unanchored cancelled feedback before assistant cancellation text", () => {
+    const items = buildCanvasCommandFlowItemsForTest(
+      "生成请求提交超时，可能是画布连接暂时中断。请在画布上直接点击该节点的生成按钮重试，或稍后再让我帮你提交。",
+      [],
+      [
+        {
+          key: "bridge:timeout",
+          applied: 0,
+          openedUiActions: 0,
+          errors: ["画布操作等待超时，已自动取消"],
+          commandResults: [
+            {
+              commandIndex: -1,
+              type: "validate",
+              status: "error",
+              label: "已取消",
+              error: "画布操作等待超时，已自动取消",
+            },
+          ],
+          cancelled: true,
+          cancelReason: "timeout",
+          surfaceOrder: 10,
+        },
+      ],
+      [],
+    );
+
+    expect(items.map((item) => item.kind)).toEqual(["feedback", "text"]);
+    expect(items[0]).toMatchObject({
+      kind: "feedback",
+      feedback: { key: "bridge:timeout" },
+    });
+  });
+
   it("targets the current assistant turn when command feedback arrives before text", () => {
     const messageId = resolveCanvasCommandFeedbackMessageIdForTest({
       messages: [
@@ -319,6 +353,42 @@ describe("canvas command flow placement", () => {
         },
       ],
     })).toBe("muted");
+
+    expect(canvasCommandFeedbackVisualToneForTest({
+      key: "bridge:cancelled",
+      applied: 0,
+      openedUiActions: 0,
+      errors: ["已取消画布操作"],
+      commandResults: [
+        {
+          commandIndex: -1,
+          type: "validate",
+          status: "error",
+          label: "已取消",
+          error: "已取消画布操作",
+        },
+      ],
+      cancelled: true,
+      cancelReason: "user",
+    })).toBe("muted");
+
+    expect(canvasCommandFeedbackVisualToneForTest({
+      key: "bridge:timeout",
+      applied: 0,
+      openedUiActions: 0,
+      errors: ["画布操作等待超时，已自动取消"],
+      commandResults: [
+        {
+          commandIndex: -1,
+          type: "validate",
+          status: "error",
+          label: "已取消",
+          error: "画布操作等待超时，已自动取消",
+        },
+      ],
+      cancelled: true,
+      cancelReason: "timeout",
+    })).toBe("warning");
 
     expect(canvasCommandFeedbackVisualToneForTest({
       key: "bridge:execution",
