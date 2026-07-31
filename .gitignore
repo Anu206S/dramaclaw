@@ -87,6 +87,12 @@ src/novelvideo/freezone/agent_catalog/builtins/recipes/*
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/outdoor-stage-duel-key-elements.json
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/outdoor-stage-duel-shot-video.json
 !src/novelvideo/freezone/agent_catalog/builtins/recipes/outdoor-stage-duel-audio-layers.json
+!src/novelvideo/freezone/agent_catalog/builtins/skills/japanese-anime-drama-video.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/jp-anime-drama-script.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/jp-anime-drama-storyboard.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/jp-anime-drama-key-elements.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/jp-anime-drama-shot-video.json
+!src/novelvideo/freezone/agent_catalog/builtins/recipes/jp-anime-drama-audio-layers.json
 docs/oss-split/
 
 # 内部过程文档不进公开仓（迁至 dc workspace docs）
