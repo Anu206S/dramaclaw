@@ -1368,11 +1368,11 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "sci-fi-survival-audio-layers",
     ]
     assert skills["japanese-anime-drama-video"]["allowed_recipe_ids"] == [
-        "jp-anime-drama-script",
-        "jp-anime-drama-storyboard",
-        "jp-anime-drama-key-elements",
-        "jp-anime-drama-shot-video",
-        "jp-anime-drama-audio-layers",
+        "dialogue-drama-story-script",
+        "dialogue-drama-storyboard-plan",
+        "visual-key-elements",
+        "dialogue-continuity-shot-video",
+        "dialogue-voice-ambience-layer",
     ]
     assert "ad-ip-character-anchor" in recipes
     assert "ad-product-prop-anchor" in recipes
@@ -1391,11 +1391,11 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "sci-fi-survival-key-elements" in recipes
     assert "sci-fi-survival-shot-video" in recipes
     assert "sci-fi-survival-audio-layers" in recipes
-    assert "jp-anime-drama-script" in recipes
-    assert "jp-anime-drama-storyboard" in recipes
-    assert "jp-anime-drama-key-elements" in recipes
-    assert "jp-anime-drama-shot-video" in recipes
-    assert "jp-anime-drama-audio-layers" in recipes
+    assert "dialogue-drama-story-script" in recipes
+    assert "dialogue-drama-storyboard-plan" in recipes
+    assert "dialogue-drama-key-elements" not in recipes
+    assert "dialogue-continuity-shot-video" in recipes
+    assert "dialogue-voice-ambience-layer" in recipes
     assert "visual-key-elements" in recipes
     assert "storyboard-shot-video" in recipes
     assert "video-audio-layer" in recipes
@@ -1834,11 +1834,11 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
     skill = skills["japanese-anime-drama-video"]
     planning = skill["planning"]
     recipe_ids = [
-        "jp-anime-drama-script",
-        "jp-anime-drama-storyboard",
-        "jp-anime-drama-key-elements",
-        "jp-anime-drama-shot-video",
-        "jp-anime-drama-audio-layers",
+        "dialogue-drama-story-script",
+        "dialogue-drama-storyboard-plan",
+        "visual-key-elements",
+        "dialogue-continuity-shot-video",
+        "dialogue-voice-ambience-layer",
     ]
     planning_text = "\n".join(
         [
@@ -1856,6 +1856,7 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
     assert "24fps" in planning_text
     assert "无 BGM" in planning_text
     assert "无字幕" in planning_text
+    assert "无屏幕文字" in planning_text
     assert "1.5 秒" in planning_text
     assert "30° 规则" in planning_text
     assert "这个规格不创建独立节点" in planning["planning_notes"]
@@ -1863,7 +1864,9 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
     assert "分镜" in planning["planning_notes"]
     assert "关键元素" in planning["planning_notes"]
     assert "样片" in planning["planning_notes"]
-    assert "音色参考" in planning["planning_notes"]
+    assert "voiceRef" in planning["planning_notes"]
+    assert "audio_infos" in planning["planning_notes"]
+    assert "音频节点连接关系" in planning["planning_notes"]
     assert "不作为 Recipe" in planning["planning_notes"]
     for recipe_id in recipe_ids:
         assert recipe_id not in planning_text
@@ -1879,28 +1882,26 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
             "\n".join(recipes[recipe_id]["must_have_items"]),
         ]
     )
-    assert "日系漫剧" in recipe_text
+    assert "日系漫剧" not in recipe_text
     for supplier in ("Seedance", "Kling", "Nano Banana", "Gemini", "GPT Image"):
         assert supplier not in planning_text
         assert supplier not in recipe_text
 
     key_text = "\n".join(
         [
-            recipes["jp-anime-drama-key-elements"]["system_prompt"],
-            "\n".join(recipes["jp-anime-drama-key-elements"]["must_have_items"]),
+            recipes["visual-key-elements"]["system_prompt"],
+            "\n".join(recipes["visual-key-elements"]["must_have_items"]),
         ]
     )
-    assert "四格" in key_text
-    assert "胸像特写" in key_text
-    assert "白底" in key_text
-    assert "正拍" in key_text
-    assert "航拍" in key_text
-    assert "后续视频引用锚点" in key_text
+    assert "角色、场景、道具" in key_text
+    assert "多角度/表情表" in key_text
+    assert "后续镜头的一致性锚点" in key_text
+    assert "已确认角色、场景或道具设定" in key_text
 
     shot_text = "\n".join(
         [
-            recipes["jp-anime-drama-shot-video"]["system_prompt"],
-            "\n".join(recipes["jp-anime-drama-shot-video"]["must_have_items"]),
+            recipes["dialogue-continuity-shot-video"]["system_prompt"],
+            "\n".join(recipes["dialogue-continuity-shot-video"]["must_have_items"]),
         ]
     )
     assert "image_infos 总数不超过 9" in shot_text
@@ -1909,16 +1910,22 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
     assert "手持呼吸感" in shot_text
     assert "偏转 15°" in shot_text
     assert "2300" in shot_text
-    assert "无音乐、无字幕、无屏幕文字" in shot_text
+    assert "全局创作规格" in shot_text
 
     audio_text = "\n".join(
         [
-            recipes["jp-anime-drama-audio-layers"]["system_prompt"],
-            "\n".join(recipes["jp-anime-drama-audio-layers"]["must_have_items"]),
+            recipes["dialogue-voice-ambience-layer"]["system_prompt"],
+            "\n".join(recipes["dialogue-voice-ambience-layer"]["must_have_items"]),
         ]
     )
-    assert "key_element_audio" in audio_text
-    assert "禁止生成 music" in audio_text
+    assert "角色语音提示词" in audio_text
+    assert "朗读文案" in audio_text
+    assert "语气情绪" in audio_text
+    assert "语速节奏" in audio_text
+    assert "音色策略" in audio_text
+    assert "待用户确认参考音色或改用系统音色" in audio_text
+    assert "环境声清单" in audio_text
+    assert "全局创作规格" in audio_text
     assert "ducking" in audio_text
 
 
@@ -1944,8 +1951,8 @@ def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch
             "sci-fi-survival-key-elements",
         ),
         "japanese-anime-drama-video": (
-            "jp-anime-drama-shot-video",
-            "jp-anime-drama-key-elements",
+            "dialogue-continuity-shot-video",
+            "visual-key-elements",
         ),
     }
 
