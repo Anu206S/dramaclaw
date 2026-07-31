@@ -201,7 +201,26 @@ def workflow_error_diagnostics(error: str | None) -> dict[str, Any]:
     elif category == "quota_exhausted":
         user_message = "当前模型渠道额度已用尽，请补充额度或切换渠道。"
     elif category == "content_policy":
-        user_message = "输入内容触发了模型安全审核，请确认授权或更换素材后重试。"
+        if "outputvideosensitivecontentdetected" in normalized_message:
+            user_message = (
+                "内容安全审核未通过（输出视频）：模型拒绝了本次生成结果，"
+                "请调整敏感情节或画面描述后重试。"
+            )
+        elif "outputimagesensitivecontentdetected" in normalized_message:
+            user_message = (
+                "内容安全审核未通过（输出图片）：模型拒绝了本次生成结果，"
+                "请调整敏感内容描述后重试。"
+            )
+        elif "inputimagesensitivecontentdetected" in normalized_message:
+            user_message = (
+                "内容安全审核未通过（输入图片）：如包含已获授权的真人，"
+                "请开启真人素材审核后重试。"
+            )
+        else:
+            user_message = (
+                "内容安全审核未通过：模型拒绝了本次生成请求，"
+                "请调整提示词或更换素材后重试。"
+            )
     elif category == "invalid_request":
         if "video total duration" in normalized_message:
             user_message = "输入视频总时长超过当前模型限制，请缩短素材或拆分生成。"

@@ -1315,6 +1315,9 @@
       "ffmpeg": "composition"
     },
     "generationChannelPolicyBlocked": "This request was blocked by the model channel policy (not a real rate limit) — low-quality sketch regeneration requests are typically skipped. Retry later, or raise the generation quality and try again.",
+    "generationInputContentPolicyBlocked": "Error type: content safety review failed (input image). If it contains an authorized real person, enable Real-person review and retry; otherwise, replace the input.",
+    "generationOutputContentPolicyBlocked": "Error type: content safety review failed (output video or image). The model rejected this result. Adjust descriptions involving violence, harm, privacy, or other sensitive content and retry.",
+    "generationContentPolicyBlocked": "Error type: content safety review failed. The model rejected this generation request. Adjust the prompt or replace the input and retry.",
     "generationRateLimited": "The model service is temporarily rate-limited (HTTP 429). Please retry shortly.",
     "refreshed": "Content refreshed",
     "save": "Save",

@@ -216,7 +216,12 @@ export async function jsonWithBackendError<T>(request: Promise<Response>): Promi
  * to tell the two apart so users don't read a policy block as "try again in a
  * bit". Order matters: check the policy signal before the bare-429 signal.
  */
-export type GatewayErrorKind = "channel_policy" | "rate_limit";
+export type GatewayErrorKind =
+  | "channel_policy"
+  | "rate_limit"
+  | "input_content_policy"
+  | "output_content_policy"
+  | "content_policy";
 
 function parseJsonValueAt(text: string, start: number): unknown | null {
   const opener = text[start];
@@ -304,6 +309,20 @@ export function classifyGatewayError(
   if (/channel[_-]?policy/i.test(raw) || /_skipped\b/i.test(raw)) {
     return "channel_policy";
   }
+  if (/InputImageSensitiveContentDetected/i.test(raw)) {
+    return "input_content_policy";
+  }
+  if (/Output(?:Video|Image)SensitiveContentDetected/i.test(raw)) {
+    return "output_content_policy";
+  }
+  if (
+    /content[_-]?policy[_-]?violation/i.test(raw)
+    || /moderation[_-]?blocked/i.test(raw)
+    || /failed safety review/i.test(raw)
+    || /内容未通过安全审核/i.test(raw)
+  ) {
+    return "content_policy";
+  }
   // Genuine upstream limit. `HTTP 429` is how run_core stamps the status.
   if (/\bHTTP 429\b/.test(raw) || /\b429\b.*rate/i.test(raw)) {
     return "rate_limit";
@@ -324,6 +343,12 @@ export function humanizeTaskError(
   switch (classifyGatewayError(raw)) {
     case "channel_policy":
       return t("common.generationChannelPolicyBlocked", { defaultValue: fallback });
+    case "input_content_policy":
+      return t("common.generationInputContentPolicyBlocked", { defaultValue: fallback });
+    case "output_content_policy":
+      return t("common.generationOutputContentPolicyBlocked", { defaultValue: fallback });
+    case "content_policy":
+      return t("common.generationContentPolicyBlocked", { defaultValue: fallback });
     case "rate_limit":
       return t("common.generationRateLimited", { defaultValue: fallback });
     default:
@@ -358,7 +383,7 @@ export function backendErrorToastMessage(error: unknown, t: TFunction): string {
     });
   }
   if (error instanceof Error && error.message) {
-    return providerErrorMessage(error.message) ?? error.message;
+    return humanizeTaskError(error.message, t);
   }
   return t("common.error");
 }
