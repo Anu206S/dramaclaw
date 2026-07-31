@@ -5319,7 +5319,7 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
     saved_to_catalog: false,
     saved_skill_ids: [],
     saved_recipe_ids: [],
-    draft: null,
+    draft,
     draft_ref: draftRef,
     message: [
       "用户已启动 Skill Studio 草稿修改会话。",
@@ -5328,7 +5328,7 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
       "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
       "不要询问是否保存当前版本，也不要提供 save_now / save_current / confirm_save 这类选项；保存只由页面草稿卡的确认按钮处理。",
       "这不是继续完成原草稿，也不是要求重新展示当前草稿。",
-      "本次回执只提供草稿引用，不提供完整 draft；不要从当前草稿结构或历史内容里自行推断结构优化、拆分步骤、增删 Recipe 或调整引用关系。",
+      "本次回执提供当前完整 draft，draft 只用于理解被修改对象和后续局部 patch；不要把 draft 内容当成用户修改意图。",
       "用户还没有提供具体修改方向；下一步必须调用 freezone_request_user_clarification 追问修改方向、范围或偏好。",
       "这次 clarification 的 questions 数组必须只有一个问题，问题要直接问用户想改哪里或怎么改。",
       "在用户回答修改方向之前，禁止调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
