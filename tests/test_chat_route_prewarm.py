@@ -800,8 +800,8 @@ async def test_receive_bridge_results_during_turn_resolves_skill_studio_result(m
     assert resolved["saved_skill_ids"] == ["home-culture-video"]
     assert resolved["saved_recipe_ids"] == ["home-culture-video-script"]
     assert saved_items == [
-        ("skills", {"id": "home-culture-video"}),
         ("recipes", {"id": "home-culture-video-script"}),
+        ("skills", {"id": "home-culture-video"}),
     ]
 
 
