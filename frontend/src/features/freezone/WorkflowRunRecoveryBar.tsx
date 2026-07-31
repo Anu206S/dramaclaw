@@ -221,10 +221,6 @@ export function WorkflowRunRecoveryBar({
       );
       if (result.errors.length > 0) {
         setError(result.errors[0] ?? "恢复执行失败");
-      } else {
-        await updateFreezoneWorkflowRun(projectId, canvasId, run.run_id, {
-          status: "cancelled",
-        });
       }
       await refresh();
     } catch (resumeError) {
@@ -255,10 +251,6 @@ export function WorkflowRunRecoveryBar({
       );
       if (result.errors.length > 0) {
         setError(result.errors[0] ?? "节点重试失败");
-      } else {
-        await updateFreezoneWorkflowRun(projectId, canvasId, run.run_id, {
-          status: "cancelled",
-        });
       }
       await refresh();
     } catch (retryError) {

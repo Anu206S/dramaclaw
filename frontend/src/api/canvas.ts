@@ -105,6 +105,9 @@ export interface FreezoneWorkflowRunAction {
   task_type?: string | null;
   job_id?: string | null;
   error_category?: string | null;
+  error_request_id?: string | null;
+  error_fingerprint?: string | null;
+  user_error?: string | null;
   retryable?: boolean | null;
   artifact_status?: "valid" | "missing" | "unverified" | "not_required" | null;
   retry_count?: number;

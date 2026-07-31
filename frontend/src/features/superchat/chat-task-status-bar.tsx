@@ -16,7 +16,6 @@ import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   listFreezoneWorkflowRuns,
-  updateFreezoneWorkflowRun,
   type FreezoneWorkflowRun,
   type FreezoneWorkflowRunAction,
 } from "@/api/canvas";
@@ -94,20 +93,24 @@ export function selectChatWorkflowRun(
     })[0] ?? null;
 }
 
+export function isStatusBarWorkflowContinuable(
+  run: FreezoneWorkflowRun | null,
+): boolean {
+  return Boolean(
+    run?.resumable &&
+    (run.status === "failed" || run.status === "interrupted"),
+  );
+}
+
 export function resolveWorkflowRunDisplayCompletion(
   run: FreezoneWorkflowRun | null,
   hasCurrentResult: (nodeId: string, action: string) => boolean,
   now = new Date().toISOString(),
 ): FreezoneWorkflowRun | null {
-  if (!run || run.status !== "running") return run;
-  const hasFailure = run.actions.some(
-    (action) => action.status === "failed" || action.status === "blocked",
-  );
-  if (hasFailure) return run;
+  if (!run || run.status === "completed") return run;
   const allReady = run.actions.length > 0 && run.actions.every(
     (action) =>
       action.status === "completed" ||
-      action.status === "skipped" ||
       hasCurrentResult(action.node_id, action.action),
   );
   if (!allReady) return run;
@@ -117,7 +120,7 @@ export function resolveWorkflowRunDisplayCompletion(
     resumable: false,
     completed_at: now,
     actions: run.actions.map((action) =>
-      action.status === "completed" || action.status === "skipped"
+      action.status === "completed"
         ? action
         : { ...action, status: "completed", updated_at: now }
     ),
@@ -359,7 +362,7 @@ export function ChatTaskStatusBar({
   );
   const resumeNodeIds = useMemo(
     () =>
-      workflowRun?.status === "interrupted" && workflowRun.resumable
+      workflowRun && isStatusBarWorkflowContinuable(workflowRun)
         ? recoverableWorkflowNodeIds(workflowRun, existingNodeIds)
         : [],
     [existingNodeIds, workflowRun],
@@ -574,9 +577,6 @@ export function ChatTaskStatusBar({
       if (result.errors.length > 0) {
         throw new Error(result.errors[0] ?? t("taskCenter.chatStatus.resumeFailedFallback"));
       }
-      await updateFreezoneWorkflowRun(projectId, canvasId, workflowRun.run_id, {
-        status: "cancelled",
-      });
       await refreshWorkflowRuns();
       toast.success(t("taskCenter.chatStatus.resumeSucceeded"));
     } catch (error) {
@@ -645,7 +645,9 @@ export function ChatTaskStatusBar({
             )}
           />
         </button>
-        {workflowRun?.status === "interrupted" && resumeNodeIds.length > 0 ? (
+        {workflowRun &&
+        isStatusBarWorkflowContinuable(workflowRun) &&
+        resumeNodeIds.length > 0 ? (
           <Button
             type="button"
             size="sm"
@@ -662,7 +664,9 @@ export function ChatTaskStatusBar({
             )}
             {resuming
               ? t("taskCenter.chatStatus.resuming")
-              : t("taskCenter.chatStatus.resume")}
+              : workflowRun.status === "failed"
+                ? t("taskCenter.chatStatus.continueDownstream")
+                : t("taskCenter.chatStatus.resume")}
           </Button>
         ) : null}
         <Button

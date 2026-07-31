@@ -100,6 +100,8 @@ def validate_workflow_plan(
         errors.append(_issue("nodes", f"must contain at most {MAX_WORKFLOW_NODES} nodes"))
 
     node_types: dict[str, str] = {}
+    node_values: dict[str, dict[str, Any]] = {}
+    node_indexes: dict[str, int] = {}
     referenced_skill_ids: set[str] = set()
     source_required_nodes: dict[str, str] = {}
     source_satisfied_node_ids: set[str] = set()
@@ -120,6 +122,8 @@ def validate_workflow_plan(
             errors.append(_issue(f"{path}.node_type", f"unsupported node type: {node_type}"))
             continue
         node_types[node_id] = node_type
+        node_values[node_id] = node
+        node_indexes[node_id] = index
         _validate_node_catalog_refs(
             node,
             path=path,
@@ -168,6 +172,9 @@ def validate_workflow_plan(
     elif len(edges) > MAX_WORKFLOW_EDGES:
         errors.append(_issue("edges", f"must contain at most {MAX_WORKFLOW_EDGES} edges"))
     adjacency: dict[str, list[str]] = {node_id: [] for node_id in node_types}
+    incoming_edges: dict[str, list[dict[str, Any]]] = {
+        node_id: [] for node_id in node_types
+    }
     seen_edges: set[tuple[str, str, str]] = set()
     for index, edge in enumerate(edges):
         path = f"edges[{index}]"
@@ -186,6 +193,7 @@ def validate_workflow_plan(
         if link_type not in ALLOWED_LINK_TYPES:
             errors.append(_issue(f"{path}.link_type", f"unsupported link type: {link_type}"))
         if source in node_types and target in node_types and link_type in ALLOWED_LINK_TYPES:
+            incoming_edges[target].append(edge)
             edge_key = (source, target, link_type)
             if edge_key in seen_edges:
                 errors.append(_issue(path, "duplicate edge"))
@@ -205,6 +213,97 @@ def validate_workflow_plan(
             ):
                 source_satisfied_node_ids.add(target)
 
+    compose_node_ids = [
+        node_id for node_id, node_type in node_types.items()
+        if node_type == "videoComposeNode"
+    ]
+    if len(compose_node_ids) > 1:
+        errors.append(
+            _issue(
+                "nodes",
+                "workflow may contain at most one videoComposeNode",
+            )
+        )
+    for node_id, node in node_values.items():
+        node_type = node_types[node_id]
+        node_index = node_indexes[node_id]
+        data = node.get("data") if isinstance(node.get("data"), dict) else {}
+        catalog = (
+            data.get("workflowCatalog")
+            if isinstance(data.get("workflowCatalog"), dict)
+            else {}
+        )
+        if node_type == "videoComposeNode":
+            if str(catalog.get("recipeId") or "").strip():
+                errors.append(
+                    _issue(
+                        f"nodes[{node_index}].data.workflowCatalog.recipeId",
+                        "videoComposeNode is a system composition capability and must not use a Recipe",
+                    )
+                )
+            compose_inputs = incoming_edges.get(node_id, [])
+            video_inputs = [
+                edge for edge in compose_inputs
+                if edge.get("link_type") == "composition_input_for"
+                and node_types.get(str(edge.get("source") or "")) == "videoNode"
+            ]
+            if not video_inputs:
+                errors.append(
+                    _issue(
+                        f"nodes[{node_index}]",
+                        "videoComposeNode requires at least one video composition input",
+                    )
+                )
+            if adjacency.get(node_id):
+                errors.append(
+                    _issue(
+                        f"nodes[{node_index}]",
+                        "videoComposeNode must be a terminal node",
+                    )
+                )
+            continue
+        if node_type != "videoNode":
+            continue
+        role = str(
+            catalog.get("role")
+            or data.get("workflowCatalogRole")
+            or ""
+        ).strip().lower()
+        stage = str(node.get("stage") or "").strip().lower()
+        step_id = str(catalog.get("stepId") or "").strip().lower().replace("-", "_")
+        if (
+            role in {"composition", "compose", "final_composition"}
+            or stage in {"composition", "compose"}
+            or step_id in {"compose", "final_compose", "final_composition", "video_compose"}
+        ):
+            errors.append(
+                _issue(
+                    f"nodes[{node_index}]",
+                    "final composition must use videoComposeNode, not a Recipe-backed videoNode",
+                )
+            )
+
+    for index, edge in enumerate(edges):
+        if not isinstance(edge, dict):
+            continue
+        source = edge.get("source")
+        target = edge.get("target")
+        link_type = edge.get("link_type")
+        if link_type == "composition_input_for" and node_types.get(target) != "videoComposeNode":
+            errors.append(
+                _issue(
+                    f"edges[{index}]",
+                    "composition_input_for must target videoComposeNode",
+                )
+            )
+        if node_types.get(target) == "videoComposeNode" and link_type != "composition_input_for":
+            errors.append(
+                _issue(
+                    f"edges[{index}]",
+                    "all videoComposeNode inputs must use composition_input_for",
+                )
+            )
+
     for node_id in sorted(set(source_required_nodes) - source_satisfied_node_ids):
         errors.append(
             _issue(
@@ -220,6 +319,7 @@ def validate_workflow_plan(
     _validate_group_refs(payload, node_types, errors)
     if errors:
         return _invalid(errors)
+    preflight = _build_plan_preflight(nodes)
     return {
         "ok": True,
         "status": "workflow_plan_valid",
@@ -228,6 +328,84 @@ def validate_workflow_plan(
         "node_count": len(nodes),
         "edge_count": len(edges),
         "skill_id": next(iter(referenced_skill_ids), ""),
+        "preflight": preflight,
+    }
+
+
+def _build_plan_preflight(nodes: list[Any]) -> dict[str, Any]:
+    counts = {
+        "text": 0,
+        "image": 0,
+        "video": 0,
+        "audio": 0,
+        "compose": 0,
+    }
+    models: set[str] = set()
+    warnings: list[dict[str, str]] = []
+    planned_video_duration = 0
+    generated_text_count = 0
+    for index, raw_node in enumerate(nodes):
+        if not isinstance(raw_node, dict):
+            continue
+        node_type = str(raw_node.get("node_type") or "")
+        kind = {
+            "textAnnotationNode": "text",
+            "scriptNode": "text",
+            "beatContextNode": "text",
+            "imageGenNode": "image",
+            "videoNode": "video",
+            "audioNode": "audio",
+            "videoComposeNode": "compose",
+        }.get(node_type)
+        if kind:
+            counts[kind] += 1
+        data = raw_node.get("data") if isinstance(raw_node.get("data"), dict) else {}
+        catalog = (
+            data.get("workflowCatalog")
+            if isinstance(data.get("workflowCatalog"), dict)
+            else {}
+        )
+        if kind == "text" and str(catalog.get("recipeId") or "").strip():
+            generated_text_count += 1
+        model = str(data.get("model") or "").strip()
+        if model:
+            models.add(model)
+        if node_type == "videoNode":
+            duration = data.get("durationSec")
+            if isinstance(duration, (int, float)) and duration > 0:
+                planned_video_duration += int(duration)
+                if duration > 15:
+                    warnings.append(
+                        _issue(
+                            f"nodes[{index}].data.durationSec",
+                            "video duration exceeds 15 seconds and will be split or clamped by the runtime",
+                        )
+                    )
+            if not model:
+                warnings.append(
+                    _issue(
+                        f"nodes[{index}].data.model",
+                        "video model is not pinned; the current runtime default will be used",
+                    )
+                )
+        elif node_type == "imageGenNode" and not model:
+            warnings.append(
+                _issue(
+                    f"nodes[{index}].data.model",
+                    "image model is not pinned; the current runtime default will be used",
+                )
+            )
+    generation_tasks = (
+        generated_text_count + counts["image"] + counts["video"] + counts["audio"]
+    )
+    return {
+        "status": "ready",
+        "blockers": [],
+        "warnings": warnings,
+        "generation_task_count": generation_tasks,
+        "counts": counts,
+        "models": sorted(models),
+        "planned_video_duration_seconds": planned_video_duration,
     }
 
 

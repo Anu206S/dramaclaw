@@ -17,6 +17,7 @@ from novelvideo.freezone.workflow_runs import (
     reconcile_workflow_runs_with_canvas_nodes,
     reconcile_workflow_runs_with_tasks,
     update_workflow_run,
+    workflow_error_diagnostics,
 )
 
 
@@ -172,6 +173,72 @@ def test_workflow_error_classification(
     retryable: bool,
 ) -> None:
     assert classify_workflow_error(error) == (category, retryable)
+
+
+def test_workflow_error_diagnostics_extracts_request_id_and_user_message() -> None:
+    diagnostics = workflow_error_diagnostics(
+        "freezone video generation failed: [InvalidParameter] parameter video total "
+        "duration must be <= 15.2. Request id: 02178540585944116abc"
+    )
+
+    assert diagnostics == {
+        "error_category": "invalid_request",
+        "retryable": False,
+        "error_request_id": "02178540585944116abc",
+        "error_fingerprint": "request:02178540585944116abc",
+        "user_error": "输入视频总时长超过当前模型限制，请缩短素材或拆分生成。",
+    }
+
+
+def test_failed_action_persists_normalized_error_diagnostics(tmp_path: Path) -> None:
+    run = create_workflow_run(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        actions=[{"node_id": "one", "action": "generate_audio"}],
+    )
+
+    updated = update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        action_updates=[
+            {
+                "node_id": "one",
+                "action": "generate_audio",
+                "status": "failed",
+                "error": "HTTP 503 timeout (request id: req-123)",
+            }
+        ],
+    )
+
+    assert updated is not None
+    action = updated["actions"][0]
+    assert action["error_category"] == "transient_upstream"
+    assert action["retryable"] is True
+    assert action["error_request_id"] == "req-123"
+    assert action["error_fingerprint"] == "request:req-123"
+    assert action["user_error"] == "上游模型服务暂时不可用，系统可稍后重试。"
+
+    completed = update_workflow_run(
+        project_dir=tmp_path,
+        canvas_id="default",
+        run_id=run["run_id"],
+        action_updates=[
+            {
+                "node_id": "one",
+                "action": "generate_audio",
+                "status": "completed",
+            }
+        ],
+    )
+
+    assert completed is not None
+    completed_action = completed["actions"][0]
+    assert completed_action["error"] is None
+    assert "error_category" not in completed_action
+    assert "error_fingerprint" not in completed_action
+    assert "user_error" not in completed_action
 
 
 def test_task_reconciliation_completes_run_with_existing_artifact(tmp_path: Path) -> None:
