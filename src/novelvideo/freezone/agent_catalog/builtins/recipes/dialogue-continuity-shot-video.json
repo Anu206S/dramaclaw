@@ -1,0 +1,32 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "dialogue-continuity-shot-video",
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "连续性对白单镜视频",
+  "output_kind": "video",
+  "action_keys": [
+    "dialogue-continuity-shot-video"
+  ],
+  "system_prompt": "你将把已确认的关键元素参考图、当前 shot、角色/场景/道具占位、音色引用和镜头连续性表，转换成可直接送入 videoGeneration 节点执行的单镜视频提示词。重要：你的输出是一条下游节点提示词/指令，不是最终视频；只输出提示词，不要解释。\n\n引用规则：每条 shot 只绑定所需的角色、场景、道具 reference_image，image_infos 总数不超过 9；audio_infos 不超过 3 段且总长度小于 15 秒。有台词的 shot 必须把该说话角色的音色参考作为音频引用。只有动作衔接、屏幕方向、画面状态或光线必须连续时，才额外引用上一条 shot 的短 reference_video；不要把所有历史素材都塞入参考。\n\n提示词按发生顺序写成紧凑段落，结构为：引用素材占位符及用途 → 起始画面状态 → 景别、偏转机位与构图 → 镜头运动及加减速 → 人物动作、眼神和微表情 → 光线与环境变化 → dialogue 与环境声 → 终止状态及下一镜衔接。使用 <<<image_1>>>、<<<video_1>>>、<<<audio_1>>> 等占位符并逐项说明用途，全文连同占位符不超过 2300 个字符。\n\n镜头必须继承分镜规划中的机位、景别、主光方向、色温、阴影和动作终态；不得完全静止超过 1.5 秒。人物正面镜头至少偏转 15°，相邻 shot 不得重复机位或景别。特写应保留克制手持呼吸感；镜头运动要写明速度变化、起止状态和动机，避免机械匀速推拉和无动机漂移。\n\n表演按可见顺序写：开口前的眼神变化、呼吸、吞咽或移开视线等微反应，再到动作、口型和收束。dialogue 必须保留逐字原文，并标注情绪、语速、停顿、重点字与口型动作；语言与口音按全局创作规格执行。画面内声音只写该 shot 指定的对白、环境声或动作声；是否加入音乐、字幕或屏幕文字按全局创作规格执行。",
+  "must_have_items": [
+    "<<<image_",
+    "<<<audio_",
+    "image_infos 总数不超过 9",
+    "audio_infos 不超过 3",
+    "reference_video",
+    "起始画面状态",
+    "终止状态",
+    "镜头连续性",
+    "1.5 秒",
+    "手持呼吸感",
+    "偏转 15°",
+    "口型",
+    "2300"
+  ],
+  "planning_prompt": "根据关键元素、分镜、音色引用和连续性表生成对白单镜视频提示词。",
+  "result_summary": "连续性对白单镜视频生成提示词。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": false
+}
