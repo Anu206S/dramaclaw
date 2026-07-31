@@ -1273,13 +1273,39 @@ function projectionKeyFromNode(node: CanvasNode): string | null {
     : null;
 }
 
-function layoutNodes(nodeIds: string[], mode: "horizontal" | "vertical" | "grid"): void {
+function scheduleMeasuredLayout(
+  nodeIds: string[],
+  mode: "horizontal" | "vertical" | "grid",
+): void {
+  if (typeof window === "undefined") return;
+  const schedule = typeof window.requestAnimationFrame === "function"
+    ? window.requestAnimationFrame.bind(window)
+    : (callback: FrameRequestCallback) => window.setTimeout(callback, 16);
+  schedule(() => {
+    schedule(() => {
+      layoutNodes(nodeIds, mode, false);
+    });
+  });
+}
+
+function layoutNodes(
+  nodeIds: string[],
+  mode: "horizontal" | "vertical" | "grid",
+  refineAfterMeasurement = true,
+): void {
   const store = useCanvasStore.getState();
   const nodesById = new Map(store.nodes.map((node) => [node.id, node] as const));
   const nodes = nodeIds
     .map((nodeId) => nodesById.get(nodeId))
     .filter((node): node is CanvasNode => Boolean(node));
   if (nodes.length < 2) return;
+  const needsMeasuredRefinement =
+    refineAfterMeasurement &&
+    nodes.some(
+      (node) =>
+        typeof node.measured?.width !== "number" ||
+        typeof node.measured?.height !== "number",
+    );
 
   const parentIds = new Set(nodes.map((node) => node.parentId).filter(Boolean));
   if (parentIds.size === 1) {
@@ -1295,6 +1321,9 @@ function layoutNodes(nodeIds: string[], mode: "horizontal" | "vertical" | "grid"
       groupChildren.every((node) => targetIds.has(node.id));
     if (targetsWholePlainGroup) {
       store.arrangeGroupChildren(groupId, mode);
+      if (needsMeasuredRefinement) {
+        scheduleMeasuredLayout(nodeIds, mode);
+      }
       return;
     }
   }
@@ -1322,6 +1351,9 @@ function layoutNodes(nodeIds: string[], mode: "horizontal" | "vertical" | "grid"
     });
   }
   store.setNodePositions(positions);
+  if (needsMeasuredRefinement) {
+    scheduleMeasuredLayout(nodeIds, mode);
+  }
 }
 
 function moveNodes(

@@ -229,6 +229,22 @@ def test_workflow_error_diagnostics_extracts_request_id_and_user_message() -> No
     }
 
 
+def test_workflow_error_diagnostics_humanizes_output_safety_review() -> None:
+    diagnostics = workflow_error_diagnostics(
+        "freezone video generation failed: "
+        "[OutputVideoSensitiveContentDetected] The output may contain sensitive "
+        "information. Request id: output-review-123"
+    )
+
+    assert diagnostics["error_category"] == "content_policy"
+    assert diagnostics["retryable"] is False
+    assert diagnostics["error_request_id"] == "output-review-123"
+    assert diagnostics["user_error"] == (
+        "内容安全审核未通过（输出视频）：模型拒绝了本次生成结果，"
+        "请调整敏感情节或画面描述后重试。"
+    )
+
+
 def test_failed_action_persists_normalized_error_diagnostics(tmp_path: Path) -> None:
     run = create_workflow_run(
         project_dir=tmp_path,

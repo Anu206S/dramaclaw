@@ -3773,7 +3773,10 @@ async def stream_assistant_reply(
                 project_dir=project_dir,
                 project_state_dir=project_state_dir,
             )
-        model_prompt = _script_creation_model_reply_prompt(prompt) or prompt
+        model_prompt = (
+            _script_creation_model_reply_prompt(prompt, tool_mode=tool_mode)
+            or prompt
+        )
         backend = _chat_backend()
         if backend == "codex":
             return await _stream_assistant_reply_codex(
@@ -3834,8 +3837,17 @@ def _frontend_context_reply(prompt: str) -> str | None:
     return None
 
 
-def _script_creation_model_reply_prompt(prompt: str) -> str | None:
+def _script_creation_model_reply_prompt(
+    prompt: str,
+    *,
+    tool_mode: str = "default",
+) -> str | None:
     if not prompt:
+        return None
+    # 虾画的动态工作流可以把一句创意展开成短视频脚本、广告文案和分镜文本节点。
+    # “必须从虾料上传剧本”的限制只属于主线 NovelVideo 摄入流程，不能在进入
+    # Freezone workflow Skill 前把合法的画布创作请求提前拦截。
+    if tool_mode == "freezone_canvas":
         return None
     if _DRAMACLAW_INGEST_AUTOMATION_RE.search(prompt):
         return None

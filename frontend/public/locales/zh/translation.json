@@ -1315,6 +1315,9 @@
       "ffmpeg": "合成"
     },
     "generationChannelPolicyBlocked": "本次生成被模型渠道策略拦截（并非真正限流）——低质量草图重生请求通常会被跳过。请稍后重试，或提高生成质量后再试。",
+    "generationInputContentPolicyBlocked": "错误类型：内容安全审核未通过（输入图片）。若素材包含已获授权的真人，请开启“真人素材审核”后重试；否则请更换素材。",
+    "generationOutputContentPolicyBlocked": "错误类型：内容安全审核未通过（输出视频或图片）。模型拒绝了本次生成结果，请调整涉及暴力、伤害、隐私或其他敏感内容的描述后重试。",
+    "generationContentPolicyBlocked": "错误类型：内容安全审核未通过。模型拒绝了本次生成请求，请调整提示词或更换输入素材后重试。",
     "generationRateLimited": "模型服务暂时限流（HTTP 429），请稍后重试。",
     "refreshed": "内容已刷新",
     "save": "保存",
