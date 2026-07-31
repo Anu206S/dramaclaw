@@ -3,15 +3,17 @@
 from __future__ import annotations
 
 import json
-import os
 import re
+import sqlite3
+import threading
 import uuid
+from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
-from novelvideo.freezone.canvas_lock import canvas_write_lock
-from novelvideo.freezone.paths import CANVAS_ID_RE, freezone_root
+from novelvideo.freezone.paths import CANVAS_ID_RE
+from novelvideo.sqlite_pragmas import configure_sqlite_connection
 
 RUN_ID_RE = re.compile(r"^[a-zA-Z0-9_-]{1,80}$")
 IDEMPOTENCY_KEY_RE = re.compile(r"^[a-zA-Z0-9._:-]{1,160}$")
@@ -72,6 +74,61 @@ REQUEST_ID_RE = re.compile(
     r"([a-zA-Z0-9._:-]+)",
     re.IGNORECASE,
 )
+WORKFLOW_RUN_SCHEMA_SQL = """
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    run_id              TEXT PRIMARY KEY,
+    schema_version      TEXT NOT NULL,
+    project_id          TEXT NOT NULL,
+    canvas_id           TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    resumable           INTEGER NOT NULL DEFAULT 1,
+    actor_id             TEXT,
+    runner_id            TEXT,
+    lease_expires_at     TEXT,
+    idempotency_key      TEXT,
+    metadata_json        TEXT NOT NULL DEFAULT '{}',
+    created_at           TEXT NOT NULL,
+    started_at           TEXT NOT NULL,
+    updated_at           TEXT NOT NULL,
+    completed_at         TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_canvas_created
+ON workflow_runs(canvas_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_canvas_status
+ON workflow_runs(canvas_id, status, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_workflow_runs_canvas_idempotency
+ON workflow_runs(canvas_id, idempotency_key)
+WHERE idempotency_key IS NOT NULL AND idempotency_key <> '';
+
+CREATE TABLE IF NOT EXISTS workflow_run_actions (
+    run_id              TEXT NOT NULL,
+    node_id             TEXT NOT NULL,
+    action              TEXT NOT NULL,
+    sequence_no         INTEGER NOT NULL,
+    status              TEXT NOT NULL,
+    phase               TEXT,
+    updated_at           TEXT,
+    error               TEXT,
+    error_category      TEXT,
+    retryable           INTEGER,
+    error_request_id    TEXT,
+    error_fingerprint   TEXT,
+    user_error           TEXT,
+    task_key             TEXT,
+    task_type            TEXT,
+    job_id               TEXT,
+    retry_count          INTEGER NOT NULL DEFAULT 0,
+    artifact_status      TEXT,
+    PRIMARY KEY (run_id, node_id, action),
+    FOREIGN KEY (run_id) REFERENCES workflow_runs(run_id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_actions_task_key
+ON workflow_run_actions(task_key);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_actions_status
+ON workflow_run_actions(run_id, status, sequence_no);
+"""
+_SCHEMA_READY_PATHS: set[Path] = set()
+_SCHEMA_READY_LOCK = threading.Lock()
 
 
 class WorkflowRunLeaseConflict(RuntimeError):
@@ -251,39 +308,236 @@ def _validate_action_artifact(
     return "unverified", None
 
 
-def workflow_runs_dir(project_dir: Path, canvas_id: str) -> Path:
+def workflow_runs_db_path(project_dir: Path) -> Path:
+    return Path(project_dir) / "data.db"
+
+
+def _configure_existing_connection(conn: sqlite3.Connection) -> None:
+    conn.execute("PRAGMA busy_timeout=10000")
+    conn.execute("PRAGMA foreign_keys=ON")
+    conn.execute("PRAGMA synchronous=NORMAL")
+
+
+@contextmanager
+def _connect(project_dir: Path):
+    db_path = workflow_runs_db_path(project_dir).resolve()
+    db_path.parent.mkdir(parents=True, exist_ok=True)
+    conn = sqlite3.connect(db_path, timeout=10, check_same_thread=False)
+    conn.row_factory = sqlite3.Row
+    if db_path not in _SCHEMA_READY_PATHS:
+        with _SCHEMA_READY_LOCK:
+            if db_path not in _SCHEMA_READY_PATHS:
+                configure_sqlite_connection(conn)
+                conn.executescript(WORKFLOW_RUN_SCHEMA_SQL)
+                conn.commit()
+                _SCHEMA_READY_PATHS.add(db_path)
+            else:
+                _configure_existing_connection(conn)
+    else:
+        _configure_existing_connection(conn)
+    try:
+        yield conn
+        conn.commit()
+    except Exception:
+        conn.rollback()
+        raise
+    finally:
+        conn.close()
+
+
+def _validate_scope(canvas_id: str, run_id: str | None = None) -> None:
     if not CANVAS_ID_RE.match(canvas_id):
         raise ValueError(f"invalid canvas_id: {canvas_id!r}")
-    return freezone_root(project_dir) / "_workflow_runs" / canvas_id
-
-
-def workflow_run_path(project_dir: Path, canvas_id: str, run_id: str) -> Path:
-    if not RUN_ID_RE.match(run_id):
+    if run_id is not None and not RUN_ID_RE.match(run_id):
         raise ValueError(f"invalid run_id: {run_id!r}")
-    return workflow_runs_dir(project_dir, canvas_id) / f"{run_id}.json"
 
 
-def _read(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
+def _decode_metadata(value: Any) -> dict[str, Any]:
     try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
+        decoded = json.loads(str(value or "{}"))
+    except json.JSONDecodeError:
+        return {}
+    return decoded if isinstance(decoded, dict) else {}
+
+
+def _action_from_row(row: sqlite3.Row) -> dict[str, Any]:
+    action: dict[str, Any] = {
+        "node_id": row["node_id"],
+        "action": row["action"],
+        "status": row["status"],
+        "phase": row["phase"],
+        "updated_at": row["updated_at"],
+        "error": row["error"],
+        "task_key": row["task_key"],
+        "task_type": row["task_type"],
+        "job_id": row["job_id"],
+        "retry_count": int(row["retry_count"] or 0),
+    }
+    for field in (
+        "error_category",
+        "error_request_id",
+        "error_fingerprint",
+        "user_error",
+        "artifact_status",
+    ):
+        if row[field] is not None:
+            action[field] = row[field]
+    if row["retryable"] is not None:
+        action["retryable"] = bool(row["retryable"])
+    return action
+
+
+def _read_run(
+    conn: sqlite3.Connection,
+    *,
+    canvas_id: str,
+    run_id: str,
+) -> dict[str, Any] | None:
+    row = conn.execute(
+        "SELECT * FROM workflow_runs WHERE canvas_id = ? AND run_id = ?",
+        (canvas_id, run_id),
+    ).fetchone()
+    if row is None:
         return None
-    return value if isinstance(value, dict) else None
+    action_rows = conn.execute(
+        """
+        SELECT * FROM workflow_run_actions
+        WHERE run_id = ?
+        ORDER BY sequence_no ASC
+        """,
+        (run_id,),
+    ).fetchall()
+    return {
+        "schema_version": row["schema_version"],
+        "run_id": row["run_id"],
+        "project_id": row["project_id"],
+        "canvas_id": row["canvas_id"],
+        "status": row["status"],
+        "resumable": bool(row["resumable"]),
+        "created_at": row["created_at"],
+        "started_at": row["started_at"],
+        "updated_at": row["updated_at"],
+        "completed_at": row["completed_at"],
+        "actor_id": row["actor_id"],
+        "runner_id": row["runner_id"],
+        "lease_expires_at": row["lease_expires_at"],
+        "actions": [_action_from_row(action_row) for action_row in action_rows],
+        "metadata": _decode_metadata(row["metadata_json"]),
+    }
 
 
-def _atomic_write(path: Path, payload: dict[str, Any]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    temporary = path.with_name(f".{path.name}.{uuid.uuid4().hex}.tmp")
-    try:
-        temporary.write_text(
-            json.dumps(payload, ensure_ascii=False, indent=2) + "\n",
-            encoding="utf-8",
+def _write_run(conn: sqlite3.Connection, payload: dict[str, Any]) -> None:
+    metadata = payload.get("metadata")
+    metadata = metadata if isinstance(metadata, dict) else {}
+    idempotency_key = str(metadata.get("idempotency_key") or "").strip() or None
+    conn.execute(
+        """
+        INSERT INTO workflow_runs (
+            run_id, schema_version, project_id, canvas_id, status, resumable,
+            actor_id, runner_id, lease_expires_at, idempotency_key, metadata_json,
+            created_at, started_at, updated_at, completed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(run_id) DO UPDATE SET
+            status = excluded.status,
+            resumable = excluded.resumable,
+            actor_id = excluded.actor_id,
+            runner_id = excluded.runner_id,
+            lease_expires_at = excluded.lease_expires_at,
+            idempotency_key = excluded.idempotency_key,
+            metadata_json = excluded.metadata_json,
+            updated_at = excluded.updated_at,
+            completed_at = excluded.completed_at
+        """,
+        (
+            payload["run_id"],
+            payload["schema_version"],
+            payload["project_id"],
+            payload["canvas_id"],
+            payload["status"],
+            int(bool(payload.get("resumable"))),
+            payload.get("actor_id"),
+            payload.get("runner_id"),
+            payload.get("lease_expires_at"),
+            idempotency_key,
+            json.dumps(metadata, ensure_ascii=False, separators=(",", ":")),
+            payload["created_at"],
+            payload["started_at"],
+            payload["updated_at"],
+            payload.get("completed_at"),
+        ),
+    )
+    for sequence_no, item in enumerate(payload.get("actions") or []):
+        conn.execute(
+            """
+            INSERT INTO workflow_run_actions (
+                run_id, node_id, action, sequence_no, status, phase, updated_at,
+                error, error_category, retryable, error_request_id,
+                error_fingerprint, user_error, task_key, task_type, job_id,
+                retry_count, artifact_status
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(run_id, node_id, action) DO UPDATE SET
+                sequence_no = excluded.sequence_no,
+                status = excluded.status,
+                phase = excluded.phase,
+                updated_at = excluded.updated_at,
+                error = excluded.error,
+                error_category = excluded.error_category,
+                retryable = excluded.retryable,
+                error_request_id = excluded.error_request_id,
+                error_fingerprint = excluded.error_fingerprint,
+                user_error = excluded.user_error,
+                task_key = excluded.task_key,
+                task_type = excluded.task_type,
+                job_id = excluded.job_id,
+                retry_count = excluded.retry_count,
+                artifact_status = excluded.artifact_status
+            """,
+            (
+                payload["run_id"],
+                item["node_id"],
+                item["action"],
+                sequence_no,
+                item["status"],
+                item.get("phase"),
+                item.get("updated_at"),
+                item.get("error"),
+                item.get("error_category"),
+                (int(bool(item["retryable"])) if item.get("retryable") is not None else None),
+                item.get("error_request_id"),
+                item.get("error_fingerprint"),
+                item.get("user_error"),
+                item.get("task_key"),
+                item.get("task_type"),
+                item.get("job_id"),
+                int(item.get("retry_count") or 0),
+                item.get("artifact_status"),
+            ),
         )
-        os.replace(temporary, path)
-    finally:
-        temporary.unlink(missing_ok=True)
+
+
+def _list_runs_in_transaction(
+    conn: sqlite3.Connection,
+    *,
+    canvas_id: str,
+    statuses: set[str] | None = None,
+    limit: int = 0,
+) -> list[dict[str, Any]]:
+    parameters: list[Any] = [canvas_id]
+    where = "canvas_id = ?"
+    if statuses:
+        placeholders = ",".join("?" for _ in statuses)
+        where += f" AND status IN ({placeholders})"
+        parameters.extend(sorted(statuses))
+    sql = f"SELECT run_id FROM workflow_runs WHERE {where} ORDER BY created_at DESC"
+    if limit > 0:
+        sql += " LIMIT ?"
+        parameters.append(limit)
+    rows = conn.execute(sql, parameters).fetchall()
+    return [
+        run
+        for row in rows
+        if (run := _read_run(conn, canvas_id=canvas_id, run_id=row["run_id"])) is not None
+    ]
 
 
 def _normalize_actions(actions: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -330,6 +584,7 @@ def create_workflow_run(
     idempotency_key: str = "",
     runner_id: str = "",
 ) -> dict[str, Any]:
+    _validate_scope(canvas_id)
     checked_idempotency_key = idempotency_key.strip()
     if checked_idempotency_key and not IDEMPOTENCY_KEY_RE.match(
         checked_idempotency_key
@@ -362,23 +617,27 @@ def create_workflow_run(
         "actions": normalized_actions,
         "metadata": run_metadata,
     }
-    with canvas_write_lock(project_dir, canvas_id):
-        directory = workflow_runs_dir(project_dir, canvas_id)
-        existing_paths = list(directory.glob("*.json")) if directory.is_dir() else []
+    with _connect(project_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
         if checked_idempotency_key:
-            for path in existing_paths:
-                existing = _read(path)
-                existing_metadata = (
-                    existing.get("metadata")
-                    if isinstance(existing, dict)
-                    and isinstance(existing.get("metadata"), dict)
-                    else {}
+            existing_row = conn.execute(
+                """
+                SELECT run_id FROM workflow_runs
+                WHERE canvas_id = ? AND idempotency_key = ?
+                """,
+                (canvas_id, checked_idempotency_key),
+            ).fetchone()
+            if existing_row is not None:
+                existing = _read_run(
+                    conn,
+                    canvas_id=canvas_id,
+                    run_id=existing_row["run_id"],
                 )
-                if existing_metadata.get("idempotency_key") == checked_idempotency_key:
+                if existing is not None:
                     return existing
-        for path in existing_paths:
-            existing = _read(path)
-            if existing is None or existing.get("status") != "running":
+        existing_runs = _list_runs_in_transaction(conn, canvas_id=canvas_id)
+        for existing in existing_runs:
+            if existing.get("status") != "running":
                 continue
             existing_runner_id = str(existing.get("runner_id") or "").strip()
             lease_expires_at = _parse_timestamp(existing.get("lease_expires_at"))
@@ -386,10 +645,7 @@ def create_workflow_run(
                 raise WorkflowRunLeaseConflict(
                     "another workflow runner is active on this canvas"
                 )
-        for path in existing_paths:
-            existing = _read(path)
-            if existing is None:
-                continue
+        for existing in existing_runs:
             if existing.get("status") not in RESUMABLE_RUN_STATUSES:
                 continue
             was_leased_running = existing.get("status") == "running" and bool(
@@ -408,8 +664,8 @@ def create_workflow_run(
             else:
                 existing_metadata["superseded_by_run_id"] = run_id
             existing["metadata"] = existing_metadata
-            _atomic_write(path, existing)
-        _atomic_write(workflow_run_path(project_dir, canvas_id, run_id), payload)
+            _write_run(conn, existing)
+        _write_run(conn, payload)
     return payload
 
 
@@ -421,16 +677,17 @@ def reconcile_workflow_runs_with_canvas_nodes(
     run_statuses: set[str] | None = None,
 ) -> list[str]:
     """Cancel resumable runs after all of their unfinished nodes are deleted."""
+    _validate_scope(canvas_id)
     now = _now()
     cancelled: list[str] = []
     eligible_statuses = run_statuses or RESUMABLE_RUN_STATUSES
-    with canvas_write_lock(project_dir, canvas_id):
-        directory = workflow_runs_dir(project_dir, canvas_id)
-        paths = directory.glob("*.json") if directory.is_dir() else []
-        for path in paths:
-            payload = _read(path)
-            if payload is None or payload.get("status") not in eligible_statuses:
-                continue
+    with _connect(project_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for payload in _list_runs_in_transaction(
+            conn,
+            canvas_id=canvas_id,
+            statuses=eligible_statuses,
+        ):
             actions = payload.get("actions")
             actions = actions if isinstance(actions, list) else []
             unfinished_node_ids = {
@@ -450,7 +707,7 @@ def reconcile_workflow_runs_with_canvas_nodes(
             metadata = metadata if isinstance(metadata, dict) else {}
             metadata["cancel_reason"] = "workflow_nodes_deleted"
             payload["metadata"] = metadata
-            _atomic_write(path, payload)
+            _write_run(conn, payload)
             cancelled.append(str(payload.get("run_id") or ""))
     return cancelled
 
@@ -463,16 +720,17 @@ def interrupt_stale_workflow_runs(
     now: datetime | None = None,
 ) -> list[str]:
     """Mark running records without a recent runner heartbeat as interrupted."""
+    _validate_scope(canvas_id)
     current = now or datetime.now(timezone.utc)
     cutoff = current - timedelta(seconds=max(stale_after_seconds, 1))
     interrupted: list[str] = []
-    with canvas_write_lock(project_dir, canvas_id):
-        directory = workflow_runs_dir(project_dir, canvas_id)
-        paths = directory.glob("*.json") if directory.is_dir() else []
-        for path in paths:
-            payload = _read(path)
-            if payload is None or payload.get("status") != "running":
-                continue
+    with _connect(project_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for payload in _list_runs_in_transaction(
+            conn,
+            canvas_id=canvas_id,
+            statuses={"running"},
+        ):
             lease_expires_at = _parse_timestamp(payload.get("lease_expires_at"))
             updated_at = _parse_timestamp(payload.get("updated_at"))
             stale = (
@@ -491,26 +749,23 @@ def interrupt_stale_workflow_runs(
             metadata = metadata if isinstance(metadata, dict) else {}
             metadata["interrupt_reason"] = "runner_heartbeat_expired"
             payload["metadata"] = metadata
-            _atomic_write(path, payload)
+            _write_run(conn, payload)
             interrupted.append(str(payload.get("run_id") or ""))
     return interrupted
 
 
-def read_workflow_run(
-    *, project_dir: Path, canvas_id: str, run_id: str
-) -> dict[str, Any] | None:
-    return _read(workflow_run_path(project_dir, canvas_id, run_id))
+def read_workflow_run(*, project_dir: Path, canvas_id: str, run_id: str) -> dict[str, Any] | None:
+    _validate_scope(canvas_id, run_id)
+    with _connect(project_dir) as conn:
+        return _read_run(conn, canvas_id=canvas_id, run_id=run_id)
 
 
 def list_workflow_runs(
     *, project_dir: Path, canvas_id: str, limit: int = 20
 ) -> list[dict[str, Any]]:
-    directory = workflow_runs_dir(project_dir, canvas_id)
-    if not directory.is_dir():
-        return []
-    runs = [value for path in directory.glob("*.json") if (value := _read(path)) is not None]
-    runs.sort(key=lambda item: str(item.get("created_at") or ""), reverse=True)
-    return runs[:limit] if limit > 0 else runs
+    _validate_scope(canvas_id)
+    with _connect(project_dir) as conn:
+        return _list_runs_in_transaction(conn, canvas_id=canvas_id, limit=limit)
 
 
 def prune_workflow_runs(
@@ -522,32 +777,32 @@ def prune_workflow_runs(
     now: datetime | None = None,
 ) -> list[str]:
     """Delete old non-resumable workflow records while preserving recovery state."""
+    _validate_scope(canvas_id)
     current = now or datetime.now(timezone.utc)
     cutoff = current - timedelta(days=max(retention_days, 1))
-    removable: list[tuple[Path, dict[str, Any], datetime]] = []
-    with canvas_write_lock(project_dir, canvas_id):
-        directory = workflow_runs_dir(project_dir, canvas_id)
-        paths = directory.glob("*.json") if directory.is_dir() else []
-        for path in paths:
-            payload = _read(path)
-            if payload is None:
-                continue
-            if payload.get("status") not in {"completed", "cancelled"}:
-                continue
+    removable: list[tuple[dict[str, Any], datetime]] = []
+    with _connect(project_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for payload in _list_runs_in_transaction(
+            conn,
+            canvas_id=canvas_id,
+            statuses={"completed", "cancelled"},
+        ):
             timestamp = (
                 _parse_timestamp(payload.get("completed_at"))
                 or _parse_timestamp(payload.get("updated_at"))
                 or datetime.min.replace(tzinfo=timezone.utc)
             )
-            removable.append((path, payload, timestamp))
-        removable.sort(key=lambda item: item[2], reverse=True)
+            removable.append((payload, timestamp))
+        removable.sort(key=lambda item: item[1], reverse=True)
         deleted: list[str] = []
-        for index, (path, payload, timestamp) in enumerate(removable):
+        for index, (payload, timestamp) in enumerate(removable):
             exceeds_limit = index >= max(max_terminal_records, 1)
             if timestamp > cutoff and not exceeds_limit:
                 continue
-            path.unlink(missing_ok=True)
-            deleted.append(str(payload.get("run_id") or ""))
+            run_id = str(payload.get("run_id") or "")
+            conn.execute("DELETE FROM workflow_runs WHERE run_id = ?", (run_id,))
+            deleted.append(run_id)
     return deleted
 
 
@@ -560,14 +815,15 @@ def update_workflow_run(
     action_updates: list[dict[str, Any]] | None = None,
     runner_id: str = "",
 ) -> dict[str, Any] | None:
+    _validate_scope(canvas_id, run_id)
     if status is not None and status not in RUN_STATUSES:
         raise ValueError(f"invalid workflow run status: {status!r}")
     checked_runner_id = runner_id.strip()
     if checked_runner_id and not RUNNER_ID_RE.match(checked_runner_id):
         raise ValueError("invalid workflow run runner_id")
-    path = workflow_run_path(project_dir, canvas_id, run_id)
-    with canvas_write_lock(project_dir, canvas_id):
-        payload = _read(path)
+    with _connect(project_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        payload = _read_run(conn, canvas_id=canvas_id, run_id=run_id)
         if payload is None:
             return None
         current_status = str(payload.get("status") or "")
@@ -593,7 +849,7 @@ def update_workflow_run(
                 payload["resumable"] = False
                 payload["updated_at"] = now
                 payload["completed_at"] = now
-                _atomic_write(path, payload)
+                _write_run(conn, payload)
             return payload
         now = _now()
         actions = payload.get("actions")
@@ -664,7 +920,7 @@ def update_workflow_run(
         if checked_runner_id and payload.get("status") == "running":
             payload["lease_expires_at"] = _lease_expires_at(datetime.now(timezone.utc))
         payload["updated_at"] = now
-        _atomic_write(path, payload)
+        _write_run(conn, payload)
         return payload
 
 
@@ -676,6 +932,7 @@ def reconcile_workflow_runs_with_tasks(
     generation_history: list[dict[str, Any]] | None = None,
 ) -> list[str]:
     """Reconcile persisted workflow actions with durable project task state."""
+    _validate_scope(canvas_id)
     history_by_task_node: dict[tuple[str, str], dict[str, Any]] = {}
     for record in generation_history or []:
         if not isinstance(record, dict):
@@ -687,18 +944,19 @@ def reconcile_workflow_runs_with_tasks(
 
     changed_run_ids: list[str] = []
     timestamp = _now()
-    with canvas_write_lock(project_dir, canvas_id):
-        directory = workflow_runs_dir(project_dir, canvas_id)
-        paths = directory.glob("*.json") if directory.is_dir() else []
-        for path in paths:
-            payload = _read(path)
-            if payload is None or payload.get("status") == "cancelled":
+    with _connect(project_dir) as conn:
+        conn.execute("BEGIN IMMEDIATE")
+        for payload in _list_runs_in_transaction(conn, canvas_id=canvas_id):
+            if payload.get("status") == "cancelled":
                 continue
             actions = payload.get("actions")
             actions = actions if isinstance(actions, list) else []
             changed = False
             for item in actions:
-                if not isinstance(item, dict) or item.get("status") in {"completed", "skipped"}:
+                if not isinstance(item, dict) or item.get("status") in {
+                    "completed",
+                    "skipped",
+                }:
                     continue
                 task_key = str(item.get("task_key") or "").strip()
                 task = tasks_by_key.get(task_key) if task_key else None
@@ -723,7 +981,9 @@ def reconcile_workflow_runs_with_tasks(
                 else:
                     artifact_status, artifact_error = _validate_action_artifact(
                         action=str(item.get("action") or ""),
-                        task_result=task.get("result") if isinstance(task.get("result"), dict) else None,
+                        task_result=(
+                            task.get("result") if isinstance(task.get("result"), dict) else None
+                        ),
                         history_record=history_by_task_node.get(
                             (task_key, str(item.get("node_id") or ""))
                         ),
@@ -749,15 +1009,16 @@ def reconcile_workflow_runs_with_tasks(
             if not changed:
                 continue
             action_statuses = {
-                str(item.get("status") or "")
-                for item in actions
-                if isinstance(item, dict)
+                str(item.get("status") or "") for item in actions if isinstance(item, dict)
             }
             if action_statuses and action_statuses <= {"completed", "skipped"}:
                 payload["status"] = "completed"
                 payload["resumable"] = False
                 payload["completed_at"] = timestamp
-            elif "failed" in action_statuses and not action_statuses & {"running", "pending"}:
+            elif "failed" in action_statuses and not action_statuses & {
+                "running",
+                "pending",
+            }:
                 payload["status"] = "failed"
                 payload["resumable"] = True
                 payload["completed_at"] = timestamp
@@ -766,6 +1027,6 @@ def reconcile_workflow_runs_with_tasks(
             metadata = metadata if isinstance(metadata, dict) else {}
             metadata["last_task_reconciliation_at"] = timestamp
             payload["metadata"] = metadata
-            _atomic_write(path, payload)
+            _write_run(conn, payload)
             changed_run_ids.append(str(payload.get("run_id") or ""))
     return changed_run_ids

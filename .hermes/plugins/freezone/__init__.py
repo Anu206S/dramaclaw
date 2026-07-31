@@ -74,21 +74,13 @@ except Exception as exc:
 _WORKFLOW_DRAFT_IMPORT_ERROR: Exception | None = None
 try:
     from workflow_drafts import (
-        claim_workflow_draft_confirmation,
-        create_workflow_draft,
-        finish_workflow_draft_confirmation,
-        patch_workflow_draft,
+        build_workflow_draft_patch,
         public_workflow_draft,
-        read_workflow_draft,
     )
 except Exception as exc:
     _WORKFLOW_DRAFT_IMPORT_ERROR = exc
-    claim_workflow_draft_confirmation = None
-    create_workflow_draft = None
-    finish_workflow_draft_confirmation = None
-    patch_workflow_draft = None
+    build_workflow_draft_patch = None
     public_workflow_draft = None
-    read_workflow_draft = None
 
 _JSON_WORKFLOW_CATALOG_IMPORT_ERROR: Exception | None = None
 try:
@@ -3329,12 +3321,8 @@ def _workflow_draft_dependencies_available() -> bool:
     return bool(
         compile_workflow_intent is not None
         and build_workflow_graph_commands is not None
-        and claim_workflow_draft_confirmation is not None
-        and create_workflow_draft is not None
-        and finish_workflow_draft_confirmation is not None
-        and patch_workflow_draft is not None
+        and build_workflow_draft_patch is not None
         and public_workflow_draft is not None
-        and read_workflow_draft is not None
     )
 
 
@@ -3353,6 +3341,75 @@ def _run_after_create_arg(args: dict[str, Any]) -> bool | None:
     if "runAfterCreate" in args:
         return bool(args.get("runAfterCreate"))
     return None
+
+
+def _workflow_draft_scope(
+    args: dict[str, Any],
+) -> tuple[str | None, str | None, dict[str, Any] | None]:
+    project_id = str(
+        args.get("project_id") or args.get("project") or _default_project_id()
+    ).strip()
+    canvas_id = str(
+        args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
+    ).strip()
+    if not project_id or not canvas_id:
+        return None, None, {
+            "ok": False,
+            "status": "workflow_draft_scope_required",
+            "error": "project_id and canvas_id are required for persisted workflow drafts",
+        }
+    return project_id, canvas_id, None
+
+
+def _workflow_draft_api_path(
+    project_id: str,
+    canvas_id: str,
+    draft_id: str = "",
+    suffix: str = "",
+) -> str:
+    path = (
+        f"/projects/{quote(project_id, safe='')}/freezone/canvases/"
+        f"{quote(canvas_id, safe='')}/workflow-drafts"
+    )
+    if draft_id:
+        path += f"/{quote(draft_id, safe='')}"
+    if suffix:
+        path += f"/{suffix}"
+    return path
+
+
+def _workflow_draft_response(
+    response: dict[str, Any],
+) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    if not response.get("ok"):
+        return None, response
+    payload = response.get("data")
+    if not isinstance(payload, dict):
+        return None, {
+            "ok": False,
+            "status": "workflow_draft_unavailable",
+            "error": "workflow draft API returned an invalid payload",
+        }
+    return payload, None
+
+
+def _finish_workflow_draft(
+    project_id: str,
+    canvas_id: str,
+    draft_id: str,
+    *,
+    outcome: str,
+) -> None:
+    _request(
+        "POST",
+        _workflow_draft_api_path(
+            project_id,
+            canvas_id,
+            draft_id,
+            "finish",
+        ),
+        body={"outcome": outcome},
+    )
 
 
 def _workflow_runtime_preflight(
@@ -3496,13 +3553,14 @@ def _workflow_runtime_preflight(
 def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if not _workflow_draft_dependencies_available():
         return _workflow_draft_unavailable()
+    project_id, canvas_id, scope_error = _workflow_draft_scope(args)
+    if scope_error:
+        return tool_result(scope_error)
+    assert project_id is not None and canvas_id is not None
     intent = args.get("intent")
     compiled = compile_workflow_intent(intent)
     if not compiled.get("ok"):
         return tool_result(compiled)
-    project_id = str(
-        args.get("project_id") or args.get("project") or _default_project_id()
-    ).strip()
     preflight = _workflow_runtime_preflight(compiled, project_id=project_id)
     compiled["preflight"] = preflight
     if preflight["blockers"]:
@@ -3515,15 +3573,19 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
             }
         )
     run_after_create = _run_after_create_arg(args)
-    payload = create_workflow_draft(
-        intent=intent,
-        compiled=compiled,
-        project_id=project_id,
-        canvas_id=str(
-            args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
-        ).strip(),
-        run_after_create=bool(run_after_create),
+    payload, error = _workflow_draft_response(
+        _request(
+            "POST",
+            _workflow_draft_api_path(project_id, canvas_id),
+            body={
+                "intent": intent,
+                "compiled": compiled,
+                "run_after_create": bool(run_after_create),
+            },
+        )
     )
+    if payload is None:
+        return tool_result(error)
     result = public_workflow_draft(payload)
     result["agent_instruction"] = (
         "Present the exact preview in product language, including each node's "
@@ -3537,6 +3599,10 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
 def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if not _workflow_draft_dependencies_available():
         return _workflow_draft_unavailable()
+    project_id, canvas_id, scope_error = _workflow_draft_scope(args)
+    if scope_error:
+        return tool_result(scope_error)
+    assert project_id is not None and canvas_id is not None
     draft_id = str(args.get("draft_id") or args.get("draftId") or "").strip()
     if not draft_id:
         return tool_result(
@@ -3574,12 +3640,44 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
                 "error": "expected_revision must be an integer",
             }
         )
-    payload, error = patch_workflow_draft(
-        draft_id=draft_id,
+    payload, error = _workflow_draft_response(
+        _request(
+            "GET",
+            _workflow_draft_api_path(project_id, canvas_id, draft_id),
+        )
+    )
+    if payload is None:
+        return tool_result(error)
+    current_revision = int(payload.get("revision") or 0)
+    if expected_revision != current_revision:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_draft_revision_conflict",
+                "error": (
+                    f"workflow draft revision changed: expected {expected_revision}, "
+                    f"current {current_revision}"
+                ),
+                "current_revision": current_revision,
+            }
+        )
+    patch_body, error = build_workflow_draft_patch(
+        payload=payload,
         changes=changes,
         compile_intent=compile_workflow_intent,
-        expected_revision=expected_revision,
         run_after_create=_run_after_create_arg(args),
+    )
+    if patch_body is None:
+        return tool_result(error)
+    payload, error = _workflow_draft_response(
+        _request(
+            "PATCH",
+            _workflow_draft_api_path(project_id, canvas_id, draft_id),
+            body={
+                "expected_revision": expected_revision,
+                **patch_body,
+            },
+        )
     )
     if payload is None:
         return tool_result(error)
@@ -3608,6 +3706,10 @@ def _tool_result_payload(value: Any) -> dict[str, Any] | None:
 def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if not _workflow_draft_dependencies_available():
         return _workflow_draft_unavailable()
+    project_id, canvas_id, scope_error = _workflow_draft_scope(args)
+    if scope_error:
+        return tool_result(scope_error)
+    assert project_id is not None and canvas_id is not None
     draft_id = str(args.get("draft_id") or args.get("draftId") or "").strip()
     if not draft_id:
         return tool_result(
@@ -3636,9 +3738,12 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
                 "error": "revision must be an integer",
             }
         )
-    payload, claim_result = claim_workflow_draft_confirmation(
-        draft_id,
-        revision=revision,
+    payload, claim_result = _workflow_draft_response(
+        _request(
+            "POST",
+            _workflow_draft_api_path(project_id, canvas_id, draft_id, "claim"),
+            body={"revision": revision},
+        )
     )
     if payload is None:
         return tool_result(claim_result)
@@ -3647,7 +3752,7 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     stored_project = str(payload.get("project_id") or "").strip()
     stored_canvas = str(payload.get("canvas_id") or "").strip()
     if explicit_project and stored_project and explicit_project != stored_project:
-        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        _finish_workflow_draft(project_id, canvas_id, draft_id, outcome="ready")
         return tool_result(
             {
                 "ok": False,
@@ -3656,7 +3761,7 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
             }
         )
     if explicit_canvas and stored_canvas and explicit_canvas != stored_canvas:
-        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        _finish_workflow_draft(project_id, canvas_id, draft_id, outcome="ready")
         return tool_result(
             {
                 "ok": False,
@@ -3673,7 +3778,7 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
         project_id=explicit_project or stored_project,
     )
     if preflight["blockers"]:
-        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        _finish_workflow_draft(project_id, canvas_id, draft_id, outcome="ready")
         return tool_result(
             {
                 "ok": False,
@@ -3691,7 +3796,7 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
         }
     )
     if not built.get("ok"):
-        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        _finish_workflow_draft(project_id, canvas_id, draft_id, outcome="ready")
         return tool_result(built)
     try:
         result = _emit_canvas_commands(
@@ -3702,7 +3807,7 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
             slim_result=True,
         )
     except Exception:
-        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        _finish_workflow_draft(project_id, canvas_id, draft_id, outcome="ready")
         raise
     result_payload = _tool_result_payload(result)
     if result_payload and result_payload.get("ok"):
@@ -3711,9 +3816,9 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
             if result_payload.get("canvas_apply_status") == "timeout"
             else "confirmed"
         )
-        finish_workflow_draft_confirmation(draft_id, outcome=outcome)
+        _finish_workflow_draft(project_id, canvas_id, draft_id, outcome=outcome)
     else:
-        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        _finish_workflow_draft(project_id, canvas_id, draft_id, outcome="ready")
     return result
 
 
@@ -5458,6 +5563,7 @@ TOOLS = (
                 "send only changed intent fields."
             ),
             {
+                **_SCOPE_PROPS,
                 "draft_id": {"type": "string"},
                 "draftId": {"type": "string", "description": "Alias of draft_id."},
                 "expected_revision": {

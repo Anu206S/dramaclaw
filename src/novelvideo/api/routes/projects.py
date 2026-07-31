@@ -4,6 +4,7 @@ import logging
 import shutil
 import sqlite3
 import time
+import uuid
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -177,6 +178,61 @@ def _cleanup_uncommitted_project_dirs(record: ProjectRecord) -> None:
     for path in (Path(record.output_dir), Path(record.state_dir), Path(record.runtime_dir)):
         if path.exists():
             shutil.rmtree(path)
+
+
+def _unique_project_storage_paths(paths) -> list[Path]:
+    unique: list[Path] = []
+    seen: set[Path] = set()
+    for raw_path in paths:
+        path = Path(raw_path)
+        resolved = path.resolve(strict=False)
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        unique.append(path)
+    return unique
+
+
+def _restore_quarantined_project_dirs(quarantined: list[tuple[Path, Path]]) -> None:
+    for original, quarantine in reversed(quarantined):
+        if not quarantine.exists():
+            continue
+        if original.exists():
+            shutil.rmtree(original)
+        quarantine.replace(original)
+
+
+def _quarantine_project_dirs(
+    paths,
+    *,
+    project_id: str,
+    reason: str,
+) -> list[tuple[Path, Path]]:
+    """Atomically detach project directories before releasing their registry name."""
+    quarantined: list[tuple[Path, Path]] = []
+    token = uuid.uuid4().hex
+    try:
+        for original in _unique_project_storage_paths(paths):
+            if not original.exists():
+                continue
+            quarantine = original.with_name(
+                f".{original.name}.{reason}-{project_id}-{token}"
+            )
+            original.replace(quarantine)
+            quarantined.append((original, quarantine))
+    except Exception:
+        _restore_quarantined_project_dirs(quarantined)
+        raise
+    return quarantined
+
+
+def _delete_quarantined_project_dirs(quarantined: list[tuple[Path, Path]]) -> None:
+    for _, quarantine in quarantined:
+        try:
+            if quarantine.exists():
+                shutil.rmtree(quarantine)
+        except OSError:
+            logger.warning("failed to remove quarantined project directory: %s", quarantine)
 
 
 def _narrator_identity_detail(resolution) -> str:
@@ -461,6 +517,22 @@ async def create_project(
                 detail=f"Project '{body.name}' already exists",
             ) from exc
         raise
+    project_dirs = (record.output_dir, record.state_dir, record.runtime_dir)
+    try:
+        orphaned_dirs = _quarantine_project_dirs(
+            project_dirs,
+            project_id=record.id,
+            reason="orphaned",
+        )
+    except Exception as exc:
+        try:
+            await registry.delete_uncommitted_project(record.id)
+        except Exception:
+            logger.warning("failed to compensate uncommitted project registry row", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Existing project data could not be isolated. Project was not created.",
+        ) from exc
     try:
         ensure_project_dirs_at_paths(
             output_dir=record.output_dir,
@@ -478,14 +550,19 @@ async def create_project(
         )
     except Exception:
         try:
-            await registry.delete_uncommitted_project(record.id)
-        except Exception:
-            logger.warning("failed to compensate uncommitted project registry row", exc_info=True)
-        try:
             _cleanup_uncommitted_project_dirs(record)
         except Exception:
             logger.warning("failed to cleanup uncommitted project directories", exc_info=True)
+        try:
+            _restore_quarantined_project_dirs(orphaned_dirs)
+        except Exception:
+            logger.error("failed to restore isolated project directories", exc_info=True)
+        try:
+            await registry.delete_uncommitted_project(record.id)
+        except Exception:
+            logger.warning("failed to compensate uncommitted project registry row", exc_info=True)
         raise
+    _delete_quarantined_project_dirs(orphaned_dirs)
     return {"ok": True, "data": {"id": record.id, "project_id": record.id, "name": body.name}}
 
 
@@ -852,13 +929,30 @@ async def purge_project(
         )
     if record.purged_at:
         raise HTTPException(status_code=400, detail="Project has already been purged.")
-    record = await registry.mark_project_purged(ctx.project_id)
+    try:
+        quarantined_dirs = _quarantine_project_dirs(
+            (paths.output_dir, paths.state_dir, paths.runtime_dir),
+            project_id=ctx.project_id,
+            reason="purging",
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=500,
+            detail="Project files could not be isolated. Nothing was permanently deleted.",
+        ) from exc
+    try:
+        record = await registry.mark_project_purged(ctx.project_id)
+    except Exception:
+        _restore_quarantined_project_dirs(quarantined_dirs)
+        raise
     if record is None:
+        _restore_quarantined_project_dirs(quarantined_dirs)
         raise HTTPException(status_code=400, detail="Project could not be marked purged.")
-    for path in (paths.output_dir, paths.state_dir, paths.runtime_dir):
-        if path.exists():
-            shutil.rmtree(path)
-    await registry.delete_project_home(ctx.project_id)
+    try:
+        await registry.delete_project_home(ctx.project_id)
+    except Exception:
+        logger.warning("failed to delete purged project home", exc_info=True)
+    _delete_quarantined_project_dirs(quarantined_dirs)
     await emit_project_audit(action="project.purge", ctx=ctx, metadata={"status": "deleted"})
     return {
         "ok": True,

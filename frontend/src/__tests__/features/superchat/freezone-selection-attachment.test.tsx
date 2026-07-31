@@ -26,7 +26,7 @@ const eventBusMocks = vi.hoisted(() => ({
 }));
 
 const apiMocks = vi.hoisted(() => ({
-  post: vi.fn(() => ({ catch: vi.fn() })),
+  post: vi.fn(() => Promise.resolve()),
 }));
 
 function getFreezoneComposerTextbox(): HTMLElement {
@@ -1484,6 +1484,76 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
 
     expect(await screen.findByText("待确认的画布操作")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "确认执行" })).toBeInTheDocument();
+  });
+
+  it("automatically cancels an expired persisted canvas command approval", async () => {
+    superChatMocks.messages = [
+      {
+        id: "user-a",
+        role: "user",
+        text: "加个视频节点",
+        displayName: "User",
+        timestamp: Date.now(),
+        turnId: "turn-a",
+        attachments: [],
+        raw: {
+          ui_events: [
+            {
+              id: 1,
+              type: "canvas_command_approval",
+              turn_id: "turn-a",
+              schema_version: "canvas_command_approval.v1",
+              canvas_id: "canvas-a",
+              bridge_key: "bridge-a",
+              envelopes: [
+                {
+                  schema_version: "canvas_chat_commands.v1",
+                  canvas_id: "canvas-a",
+                  commands: [
+                    {
+                      type: "create_node",
+                      node_type: "videoNode",
+                      data: { title: "视频输入" },
+                    },
+                  ],
+                },
+              ],
+              received_at: Date.now() - 61_000,
+            },
+          ],
+        },
+      } as ChatMessage,
+    ];
+
+    render(
+      <SuperChatPanel
+        variant="freezone"
+        canvasId="canvas-a"
+        currentCanvasSelection={[]}
+        currentCanvasOntologyContext={buildCanvasOntologyContext([], [], {
+          canvasId: "canvas-a",
+          selectedNodeIds: [],
+        })}
+        pendingAttachments={[]}
+      />,
+    );
+
+    await waitFor(() => {
+      expect(screen.queryByText("待确认的画布操作")).not.toBeInTheDocument();
+    });
+    await waitFor(() => {
+      expect(apiMocks.post).toHaveBeenCalledWith(
+        "api/v1/chat/ui-events",
+        expect.objectContaining({
+          json: expect.objectContaining({
+            event: expect.objectContaining({
+              type: "canvas_command_approval_resolution",
+              decision: "timeout",
+            }),
+          }),
+        }),
+      );
+    });
   });
 
   it("does not restore a persisted canvas command approval when a result already exists", async () => {

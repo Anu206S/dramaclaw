@@ -445,4 +445,37 @@ describe("selectWorkflowActivityLabels", () => {
       (label, phase) => `${phase}:${label}`,
     )).toEqual(["generating:商品主图"]);
   });
+
+  it("uses a running task linked by the persisted workflow task key after refresh", () => {
+    const actions: FreezoneWorkflowRun["actions"] = [
+      {
+        node_id: "node-1",
+        action: "generate_image",
+        status: "running",
+        phase: "waiting_capacity",
+        task_key: "running-after-refresh",
+      },
+    ];
+    const tasks = new Map([
+      [
+        "running-after-refresh",
+        task({
+          task_key: "running-after-refresh",
+          status: "running",
+          metadata: null,
+        }),
+      ],
+    ]);
+
+    expect(selectWorkflowActivityLabels(
+      actions,
+      [node({ data: { displayName: "刷新后仍在生成" } })],
+      (label, phase) => `${phase}:${label}`,
+      tasks,
+    )).toEqual(["waiting_capacity:刷新后仍在生成"]);
+    expect(workflowStatusCounts(actions, tasks)).toMatchObject({
+      inProgress: 1,
+      waiting: 0,
+    });
+  });
 });
