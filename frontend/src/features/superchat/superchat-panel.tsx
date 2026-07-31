@@ -3589,6 +3589,10 @@ type SkillStudioUiEvent =
       saved_to_catalog?: boolean;
       saved_skill_ids?: string[];
       saved_recipe_ids?: string[];
+      incomplete?: boolean;
+      read_only?: boolean;
+      completed_items?: unknown[];
+      missing_items?: unknown[];
     };
 
 function uiEventRecordString(value: Record<string, unknown>, key: string): string | null {
@@ -4749,12 +4753,6 @@ function assertSkillStudioCatalogPayload(kind: FreezoneAgentConfigKind, payload:
 
 function buildSkillStudioCatalogSaveItems(draft: Record<string, unknown>): SkillStudioCatalogSaveItem[] {
   const items: SkillStudioCatalogSaveItem[] = [];
-  const skill = getRecord(draft.skill);
-  if (Object.keys(skill).length > 0) {
-    const payload = normalizedSkillStudioSkillPayload(skill);
-    assertSkillStudioCatalogPayload("skills", payload);
-    items.push({ kind: "skills", payload });
-  }
   const recipes = Array.isArray(draft.recipes)
     ? draft.recipes.filter((recipe): recipe is Record<string, unknown> =>
         Boolean(recipe) && typeof recipe === "object" && !Array.isArray(recipe),
@@ -4764,6 +4762,12 @@ function buildSkillStudioCatalogSaveItems(draft: Record<string, unknown>): Skill
     const payload = normalizedSkillStudioRecipePayload(recipe);
     assertSkillStudioCatalogPayload("recipes", payload);
     items.push({ kind: "recipes", payload });
+  }
+  const skill = getRecord(draft.skill);
+  if (Object.keys(skill).length > 0) {
+    const payload = normalizedSkillStudioSkillPayload(skill);
+    assertSkillStudioCatalogPayload("skills", payload);
+    items.push({ kind: "skills", payload });
   }
   if (items.length === 0) {
     throw new Error("empty skill studio catalog draft");
@@ -5291,6 +5295,17 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
   event: Extract<SkillStudioUiEvent, { type: "skill_studio.draft" }>,
   draft: Record<string, unknown>,
 ) {
+  const skill = draft.skill && typeof draft.skill === "object" && !Array.isArray(draft.skill)
+    ? draft.skill as Record<string, unknown>
+    : {};
+  const recipes = Array.isArray(draft.recipes) ? draft.recipes : [];
+  const draftRef = {
+    skill_studio_session_id: event.skill_studio_session_id ?? null,
+    skill_id: textField(skill.id) || null,
+    skill_name: textField(skill.name) || null,
+    summary: textField(draft.summary) || event.summary || null,
+    recipe_count: recipes.length,
+  };
   return {
     turn_id: event.turn_id ?? undefined,
     bridge_key: event.bridge_key ?? "",
@@ -5304,14 +5319,16 @@ export function buildSkillStudioDraftRevisionToolResultForTest(
     saved_to_catalog: false,
     saved_skill_ids: [],
     saved_recipe_ids: [],
-    draft,
+    draft: null,
+    draft_ref: draftRef,
     message: [
       "用户已启动 Skill Studio 草稿修改会话。",
       event.skill_studio_session_id ? `Skill Studio 会话：${event.skill_studio_session_id}` : "",
+      textField(skill.id) ? `当前草稿：${textField(skill.name) || textField(skill.id)}` : "",
       "用户已经明确表示需要调整当前草稿，不要再询问是否需要调整。",
       "不要询问是否保存当前版本，也不要提供 save_now / save_current / confirm_save 这类选项；保存只由页面草稿卡的确认按钮处理。",
       "这不是继续完成原草稿，也不是要求重新展示当前草稿。",
-      "返回的 draft 只是被修改对象，不是用户修改意图；禁止从 draft 内容里自行推断结构优化、拆分步骤、增删 Recipe 或调整引用关系。",
+      "本次回执只提供草稿引用，不提供完整 draft；不要从当前草稿结构或历史内容里自行推断结构优化、拆分步骤、增删 Recipe 或调整引用关系。",
       "用户还没有提供具体修改方向；下一步必须调用 freezone_request_user_clarification 追问修改方向、范围或偏好。",
       "这次 clarification 的 questions 数组必须只有一个问题，问题要直接问用户想改哪里或怎么改。",
       "在用户回答修改方向之前，禁止调用 freezone_begin_agent_catalog_draft / freezone_put_agent_catalog_skill / freezone_put_agent_catalog_recipe / freezone_finish_agent_catalog_draft。",
@@ -6134,7 +6151,10 @@ function SkillStudioDraftCard({
     if (!summary || !clickEvent.currentTarget.contains(summary)) return;
     onPreserveScrollAnchor?.(summary as HTMLElement);
   }, [onPreserveScrollAnchor]);
-  const readOnly = submitted || cancelled || revisionPending;
+  const incomplete = event.incomplete === true;
+  const readOnly = submitted || cancelled || revisionPending || incomplete || event.read_only === true;
+  const completedItems = cleanStringArray(event.completed_items);
+  const missingItems = cleanStringArray(event.missing_items);
   const fieldClass = "h-8 rounded-lg border-white/[0.08] bg-black/20 text-xs shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
   const labelClass = "mb-1 block text-[11px] font-medium text-muted-foreground";
   const textAreaClass = "min-h-16 resize-y rounded-lg border-white/[0.08] bg-black/20 text-xs leading-5 shadow-none focus-visible:ring-cyan-300/20 disabled:opacity-70";
@@ -6147,7 +6167,7 @@ function SkillStudioDraftCard({
         <span className="flex size-6 items-center justify-center rounded-md border border-white/[0.08] bg-white/[0.04] text-emerald-100/90">
           <Package className="size-3.5" />
         </span>
-        <span className="font-medium">Skill / Recipe 草稿</span>
+        <span className="font-medium">{incomplete ? "Skill 草稿未完成" : "Skill / Recipe 草稿"}</span>
         {event.mode && (
           <Badge variant="outline" className="h-5 rounded-md border-white/[0.1] px-1.5 text-[10px] text-muted-foreground">
             {event.mode === "edit" ? "编辑" : "新建"}
@@ -6156,6 +6176,32 @@ function SkillStudioDraftCard({
       </div>
       {event.summary && (
         <p className="mb-3 text-xs leading-relaxed text-muted-foreground">{event.summary}</p>
+      )}
+      {incomplete && (
+        <div className="mb-3 rounded-lg border border-amber-300/20 bg-amber-300/[0.055] px-3 py-2 text-xs leading-5 text-amber-50/85">
+          <div>Agent 已提交了一部分内容，但本轮对话已结束，草稿还不能保存。</div>
+          {(completedItems.length > 0 || missingItems.length > 0) && (
+            <div className="mt-2 grid gap-2 sm:grid-cols-2">
+              {completedItems.length > 0 && (
+                <div>
+                  <div className="text-amber-50/60">已完成</div>
+                  <ul className="mt-1 space-y-0.5">
+                    {completedItems.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
+              {missingItems.length > 0 && (
+                <div>
+                  <div className="text-amber-50/60">缺少</div>
+                  <ul className="mt-1 space-y-0.5">
+                    {missingItems.map((item) => <li key={item}>{item}</li>)}
+                  </ul>
+                </div>
+              )}
+            </div>
+          )}
+          <div className="mt-2 text-amber-50/65">继续对话后，Agent 可以基于当前草稿补全缺失部分。</div>
+        </div>
       )}
       <div className="overflow-hidden rounded-xl border border-white/[0.08] bg-white/[0.045]">
         <div className="p-3">
@@ -6736,39 +6782,41 @@ function SkillStudioDraftCard({
       {jsonError && <div className="mt-2 text-xs text-amber-200">{jsonError}</div>}
       <div className="mt-3 flex flex-wrap items-center justify-between gap-2">
         <div className="text-[11px] text-muted-foreground">
-          {skillStudioDraftFooterText({ submitted, cancelled, revisionPending })}
+          {incomplete ? "草稿未完成，本轮不会保存" : skillStudioDraftFooterText({ submitted, cancelled, revisionPending })}
         </div>
-        <div className="flex flex-wrap items-center gap-2">
-          <Button
-            type="button"
-            size="sm"
-            variant="outline"
-            className="h-8 rounded-lg border-white/[0.12] bg-white/[0.04] px-3 text-xs hover:bg-white/[0.08]"
-            disabled={!onStartRevision || readOnly}
-            onClick={startRevision}
-          >
-            让 AI 调整
-          </Button>
-          <Button
-            type="button"
-            size="sm"
-            variant="ghost"
-            className="h-8 rounded-lg px-3 text-xs"
-            disabled={readOnly}
-            onClick={cancelDraft}
-          >
-            取消
-          </Button>
-	          <Button
-	            type="button"
-            size="sm"
-            className="h-8 rounded-lg px-3 text-xs"
-            disabled={!onSubmit || readOnly}
-            onClick={submitDraft}
-          >
-            确认添加
-          </Button>
-        </div>
+        {!incomplete && (
+          <div className="flex flex-wrap items-center gap-2">
+            <Button
+              type="button"
+              size="sm"
+              variant="outline"
+              className="h-8 rounded-lg border-white/[0.12] bg-white/[0.04] px-3 text-xs hover:bg-white/[0.08]"
+              disabled={!onStartRevision || readOnly}
+              onClick={startRevision}
+            >
+              让 AI 调整
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              variant="ghost"
+              className="h-8 rounded-lg px-3 text-xs"
+              disabled={readOnly}
+              onClick={cancelDraft}
+            >
+              取消
+            </Button>
+            <Button
+              type="button"
+              size="sm"
+              className="h-8 rounded-lg px-3 text-xs"
+              disabled={!onSubmit || readOnly}
+              onClick={submitDraft}
+            >
+              确认添加
+            </Button>
+          </div>
+        )}
       </div>
     </div>
   );

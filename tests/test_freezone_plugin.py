@@ -1397,6 +1397,7 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     assert outline["ok"] is True
     assert begin["ok"] is True
     assert skill["ok"] is True
+    assert skill["agent_instruction"].startswith("下一步必须调用 freezone_put_agent_catalog_recipe")
     assert "剩余 2 个" in skill["agent_instruction"]
     assert "下一步必须调用 freezone_put_agent_catalog_recipe" in skill["agent_instruction"]
     assert "index=0" in skill["agent_instruction"]
@@ -1404,8 +1405,10 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     assert "不要把 Skill 的风格" in skill["agent_instruction"]
     assert "现在不要调用 freezone_finish_agent_catalog_draft" in skill["agent_instruction"]
     assert recipe_1["ok"] is True
+    assert recipe_1["agent_instruction"].startswith("下一步必须调用 freezone_put_agent_catalog_recipe")
     assert "中性工艺级 recipe_id" in recipe_1["agent_instruction"]
     assert recipe_2["ok"] is True
+    assert recipe_2["agent_instruction"].startswith("下一步必须调用 freezone_finish_agent_catalog_draft")
     assert finished["ok"] is True
     assert wait_keys == [("skill-studio-6", 600)]
     event_types = [item["event"]["type"] for item in pending_events]
@@ -2123,7 +2126,12 @@ def test_freezone_plugin_patch_draft_skill_keywords_preserves_recipes(monkeypatc
 
     assert patched["ok"] is True
     assert patched["status"] == "draft_patch_applied"
+    assert patched["agent_instruction"].startswith("下一步必须调用 freezone_finish_agent_catalog_draft")
+    assert "更新后的完整草稿必须通过 finish 工具重新展示给用户" in patched["agent_instruction"]
     assert pending_events[-2]["event"]["message"] == "已更新 Skill 触发关键词"
+    assert pending_events[-2]["event"]["debug"]["agent_instruction"].startswith(
+        "下一步必须调用 freezone_finish_agent_catalog_draft"
+    )
     draft_events = [item["event"] for item in pending_events if item["event"]["type"] == "skill_studio.draft"]
     assert draft_events[-1]["skill"]["triggers"]["keywords"] == ["公益短片", "公益视频"]
     assert [recipe["id"] for recipe in draft_events[-1]["recipes"]] == ["story-outline", "video-render"]
@@ -2426,9 +2434,12 @@ def test_freezone_plugin_skill_studio_tool_schemas_expose_nested_contracts():
     assert "operation or output shape only" in outline_stage_schema["properties"]["name"]["description"]
     assert "reusable craft-level Recipe id" in outline_stage_schema["properties"]["recipe_id"]["description"]
     assert "same input object, processing action, output shape" in outline_stage_schema["properties"]["reuse"]["description"]
+    assert "workflow responsibility" in outline_stage_schema["properties"]["reuse"]["description"]
+    assert "output_kind matches" in outline_stage_schema["properties"]["reuse"]["description"]
     assert "Do not cite style/theme/brand/aesthetic difference" in outline_stage_schema["properties"]["reason"]["description"]
     assert "Do not write only 'same craft'" in outline_stage_schema["properties"]["reason"]["description"]
     assert "Do not include the current Skill's visual style" in outline_stage_schema["properties"]["new_recipe_craft_gap"]["description"]
+    assert "generic generation/enhancement Recipe is insufficient" in outline_stage_schema["properties"]["new_recipe_craft_gap"]["description"]
     assert begin_schema["required"] == ["skill_studio_session_id", "mode", "expected_recipe_count"]
     assert put_recipe_schema["required"] == ["skill_studio_session_id", "recipe"]
     assert patch_schema["required"] == ["skill_studio_session_id", "target", "patch"]

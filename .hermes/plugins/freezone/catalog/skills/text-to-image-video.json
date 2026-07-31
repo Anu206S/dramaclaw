@@ -34,8 +34,7 @@
     "video-storyboard-grid",
     "general-image",
     "general-video",
-    "video-frame-extraction",
-    "smart-editing"
+    "video-frame-extraction"
   ],
   "input_parameters": [],
   "evaluation": {

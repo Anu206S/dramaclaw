@@ -517,10 +517,56 @@ def test_resolve_saved_skill_studio_tool_result_tells_agent_catalog_is_formal(mo
     assert "Do not ask the user to save it again" in resolved["agent_instruction"]
     assert "Reply briefly in Chinese only" in resolved["agent_instruction"]
     assert saved_items == [
-        ("skills", {"id": "home-culture-poster"}),
         ("recipes", {"id": "home-culture-poster-image"}),
+        ("skills", {"id": "home-culture-poster"}),
     ]
     assert wait_skill_studio_result("skill-key-2", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
+
+
+def test_resolve_saved_skill_studio_tool_result_saves_new_recipes_before_skill(monkeypatch, tmp_path) -> None:
+    monkeypatch.setattr(chat_route, "_canvas_bridge_dir", lambda *_args, **_kwargs: tmp_path)
+    available_recipe_ids: set[str] = set()
+
+    def fake_save_user_agent_config_item(*, username: str, kind: str, payload: dict) -> dict:
+        assert username == "alice"
+        if kind == "recipes":
+            available_recipe_ids.add(str(payload["id"]))
+            return payload
+        missing = [
+            recipe_id
+            for recipe_id in payload.get("allowed_recipe_ids", [])
+            if recipe_id not in available_recipe_ids
+        ]
+        if missing:
+            raise ValueError("missing recipe(s): " + ", ".join(missing))
+        return payload
+
+    monkeypatch.setattr(chat_route, "save_user_agent_config_item", fake_save_user_agent_config_item)
+    payload = chat_route.SkillStudioToolResultIn(
+        turn_id="turn-a",
+        bridge_key="skill-key-new-recipe",
+        project_id="project-a",
+        canvas_id="canvas-a",
+        agent_id="agent-1",
+        skill_studio_status="catalog_saved",
+        action="confirm_add",
+        draft={
+            "skill": {
+                "id": "home-culture-poster",
+                "allowed_recipe_ids": ["home-culture-poster-image"],
+            },
+            "recipes": [{"id": "home-culture-poster-image"}],
+        },
+        message="已保存为正式 Skill / Recipe",
+    )
+
+    resolved = chat_route._resolve_skill_studio_tool_result_payload(payload, username="alice")
+
+    assert resolved["ok"] is True
+    assert resolved["saved_skill_ids"] == ["home-culture-poster"]
+    assert resolved["saved_recipe_ids"] == ["home-culture-poster-image"]
+    assert resolved["errors"] == []
+    assert wait_skill_studio_result("skill-key-new-recipe", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
 
 
 def test_resolve_cancelled_skill_studio_tool_result_stops_flow(monkeypatch, tmp_path) -> None:
@@ -579,6 +625,7 @@ def test_resolve_revision_skill_studio_tool_result_starts_question_flow(monkeypa
         skill_studio_status="revision_started",
         action="start_revision",
         draft={"skill": {"id": "home-culture-poster", "description": "当前草稿"}, "recipes": []},
+        draft_ref={"skill_id": "home-culture-poster", "recipe_count": 0},
         message="用户已启动 Skill Studio 草稿修改会话。",
     )
 
@@ -587,9 +634,11 @@ def test_resolve_revision_skill_studio_tool_result_starts_question_flow(monkeypa
     assert resolved["ok"] is True
     assert resolved["skill_studio_status"] == "revision_started"
     assert resolved["saved_to_catalog"] is False
-    assert resolved["draft"] == payload.draft
+    assert resolved["draft"] is None
+    assert resolved["draft_ref"] == {"skill_id": "home-culture-poster", "recipe_count": 0}
     assert resolved["message"] == payload.message
-    assert resolved["agent_instruction"] == "Continue the Skill Studio revision flow using the frontend response."
+    assert "only contains a lightweight draft reference" in resolved["agent_instruction"]
+    assert "Ask one clarification question" in resolved["agent_instruction"]
     assert wait_skill_studio_result("skill-key-4", timeout_seconds=0.1, bridge_dir=tmp_path) == resolved
 
 
