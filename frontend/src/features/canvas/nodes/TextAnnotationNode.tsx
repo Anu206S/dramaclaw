@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
 import { Handle, Position, useReactFlow, type NodeProps } from '@xyflow/react';
 import ReactMarkdown from 'react-markdown';
 import remarkBreaks from 'remark-breaks';
@@ -23,11 +23,14 @@ import {
   CANVAS_NODE_TYPES,
   type TextAnnotationNodeData,
   type TextNodeMode,
+  type UploadImageNodeData,
+  type VideoGenCount,
+  type VideoGenQuality,
+  type VideoNodeData,
 } from '@/features/canvas/domain/canvasNodes';
 import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import { isSystemManagedNodeData } from '@/features/canvas/domain/mainlineNodeFlags';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
-import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeHeader, NODE_HEADER_FLOATING_POSITION_CLASS } from '@/features/canvas/ui/NodeHeader';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { NodeGenerationOverlay } from '@/features/canvas/ui/NodeGenerationOverlay';
@@ -39,32 +42,19 @@ import {
   CANVAS_NODE_INPUT_SURFACE_CLASS,
 } from '@/features/canvas/ui/nodeFrameStyles';
 import { useCanvasStore, useIsBoxSelecting } from '@/stores/canvasStore';
-import { translateNodeText } from '@/features/canvas/application/translateText';
 import {
-  publishNodeActionAccepted,
-  publishNodeActionError,
-  publishNodeActionSuccess,
-  subscribeNodeAction,
-} from '@/features/canvas/application/nodeActionResult';
-import {
-  REVERSE_PROMPT_DURATION_MS,
-  resolveUpstreamImageUrl,
-  runTextImageToPrompt,
-} from '@/features/canvas/application/textImageToPrompt';
-import {
-  applyTextNodeMode,
-  IMAGE_TO_PROMPT_DEFAULT_CONTENT,
-  TEXT_NODE_COMPACT_MODES,
-  TEXT_NODE_REAL_MODES,
-} from '@/features/canvas/application/textNodeModes';
-import {
-  resolveTextNodeDownstreamVideoNodeId,
-  submitTextToVideo,
-} from '@/features/canvas/application/textToVideoSubmit';
+  ensureBackendImageUrl,
+  fetchFreezoneReversePromptResult,
+  fetchFreezoneTextTranslateResult,
+  submitFreezoneReversePrompt,
+  submitFreezoneTextTranslate,
+  submitFreezoneVideoGen,
+  type FreezoneVideoAspectRatio,
+  type FreezoneVideoResolution,
+} from '@/api/ops';
+import { awaitTaskCompletion } from '@/api/tasks';
+import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
-import { joinUpstreamText } from '@/features/canvas/application/graphContentResolver';
-import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
-import { generateWorkflowText } from '@/features/canvas/application/workflowRecipeRuntime';
 import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
@@ -81,6 +71,7 @@ import {
 import { useFreezoneVideoModels } from '@/features/canvas/hooks/useFreezoneVideoModels';
 import { CreditCostInline } from '@/components/credit-cost-inline';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
+import { BillingRuleNotConfiguredError } from '@/lib/api-errors';
 
 type TextAnnotationNodeProps = NodeProps & {
   id: string;
@@ -96,11 +87,66 @@ const MIN_HEIGHT = 240;
 const COMPACT_MIN_HEIGHT = 240;
 const MAX_WIDTH = 900;
 const MAX_HEIGHT = 1200;
+const IMAGE_REVERSE_PROMPT_FEATURE_KEY = 'freezone.image_reverse_prompt';
 
 const PICKER_INSET = 32;
 const COMPACT_OPS_PANEL_HEIGHT = 140;
 const COMPACT_OPS_PANEL_GAP = 12;
 const COMPACT_OPS_PANEL_MIN_WIDTH = 480;
+
+const COMPACT_MODES = new Set<TextNodeMode>(['textToVideo', 'imageToPrompt']);
+
+const IMAGE_TO_PROMPT_DEFAULT_CONTENT =
+  '根据图片生成结构化中文提示词，包括主体描述、环境、光影、镜头语言、风格关键词。';
+
+function countBillableTextChars(text: string): number {
+  return text.replace(/[\s\u3000]+/gu, '').length;
+}
+
+// 「文字生成音乐」的默认音乐描述——点击后预填进文本节点，用户可在此基础上改。
+const TEXT_TO_MUSIC_DEFAULT_CONTENT =
+  '生成一首现代品牌电子音乐（约 110 BPM），干净有力的低频贝斯，清晰电子鼓点，整体风格高级、未来感强。开场节奏型贝斯与简洁合成器音色建立律动。主段加入稳定鼓点，节奏清晰，保持克制的张力。强化段加入更丰富的音层，合成器音色提升，律动增强但不过度拥挤。结尾鼓点减弱，仅保留低频与氛围音渐出，干净利落收尾。';
+
+const SPAWN_UPLOAD_WIDTH = 320;
+
+/** 反推提示词通常十几秒返回，用它给 loading 覆盖层估算进度推进。 */
+const REVERSE_PROMPT_DURATION_MS = 15000;
+
+/**
+ * 解析上游图片节点「眼下展示的那张图」的 URL。和 graphContentResolver 的图片分支
+ * 保持同一套回退顺序：生成结果 imageUrl → previewImageUrl → referenceImageUrl，
+ * 这样图生节点只挂了参考图（还没生成）时也能被识别为可引用素材。
+ */
+function resolveUpstreamImageUrl(data: unknown): string | null {
+  const d = data as
+    | { imageUrl?: unknown; previewImageUrl?: unknown; referenceImageUrl?: unknown }
+    | undefined;
+  for (const candidate of [d?.imageUrl, d?.previewImageUrl, d?.referenceImageUrl]) {
+    if (typeof candidate === 'string' && candidate.length > 0) return candidate;
+  }
+  return null;
+}
+
+const REAL_MODES = new Set<TextNodeMode>([
+  'writing',
+  'textToVideo',
+  'imageToPrompt',
+  'textToMusic',
+  'textToMusicGen',
+]);
+
+function resolveVideoOutputUrl(result: Record<string, unknown> | null | undefined): string | null {
+  if (!result) return null;
+  for (const key of ['video_url', 'output_url', 'url']) {
+    const value = result[key];
+    if (typeof value === 'string' && value.length > 0) return value;
+  }
+  return null;
+}
+
+function qualityToResolution(q: VideoGenQuality): FreezoneVideoResolution {
+  return q.toLowerCase() as FreezoneVideoResolution;
+}
 
 const MODES: ReadonlyArray<{
   key: TextNodeMode;
@@ -129,10 +175,13 @@ export const TextAnnotationNode = memo(({
   const isBoxSelecting = useIsBoxSelecting();
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const deleteEdge = useCanvasStore((state) => state.deleteEdge);
+  const addNode = useCanvasStore((state) => state.addNode);
+  const addEdge = useCanvasStore((state) => state.addEdge);
+  const duplicateNodeAsSibling = useCanvasStore((state) => state.duplicateNodeAsSibling);
+  const findNodePosition = useCanvasStore((state) => state.findNodePosition);
   const content = typeof data.content === 'string' ? data.content : '';
   const instruction = typeof data.instruction === 'string' ? data.instruction : '';
-  const mode: TextNodeMode =
-    data.mode && TEXT_NODE_REAL_MODES.has(data.mode) ? data.mode : 'writing';
+  const mode: TextNodeMode = data.mode && REAL_MODES.has(data.mode) ? data.mode : 'writing';
   // 已从能力 picker 选过一次(如「文字生成音乐」)：恒为纯文本编辑区,空内容也不再弹「试试」。
   const pickerDismissed = Boolean(data.pickerDismissed);
   const modelId = typeof data.model === 'string' && data.model.length > 0
@@ -140,22 +189,37 @@ export const TextAnnotationNode = memo(({
     : DEFAULT_SHARED_MODEL_ID;
   // 文生视频默认模型取「视频模型接口返回的第一个」，而非文本节点的图像默认 id。
   const { models: videoModels } = useFreezoneVideoModels();
+  const reversePromptInstruction =
+    instruction.trim() || IMAGE_TO_PROMPT_DEFAULT_CONTENT;
+  const reversePromptBillableChars = countBillableTextChars(
+    reversePromptInstruction,
+  );
   const reversePromptCost = useGenerationCreditCost(
-    mode === 'imageToPrompt' ? 'freezone_image_reverse_prompt' : '',
-    null,
-    { surface: 'canvas' },
+    'feature',
+    mode === 'imageToPrompt' ? IMAGE_REVERSE_PROMPT_FEATURE_KEY : null,
+    {
+      surface: 'canvas',
+      quantity: reversePromptBillableChars,
+      params: {
+        operation: 'image_reverse_prompt',
+        billable_chars: reversePromptBillableChars,
+        pricing_quantity: reversePromptBillableChars,
+      },
+    },
   );
+  const reversePromptBillingRuleMissing =
+    reversePromptCost.error instanceof BillingRuleNotConfiguredError;
+  const reversePromptCostDisplay =
+    reversePromptCost.data?.data.display ??
+    (reversePromptBillingRuleMissing
+      ? t('common.billingRuleNotConfiguredShort')
+      : null);
   const { isGenerating } = useNodeGenerationTaskState(data);
-  const upstreamContents = useUpstreamContents(id);
-  const upstreamTextJoined = useMemo(
-    () => joinUpstreamText(upstreamContents),
-    [upstreamContents],
-  );
   // referenceOnly: 节点被作为上游引用素材使用（脚本节点 spawn 出来的）。
   // 复用 compact 视图（只渲染编辑卡片），同时 selected ops panel 也不显示。
   const isReferenceOnly = Boolean(data.referenceOnly);
   const isSystemManaged = isSystemManagedNodeData(data);
-  const isCompactView = isReferenceOnly || TEXT_NODE_COMPACT_MODES.has(mode);
+  const isCompactView = isReferenceOnly || COMPACT_MODES.has(mode);
   const [isEditingContent, setIsEditingContent] = useState(false);
   const editTextareaRef = useRef<HTMLTextAreaElement | null>(null);
   const resolvedTitle = resolveNodeDisplayName(CANVAS_NODE_TYPES.textAnnotation, data);
@@ -220,101 +284,239 @@ export const TextAnnotationNode = memo(({
     return () => window.clearTimeout(timer);
   }, [isEditingContent]);
 
-  // 能力选择（含派生下游/上游节点）走 application/textNodeModes——故事板详情复用
-  // 同一份实现；enterEditMode 的画布缩放语义只属于工作流，所以留在这里执行。
-  const handlePickMode = useCallback((nextMode: TextNodeMode) => {
-    const { enterEdit } = applyTextNodeMode(id, nextMode);
-    if (enterEdit) enterEditMode();
-  }, [enterEditMode, id]);
+  const spawnVideoNode = useCallback(() => {
+    const position = findNodePosition(id, 580, 680);
+    const seedData: Partial<VideoNodeData> = {
+      genMode: 'textToVideo',
+      prompt: typeof data.content === 'string' ? data.content : '',
+    };
+    const newNodeId = addNode(CANVAS_NODE_TYPES.video, position, seedData);
+    addEdge(id, newNodeId);
+    useCanvasStore.getState().autoGroupSpawn(id, [newNodeId], { label: '文生视频组' });
+  }, [addEdge, addNode, data.content, findNodePosition, id]);
 
-  const runRecipeText = useCallback(async (): Promise<{ content?: string }> => {
-    updateNodeData(id, {
+  const spawnUploadNode = useCallback(() => {
+    const sourceNode = useCanvasStore
+      .getState()
+      .nodes.find((node) => node.id === id);
+    const sourceX = sourceNode?.position.x ?? 0;
+    const sourceY = sourceNode?.position.y ?? 0;
+    const position = {
+      x: sourceX - SPAWN_UPLOAD_WIDTH - 60,
+      y: sourceY,
+    };
+    // 反推提示词只能吃图片，限制上传节点仅接受图片类型（标题变「上传图片」、
+    // 文件选择器 accept=image/*、拖入视频/音频会被拒）。
+    const seedData: Partial<UploadImageNodeData> = { imageOnly: true };
+    const newNodeId = addNode(CANVAS_NODE_TYPES.upload, position, seedData);
+    addEdge(newNodeId, id);
+    useCanvasStore.getState().autoGroupSpawn(id, [newNodeId], { label: '图片反推提示词组' });
+  }, [addEdge, addNode, id]);
+
+  // 克隆音频 / 文字生成音乐：在文本节点下游派生一个音频节点并连边（文本 → 音频），
+  // 与「文生视频」派生视频节点同构。音频节点默认尺寸 480×180。
+  // audioKind 决定下游音频节点走语音克隆(speech) 还是文本生成音乐(music)。
+  const spawnAudioNode = useCallback((audioKind: 'speech' | 'music') => {
+    const position = findNodePosition(id, 480, 180);
+    const newNodeId = addNode(CANVAS_NODE_TYPES.audio, position, { audioKind });
+    addEdge(id, newNodeId);
+    const label = audioKind === 'music' ? '文字生成音乐组' : '克隆音频组';
+    useCanvasStore.getState().autoGroupSpawn(id, [newNodeId], { label });
+  }, [addEdge, addNode, findNodePosition, id]);
+
+  const handlePickMode = useCallback((nextMode: TextNodeMode) => {
+    if (nextMode === 'writing') {
+      updateNodeData(id, { mode: nextMode });
+      enterEditMode();
+      return;
+    }
+    // 文字生成音乐：派生下游音乐音频节点后，左侧文本节点回到纯文本编辑态
+    // (writing)——音乐描述在这里输入并同步给下游音频节点，不再显示能力 picker。
+    if (nextMode === 'textToMusicGen') {
+      spawnAudioNode('music');
+      // 文本节点回到纯文本编辑态、关闭能力 picker,并预填默认音乐描述(同步给下游音频节点)。
+      updateNodeData(id, {
+        mode: 'writing',
+        pickerDismissed: true,
+        content: TEXT_TO_MUSIC_DEFAULT_CONTENT,
+      });
+      enterEditMode();
+      return;
+    }
+    updateNodeData(id, { mode: nextMode });
+    if (nextMode === 'textToVideo') {
+      spawnVideoNode();
+    } else if (nextMode === 'imageToPrompt') {
+      spawnUploadNode();
+    } else if (nextMode === 'textToMusic') {
+      spawnAudioNode('speech');
+    }
+  }, [enterEditMode, id, spawnAudioNode, spawnUploadNode, spawnVideoNode, updateNodeData]);
+
+  const runImageToPrompt = useCallback(async () => {
+    const projectId = readUrl().project;
+    if (!projectId) {
+      console.error('[text-node] no project in URL');
+      return;
+    }
+    const state = useCanvasStore.getState();
+    const upstreamEdge = state.edges.find((edge) => edge.target === id);
+    const sourceNode = upstreamEdge
+      ? state.nodes.find((node) => node.id === upstreamEdge.source)
+      : null;
+    const rawUrl = resolveUpstreamImageUrl(sourceNode?.data);
+    if (!rawUrl) {
+      console.warn('[text-node] imageToPrompt: no upstream image url');
+      return;
+    }
+    updateNodeData(id, { isGenerating: true, generationStartedAt: Date.now() });
+    try {
+      // Backend looks up the file by static path — `data:` URLs get uploaded
+      // first via /freezone/upload to obtain a real path; `?v=<ts>` cache
+      // busters are stripped either way.
+      const sourceUrl = await ensureBackendImageUrl(projectId, rawUrl);
+      const ref = await submitFreezoneReversePrompt(projectId, {
+        sourceUrl,
+        instruction: reversePromptInstruction,
+        canvasId: readUrl().canvas ?? 'default',
+        nodeId: id,
+      });
+      // Persist the task handle so a page refresh can resume this job.
+      updateNodeData(id, generationTaskDescriptor(ref));
+      await awaitTaskCompletion(ref.task_key, projectId);
+      // SSE task.result only carries `{ output_format: "json" }`; the prompt
+      // text comes from the dedicated job-result endpoint.
+      const { prompt } = await fetchFreezoneReversePromptResult(projectId, ref.job_id);
+      if (prompt && prompt.trim().length > 0) {
+        updateNodeData(id, { content: prompt, isGenerating: false, generationStartedAt: null });
+      } else {
+        console.warn('[text-node] reverse-prompt returned empty prompt', { jobId: ref.job_id });
+        updateNodeData(id, { isGenerating: false, generationStartedAt: null });
+      }
+    } catch (error) {
+      console.error('[text-node] reverse-prompt failed', error);
+      updateNodeData(id, { isGenerating: false, generationStartedAt: null });
+    }
+  }, [id, reversePromptInstruction, updateNodeData]);
+
+  const runTextToVideo = useCallback(async () => {
+    const promptText = content.trim();
+    if (promptText.length === 0) return;
+    const projectId = readUrl().project;
+    if (!projectId) {
+      console.error('[text-node] no project in URL');
+      return;
+    }
+    const state = useCanvasStore.getState();
+    const downstreamEdge = state.edges.find((edge) => edge.source === id);
+    const targetNode = downstreamEdge
+      ? state.nodes.find((node) => node.id === downstreamEdge.target)
+      : null;
+    if (!targetNode || targetNode.type !== CANVAS_NODE_TYPES.video) {
+      console.warn('[text-node] textToVideo: no downstream video node');
+      return;
+    }
+    const videoData = targetNode.data as VideoNodeData;
+    const aspectRatio = (videoData.aspectRatio ?? '16:9') as FreezoneVideoAspectRatio;
+    const quality: VideoGenQuality = videoData.quality ?? '720P';
+    const durationSec = typeof videoData.durationSec === 'number' ? videoData.durationSec : 5;
+    const generateAudio = Boolean(videoData.generateAudio);
+    const count: VideoGenCount = (videoData.count ?? 1) as VideoGenCount;
+    const videoModel = typeof videoData.model === 'string' && videoData.model.length > 0
+      ? videoData.model
+      : (videoModels[0]?.id ?? DEFAULT_VIDEO_MODEL_ID);
+
+    // 后端不再支持一次出多条 —— 按视频节点选的「生成数量」并发调 N 次接口：
+    // 第 1 条回填下游视频节点，其余复制成同类视频节点并排。
+    const total = Math.min(Math.max(count, 1), 4);
+    updateNodeData(targetNode.id, {
+      prompt: promptText,
       isGenerating: true,
       generationStartedAt: Date.now(),
-      generationError: null,
+      // 目标节点可能带着上次批量生成的画册，本次单条回填后画册与主视频脱钩——清掉。
+      generationBatch: null,
     });
-    try {
-      const generated = await generateWorkflowText({
-        nodeId: id,
-        nodeData: data,
-        nodePrompt: content,
-        upstreamText: upstreamTextJoined,
-        upstreamContents,
+    const targetIds: string[] = [targetNode.id];
+    for (let i = 1; i < total; i += 1) {
+      const siblingId = duplicateNodeAsSibling(targetNode.id, i, {
+        prompt: promptText,
+        isGenerating: true,
+        generationStartedAt: Date.now(),
+        count: 1,
+        videoUrl: null,
+        sourceFileName: null,
+        // duplicateNodeAsSibling 整份展开源节点 data，画册字段必须显式清空，
+        // 否则兄弟节点会继承源节点的旧画册（卡边 + 徽标显示别人的结果）。
+        generationBatch: null,
       });
-      updateNodeData(id, {
-        content: generated,
-        workflowTextGenerated: true,
-        isGenerating: false,
-        generationStartedAt: null,
-      });
-      return { content: generated };
-    } catch (error) {
-      updateNodeData(id, {
-        isGenerating: false,
-        generationStartedAt: null,
-        generationError: error instanceof Error ? error.message : '文本生成失败',
-      });
-      throw error;
+      if (siblingId) targetIds.push(siblingId);
     }
-  }, [content, data, id, updateNodeData, upstreamContents, upstreamTextJoined]);
 
-  useEffect(() => {
-    return subscribeNodeAction(({ nodeId, action, requestId }) => {
-      if (nodeId === id && action === 'generate_text') {
-        publishNodeActionAccepted(requestId, id, action);
-        void runRecipeText()
-          .then((output) => publishNodeActionSuccess(requestId, id, action, output))
-          .catch((error) => publishNodeActionError(requestId, id, action, error));
-        return;
+    const runOne = async (videoNodeId: string) => {
+      try {
+        const ref = await submitFreezoneVideoGen(projectId, {
+          prompt: promptText,
+          aspectRatio,
+          resolution: qualityToResolution(quality),
+          durationSeconds: durationSec,
+          generateAudio,
+          model: videoModel,
+          canvasId: readUrl().canvas ?? 'default',
+          nodeId: videoNodeId,
+        });
+        // Persist the task handle so a page refresh can resume this job.
+        updateNodeData(videoNodeId, generationTaskDescriptor(ref));
+        const completed = await awaitTaskCompletion(ref.task_key, projectId);
+        const url = resolveVideoOutputUrl(completed.result);
+        if (url) {
+          updateNodeData(videoNodeId, {
+            videoUrl: url,
+            isGenerating: false,
+            generationStartedAt: null,
+            sourceFileName: null,
+          });
+        } else {
+          console.warn('[text-node] textToVideo completed without output url', completed);
+          updateNodeData(videoNodeId, { isGenerating: false, generationStartedAt: null });
+        }
+      } catch (error) {
+        console.error('[text-node] textToVideo failed', error);
+        updateNodeData(videoNodeId, { isGenerating: false, generationStartedAt: null });
       }
-      if (nodeId !== id || action !== 'generate_text_video') return;
-      publishNodeActionAccepted(requestId, id, action);
-      // 编排走 application/textToVideoSubmit（与故事板详情同一条链路）。helper 只回报
-      // 承载产物的节点 id 与失败原因，产物 url 仍从那个下游视频节点上回读。
-      void submitTextToVideo(id, {
-        content,
-        fallbackModelId: videoModels[0]?.id ?? DEFAULT_VIDEO_MODEL_ID,
-      })
-        .then((result) => {
-          if (result.error) {
-            publishNodeActionError(requestId, id, action, new Error(result.error));
-            return;
-          }
-          const resultNodeId = result.nodeIds[0] ?? resolveTextNodeDownstreamVideoNodeId(id);
-          const resultNode = resultNodeId
-            ? useCanvasStore.getState().nodes.find((node) => node.id === resultNodeId)
-            : null;
-          const videoUrl = resultNode?.type === CANVAS_NODE_TYPES.video
-            && typeof resultNode.data.videoUrl === 'string'
-            ? resultNode.data.videoUrl
-            : undefined;
-          publishNodeActionSuccess(requestId, id, action, videoUrl ? { videoUrl } : {});
-        })
-        .catch((error) => publishNodeActionError(requestId, id, action, error));
-    });
-  }, [content, id, runRecipeText, videoModels]);
+    };
+
+    await Promise.allSettled(targetIds.map(runOne));
+  }, [content, duplicateNodeAsSibling, id, videoModels, updateNodeData]);
 
   const textPlaceholder = t('node.textNode.placeholder');
   const hasUserContent = content.trim().length > 0 && content.trim() !== textPlaceholder.trim();
 
   const handleSubmit = useCallback(() => {
-    if (isGenerating) return;
+    if (isGenerating || reversePromptBillingRuleMissing) return;
     if (mode === 'imageToPrompt') {
-      void runTextImageToPrompt(id);
+      void runImageToPrompt();
       return;
     }
     if (mode === 'textToVideo') {
-      void submitTextToVideo(id, {
-        content,
-        fallbackModelId: videoModels[0]?.id ?? DEFAULT_VIDEO_MODEL_ID,
-      });
+      void runTextToVideo();
       return;
     }
     if (!hasUserContent) return;
     console.info('[text-node] submit stub', { id, mode, model: modelId, content });
-  }, [content, hasUserContent, id, isGenerating, mode, modelId, videoModels]);
+  }, [
+    content,
+    hasUserContent,
+    id,
+    isGenerating,
+    mode,
+    modelId,
+    reversePromptBillingRuleMissing,
+    runImageToPrompt,
+    runTextToVideo,
+  ]);
 
   const submitDisabled = isGenerating
+    || (mode === 'imageToPrompt' && reversePromptBillingRuleMissing)
     || (mode !== 'imageToPrompt' && !hasUserContent);
   // Inner panels stay neutral regardless of selection — the React Flow node
   // wrapper already shows the active state as an outer outline. Doubling it
@@ -352,8 +554,6 @@ export const TextAnnotationNode = memo(({
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
 
-      <AddNodeToChatButton nodeId={id} />
-
       <NodeResizeHandle
         minWidth={MIN_WIDTH}
         minHeight={minHeightForView}
@@ -384,10 +584,7 @@ export const TextAnnotationNode = memo(({
               <textarea
                 ref={editTextareaRef}
                 value={content}
-                onChange={(event) => updateNodeData(id, {
-                  content: event.target.value,
-                  workflowTextGenerated: false,
-                })}
+                onChange={(event) => updateNodeData(id, { content: event.target.value })}
                 onMouseDown={(event) => event.stopPropagation()}
                 onClick={(event) => event.stopPropagation()}
                 onKeyDown={(event) => {
@@ -501,7 +698,10 @@ export const TextAnnotationNode = memo(({
                 )}
                 <div className="flex items-center gap-1.5">
                   {mode === 'imageToPrompt' && (
-                    <CreditCostInline display={reversePromptCost.data?.data.display} />
+                    <CreditCostInline
+                      display={reversePromptCostDisplay}
+                      promotion={reversePromptCost.data?.data.promotion}
+                    />
                   )}
                   <button
                     type="button"
@@ -546,10 +746,7 @@ export const TextAnnotationNode = memo(({
             <textarea
               ref={editTextareaRef}
               value={content}
-              onChange={(event) => updateNodeData(id, {
-                content: event.target.value,
-                workflowTextGenerated: false,
-              })}
+              onChange={(event) => updateNodeData(id, { content: event.target.value })}
               onMouseDown={(event) => event.stopPropagation()}
               onClick={(event) => event.stopPropagation()}
               onKeyDown={(event) => {
@@ -665,12 +862,15 @@ function WritingOpsPanel({
     }
     setIsTranslating(true);
     try {
-      const translated = await translateNodeText(project, {
+      const ref = await submitFreezoneTextTranslate(project, {
         text: content,
-        nodeId,
         nodeType: 'text',
+        canvasId: readUrl().canvas ?? 'default',
+        nodeId,
       });
-      updateNodeData(nodeId, { content: translated });
+      await awaitTaskCompletion(ref.task_key, project);
+      const result = await fetchFreezoneTextTranslateResult(project, ref.job_id);
+      updateNodeData(nodeId, { content: result.translated_text });
     } catch (error) {
       console.error('[text-node] translate failed', error);
     } finally {

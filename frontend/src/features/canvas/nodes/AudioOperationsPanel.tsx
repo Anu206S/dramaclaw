@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import {
   ArrowUp,
   Check,
@@ -21,7 +22,11 @@ import { useCanvasStore } from '@/stores/canvasStore';
 import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
 import { ReferenceTextChip } from '@/features/canvas/nodes/shared/ReferenceTextChip';
 import { useDetachUpstream } from '@/features/canvas/hooks/useDetachUpstream';
-import { translateNodeText } from '@/features/canvas/application/translateText';
+import {
+  fetchFreezoneTextTranslateResult,
+  submitFreezoneTextTranslate,
+} from '@/api/ops';
+import { awaitTaskCompletion } from '@/api/tasks';
 import { deriveAudioText, useAudioGeneration } from '@/features/canvas/nodes/useAudioGeneration';
 import { readUrl } from '@/lib/url-params';
 import { PanelExpandButton } from '@/features/canvas/ui/PanelExpandButton';
@@ -44,6 +49,7 @@ import {
   TooltipTrigger,
 } from '@/components/ui/tooltip';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
+import { BillingRuleNotConfiguredError } from '@/lib/api-errors';
 import { VoiceSelectionModal } from './VoiceSelectionModal';
 
 const PANEL_GAP_PX = 12;
@@ -55,8 +61,9 @@ const AUDIO_INPUT_FIELD_CLASS =
   'nodrag nowheel w-full rounded-[10px] border border-white/[0.08] bg-transparent px-3 text-[13px] text-text-dark outline-none transition-colors placeholder:text-text-muted/70 hover:border-white/[0.12] focus:border-white/20';
 
 // music 模式时长默认 30s（对齐后端 music_length_ms 默认 30000）。
-// 导出：故事板详情的音频操作面复用同一默认值与预设档位，避免两处漂移。
 export const DEFAULT_MUSIC_LENGTH_MS = 30000;
+const AUDIO_SPEECH_FEATURE_KEY = 'freezone.audio_speech';
+const AUDIO_MUSIC_FEATURE_KEY = 'freezone.audio_music';
 // 音乐时长下拉样式：暗色画布风格 + min-width 兜底,避免画布缩放/窄触发器时
 // 菜单按触发器屏幕宽渲染导致选项被 truncate 成「1…」。
 const MUSIC_LENGTH_SELECT_CLASS =
@@ -74,9 +81,12 @@ export const MUSIC_LENGTH_PRESETS: ReadonlyArray<{ ms: number; label: string }> 
   { ms: 600000, label: '10分钟' },
 ];
 
-/** 音乐计费秒数（向上取整、至少 1s）。导出供故事板音频表单复用同一口径询价。 */
 export function musicBillingSecondsFromMs(ms: number): number {
   return Math.max(Math.ceil(Math.max(ms, 0) / 1000), 1);
+}
+
+function countBillableTextChars(text: string): number {
+  return text.replace(/[\s\u3000]+/gu, '').length;
 }
 
 interface AudioOperationsPanelProps {
@@ -85,6 +95,7 @@ interface AudioOperationsPanelProps {
 }
 
 export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps) {
+  const { t } = useTranslation();
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const [isTranslating, setIsTranslating] = useState(false);
   const [panelExpanded, setPanelExpanded] = useState(false);
@@ -92,27 +103,42 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
   const [showVoiceSettings, setShowVoiceSettings] = useState(false);
   // music 模式：高级设置（音乐时长等）默认收起，点底部设置按钮展开。
   const [showMusicSettings, setShowMusicSettings] = useState(false);
-  // 'music'：文字生成音乐；缺省/'speech'：系统音色或显式选择的克隆音色。
+  // 'music'：文字生成音乐(走 /freezone/audio/eleven-music)；缺省/'speech'：克隆音频(TTS)。
   const isMusic = data.audioKind === 'music';
-  const musicLengthMs =
-    typeof data.musicLengthMs === 'number' ? data.musicLengthMs : DEFAULT_MUSIC_LENGTH_MS;
-  const audioCost = useGenerationCreditCost(
-    isMusic ? 'freezone_audio_music' : 'beat_tts',
-    null,
-    isMusic
-      ? {
-          surface: 'canvas',
-          quantity: musicBillingSecondsFromMs(musicLengthMs),
-        }
-      : {},
-  );
   // 生成逻辑(含失败重试)抽到 useAudioGeneration，与节点本体的重试共用同一实现。
   const {
     generate: handleSubmit,
     effectivePrompt,
     isGenerating,
   } = useAudioGeneration(nodeId, data);
-
+  const speechBillableChars = countBillableTextChars(effectivePrompt);
+  const musicLengthMs =
+    typeof data.musicLengthMs === 'number' ? data.musicLengthMs : DEFAULT_MUSIC_LENGTH_MS;
+  const musicBillingSeconds = musicBillingSecondsFromMs(musicLengthMs);
+  const audioCost = useGenerationCreditCost(
+    'feature',
+    isMusic ? AUDIO_MUSIC_FEATURE_KEY : AUDIO_SPEECH_FEATURE_KEY,
+    {
+      surface: 'canvas',
+      quantity: isMusic ? undefined : speechBillableChars,
+      params: isMusic
+        ? {
+            operation: 'music',
+            music_length_ms: musicLengthMs,
+            pricing_quantity: musicBillingSeconds,
+          }
+        : {
+            operation: 'speech',
+            billable_chars: speechBillableChars,
+            pricing_quantity: speechBillableChars,
+          },
+    },
+  );
+  const billingRuleMissing =
+    audioCost.error instanceof BillingRuleNotConfiguredError;
+  const costDisplay =
+    audioCost.data?.data.display ??
+    (billingRuleMissing ? t('common.billingRuleNotConfiguredShort') : null);
   const text = useMemo(() => deriveAudioText(data), [data]);
   const emotionPrompt = data.emotionPrompt ?? '';
 
@@ -171,12 +197,15 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
     }
     setIsTranslating(true);
     try {
-      const translated = await translateNodeText(project, {
+      const ref = await submitFreezoneTextTranslate(project, {
         text: trimmed,
-        nodeId,
         nodeType: 'audio',
+        canvasId: readUrl().canvas ?? 'default',
+        nodeId,
       });
-      handleTextChange(translated);
+      await awaitTaskCompletion(ref.task_key, project);
+      const result = await fetchFreezoneTextTranslateResult(project, ref.job_id);
+      handleTextChange(result.translated_text);
     } catch (error) {
       console.error('[audio-node] translate failed', error);
     } finally {
@@ -185,7 +214,8 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
   }, [isGenerating, handleTextChange, isTranslating, text]);
 
   // 文本框为空但引用了非空文本时也允许提交（effectivePrompt 会回退到上游引用）。
-  const submitDisabled = isGenerating || effectivePrompt.length === 0;
+  const submitDisabled =
+    isGenerating || billingRuleMissing || effectivePrompt.length === 0;
 
   return (
     <OperationPanelShell
@@ -322,7 +352,8 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
           </IconButton>
         )}
         <CreditCostPill
-          display={audioCost.data?.data.display}
+          display={costDisplay}
+          promotion={audioCost.data?.data.promotion}
           disabled={submitDisabled}
           className={NODE_CREDIT_PILL_FLAT_CLASS}
         />
@@ -529,11 +560,10 @@ function AudioMusicSettingsPanel({
 
 function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps) {
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
-  const speechMode = data.speechMode ?? (data.voiceRef ? 'clone' : 'preset');
-  const voiceLabel =
-    speechMode === 'preset' ? '系统女声' : data.voiceLabel ?? '选择克隆音色';
-  const voiceLanguage =
-    speechMode === 'preset' ? '普通话' : data.voiceLanguage ?? '';
+  // 默认音色的拉取放在 AudioNode 里完成（音频节点一挂载就会触发）；这里只负责展示。
+  // 显示兜底改为「加载中…」而不是「项目解说人」——避免在 references 落地前误导用户。
+  const voiceLabel = data.voiceLabel ?? '加载中…';
+  const voiceLanguage = data.voiceLanguage ?? '';
   const currentRef: AudioVoiceRef = data.voiceRef ?? { scope: 'project_narrator' };
   const [modalOpen, setModalOpen] = useState(false);
   const [copyState, setCopyState] = useState<'idle' | 'success' | 'error'>('idle');
@@ -574,54 +604,28 @@ function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps)
       <div className="flex items-center justify-between py-2">
         <span className="text-[12px] font-semibold text-text-muted">音色设置</span>
       </div>
-      <div className="mb-2 grid grid-cols-2 rounded-[6px] bg-white/[0.04] p-0.5">
-        <button
-          type="button"
-          onClick={() => updateNodeData(nodeId, { speechMode: 'preset' })}
-          className={`h-7 rounded-[5px] text-[12px] transition-colors ${
-            speechMode === 'preset'
-              ? 'bg-white/10 text-text-dark'
-              : 'text-text-muted hover:text-text-dark'
-          }`}
-        >
-          系统音色
-        </button>
-        <button
-          type="button"
-          onClick={() => setModalOpen(true)}
-          className={`h-7 rounded-[5px] text-[12px] transition-colors ${
-            speechMode === 'clone'
-              ? 'bg-white/10 text-text-dark'
-              : 'text-text-muted hover:text-text-dark'
-          }`}
-        >
-          克隆音色
-        </button>
-      </div>
       <div className="flex min-h-[55px] w-full items-center gap-3 rounded-[10px] border border-white/[0.08] bg-transparent px-3 py-2">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-1.5">
             <span className="truncate text-[14px] font-medium text-text-dark">{voiceLabel}</span>
-            {speechMode === 'clone' && (
-              <button
-                type="button"
-                title={copyState === 'success' ? '已复制' : copyState === 'error' ? '复制失败' : '复制声线引用'}
-                onClick={handleCopyVoiceId}
-                className={`flex h-4 w-4 shrink-0 items-center justify-center transition-colors ${
-                  copyState === 'success'
-                    ? 'text-[rgb(var(--accent-rgb))]'
-                    : copyState === 'error'
-                      ? 'text-rose-300'
-                      : 'text-text-muted hover:text-text-dark'
-                }`}
-              >
-                {copyState === 'success' ? (
-                  <Check className="h-3 w-3" />
-                ) : (
-                  <Copy className="h-3 w-3" />
-                )}
-              </button>
-            )}
+            <button
+              type="button"
+              title={copyState === 'success' ? '已复制' : copyState === 'error' ? '复制失败' : '复制声线引用'}
+              onClick={handleCopyVoiceId}
+              className={`flex h-4 w-4 shrink-0 items-center justify-center transition-colors ${
+                copyState === 'success'
+                  ? 'text-[rgb(var(--accent-rgb))]'
+                  : copyState === 'error'
+                    ? 'text-rose-300'
+                    : 'text-text-muted hover:text-text-dark'
+              }`}
+            >
+              {copyState === 'success' ? (
+                <Check className="h-3 w-3" />
+              ) : (
+                <Copy className="h-3 w-3" />
+              )}
+            </button>
           </div>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
@@ -646,7 +650,6 @@ function AudioVoiceSettingsPanel({ nodeId, data }: AudioVoiceSettingsPanelProps)
         currentRef={currentRef}
         onPick={({ ref, label, language }) => {
           updateNodeData(nodeId, {
-            speechMode: 'clone',
             voiceRef: ref,
             voiceLabel: label,
             voiceLanguage: language ?? '',

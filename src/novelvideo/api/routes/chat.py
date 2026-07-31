@@ -52,7 +52,7 @@ from novelvideo.shared.billing_errors import (
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
-AI_ASSISTANT_CHAT_FEATURE_KEY = "ai_assistant_chat"
+AI_ASSISTANT_CHAT_FEATURE_KEY = "assistant.chat"
 EMPTY_AGENT_REPLY_MESSAGE = "这轮操作没有收到虾导的有效回复，请稍后重试。"
 
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -8,6 +9,10 @@ from novelvideo.api.routes import freezone as freezone_routes
 from novelvideo.freezone import vision_gateway
 from novelvideo.freezone.jobs import build_video_story_analysis_prompt
 from novelvideo.freezone.jobs import run_freezone_analyze_shots
+from novelvideo.freezone.jobs import sort_extracted_frames_by_pts
+from novelvideo.freezone.vision_gateway import (
+    FREEZONE_VIDEO_ANALYSIS_TIMEOUT_SECONDS,
+)
 
 
 def _patch_project_resolution(
@@ -21,6 +26,40 @@ def _patch_project_resolution(
         return None, username, project, project_dir, str(project_dir)
 
     monkeypatch.setattr(freezone_routes, "_resolve_freezone_project", _fake_resolve)
+
+
+def test_extracted_frames_sort_by_numeric_pts_not_lexicographically() -> None:
+    # `-frame_pts true` 让文件名里的数字是 PTS 而不是计数，位数不固定：
+    # 字典序会把 scene_1000 排到 scene_900 前面，关键帧顺序和 keyframe_index 全乱。
+    out_dir = Path("/tmp/freezone_extract/job")
+    paths = [
+        out_dir / "scene_1000.png",
+        out_dir / "scene_90.png",
+        out_dir / "scene_900.png",
+        out_dir / "scene_1.png",
+    ]
+
+    ordered = sort_extracted_frames_by_pts(paths)
+
+    assert [path.name for path in ordered] == [
+        "scene_1.png",
+        "scene_90.png",
+        "scene_900.png",
+        "scene_1000.png",
+    ]
+
+
+def test_extracted_frames_sort_keeps_zero_padded_even_samples_in_order() -> None:
+    out_dir = Path("/tmp/freezone_extract/job")
+    paths = [out_dir / "even_010.png", out_dir / "even_002.png", out_dir / "even_001.png"]
+
+    ordered = sort_extracted_frames_by_pts(paths)
+
+    assert [path.name for path in ordered] == [
+        "even_001.png",
+        "even_002.png",
+        "even_010.png",
+    ]
 
 
 def test_video_story_prompt_requests_libtv_story_table() -> None:
@@ -41,6 +80,54 @@ def test_freezone_analyze_request_defaults_to_shots_mode() -> None:
 
     assert body.analysis_mode == "shots"
     assert body.duration_sec is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("task_type", "operation"),
+    [
+        ("freezone_analyze", "shots"),
+        ("freezone_video_story", "video_story"),
+    ],
+)
+async def test_video_analysis_tasks_include_shared_feature_billing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    task_type: str,
+    operation: str,
+) -> None:
+    captured: dict[str, object] = {}
+    ctx = SimpleNamespace(project_id="project_59")
+
+    async def fake_enqueue_project_task(*_args, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            task_state=SimpleNamespace(task_id="task_1"),
+            backend="celery",
+            queue="node.default",
+        )
+
+    monkeypatch.setattr(
+        freezone_routes,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=fake_enqueue_project_task),
+    )
+
+    await freezone_routes._enqueue_or_start_freezone_video_analysis(
+        ctx=ctx,
+        username="admin",
+        project="59",
+        project_dir=tmp_path,
+        output_dir=str(tmp_path),
+        task_type=task_type,
+        job_id="job_1",
+        payload={"frame_paths": []},
+    )
+
+    assert captured["payload"]["billing"] == {
+        "feature_key": "freezone.video_analyze",
+        "operation": operation,
+    }
 
 
 @pytest.mark.asyncio
@@ -73,6 +160,7 @@ async def test_video_story_analysis_uses_shared_freezone_vision_model(
     assert result["model"] == "DC-freezone-vision-LLM"
     assert result["video_story"] == {"shots": []}
     assert len(captured["images"]) == 1
+    assert captured["timeout_seconds"] == FREEZONE_VIDEO_ANALYSIS_TIMEOUT_SECONDS
 
 
 @pytest.mark.asyncio

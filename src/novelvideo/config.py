@@ -256,7 +256,7 @@ def get_newapi_text_pydantic_model(
         if timeout_seconds_override is not None
         else _env_float(
             f"{model_env}_TIMEOUT_SECONDS",
-            _env_float("NEWAPI_TEXT_TIMEOUT_SECONDS", 120.0),
+            _env_float("NEWAPI_TEXT_TIMEOUT_SECONDS", 300.0),
         )
     )
     return _newapi_text_openai_model(
@@ -809,7 +809,7 @@ NEWAPI_VIDEO_DURATION_BOUNDS = os.environ.get(
 ).strip()
 
 # 视频生成后端: newapi_seedance-1.0-pro-fast (默认), newapi_seedance-2.0-fast,
-# comfyui, seedance_fast, seedance_pro, seedance_pro_silent, wan26, grok_720
+# comfyui, seedance_fast, seedance_pro, seedance_pro_silent, grok_720
 VIDEO_BACKEND = os.environ.get("VIDEO_BACKEND", f"newapi_{DEFAULT_VIDEO_MODEL}")
 
 # Seedance 模型（火山方舟）

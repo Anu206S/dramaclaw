@@ -15,6 +15,7 @@ export interface FreezoneNodeContext {
   canvasId?: string | null;
   /** Id of the node that triggered the generation. */
   nodeId?: string | null;
+  modelParams?: Record<string, unknown>;
 }
 
 export type FreezoneRecipeNodeKind = "image" | "video" | "audio" | "text";
@@ -231,10 +232,11 @@ export async function generateFreezoneRecipeText(
  * Map the camelCase node context to the backend's snake_case body fields,
  * emitting keys only when present so legacy callers stay byte-identical.
  */
-function nodeContextBody(ctx: FreezoneNodeContext): Record<string, string> {
-  const out: Record<string, string> = {};
+function nodeContextBody(ctx: FreezoneNodeContext): Record<string, unknown> {
+  const out: Record<string, unknown> = {};
   if (ctx.canvasId) out.canvas_id = ctx.canvasId;
   if (ctx.nodeId) out.node_id = ctx.nodeId;
+  if (ctx.modelParams) out.model_params = ctx.modelParams;
   return out;
 }
 
@@ -304,6 +306,7 @@ export async function fetchCanvasGenerationHistory(
 // /freezone/gen ----------------------------------------------------------- //
 
 export type FreezoneProvider =
+  | "newapi"
   | "openrouter"
   | "huimeng"
   | "openai";
@@ -372,16 +375,9 @@ export interface FreezoneJobRef {
 
 // /freezone/video/gen ----------------------------------------------------- //
 
-export type FreezoneVideoAspectRatio =
-  | "auto"
-  | "16:9"
-  | "4:3"
-  | "1:1"
-  | "3:4"
-  | "9:16"
-  | "21:9";
+export type FreezoneVideoAspectRatio = string;
 
-export type FreezoneVideoResolution = "480p" | "720p" | "1080p";
+export type FreezoneVideoResolution = string;
 
 /** Local element marker on the source image, used to anchor subjects/objects. */
 export interface FreezoneVideoMark {
@@ -584,7 +580,7 @@ export async function submitFreezoneVideoI2v(
     {
       method: "POST",
       json: {
-        image_urls: payload.imageUrls.slice(0, 9),
+        image_urls: payload.imageUrls,
         prompt: payload.prompt ?? "",
         camera_template_id: payload.cameraTemplateId ?? null,
         marks: (payload.marks ?? []).map((m) => ({
@@ -647,7 +643,7 @@ export async function submitFreezoneVideoEdit(
       method: "POST",
       json: {
         video_url: payload.videoUrl,
-        image_urls: (payload.imageUrls ?? []).slice(0, 5),
+        image_urls: payload.imageUrls ?? [],
         prompt: payload.prompt ?? "",
         camera_template_id: payload.cameraTemplateId ?? null,
         marks: (payload.marks ?? []).map((m) => ({
@@ -968,11 +964,11 @@ export async function fetchFreezoneAudioSeparateResult(
 // /freezone/image/reverse-prompt ----------------------------------------- //
 
 /**
- * Per `FreezoneImageReversePromptRequest` in openapi.json the only field is
- * `source_url` (required). No `model`, no `prompt` steering on the backend.
+ * `source_url` is required; `instruction` steers the returned prompt.
  */
 export interface FreezoneReversePromptPayload extends FreezoneNodeContext {
   sourceUrl: string;
+  instruction?: string;
 }
 
 export async function submitFreezoneReversePrompt(
@@ -985,6 +981,7 @@ export async function submitFreezoneReversePrompt(
       method: "POST",
       json: {
         source_url: payload.sourceUrl,
+        instruction: payload.instruction ?? "",
         ...nodeContextBody(payload),
       },
     },
@@ -1034,7 +1031,29 @@ export async function fetchFreezoneCameraOptions(
 
 // /freezone/image/models -------------------------------------------------- //
 
+export type MediaModelParameterControl = "select" | "number" | "switch" | "text" | "multiselect";
+export interface MediaModelParameterDefinition {
+  key: string;
+  label: string;
+  control: MediaModelParameterControl;
+  requestPath: string;
+  options?: Array<string | number | boolean>;
+  default?: unknown;
+  min?: number;
+  max?: number;
+  step?: number;
+  required?: boolean;
+  modes?: string[];
+}
+export interface MediaModelRequestSchema {
+  endpoint: "images/generations" | "video/generations" | "audio/speech";
+  parameters?: MediaModelParameterDefinition[];
+  omitPaths?: string[];
+}
+
 export interface FreezoneImageModelInfo {
+  /** Opaque database identity used by new billing and task records. */
+  catalogId?: string;
   /** Stable picker id, e.g. `"newapi_gpt_image2"`. */
   id: string;
   /** Provider tab id (`huimeng` / `openrouter` / `openai`). */
@@ -1043,6 +1062,11 @@ export interface FreezoneImageModelInfo {
   apiModel: string;
   /** Display label in the model chip. */
   label: string;
+  resolutionOptions?: string[];
+  qualityOptions?: string[];
+  ratioOptions?: string[];
+  referenceImageMax?: number | null;
+  request?: MediaModelRequestSchema;
 }
 
 // Provider inference for raw model strings the backend may return without
@@ -1087,6 +1111,14 @@ function pickNumber(record: Record<string, unknown>, ...keys: string[]): number 
   return null;
 }
 
+function pickBoolean(record: Record<string, unknown>, ...keys: string[]): boolean | undefined {
+  for (const key of keys) {
+    const value = record[key];
+    if (typeof value === "boolean") return value;
+  }
+  return undefined;
+}
+
 function pickStringArray(record: Record<string, unknown>, ...keys: string[]): string[] {
   for (const key of keys) {
     const value = record[key];
@@ -1097,10 +1129,22 @@ function pickStringArray(record: Record<string, unknown>, ...keys: string[]): st
   return [];
 }
 
+function pickMediaRequestSchema(value: unknown): MediaModelRequestSchema | undefined {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
+  const schema = value as Record<string, unknown>;
+  if (typeof schema.endpoint !== "string") return undefined;
+  return schema as unknown as MediaModelRequestSchema;
+}
+
 function normalizeProviderId(raw: string | null): FreezoneProvider | null {
   if (!raw) return null;
   const lowered = raw.toLowerCase();
-  if (lowered === "huimeng" || lowered === "openrouter" || lowered === "openai") {
+  if (
+    lowered === "newapi" ||
+    lowered === "huimeng" ||
+    lowered === "openrouter" ||
+    lowered === "openai"
+  ) {
     return lowered;
   }
   return null;
@@ -1114,7 +1158,19 @@ function modelEntryFromObject(entry: Record<string, unknown>): FreezoneImageMode
     inferProvider(apiModel);
   const id = pickString(entry, "id") ?? `${providerId}/${apiModel}`;
   const label = pickString(entry, "label", "displayName", "display_name") ?? apiModel;
-  return { id, providerId, apiModel, label };
+  const catalogId = pickString(entry, "catalogId", "catalog_id");
+  return {
+    ...(catalogId ? { catalogId } : {}),
+    id,
+    providerId,
+    apiModel,
+    label,
+    resolutionOptions: pickStringArray(entry, "resolutionOptions", "resolution_options"),
+    qualityOptions: pickStringArray(entry, "qualityOptions", "quality_options"),
+    ratioOptions: pickStringArray(entry, "ratioOptions", "ratio_options"),
+    referenceImageMax: pickNumber(entry, "referenceImageMax", "reference_image_max"),
+    request: pickMediaRequestSchema(entry.request),
+  };
 }
 
 function modelEntryFromString(raw: string): FreezoneImageModelInfo {
@@ -1185,9 +1241,11 @@ export async function fetchFreezoneImageModels(
 // /freezone/video/models -------------------------------------------------- //
 
 /** Provider tab id for video generation models. */
-export type FreezoneVideoProvider = "seedance" | "huimeng";
+export type FreezoneVideoProvider = "newapi" | "seedance" | "huimeng";
 
 export interface FreezoneVideoModelInfo {
+  /** Opaque database identity used by new billing and task records. */
+  catalogId?: string;
   /** Stable picker id, e.g. `"seedance_2"` (backend currently keys by api id). */
   id: string;
   /** Provider tab id (`seedance` / `huimeng`). */
@@ -1198,6 +1256,7 @@ export interface FreezoneVideoModelInfo {
   label: string;
   /** Supported output resolution values for this model, when advertised by backend. */
   resolutionOptions?: FreezoneVideoResolution[];
+  humanReview?: boolean;
   /** Smallest supported duration in seconds, when advertised by backend. */
   minDuration?: number | null;
   /** Largest supported duration in seconds, when advertised by backend. */
@@ -1206,6 +1265,12 @@ export interface FreezoneVideoModelInfo {
   sceneOptimizeOptions?: Array<"anime" | "realistic">;
   /** Default Seedance 2.0 Value style hint, when advertised by backend. */
   defaultSceneOptimize?: "anime" | "realistic" | null;
+  ratioOptions?: string[];
+  supportedModes?: string[];
+  referenceImageMax?: number | null;
+  referenceVideoMax?: number | null;
+  referenceAudioMax?: number | null;
+  request?: MediaModelRequestSchema;
 }
 
 // Provider inference for raw model ids the backend may return without
@@ -1229,7 +1294,7 @@ function inferVideoProvider(raw: string): FreezoneVideoProvider {
 function normalizeVideoProviderId(raw: string | null): FreezoneVideoProvider | null {
   if (!raw) return null;
   const lowered = raw.toLowerCase();
-  if (lowered === "seedance" || lowered === "huimeng") return lowered;
+  if (lowered === "newapi" || lowered === "seedance" || lowered === "huimeng") return lowered;
   return null;
 }
 
@@ -1243,11 +1308,8 @@ function videoModelEntryFromObject(
     inferVideoProvider(apiModel);
   const id = pickString(entry, "id") ?? apiModel;
   const label = pickString(entry, "label", "displayName", "display_name") ?? apiModel;
-  const resolutionOptions = pickStringArray(entry, "resolutionOptions", "resolution_options")
-    .map((value) => value.toLowerCase())
-    .filter((value): value is FreezoneVideoResolution =>
-      value === "480p" || value === "720p" || value === "1080p"
-    );
+  const catalogId = pickString(entry, "catalogId", "catalog_id");
+  const resolutionOptions = pickStringArray(entry, "resolutionOptions", "resolution_options");
   const sceneOptimizeOptions = pickStringArray(entry, "sceneOptimizeOptions", "scene_optimize_options")
     .map((value) => value.toLowerCase())
     .filter((value): value is "anime" | "realistic" =>
@@ -1260,15 +1322,23 @@ function videoModelEntryFromObject(
       ? defaultSceneOptimizeRaw
       : null;
   return {
+    ...(catalogId ? { catalogId } : {}),
     id,
     providerId,
     apiModel,
     label,
     ...(resolutionOptions.length > 0 ? { resolutionOptions } : {}),
+    humanReview: pickBoolean(entry, "humanReview", "human_review"),
     minDuration: pickNumber(entry, "minDuration", "min_duration"),
     maxDuration: pickNumber(entry, "maxDuration", "max_duration"),
     ...(sceneOptimizeOptions.length > 0 ? { sceneOptimizeOptions } : {}),
     defaultSceneOptimize,
+    ratioOptions: pickStringArray(entry, "ratioOptions", "ratio_options"),
+    supportedModes: pickStringArray(entry, "supportedModes", "supported_modes"),
+    referenceImageMax: pickNumber(entry, "referenceImageMax", "reference_image_max"),
+    referenceVideoMax: pickNumber(entry, "referenceVideoMax", "reference_video_max"),
+    referenceAudioMax: pickNumber(entry, "referenceAudioMax", "reference_audio_max"),
+    request: pickMediaRequestSchema(entry.request),
   };
 }
 
@@ -2377,13 +2447,30 @@ export async function submitFreezoneStoryScript(
   );
 }
 
+/**
+ * 故事脚本表的一行。字段名必须和后端 `FreezoneStoryScriptRow`
+ * （`src/novelvideo/api/schemas.py`）逐字对齐 —— 早期前端用的是
+ * `character` / `action` 这类简写，后端从来没发过这些 key，表格里就只显示
+ * 「-」（issue #207）。
+ */
 export interface FreezoneStoryScriptRow {
   shot_no?: string | number | null;
   duration?: string | number | null;
   visual_description?: string | null;
-  character?: string | null;
+  character_1?: string | null;
+  character_description_1?: string | null;
+  /** 角色图1 URL，由后端按角色名匹配 character_refs 回填。 */
+  character_image_1?: string | null;
+  character_2?: string | null;
+  character_description_2?: string | null;
+  /** 角色图2 URL，由后端按角色名匹配 character_refs 回填。 */
+  character_image_2?: string | null;
+  /** 参考图 URL，视频参考模式下由后端按 keyframe_index 回填对应关键帧。 */
+  reference?: string | null;
+  /** 视频参考模式下这一镜对应的输入关键帧序号（1-based，0 表示无）。 */
+  keyframe_index?: number | null;
   shot?: string | null;
-  action?: string | null;
+  character_action?: string | null;
   emotion?: string | null;
   scene_tags?: string | null;
   lighting_mood?: string | null;
@@ -2397,6 +2484,8 @@ export interface FreezoneStoryScriptRow {
 export interface FreezoneStoryScriptResult {
   title?: string | null;
   rows: FreezoneStoryScriptRow[];
+  /** 视频参考模式下抽出的关键帧静态 URL，按顺序对应 keyframe_index。 */
+  frame_urls?: string[] | null;
 }
 
 export async function fetchFreezoneStoryScriptResult(

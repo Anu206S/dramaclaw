@@ -58,11 +58,8 @@ HERMES_STDIO_LINE_LIMIT_BYTES = max(
     65536,
     _env_int("DRAMACLAW_HERMES_STDIO_LINE_LIMIT_BYTES", 4 * 1024 * 1024),
 )
-STREAM_READ_TIMEOUT = max(
-    180.0,
-    CANVAS_COMMAND_RESULT_TIMEOUT + 30.0,
-    _env_float("HERMES_STREAM_READ_TIMEOUT_SECONDS", 0.0),
-)
+STREAM_IDLE_TIMEOUT = 300.0
+STREAM_TOTAL_TIMEOUT = max(1800.0, STREAM_IDLE_TIMEOUT)
 try:
     TURN_TOOL_CALL_LIMIT = max(1, int(os.environ.get("HERMES_TURN_TOOL_CALL_LIMIT", "20")))
 except ValueError:
@@ -161,6 +158,10 @@ _FREEZONE_CANVAS_WRITE_TOOLS = {
     "freezone_run_node_action",
 }
 FREEZONE_FAILED_WRITE_RETRY_LIMIT = 1
+
+
+def _refresh_stream_idle_deadline(*, now: float, total_deadline: float) -> float:
+    return min(total_deadline, now + STREAM_IDLE_TIMEOUT)
 
 _TOOL_DETAIL_FIELDS = (
     ("command", "命令"),
@@ -760,6 +761,17 @@ class HermesSdkThread:
         except Exception as e:  # noqa: BLE001 - best-effort prewarm
             _log.warning("hermes warm() failed for user=%s: %s", self._username, e)
 
+    async def _stream_timeout_event(self, turn_id: str) -> ChatBackendEvent:
+        """Retire a timed-out worker before returning control to the pool."""
+
+        await self.close()
+        return ChatBackendEvent(
+            type="complete",
+            thread_id=self.id,
+            turn_id=turn_id,
+            text="(hermes timed out)",
+        )
+
     async def stream(self, prompt: str, *, current_project: str | None = None) \
             -> AsyncIterator[ChatBackendEvent]:
         """Send a prompt and yield ChatBackendEvent items as hermes streams them.
@@ -793,7 +805,12 @@ class HermesSdkThread:
             # Along the way emit assistant/tool/plan/thought/usage events for any
             # session/update notifications hermes sends.
             assert self._proc.stdout is not None
-            deadline = asyncio.get_event_loop().time() + STREAM_READ_TIMEOUT
+            loop = asyncio.get_running_loop()
+            total_deadline = loop.time() + STREAM_TOTAL_TIMEOUT
+            idle_deadline = _refresh_stream_idle_deadline(
+                now=loop.time(),
+                total_deadline=total_deadline,
+            )
             tool_call_guard = _TurnToolCallGuard()
             first_write_tool: str | None = None
             active_tool_name: str | None = None
@@ -801,7 +818,12 @@ class HermesSdkThread:
             first_write_failed = False
             failed_write_retry_count = 0
             while True:
-                remaining = max(0.1, deadline - asyncio.get_event_loop().time())
+                deadline = min(total_deadline, idle_deadline)
+                now = loop.time()
+                if now >= deadline:
+                    yield await self._stream_timeout_event(turn_id)
+                    return
+                remaining = deadline - now
                 try:
                     line = await asyncio.wait_for(
                         self._proc.stdout.readline(), timeout=remaining
@@ -815,10 +837,7 @@ class HermesSdkThread:
                         req_id,
                         dict(self._tool_names_by_call_id),
                     )
-                    yield ChatBackendEvent(
-                        type="complete", thread_id=self.id, turn_id=turn_id,
-                        text="(hermes timed out)",
-                    )
+                    yield await self._stream_timeout_event(turn_id)
                     return
                 if not line:
                     _log.warning(
@@ -830,6 +849,10 @@ class HermesSdkThread:
                         dict(self._tool_names_by_call_id),
                     )
                     break
+                idle_deadline = _refresh_stream_idle_deadline(
+                    now=loop.time(),
+                    total_deadline=total_deadline,
+                )
                 try:
                     msg = json.loads(line.decode("utf-8"))
                 except json.JSONDecodeError:
@@ -918,6 +941,11 @@ class HermesSdkThread:
                     if ev.type == "tool_started":
                         tool_name = str(ev.name or "").strip()
                         active_tool_name = tool_name
+                        if tool_name in _FREEZONE_CANVAS_WRITE_TOOLS:
+                            idle_deadline = min(
+                                total_deadline,
+                                loop.time() + CANVAS_COMMAND_RESULT_TIMEOUT + 30.0,
+                            )
                         if _should_stop_after_write_tool(first_write_tool, tool_name):
                             if _can_retry_failed_canvas_write(
                                 first_write_tool,

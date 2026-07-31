@@ -4,6 +4,7 @@ import { useEffect, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
 import { Box, Check, ChevronDown } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import type { MediaModelRequestSchema } from '@/api/ops';
 
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import { useFreezoneVideoModels } from '@/features/canvas/hooks/useFreezoneVideoModels';
@@ -35,15 +36,24 @@ export interface ProviderOption {
 }
 
 export interface ModelOption {
+  catalogId?: string;
   id: string;
   providerId: ProviderId;
   apiModel: string;
   label: string;
   resolutionOptions?: string[];
+  qualityOptions?: string[];
+  humanReview?: boolean;
   minDuration?: number | null;
   maxDuration?: number | null;
   sceneOptimizeOptions?: Array<'anime' | 'realistic'>;
   defaultSceneOptimize?: 'anime' | 'realistic' | null;
+  ratioOptions?: string[];
+  supportedModes?: string[];
+  referenceImageMax?: number | null;
+  referenceVideoMax?: number | null;
+  referenceAudioMax?: number | null;
+  request?: MediaModelRequestSchema;
 }
 
 export const SHARED_PROVIDERS: ProviderOption[] = [
