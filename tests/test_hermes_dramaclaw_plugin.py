@@ -11,8 +11,8 @@ def _load_plugin_module():
     registry_module = types.ModuleType("tools.registry")
     registry_module.tool_error = lambda value: value
     registry_module.tool_result = lambda value: value
-    sys.modules.setdefault("tools", tools_module)
-    sys.modules.setdefault("tools.registry", registry_module)
+    sys.modules["tools"] = tools_module
+    sys.modules["tools.registry"] = registry_module
 
     path = Path(__file__).resolve().parents[1] / ".hermes" / "plugins" / "dramaclaw" / "__init__.py"
     spec = importlib.util.spec_from_file_location("test_dramaclaw_plugin", path)
