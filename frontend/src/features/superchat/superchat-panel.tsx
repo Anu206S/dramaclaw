@@ -2968,7 +2968,10 @@ function CanvasCommandApprovalCard({
   approval: PendingCanvasCommandApproval;
   isExecuting?: boolean;
   onApply: (approval: PendingCanvasCommandApproval) => void;
-  onCancel: (approval: PendingCanvasCommandApproval) => void;
+  onCancel: (
+    approval: PendingCanvasCommandApproval,
+    reason?: CanvasCommandApprovalCancelReason,
+  ) => void;
 }) {
   const [now, setNow] = useState(() => Date.now());
   const params = useParams({ strict: false }) as { project?: string };
@@ -3032,6 +3035,13 @@ function CanvasCommandApprovalCard({
     const tick = window.setInterval(() => setNow(Date.now()), 1000);
     return () => window.clearInterval(tick);
   }, [approval.expiresAt, isExecuting]);
+
+  useEffect(() => {
+    if (!approval.expiresAt || isExecuting) return;
+    const delay = Math.max(0, approval.expiresAt - Date.now());
+    const timer = window.setTimeout(() => onCancel(approval, "timeout"), delay + 25);
+    return () => window.clearTimeout(timer);
+  }, [approval, isExecuting, onCancel]);
 
   const amendedApproval = useMemo(() => {
     const withImageParams = amendCanvasApprovalWithImageParams(approval, imageParams);
@@ -6867,7 +6877,10 @@ const MessageBubble = memo(function MessageBubble({
   canvasContextActivities?: CanvasContextActivity[];
   executingCanvasCommandApprovalIds?: Set<string>;
   onApplyCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
-  onCancelCanvasCommandApproval?: (approval: PendingCanvasCommandApproval) => void;
+  onCancelCanvasCommandApproval?: (
+    approval: PendingCanvasCommandApproval,
+    reason?: CanvasCommandApprovalCancelReason,
+  ) => void;
   onRetryCanvasCommandFeedback?: (
     feedback: CanvasCommandFeedback,
     messageId: string,
@@ -10413,6 +10426,11 @@ function canvasCommandApprovalDetailsFromUiEvents(events: unknown[] | undefined)
       : typeof value.anchorTextPrefix === "string"
         ? value.anchorTextPrefix
         : null;
+    const receivedAt = typeof value.received_at === "number"
+      ? value.received_at
+      : typeof value.receivedAt === "number"
+        ? value.receivedAt
+        : canvasSurfaceEventOrder(value, approvals.length);
     approvals.push({
       canvasId,
       turnId,
@@ -10420,10 +10438,42 @@ function canvasCommandApprovalDetailsFromUiEvents(events: unknown[] | undefined)
       anchorTextPrefix,
       bridgeKey,
       envelopes: value.envelopes as CanvasChatCommandEnvelope[],
-      receivedAt: canvasSurfaceEventOrder(value, approvals.length),
+      receivedAt,
+      autoExpires: true,
     });
   }
   return approvals;
+}
+
+function canvasCommandApprovalResolutionKeysFromUiEvents(
+  events: unknown[] | undefined,
+): Set<string> {
+  const keys = new Set<string>();
+  if (!events || events.length === 0) return keys;
+  for (const event of events) {
+    if (!event || typeof event !== "object") continue;
+    const value = event as Record<string, unknown>;
+    if (value.type !== "canvas_command_approval_resolution") continue;
+    const bridgeKey = typeof value.bridge_key === "string"
+      ? value.bridge_key
+      : typeof value.bridgeKey === "string"
+        ? value.bridgeKey
+        : null;
+    const turnId = typeof value.turn_id === "string"
+      ? value.turn_id
+      : typeof value.turnId === "string"
+        ? value.turnId
+        : null;
+    const envelopes = Array.isArray(value.envelopes) ? value.envelopes : [];
+    const receivedAt = typeof value.received_at === "number"
+      ? value.received_at
+      : typeof value.receivedAt === "number"
+        ? value.receivedAt
+        : undefined;
+    keys.add(canvasCommandApprovalKey(bridgeKey, turnId, envelopes, receivedAt));
+    if (bridgeKey) keys.add(`bridge:${bridgeKey}`);
+  }
+  return keys;
 }
 
 function messageUiEvents(message: ChatMessage): unknown[] | undefined {
@@ -11404,6 +11454,14 @@ export function SuperChatPanel({
     if (variant !== "freezone") return;
     setPendingCanvasCommandApprovals((current) => {
       let next = current;
+      const persistedResolutionKeys = new Set<string>();
+      for (const message of chat.messages) {
+        for (const key of canvasCommandApprovalResolutionKeysFromUiEvents(
+          messageUiEvents(message),
+        )) {
+          persistedResolutionKeys.add(key);
+        }
+      }
       for (const message of chat.messages) {
         for (const detail of canvasCommandApprovalDetailsFromUiEvents(messageUiEvents(message))) {
           const approval = buildApprovalFromDetail({
@@ -11411,6 +11469,11 @@ export function SuperChatPanel({
             turnId: detail.turnId ?? message.turnId ?? null,
           });
           if (!approval) continue;
+          if (
+            persistedResolutionKeys.has(approval.key)
+            || persistedResolutionKeys.has(canvasCommandApprovalApplyKey(approval))
+            || (approval.bridgeKey && persistedResolutionKeys.has(`bridge:${approval.bridgeKey}`))
+          ) continue;
           const resolvedKeys = resolvedCanvasCommandApprovalKeysRef.current;
           if (resolvedKeys.has(approval.key) || resolvedKeys.has(canvasCommandApprovalApplyKey(approval))) continue;
           if (canvasCommandApprovalHasCompletedFeedback(
@@ -11669,26 +11732,32 @@ export function SuperChatPanel({
   const persistCanvasCommandUiEvent = useCallback((
     turnId: string | null | undefined,
     event: Record<string, unknown>,
-  ) => {
-    if (!params.project || !effectiveFreezoneCanvasId || !turnId) return;
-    void api.post("api/v1/chat/ui-events", {
-      json: {
-        scope: {
-          kind: "project",
-          id: params.project,
-          surface: "freezone",
-          canvasId: effectiveFreezoneCanvasId,
+  ): Promise<boolean> => {
+    if (!params.project || !effectiveFreezoneCanvasId || !turnId) {
+      return Promise.resolve(false);
+    }
+    return api
+      .post("api/v1/chat/ui-events", {
+        json: {
+          scope: {
+            kind: "project",
+            id: params.project,
+            surface: "freezone",
+            canvasId: effectiveFreezoneCanvasId,
+          },
+          turn_id: turnId,
+          event,
         },
-        turn_id: turnId,
-        event,
-      },
-    }).catch((error) => {
-      console.warn("[freezone-canvas-command] failed to persist superchat canvas event", {
-        canvasId: effectiveFreezoneCanvasId,
-        turnId,
-        error,
+      })
+      .then(() => true)
+      .catch((error) => {
+        console.warn("[freezone-canvas-command] failed to persist superchat canvas event", {
+          canvasId: effectiveFreezoneCanvasId,
+          turnId,
+          error,
+        });
+        return false;
       });
-    });
   }, [effectiveFreezoneCanvasId, params.project]);
 
   const persistSkillStudioUiEvent = useCallback((
@@ -11752,6 +11821,16 @@ export function SuperChatPanel({
     void (async () => {
       const receivedAt = Date.now();
       try {
+        await persistCanvasCommandUiEvent(approval.turnId, {
+          schema_version: "canvas_command_approval_resolution.v1",
+          type: "canvas_command_approval_resolution",
+          canvas_id: effectiveFreezoneCanvasId,
+          turn_id: approval.turnId ?? null,
+          bridge_key: approval.bridgeKey ?? null,
+          envelopes: approval.envelopes,
+          decision: "confirmed",
+          received_at: receivedAt,
+        });
         const applyKey = canvasCommandApprovalApplyKey(approval);
         const canRepeatApproval = canvasCommandApprovalCanRepeat(approval);
         if (!canRepeatApproval && appliedCanvasCommandApprovalKeysRef.current.has(applyKey)) {
@@ -11864,7 +11943,7 @@ export function SuperChatPanel({
             event: feedback,
           },
         );
-        persistCanvasCommandUiEvent(approval.turnId, {
+        void persistCanvasCommandUiEvent(approval.turnId, {
           schema_version: "canvas_command_result.v1",
           type: "canvas_command_result",
           canvas_id: effectiveFreezoneCanvasId,
@@ -11884,8 +11963,13 @@ export function SuperChatPanel({
 
   const handleCancelCanvasCommandApproval = useCallback((approval: PendingCanvasCommandApproval, reason: CanvasCommandApprovalCancelReason = "user") => {
     if (executingCanvasCommandApprovalIdsRef.current.has(approval.id)) return;
+    const applyKey = canvasCommandApprovalApplyKey(approval);
+    if (
+      resolvedCanvasCommandApprovalKeysRef.current.has(approval.key)
+      || resolvedCanvasCommandApprovalKeysRef.current.has(applyKey)
+    ) return;
     resolvedCanvasCommandApprovalKeysRef.current.add(approval.key);
-    resolvedCanvasCommandApprovalKeysRef.current.add(canvasCommandApprovalApplyKey(approval));
+    resolvedCanvasCommandApprovalKeysRef.current.add(applyKey);
     if (resolvedCanvasCommandApprovalKeysRef.current.size > 200) {
       resolvedCanvasCommandApprovalKeysRef.current = new Set(
         [...resolvedCanvasCommandApprovalKeysRef.current].slice(-100),
@@ -11919,7 +12003,17 @@ export function SuperChatPanel({
       cancelled: true,
     });
     const feedbackKey = canvasCommandFeedbackKey(approval.bridgeKey, approval.turnId, undefined, approval.key);
-    persistCanvasCommandUiEvent(approval.turnId, {
+    void persistCanvasCommandUiEvent(approval.turnId, {
+      schema_version: "canvas_command_approval_resolution.v1",
+      type: "canvas_command_approval_resolution",
+      canvas_id: effectiveFreezoneCanvasId,
+      turn_id: approval.turnId ?? null,
+      bridge_key: approval.bridgeKey ?? null,
+      envelopes: approval.envelopes,
+      decision: reason === "timeout" ? "timeout" : "cancelled",
+      received_at: receivedAt,
+    });
+    void persistCanvasCommandUiEvent(approval.turnId, {
       schema_version: "canvas_command_result.v1",
       type: "canvas_command_result",
       canvas_id: effectiveFreezoneCanvasId,

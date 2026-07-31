@@ -120,6 +120,14 @@ from novelvideo.freezone.history import (
     read_canvas_generation_history,
     read_generation_history,
 )
+from novelvideo.freezone.workflow_drafts import (
+    claim_workflow_draft_confirmation,
+    create_workflow_draft,
+    finish_workflow_draft_confirmation,
+    patch_workflow_draft,
+    prune_expired_workflow_drafts,
+    read_workflow_draft,
+)
 from novelvideo.freezone.workflow_runs import (
     WorkflowRunLeaseConflict,
     create_workflow_run,
@@ -10386,6 +10394,181 @@ async def list_canvas_history(
         return {"ok": True, "data": canvas_store.list_canvas_history(canvas_project_dir, canvas_id)}
     except canvas_store.CanvasStoreError as exc:
         _raise_canvas_store_http(exc)
+
+
+@router.post(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-drafts",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def create_canvas_workflow_draft(
+    project: str,
+    canvas_id: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    state_dir = _canvas_state_project_dir(ctx, project_dir)
+    try:
+        prune_expired_workflow_drafts(project_dir=state_dir, canvas_id=canvas_id)
+        draft = create_workflow_draft(
+            project_dir=state_dir,
+            project_id=ctx.project_id,
+            canvas_id=canvas_id,
+            intent=body.get("intent"),
+            compiled=body.get("compiled"),
+            run_after_create=bool(body.get("run_after_create")),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "data": draft}
+
+
+@router.get(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-drafts/{draft_id}",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def get_canvas_workflow_draft(
+    project: str,
+    canvas_id: str,
+    draft_id: str,
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user, required_role="viewer"
+    )
+    try:
+        draft, error = read_workflow_draft(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if draft is None:
+        return {
+            "ok": False,
+            "status": "workflow_draft_unavailable",
+            "error": error or "workflow draft not found",
+        }
+    return {"ok": True, "data": draft}
+
+
+@router.patch(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-drafts/{draft_id}",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def patch_canvas_workflow_draft(
+    project: str,
+    canvas_id: str,
+    draft_id: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    try:
+        expected_revision = int(body.get("expected_revision"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "expected_revision must be an integer") from exc
+    try:
+        draft, error = patch_workflow_draft(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            expected_revision=expected_revision,
+            intent=body.get("intent"),
+            compiled=body.get("compiled"),
+            last_changes=(
+                body.get("last_changes") if isinstance(body.get("last_changes"), dict) else None
+            ),
+            run_after_create=(
+                bool(body.get("run_after_create"))
+                if "run_after_create" in body
+                else None
+            ),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if draft is None:
+        return error
+    return {"ok": True, "data": draft}
+
+
+@router.post(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-drafts/{draft_id}/claim",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def claim_canvas_workflow_draft(
+    project: str,
+    canvas_id: str,
+    draft_id: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    try:
+        revision = int(body.get("revision"))
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(400, "revision must be an integer") from exc
+    try:
+        draft, error = claim_workflow_draft_confirmation(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            revision=revision,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if draft is None:
+        return error
+    return {"ok": True, "data": draft}
+
+
+@router.post(
+    "/projects/{project}/freezone/canvases/{canvas_id}/workflow-drafts/{draft_id}/finish",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def finish_canvas_workflow_draft(
+    project: str,
+    canvas_id: str,
+    draft_id: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    try:
+        draft = finish_workflow_draft_confirmation(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            outcome=str(body.get("outcome") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if draft is None:
+        return {
+            "ok": False,
+            "status": "workflow_draft_unavailable",
+            "error": "workflow draft not found",
+        }
+    return {"ok": True, "data": draft}
 
 
 @router.post(

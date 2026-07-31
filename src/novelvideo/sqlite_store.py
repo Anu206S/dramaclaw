@@ -19,6 +19,8 @@ from typing import Any, Dict, List, Optional
 import aiosqlite
 from rich.console import Console
 
+from novelvideo.freezone.workflow_drafts import WORKFLOW_DRAFT_SCHEMA_SQL
+from novelvideo.freezone.workflow_runs import WORKFLOW_RUN_SCHEMA_SQL
 from novelvideo.models import (
     CharacterIdentity,
     NovelCharacter,
@@ -322,6 +324,8 @@ class SQLiteStore:
             self._db.row_factory = aiosqlite.Row
             await configure_sqlite_connection_async(self._db)
             await self._db.executescript(SQLITE_SCHEMA_SQL)
+            await self._db.executescript(WORKFLOW_DRAFT_SCHEMA_SQL)
+            await self._db.executescript(WORKFLOW_RUN_SCHEMA_SQL)
             await self._ensure_episode_planning_columns(self._db)
             await self._ensure_beat_current_columns(self._db)
             await self._ensure_scene_columns(self._db)
