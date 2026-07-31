@@ -1397,13 +1397,14 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     assert outline["ok"] is True
     assert begin["ok"] is True
     assert skill["ok"] is True
-    assert "remaining Recipe chunks: 2" in skill["agent_instruction"]
-    assert "Next call MUST be freezone_put_agent_catalog_recipe with index=0" in skill["agent_instruction"]
-    assert "neutral craft-level recipe_id" in skill["agent_instruction"]
-    assert "Do not add Skill style" in skill["agent_instruction"]
-    assert "Do not call freezone_finish_agent_catalog_draft yet" in skill["agent_instruction"]
+    assert "剩余 2 个" in skill["agent_instruction"]
+    assert "下一步必须调用 freezone_put_agent_catalog_recipe" in skill["agent_instruction"]
+    assert "index=0" in skill["agent_instruction"]
+    assert "中性工艺级 recipe_id" in skill["agent_instruction"]
+    assert "不要把 Skill 的风格" in skill["agent_instruction"]
+    assert "现在不要调用 freezone_finish_agent_catalog_draft" in skill["agent_instruction"]
     assert recipe_1["ok"] is True
-    assert "neutral craft-level recipe_id" in recipe_1["agent_instruction"]
+    assert "中性工艺级 recipe_id" in recipe_1["agent_instruction"]
     assert recipe_2["ok"] is True
     assert finished["ok"] is True
     assert wait_keys == [("skill-studio-6", 600)]
@@ -1419,11 +1420,11 @@ def test_freezone_plugin_skill_studio_chunked_draft_tools_emit_progress_and_fini
     assert pending_events[0]["event"]["status"] == "draft_outline_ready"
     assert pending_events[1]["event"]["status"] == "draft_begin"
     assert pending_events[2]["event"]["message"] == "已生成 Skill 基础配置"
-    assert "Next call MUST be freezone_put_agent_catalog_recipe" in (
+    assert "下一步必须调用 freezone_put_agent_catalog_recipe" in (
         pending_events[2]["event"]["debug"]["agent_instruction"]
     )
     assert pending_events[3]["event"]["message"] == "已生成 Recipe 1 / 2"
-    assert "Do not write pseudo tool calls" in pending_events[3]["event"]["debug"]["agent_instruction"]
+    assert "不要把工具调用、参数块或代码块写进聊天内容" in pending_events[3]["event"]["debug"]["agent_instruction"]
     assert pending_events[4]["event"]["message"] == "已生成 Recipe 2 / 2"
     draft_event = pending_events[-1]["event"]
     assert draft_event["skill"]["id"] == "public-service-video"
@@ -1447,6 +1448,60 @@ def test_freezone_plugin_begin_agent_catalog_draft_requires_outline_for_create(m
     assert result["ok"] is False
     assert result["status"] == "skill_studio_outline_required"
     assert "freezone_put_agent_catalog_draft_outline" in result["agent_instruction"]
+
+
+def test_freezone_plugin_begin_agent_catalog_draft_inherits_outline_expected_count(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    pending_events = []
+
+    def fake_bridge_key(*, project_id, canvas_id, event):  # noqa: ARG001
+        return f"skill-studio-{len(pending_events) + 1}"
+
+    def fake_put_pending_event(**kwargs):
+        pending_events.append(kwargs)
+
+    monkeypatch.setattr(plugin, "skill_studio_bridge_key", fake_bridge_key)
+    monkeypatch.setattr(plugin, "put_pending_skill_studio_event", fake_put_pending_event)
+
+    base_args = {
+        "project_id": "project-a",
+        "canvas_id": "canvas-a",
+        "skill_studio_session_id": "skill_studio_inherits_expected",
+    }
+    handlers["freezone_put_agent_catalog_draft_outline"](
+        {
+            **base_args,
+            "mode": "create",
+            "reuse_goal": "广告短片工作流",
+            "stages": [
+                {
+                    "id": "storyboard",
+                    "recipe_id": "ad-storyboard",
+                    "reuse": "new",
+                    "new_recipe_craft_gap": "现有 Recipe 缺少全片分镜的输入结构和输出结构。",
+                }
+            ],
+            "expected_recipe_count": 1,
+            "catalog_checked": True,
+        }
+    )
+
+    begin = handlers["freezone_begin_agent_catalog_draft"]({**base_args, "mode": "create"})
+    recipe = handlers["freezone_put_agent_catalog_recipe"](
+        {**base_args, "index": 0, "recipe": {"id": "ad-storyboard", "name": "广告分镜"}}
+    )
+    skill = handlers["freezone_put_agent_catalog_skill"](
+        {**base_args, "skill": {"id": "ad-video", "description": "广告短片 Skill"}}
+    )
+
+    assert begin["ok"] is True
+    assert recipe["ok"] is True
+    assert pending_events[2]["event"]["message"] == "已生成 Recipe 1 / 1"
+    assert skill["ok"] is True
+    assert "Recipe 已提交 1 / 1" in skill["agent_instruction"]
+    assert "下一步必须调用 freezone_finish_agent_catalog_draft" in skill["agent_instruction"]
+    assert "本次不需要提交 Recipe" not in skill["agent_instruction"]
 
 
 def test_freezone_plugin_draft_outline_allows_create_flow_and_reaches_final_draft(monkeypatch):
@@ -1559,7 +1614,7 @@ def test_freezone_plugin_draft_outline_counts_only_new_recipe_chunks(monkeypatch
     assert outline["ok"] is True
     assert outline["agent_instruction"].count("expected_recipe_count=2") == 1
     assert begin["ok"] is True
-    assert skill["agent_instruction"].count("0 of 2 Recipe chunks submitted") == 1
+    assert skill["agent_instruction"].count("Recipe 已提交 0 / 2") == 1
     outline_event = pending_events[0]["event"]
     assert outline_event["status"] == "draft_outline_ready"
 
@@ -1782,14 +1837,15 @@ def test_freezone_plugin_chunked_draft_skill_result_directs_first_recipe_before_
     )
 
     instruction = result["agent_instruction"]
-    assert "Skill chunk was delivered" in instruction
-    assert "0 of 5 Recipe chunks submitted" in instruction
-    assert "remaining Recipe chunks: 5" in instruction
-    assert "Next call MUST be freezone_put_agent_catalog_recipe with index=0" in instruction
-    assert "Do not answer with prose" in instruction
-    assert "Do not write pseudo tool calls" in instruction
-    assert "Call the actual tool directly" in instruction
-    assert "Do not call freezone_finish_agent_catalog_draft yet" in instruction
+    assert "Skill 基础配置已提交到前端" in instruction
+    assert "Recipe 已提交 0 / 5" in instruction
+    assert "剩余 5 个" in instruction
+    assert "下一步必须调用 freezone_put_agent_catalog_recipe" in instruction
+    assert "index=0" in instruction
+    assert "不要用普通文本回复" in instruction
+    assert "不要把工具调用、参数块或代码块写进聊天内容" in instruction
+    assert "请直接调用对应工具" in instruction
+    assert "现在不要调用 freezone_finish_agent_catalog_draft" in instruction
 
 
 def test_freezone_plugin_chunked_draft_skill_without_recipes_directs_finish(monkeypatch):
@@ -1817,12 +1873,11 @@ def test_freezone_plugin_chunked_draft_skill_without_recipes_directs_finish(monk
                 {
                     "id": f"recipe-{index}",
                     "recipe_id": f"recipe-{index}",
-                    "reuse": "new",
-                    "new_recipe_craft_gap": "现有 Recipe 缺少该阶段的输入结构和输出结构。",
+                    "reuse": "existing",
                 }
                 for index in range(6)
             ],
-            "expected_recipe_count": 6,
+            "expected_recipe_count": 0,
             "catalog_checked": True,
         }
     )
@@ -1845,8 +1900,8 @@ def test_freezone_plugin_chunked_draft_skill_without_recipes_directs_finish(monk
     )
 
     instruction = result["agent_instruction"]
-    assert "no Recipe chunks are expected" in instruction
-    assert "Next call MUST be freezone_finish_agent_catalog_draft" in instruction
+    assert "本次不需要提交 Recipe" in instruction
+    assert "下一步必须调用 freezone_finish_agent_catalog_draft" in instruction
     assert "freezone_put_agent_catalog_recipe" not in instruction
 
 
@@ -1954,15 +2009,15 @@ def test_freezone_plugin_chunked_draft_recipe_result_directs_next_recipe_before_
     )
 
     instruction = result["agent_instruction"]
-    assert "remaining Recipe chunks: 1" in instruction
+    assert "剩余 1 个" in instruction
     assert "freezone_put_agent_catalog_recipe" in instruction
     assert "index=5" in instruction
-    assert "Do not answer with prose" in instruction
-    assert "Do not write pseudo tool calls" in instruction
-    assert "Call the actual tool directly" in instruction
-    assert "Do not call skill_view" in instruction
-    assert "Do not handle slash commands" in instruction
-    assert "Do not call freezone_finish_agent_catalog_draft yet" in instruction
+    assert "不要用普通文本回复" in instruction
+    assert "不要把工具调用、参数块或代码块写进聊天内容" in instruction
+    assert "请直接调用对应工具" in instruction
+    assert "不要调用 skill_view" in instruction
+    assert "不要处理斜杠命令" in instruction
+    assert "现在不要调用 freezone_finish_agent_catalog_draft" in instruction
 
 
 def test_freezone_plugin_chunked_draft_revision_preserves_unchanged_recipes(monkeypatch):
