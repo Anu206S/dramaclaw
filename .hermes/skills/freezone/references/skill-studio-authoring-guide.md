@@ -92,7 +92,7 @@ tool schema 只说明字段能填什么，不说明一个好 Skill 应该怎么�
 
 outline 是写 JSON 前的架构拆分，不是用户可见文案。包含 Recipe 的新草稿必须先调用 `freezone_put_agent_catalog_draft_outline`，再调用 `freezone_begin_agent_catalog_draft`。不要跳过 outline 直接 begin。复用已有 Recipe 时，只把它的 id 写进 Skill 的 `allowed_recipe_ids`，不要再调用 `freezone_put_agent_catalog_recipe` 提交一遍；`expected_recipe_count` 只统计本次需要新建的 Recipe chunk。
 
-outline 中每个 `reuse=new` 阶段必须写 `new_recipe_craft_gap`。这个字段只写“为什么现有 Recipe 的执行工艺不够”，不要写“因为当前 Skill 风格/题材/品牌不同”。有效的 craft gap 应说明已有 Recipe 在加工对象、加工动作、产物形态、关键结构、约束边界或下游用途上哪里不匹配。如果去掉当前风格、题材、品牌和一次性案例变量后说不出这些差异，就应复用已有 Recipe，把风格和领域约束写进 Skill。
+outline 中每个 `reuse=new` 阶段必须写 `new_recipe_craft_gap`。这个字段只写“为什么现有 Recipe 的执行工艺不够”，不要写“因为当前 Skill 风格/题材/品牌不同”。有效的 craft gap 应说明已有 Recipe 在加工对象、加工动作、产物形态、关键结构、约束边界或下游用途上哪里不匹配。工艺缺口不只看输入/输出格式，也要看该阶段在工作流中的职责：如果阶段产物会作为后续节点的稳定依据、审核闸门、拆分依据或合成素材，Recipe 必须覆盖这种职责边界；不能只因为 `output_kind` 相同，就复用只做通用生成或通用增强的 Recipe。如果去掉当前风格、题材、品牌和一次性案例变量后说不出这些差异，就应复用已有 Recipe，把风格和领域约束写进 Skill。
 
 `reuse=existing` 不是默认选择。复用已有 Recipe 前，必须先确认当前阶段和已有 Recipe 的执行工艺一致：它们处理的是同类对象，做的是同类加工，产出的是同类中间产物，并以相同方式供下游使用。名称相似、节点类型相同、都属于角色/道具/分镜，不能单独作为复用依据。若当前阶段需要“单张可引用锚点”，而已有 Recipe 产出“多角度模卡/多视角参考图”，这是产物形态和下游用途不同，应新建更匹配的 Recipe 或选择其他 Recipe。
 
@@ -260,9 +260,9 @@ Recipe 的边界应对应可复用能力模块。生成草稿前先看当前已�
 
 1. 先列出本 Skill 真正需要的执行阶段。
 2. 再对照现有 Recipe 的 name、output_kind、action_keys、planning_prompt 和 result_summary。
-3. 比较执行工艺，而不是只比较名称、节点类型或大类标签。工艺包括：加工对象、加工动作、产物形态、关键结构、约束边界和下游用途。
+3. 比较执行工艺，而不是只比较名称、节点类型、`output_kind` 或大类标签。工艺包括：加工对象、加工动作、产物形态、关键结构、约束边界、下游用途和工作流职责。
 4. 工艺相同就复用已有 Recipe；风格、题材、品牌不同，不等于必须新建 Recipe。
-5. 工艺不同就不要复用。典型不匹配包括：当前需要单张锚点图，但已有 Recipe 产出多角度模卡；当前需要品牌道具展示图，但已有 Recipe 产出道具多视角设定图；当前需要逐镜视频提示词，但已有 Recipe 负责整体视频规划。
+5. 工艺不同就不要复用。尤其是阶段产物会承担后续一致性锚点、审核闸门、拆分依据或合成素材时，不能复用只覆盖通用生成、通用增强或普通内容整理的 Recipe。
 6. 只有现有 Recipe 无法表达这个阶段，或强行复用会让 Recipe 变得含糊、误导、过度泛化时，才新建 Recipe。
 7. 每个新建 Recipe 决策都要在 outline 的 `new_recipe_craft_gap` 写清工艺缺口；没有具体缺口就改为复用已有 Recipe。
 8. `allowed_recipe_ids` 只写本 Skill 实际可执行链路需要的 Recipe id。它是运行白名单，不是“相关 Recipe 大合集”。

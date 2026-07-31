@@ -69,7 +69,8 @@ export type ClientFrame =
       action?: string;
       selections?: Record<string, unknown>;
       draft?: Record<string, unknown> | null;
-	      saved_to_catalog?: boolean;
+      draft_ref?: Record<string, unknown> | null;
+      saved_to_catalog?: boolean;
 	      saved_skill_ids?: string[];
       saved_recipe_ids?: string[];
       errors?: string[];

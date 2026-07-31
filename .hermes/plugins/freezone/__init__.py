@@ -148,6 +148,19 @@ _SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION = (
 )
 
 
+def _skill_studio_agent_instruction(next_step: str, progress: str, notes: list[str] | None = None) -> str:
+    parts = [
+        f"下一步必须调用 {next_step}",
+        f"当前进度：{progress}",
+        f"注意：{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION}",
+    ]
+    for note in notes or []:
+        clean_note = note.strip()
+        if clean_note:
+            parts.append(clean_note)
+    return "\n".join(parts)
+
+
 def _available() -> bool:
     return bool(
         os.environ.get("DRAMACLAW_API_URL")
@@ -822,23 +835,6 @@ def _skill_studio_stage_requires_recipe_chunk(stage: Any) -> bool:
     return reuse != "existing"
 
 
-def _skill_studio_craft_gap_categories(text: str) -> set[str]:
-    normalized = text.strip().lower()
-    compact = normalized.replace(" ", "")
-    categories: set[str] = set()
-    category_markers = {
-        "input": ("输入", "输入来源", "上游", "素材", "参考", "source", "upstream", "input"),
-        "output": ("输出", "输出结构", "必须包含", "must_have", "must have", "output"),
-        "quality": ("质量", "质量标准", "检查", "审核", "标准", "quality", "evaluation", "check"),
-        "failure": ("失败", "失败边界", "禁止", "不得", "排除", "负向", "failure", "forbid", "negative"),
-        "execution": ("执行", "阶段", "动作", "工艺", "节点", "流程", "stage", "craft", "action"),
-    }
-    for category, markers in category_markers.items():
-        if any(marker in normalized or marker in compact for marker in markers):
-            categories.add(category)
-    return categories
-
-
 def _skill_studio_new_recipe_craft_gap(stage: dict[str, Any]) -> str:
     value = stage.get("new_recipe_craft_gap")
     if value is None:
@@ -856,8 +852,7 @@ def _skill_studio_outline_new_recipe_gap_errors(stages: list[Any]) -> list[str]:
             continue
         recipe_id = str(stage.get("recipe_id") or stage.get("id") or "未命名阶段").strip()
         craft_gap = _skill_studio_new_recipe_craft_gap(stage)
-        categories = _skill_studio_craft_gap_categories(craft_gap)
-        if len(categories) < 2:
+        if not craft_gap:
             errors.append(recipe_id)
     return errors
 
@@ -940,18 +935,14 @@ def _handle_put_agent_catalog_draft_outline(args: dict[str, Any], **_: Any) -> s
                 "ok": False,
                 "status": "skill_studio_outline_new_recipe_craft_gap_required",
                 "error": (
-                    "Every reuse=new stage must include new_recipe_craft_gap describing the real craft gap, "
-                    "not only style/theme/brand difference."
+                    "Every reuse=new stage must include new_recipe_craft_gap explaining why a new Recipe is needed."
                 ),
                 "invalid_recipe_ids": new_recipe_gap_errors,
                 "skill_studio_session_id": session_id,
                 "agent_instruction": (
                     "Revise the outline before beginning the draft. For each reuse=new stage, add "
-                    "new_recipe_craft_gap that explains the missing executable craft in existing Recipes: "
-                    "input structure, output structure, required items, quality checks, failure boundaries, "
-                    "or execution-stage differences. Style, subject, brand, visual taste, or aesthetic "
-                    "differences belong in the Skill planning.prompt_guide/conduct_rules/evaluation and "
-                    "are not enough reason to create a new Recipe. Reuse existing Recipes when the craft matches."
+                    "new_recipe_craft_gap explaining why a new Recipe is needed. Keep style, subject, brand, "
+                    "visual taste, and aesthetic constraints in the Skill planning.prompt_guide/conduct_rules/evaluation."
                 ),
             }
         )
@@ -1124,38 +1115,34 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
                 (candidate for candidate in range(expected) if candidate not in recipes),
                 submitted,
             )
-            agent_instruction = (
-                "Skill 基础配置已提交到前端。"
-                f"进度：Skill 已提交；Recipe 已提交 {submitted} / {expected}；剩余 {remaining} 个。"
-                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-                "不要向用户复述工具字段。"
-                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
-                "不要处理斜杠命令或内部状态名。"
-                "提交新建 Recipe 时，使用 outline 里的中性工艺级 recipe_id。"
-                "不要把 Skill 的风格、题材、品牌、角色、产品或一次性案例词写进 Recipe 的 id/name/content。"
-                "现在不要调用 freezone_finish_agent_catalog_draft。"
-                f"下一步必须调用 freezone_put_agent_catalog_recipe，index={next_missing_index}，"
-                f"skill_studio_session_id={session_id}。"
+            agent_instruction = _skill_studio_agent_instruction(
+                (
+                    f"freezone_put_agent_catalog_recipe，index={next_missing_index}，"
+                    f"skill_studio_session_id={session_id}。"
+                ),
+                f"Skill 已提交；Recipe 已提交 {submitted} / {expected}；剩余 {remaining} 个。",
+                [
+                    "提交新建 Recipe 时，使用 outline 里的中性工艺级 recipe_id。",
+                    "不要把 Skill 的风格、题材、品牌、角色、产品或一次性案例词写进 Recipe 的 id/name/content。",
+                    "现在不要调用 freezone_finish_agent_catalog_draft。",
+                    "不要向用户复述工具字段；不要调用 skill_view、skills_list、tool_search 或 tool_describe；不要处理斜杠命令或内部状态名。",
+                ],
             )
         else:
-            agent_instruction = (
-                "Skill 基础配置已提交到前端。"
-                f"进度：Skill 已提交；Recipe 已提交 {submitted} / {expected}。"
-                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-                "不要向用户复述工具字段。"
-                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
-                "不要处理斜杠命令或内部状态名。"
-                f"下一步必须调用 freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。"
+            agent_instruction = _skill_studio_agent_instruction(
+                f"freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。",
+                f"Skill 已提交；Recipe 已提交 {submitted} / {expected}。",
+                [
+                    "不要向用户复述工具字段；不要调用 skill_view、skills_list、tool_search 或 tool_describe；不要处理斜杠命令或内部状态名。",
+                ],
             )
     else:
-        agent_instruction = (
-            "Skill 基础配置已提交到前端。"
-            "进度：Skill 已提交，本次不需要提交 Recipe。"
-            f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-            "不要向用户复述工具字段。"
-            "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
-            "不要处理斜杠命令或内部状态名。"
-            f"下一步必须调用 freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。"
+        agent_instruction = _skill_studio_agent_instruction(
+            f"freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。",
+            "Skill 已提交，本次不需要提交 Recipe。",
+            [
+                "不要向用户复述工具字段；不要调用 skill_view、skills_list、tool_search 或 tool_describe；不要处理斜杠命令或内部状态名。",
+            ],
         )
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
@@ -1215,39 +1202,36 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
                 (candidate for candidate in range(expected) if candidate not in recipes),
                 len(recipes),
             )
-            agent_instruction = (
-                "Recipe 分片已提交到前端。"
-                f"进度：Recipe 已提交 {len(recipes)} / {expected}；剩余 {remaining} 个。"
-                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-                "不要向用户复述工具字段。"
-                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
-                "不要处理斜杠命令或内部状态名。"
-                "提交新建 Recipe 时，使用 outline 里的中性工艺级 recipe_id。"
-                "不要把 Skill 的风格、题材、品牌、角色、产品或一次性案例词写进 Recipe 的 id/name/content。"
-                "现在不要调用 freezone_finish_agent_catalog_draft。"
-                f"下一步必须调用 freezone_put_agent_catalog_recipe，index={next_missing_index}，"
-                f"skill_studio_session_id={session_id}。"
+            agent_instruction = _skill_studio_agent_instruction(
+                (
+                    f"freezone_put_agent_catalog_recipe，index={next_missing_index}，"
+                    f"skill_studio_session_id={session_id}。"
+                ),
+                f"Recipe 已提交 {len(recipes)} / {expected}；剩余 {remaining} 个。",
+                [
+                    "提交新建 Recipe 时，使用 outline 里的中性工艺级 recipe_id。",
+                    "不要把 Skill 的风格、题材、品牌、角色、产品或一次性案例词写进 Recipe 的 id/name/content。",
+                    "现在不要调用 freezone_finish_agent_catalog_draft。",
+                    "不要向用户复述工具字段；不要调用 skill_view、skills_list、tool_search 或 tool_describe；不要处理斜杠命令或内部状态名。",
+                ],
             )
         else:
-            agent_instruction = (
-                "全部预期 Recipe 分片已提交到前端。"
-                f"进度：Recipe 已提交 {len(recipes)} / {expected}。"
-                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-                "不要向用户复述工具字段。"
-                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
-                "不要处理斜杠命令或内部状态名。"
-                f"下一步必须调用 freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。"
+            agent_instruction = _skill_studio_agent_instruction(
+                f"freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。",
+                f"全部预期 Recipe 已提交；Recipe 已提交 {len(recipes)} / {expected}。",
+                [
+                    "不要向用户复述工具字段；不要调用 skill_view、skills_list、tool_search 或 tool_describe；不要处理斜杠命令或内部状态名。",
+                ],
             )
     else:
         message = f"已生成第 {index + 1} 个 Recipe"
         count_payload = {}
-        agent_instruction = (
-            "Recipe 分片已提交到前端。"
-            f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-            "不要向用户复述工具字段。还有剩余 Recipe 就继续提交。"
-            "全部计划 Recipe 提交完后，调用 freezone_finish_agent_catalog_draft。"
-            "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
-            "不要处理斜杠命令或内部状态名。"
+        agent_instruction = _skill_studio_agent_instruction(
+            "freezone_put_agent_catalog_recipe 提交剩余 Recipe；全部计划 Recipe 提交完后，调用 freezone_finish_agent_catalog_draft。",
+            f"Recipe 已提交 {len(recipes)} 个，未声明预期总数。",
+            [
+                "不要向用户复述工具字段；不要调用 skill_view、skills_list、tool_search 或 tool_describe；不要处理斜杠命令或内部状态名。",
+            ],
         )
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
@@ -1485,6 +1469,14 @@ def _handle_patch_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
             "message": message,
             **patched_payload,
         },
+        agent_instruction=_skill_studio_agent_instruction(
+            f"freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。",
+            f"{message}。",
+            [
+                "不要用普通文本解释本次修改；更新后的完整草稿必须通过 finish 工具重新展示给用户。",
+                "不要向用户复述工具字段；不要调用 skill_view、skills_list、tool_search 或 tool_describe；不要处理斜杠命令或内部状态名。",
+            ],
+        ),
     )
     if isinstance(progress, dict):
         return tool_result(
@@ -4575,7 +4567,10 @@ _SKILL_STUDIO_DRAFT_OUTLINE_STAGE_SCHEMA = {
             "description": (
                 "Whether this stage reuses a saved Recipe or needs a new Recipe. Use existing only when the "
                 "existing Recipe has the same executable craft: same input object, processing action, output shape, "
-                "downstream usage, and quality boundary. Use new only when those craft dimensions do not match."
+                "downstream usage, quality boundary, and workflow responsibility. Do not reuse a generic generation "
+                "or enhancement Recipe only because output_kind matches when this stage output must act as a stable "
+                "reference, review gate, split basis, or composition asset. Use new only when those craft dimensions "
+                "do not match."
             ),
         },
         "reason": {
@@ -4590,7 +4585,9 @@ _SKILL_STUDIO_DRAFT_OUTLINE_STAGE_SCHEMA = {
             "type": "string",
             "description": (
                 "Required when reuse=new. Explain the reusable executable craft gap missing from existing Recipes: "
-                "input object, processing action, output shape, downstream usage, quality checks, or failure boundary. "
+                "input object, processing action, output shape, downstream usage, workflow responsibility, quality "
+                "checks, or failure boundary. Mention why a generic generation/enhancement Recipe is insufficient "
+                "when the current stage output is used as a stable reference, review gate, split basis, or composition asset. "
                 "Do not include the current Skill's visual style, theme, brand, character name, product name, or one-off case details."
             ),
         },
