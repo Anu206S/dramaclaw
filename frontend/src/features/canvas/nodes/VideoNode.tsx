@@ -89,6 +89,12 @@ import { ensureWebSafeVideo } from "@/features/canvas/application/videoTranscode
 import { isVideoFile, VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
 import { spawnExternalAssetNodes } from "@/features/canvas/application/spawnExternalAssets";
 import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
+import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from "@/features/canvas/application/nodeActionResult";
 import { toast } from "sonner";
 import { downloadUrlAsFile } from "@/lib/browserDownload";
 import {
@@ -2732,6 +2738,21 @@ export const VideoNode = memo(
       updateNodeData,
       upstreamTextJoined,
     ]);
+
+    useEffect(() => subscribeNodeAction(({ nodeId, action, requestId }) => {
+      if (nodeId !== id || action !== "generate_video") return;
+      publishNodeActionAccepted(requestId, id, action);
+      void handleSubmit()
+        .then(() => {
+          const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
+          const videoUrl = isVideoNode(latest) && typeof latest.data.videoUrl === "string"
+            ? latest.data.videoUrl
+            : "";
+          if (!videoUrl) throw new Error("节点动作完成但未产出 videoUrl");
+          publishNodeActionSuccess(requestId, id, action, { videoUrl });
+        })
+        .catch((error) => publishNodeActionError(requestId, id, action, error));
+    }), [handleSubmit, id]);
 
     const hasMainlineContext = hasMainlineContexts(
       (data as { mainline_context?: unknown }).mainline_context,

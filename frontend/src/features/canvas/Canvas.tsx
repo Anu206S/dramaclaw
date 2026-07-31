@@ -45,6 +45,10 @@ import { SKILL_SCHEMA_VERSION, type SkillDefinition } from '@/features/freezone/
 import { translateSkillName } from '@/features/freezone/context/skillI18n';
 import { canvasAiGateway, canvasEventBus } from '@/features/canvas/application/canvasServices';
 import {
+  WORKFLOW_RUN_UPDATED_EVENT,
+  type WorkflowRunUpdatedDetail,
+} from '@/features/canvas/application/workflowExecutionActivity';
+import {
   CANVAS_NODE_TYPES,
   type BeatContextNodeData,
   type CanvasEdge,
@@ -747,7 +751,26 @@ export function Canvas({
 
   const [minimapPinned, setMinimapPinned] = useState(false);
   const [minimapHovered, setMinimapHovered] = useState(false);
+  const [workflowExecutionActive, setWorkflowExecutionActive] = useState(false);
   const minimapVisible = minimapPinned || minimapHovered;
+  useEffect(() => {
+    const handleWorkflowRunUpdated = (event: Event) => {
+      const detail = (event as CustomEvent<WorkflowRunUpdatedDetail>).detail;
+      const status = detail?.status ?? detail?.run?.status;
+      if (status === 'running') {
+        setWorkflowExecutionActive(true);
+      } else if (
+        status === 'completed'
+        || status === 'failed'
+        || status === 'cancelled'
+        || status === 'interrupted'
+      ) {
+        setWorkflowExecutionActive(false);
+      }
+    };
+    window.addEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleWorkflowRunUpdated);
+    return () => window.removeEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleWorkflowRunUpdated);
+  }, []);
   // 小地图弹层（含上方的书签数字行）靠 hover 显示。数字行是小地图上方、隔着间隙的
   // 独立 DOM 子树:鼠标从小地图移到数字按钮的途中会先离开小地图,若立即把
   // minimapHovered 置 false,整个 overlay 会在点到按钮前卸载,导致「点不了」。
@@ -4586,7 +4609,7 @@ export function Canvas({
         multiSelectionKeyCode={MULTI_SELECTION_KEY_CODES}
         selectionKeyCode={null}
         deleteKeyCode={null}
-        onlyRenderVisibleElements
+        onlyRenderVisibleElements={!workflowExecutionActive}
         zoomOnDoubleClick={false}
         proOptions={REACT_FLOW_PRO_OPTIONS}
         className="bg-background"
