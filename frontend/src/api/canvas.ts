@@ -176,13 +176,30 @@ export async function updateFreezoneWorkflowRun(
   );
 }
 
-export async function listFreezoneWorkflowRuns(
+const workflowRunsInFlight = new Map<
+  string,
+  Promise<{ runs: FreezoneWorkflowRun[] }>
+>();
+
+export function listFreezoneWorkflowRuns(
   projectId: string,
   canvasId: string,
 ): Promise<{ runs: FreezoneWorkflowRun[] }> {
-  return await apiCall<{ runs: FreezoneWorkflowRun[] }>(
-    `projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}/workflow-runs`,
-  );
+  const key = `${projectId}\u0000${canvasId}`;
+  const existing = workflowRunsInFlight.get(key);
+  if (existing) return existing;
+
+  const request = apiCall<{ runs: FreezoneWorkflowRun[] }>(
+    `projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(
+      canvasId,
+    )}/workflow-runs`,
+  ).finally(() => {
+    if (workflowRunsInFlight.get(key) === request) {
+      workflowRunsInFlight.delete(key);
+    }
+  });
+  workflowRunsInFlight.set(key, request);
+  return request;
 }
 
 /**
