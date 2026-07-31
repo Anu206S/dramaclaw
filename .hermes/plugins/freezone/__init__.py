@@ -144,10 +144,7 @@ _SKILL_STUDIO_DEFAULT_SKILL_SCHEMA_VERSION = "dramaclaw.workflow-skill.v1"
 _SKILL_STUDIO_DEFAULT_SKILL_VERSION = "1.0.0"
 
 _SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION = (
-    "Do not answer with prose. "
-    "Do not write pseudo tool calls, XML tags, JSON snippets, markdown code blocks, "
-    "or parameter blocks in assistant text. "
-    "Call the actual tool directly."
+    "不要用普通文本回复，不要把工具调用、参数块或代码块写进聊天内容；请直接调用对应工具。"
 )
 
 
@@ -982,10 +979,10 @@ def _handle_put_agent_catalog_draft_outline(args: dict[str, Any], **_: Any) -> s
             "outline": outline,
         },
         agent_instruction=(
-            "The Skill Studio outline was accepted. "
-            f"Only submit new Recipe chunks; reused existing Recipes are already represented by allowed_recipe_ids. "
-            f"Next call MUST be freezone_begin_agent_catalog_draft with expected_recipe_count={outline['expected_recipe_count']} "
-            f"and skill_studio_session_id={session_id}."
+            "Skill 方案已通过。"
+            "只提交本次新建的 Recipe；复用的已有 Recipe 已经写在 allowed_recipe_ids 里。"
+            f"下一步必须调用 freezone_begin_agent_catalog_draft，expected_recipe_count={outline['expected_recipe_count']}，"
+            f"skill_studio_session_id={session_id}。"
         ),
     )
 
@@ -1003,10 +1000,10 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
     except (TypeError, ValueError):
         expected_recipe_count = 0
     existing = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id) if mode == "edit" else None
-    if mode == "create" and expected_recipe_count > 0:
+    if mode == "create":
         existing_create = _PENDING_SKILL_STUDIO_DRAFTS.get(session_id)
         outline = existing_create.get("outline") if isinstance(existing_create, dict) else None
-        if not isinstance(outline, dict):
+        if expected_recipe_count > 0 and not isinstance(outline, dict):
             return tool_result(
                 {
                     "ok": False,
@@ -1019,7 +1016,7 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
                     ),
                 }
             )
-        if not bool(outline.get("catalog_checked")):
+        if isinstance(outline, dict) and not bool(outline.get("catalog_checked")):
             return tool_result(
                 {
                     "ok": False,
@@ -1032,7 +1029,9 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
                     ),
                 }
             )
-        if not _safe_list(outline.get("stages")):
+        if isinstance(outline, dict) and int(outline.get("expected_recipe_count") or 0) > 0 and not _safe_list(
+            outline.get("stages")
+        ):
             return tool_result(
                 {
                     "ok": False,
@@ -1041,8 +1040,9 @@ def _handle_begin_agent_catalog_draft(args: dict[str, Any], **_: Any) -> str:
                     "skill_studio_session_id": session_id,
                 }
             )
-        existing = existing_create
-        expected_recipe_count = int(outline.get("expected_recipe_count") or 0)
+        if isinstance(outline, dict):
+            existing = existing_create
+            expected_recipe_count = int(outline.get("expected_recipe_count") or 0)
     _PENDING_SKILL_STUDIO_DRAFTS[session_id] = {
         "project_id": project or (existing or {}).get("project_id"),
         "canvas_id": canvas or (existing or {}).get("canvas_id"),
@@ -1115,30 +1115,47 @@ def _handle_put_agent_catalog_skill(args: dict[str, Any], **_: Any) -> str:
     draft["canvas_id"] = canvas or draft.get("canvas_id")
     draft["skill"] = _normalize_skill_studio_skill(skill, existing=draft.get("skill"))
     expected = int(draft.get("expected_recipe_count") or 0)
+    recipes = draft.setdefault("recipes", {})
     if expected > 0:
-        agent_instruction = (
-            "The Skill Studio Skill chunk was delivered to the frontend. "
-            f"Progress: Skill submitted; 0 of {expected} Recipe chunks submitted; "
-            f"remaining Recipe chunks: {expected}. "
-            f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-            "Do not repeat tool fields to the user. "
-            "Do not call skill_view, skills_list, tool_search, or tool_describe. "
-            "Do not handle slash commands or internal status names. "
-            "When submitting new Recipe chunks, use the neutral craft-level recipe_id from the outline. "
-            "Do not add Skill style, theme, brand, character, product, or one-off case terms to Recipe id/name/content. "
-            "Do not call freezone_finish_agent_catalog_draft yet. "
-            f"Next call MUST be freezone_put_agent_catalog_recipe with index=0 "
-            f"and skill_studio_session_id={session_id}."
-        )
+        submitted = len(recipes)
+        remaining = max(0, expected - submitted)
+        if remaining > 0:
+            next_missing_index = next(
+                (candidate for candidate in range(expected) if candidate not in recipes),
+                submitted,
+            )
+            agent_instruction = (
+                "Skill 基础配置已提交到前端。"
+                f"进度：Skill 已提交；Recipe 已提交 {submitted} / {expected}；剩余 {remaining} 个。"
+                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
+                "不要向用户复述工具字段。"
+                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
+                "不要处理斜杠命令或内部状态名。"
+                "提交新建 Recipe 时，使用 outline 里的中性工艺级 recipe_id。"
+                "不要把 Skill 的风格、题材、品牌、角色、产品或一次性案例词写进 Recipe 的 id/name/content。"
+                "现在不要调用 freezone_finish_agent_catalog_draft。"
+                f"下一步必须调用 freezone_put_agent_catalog_recipe，index={next_missing_index}，"
+                f"skill_studio_session_id={session_id}。"
+            )
+        else:
+            agent_instruction = (
+                "Skill 基础配置已提交到前端。"
+                f"进度：Skill 已提交；Recipe 已提交 {submitted} / {expected}。"
+                f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
+                "不要向用户复述工具字段。"
+                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
+                "不要处理斜杠命令或内部状态名。"
+                f"下一步必须调用 freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。"
+            )
     else:
         agent_instruction = (
-            "The Skill Studio Skill chunk was delivered to the frontend. "
-            "Progress: Skill submitted and no Recipe chunks are expected. "
+            "Skill 基础配置已提交到前端。"
+            "进度：Skill 已提交，本次不需要提交 Recipe。"
             f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-            "Do not repeat tool fields to the user. "
-            "Do not call skill_view, skills_list, tool_search, or tool_describe. "
-            "Do not handle slash commands or internal status names. "
-            f"Next call MUST be freezone_finish_agent_catalog_draft with skill_studio_session_id={session_id}."
+            "不要向用户复述工具字段。"
+            "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
+            "不要处理斜杠命令或内部状态名。"
+            f"下一步必须调用 freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。"
         )
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
@@ -1199,39 +1216,38 @@ def _handle_put_agent_catalog_recipe(args: dict[str, Any], **_: Any) -> str:
                 len(recipes),
             )
             agent_instruction = (
-                "The Skill Studio Recipe chunk was delivered to the frontend. "
-                f"Progress: {len(recipes)} of {expected} Recipe chunks submitted; "
-                f"remaining Recipe chunks: {remaining}. "
+                "Recipe 分片已提交到前端。"
+                f"进度：Recipe 已提交 {len(recipes)} / {expected}；剩余 {remaining} 个。"
                 f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-                "Do not repeat tool fields to the user. "
-                "Do not call skill_view, skills_list, tool_search, or tool_describe. "
-                "Do not handle slash commands or internal status names. "
-                "When submitting new Recipe chunks, use the neutral craft-level recipe_id from the outline. "
-                "Do not add Skill style, theme, brand, character, product, or one-off case terms to Recipe id/name/content. "
-                "Do not call freezone_finish_agent_catalog_draft yet. "
-                f"Next call MUST be freezone_put_agent_catalog_recipe with index={next_missing_index} "
-                f"and skill_studio_session_id={session_id}."
+                "不要向用户复述工具字段。"
+                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
+                "不要处理斜杠命令或内部状态名。"
+                "提交新建 Recipe 时，使用 outline 里的中性工艺级 recipe_id。"
+                "不要把 Skill 的风格、题材、品牌、角色、产品或一次性案例词写进 Recipe 的 id/name/content。"
+                "现在不要调用 freezone_finish_agent_catalog_draft。"
+                f"下一步必须调用 freezone_put_agent_catalog_recipe，index={next_missing_index}，"
+                f"skill_studio_session_id={session_id}。"
             )
         else:
             agent_instruction = (
-                "All expected Skill Studio Recipe chunks have been delivered to the frontend. "
-                f"Progress: {len(recipes)} of {expected} Recipe chunks submitted. "
+                "全部预期 Recipe 分片已提交到前端。"
+                f"进度：Recipe 已提交 {len(recipes)} / {expected}。"
                 f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-                "Do not repeat tool fields to the user. "
-                "Do not call skill_view, skills_list, tool_search, or tool_describe. "
-                "Do not handle slash commands or internal status names. "
-                f"Next call MUST be freezone_finish_agent_catalog_draft with skill_studio_session_id={session_id}."
+                "不要向用户复述工具字段。"
+                "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
+                "不要处理斜杠命令或内部状态名。"
+                f"下一步必须调用 freezone_finish_agent_catalog_draft，skill_studio_session_id={session_id}。"
             )
     else:
         message = f"已生成第 {index + 1} 个 Recipe"
         count_payload = {}
         agent_instruction = (
-            "The Skill Studio Recipe chunk was delivered to the frontend. "
+            "Recipe 分片已提交到前端。"
             f"{_SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION} "
-            "Do not repeat tool fields to the user. Continue submitting any remaining Recipe chunks. "
-            "When all planned Recipes are submitted, call freezone_finish_agent_catalog_draft. "
-            "Do not call skill_view, skills_list, tool_search, or tool_describe. "
-            "Do not handle slash commands or internal status names."
+            "不要向用户复述工具字段。还有剩余 Recipe 就继续提交。"
+            "全部计划 Recipe 提交完后，调用 freezone_finish_agent_catalog_draft。"
+            "不要调用 skill_view、skills_list、tool_search 或 tool_describe。"
+            "不要处理斜杠命令或内部状态名。"
         )
     return _emit_skill_studio_progress_event(
         project or draft.get("project_id"),
