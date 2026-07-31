@@ -58,6 +58,7 @@ import {
   type WorkflowExecutionActivityDetail,
   type WorkflowRunActionUpdate,
 } from "@/features/canvas/application/workflowExecutionActivity";
+import { dedupeGenerationErrors } from "@/features/canvas/application/generationErrorReport";
 
 export const CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1";
 export const FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT = "freezone/canvas-command-approval";
@@ -2485,7 +2486,11 @@ async function executeQueuedNodeActions(
         if (
           current &&
           TERMINAL_WORKFLOW_ACTION_STATUSES.has(current) &&
-          update.status !== current
+          update.status !== current &&
+          !(
+            update.status === "completed" &&
+            (current === "failed" || current === "blocked")
+          )
         ) {
           return false;
         }
@@ -2556,6 +2561,10 @@ async function executeQueuedNodeActions(
     const initialGraphSignature = workflowGraphSignature(pendingActions);
     const settledActionKeys = new Set<string>();
     const blockedNodeIds = new Set<string>();
+    const recoverableFailures = new Map<
+      string,
+      { action: PendingNodeAction; error: string }
+    >();
     const workflowLaneLimits: Record<WorkflowActionLane, number> = {
       ...WORKFLOW_ACTION_LANE_LIMITS,
     };
@@ -2644,8 +2653,28 @@ async function executeQueuedNodeActions(
       })));
       const levelResults = await Promise.all(level.map(async (action) => {
         const settled = await (async () => {
-        const blockedUpstream = [...(dependenciesByNodeId.get(action.nodeId) ?? [])]
-          .find((nodeId) => blockedNodeIds.has(nodeId));
+        let blockedUpstream: string | undefined;
+        for (const nodeId of dependenciesByNodeId.get(action.nodeId) ?? []) {
+          if (!blockedNodeIds.has(nodeId)) continue;
+          const upstreamAction = actionByNodeId.get(nodeId);
+          if (
+            upstreamAction &&
+            hasGeneratedResult(nodeId, upstreamAction.action, true)
+          ) {
+            blockedNodeIds.delete(nodeId);
+            recoverableFailures.delete(nodeId);
+            markWorkflowActionResultCurrent(nodeId, upstreamAction.action);
+            await persistRunUpdate([{
+              node_id: nodeId,
+              action: upstreamAction.action,
+              status: "completed",
+              phase: "syncing_result",
+            }]);
+            continue;
+          }
+          blockedUpstream = nodeId;
+          break;
+        }
         if (blockedUpstream) {
           return {
             action,
@@ -2936,18 +2965,8 @@ async function executeQueuedNodeActions(
 
       for (const { action, failed, output } of levelResults) {
         if (failed) {
-          runFailed = true;
           blockedNodeIds.add(action.nodeId);
-          result.errors.push(failed);
-          result.commandResults.push({
-            commandIndex: action.commandIndex,
-            type: "run_node_action",
-            status: "error",
-            label: action.label,
-            nodeId: action.nodeId,
-            action: action.action,
-            error: failed,
-          });
+          recoverableFailures.set(action.nodeId, { action, error: failed });
           continue;
         }
 
@@ -2968,9 +2987,24 @@ async function executeQueuedNodeActions(
         settledActionKeys.add(`${action.nodeId}:${action.action}`);
       }
       }
+      for (const { action, error } of recoverableFailures.values()) {
+        result.errors.push(error);
+        result.commandResults.push({
+          commandIndex: action.commandIndex,
+          type: "run_node_action",
+          status: "error",
+          label: action.label,
+          nodeId: action.nodeId,
+          action: action.action,
+          error,
+        });
+      }
       stopWorkflowHeartbeat();
       await workflowHeartbeatQueue;
-      await persistRunUpdate([], runFailed ? "failed" : "completed");
+      await persistRunUpdate(
+        [],
+        runFailed || blockedNodeIds.size > 0 ? "failed" : "completed",
+      );
     } finally {
       if (typeof window !== "undefined") {
         window.removeEventListener(WORKFLOW_EXECUTION_ACTIVITY_EVENT, handleWorkflowActivity);
@@ -3783,10 +3817,12 @@ function applyCanvasChatCommandsInternal(
     return (async () => {
       await executePendingMainlineProjections(pendingMainlineProjections, result);
       await executeQueuedNodeActions(pendingNodeActions, result, options);
+      result.errors = dedupeGenerationErrors(result.errors);
       return result;
     })();
   }
 
+  result.errors = dedupeGenerationErrors(result.errors);
   return result;
 }
 

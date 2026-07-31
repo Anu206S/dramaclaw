@@ -185,6 +185,7 @@ def _plan_preview(compiled: dict[str, Any]) -> dict[str, Any]:
             )
     return {
         "planner": deepcopy(compiled.get("planner") or plan.get("planner") or {}),
+        "preflight": deepcopy(compiled.get("preflight") or {}),
         "title": str(plan.get("summary") or "").strip(),
         "skill_id": str(compiled.get("skill_id") or "").strip(),
         "inputs": deepcopy(plan.get("inputs") or {}),

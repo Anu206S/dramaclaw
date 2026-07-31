@@ -1603,6 +1603,7 @@
       "interruptedShort": "已暂停",
       "stoppedShort": "已停止",
       "resume": "继续",
+      "continueDownstream": "继续下游",
       "resuming": "继续中",
       "resumeSucceeded": "工作流已继续执行",
       "resumeFailed": "继续工作流失败：{{message}}",

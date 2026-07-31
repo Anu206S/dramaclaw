@@ -271,12 +271,6 @@ describe("WorkflowRunRecoveryBar", () => {
     fireEvent.click(screen.getByRole("button", { name: "继续下游" }));
 
     await waitFor(() => {
-      expect(updateFreezoneWorkflowRun).toHaveBeenCalledWith(
-        "project-a",
-        "canvas-a",
-        "run-failed",
-        { status: "cancelled" },
-      );
       expect(applyCanvasChatCommandsAsync).toHaveBeenCalledWith(
         [expect.objectContaining({
           commands: [{
@@ -288,6 +282,7 @@ describe("WorkflowRunRecoveryBar", () => {
         })],
         { projectId: "project-a", canvasId: "canvas-a" },
       );
+      expect(updateFreezoneWorkflowRun).not.toHaveBeenCalled();
     });
   });
 
@@ -324,12 +319,7 @@ describe("WorkflowRunRecoveryBar", () => {
         })],
         { projectId: "project-a", canvasId: "canvas-a" },
       );
-      expect(updateFreezoneWorkflowRun).toHaveBeenCalledWith(
-        "project-a",
-        "canvas-a",
-        "run-failed",
-        { status: "cancelled" },
-      );
+      expect(updateFreezoneWorkflowRun).not.toHaveBeenCalled();
     });
   });
 });

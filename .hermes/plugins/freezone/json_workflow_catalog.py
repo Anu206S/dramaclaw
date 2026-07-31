@@ -1294,6 +1294,7 @@ def _compile_dynamic_recipe_items_intent(
         "skill_id": skill_id,
         "node_count": len(nodes),
         "edge_count": len(edges),
+        "preflight": validated.get("preflight") or {},
         "plan": plan,
     }
 

@@ -83,6 +83,7 @@ import { cn } from "@/lib/utils";
 import { resolveMediaUrl } from "@/lib/media-url";
 import { api } from "@/lib/api";
 import { backendErrorToastMessage, jsonWithBackendError } from "@/lib/api-errors";
+import { dedupeGenerationErrors } from "@/features/canvas/application/generationErrorReport";
 import { p } from "@/lib/api-path";
 import { validateFreezoneAgentConfigPayload } from "@/lib/freezone-agent-config-schema";
 import {
@@ -10295,7 +10296,7 @@ function mergeCanvasCommandFeedbackValue(
     key,
     applied: (previous?.applied ?? 0) + result.applied,
     openedUiActions: (previous?.openedUiActions ?? 0) + result.openedUiActions,
-    errors: [...(previous?.errors ?? []), ...result.errors],
+    errors: dedupeGenerationErrors([...(previous?.errors ?? []), ...result.errors]),
     commandResults: mergeCanvasCommandResults(previous?.commandResults, result.commandResults),
     plans: [...(previous?.plans ?? []), ...plans],
     anchorTextPrefix: previous?.anchorTextPrefix ?? nextAnchorTextPrefix,
@@ -10337,7 +10338,9 @@ function canvasCommandApplyResultFromUnknown(value: unknown): CanvasChatCommandA
     createdNodeIds: Array.isArray(result.createdNodeIds)
       ? result.createdNodeIds.filter((item): item is string => typeof item === "string")
       : [],
-    errors: Array.isArray(result.errors) ? result.errors.map((item) => String(item)) : [],
+    errors: Array.isArray(result.errors)
+      ? dedupeGenerationErrors(result.errors.map((item) => String(item)))
+      : [],
     commandResults: commandResults.filter(
       (item): item is CanvasChatCommandApplyStep =>
         Boolean(item) &&

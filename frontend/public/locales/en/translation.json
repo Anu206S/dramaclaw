@@ -1603,6 +1603,7 @@
       "interruptedShort": "Paused",
       "stoppedShort": "Stopped",
       "resume": "Resume",
+      "continueDownstream": "Continue downstream",
       "resuming": "Resuming",
       "resumeSucceeded": "Workflow resumed",
       "resumeFailed": "Failed to resume workflow: {{message}}",
