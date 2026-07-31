@@ -13,6 +13,7 @@ import {
   mergeHistorySnapshot,
   normalizeMessageForScopeForTest,
   removeSkillStudioStatusForTurnForTest,
+  revealIncompleteSkillStudioDraftForTurnForTest,
   pruneOldMessageCaches,
   resolveUiEventTurnIdForTest,
   sanitizeMessagesForCache,
@@ -363,6 +364,67 @@ describe("mergeHistorySnapshot", () => {
         skill: { id: "edited-skill", description: "编辑后的草稿" },
       },
     });
+  });
+
+  it("reveals an incomplete Skill Studio draft from submitted tool chunks when the turn ends", () => {
+    const messages: ChatMessage[] = [
+      message("user-1", "user", "把画布提炼成 Skill", 10, "turn-1"),
+      {
+        id: "assistant-turn-1",
+        role: "assistant",
+        text: "正在生成草稿。",
+        timestamp: 20,
+        turnId: "turn-1",
+        uiEvents: [
+          {
+            type: "skill_studio.status",
+            status: "draft_skill_ready",
+            message: "已生成 Skill 基础配置",
+            skill_studio_session_id: "studio-1",
+          },
+          {
+            type: "skill_studio.status",
+            status: "draft_recipe_ready",
+            message: "已生成 Recipe 1 / 2",
+            recipe_index: 0,
+            recipe_count: 2,
+            skill_studio_session_id: "studio-1",
+          },
+        ],
+      },
+    ];
+    const draftChunks = new Map([
+      [
+        "studio-1",
+        {
+          turnId: "turn-1",
+          sessionId: "studio-1",
+          mode: "create",
+          expectedRecipeCount: 2,
+          skill: { id: "pixar-ad", description: "皮克斯广告" },
+          recipes: new Map([[0, { id: "storyboard", name: "分镜" }]]),
+        },
+      ],
+    ]);
+
+    const next = revealIncompleteSkillStudioDraftForTurnForTest(messages, "turn-1", draftChunks);
+    const assistant = next.find((item) => item.role === "assistant" && item.turnId === "turn-1");
+    const event = assistant?.uiEvents?.find((item): item is Record<string, unknown> =>
+      Boolean(item && typeof item === "object" && (item as Record<string, unknown>).type === "skill_studio.draft"),
+    );
+
+    expect(event).toMatchObject({
+      type: "skill_studio.draft",
+      skill_studio_session_id: "studio-1",
+      incomplete: true,
+      read_only: true,
+      skill: { id: "pixar-ad" },
+      recipes: [{ id: "storyboard" }],
+    });
+    expect(event?.warnings).toContain("Recipe 已生成 1 / 2，缺少 1 个。");
+    expect(assistant?.uiEvents?.some((item) =>
+      Boolean(item && typeof item === "object" && (item as Record<string, unknown>).type === "skill_studio.status"),
+    )).toBe(false);
   });
 });
 
@@ -2800,10 +2862,17 @@ describe("Skill Studio draft response", () => {
       action: "start_revision",
       skill_studio_status: "revision_started",
       saved_to_catalog: false,
-      draft,
+      draft: null,
+      draft_ref: {
+        skill_studio_session_id: "skill_studio_01",
+        skill_id: "home-culture-poster",
+        skill_name: null,
+        summary: "当前草稿",
+        recipe_count: 0,
+      },
     });
     expect(payload.message).toContain("启动 Skill Studio 草稿修改会话");
-    expect(payload.message).toContain("基于当前完整草稿");
+    expect(payload.message).toContain("本次回执只提供草稿引用");
     expect(payload.message).toContain("用户已经明确表示需要调整");
     expect(payload.message).toContain("不要再询问是否需要调整");
     expect(payload.message).toContain("不要询问是否保存当前版本");
@@ -2880,6 +2949,19 @@ describe("Skill Studio draft response", () => {
 
     expect(items).toEqual([
       expect.objectContaining({
+        kind: "recipes",
+        payload: expect.objectContaining({
+          id: "home-culture-poster-image",
+          output_kind: "image",
+          action_keys: ["home-culture-poster-image"],
+          system_prompt: "生成海报",
+          must_have_items: ["地域符号"],
+          planning_prompt: "根据地域符号生成海报",
+          result_summary: "一张家乡文化海报",
+          requires_source_media: true,
+        }),
+      }),
+      expect.objectContaining({
         kind: "skills",
         payload: expect.objectContaining({
           id: "home-culture-poster",
@@ -2910,21 +2992,8 @@ describe("Skill Studio draft response", () => {
           }),
         }),
       }),
-      expect.objectContaining({
-        kind: "recipes",
-        payload: expect.objectContaining({
-          id: "home-culture-poster-image",
-          output_kind: "image",
-          action_keys: ["home-culture-poster-image"],
-          system_prompt: "生成海报",
-          must_have_items: ["地域符号"],
-          planning_prompt: "根据地域符号生成海报",
-          result_summary: "一张家乡文化海报",
-          requires_source_media: true,
-        }),
-      }),
     ]);
-    expect(items[0]?.payload.planning).not.toHaveProperty("default_aspect_ratios");
+    expect(items[1]?.payload.planning).not.toHaveProperty("default_aspect_ratios");
   });
 });
 

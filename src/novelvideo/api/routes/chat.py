@@ -189,6 +189,7 @@ class SkillStudioToolResultIn(BaseModel):
     action: str = "submit"
     selections: dict[str, Any] = Field(default_factory=dict)
     draft: dict[str, Any] | None = None
+    draft_ref: dict[str, Any] | None = None
     saved_to_catalog: bool = False
     saved_skill_ids: list[str] = Field(default_factory=list)
     saved_recipe_ids: list[str] = Field(default_factory=list)
@@ -601,14 +602,6 @@ def _save_skill_studio_draft_catalog(
     saved_skill_ids: list[str] = []
     saved_recipe_ids: list[str] = []
     errors: list[str] = []
-    skill = draft.get("skill")
-    if isinstance(skill, dict) and str(skill.get("id") or "").strip():
-        try:
-            saved = save_user_agent_config_item(username=username, kind="skills", payload=skill)
-            saved_skill_ids.append(str(saved.get("id") or skill.get("id")))
-        except Exception as exc:
-            errors.append(f"Failed to save Skill: {exc}")
-
     recipes = draft.get("recipes")
     if isinstance(recipes, list):
         for index, recipe in enumerate(recipes):
@@ -620,6 +613,14 @@ def _save_skill_studio_draft_catalog(
             except Exception as exc:
                 recipe_id = str(recipe.get("id") or f"#{index + 1}")
                 errors.append(f"Failed to save Recipe {recipe_id}: {exc}")
+
+    skill = draft.get("skill")
+    if isinstance(skill, dict) and str(skill.get("id") or "").strip():
+        try:
+            saved = save_user_agent_config_item(username=username, kind="skills", payload=skill)
+            saved_skill_ids.append(str(saved.get("id") or skill.get("id")))
+        except Exception as exc:
+            errors.append(f"Failed to save Skill: {exc}")
 
     if not saved_skill_ids and not saved_recipe_ids and not errors:
         errors.append("Skill Studio draft does not contain a Skill or Recipe id.")
@@ -677,7 +678,12 @@ def _resolve_skill_studio_tool_result_payload(
             )
             message = payload.message or "Frontend reported that the user cancelled saving the Skill/Recipe draft."
         elif revision_started:
-            agent_instruction = "Continue the Skill Studio revision flow using the frontend response."
+            agent_instruction = (
+                "The user started revising the Skill Studio draft. "
+                "The frontend response intentionally only contains a lightweight draft reference, not the full draft. "
+                "Do not infer concrete edits from the existing draft or conversation history. "
+                "Ask one clarification question for the user's exact revision direction before patching or resubmitting draft content."
+            )
             message = payload.message or "Frontend reported that the user started revising the Skill/Recipe draft."
         else:
             agent_instruction = "Continue the Skill Studio flow using the frontend response."
@@ -685,7 +691,7 @@ def _resolve_skill_studio_tool_result_payload(
     else:
         agent_instruction = "Do not continue the Skill Studio flow; handle the frontend error or ask the user to retry."
         message = payload.message or "Frontend reported that the Skill Studio interaction failed."
-    agent_visible_draft = None if saved_to_catalog or cancelled else payload.draft
+    agent_visible_draft = None if saved_to_catalog or cancelled or revision_started else payload.draft
     result = {
         "ok": ok,
         "turn_id": payload.turn_id,
@@ -694,6 +700,7 @@ def _resolve_skill_studio_tool_result_payload(
         "action": payload.action,
         "selections": payload.selections,
         "draft": agent_visible_draft,
+        "draft_ref": payload.draft_ref,
         "saved_to_catalog": saved_to_catalog,
         "saved_skill_ids": saved_skill_ids,
         "saved_recipe_ids": saved_recipe_ids,

@@ -390,13 +390,13 @@ Output contract:
 
 Draft revision:
 - When the frontend returns action=start_revision or skill_studio_status=revision_started, use the
-  returned draft as the source of truth and start a revision question flow. If you call
-  freezone_request_user_clarification for this revision flow, the questions array must contain
-  exactly one question object. Wait for the user's answer before deciding the next question unless
-  the requested change is already clear.
-- In revision flows, the returned draft is only the object being edited; it is not user intent. Do not
-  infer desired edits, structural improvements, Recipe splits/merges, Recipe additions/removals, or
-  dependency rewrites from the draft content alone.
+  returned draft_ref only as the draft identity and start a revision question flow. The frontend does
+  not return the full draft at this point. If you call freezone_request_user_clarification for this
+  revision flow, the questions array must contain exactly one question object. Wait for the user's
+  answer before deciding the next question unless the requested change is already clear.
+- In revision flows, draft_ref is only the object identity; it is not user intent. Do not infer desired
+  edits, structural improvements, Recipe splits/merges, Recipe additions/removals, or dependency
+  rewrites from draft_ref, the existing draft summary, or history alone.
 - A broad category answer such as "basic info", "input parameters", "module content", "constraints",
   "quality standards", "execution flow", or similar is still not a concrete edit. Ask one more focused
   clarification question. Only edit after the user provides a concrete target and concrete change.

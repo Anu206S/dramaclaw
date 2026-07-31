@@ -1230,6 +1230,178 @@ function removeSkillStudioStatusForTurn(
 
 export const removeSkillStudioStatusForTurnForTest = removeSkillStudioStatusForTurn;
 
+function removeAllSkillStudioStatusForTurn(
+  messages: ChatMessage[],
+  turnId: string,
+): ChatMessage[] {
+  if (!turnId.trim()) return messages;
+  let changed = false;
+  const nextMessages = messages.flatMap((message): ChatMessage[] => {
+    if (message.role !== "assistant" || message.turnId !== turnId) return [message];
+    const parts = removeSkillStudioStatusParts(message.parts);
+    const uiEvents = message.uiEvents?.filter((event) => !isSkillStudioStatusEvent(event));
+    if (parts === message.parts && uiEvents?.length === message.uiEvents?.length) return [message];
+    changed = true;
+    const nextMessage = {
+      ...message,
+      ...(parts ? { parts } : { parts: undefined }),
+      ...(uiEvents && uiEvents.length > 0 ? { uiEvents } : { uiEvents: undefined }),
+    };
+    if (!nextMessage.text.trim() && !nextMessage.parts?.length && !nextMessage.uiEvents?.length) {
+      return [];
+    }
+    return [nextMessage];
+  });
+  return changed ? sortMessages(nextMessages) : messages;
+}
+
+type PendingSkillStudioDraftChunks = {
+  turnId?: string | null;
+  sessionId: string;
+  mode?: string;
+  summary?: string;
+  expectedRecipeCount?: number;
+  skill?: Record<string, unknown>;
+  recipes: Map<number, Record<string, unknown>>;
+};
+
+function numberFromUnknown(value: unknown): number | null {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value.trim()) {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+  return null;
+}
+
+function updatePendingSkillStudioDraftChunksFromToolFrame(
+  chunksBySession: Map<string, PendingSkillStudioDraftChunks>,
+  frame: ServerFrame,
+): void {
+  if (frame.type !== "agent.tool.updated" || frame.status !== "completed") return;
+  const name = typeof frame.name === "string" ? frame.name : "";
+  const input = frame.input && typeof frame.input === "object" && !Array.isArray(frame.input)
+    ? frame.input as Record<string, unknown>
+    : null;
+  if (!input) return;
+  const sessionId = typeof input.skill_studio_session_id === "string" && input.skill_studio_session_id.trim()
+    ? input.skill_studio_session_id
+    : "";
+  if (!sessionId) return;
+  if (name === "freezone_finish_agent_catalog_draft") {
+    chunksBySession.delete(sessionId);
+    return;
+  }
+  if (
+    name !== "freezone_put_agent_catalog_draft_outline"
+    && name !== "freezone_begin_agent_catalog_draft"
+    && name !== "freezone_put_agent_catalog_skill"
+    && name !== "freezone_put_agent_catalog_recipe"
+  ) {
+    return;
+  }
+  const existing = chunksBySession.get(sessionId) ?? {
+    sessionId,
+    recipes: new Map<number, Record<string, unknown>>(),
+  };
+  existing.turnId = typeof frame.turn_id === "string" && frame.turn_id.trim() ? frame.turn_id : existing.turnId;
+  if (typeof input.mode === "string" && input.mode.trim()) existing.mode = input.mode;
+  if (typeof input.summary === "string" && input.summary.trim()) existing.summary = input.summary;
+  const expected = numberFromUnknown(input.expected_recipe_count);
+  if (expected != null) existing.expectedRecipeCount = expected;
+  if (name === "freezone_put_agent_catalog_draft_outline") {
+    const outlineExpected = numberFromUnknown(input.expected_recipe_count);
+    if (outlineExpected != null) existing.expectedRecipeCount = outlineExpected;
+  }
+  if (
+    name === "freezone_put_agent_catalog_skill"
+    && input.skill
+    && typeof input.skill === "object"
+    && !Array.isArray(input.skill)
+  ) {
+    existing.skill = input.skill as Record<string, unknown>;
+  }
+  if (
+    name === "freezone_put_agent_catalog_recipe"
+    && input.recipe
+    && typeof input.recipe === "object"
+    && !Array.isArray(input.recipe)
+  ) {
+    const index = numberFromUnknown(input.index) ?? existing.recipes.size;
+    existing.recipes.set(index, input.recipe as Record<string, unknown>);
+  }
+  chunksBySession.set(sessionId, existing);
+}
+
+function hasSkillStudioDraftForTurn(messages: ChatMessage[], turnId: string): boolean {
+  return messages.some((message) =>
+    message.role === "assistant"
+    && message.turnId === turnId
+    && (message.uiEvents ?? []).some((event) =>
+      Boolean(event && typeof event === "object" && (event as Record<string, unknown>).type === "skill_studio.draft"),
+    ),
+  );
+}
+
+function incompleteSkillStudioDraftEvent(chunks: PendingSkillStudioDraftChunks): Record<string, unknown> {
+  const recipes = [...chunks.recipes.entries()]
+    .sort(([left], [right]) => left - right)
+    .map(([, recipe]) => recipe);
+  const expected = Math.max(0, chunks.expectedRecipeCount ?? recipes.length);
+  const missingRecipeCount = Math.max(0, expected - recipes.length);
+  const warnings = [
+    "Agent 已提交了一部分内容，但本轮对话已结束，草稿还不能保存。",
+    chunks.skill ? "已生成 Skill 基础配置。" : "缺少 Skill 基础配置。",
+    expected > 0
+      ? `Recipe 已生成 ${recipes.length} / ${expected}，缺少 ${missingRecipeCount} 个。`
+      : recipes.length > 0
+        ? `Recipe 已生成 ${recipes.length} 个。`
+        : "本轮未提交新 Recipe。",
+    "缺少最终草稿整理。",
+  ];
+  return {
+    type: "skill_studio.draft",
+    bridge_key: `incomplete:${chunks.sessionId}`,
+    skill_studio_session_id: chunks.sessionId,
+    mode: chunks.mode ?? "create",
+    summary: chunks.summary || "Skill 草稿未完成",
+    skill: chunks.skill ?? {},
+    recipes,
+    warnings,
+    incomplete: true,
+    read_only: true,
+    missing_items: [
+      ...(chunks.skill ? [] : ["Skill 基础配置"]),
+      ...(missingRecipeCount > 0 ? [`Recipe ${recipes.length + 1} / ${expected}`] : []),
+      "最终草稿整理",
+    ],
+    completed_items: [
+      ...(chunks.skill ? ["Skill 基础配置"] : []),
+      ...(recipes.length > 0 ? [`Recipe ${recipes.length} / ${expected || recipes.length}`] : []),
+    ],
+  };
+}
+
+function revealIncompleteSkillStudioDraftForTurn(
+  messages: ChatMessage[],
+  turnId: string,
+  chunksBySession: Map<string, PendingSkillStudioDraftChunks>,
+): ChatMessage[] {
+  if (!turnId.trim() || hasSkillStudioDraftForTurn(messages, turnId)) {
+    return removeSkillStudioStatusForTurn(messages, turnId);
+  }
+  const chunks = [...chunksBySession.values()].find((item) => item.turnId === turnId);
+  if (!chunks || (!chunks.skill && chunks.recipes.size === 0)) {
+    return removeSkillStudioStatusForTurn(messages, turnId);
+  }
+  const withDraft = upsertAssistantUiEvent(messages, turnId, incompleteSkillStudioDraftEvent(chunks));
+  chunksBySession.delete(chunks.sessionId);
+  return removeAllSkillStudioStatusForTurn(withDraft, turnId);
+}
+
+export const revealIncompleteSkillStudioDraftForTurnForTest = revealIncompleteSkillStudioDraftForTurn;
+export const updatePendingSkillStudioDraftChunksFromToolFrameForTest = updatePendingSkillStudioDraftChunksFromToolFrame;
+
 function resultText(result: unknown): string {
   if (typeof result === "string") return result;
   if (!result || typeof result !== "object") return "";
@@ -1701,6 +1873,7 @@ export function useSuperChat({
   const cancelledTurnIdsRef = useRef<Set<string>>(new Set());
   const runtimePartSeqByIdRef = useRef<Map<string, number>>(new Map());
   const runtimePartSeqCounterRef = useRef(0);
+  const pendingSkillStudioDraftChunksRef = useRef<Map<string, PendingSkillStudioDraftChunks>>(new Map());
   const wsRef = useRef<WebSocket | null>(null);
   const reconnectRef = useRef<number | null>(null);
   const closedRef = useRef(false);
@@ -2221,6 +2394,7 @@ export function useSuperChat({
           ? frame.turn_id
           : activeTurnIdRef.current;
         if (!turnId || cancelledTurnIdsRef.current.has(turnId)) break;
+        updatePendingSkillStudioDraftChunksFromToolFrame(pendingSkillStudioDraftChunksRef.current, frame);
         if (frame.type === "agent.tool.started") {
           dispatchCanvasContextRequestFrame(frame);
         }
@@ -2422,7 +2596,11 @@ export function useSuperChat({
         finalizeStream();
         if (completedTurnId) {
           setMessages((current) => {
-            const next = removeSkillStudioStatusForTurn(current, completedTurnId);
+            const next = revealIncompleteSkillStudioDraftForTurn(
+              current,
+              completedTurnId,
+              pendingSkillStudioDraftChunksRef.current,
+            );
             const persistedMessage = next.find((message) =>
               message.role === "assistant" && message.turnId === completedTurnId,
             );
