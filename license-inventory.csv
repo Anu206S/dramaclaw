@@ -1,6 +1,7 @@
 path,license_expression,copyright,evidence
 .dockerignore,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 .env.example,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+.github/CODEOWNERS,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 .github/ISSUE_TEMPLATE/bug_report.yml,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 .github/ISSUE_TEMPLATE/config.yml,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 .github/ISSUE_TEMPLATE/documentation.yml,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
