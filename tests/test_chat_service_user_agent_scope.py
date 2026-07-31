@@ -31,6 +31,29 @@ def test_chat_visible_text_redacts_local_filesystem_paths():
     assert redacted.count("[本地路径]") == 2
 
 
+def test_mainline_script_creation_still_requires_uploaded_script():
+    prompt = "请创建一个30秒悬疑短剧工作流，生成完整脚本和分镜方案"
+
+    routed = chat_service._script_creation_model_reply_prompt(
+        prompt,
+        tool_mode="default",
+    )
+
+    assert routed is not None
+    assert "虾料" in routed
+
+
+def test_freezone_workflow_can_expand_an_idea_into_script_nodes():
+    prompt = "请创建一个30秒悬疑短剧工作流，生成完整脚本和分镜方案"
+
+    routed = chat_service._script_creation_model_reply_prompt(
+        prompt,
+        tool_mode="freezone_canvas",
+    )
+
+    assert routed is None
+
+
 @pytest.mark.anyio
 async def test_hermes_session_load_null_result_falls_back_to_new_session(
     tmp_path, monkeypatch

@@ -12447,13 +12447,31 @@ export function SuperChatPanel({
 
   useEffect(() => {
     const list = messageListRef.current;
-    if (!list || typeof ResizeObserver === "undefined") return;
-    const observer = new ResizeObserver(() => {
+    const viewport = scrollRef.current;
+    if (!list || !viewport) return;
+    let pendingFrame = 0;
+    const realignPinnedBottom = () => {
       if (!shouldStickToBottomRef.current) return;
-      window.requestAnimationFrame(() => scrollToChatBottom());
-    });
-    observer.observe(list);
-    return () => observer.disconnect();
+      if (pendingFrame) window.cancelAnimationFrame(pendingFrame);
+      pendingFrame = window.requestAnimationFrame(() => {
+        pendingFrame = 0;
+        scrollToChatBottom("auto", { force: true });
+      });
+    };
+    const observer = typeof ResizeObserver === "undefined"
+      ? null
+      : new ResizeObserver(realignPinnedBottom);
+    // Message reflow changes the list size; resizing the split pane/window can
+    // change only the viewport. Observe both so the latest reply does not end
+    // up hidden below the composer after a responsive layout change.
+    observer?.observe(list);
+    observer?.observe(viewport);
+    window.addEventListener("resize", realignPinnedBottom);
+    return () => {
+      observer?.disconnect();
+      window.removeEventListener("resize", realignPinnedBottom);
+      if (pendingFrame) window.cancelAnimationFrame(pendingFrame);
+    };
   }, [chat.busy, scrollToChatBottom]);
 
   useEffect(() => {
