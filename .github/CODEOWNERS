@@ -1,0 +1,12 @@
+/.github/CODEOWNERS                         @dramaclaw/maintainers
+/.github/workflows/                         @dramaclaw/maintainers
+/.github/dependency-review-config.yml       @dramaclaw/maintainers
+/scripts/check_*.py                         @dramaclaw/maintainers
+/scripts/ci_yaml.py                         @dramaclaw/maintainers
+/scripts/lint_*.py                          @dramaclaw/maintainers
+/scripts/ce_allowlist.py                    @dramaclaw/maintainers
+/pyproject.toml                             @dramaclaw/maintainers
+/uv.lock                                    @dramaclaw/maintainers
+/.gitleaks.toml                             @dramaclaw/maintainers
+/ce-allowlist.toml                          @dramaclaw/maintainers
+/docs/ci-gate-*.md                          @dramaclaw/maintainers
