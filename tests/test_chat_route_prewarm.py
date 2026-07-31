@@ -1005,7 +1005,7 @@ async def test_ai_assistant_access_check_uses_chat_feature_key(monkeypatch) -> N
     )
 
     assert seen["user_id"] == "usr_1"
-    assert seen["feature_key"] == "ai_assistant_chat"
+    assert seen["feature_key"] == "assistant.chat"
     assert seen["project_id"] == ""
     assert seen["resource_kind"] == "chat"
     assert seen["metadata"]["scope"] == {"kind": "home", "id": None}

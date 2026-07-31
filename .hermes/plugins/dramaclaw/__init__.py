@@ -243,7 +243,11 @@ def _guard_freezone_mainline_write(tool_name: str, handler):
 def _available() -> bool:
     return bool(
         os.environ.get("DRAMACLAW_API_URL")
-        and (os.environ.get("DRAMACLAW_AGENT_TOKEN") or _local_agent_trust_enabled())
+        and (
+            os.environ.get("DRAMACLAW_AGENT_TOKEN")
+            or _local_agent_trust_enabled()
+            or _ce_owner_mode()
+        )
     )
 
 
@@ -259,6 +263,29 @@ def _token() -> str:
     if not value:
         raise ValueError("DRAMACLAW_AGENT_TOKEN is not set")
     return value
+
+
+def _ce_owner_mode() -> bool:
+    raw = os.environ.get("DRAMACLAW_CE_OWNER", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _ce_owner_allow_remote() -> bool:
+    raw = os.environ.get("DRAMACLAW_CE_OWNER_ALLOW_REMOTE", "").strip().lower()
+    return raw in {"1", "true", "yes", "on"}
+
+
+def _enforce_ce_owner_target(url: str | None = None) -> None:
+    if _ce_owner_allow_remote():
+        return
+    parsed = urlparse(url or os.environ.get("DRAMACLAW_API_URL", "").strip())
+    if (parsed.hostname or "").lower() in {"127.0.0.1", "::1", "localhost"}:
+        return
+    raise ValueError(
+        "DRAMACLAW_CE_OWNER=1 requires a loopback DRAMACLAW_API_URL; "
+        "set DRAMACLAW_CE_OWNER_ALLOW_REMOTE=1 to override (unsafe), "
+        "or provide DRAMACLAW_AGENT_TOKEN"
+    )
 
 
 def _local_agent_trust_enabled() -> bool:
@@ -281,6 +308,8 @@ def _request_headers(user_agent: str) -> dict[str, str]:
     token = os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    elif _ce_owner_mode():
+        _enforce_ce_owner_target()
     elif not _local_agent_trust_enabled():
         raise ValueError("DRAMACLAW_AGENT_TOKEN is not set")
     return headers

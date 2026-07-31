@@ -16,20 +16,34 @@ import {
 import { useTranslation } from 'react-i18next';
 
 import {
+  CANVAS_NODE_TYPES,
+  DEFAULT_ASPECT_RATIO,
   DEFAULT_NODE_WIDTH,
+  EXPORT_RESULT_NODE_DEFAULT_WIDTH,
+  EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
   type CanvasNode,
 } from '@/features/canvas/domain/canvasNodes';
 import { useCanvasStore } from '@/stores/canvasStore';
-import { type FreezoneOutpaintAspectRatio } from '@/api/ops';
-import { outpaintImage } from '@/features/canvas/application/imageOutpaint';
+import {
+  fetchFreezoneJobResult,
+  submitFreezoneOutpaint,
+  type FreezoneOutpaintAspectRatio,
+} from '@/api/ops';
+import { awaitTaskCompletion } from '@/api/tasks';
+import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
+import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
   ProviderModelPicker,
   SHARED_MODELS,
 } from '@/features/canvas/ui/ProviderModelPicker';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
+import { inheritMainlineFields } from '@/features/canvas/domain/inheritMainlineFields';
+import { buildImageFeatureBillingParams } from '@/features/canvas/domain/imageBilling';
 import { CreditCostPill } from '@/components/credits/credit-visual';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
+import { BillingRuleNotConfiguredError } from '@/lib/api-errors';
+import { FREEZONE_IMAGE_FEATURES } from '@/features/canvas/application/freezoneImageFeatureBilling';
 import { NODE_TOOLBAR_CLASS } from './nodeToolbarConfig';
 import { CANVAS_NODE_TOOLBAR_PILL_CLASS } from './nodeFrameStyles';
 import {
@@ -44,6 +58,9 @@ type OutpaintImageSize = (typeof OUTPAINT_IMAGE_SIZES)[number];
 
 const OUTPAINT_NUM_IMAGES = [1, 2, 3, 4] as const;
 type OutpaintNumImages = (typeof OUTPAINT_NUM_IMAGES)[number];
+
+// 数量 > 1 时多个结果节点纵向错开摆放的间距。
+const RESULT_STACK_GAP = 24;
 
 const OUTPAINT_ASPECT_OPTIONS: {
   value: FreezoneOutpaintAspectRatio;
@@ -79,7 +96,11 @@ interface OutpaintEditorOverlayProps {
 export const OutpaintEditorOverlay = memo(
   ({ node, imageSource, onClose }: OutpaintEditorOverlayProps) => {
     const { t } = useTranslation();
+    const addNode = useCanvasStore((state) => state.addNode);
+    const addEdge = useCanvasStore((state) => state.addEdge);
     const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
+    const findNodePosition = useCanvasStore((state) => state.findNodePosition);
+    const updateNodeData = useCanvasStore((state) => state.updateNodeData);
 
     const [aspectRatio, setAspectRatio] =
       useState<FreezoneOutpaintAspectRatio>('original');
@@ -93,16 +114,26 @@ export const OutpaintEditorOverlay = memo(
       ?? availableModels[0]
       ?? SHARED_MODELS.find((m) => m.id === modelId);
     const creditCost = useGenerationCreditCost(
-      'image_selection',
-      selectedModel?.apiModel ?? null,
+      'feature',
+      selectedModel ? FREEZONE_IMAGE_FEATURES.edit : null,
       {
         surface: 'canvas',
-        params: imageModelSupportsQuality(selectedModel?.apiModel)
-          ? { size: imageSize, quality: 'medium' }
-          : { size: imageSize },
+        params: buildImageFeatureBillingParams(selectedModel, {
+          size: imageSize,
+          ...(imageModelSupportsQuality(selectedModel?.apiModel)
+            ? { quality: 'medium' }
+            : {}),
+          operation: 'outpaint',
+          pricing_quantity: Math.min(Math.max(numImages, 1), 4),
+        }),
         quantity: Math.min(Math.max(numImages, 1), 4),
       },
     );
+    const billingRuleMissing =
+      creditCost.error instanceof BillingRuleNotConfiguredError;
+    const costDisplay =
+      creditCost.data?.data.display ??
+      (billingRuleMissing ? t('common.billingRuleNotConfiguredShort') : null);
 
     const nodeWidth =
       typeof node.measured?.width === 'number'
@@ -138,37 +169,122 @@ export const OutpaintEditorOverlay = memo(
     const horizontalExtension = Math.max(0, (frame.width - nodeWidth) / 2);
     const bottomToolbarOffset = verticalExtension + 12;
 
+    // 建一个 loading 结果节点并连边，立即返回节点 id（同步，不等待生成）。
+    const createOutpaintNode = useCallback(
+      (sourceAspectRatio: string, position: { x: number; y: number }) => {
+        const generationStartedAt = Date.now();
+        // 1→1 outpaint: inherit source's mainline fields so the new node still
+        // resolves to the same canonical slot at Push time. user_spawned: true
+        // is stamped by inheritMainlineFields; preset_managed is never set.
+        const initialData = inheritMainlineFields(
+          { data: node.data as Record<string, unknown> },
+          {
+            displayName: t('outpaintEditor.title'),
+            imageUrl: null,
+            previewImageUrl: null,
+            aspectRatio: aspectRatio === 'original' ? sourceAspectRatio : aspectRatio,
+            resultKind: 'generic',
+            isGenerating: true,
+            generationStartedAt,
+          },
+        );
+        const nextNodeId = addNode(
+          CANVAS_NODE_TYPES.exportImage,
+          position,
+          initialData as unknown as Parameters<typeof addNode>[2],
+        );
+        addEdge(node.id, nextNodeId);
+        return nextNodeId;
+      },
+      [addEdge, addNode, aspectRatio, node, t],
+    );
+
+    // 针对已建好的节点提交单图扩图（num_images=1）→ 轮询 → 回填。
+    const runOutpaintGeneration = useCallback(
+      async (project: string, nodeId: string, apiModel: string) => {
+        try {
+          const ref = await submitFreezoneOutpaint(project, {
+            sourceUrl: imageSource.split('?')[0],
+            targetAspectRatio: aspectRatio,
+            numImages: 1,
+            imageSize,
+            model: apiModel,
+          });
+          updateNodeData(nodeId, generationTaskDescriptor(ref));
+          const completed = await awaitTaskCompletion(ref.task_key, project);
+          const directUrl = completed.result?.['output_url'] as string | undefined;
+          let url = directUrl;
+          if (!url) {
+            const fallback = await fetchFreezoneJobResult(project, ref.task_type, ref.job_id);
+            url = fallback.url;
+          }
+          updateNodeData(nodeId, {
+            imageUrl: url,
+            previewImageUrl: url,
+            isGenerating: false,
+            generationStartedAt: null,
+            generationError: null,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          console.error('[outpaint] generation failed', err);
+          updateNodeData(nodeId, {
+            isGenerating: false,
+            generationStartedAt: null,
+            generationError: message,
+          });
+        }
+      },
+      [aspectRatio, imageSize, imageSource, updateNodeData],
+    );
+
     const handleSubmit = useCallback(async () => {
       if (isSubmitting) return;
+      const project = readUrl().project;
+      if (!project) {
+        console.error('[outpaint] no project in URL — cannot submit');
+        return;
+      }
+
+      const sourceAspectRatio =
+        typeof (node.data as { aspectRatio?: unknown }).aspectRatio === 'string'
+          ? ((node.data as { aspectRatio?: string }).aspectRatio ?? DEFAULT_ASPECT_RATIO)
+          : DEFAULT_ASPECT_RATIO;
+      const base = findNodePosition(
+        node.id,
+        EXPORT_RESULT_NODE_DEFAULT_WIDTH,
+        EXPORT_RESULT_NODE_LAYOUT_HEIGHT,
+      );
       const apiModel = selectedModel?.apiModel ?? modelId;
 
       setIsSubmitting(true);
       try {
-        const result = outpaintImage(node.id, imageSource, {
-          displayName: t('outpaintEditor.title'),
-          targetAspectRatio: aspectRatio,
-          imageSize,
-          numImages,
-          model: apiModel,
-        });
-        if (!result) return;
-        setSelectedNode(result.nodeIds[0]);
+        // 后端 outpaint 单次仅出 1 张：选了 N 张就建 N 个 loading 节点（纵向错开）
+        // 并发起 N 次单图请求，每个节点各自独立轮询/回填/报错。
+        const count = Math.max(1, numImages);
+        const nodeIds = Array.from({ length: count }, (_unused, i) =>
+          createOutpaintNode(sourceAspectRatio, {
+            x: base.x,
+            y: base.y + i * (EXPORT_RESULT_NODE_LAYOUT_HEIGHT + RESULT_STACK_GAP),
+          }),
+        );
+        setSelectedNode(nodeIds[0]);
         onClose();
+        nodeIds.forEach((id) => void runOutpaintGeneration(project, id, apiModel));
       } finally {
         setIsSubmitting(false);
       }
     }, [
-      aspectRatio,
-      imageSize,
-      imageSource,
+      createOutpaintNode,
+      findNodePosition,
       isSubmitting,
       modelId,
-      node.id,
+      node,
       numImages,
       onClose,
+      runOutpaintGeneration,
       selectedModel,
       setSelectedNode,
-      t,
     ]);
 
     return (
@@ -260,16 +376,17 @@ export const OutpaintEditorOverlay = memo(
               titleI18nKey="outpaintEditor.numImagesLabel"
             />
             <CreditCostPill
-              display={creditCost.data?.data.display}
+              display={costDisplay}
+              promotion={creditCost.data?.data.promotion}
               className={NODE_CREDIT_PILL_FLAT_CLASS}
             />
 
             <button
               type="button"
               onClick={handleSubmit}
-              disabled={isSubmitting}
+              disabled={isSubmitting || billingRuleMissing}
               className={`shrink-0 ${NODE_GENERATE_BUTTON_BASE_CLASS} ${
-                isSubmitting
+                isSubmitting || billingRuleMissing
                   ? NODE_GENERATE_BUTTON_DISABLED_CLASS
                   : NODE_GENERATE_BUTTON_ENABLED_CLASS
               }`}
