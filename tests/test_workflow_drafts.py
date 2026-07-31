@@ -1,25 +1,8 @@
-import importlib.util
-from pathlib import Path
-
-
-def _load_workflow_drafts_module():
-    path = (
-        Path(__file__).resolve().parents[1]
-        / ".hermes"
-        / "plugins"
-        / "freezone"
-        / "workflow_drafts.py"
-    )
-    spec = importlib.util.spec_from_file_location("test_workflow_drafts_module", path)
-    assert spec is not None
-    module = importlib.util.module_from_spec(spec)
-    assert spec.loader is not None
-    spec.loader.exec_module(module)
-    return module
+from novelvideo.freezone.workflow_drafts import _plan_preview
 
 
 def test_plan_preview_explains_ordered_recipe_pipeline():
-    preview = _load_workflow_drafts_module()._plan_preview(
+    preview = _plan_preview(
         {
             "skill_id": "video-ad",
             "edge_count": 1,

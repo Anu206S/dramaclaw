@@ -146,6 +146,70 @@ def test_workflow_run_api_rejects_competing_runner(
     assert competing.status_code == 409
 
 
+def test_workflow_draft_api_lifecycle(workflow_run_client: TestClient) -> None:
+    base = "/api/v1/projects/proj_demo/freezone/canvases/default/workflow-drafts"
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "edge_count": 0,
+        "plan": {
+            "summary": "广告",
+            "inputs": {},
+            "phases": ["视频"],
+            "nodes": [
+                {
+                    "id": "shot-1",
+                    "name": "镜头 1",
+                    "node_type": "videoNode",
+                    "stage": "video",
+                }
+            ],
+            "edges": [],
+        },
+    }
+    created_response = workflow_run_client.post(
+        base,
+        json={
+            "intent": {"skill_id": "video-ad", "user_goal": "广告"},
+            "compiled": compiled,
+        },
+    )
+    assert created_response.status_code == 200
+    created = created_response.json()["data"]
+
+    patched_response = workflow_run_client.patch(
+        f"{base}/{created['draft_id']}",
+        json={
+            "expected_revision": 1,
+            "intent": {
+                "skill_id": "video-ad",
+                "user_goal": "广告",
+                "items": ["开场"],
+            },
+            "compiled": compiled,
+            "last_changes": {"items": ["开场"]},
+        },
+    )
+    assert patched_response.status_code == 200
+    patched = patched_response.json()["data"]
+    assert patched["revision"] == 2
+
+    claimed_response = workflow_run_client.post(
+        f"{base}/{created['draft_id']}/claim",
+        json={"revision": 2},
+    )
+    assert claimed_response.json()["data"]["status"] == "confirming"
+
+    finished_response = workflow_run_client.post(
+        f"{base}/{created['draft_id']}/finish",
+        json={"outcome": "confirmed"},
+    )
+    assert finished_response.json()["data"]["status"] == "confirmed"
+    assert workflow_run_client.get(f"{base}/{created['draft_id']}").json()["data"][
+        "status"
+    ] == "confirmed"
+
+
 def test_workflow_run_list_reconciles_completed_project_task(
     workflow_run_client: TestClient,
     monkeypatch,

@@ -1077,6 +1077,7 @@
       "deleted": "已将「{{name}}」移至回收站",
       "restored": "已恢复「{{name}}」",
       "purged": "已永久删除「{{name}}」",
+      "purgeFailed": "未能永久删除「{{name}}」，项目数据仍保留",
       "undo": "撤销"
     },
     "title": "项目管理",

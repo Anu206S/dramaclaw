@@ -1,6 +1,7 @@
 from __future__ import annotations
 
-import json
+import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -17,8 +18,27 @@ from novelvideo.freezone.workflow_runs import (
     reconcile_workflow_runs_with_canvas_nodes,
     reconcile_workflow_runs_with_tasks,
     update_workflow_run,
+    workflow_runs_db_path,
     workflow_error_diagnostics,
 )
+
+
+def _set_run_timestamps(
+    project_dir: Path,
+    run_id: str,
+    *,
+    updated_at: str,
+    completed_at: str | None = None,
+) -> None:
+    with sqlite3.connect(workflow_runs_db_path(project_dir)) as conn:
+        conn.execute(
+            """
+            UPDATE workflow_runs
+            SET updated_at = ?, completed_at = COALESCE(?, completed_at)
+            WHERE run_id = ?
+            """,
+            (updated_at, completed_at, run_id),
+        )
 
 
 def test_workflow_run_tracks_actions_and_completion(tmp_path: Path) -> None:
@@ -52,6 +72,8 @@ def test_workflow_run_tracks_actions_and_completion(tmp_path: Path) -> None:
     assert read_workflow_run(
         project_dir=tmp_path, canvas_id="default", run_id=run["run_id"]
     ) == updated
+    assert workflow_runs_db_path(tmp_path).is_file()
+    assert not (tmp_path / "freezone" / "_workflow_runs").exists()
 
 
 def test_workflow_runs_are_listed_newest_first(tmp_path: Path) -> None:
@@ -90,6 +112,23 @@ def test_workflow_run_creation_is_idempotent(tmp_path: Path) -> None:
     )
 
     assert duplicate["run_id"] == first["run_id"]
+    assert len(list_workflow_runs(project_dir=tmp_path, canvas_id="default")) == 1
+
+
+def test_concurrent_workflow_run_creation_is_idempotent(tmp_path: Path) -> None:
+    def create() -> dict:
+        return create_workflow_run(
+            project_dir=tmp_path,
+            project_id="project-a",
+            canvas_id="default",
+            actions=[{"node_id": "one", "action": "generate_image"}],
+            idempotency_key="canvas-run:concurrent-request",
+        )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        runs = list(executor.map(lambda _: create(), range(2)))
+
+    assert runs[0]["run_id"] == runs[1]["run_id"]
     assert len(list_workflow_runs(project_dir=tmp_path, canvas_id="default")) == 1
 
 
@@ -576,13 +615,8 @@ def test_stale_running_workflow_is_marked_interrupted(tmp_path: Path) -> None:
         canvas_id="default",
         actions=[{"node_id": "pending", "action": "generate_image"}],
     )
-    path = tmp_path / "freezone" / "_workflow_runs" / "default" / f"{run['run_id']}.json"
-    payload = read_workflow_run(
-        project_dir=tmp_path, canvas_id="default", run_id=run["run_id"]
-    )
-    assert payload is not None
-    payload["updated_at"] = (now - timedelta(seconds=61)).isoformat().replace("+00:00", "Z")
-    path.write_text(json.dumps(payload), encoding="utf-8")
+    old_timestamp = (now - timedelta(seconds=61)).isoformat().replace("+00:00", "Z")
+    _set_run_timestamps(tmp_path, run["run_id"], updated_at=old_timestamp)
 
     interrupted = interrupt_stale_workflow_runs(
         project_dir=tmp_path,
@@ -659,18 +693,13 @@ def test_prune_workflow_runs_only_removes_old_non_resumable_records(
             run_id=run["run_id"],
             status=status,
         )
-        path = (
-            tmp_path
-            / "freezone"
-            / "_workflow_runs"
-            / "default"
-            / f"{run['run_id']}.json"
-        )
-        payload = json.loads(path.read_text(encoding="utf-8"))
         old_timestamp = (now - timedelta(days=31)).isoformat().replace("+00:00", "Z")
-        payload["updated_at"] = old_timestamp
-        payload["completed_at"] = old_timestamp
-        path.write_text(json.dumps(payload), encoding="utf-8")
+        _set_run_timestamps(
+            tmp_path,
+            run["run_id"],
+            updated_at=old_timestamp,
+            completed_at=old_timestamp,
+        )
         run_ids[label] = run["run_id"]
 
     deleted = prune_workflow_runs(

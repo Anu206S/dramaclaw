@@ -101,6 +101,84 @@ def _install_minimal_builtin_catalog(monkeypatch, catalog) -> None:
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
 
 
+def _install_workflow_draft_api(monkeypatch, plugin, project_dir: Path) -> None:
+    from novelvideo.freezone.workflow_drafts import (
+        claim_workflow_draft_confirmation,
+        create_workflow_draft,
+        finish_workflow_draft_confirmation,
+        patch_workflow_draft,
+        read_workflow_draft,
+    )
+
+    monkeypatch.setenv("DRAMACLAW_PROJECT_ID", "project-a")
+    monkeypatch.setenv("DRAMACLAW_CANVAS_ID", "canvas-a")
+
+    def fake_request(method, path, *, body=None, **_kwargs):
+        if "/workflow-drafts" not in path:
+            raise AssertionError(path)
+        parts = path.strip("/").split("/")
+        project_id = parts[1]
+        canvas_id = parts[4]
+        draft_id = parts[6] if len(parts) > 6 else ""
+        suffix = parts[7] if len(parts) > 7 else ""
+        if method == "POST" and not draft_id:
+            draft = create_workflow_draft(
+                project_dir=project_dir,
+                project_id=project_id,
+                canvas_id=canvas_id,
+                intent=body["intent"],
+                compiled=body["compiled"],
+                run_after_create=bool(body.get("run_after_create")),
+            )
+            return {"ok": True, "data": draft}
+        if method == "GET" and draft_id:
+            draft, error = read_workflow_draft(
+                project_dir=project_dir,
+                canvas_id=canvas_id,
+                draft_id=draft_id,
+            )
+            return (
+                {"ok": True, "data": draft}
+                if draft is not None
+                else {
+                    "ok": False,
+                    "status": "workflow_draft_unavailable",
+                    "error": error,
+                }
+            )
+        if method == "PATCH" and draft_id:
+            draft, error = patch_workflow_draft(
+                project_dir=project_dir,
+                canvas_id=canvas_id,
+                draft_id=draft_id,
+                expected_revision=int(body["expected_revision"]),
+                intent=body["intent"],
+                compiled=body["compiled"],
+                last_changes=body.get("last_changes"),
+                run_after_create=body.get("run_after_create"),
+            )
+            return {"ok": True, "data": draft} if draft is not None else error
+        if method == "POST" and suffix == "claim":
+            draft, error = claim_workflow_draft_confirmation(
+                project_dir=project_dir,
+                canvas_id=canvas_id,
+                draft_id=draft_id,
+                revision=int(body["revision"]),
+            )
+            return {"ok": True, "data": draft} if draft is not None else error
+        if method == "POST" and suffix == "finish":
+            draft = finish_workflow_draft_confirmation(
+                project_dir=project_dir,
+                canvas_id=canvas_id,
+                draft_id=draft_id,
+                outcome=body["outcome"],
+            )
+            return {"ok": True, "data": draft}
+        raise AssertionError((method, path, body))
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+
 def test_freezone_plugin_registers_canvas_command_tools():
     plugin = _load_plugin_module()
 
@@ -323,7 +401,7 @@ def test_compact_workflow_intent_compiles_before_canvas_bridge(monkeypatch):
 
 def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, tmp_path):
     plugin = _load_plugin_module()
-    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
     emitted = []
 
     def fake_compile(intent):
@@ -437,7 +515,7 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
 
 def test_workflow_draft_concurrent_confirmation_emits_once(monkeypatch, tmp_path):
     plugin = _load_plugin_module()
-    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
     compiled = {
         "ok": True,
         "skill_id": "video-ad",
@@ -496,9 +574,11 @@ def test_workflow_draft_concurrent_confirmation_emits_once(monkeypatch, tmp_path
     assert len(emitted) == 1
 
 
-def test_workflow_draft_timeout_retry_reuses_instance_id(monkeypatch, tmp_path):
+def test_workflow_draft_timeout_is_persisted_without_duplicate_submission(
+    monkeypatch, tmp_path
+):
     plugin = _load_plugin_module()
-    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
     compiled = {
         "ok": True,
         "skill_id": "video-ad",
@@ -545,14 +625,14 @@ def test_workflow_draft_timeout_retry_reuses_instance_id(monkeypatch, tmp_path):
     repeated = plugin._handle_confirm_workflow_draft(confirm_args)
 
     assert first["canvas_apply_status"] == "timeout"
-    assert repeated["canvas_apply_status"] == "timeout"
-    assert len(emitted) == 2
-    assert built_instance_ids == [prepared["draft_id"], prepared["draft_id"]]
+    assert repeated["status"] == "workflow_draft_confirmation_in_progress"
+    assert len(emitted) == 1
+    assert built_instance_ids == [prepared["draft_id"]]
 
 
 def test_workflow_draft_patch_rejects_skill_replacement(monkeypatch, tmp_path):
     plugin = _load_plugin_module()
-    monkeypatch.setenv("DRAMACLAW_WORKFLOW_DRAFT_DIR", str(tmp_path))
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
     compiled = {
         "ok": True,
         "skill_id": "video-ad",

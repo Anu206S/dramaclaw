@@ -243,11 +243,17 @@ export function selectWorkflowActivityLabels(
     nodeLabel: string,
     phase: FreezoneWorkflowRunAction["phase"],
   ) => string = (nodeLabel) => nodeLabel,
+  tasksByKey: ReadonlyMap<string, TaskState> = new Map(),
 ): string[] {
   const nodesById = new Map(nodes.map((node) => [node.id, node]));
   return [...new Set(
     actions.flatMap((action) => {
-      if (action.status !== "running" || isWaitingWorkflowAction(action)) return [];
+      const task = action.task_key ? tasksByKey.get(action.task_key) : undefined;
+      const taskIsRunning = task?.status === "running";
+      if (
+        !taskIsRunning &&
+        (action.status !== "running" || isWaitingWorkflowAction(action))
+      ) return [];
       const node = nodesById.get(action.node_id);
       if (!node?.type) return [];
       return [formatLabel(resolveNodeDisplayName(node.type, node.data), action.phase)];
@@ -367,6 +373,15 @@ export function ChatTaskStatusBar({
         : [],
     [existingNodeIds, workflowRun],
   );
+  const workflowTasksByKey = useMemo(() => {
+    const linked = new Map<string, TaskState>();
+    for (const action of workflowRun?.actions ?? []) {
+      if (!action.task_key) continue;
+      const task = tasks.get(action.task_key);
+      if (task) linked.set(action.task_key, task);
+    }
+    return linked;
+  }, [tasks, workflowRun]);
   const workflowActivityLabels = useMemo(
     () => selectWorkflowActivityLabels(
       workflowRun?.actions ?? [],
@@ -375,8 +390,9 @@ export function ChatTaskStatusBar({
         `taskCenter.chatStatus.workflowActivity.${phase ?? "preparing"}`,
         { name: nodeLabel },
       ),
+      workflowTasksByKey,
     ),
-    [nodes, t, workflowRun],
+    [nodes, t, workflowRun, workflowTasksByKey],
   );
   const workflowActivityLabelsKey = workflowActivityLabels.join("\u0000");
   const [workflowActivityIndex, setWorkflowActivityIndex] = useState(0);
@@ -469,9 +485,6 @@ export function ChatTaskStatusBar({
   const completedCount = items.filter(({ task }) => task.status === "completed").length;
   const leading = activeItems[0] ?? items[0] ?? null;
   const workflowActions = workflowRun?.actions ?? [];
-  const workflowTasksByKey = new Map(
-    items.map(({ task }) => [task.task_key, task]),
-  );
   const workflowCounts = workflowStatusCounts(workflowActions, workflowTasksByKey);
   const nodeById = new Map(nodes.map((node) => [node.id, node]));
   const workflowNodeLabel = (action: FreezoneWorkflowRunAction | null): string | null => {
