@@ -6050,7 +6050,7 @@ TOOLS = (
         "freezone_run_workflow",
         _schema(
             "freezone_run_workflow",
-            "Run, continue, retry, or locally regenerate a canvas workflow through the deterministic DAG runner. The runner expands dependencies, skips completed outputs by default, executes independent nodes in parallel, persists status, and blocks failed descendants without Agent polling.",
+            "Run, continue, retry, or locally regenerate a canvas workflow through the deterministic DAG runner. The runner expands dependencies, skips completed outputs by default, executes independent nodes in parallel, persists status, and blocks failed descendants without Agent polling. Use this directly for continue/resume requests instead of reading and running nodes one by one. If it reports content_policy, stop: do not infer sensitive words, rewrite prompts, or retry unless the user explicitly requests one specific prompt edit.",
             {
                 **_SCOPE_PROPS,
                 "node_ids": {

@@ -263,6 +263,18 @@ def test_freezone_run_workflow_emits_one_deterministic_runner_command(monkeypatc
     }
 
 
+def test_freezone_agent_rules_bound_content_policy_remediation() -> None:
+    repo_root = Path(__file__).resolve().parents[1]
+    skill = (repo_root / ".hermes/skills/freezone/SKILL.md").read_text(encoding="utf-8")
+    plugin = (repo_root / ".hermes/plugins/freezone/__init__.py").read_text(encoding="utf-8")
+
+    assert "内容安全失败不是提示词诊断" in skill
+    assert "禁止靠猜词反复改写提示词" in skill
+    assert "内容安全失败不可自动重试" in skill
+    assert "修改后再次失败就暂停" in skill
+    assert "If it reports content_policy, stop" in plugin
+
+
 def test_freezone_run_workflow_command_passes_write_shape_validation():
     plugin = _load_plugin_module()
 

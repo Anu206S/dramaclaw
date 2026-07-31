@@ -48,6 +48,12 @@ import {
 } from '@/features/canvas/application/imageNodeSizing';
 import { resolveNodeDisplayName } from '@/features/canvas/domain/nodeDisplay';
 import {
+  publishNodeActionAccepted,
+  publishNodeActionError,
+  publishNodeActionSuccess,
+  subscribeNodeAction,
+} from '@/features/canvas/application/nodeActionResult';
+import {
   isSystemManagedNodeData,
   mainlineNodeVisualState,
   nodeMainlineFlags,
@@ -1107,6 +1113,21 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     upstreamTextJoined,
     refreshHistory,
   ]);
+
+  useEffect(() => subscribeNodeAction(({ nodeId, action, requestId }) => {
+    if (nodeId !== id || action !== 'generate_image') return;
+    publishNodeActionAccepted(requestId, id, action);
+    void handleSubmit()
+      .then(() => {
+        const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
+        const imageUrl = typeof latest?.data.imageUrl === 'string'
+          ? latest.data.imageUrl
+          : '';
+        if (!imageUrl) throw new Error('节点动作完成但未产出 imageUrl');
+        publishNodeActionSuccess(requestId, id, action, { imageUrl });
+      })
+      .catch((error) => publishNodeActionError(requestId, id, action, error));
+  }), [handleSubmit, id]);
 
   // ===== Step B: 场景资产节点的 "用作背景源" 操作 =====
   // scene_master / scene_reverse_master 节点上的按钮 → 打开 BackgroundCropperDialog
