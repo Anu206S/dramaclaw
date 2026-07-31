@@ -894,6 +894,7 @@ frontend/src/features/canvas/application/videoSubtitleErase.ts,Elastic-2.0,2026 
 frontend/src/features/canvas/application/videoTranscode.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/application/videoTranscodeFfmpeg.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/application/videoUpscale.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+frontend/src/features/canvas/application/workflowExecutionActivity.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/application/workflowRecipeRuntime.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/application/workflowRecipeRuntime.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/compose/CoverEditor.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
