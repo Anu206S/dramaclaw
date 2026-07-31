@@ -1331,6 +1331,7 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert skills["retro-hong-kong-kungfu-comedy-video"]["name"] == "港风功夫萌宠短片"
     assert skills["outdoor-stage-duel-video"]["name"] == "户外舞台双人能力秀"
     assert skills["ling-cage-cinematic-video"]["name"] == "灵笼风格科幻短片"
+    assert skills["japanese-anime-drama-video"]["name"] == "日系漫剧梦工坊"
     assert "pixar-ip-brand-ad-short-film" not in skills
     assert skills["pixar-ip-ad-video"]["allowed_recipe_ids"] == [
         "ad-ip-character-anchor",
@@ -1366,6 +1367,13 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "sci-fi-survival-shot-video",
         "sci-fi-survival-audio-layers",
     ]
+    assert skills["japanese-anime-drama-video"]["allowed_recipe_ids"] == [
+        "jp-anime-drama-script",
+        "jp-anime-drama-storyboard",
+        "jp-anime-drama-key-elements",
+        "jp-anime-drama-shot-video",
+        "jp-anime-drama-audio-layers",
+    ]
     assert "ad-ip-character-anchor" in recipes
     assert "ad-product-prop-anchor" in recipes
     assert "workflow-input-analysis" in recipes
@@ -1383,6 +1391,11 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "sci-fi-survival-key-elements" in recipes
     assert "sci-fi-survival-shot-video" in recipes
     assert "sci-fi-survival-audio-layers" in recipes
+    assert "jp-anime-drama-script" in recipes
+    assert "jp-anime-drama-storyboard" in recipes
+    assert "jp-anime-drama-key-elements" in recipes
+    assert "jp-anime-drama-shot-video" in recipes
+    assert "jp-anime-drama-audio-layers" in recipes
     assert "visual-key-elements" in recipes
     assert "storyboard-shot-video" in recipes
     assert "video-audio-layer" in recipes
@@ -1809,6 +1822,106 @@ def test_ling_cage_skill_keeps_style_while_recipes_are_survival_sci_fi_stages(mo
     assert "no subtitles" in shot_text
 
 
+def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    skills = {item["id"]: item for item in catalog._load_skills()}
+    recipes = {
+        item["id"]: item
+        for item in catalog._load_agent_config_items("recipes", catalog._RECIPES_DIR)
+    }
+    skill = skills["japanese-anime-drama-video"]
+    planning = skill["planning"]
+    recipe_ids = [
+        "jp-anime-drama-script",
+        "jp-anime-drama-storyboard",
+        "jp-anime-drama-key-elements",
+        "jp-anime-drama-shot-video",
+        "jp-anime-drama-audio-layers",
+    ]
+    planning_text = "\n".join(
+        [
+            planning["planning_notes"],
+            planning["prompt_guide"],
+            "\n".join(planning["conduct_rules"]),
+            "\n".join(skill["evaluation"]["domain_constraints"]),
+        ]
+    )
+
+    assert "日式写实动漫" in planning["prompt_guide"]
+    assert "语言与口音风格" in planning_text
+    assert "台湾华语" in planning_text
+    assert "16:9" in planning_text
+    assert "24fps" in planning_text
+    assert "无 BGM" in planning_text
+    assert "无字幕" in planning_text
+    assert "1.5 秒" in planning_text
+    assert "30° 规则" in planning_text
+    assert "这个规格不创建独立节点" in planning["planning_notes"]
+    assert "故事脚本" in planning["planning_notes"]
+    assert "分镜" in planning["planning_notes"]
+    assert "关键元素" in planning["planning_notes"]
+    assert "样片" in planning["planning_notes"]
+    assert "音色参考" in planning["planning_notes"]
+    assert "不作为 Recipe" in planning["planning_notes"]
+    for recipe_id in recipe_ids:
+        assert recipe_id not in planning_text
+
+    recipe_text = "\n".join(
+        item
+        for recipe_id in recipe_ids
+        for item in [
+            recipes[recipe_id]["name"],
+            recipes[recipe_id]["system_prompt"],
+            recipes[recipe_id]["planning_prompt"],
+            recipes[recipe_id]["result_summary"],
+            "\n".join(recipes[recipe_id]["must_have_items"]),
+        ]
+    )
+    assert "日系漫剧" in recipe_text
+    for supplier in ("Seedance", "Kling", "Nano Banana", "Gemini", "GPT Image"):
+        assert supplier not in planning_text
+        assert supplier not in recipe_text
+
+    key_text = "\n".join(
+        [
+            recipes["jp-anime-drama-key-elements"]["system_prompt"],
+            "\n".join(recipes["jp-anime-drama-key-elements"]["must_have_items"]),
+        ]
+    )
+    assert "四格" in key_text
+    assert "胸像特写" in key_text
+    assert "白底" in key_text
+    assert "正拍" in key_text
+    assert "航拍" in key_text
+    assert "后续视频引用锚点" in key_text
+
+    shot_text = "\n".join(
+        [
+            recipes["jp-anime-drama-shot-video"]["system_prompt"],
+            "\n".join(recipes["jp-anime-drama-shot-video"]["must_have_items"]),
+        ]
+    )
+    assert "image_infos 总数不超过 9" in shot_text
+    assert "audio_infos 不超过 3" in shot_text
+    assert "reference_video" in shot_text
+    assert "手持呼吸感" in shot_text
+    assert "偏转 15°" in shot_text
+    assert "2300" in shot_text
+    assert "无音乐、无字幕、无屏幕文字" in shot_text
+
+    audio_text = "\n".join(
+        [
+            recipes["jp-anime-drama-audio-layers"]["system_prompt"],
+            "\n".join(recipes["jp-anime-drama-audio-layers"]["must_have_items"]),
+        ]
+    )
+    assert "key_element_audio" in audio_text
+    assert "禁止生成 music" in audio_text
+    assert "ducking" in audio_text
+
+
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
@@ -1829,6 +1942,10 @@ def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch
         "ling-cage-cinematic-video": (
             "sci-fi-survival-shot-video",
             "sci-fi-survival-key-elements",
+        ),
+        "japanese-anime-drama-video": (
+            "jp-anime-drama-shot-video",
+            "jp-anime-drama-key-elements",
         ),
     }
 
