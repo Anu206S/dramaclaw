@@ -16,9 +16,11 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 import shutil
 import subprocess
 import tempfile
+from collections.abc import Iterable
 from pathlib import Path
 from typing import Any, Optional
 
@@ -42,6 +44,8 @@ async def run_freezone_gen(
     provider: Optional[str] = None,
     model: Optional[str] = None,
     quality: Optional[str] = None,
+    model_params: Optional[dict[str, Any]] = None,
+    request_schema: Optional[dict[str, Any]] = None,
     output_task_type: str = "freezone_gen",
 ) -> Path:
     """text → image (with optional reference images).
@@ -75,6 +79,8 @@ async def run_freezone_gen(
         model_override=model,
         image_size_override=image_size,
     )
+    cfg["newapi_model_params"] = model_params or {}
+    cfg["newapi_request_schema"] = request_schema or {}
     if reference_paths:
         await generate_reference_edit_image(
             prompt=prompt,
@@ -1137,6 +1143,9 @@ async def run_freezone_video_gen(
     backend: str = "huimeng_seedance-2.0-fast",
     last_frame_path: Optional[str] = None,
     audio_setting: Optional[str] = None,
+    gen_mode: Optional[str] = None,
+    model_params: Optional[dict[str, Any]] = None,
+    request_schema: Optional[dict[str, Any]] = None,
 ) -> Path:
     """Freezone 文生视频。
 
@@ -1170,6 +1179,8 @@ async def run_freezone_video_gen(
         backend=backend,
         resolution=resolution,
         generate_audio=generate_audio,
+        model_params=model_params,
+        request_schema=request_schema,
     )
     if backend == "seedance_2":
         result = await video_gen.generate(
@@ -1204,6 +1215,7 @@ async def run_freezone_video_gen(
             references=references,
             human_review=bool(human_review),
             seedance2_config={"scene_optimize": scene_optimize} if scene_optimize else None,
+            gen_mode=gen_mode,
             **extra_kwargs,
         )
     if not result or result.status.value != "done":
@@ -1217,6 +1229,24 @@ async def run_freezone_video_gen(
 # ============================================================
 # Extract frames (M1a) — 视频拉片
 # ============================================================
+
+
+def sort_extracted_frames_by_pts(paths: Iterable[Path]) -> list[Path]:
+    """按文件名尾部的数值排序抽帧结果，而不是按字典序。
+
+    ``-frame_pts true`` 让 ffmpeg 把 ``%03d`` 填成该帧的 PTS 而不是递增计数，
+    于是文件名位数不固定：字典序会把 ``scene_1000.png`` 排到 ``scene_900.png``
+    前面，送进模型的关键帧顺序和 ``keyframe_index`` 映射就全乱了。
+    """
+
+    def sort_key(path: Path) -> tuple[int, int, str]:
+        match = re.search(r"(\d+)$", path.stem)
+        if match is None:
+            # 没有数字后缀的（理论上不该出现）排到最后，按名字兜底。
+            return (1, 0, path.name)
+        return (0, int(match.group(1)), path.name)
+
+    return sorted(paths, key=sort_key)
 
 
 async def run_freezone_extract_frames(
@@ -1269,7 +1299,7 @@ async def run_freezone_extract_frames(
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg scene detect failed: {proc.stderr[-500:]}")
 
-    scene_files = sorted(out_dir.glob("scene_*.png"))
+    scene_files = sort_extracted_frames_by_pts(out_dir.glob("scene_*.png"))
 
     # Fallback: if too few scene cuts (e.g. talking head static video),
     # sample evenly-spaced frames so the user always gets *something*.
@@ -1383,6 +1413,7 @@ async def run_freezone_analyze_shots(
     import json
 
     from novelvideo.freezone.vision_gateway import (
+        FREEZONE_VIDEO_ANALYSIS_TIMEOUT_SECONDS,
         VisionInput,
         call_freezone_vision_model,
         image_media_type,
@@ -1419,6 +1450,7 @@ async def run_freezone_analyze_shots(
             if Path(path).exists()
         ],
         model_override=model,
+        timeout_seconds=FREEZONE_VIDEO_ANALYSIS_TIMEOUT_SECONDS,
     )
     used_provider = "newapi"
 
@@ -1505,7 +1537,7 @@ async def _sample_evenly(video_path: Path, out_dir: Path, max_frames: int) -> li
         str(out_dir / "even_%03d.png"),
     ]
     await asyncio.to_thread(subprocess.run, cmd, capture_output=True, text=True, timeout=300)
-    return sorted(out_dir.glob("even_*.png"))
+    return sort_extracted_frames_by_pts(out_dir.glob("even_*.png"))
 
 
 _SIZE_BASE = {

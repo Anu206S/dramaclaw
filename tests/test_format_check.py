@@ -21,15 +21,15 @@ def _dialogue_lines(count: int) -> str:
     return "\n".join(f"角色{i % 3}：这是一句用于预检统计的对白。" for i in range(count))
 
 
-def test_bad_colon_scene_marker_and_split_location_time_warn_with_fixes():
+def test_complete_split_field_scene_header_is_supported_without_warning():
     result = build_import_format_check(
-        "场次：1\n地点：人类城池\n时间：日\n",
+        "场次：1\n地点：人类城池\n时间：日\n内外景：内\n",
         has_chapters=True,
     )
 
-    assert result["level"] == "warning"
-    assert _codes(result) >= {"scene_marker_colon_number", "split_location_time"}
-    assert all(issue["fix"] for issue in result["issues"])
+    assert result["level"] == "ok"
+    assert result["scene_header_status"] == "standard"
+    assert result["issues"] == []
 
 
 def test_normative_scene_headers_pass_without_issues():
@@ -46,6 +46,7 @@ def test_normative_scene_headers_pass_without_issues():
 
     assert result["level"] == "ok"
     assert result["issues"] == []
+    assert result["scene_header_status"] == "standard"
 
 
 def test_not_screenplay_like_is_metric_only():
@@ -88,6 +89,211 @@ def test_missing_scene_headers_is_warning_when_chapters_exist():
     assert result["level"] == "warning"
     assert "missing_scene_headers" in _codes(result)
     assert result["level"] != "blocking"
+    assert result["scene_header_status"] == "missing"
+
+
+def test_headerless_short_drama_is_blocking_when_scene_headers_are_required():
+    text = "第一集\n孙悟空走进寝房，看见师父正在休息。"
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["level"] == "blocking"
+    assert result["scene_header_status"] == "missing"
+    assert "missing_scene_headers" in _codes(result)
+
+
+@pytest.mark.parametrize(
+    "action_line",
+    [
+        "孙悟空快步走到门外",
+        "孙悟空推门走进屋内",
+        "孙悟空快步走到门外（闪回）",
+        "孙悟空推门走进屋内（雨）",
+    ],
+)
+def test_prose_ending_in_interior_or_exterior_is_not_a_repairable_scene_header(
+    action_line,
+):
+    text = f"""
+第一集
+{action_line}
+他发现师父已经离开。
+"""
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["level"] == "blocking"
+    assert result["scene_header_status"] == "missing"
+    assert "missing_scene_headers" in _codes(result)
+
+
+def test_unnumbered_header_with_explicit_time_and_commas_is_supported():
+    text = """
+第一集
+菩提寝房，夜，内
+孙悟空：师父。
+"""
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["level"] == "ok"
+    assert result["scene_header_status"] == "standard"
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "菩提寝房 夜 内（闪回）",
+        "菩提寝房，夜，内（梦境）",
+        "菩提寝房 夜 内（闪回）（雨）",
+    ],
+)
+def test_unnumbered_header_with_trailing_parenthetical_is_supported(header):
+    text = f"""
+第一集
+{header}
+孙悟空：师父。
+"""
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["level"] == "ok"
+    assert result["scene_header_status"] == "standard"
+
+
+def test_bare_numbered_labeled_scene_header_is_supported():
+    text = """
+第一集
+1场 地点：菩提寝房
+时间：夜
+内外景：内
+孙悟空：师父。
+"""
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["level"] == "ok"
+    assert result["scene_header_status"] == "standard"
+    assert result["issues"] == []
+
+
+def test_numbered_bracketed_scene_header_is_standard():
+    text = """
+第一集
+1 场景：【夜 皇宫豹房露台 外】
+人物：正德帝、随行太监
+△ 乾清宫方向烈焰冲天。
+正德帝：好一棚大烟火也。
+"""
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["level"] == "ok"
+    assert result["scene_header_status"] == "standard"
+    assert result["issues"] == []
+
+
+@pytest.mark.parametrize(
+    "header",
+    [
+        "1.1 李家客厅 内 日",
+        "1-1 李家客厅 日 内",
+        "内景 李家客厅 - 夜",
+        "INT. LI FAMILY LIVING ROOM - NIGHT",
+        "+场 李家客厅 内 日",
+    ],
+)
+def test_supported_scene_header_dialects_are_standard(header):
+    text = f"""
+第一集
+{header}
+人物：李梅、王芳
+李梅：我回来了。
+"""
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["scene_header_status"] == "standard"
+    assert result["level"] == "ok"
+    assert result["issues"] == []
+
+
+def test_recognizable_scene_header_with_missing_time_warns_but_does_not_block():
+    result = build_import_format_check(
+        "第一集\n1.1 李家客厅 内\n人物：李梅\n李梅：我回来了。",
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["scene_header_status"] == "repairable"
+    assert result["level"] == "warning"
+    assert "nonstandard_scene_headers" in _codes(result)
+    assert "scene_headers_missing_time" in _codes(result)
+
+
+def test_parenthetical_dialogue_directions_do_not_warn():
+    dialogue = "\n".join(
+        f"角色{i % 2}（轻笑，语气平静）：这是第{i + 1}句对白。"
+        for i in range(8)
+    )
+    text = f"""
+第一集
+1 场景：【夜 皇宫豹房露台 外】
+人物：角色0、角色1
+{dialogue}
+"""
+
+    result = build_import_format_check(
+        text,
+        has_chapters=True,
+        require_scene_headers=True,
+    )
+
+    assert result["level"] == "ok"
+    assert "heavy_parenthetical_dialogue" not in _codes(result)
+
+
+def test_complete_multiline_scene_headers_are_supported():
+    text = """
+场次（1）
+地点：兰州拉面馆，夜，内
+人物：杜晨
+杜晨：老板，结账。
+"""
+
+    result = build_import_format_check(text, has_chapters=True)
+
+    assert result["scene_header_status"] == "standard"
+    assert result["level"] == "ok"
+    assert result["issues"] == []
 
 
 def test_no_chapters_is_blocking():
@@ -140,10 +346,16 @@ def test_sparse_scene_headers_only_for_long_scripts():
     assert "sparse_scene_headers" not in _codes(short_result)
 
 
-def test_scene_marker_colon_number_reports_real_line_number():
-    result = build_import_format_check("梗概\n这是故事。\n场次：1\n地点：人类城池\n", has_chapters=True)
+def test_incomplete_split_field_scene_header_warns_without_blocking():
+    result = build_import_format_check(
+        "梗概\n这是故事。\n场次：1\n地点：人类城池\n",
+        has_chapters=True,
+        require_scene_headers=True,
+    )
 
-    assert _issue(result, "scene_marker_colon_number")["line"] == 3
+    assert result["level"] == "warning"
+    assert result["scene_header_status"] == "repairable"
+    assert "nonstandard_scene_headers" in _codes(result)
 
 
 def test_time_detection_requires_delimiters():
@@ -156,7 +368,8 @@ def test_time_detection_requires_delimiters():
         has_chapters=True,
     )
 
-    assert "split_location_time" in _codes(split_result)
+    assert split_result["scene_header_status"] == "repairable"
+    assert "nonstandard_scene_headers" in _codes(split_result)
     assert "missing_interior_exterior" not in _codes(false_time_result)
 
 
@@ -192,9 +405,8 @@ async def test_upload_success_includes_format_check_in_data(tmp_path, monkeypatc
 
     assert response["ok"] is True
     assert response["data"]["format_check"]["level"] == "warning"
-    assert _codes(response["data"]["format_check"]) >= {
-        "scene_marker_colon_number",
-        "split_location_time",
+    assert _codes(response["data"]["format_check"]) == {
+        "nonstandard_scene_headers",
     }
     assert "format_check" not in response
 

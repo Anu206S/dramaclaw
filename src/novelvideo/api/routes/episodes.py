@@ -1,6 +1,8 @@
 """分集列表 & 规划 & 身份端点。"""
 
 import logging
+from typing import Literal
+
 from fastapi import APIRouter, Depends
 
 from novelvideo.api.auth import get_api_user
@@ -115,6 +117,13 @@ async def _plan_episode_assets(
         logs.append(message)
 
     compiler = _asset_compiler_cls()(store)
+    state_dir = str(getattr(store, "state_dir", "") or "")
+    project_config = (
+        load_project_config_file_from_state_dir(state_dir)
+        if state_dir
+        else {}
+    )
+    compiler.spine_template = str(project_config.get("spine_template") or "drama")
     try:
         if asset_kind == "scene":
             scene_menu, new_count = await compiler.compile_episode_scenes(episode, on_log=log_fn)
@@ -617,7 +626,11 @@ async def update_episode(
 
 
 @router.get("/projects/{project}/chapters")
-async def detect_chapters(project: str, user: dict = Depends(get_api_user)):
+async def detect_chapters(
+    project: str,
+    spine_template: Literal["drama", "narrated"] | None = None,
+    user: dict = Depends(get_api_user),
+):
     """检测已上传小说的章节结构。"""
     resolved = await resolve_project_scope(project, user, required_role="viewer")
 
@@ -630,8 +643,14 @@ async def detect_chapters(project: str, user: dict = Depends(get_api_user)):
     if not novel_text:
         return {"ok": False, "error": "No novel file found. Upload a novel first."}
 
-    preview = build_chapter_preview(novel_text)
     config = load_project_config_file_from_state_dir(resolved.state_dir)
+    requested_spine_template = spine_template or str(
+        config.get("spine_template") or "drama"
+    ).strip()
+    preview = build_chapter_preview(
+        novel_text,
+        include_scene_blocks=requested_spine_template != "narrated",
+    )
     source_filename = resolve_uploaded_novel_filename(
         resolved.project_dir,
         novel_text,

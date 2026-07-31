@@ -12,6 +12,7 @@ import { motion } from "framer-motion";
 import {
   AlertTriangle,
   CheckCircle2,
+  ChevronRight,
   FileText,
   FishSymbol,
   Info,
@@ -45,14 +46,13 @@ import {
   BillingRuleNotConfiguredError,
 } from "@/lib/api-errors";
 import { CreditCostInline } from "@/components/credit-cost-inline";
-import { useCreditDisplayHidden } from "@/components/credits/credit-visual";
+import type { CreditPromotionDisplay } from "@/components/credits/credit-visual";
 import { useDebouncedValue } from "@/hooks/use-debounced-value";
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 import { Progress } from "@/components/ui/progress";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
-import { isCeRuntime } from "@/lib/runtime-config";
 import {
   Select,
   SelectContent,
@@ -70,8 +70,16 @@ import {
   AlertDialogHeader,
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { cn } from "@/lib/utils";
 import type { ProjectConfig, SpineTemplate } from "@/types/project";
+import type { Chapter, ChapterSceneBlock } from "@/types/episode";
 
 // ─── form schema ─────────────────────────────────────────────────────────────
 
@@ -110,6 +118,52 @@ const VISUAL_STYLE_OPTIONS: { value: string; labelKey: string }[] = [
     labelKey: "ingest.visualStyles.republicanEraDrama",
   },
 ];
+
+function chapterContentSlice(
+  chapter: Chapter,
+  startLine: number,
+  endLine: number,
+): string {
+  const lines = (chapter.content ?? "")
+    .replace(/\r\n?/g, "\n")
+    .split("\n");
+  const start = Math.max(0, Math.min(startLine, lines.length));
+  const end = Math.max(start, Math.min(endLine, lines.length));
+  return lines.slice(start, end).join("\n").trim();
+}
+
+function sceneBodyFromChapter(
+  chapter: Chapter,
+  scene: ChapterSceneBlock,
+): string {
+  const legacyContent = scene.content?.trim();
+  if (legacyContent) return legacyContent;
+  if (
+    typeof scene.content_start_line !== "number" ||
+    typeof scene.content_end_line !== "number"
+  ) {
+    return "";
+  }
+  return chapterContentSlice(
+    chapter,
+    scene.content_start_line,
+    scene.content_end_line,
+  );
+}
+
+function unparsedBodyFromChapter(chapter: Chapter): string {
+  if (
+    typeof chapter.unparsed_content_start_line !== "number" ||
+    typeof chapter.unparsed_content_end_line !== "number"
+  ) {
+    return "";
+  }
+  return chapterContentSlice(
+    chapter,
+    chapter.unparsed_content_start_line,
+    chapter.unparsed_content_end_line,
+  );
+}
 
 const ETHNICITY_OPTIONS: { value: string; labelKey: string }[] = [
   { value: "Chinese", labelKey: "ingest.ethnicities.chinese" },
@@ -253,6 +307,68 @@ function countBillableNovelChars(text: string): number {
   return text ? text.replace(/[\s\u3000]+/g, "").length : 0;
 }
 
+function resolveFormatCheckForSpineTemplate(
+  formatCheck: FormatCheck | null | undefined,
+  spineTemplate: IngestSettingsValues["spine_template"],
+  t: (key: string) => string,
+): FormatCheck | null {
+  if (!formatCheck) return null;
+
+  if (spineTemplate === "narrated") {
+    const issues = (formatCheck.issues ?? []).filter(
+      (issue) =>
+        !["missing_scene_headers", "nonstandard_scene_headers"].includes(
+          issue.code,
+        ),
+    );
+    if (issues.length === 0 && formatCheck.level !== "blocking") {
+      return { ...formatCheck, level: "ok", issues };
+    }
+    return { ...formatCheck, issues };
+  }
+
+  if (formatCheck.scene_header_status === "missing") {
+    const issues = (formatCheck.issues ?? []).filter(
+      (issue) => issue.code !== "missing_scene_headers",
+    );
+    issues.unshift({
+      code: "missing_scene_headers",
+      line: null,
+      message: t("ingest.sceneHeaders.missing"),
+      fix: t("ingest.sceneHeaders.missingFix"),
+    });
+    return {
+      ...formatCheck,
+      level: "blocking",
+      summary: t("ingest.sceneHeaders.missing"),
+      issues,
+    };
+  }
+
+  if (
+    formatCheck.scene_header_status === "repairable" &&
+    formatCheck.level !== "blocking"
+  ) {
+    const issues = (formatCheck.issues ?? []).filter(
+      (issue) => issue.code !== "nonstandard_scene_headers",
+    );
+    issues.unshift({
+      code: "nonstandard_scene_headers",
+      line: null,
+      message: t("ingest.sceneHeaders.repairable"),
+      fix: t("ingest.sceneHeaders.repairableFix"),
+    });
+    return {
+      ...formatCheck,
+      level: "warning",
+      summary: t("ingest.sceneHeaders.repairable"),
+      issues,
+    };
+  }
+
+  return formatCheck;
+}
+
 function hiddenImportedPreviewKey(project: string): string {
   return `${HIDDEN_IMPORTED_PREVIEW_KEY_PREFIX}${encodeURIComponent(project)}`;
 }
@@ -347,7 +463,8 @@ function UploadZone({
         className="hidden"
         accept=".txt,.md,.docx"
         onChange={(e) => {
-          const file = e.target.files?.[0];
+          const file = e.currentTarget.files?.[0];
+          e.currentTarget.value = "";
           if (file) onFile(file);
         }}
       />
@@ -394,8 +511,8 @@ function UploadingOverlay() {
   );
 }
 
-// 格式风险常驻警告：文件在则警告在，替代一闪而过的 toast.warning。
-// boxed = 富卡片里的琥珀色警告条；plain = 上传表单提示行里的一行轻量文字。
+// 格式风险常驻提示：warning 仅提示且允许导入，blocking 使用红色并阻止导入。
+// boxed = 富卡片提示条；plain = 上传表单提示行里的一行轻量文字。
 function FormatCheckWarning({
   formatCheck,
   onViewDetails,
@@ -424,7 +541,14 @@ function FormatCheckWarning({
   if (variant === "plain") {
     return (
       <div className={cn("flex items-start gap-1.5", className)}>
-        <AlertTriangle className="mt-px size-3.5 shrink-0 text-foreground/45" />
+        <AlertTriangle
+          className={cn(
+            "mt-px size-3.5 shrink-0",
+            formatCheck.level === "blocking"
+              ? "text-destructive"
+              : "text-foreground/45",
+          )}
+        />
         <div className="min-w-0">
           <span>{formatCheck.summary || t("aiAssistant.formatCheck.title")}</span>
           {detailsButton}
@@ -436,11 +560,21 @@ function FormatCheckWarning({
   return (
     <div
       className={cn(
-        "flex items-start gap-2 rounded-md border border-white/10 bg-white/[0.04] px-3 py-2",
+        "flex items-start gap-2 rounded-md border px-3 py-2",
+        formatCheck.level === "blocking"
+          ? "border-destructive/35 bg-destructive/10"
+          : "border-white/10 bg-white/[0.04]",
         className,
       )}
     >
-      <AlertTriangle className="mt-0.5 size-3.5 shrink-0 text-foreground/45" />
+      <AlertTriangle
+        className={cn(
+          "mt-0.5 size-3.5 shrink-0",
+          formatCheck.level === "blocking"
+            ? "text-destructive"
+            : "text-foreground/45",
+        )}
+      />
       <div className="min-w-0 text-xs leading-5 text-foreground/70">
         <span>{formatCheck.summary || t("aiAssistant.formatCheck.title")}</span>
         {detailsButton}
@@ -463,6 +597,7 @@ function UploadedFileCard({
   isStarting,
   sourceLocked,
   ingestCostDisplay,
+  ingestPromotion,
   onStart,
   onCancel,
   isCancelling,
@@ -482,6 +617,7 @@ function UploadedFileCard({
   isStarting: boolean;
   sourceLocked: boolean;
   ingestCostDisplay?: string | null;
+  ingestPromotion?: CreditPromotionDisplay | null;
   onStart: () => void;
   onCancel: () => void;
   isCancelling: boolean;
@@ -492,7 +628,7 @@ function UploadedFileCard({
   const percent = Math.round(progress * 100);
   // 导入完成后风险提示已无行动价值，只在导入前/失败/中止时常驻展示。
   const showFormatWarning =
-    formatCheck?.level === "warning" && status !== "completed";
+    formatCheck?.level !== "ok" && status !== "completed";
   const statusStyles: Record<IngestFileStatus, string> = {
     uploaded: "border-primary/30 bg-primary/10 text-primary",
     importing: "border-primary/30 bg-primary/10 text-primary",
@@ -585,7 +721,10 @@ function UploadedFileCard({
                     : status === "failed" || status === "stopped"
                       ? t("common.retry")
                       : t("ingest.startIngest")}
-                  <CreditCostInline display={ingestCostDisplay} />
+                  <CreditCostInline
+                    display={ingestCostDisplay}
+                    promotion={ingestPromotion}
+                  />
                 </Button>
               )}
               {/* 已锁定的重导入源只允许原文件重试；普通临时上传在失败或停止后
@@ -725,11 +864,13 @@ function IngestStartButton({
   disabled,
   isBusy,
   costDisplay,
+  promotion,
   onClick,
 }: {
   disabled: boolean;
   isBusy: boolean;
   costDisplay?: string | null;
+  promotion?: CreditPromotionDisplay | null;
   onClick: () => void;
 }) {
   const { t } = useTranslation();
@@ -738,14 +879,14 @@ function IngestStartButton({
       type="button"
       onClick={onClick}
       disabled={disabled}
-      className="h-8 w-[124px] rounded-[8px] bg-primary px-0 text-xs font-normal text-primary-foreground shadow-none transition-colors hover:bg-primary/85 active:bg-primary/75"
+      className="h-auto min-h-8 min-w-[124px] rounded-[8px] bg-primary px-3 py-1 text-xs font-normal text-primary-foreground shadow-none transition-colors hover:bg-primary/85 active:bg-primary/75"
     >
-      <span className="grid w-full grid-cols-[12px_52px_26px] items-center justify-center gap-1.5">
+      <span className="grid w-full grid-cols-[12px_52px_auto] items-center justify-center gap-1.5">
         <Play className="size-3 fill-current" />
         <span className="text-center">
           {isBusy ? t("ingest.processing") : t("ingest.startIngest")}
         </span>
-        <IngestCreditCostSlot display={costDisplay} />
+        <IngestCreditCostSlot display={costDisplay} promotion={promotion} />
       </span>
     </Button>
   );
@@ -753,42 +894,18 @@ function IngestStartButton({
 
 const IngestCreditCostSlot = memo(function IngestCreditCostSlot({
   display,
+  promotion,
 }: {
   display?: string | null;
+  promotion?: CreditPromotionDisplay | null;
 }) {
-  const hidden = useCreditDisplayHidden() || isCeRuntime() || !display;
   return (
-    <span className="flex h-4 w-[26px] items-center justify-center overflow-hidden">
-      <span
-        aria-hidden="true"
-        className={cn(
-          "inline-flex w-[26px] items-center justify-center gap-0.5 text-[11px] font-medium leading-none tabular-nums text-primary-foreground",
-          hidden && "invisible",
-        )}
-      >
-        <svg
-          viewBox="0 0 24 24"
-          className="size-3 shrink-0 text-primary-foreground"
-          aria-hidden="true"
-        >
-          <path
-            d="M12 2.6l2.16 6.28L20.4 11l-6.24 2.12L12 19.4l-2.16-6.28L3.6 11l6.24-2.12L12 2.6Z"
-            fill="currentColor"
-          />
-          <path
-            d="M18.1 16.2l.72 1.98 1.98.72-1.98.72-.72 1.98-.72-1.98-1.98-.72 1.98-.72.72-1.98Z"
-            fill="currentColor"
-            opacity="0.78"
-          />
-          <path
-            d="M7.2 3.3l.44 1.18 1.18.44-1.18.44-.44 1.18-.44-1.18-1.18-.44 1.18-.44.44-1.18Z"
-            fill="currentColor"
-            opacity="0.72"
-          />
-        </svg>
-        <span className="min-w-[8px] text-center">{display ?? "0"}</span>
-      </span>
-    </span>
+    <CreditCostInline
+      display={display}
+      promotion={promotion}
+      className="ml-0 text-primary-foreground"
+      iconClassName="text-primary-foreground drop-shadow-none [&_path]:fill-current"
+    />
   );
 });
 
@@ -889,7 +1006,23 @@ export function IngestPageContent({ project }: { project: string }) {
     formatCheck: FormatCheck;
     filename: string;
   } | null>(null);
+  const [selectedChapterNumber, setSelectedChapterNumber] = useState<number | null>(
+    null,
+  );
   const logsScrollRef = useRef<HTMLDivElement>(null);
+  const replacementFileInputRef = useRef<HTMLInputElement>(null);
+
+  // The chapter preview representation depends on the currently selected
+  // project type, so initialize the form before creating that query.
+  const { data: projectRes } = useProject(project);
+  const config = projectRes?.data;
+  const normalizedDefaults = normalizeLegacyDefaults(config);
+  const { watch, setValue, getValues } = useForm<SettingsForm>({
+    resolver: zodResolver(settingsSchema),
+    values: normalizedDefaults,
+  });
+  const formValues = watch();
+  const settingsValues = resolveIngestSettings(formValues, normalizedDefaults);
 
   const uploadMutation = useUploadNovel(project);
   const startIngestMutation = useStartIngest(project);
@@ -902,6 +1035,7 @@ export function IngestPageContent({ project }: { project: string }) {
   // route changes. Upload filename/size is only local session metadata.
   const { data: chaptersRes, isFetching: chaptersFetching } = useChapters(
     project,
+    settingsValues.spine_template,
     true,
   );
   const chaptersData = chaptersRes?.data;
@@ -924,7 +1058,7 @@ export function IngestPageContent({ project }: { project: string }) {
   const hasBillableInput = inputMode === "paste"
     ? pastedBillableChars > 0
     : (billingBillableChars ?? 0) > 0;
-  const ingestFeatureCost = useGenerationCreditCost("feature", "ingest_fast", {
+  const ingestFeatureCost = useGenerationCreditCost("feature", "mainline.ingest_fast", {
     quantity: billingBillableChars && billingBillableChars > 0
       ? billingBillableChars
       : undefined,
@@ -1092,11 +1226,8 @@ export function IngestPageContent({ project }: { project: string }) {
   }, [ingestLogs]);
 
   // Project config & form
-  const { data: projectRes } = useProject(project);
   const { data: stylesRes } = useStyles(project);
   const updateProject = useUpdateProject(project);
-  const config = projectRes?.data;
-  const normalizedDefaults = normalizeLegacyDefaults(config);
   const visualStyleOptions = useMemo(() => {
     const styles = stylesRes?.data ?? [];
     if (styles.length > 0) {
@@ -1111,13 +1242,16 @@ export function IngestPageContent({ project }: { project: string }) {
     }));
   }, [stylesRes?.data, t]);
 
-  const { watch, setValue, getValues } = useForm<SettingsForm>({
-    resolver: zodResolver(settingsSchema),
-    values: normalizedDefaults,
-  });
-
-  const formValues = watch();
-  const settingsValues = resolveIngestSettings(formValues, normalizedDefaults);
+  const displayedFormatCheck = useMemo(
+    () =>
+      resolveFormatCheckForSpineTemplate(
+        uploadedFile?.format_check,
+        settingsValues.spine_template,
+        t,
+      ),
+    [settingsValues.spine_template, t, uploadedFile?.format_check],
+  );
+  const formatCheckBlocksImport = displayedFormatCheck?.level === "blocking";
   const settingsChanged =
     projectRes?.data !== undefined &&
     hasIngestSettingsChanges(settingsValues, config);
@@ -1159,33 +1293,47 @@ export function IngestPageContent({ project }: { project: string }) {
   const handleFile = useCallback(
     async (file: File) => {
       try {
-        const result = await uploadMutation.mutateAsync(file);
+        const result = await uploadMutation.mutateAsync({
+          file,
+          spineTemplate: settingsValues.spine_template,
+        });
         setUploadedFile(result.data);
         setUploadedFileSource("upload");
+        setHideImportedPreview(false);
+        writeHiddenImportedPreview(project, false);
         setIngestFileStatus("uploaded");
         setIngestError(null);
         toast.success(`${t("common.upload")} ✓ — ${result.data.filename}`);
         // 格式风险不再走 toast：SelectedFileCard 内有常驻警告条,文件在则警告在。
+        return true;
       } catch (error) {
         toast.error(backendErrorToastMessage(error, t));
+        return false;
       }
     },
-    [uploadMutation, t],
+    [project, settingsValues.spine_template, uploadMutation, t],
   );
 
   const handleReupload = useCallback(() => {
-    setUploadedFile(null);
-    setUploadedFileSource(null);
-    setIngestSubmitted(false);
-    setReimporting(true);
-    // Transient-only: keep the upload form for the current view, but do NOT
-    // persist the "hide preview" intent. If the user navigates away without
-    // completing a new import, returning should restore the imported summary.
-    setHideImportedPreview(true);
-    setIngestFileStatus("uploaded");
-    setIngestError(null);
-    setIngestLogs([]);
+    replacementFileInputRef.current?.click();
   }, []);
+
+  const handleReplacementFile = useCallback(
+    async (file: File) => {
+      const uploaded = await handleFile(file);
+      if (!uploaded) return;
+
+      // Only replace the current preview after the new upload succeeds. Native
+      // file pickers do not emit a change event when cancelled, so preserving
+      // the old state here prevents a cancelled picker from blanking the page.
+      setIngestSubmitted(false);
+      setReimporting(true);
+      setIngestFileStatus("uploaded");
+      setIngestError(null);
+      setIngestLogs([]);
+    },
+    [handleFile],
+  );
 
   const handleDeleteFile = useCallback(() => {
     setUploadedFile(null);
@@ -1213,14 +1361,30 @@ export function IngestPageContent({ project }: { project: string }) {
     const file = new File([text], "pasted-novel.txt", {
       type: "text/plain;charset=utf-8",
     });
-    const result = await uploadMutation.mutateAsync(file);
+    const result = await uploadMutation.mutateAsync({
+      file,
+      spineTemplate: settingsValues.spine_template,
+    });
     setUploadedFile(result.data);
     setUploadedFileSource("paste");
     setIngestFileStatus("uploaded");
     setIngestError(null);
-    warnFormatCheck(result.data.format_check, result.data.filename);
+    warnFormatCheck(
+      resolveFormatCheckForSpineTemplate(
+        result.data.format_check,
+        settingsValues.spine_template,
+        t,
+      ) ?? undefined,
+      result.data.filename,
+    );
     return result.data;
-  }, [pastedText, uploadMutation, warnFormatCheck]);
+  }, [
+    pastedText,
+    settingsValues.spine_template,
+    t,
+    uploadMutation,
+    warnFormatCheck,
+  ]);
 
   const saveProjectSettings = useCallback(async () => {
     const defaults = normalizeLegacyDefaults(config);
@@ -1304,8 +1468,25 @@ export function IngestPageContent({ project }: { project: string }) {
     const sourceFile =
       inputMode === "upload" ? uploadedFile : await uploadPastedText();
     if (!sourceFile) return;
+    const formatCheck = resolveFormatCheckForSpineTemplate(
+      sourceFile.format_check,
+      settingsValues.spine_template,
+      t,
+    );
+    if (formatCheck?.level === "blocking") {
+      setFormatCheckDetails({ formatCheck, filename: sourceFile.filename });
+      toast.error(formatCheck.summary);
+      return;
+    }
     await startIngestFromFilename(sourceFile.filename);
-  }, [inputMode, uploadedFile, uploadPastedText, startIngestFromFilename]);
+  }, [
+    inputMode,
+    settingsValues.spine_template,
+    startIngestFromFilename,
+    t,
+    uploadedFile,
+    uploadPastedText,
+  ]);
 
   const handleReimportExisting = useCallback(async () => {
     setReuploadConfirmOpen(false);
@@ -1323,6 +1504,10 @@ export function IngestPageContent({ project }: { project: string }) {
   }, [reimportSourceFilename, startIngestFromFilename]);
 
   const chapters = chaptersData?.chapters ?? [];
+  const selectedChapter =
+    selectedChapterNumber == null
+      ? null
+      : chapters.find((chapter) => chapter.number === selectedChapterNumber) ?? null;
   const chapterCount = chapters.length;
   const shouldRestoreImportedPreview =
     hasImportedContent && !hideImportedPreview;
@@ -1372,7 +1557,8 @@ export function IngestPageContent({ project }: { project: string }) {
   );
 
   const canStartFromCurrentInput =
-    inputMode === "upload" ? !!uploadedFile : pastedText.trim().length > 0;
+    (inputMode === "upload" ? !!uploadedFile : pastedText.trim().length > 0) &&
+    !formatCheckBlocksImport;
   const hasPastedText = pastedText.trim().length > 0;
   const hasUserUploadedFile = uploadedFileSource === "upload" && !!uploadedFile;
   const sourceHint =
@@ -1385,6 +1571,18 @@ export function IngestPageContent({ project }: { project: string }) {
   return (
     <div className="-m-6 flex h-[calc(100%+3rem)] flex-col overflow-hidden">
       {uploadMutation.isPending && <UploadingOverlay />}
+      <input
+        ref={replacementFileInputRef}
+        type="file"
+        className="hidden"
+        accept=".txt,.md,.docx"
+        aria-label={t("common.reupload")}
+        onChange={(event) => {
+          const file = event.currentTarget.files?.[0];
+          event.currentTarget.value = "";
+          if (file) void handleReplacementFile(file);
+        }}
+      />
       <div className="flex shrink-0 flex-col gap-3 border-b border-border/30 bg-background px-9 py-5 lg:flex-row lg:items-center lg:justify-between">
         <div className="flex min-w-0 items-start gap-3">
           <span className="mt-0.5 flex size-9 shrink-0 items-center justify-center rounded-md bg-primary text-primary-foreground">
@@ -1472,16 +1670,15 @@ export function IngestPageContent({ project }: { project: string }) {
               </div>
               {inputMode === "upload" && (
                 <div className="mt-1.5 min-h-4 px-1 text-xs leading-4 text-muted-foreground/70">
-                  {uploadedFile?.format_check?.level === "warning" ? (
+                  {displayedFormatCheck && displayedFormatCheck.level !== "ok" ? (
                     // 格式风险常驻在提示行（紧邻「开始导入」决策区），替代一闪而过的 toast。
                     <FormatCheckWarning
-                      formatCheck={uploadedFile.format_check}
+                      formatCheck={displayedFormatCheck}
                       variant="plain"
                       onViewDetails={() => {
-                        if (!uploadedFile.format_check) return;
                         setFormatCheckDetails({
-                          formatCheck: uploadedFile.format_check,
-                          filename: uploadedFile.filename,
+                          formatCheck: displayedFormatCheck,
+                          filename: uploadedFile?.filename ?? "",
                         });
                       }}
                     />
@@ -1678,6 +1875,7 @@ export function IngestPageContent({ project }: { project: string }) {
                     }
                     isBusy={isStarting || ingestStarted}
                     costDisplay={ingestFeatureCostDisplay}
+                    promotion={ingestFeatureCostData?.promotion}
                   />
                 </div>
               </div>
@@ -1693,17 +1891,18 @@ export function IngestPageContent({ project }: { project: string }) {
                   progress={taskStream.progress}
                   currentTask={taskStream.currentTask}
                   error={ingestError}
-                  formatCheck={uploadedFile?.format_check ?? null}
+                  formatCheck={displayedFormatCheck}
                   onViewFormatCheck={() => {
-                    if (!uploadedFile?.format_check) return;
+                    if (!displayedFormatCheck) return;
                     setFormatCheckDetails({
-                      formatCheck: uploadedFile.format_check,
-                      filename: uploadedFile.filename,
+                      formatCheck: displayedFormatCheck,
+                      filename: previewFile.filename,
                     });
                   }}
                   isIngesting={ingestStarted}
                   canStart={
                     !ingestSubmitted &&
+                    !formatCheckBlocksImport &&
                     (!!uploadedFile ||
                       (!!reimportSourceFilename &&
                         (previewStatus === "failed" ||
@@ -1712,6 +1911,7 @@ export function IngestPageContent({ project }: { project: string }) {
                   isStarting={isStarting}
                   sourceLocked={!!reimportSourceFilename}
                   ingestCostDisplay={ingestFeatureCostDisplay}
+                  ingestPromotion={ingestFeatureCostData?.promotion}
                   onStart={
                     reimportSourceFilename
                       ? handleRetryReimport
@@ -1922,30 +2122,58 @@ export function IngestPageContent({ project }: { project: string }) {
                       </span>
                     </div>
                     <div className="divide-y divide-white/[0.05]">
-                      {chapters.slice(0, 20).map((ch) => (
-                        <div
-                          key={ch.number}
-                          className="grid grid-cols-[4rem_1fr_5rem] items-center gap-2 px-4 py-2.5 text-xs"
-                        >
-                          <span className="tabular-nums text-muted-foreground">
-                            {ch.number}
-                          </span>
-                          <span className="truncate text-foreground">
-                            {chapterTitle(ch.number, ch.title, ch.content)}
-                          </span>
-                          <span className="text-right tabular-nums text-muted-foreground">
-                            {(() => {
-                              const count =
-                                ch.word_count ??
-                                ch.char_count ??
-                                ch.content?.length;
-                              return count != null
-                                ? count.toLocaleString()
-                                : "—";
-                            })()}
-                          </span>
-                        </div>
-                      ))}
+                      {chapters.slice(0, 20).map((ch) => {
+                        const isDramaChapter =
+                          settingsValues.spine_template === "drama";
+                        return (
+                          <button
+                            key={ch.number}
+                            type="button"
+                            onClick={() => setSelectedChapterNumber(ch.number)}
+                            className="grid w-full grid-cols-[4rem_1fr_5rem] items-center gap-2 px-4 py-2.5 text-left text-xs transition-colors hover:bg-accent/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/40 focus-visible:ring-inset"
+                            aria-label={t(
+                              isDramaChapter
+                                ? "ingest.sceneHeaders.open"
+                                : "ingest.chapterDetails.open",
+                              {
+                                chapter: chapterTitle(
+                                  ch.number,
+                                  ch.title,
+                                  ch.content,
+                                ),
+                              },
+                            )}
+                          >
+                            <span className="tabular-nums text-muted-foreground">
+                              {ch.number}
+                            </span>
+                            <span className="flex min-w-0 items-center gap-2 text-foreground">
+                              <span className="min-w-0 flex-1 truncate">
+                                {chapterTitle(ch.number, ch.title, ch.content)}
+                              </span>
+                              {isDramaChapter && (
+                                <span className="shrink-0 text-muted-foreground">
+                                  {t("ingest.sceneHeaders.rowCount", {
+                                    count: ch.scene_blocks?.length ?? 0,
+                                  })}
+                                </span>
+                              )}
+                              <ChevronRight className="size-3.5 shrink-0 text-muted-foreground" />
+                            </span>
+                            <span className="text-right tabular-nums text-muted-foreground">
+                              {(() => {
+                                const count =
+                                  ch.word_count ??
+                                  ch.char_count ??
+                                  ch.content?.length;
+                                return count != null
+                                  ? count.toLocaleString()
+                                  : "—";
+                              })()}
+                            </span>
+                          </button>
+                        );
+                      })}
                       {chapterCount > 20 && (
                         <div className="px-4 py-2.5 text-center text-xs text-muted-foreground">
                           {t("ingest.moreChapters", {
@@ -1955,6 +2183,157 @@ export function IngestPageContent({ project }: { project: string }) {
                       )}
                     </div>
                   </div>
+
+                  <Sheet
+                    open={selectedChapterNumber !== null && selectedChapter !== null}
+                    onOpenChange={(open) => {
+                      if (!open) setSelectedChapterNumber(null);
+                    }}
+                  >
+                    <SheetContent
+                      side="right"
+                      className="data-[side=right]:w-full border-border/50 sm:!max-w-[520px]"
+                    >
+                      <SheetHeader className="border-b border-border/50 px-6 py-5">
+                        <SheetTitle>
+                          {selectedChapter
+                            ? chapterTitle(
+                                selectedChapter.number,
+                                selectedChapter.title,
+                                selectedChapter.content,
+                              )
+                            : ""}
+                        </SheetTitle>
+                        <SheetDescription>
+                          {settingsValues.spine_template === "drama"
+                            ? t("ingest.sceneHeaders.count", {
+                                count:
+                                  selectedChapter?.scene_blocks?.length ?? 0,
+                              })
+                            : t("ingest.chapterDetails.description")}
+                        </SheetDescription>
+                      </SheetHeader>
+                      <ScrollArea className="min-h-0 flex-1">
+                        <div className="space-y-6 px-6 pb-8 pt-2">
+                          {settingsValues.spine_template === "drama" && (
+                            <section>
+                              <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                                {t("ingest.chapterDetails.sceneHeaders")}
+                              </h3>
+                              <div className="space-y-3">
+                                {selectedChapter?.scene_blocks?.length ? (
+                                  selectedChapter.scene_blocks.map(
+                                    (scene, index) => (
+                                      <div
+                                        key={`${index}-${scene.scene_no || "scene"}-${scene.header}`}
+                                        className="rounded-lg border border-border/50 bg-muted/20 p-4"
+                                      >
+                                        <div className="flex items-center justify-between gap-3">
+                                          <p className="text-sm font-medium text-foreground">
+                                            {scene.scene_no
+                                              ? t(
+                                                  "ingest.sceneHeaders.scene",
+                                                  {
+                                                    number: scene.scene_no,
+                                                  },
+                                                )
+                                              : t(
+                                                  "ingest.sceneHeaders.scene",
+                                                  {
+                                                    number: index + 1,
+                                                  },
+                                                )}
+                                          </p>
+                                          <span className="text-xs text-muted-foreground">
+                                            {[
+                                              scene.time_of_day,
+                                              scene.interior_exterior,
+                                            ]
+                                              .filter(Boolean)
+                                              .join(" · ")}
+                                          </span>
+                                        </div>
+                                        <p className="mt-2 text-sm leading-6 text-foreground/80">
+                                          {scene.location ||
+                                            t(
+                                              "ingest.sceneHeaders.unknownLocation",
+                                            )}
+                                        </p>
+                                        {scene.characters?.length ? (
+                                          <p className="mt-2 text-xs leading-5 text-muted-foreground">
+                                            {t(
+                                              "ingest.sceneHeaders.characters",
+                                            )}
+                                            :{" "}
+                                            {scene.characters.join(
+                                              t(
+                                                "ingest.sceneHeaders.characterSeparator",
+                                              ),
+                                            )}
+                                          </p>
+                                        ) : null}
+                                        <p className="mt-3 border-t border-border/40 pt-3 font-mono text-xs leading-5 text-muted-foreground">
+                                          {scene.header}
+                                        </p>
+                                        <div className="mt-3 whitespace-pre-wrap border-t border-border/40 pt-3 text-sm leading-7 text-foreground/85">
+                                          {sceneBodyFromChapter(
+                                            selectedChapter,
+                                            scene,
+                                          ) ||
+                                            t(
+                                              "ingest.chapterDetails.emptyScene",
+                                            )}
+                                        </div>
+                                      </div>
+                                    ),
+                                  )
+                                ) : selectedChapter?.content?.trim() ? (
+                                  <div
+                                    data-testid="chapter-body"
+                                    className="whitespace-pre-wrap rounded-lg border border-border/50 bg-muted/20 p-4 text-sm leading-7 text-foreground/85"
+                                  >
+                                    {selectedChapter.content.trim()}
+                                  </div>
+                                ) : (
+                                  <div className="rounded-lg border border-dashed border-border/50 px-4 py-10 text-center text-sm text-muted-foreground">
+                                    {t("ingest.sceneHeaders.empty")}
+                                  </div>
+                                )}
+                              </div>
+                            </section>
+                          )}
+
+                          {settingsValues.spine_template === "drama" &&
+                            selectedChapter &&
+                            unparsedBodyFromChapter(selectedChapter) && (
+                              <section>
+                                <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                                  {t("ingest.sceneHeaders.unparsedBody")}
+                                </h3>
+                                <div className="whitespace-pre-wrap rounded-lg border border-border/50 bg-muted/20 p-4 text-sm leading-7 text-foreground/85">
+                                  {unparsedBodyFromChapter(selectedChapter)}
+                                </div>
+                              </section>
+                            )}
+
+                          {settingsValues.spine_template !== "drama" && (
+                            <section>
+                              <h3 className="mb-3 text-xs font-medium uppercase tracking-wider text-muted-foreground">
+                                {t("ingest.chapterDetails.body")}
+                              </h3>
+                              <div
+                                data-testid="chapter-body"
+                                className="whitespace-pre-wrap rounded-lg border border-border/50 bg-muted/20 p-4 text-sm leading-7 text-foreground/85"
+                              >
+                                {selectedChapter?.content?.trim() ||
+                                  t("ingest.chapterDetails.empty")}
+                              </div>
+                            </section>
+                          )}
+                        </div>
+                      </ScrollArea>
+                    </SheetContent>
+                  </Sheet>
                 </div>
               )}
 

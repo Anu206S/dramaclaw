@@ -2,6 +2,8 @@
 // Copyright (c) 2026 ClaymoreLab
 import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
+import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 import {
   Handle,
   Position,
@@ -18,6 +20,7 @@ import {
   ImageIcon,
   Languages,
   Loader2,
+  Upload,
   User,
   Video,
   X,
@@ -43,7 +46,6 @@ import {
   NodeHeader,
   NODE_HEADER_FLOATING_POSITION_CLASS,
 } from '@/features/canvas/ui/NodeHeader';
-import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { NodeGenerationOverlay } from '@/features/canvas/ui/NodeGenerationOverlay';
 import { RegenerateButton } from '@/features/canvas/ui/RegenerateButton';
@@ -60,20 +62,16 @@ import { PanelExpandButton } from '@/features/canvas/ui/PanelExpandButton';
 import { useCanvasStore } from '@/stores/canvasStore';
 import {
   fetchFreezoneStoryScriptResult,
+  fetchFreezoneTextTranslateResult,
   submitFreezoneStoryScript,
+  submitFreezoneTextTranslate,
+  uploadFreezoneImage,
   type FreezoneGenerationHistoryRecord,
   type FreezoneStoryScriptResult,
   type FreezoneStoryScriptRow,
 } from '@/api/ops';
 import { awaitTaskCompletion } from '@/api/tasks';
-import { translateNodeText } from '@/features/canvas/application/translateText';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
-import {
-  publishNodeActionAccepted,
-  publishNodeActionError,
-  publishNodeActionSuccess,
-  subscribeNodeAction,
-} from '@/features/canvas/application/nodeActionResult';
 import { useUpstreamNodes } from '@/features/canvas/application/useUpstreamGraph';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { useNodeGenerationHistory } from '@/features/canvas/hooks/useNodeGenerationHistory';
@@ -82,6 +80,10 @@ import {
   hasCompletedHistoryRecords,
 } from '@/features/canvas/ui/NodeGenerationHistory';
 import { readUrl } from '@/lib/url-params';
+import {
+  BillingRuleNotConfiguredError,
+  backendErrorToastMessage,
+} from '@/lib/api-errors';
 import { CreditCostPill } from '@/components/credits/credit-visual';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
 import {
@@ -110,6 +112,8 @@ const MAX_WIDTH = 1600;
 const MAX_HEIGHT = 1200;
 const PANEL_GAP_PX = 12;
 const PANEL_OVERHANG_PX = 60;
+const TEXT_TRANSLATE_FEATURE_KEY = 'freezone.text_translate';
+const STORY_SCRIPT_FEATURE_KEY = 'freezone.story_script';
 // 「放大」后的输入面板尺寸：给提示词编辑区更舒适的高度与宽度（与 ImageGenNode 同款体验）。
 const OPS_PANEL_EXPANDED_WIDTH = 880;
 const OPS_PANEL_EXPANDED_HEIGHT = 560;
@@ -154,8 +158,8 @@ const SCRIPT_ACTIONS: ScriptActionDef[] = [
 ];
 
 // 与 libtv 脚本表格列对齐：19 列、宽度按像素硬性给定，整体 min-width 由 tailwind 继承。
-// 后端 FreezoneStoryScriptRow 当前未提供 character_2 / character_image_* / reference 字段，
-// 通过 row[key] 软查询：缺值统一渲染 "-"。
+// key 必须和后端 FreezoneStoryScriptRow 的字段名逐字一致 —— 之前 character /
+// character_desc_1 / action 三个 key 后端从来没发过，于是这三列永远显示 "-"（issue #207）。
 type ScriptCellRender = 'text' | 'image';
 
 interface ScriptColumnDef {
@@ -170,15 +174,15 @@ const SCRIPT_COLUMNS: ScriptColumnDef[] = [
   { key: 'shot_no', label: '镜号', widthPx: 60 },
   { key: 'duration', label: '时长', widthPx: 80 },
   { key: 'visual_description', label: '画面描述', widthPx: 200 },
-  { key: 'character', label: '角色1', widthPx: 120 },
-  { key: 'character_desc_1', label: '角色描述1', widthPx: 180 },
+  { key: 'character_1', label: '角色1', widthPx: 120 },
+  { key: 'character_description_1', label: '角色描述1', widthPx: 180 },
   { key: 'character_image_1', label: '角色图1', widthPx: 80, render: 'image' },
   { key: 'character_2', label: '角色2', widthPx: 120 },
-  { key: 'character_desc_2', label: '角色描述2', widthPx: 180 },
+  { key: 'character_description_2', label: '角色描述2', widthPx: 180 },
   { key: 'character_image_2', label: '角色图2', widthPx: 80, render: 'image' },
   { key: 'reference', label: '参考', widthPx: 80, render: 'image' },
   { key: 'shot', label: '景别', widthPx: 120 },
-  { key: 'action', label: '角色动作', widthPx: 120 },
+  { key: 'character_action', label: '角色动作', widthPx: 120 },
   { key: 'emotion', label: '情绪', widthPx: 120 },
   { key: 'scene_tags', label: '场景标签', widthPx: 120 },
   { key: 'lighting_mood', label: '光影氛围', widthPx: 120 },
@@ -193,10 +197,7 @@ const SCRIPT_TABLE_MIN_WIDTH = SCRIPT_COLUMNS.reduce(
   0,
 );
 
-// isScriptResult / ScriptReference / classifyUpstreamNode / useScriptStorySubmit
-// 对外导出：故事板详情的脚本节点工具条（生成分镜脚本 + 历史恢复）复用同一条
-// 提交/恢复路径（Task 8 纯装配，不改这里的语义）。
-export function isScriptResult(value: unknown): value is FreezoneStoryScriptResult {
+function isScriptResult(value: unknown): value is FreezoneStoryScriptResult {
   if (!value || typeof value !== 'object') return false;
   const candidate = value as { rows?: unknown };
   return Array.isArray(candidate.rows);
@@ -204,7 +205,7 @@ export function isScriptResult(value: unknown): value is FreezoneStoryScriptResu
 
 type ScriptReferenceKind = 'text' | 'image' | 'video' | 'audio';
 
-export interface ScriptReference {
+interface ScriptReference {
   nodeId: string;
   kind: ScriptReferenceKind;
   /** 用作 chip / 预览的图片（image / video 首帧）；text 节点不需要。 */
@@ -219,7 +220,7 @@ export interface ScriptReference {
   displayName?: string | null;
 }
 
-export function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
+function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
   if (isTextAnnotationNode(node)) {
     return {
       nodeId: node.id,
@@ -283,23 +284,24 @@ export function classifyUpstreamNode(node: CanvasNode): ScriptReference | null {
 
 // 提交逻辑抽成共享 hook：节点本体的「重试」按钮与底部操作面板的「生成」按钮共用同一条
 // 提交路径。错误统一写进 data.generationError（渲染在节点本体上），不再用面板本地 state。
-export function useScriptStorySubmit(
+function useScriptStorySubmit(
   nodeId: string,
   references: ScriptReference[],
   prompt: string,
   data: ScriptNodeData,
   onSettled?: () => void,
-): { submit: () => Promise<{ scriptResult?: FreezoneStoryScriptResult }>; isGenerating: boolean } {
+): { submit: () => Promise<void>; isGenerating: boolean } {
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
+  const { t } = useTranslation();
   const { isGenerating } = useNodeGenerationTaskState(data);
 
-  const submit = useCallback(async (): Promise<{ scriptResult?: FreezoneStoryScriptResult }> => {
-    if (isGenerating) return {};
+  const submit = useCallback(async () => {
+    if (isGenerating) return;
     const project = readUrl().project;
     if (!project) {
       console.error('[script-node] submit: no project in URL');
       updateNodeData(nodeId, { generationError: '缺少 project 参数' });
-      return {};
+      return;
     }
 
     // 同一个 story-script 接口支持三种输入，按上游连线类型分流（后端默认 newapi，
@@ -308,12 +310,10 @@ export function useScriptStorySubmit(
     //  - 视频节点  → video_url (+ duration_sec)
     //  - 角色图节点 → character_refs[]（image_url + 角色名）
     // 文本框内容：有任一素材时作为 steering prompt；否则作为 source_text 主输入。
-    const upstreamText = references
-      .filter((ref) => ref.kind === 'text')
-      .map((ref) => (ref.text ?? '').trim())
-      .filter((text) => text.length > 0)
-      .join('\n\n');
-    const trimmedPrompt = prompt.trim();
+    const { sourceText, steeringPrompt, hasMedia } = resolveStoryScriptTextInput(
+      references,
+      prompt,
+    );
 
     const videoRef = references.find((ref) => ref.kind === 'video' && ref.videoUrl);
     const characterRefs = references
@@ -323,21 +323,15 @@ export function useScriptStorySubmit(
         name: ref.displayName?.trim() || undefined,
       }));
 
-    // 后端 story-script 接口目前只消费文本(source_text/source_url):视频 / 角色图片
-    // 参考仅作为画布上的视觉参考，模型并不直接读取它们。因此真正驱动生成的是用户手动
-    // 输入的提示词(参考 libtv:素材做参考、提示词驱动生成)。优先用上游文本节点内容，
-    // 否则把输入框里用户写的提示词作为 source_text 主输入 —— 而不是塞进 steering 后
-    // 让后端因缺 source_text 报 400(#65 视频参考、#66 图片参考失败的根因)。
-    const sourceText = upstreamText.length > 0 ? upstreamText : trimmedPrompt;
-    // 有上游文本节点时输入框内容退居 steering prompt；否则它已是主输入，不再重复下发。
-    const steeringPrompt =
-      upstreamText.length > 0 ? trimmedPrompt || undefined : undefined;
-
-    if (!sourceText || sourceText.length === 0) {
+    // 视频 / 角色图现在是真正的主输入：后端会对视频抽帧、把关键帧和角色图一起送进
+    // 视觉模型（issue #207 之前它们被 Pydantic 静默丢弃，模型只能照着系统提示词编）。
+    // 所以只有在没有任何素材时，才把输入框内容当 source_text 兜底；有素材时它一律是
+    // steering prompt，不再被冒充成剧本正文。
+    if (!hasMedia && sourceText.length === 0) {
       updateNodeData(nodeId, {
-        generationError: '请输入提示词描述剧情（视频 / 角色图片仅作参考）',
+        generationError: '请输入提示词描述剧情，或连接视频 / 角色图片节点',
       });
-      return {};
+      return;
     }
 
     updateNodeData(nodeId, {
@@ -366,20 +360,17 @@ export function useScriptStorySubmit(
         scriptTitle: result.title ?? null,
         generationError: null,
       });
-      return { scriptResult: result };
     } catch (error) {
       console.error('[script-node] submit failed', error);
       updateNodeData(nodeId, {
         isGenerating: false,
         generationStartedAt: null,
-        generationError: error instanceof Error ? error.message : '生成失败',
+        generationError: backendErrorToastMessage(error, t),
       });
-      throw error;
     } finally {
       onSettled?.();
     }
-    return {};
-  }, [isGenerating, nodeId, references, prompt, updateNodeData, onSettled]);
+  }, [isGenerating, nodeId, references, prompt, updateNodeData, onSettled, t]);
 
   return { submit, isGenerating };
 }
@@ -458,25 +449,6 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
     data,
     refreshHistory,
   );
-
-  useEffect(() => {
-    return subscribeNodeAction(({ nodeId, action, requestId }) => {
-      if (nodeId !== id || action !== 'generate_story_script') return;
-      publishNodeActionAccepted(requestId, id, action);
-      void submit()
-        .then((output) => {
-          const latest = useCanvasStore.getState().nodes.find((node) => node.id === id);
-          const latestScriptResult = latest?.type === CANVAS_NODE_TYPES.script
-            ? (latest.data as ScriptNodeData).scriptResult
-            : undefined;
-          publishNodeActionSuccess(requestId, id, action, {
-            ...(output.scriptResult ? { scriptResult: output.scriptResult } : {}),
-            ...(latestScriptResult ? { scriptResult: latestScriptResult } : {}),
-          });
-        })
-        .catch((error) => publishNodeActionError(requestId, id, action, error));
-    });
-  }, [id, submit]);
 
   useEffect(() => {
     updateNodeInternals(id);
@@ -656,8 +628,6 @@ export const ScriptNode = memo(({ id, data, selected, width, height }: ScriptNod
         editable
         onTitleChange={(nextTitle) => updateNodeData(id, { displayName: nextTitle })}
       />
-
-      <AddNodeToChatButton nodeId={id} />
 
       <NodeResizeHandle
         minWidth={MIN_WIDTH}
@@ -924,27 +894,10 @@ function ScriptResultCell({ row, col, onCommit }: ScriptResultCellProps) {
   const raw = row[col.key];
 
   if (col.render === 'image') {
-    // 图片列暂不支持 inline 编辑 —— 替换图需要走文件选择器 / URL 输入，
-    // 是另一条交互，等用户后续提。
-    // 角色图/参考是后端占位字符串字段：模型经常写入 `无` 之类的非 URL 文本，
-    // 只有真正的图片来源才渲染 <img>，否则一律回退到空占位（避免 404 裂图）。
-    const url =
-      typeof raw === 'string' && isRenderableImageSrc(raw) ? raw : null;
-    if (!url) {
-      return (
-        <div className="flex h-14 w-14 items-center justify-center rounded border border-dashed border-[rgba(255,255,255,0.14)] text-text-muted/50">
-          <ImageIcon className="h-4 w-4" />
-        </div>
-      );
-    }
-    return (
-      <img
-        src={resolveImageDisplayUrl(url)}
-        alt=""
-        className="h-14 w-14 rounded border border-[rgba(255,255,255,0.08)] object-cover"
-        draggable={false}
-      />
-    );
+    // 角色图/参考由后端回填，但模型偶尔仍会写进 `无` 之类的非 URL 文本，
+    // 只有真正的图片来源才渲染 <img>，否则回退到「点击上传」占位（避免 404 裂图）。
+    const url = typeof raw === 'string' && isRenderableImageSrc(raw) ? raw : null;
+    return <ScriptImageCell url={url} onCommit={onCommit} />;
   }
 
   const initialText =
@@ -967,12 +920,170 @@ function ScriptResultCell({ row, col, onCommit }: ScriptResultCellProps) {
   return <EditableTableCell value={initialText} onCommit={onCommit} />;
 }
 
+interface ScriptImageCellProps {
+  url: string | null;
+  /** 传了才可编辑：上传/替换/删除都通过它写回 scriptResult.rows[i][key]。 */
+  onCommit?: (nextValue: string) => void;
+}
+
+/**
+ * 表格里的图片格：空位可点击上传，已有图可预览 / 替换 / 删除。
+ * 生成结果里角色图和参考图经常需要人工补一张（issue #207：以前这里是纯只读的）。
+ */
+function ScriptImageCell({ url, onCommit }: ScriptImageCellProps) {
+  const inputRef = useRef<HTMLInputElement | null>(null);
+  const [uploading, setUploading] = useState(false);
+  const [uploadError, setUploadError] = useState<string | null>(null);
+  const [previewOpen, setPreviewOpen] = useState(false);
+  const editable = Boolean(onCommit);
+
+  const handleFileChange = useCallback(
+    async (event: React.ChangeEvent<HTMLInputElement>) => {
+      const file = event.target.files?.[0];
+      // 立刻清空，保证连续选同一个文件也能触发 change。
+      event.target.value = '';
+      if (!file || !onCommit) return;
+      const project = readUrl().project;
+      if (!project) {
+        setUploadError('缺少 project 参数');
+        return;
+      }
+      setUploading(true);
+      setUploadError(null);
+      try {
+        const result = await uploadFreezoneImage(project, file, file.name);
+        onCommit(result.url);
+      } catch (error) {
+        console.error('[script-node] cell image upload failed', error);
+        setUploadError(error instanceof Error ? error.message : '上传失败');
+      } finally {
+        setUploading(false);
+      }
+    },
+    [onCommit],
+  );
+
+  const openPicker = useCallback(() => {
+    if (uploading) return;
+    inputRef.current?.click();
+  }, [uploading]);
+
+  const fileInput = editable ? (
+    <input
+      ref={inputRef}
+      type="file"
+      accept="image/*"
+      className="hidden"
+      onChange={handleFileChange}
+    />
+  ) : null;
+
+  if (!url) {
+    if (!editable) {
+      return (
+        <div className="flex h-14 w-14 items-center justify-center rounded border border-dashed border-[rgba(255,255,255,0.14)] text-text-muted/50">
+          <ImageIcon className="h-4 w-4" />
+        </div>
+      );
+    }
+    return (
+      <div className="flex flex-col gap-1">
+        <button
+          type="button"
+          onClick={openPicker}
+          disabled={uploading}
+          title="点击上传图片"
+          className="flex h-14 w-14 items-center justify-center rounded border border-dashed border-[rgba(255,255,255,0.14)] text-text-muted/50 transition-colors hover:border-[rgb(var(--accent-rgb)/0.6)] hover:text-text-dark/80 disabled:cursor-wait"
+        >
+          {uploading ? (
+            <Loader2 className="h-4 w-4 animate-spin" />
+          ) : (
+            <ImageIcon className="h-4 w-4" />
+          )}
+        </button>
+        {uploadError ? (
+          <span className="text-[10px] leading-tight text-red-400">{uploadError}</span>
+        ) : null}
+        {fileInput}
+      </div>
+    );
+  }
+
+  return (
+    <div className="flex flex-col gap-1">
+      <div className="group relative h-14 w-14">
+        <img
+          src={resolveImageDisplayUrl(url)}
+          alt=""
+          className="h-14 w-14 cursor-zoom-in rounded border border-[rgba(255,255,255,0.08)] object-cover"
+          draggable={false}
+          onClick={() => setPreviewOpen(true)}
+        />
+        {editable ? (
+          <div className="pointer-events-none absolute inset-0 flex items-center justify-center gap-1 rounded bg-black/60 opacity-0 transition-opacity group-hover:pointer-events-auto group-hover:opacity-100">
+            <button
+              type="button"
+              onClick={openPicker}
+              disabled={uploading}
+              title="替换图片"
+              className="rounded p-1 text-white/85 transition-colors hover:bg-white/15 hover:text-white disabled:cursor-wait"
+            >
+              {uploading ? (
+                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              ) : (
+                <Upload className="h-3.5 w-3.5" />
+              )}
+            </button>
+            <button
+              type="button"
+              onClick={() => onCommit?.('')}
+              title="删除图片"
+              className="rounded p-1 text-white/85 transition-colors hover:bg-white/15 hover:text-white"
+            >
+              <X className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        ) : null}
+      </div>
+      {uploadError ? (
+        <span className="text-[10px] leading-tight text-red-400">{uploadError}</span>
+      ) : null}
+      {fileInput}
+      {previewOpen
+        ? createPortal(
+            <div
+              className="fixed inset-0 z-[120] flex items-center justify-center bg-black/80 p-8"
+              onClick={() => setPreviewOpen(false)}
+            >
+              <img
+                src={resolveImageDisplayUrl(url)}
+                alt=""
+                className="max-h-full max-w-full rounded object-contain"
+                draggable={false}
+                onClick={(event) => event.stopPropagation()}
+              />
+              <button
+                type="button"
+                onClick={() => setPreviewOpen(false)}
+                title="关闭预览"
+                className="absolute right-6 top-6 rounded p-2 text-white/80 transition-colors hover:bg-white/15 hover:text-white"
+              >
+                <X className="h-5 w-5" />
+              </button>
+            </div>,
+            document.body,
+          )
+        : null}
+    </div>
+  );
+}
+
 interface ScriptOperationsPanelProps {
   nodeId: string;
   data: ScriptNodeData;
   references: ScriptReference[];
   /** 与节点本体「重试」共用的提交实例 + 历史（见 ScriptNode 里的 hook 调用）。 */
-  onSubmit: () => Promise<{ scriptResult?: FreezoneStoryScriptResult }>;
+  onSubmit: () => Promise<void>;
   isGenerating: boolean;
   historyRecords: FreezoneGenerationHistoryRecord[];
   historyLoading: boolean;
@@ -990,10 +1101,26 @@ function ScriptOperationsPanel({
   refreshHistory,
 }: ScriptOperationsPanelProps) {
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
+  const { t } = useTranslation();
   const [isTranslating, setIsTranslating] = useState(false);
   // 收起态是节点下方的浮动面板；点右上角「放大」后改为居中弹窗展示同一份内容。
   const [panelExpanded, setPanelExpanded] = useState(false);
-  const scriptCost = useGenerationCreditCost('freezone_story_script');
+  const prompt = typeof data.prompt === 'string' ? data.prompt : '';
+  const storyInput = resolveStoryScriptTextInput(references, prompt);
+  const storyBillableChars = countBillableTextChars(
+    `${storyInput.sourceText}\n${storyInput.steeringPrompt ?? ''}`,
+  );
+  const translateBillableChars = countBillableTextChars(prompt);
+  const scriptCost = useGenerationCreditCost(
+    'feature',
+    STORY_SCRIPT_FEATURE_KEY,
+    { surface: 'canvas', quantity: storyBillableChars },
+  );
+  const translateCost = useGenerationCreditCost(
+    'feature',
+    translateBillableChars > 0 ? TEXT_TRANSLATE_FEATURE_KEY : null,
+    { surface: 'canvas', quantity: translateBillableChars },
+  );
 
   const handleRestoreHistory = useCallback(
     (record: FreezoneGenerationHistoryRecord) => {
@@ -1009,8 +1136,6 @@ function ScriptOperationsPanel({
     [nodeId, updateNodeData],
   );
 
-  const prompt = typeof data.prompt === 'string' ? data.prompt : '';
-
   const handleTranslate = useCallback(async () => {
     if (isGenerating || isTranslating) return;
     if (prompt.trim().length === 0) return;
@@ -1021,18 +1146,22 @@ function ScriptOperationsPanel({
     }
     setIsTranslating(true);
     try {
-      const translated = await translateNodeText(project, {
+      const ref = await submitFreezoneTextTranslate(project, {
         text: prompt,
-        nodeId,
         nodeType: 'text',
+        canvasId: readUrl().canvas ?? 'default',
+        nodeId,
       });
-      updateNodeData(nodeId, { prompt: translated });
+      await awaitTaskCompletion(ref.task_key, project);
+      const result = await fetchFreezoneTextTranslateResult(project, ref.job_id);
+      updateNodeData(nodeId, { prompt: result.translated_text });
     } catch (error) {
       console.error('[script-node] translate failed', error);
+      toast.error(backendErrorToastMessage(error, t));
     } finally {
       setIsTranslating(false);
     }
-  }, [isGenerating, isTranslating, nodeId, prompt, updateNodeData]);
+  }, [isGenerating, isTranslating, nodeId, prompt, updateNodeData, t]);
 
   // 文本 / 视频 / 角色图任一有内容即可提交（与 useScriptStorySubmit 的分流一致）。
   const hasContent =
@@ -1101,7 +1230,23 @@ function ScriptOperationsPanel({
             )}
           </IconButton>
           <CreditCostPill
-            display={scriptCost.data?.data.display}
+            display={
+              translateCost.data?.data.cost === 0
+                ? null
+                : translateCost.data?.data.display
+            }
+            promotion={translateCost.data?.data.promotion}
+            disabled={isGenerating || isTranslating || prompt.trim().length === 0}
+            className={NODE_CREDIT_PILL_FLAT_CLASS}
+          />
+          <CreditCostPill
+            display={
+              scriptCost.data?.data.display ??
+              (scriptCost.error instanceof BillingRuleNotConfiguredError
+                ? t('common.billingRuleNotConfiguredShort')
+                : null)
+            }
+            promotion={scriptCost.data?.data.promotion}
             disabled={submitDisabled}
             className={NODE_CREDIT_PILL_FLAT_CLASS}
           />
@@ -1143,6 +1288,33 @@ function ScriptOperationsPanel({
       )}
     </OperationPanelShell>
   );
+}
+
+function countBillableTextChars(text: string): number {
+  return text.replace(/[\s\u3000]+/gu, '').length;
+}
+
+function resolveStoryScriptTextInput(
+  references: ScriptReference[],
+  prompt: string,
+): { sourceText: string; steeringPrompt?: string; hasMedia: boolean } {
+  const upstreamText = references
+    .filter((ref) => ref.kind === 'text')
+    .map((ref) => (ref.text ?? '').trim())
+    .filter((text) => text.length > 0)
+    .join('\n\n');
+  const trimmedPrompt = prompt.trim();
+  const hasMedia = references.some(
+    (ref) =>
+      (ref.kind === 'video' && Boolean(ref.videoUrl)) ||
+      (ref.kind === 'image' && Boolean(ref.thumbUrl)),
+  );
+  return {
+    sourceText: upstreamText.length > 0 ? upstreamText : hasMedia ? '' : trimmedPrompt,
+    steeringPrompt:
+      upstreamText.length > 0 || hasMedia ? trimmedPrompt || undefined : undefined,
+    hasMedia,
+  };
 }
 
 interface ScriptReferencesRowProps {
