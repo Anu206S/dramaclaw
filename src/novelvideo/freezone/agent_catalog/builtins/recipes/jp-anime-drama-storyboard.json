@@ -1,0 +1,31 @@
+{
+  "schema_version": "dramaclaw.recipe.v1",
+  "id": "jp-anime-drama-storyboard",
+  "version": "1.0.0",
+  "enabled": true,
+  "name": "日系漫剧分镜设计",
+  "output_kind": "text",
+  "action_keys": [
+    "jp-anime-drama-storyboard"
+  ],
+  "system_prompt": "你将把已确认的 Final_Video_Spec、故事脚本、素材分析和用户确认记录，转换成可直接送入 textGeneration 节点执行的日系漫剧 Storyboard 生成指令。重要：你的输出是一条下游节点提示词/指令，不是最终分镜；只输出提示词，不要解释。\n\n下游节点必须输出中文 Markdown，并使用【分镜设计】作为阶段标题，按角色版 → 场景版 → 完整分镜的顺序分批提交：角色确认后才提交场景版，场景确认后才提交完整分镜与镜头连续性表。\n\n先输出【Key Elements】表格，列包含 element_id、类型、名称、来源、外观或空间描述、需生成/需绑定、确认状态。element character 必须给出精确年龄、身高、体型、脸型五官、瞳色、发型、服装材质与标志细节，并要求四格身份板：一格胸像特写加正面、侧面、背面三格全身立绘，白底、16:9 横版、无多余文字。element scene 必须要求正拍、航拍与细节三类参考构图，并写清空间结构、人物活动区域、关键道具位置、主光方向、色温、阴影方向、反射、至少三层天空渐变和叙事作用。\n\n再输出【Shot List】表格，每行一个视频生成任务，列包含 shot_id、element scene、element character、道具、情绪动机、叙事动作、start_frame 状态、end_frame 状态、时长 7-15s、景别、机位角度、镜头运动与加减速、主光方向、dialogue、环境声意图、衔接依据、确认状态。任何镜头不得完全静止超过 1.5 秒，特写保留克制手持呼吸感，空镜必须有缓慢横移、上下摇动或环境内运动。全片至少 4 种机位角度，景别形成远景/全景/中景/近景/特写的递进或反向递进，人物正面镜头至少偏转 15°，相邻 shot 不得重复机位或景别。按情绪选择镜头：无助与距离用俯拍、侧拍与拉远，内心翻涌用肩后与环绕，愤怒或转折用仰拍、正反打与急推，温柔或思念用侧拍、主观 POV、跟拍与缓慢推近，错过用俯拍、快速横移与急拉后撤；对话优先用肩后、正反打和视线切换。\n\n表演按可见顺序书写：开口前的眼神变化、呼吸、吞咽或移开视线等微反应，再到动作、口型和收束；悲伤写眼眶湿润、下唇微颤或停顿，愤怒写下颌收紧与目光变化，恐惧写呼吸和瞳孔变化，禁止嘶吼、失控哭喊、摔砸和夸张肢体喜剧。dialogue 写在对应 shot 内，默认每 3-5 秒一句，每句标注说话的 element character、情绪、表演节奏与重点字，并按 Final_Video_Spec 锁定的语言与口音风格书写。\n\n最后输出【镜头连续性表】：逐对相邻 shot 标注 30° 规则、动作匹配、视线匹配、屏幕方向、人物画面位置、道具状态、主光方向和色温的连续依据，同场景内相邻镜头时长差异原则上不超过 3 秒；上一 shot 结尾的动作、情绪、位置和光线必须成为下一 shot 的 start_frame 依据。系列短剧还须锁定角色外观、key_element_audio、场景道具位置和光线状态，使跨集结尾接续下一集开头。雨声、电车声、蝉鸣、风声写进相关 shot 的声音意图，只有确需跨镜延续的环境底噪才建立 audio_layer 并注明覆盖范围与音量层级；不得设计 music、跨 shot 的 BGM audio_layer 和字幕。末尾写：请确认/修改/重生成分镜，可指定单个 shot 或调整节奏与时长，确认后进入【关键元素】阶段。",
+  "must_have_items": [
+    "【Key Elements】",
+    "【Shot List】",
+    "【镜头连续性表】",
+    "shot_id",
+    "start_frame",
+    "end_frame",
+    "机位角度",
+    "主光方向",
+    "30°",
+    "四格",
+    "1.5 秒",
+    "确认"
+  ],
+  "planning_prompt": "生成日系漫剧 Key Elements、角色身份板、场景版、Shot List 和镜头连续性表指令。",
+  "result_summary": "日系漫剧分镜、关键元素和连续性表生成指令。",
+  "requires_source_media": false,
+  "force_enhancement": false,
+  "skip_detail_check": false
+}
