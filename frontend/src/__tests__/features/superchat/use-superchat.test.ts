@@ -2862,7 +2862,14 @@ describe("Skill Studio draft response", () => {
       action: "start_revision",
       skill_studio_status: "revision_started",
       saved_to_catalog: false,
-      draft: null,
+      draft: {
+        skill: {
+          id: "home-culture-poster",
+          description: "用户手动编辑后的草稿",
+        },
+        recipes: [],
+        summary: "当前草稿",
+      },
       draft_ref: {
         skill_studio_session_id: "skill_studio_01",
         skill_id: "home-culture-poster",
@@ -2872,7 +2879,8 @@ describe("Skill Studio draft response", () => {
       },
     });
     expect(payload.message).toContain("启动 Skill Studio 草稿修改会话");
-    expect(payload.message).toContain("本次回执只提供草稿引用");
+    expect(payload.message).toContain("本次回执提供当前完整 draft");
+    expect(payload.message).toContain("draft 只用于理解被修改对象和后续局部 patch");
     expect(payload.message).toContain("用户已经明确表示需要调整");
     expect(payload.message).toContain("不要再询问是否需要调整");
     expect(payload.message).toContain("不要询问是否保存当前版本");

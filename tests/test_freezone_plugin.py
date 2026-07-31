@@ -1840,10 +1840,10 @@ def test_freezone_plugin_chunked_draft_skill_result_directs_first_recipe_before_
     )
 
     instruction = result["agent_instruction"]
-    assert "Skill 基础配置已提交到前端" in instruction
+    assert "下一步必须调用 freezone_put_agent_catalog_recipe" in instruction
+    assert "当前进度：Skill 已提交；Recipe 已提交 0 / 5；剩余 5 个。" in instruction
     assert "Recipe 已提交 0 / 5" in instruction
     assert "剩余 5 个" in instruction
-    assert "下一步必须调用 freezone_put_agent_catalog_recipe" in instruction
     assert "index=0" in instruction
     assert "不要用普通文本回复" in instruction
     assert "不要把工具调用、参数块或代码块写进聊天内容" in instruction
