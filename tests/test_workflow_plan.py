@@ -1072,6 +1072,108 @@ def test_dynamic_workflow_plan_accepts_different_node_counts(monkeypatch):
     assert six["node_count"] == 7
 
 
+def test_workflow_plan_reports_deterministic_preflight_summary():
+    result = validate_workflow_plan(_dynamic_plan(image_count=3))
+
+    assert result["ok"] is True
+    assert result["preflight"]["status"] == "ready"
+    assert result["preflight"]["generation_task_count"] == 3
+    assert result["preflight"]["counts"] == {
+        "text": 1,
+        "image": 3,
+        "video": 0,
+        "audio": 0,
+        "compose": 0,
+    }
+
+
+def _video_compose_plan() -> dict:
+    return {
+        "schema_version": "freezone_workflow_plan.v1",
+        "workflow_type": "dynamic.video",
+        "nodes": [
+            {"id": "clip", "node_type": "videoNode", "stage": "video"},
+            {"id": "compose", "node_type": "videoComposeNode", "stage": "compose"},
+        ],
+        "edges": [
+            {
+                "source": "clip",
+                "target": "compose",
+                "link_type": "composition_input_for",
+            }
+        ],
+    }
+
+
+def test_workflow_plan_rejects_duplicate_or_non_terminal_compose_nodes():
+    plan = _video_compose_plan()
+    plan["nodes"].append(
+        {"id": "compose_two", "node_type": "videoComposeNode", "stage": "compose"}
+    )
+    plan["edges"].append(
+        {
+            "source": "clip",
+            "target": "compose_two",
+            "link_type": "composition_input_for",
+        }
+    )
+    plan["edges"].append(
+        {"source": "compose", "target": "clip", "link_type": "dependency_for"}
+    )
+
+    result = validate_workflow_plan(plan)
+
+    assert result["ok"] is False
+    assert any("at most one videoComposeNode" in issue["message"] for issue in result["errors"])
+    assert any("must be a terminal node" in issue["message"] for issue in result["errors"])
+
+
+def test_workflow_plan_rejects_composition_edge_to_regular_video_node():
+    plan = _video_compose_plan()
+    plan["nodes"].append({"id": "clip_two", "node_type": "videoNode", "stage": "video"})
+    plan["edges"].append(
+        {
+            "source": "clip",
+            "target": "clip_two",
+            "link_type": "composition_input_for",
+        }
+    )
+
+    result = validate_workflow_plan(plan)
+
+    assert result["ok"] is False
+    assert any(
+        "composition_input_for must target videoComposeNode" in issue["message"]
+        for issue in result["errors"]
+    )
+
+
+def test_workflow_plan_rejects_recipe_backed_video_as_final_compose():
+    plan = _video_compose_plan()
+    plan["nodes"] = [
+        {
+            "id": "clip",
+            "node_type": "videoNode",
+            "stage": "compose",
+            "data": {
+                "workflowCatalog": {
+                    "recipeId": "general-video",
+                    "stepId": "final_compose",
+                }
+            },
+        }
+    ]
+    plan["edges"] = []
+
+    result = validate_workflow_plan(plan)
+
+    assert result["ok"] is False
+    assert any(
+        "final composition must use videoComposeNode" in issue["message"]
+        for issue in result["errors"]
+    )
+
+
 def test_dynamic_workflow_plan_validates_skill_inputs(monkeypatch):
     catalog = _load_catalog_module()
     _use_parameterized_catalog(monkeypatch, catalog)

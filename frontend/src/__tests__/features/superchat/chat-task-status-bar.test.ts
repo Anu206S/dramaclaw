@@ -4,6 +4,7 @@ import { describe, expect, it } from "vitest";
 
 import {
   applyOptimisticWorkflowRunUpdate,
+  isStatusBarWorkflowContinuable,
   mergeWorkflowRunUpdate,
   resolveWorkflowRunDisplayCompletion,
   selectChatTaskItems,
@@ -191,6 +192,31 @@ describe("selectChatWorkflowRun", () => {
   });
 });
 
+describe("isStatusBarWorkflowContinuable", () => {
+  it("allows failed and interrupted resumable workflows", () => {
+    expect(isStatusBarWorkflowContinuable(workflowRun({
+      status: "failed",
+      resumable: true,
+    }))).toBe(true);
+    expect(isStatusBarWorkflowContinuable(workflowRun({
+      status: "interrupted",
+      resumable: true,
+    }))).toBe(true);
+  });
+
+  it("does not offer continuation for running, completed, or non-resumable runs", () => {
+    expect(isStatusBarWorkflowContinuable(workflowRun())).toBe(false);
+    expect(isStatusBarWorkflowContinuable(workflowRun({
+      status: "completed",
+      resumable: false,
+    }))).toBe(false);
+    expect(isStatusBarWorkflowContinuable(workflowRun({
+      status: "failed",
+      resumable: false,
+    }))).toBe(false);
+  });
+});
+
 describe("resolveWorkflowRunDisplayCompletion", () => {
   it("presents a running workflow as complete when its last verified result is ready", () => {
     const run = workflowRun({
@@ -223,6 +249,42 @@ describe("resolveWorkflowRunDisplayCompletion", () => {
     });
 
     expect(resolveWorkflowRunDisplayCompletion(run, () => false)).toBe(run);
+  });
+
+  it("presents a cancelled recovery run as complete when its fresh result exists", () => {
+    const run = workflowRun({
+      status: "cancelled",
+      resumable: false,
+      actions: [{
+        node_id: "compose",
+        action: "auto_compose_video",
+        status: "skipped",
+      }],
+    });
+
+    const resolved = resolveWorkflowRunDisplayCompletion(
+      run,
+      (nodeId) => nodeId === "compose",
+      "2026-07-27T08:00:00.000Z",
+    );
+
+    expect(resolved?.status).toBe("completed");
+    expect(resolved?.actions[0]?.status).toBe("completed");
+  });
+
+  it("keeps a failed workflow failed when any required result is missing", () => {
+    const run = workflowRun({
+      status: "failed",
+      actions: [
+        { node_id: "video", action: "generate_video", status: "completed" },
+        { node_id: "compose", action: "auto_compose_video", status: "blocked" },
+      ],
+    });
+
+    expect(resolveWorkflowRunDisplayCompletion(
+      run,
+      (nodeId) => nodeId === "video",
+    )).toBe(run);
   });
 });
 

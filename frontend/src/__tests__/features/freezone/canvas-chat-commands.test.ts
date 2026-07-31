@@ -5663,6 +5663,88 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("continues downstream when a timed-out upstream already has a valid result", async () => {
+    const store = useCanvasStore.getState();
+    const imageNodeId = store.addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      { prompt: "商品主图" },
+    );
+    const videoNodeId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      { prompt: "商品视频" },
+    );
+    store.addEdge(imageNodeId, videoNodeId);
+    const events: Array<{ nodeId: string; action: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({ nodeId: payload.nodeId, action: payload.action });
+        if (!payload.requestId) return;
+        if (payload.nodeId === imageNodeId) {
+          store.updateNodeData(imageNodeId, {
+            imageUrl: "/static/project/late-image.png",
+          });
+          canvasEventBus.publish("freezone/node-action-result", {
+            requestId: payload.requestId,
+            nodeId: payload.nodeId,
+            action: payload.action,
+            status: "error",
+            error: "节点动作执行超时",
+          });
+          return;
+        }
+        store.updateNodeData(videoNodeId, {
+          videoUrl: "/static/project/video.mp4",
+        });
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{
+            type: "run_workflow",
+            node_ids: [imageNodeId],
+            direction: "downstream",
+          }],
+        }]),
+        {
+          projectId: "project-a",
+          canvasId: "canvas-a",
+          actionTimeoutMs: 100,
+        },
+      );
+
+      expect(events).toEqual([
+        { nodeId: imageNodeId, action: "generate_image" },
+        { nodeId: videoNodeId, action: "generate_video" },
+      ]);
+      expect(result.errors).toEqual([]);
+      expect(updateFreezoneWorkflowRun).toHaveBeenCalledWith(
+        "project-a",
+        "canvas-a",
+        "run-test",
+        expect.objectContaining({
+          action_updates: [expect.objectContaining({
+            node_id: imageNodeId,
+            status: "completed",
+          })],
+        }),
+      );
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("retries transient upstream failures before reporting the final result", async () => {
     const store = useCanvasStore.getState();
     const imageNodeId = store.addNode(

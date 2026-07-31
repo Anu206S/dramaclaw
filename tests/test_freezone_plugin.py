@@ -590,6 +590,89 @@ def test_workflow_draft_patch_rejects_skill_replacement(monkeypatch, tmp_path):
     assert result["unsupported_fields"] == ["skill_id"]
 
 
+def test_workflow_runtime_preflight_blocks_unavailable_model(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+
+    def fake_request(method, path, **_kwargs):
+        assert method == "GET"
+        if path.endswith("/freezone/image/models"):
+            return {"ok": True, "data": [{"id": "available-image-model"}]}
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {
+                    "default": {"limit": 3, "remaining": 3},
+                    "video": {"limit": 3, "remaining": 3},
+                    "ffmpeg": {"limit": 1, "remaining": 1},
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    result = plugin._workflow_runtime_preflight(
+        {
+            "preflight": {"status": "ready", "blockers": [], "warnings": []},
+            "plan": {
+                "nodes": [
+                    {
+                        "id": "image",
+                        "node_type": "imageGenNode",
+                        "data": {"model": "missing-image-model"},
+                    }
+                ]
+            },
+        },
+        project_id="project-a",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        {
+            "path": "runtime.models",
+            "message": "configured model is unavailable: missing-image-model",
+            "code": "model_unavailable",
+        }
+    ]
+
+
+def test_workflow_runtime_preflight_warns_when_queue_is_full(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+    monkeypatch.setattr(
+        plugin,
+        "_request",
+        lambda _method, _path, **_kwargs: {
+            "ok": True,
+            "data": {
+                "default": {"limit": 3, "remaining": 0},
+                "video": {"limit": 3, "remaining": 3},
+                "ffmpeg": {"limit": 1, "remaining": 1},
+            },
+        },
+    )
+
+    result = plugin._workflow_runtime_preflight(
+        {
+            "preflight": {"status": "ready", "blockers": [], "warnings": []},
+            "plan": {
+                "nodes": [
+                    {"id": "brief", "node_type": "textAnnotationNode", "data": {}},
+                    {"id": "image", "node_type": "imageGenNode", "data": {}},
+                ]
+            },
+        },
+        project_id="project-a",
+    )
+
+    assert result["status"] == "ready"
+    assert result["blockers"] == []
+    assert any(
+        warning["path"] == "runtime.queue_capacity.default"
+        for warning in result["warnings"]
+    )
+
+
 def test_workflow_graph_can_run_validated_nodes_after_create():
     plugin = _load_plugin_module()
     built = plugin.build_workflow_graph_commands(

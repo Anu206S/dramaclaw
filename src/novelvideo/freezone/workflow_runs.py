@@ -67,6 +67,11 @@ RETRYABLE_ERROR_MARKERS = {
     "connection reset",
     "bad_response_body",
 }
+REQUEST_ID_RE = re.compile(
+    r"(?:request[_\s-]*id\s*[=:]\s*|request\s+id\s*:\s*)"
+    r"([a-zA-Z0-9._:-]+)",
+    re.IGNORECASE,
+)
 
 
 class WorkflowRunLeaseConflict(RuntimeError):
@@ -97,6 +102,13 @@ def classify_workflow_error(error: str | None) -> tuple[str, bool]:
     normalized = str(error or "").strip().lower()
     if not normalized:
         return "unknown", False
+    if (
+        "invalidparameter" in normalized
+        or "invalid parameter" in normalized
+        or "parameter `content`" in normalized
+        or "parameter video total duration" in normalized
+    ):
+        return "invalid_request", False
     if any(marker in normalized for marker in NON_RETRYABLE_ERROR_MARKERS):
         if "sensitivecontent" in normalized or "privacyinformation" in normalized:
             return "content_policy", False
@@ -112,6 +124,49 @@ def classify_workflow_error(error: str | None) -> tuple[str, bool]:
     if "产物" in normalized and ("不存在" in normalized or "缺失" in normalized):
         return "artifact_missing", False
     return "execution", False
+
+
+def workflow_error_diagnostics(error: str | None) -> dict[str, Any]:
+    raw_error = str(error or "").strip()
+    category, retryable = classify_workflow_error(raw_error)
+    request_match = REQUEST_ID_RE.search(raw_error)
+    request_id = request_match.group(1).rstrip(")}],;") if request_match else None
+    normalized_message = re.sub(r"\s+", " ", raw_error).strip().lower()
+    fingerprint = (
+        f"request:{request_id.lower()}"
+        if request_id
+        else f"{category}:{normalized_message[:500]}"
+    )
+    if category == "authentication":
+        user_message = "模型服务认证失败，请检查渠道地址和密钥后重试。"
+    elif category == "model_unavailable":
+        user_message = "当前渠道没有可用的目标模型，请更换模型或配置渠道。"
+    elif category == "quota_exhausted":
+        user_message = "当前模型渠道额度已用尽，请补充额度或切换渠道。"
+    elif category == "content_policy":
+        user_message = "输入内容触发了模型安全审核，请确认授权或更换素材后重试。"
+    elif category == "invalid_request":
+        if "video total duration" in normalized_message:
+            user_message = "输入视频总时长超过当前模型限制，请缩短素材或拆分生成。"
+        elif "audio_url is required" in normalized_message:
+            user_message = "当前音频模型需要参考音频，请上传样音或切换为无需样音的模型。"
+        else:
+            user_message = "生成参数不符合当前模型要求，请调整节点参数后重试。"
+    elif category == "artifact_missing":
+        user_message = "任务已结束但没有找到有效产物，请重新生成该节点。"
+    elif category == "transient_upstream":
+        user_message = "上游模型服务暂时不可用，系统可稍后重试。"
+    elif category == "unknown":
+        user_message = "生成任务失败，但没有返回具体错误。"
+    else:
+        user_message = "节点生成失败，请检查节点输入和模型配置后重试。"
+    return {
+        "error_category": category,
+        "retryable": retryable,
+        "error_request_id": request_id,
+        "error_fingerprint": fingerprint,
+        "user_error": user_message,
+    }
 
 
 def _artifact_values(value: Any, *, key: str = "") -> list[tuple[str, str]]:
@@ -568,9 +623,16 @@ def update_workflow_run(
                     raise ValueError(f"invalid workflow node phase: {phase!r}")
                 item["phase"] = phase or None
             if node_status == "failed":
-                category, retryable = classify_workflow_error(item["error"])
-                item["error_category"] = category
-                item["retryable"] = retryable
+                item.update(workflow_error_diagnostics(item["error"]))
+            else:
+                for field in (
+                    "error_category",
+                    "retryable",
+                    "error_request_id",
+                    "error_fingerprint",
+                    "user_error",
+                ):
+                    item.pop(field, None)
             for field in ("task_key", "task_type", "job_id"):
                 if field not in update:
                     continue
@@ -653,12 +715,10 @@ def reconcile_workflow_runs_with_tasks(
                     continue
                 if task_status in {"failed", "cancelled"}:
                     error = str(task.get("error") or "生成任务失败").strip()
-                    category, retryable = classify_workflow_error(error)
                     updates = {
                         "status": "failed",
                         "error": error,
-                        "error_category": category,
-                        "retryable": retryable,
+                        **workflow_error_diagnostics(error),
                     }
                 else:
                     artifact_status, artifact_error = _validate_action_artifact(
@@ -670,12 +730,10 @@ def reconcile_workflow_runs_with_tasks(
                         project_dir=project_dir,
                     )
                     if artifact_status == "missing":
-                        category, retryable = classify_workflow_error(artifact_error)
                         updates = {
                             "status": "failed",
                             "error": artifact_error,
-                            "error_category": category,
-                            "retryable": retryable,
+                            **workflow_error_diagnostics(artifact_error),
                             "artifact_status": artifact_status,
                         }
                     else:

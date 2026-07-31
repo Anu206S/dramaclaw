@@ -3355,6 +3355,144 @@ def _run_after_create_arg(args: dict[str, Any]) -> bool | None:
     return None
 
 
+def _workflow_runtime_preflight(
+    compiled: dict[str, Any],
+    *,
+    project_id: str,
+) -> dict[str, Any]:
+    base = deepcopy(compiled.get("preflight") or {})
+    blockers = list(base.get("blockers") or [])
+    warnings = list(base.get("warnings") or [])
+    checks: dict[str, Any] = {}
+    plan = compiled.get("plan") if isinstance(compiled.get("plan"), dict) else {}
+    nodes = plan.get("nodes") if isinstance(plan.get("nodes"), list) else []
+    if not project_id or not _available():
+        checks["runtime"] = "unavailable"
+        warnings.append(
+            {
+                "path": "runtime",
+                "message": "runtime model and queue availability could not be checked",
+            }
+        )
+    else:
+        model_endpoints = {
+            "imageGenNode": f"/projects/{quote(project_id, safe='')}/freezone/image/models",
+            "videoNode": f"/projects/{quote(project_id, safe='')}/freezone/video/models",
+        }
+        for node_type, endpoint in model_endpoints.items():
+            requested = {
+                str((node.get("data") or {}).get("model") or "").strip()
+                for node in nodes
+                if isinstance(node, dict)
+                and node.get("node_type") == node_type
+                and isinstance(node.get("data"), dict)
+                and str((node.get("data") or {}).get("model") or "").strip()
+            }
+            if not requested:
+                continue
+            response = _request("GET", endpoint)
+            if response.get("ok") is False:
+                checks[f"{node_type}.models"] = "unavailable"
+                warnings.append(
+                    {
+                        "path": "runtime.models",
+                        "message": f"could not verify {node_type} model availability",
+                    }
+                )
+                continue
+            raw_models = response.get("data")
+            available = {
+                str(item.get("id") or item.get("apiModel") or item.get("api_model") or "").strip()
+                for item in raw_models if isinstance(item, dict)
+            } if isinstance(raw_models, list) else set()
+            missing = sorted(requested - available)
+            checks[f"{node_type}.models"] = {
+                "requested": sorted(requested),
+                "available": not missing,
+            }
+            blockers.extend(
+                {
+                    "path": "runtime.models",
+                    "message": f"configured model is unavailable: {model}",
+                    "code": "model_unavailable",
+                }
+                for model in missing
+            )
+        limits = _request(
+            "GET",
+            f"/api/v1/projects/{quote(project_id, safe='')}/tasks/limits",
+        )
+        lane_demand = {
+            "default": sum(
+                1 for node in nodes
+                if isinstance(node, dict)
+                and (
+                    node.get("node_type") in {"imageGenNode", "audioNode"}
+                    or (
+                        node.get("node_type")
+                        in {"textAnnotationNode", "scriptNode", "beatContextNode"}
+                        and isinstance((node.get("data") or {}).get("workflowCatalog"), dict)
+                        and str(
+                            ((node.get("data") or {}).get("workflowCatalog") or {}).get(
+                                "recipeId"
+                            )
+                            or ""
+                        ).strip()
+                    )
+                )
+            ),
+            "video": sum(
+                1 for node in nodes
+                if isinstance(node, dict) and node.get("node_type") == "videoNode"
+            ),
+            "ffmpeg": sum(
+                1 for node in nodes
+                if isinstance(node, dict) and node.get("node_type") == "videoComposeNode"
+            ),
+        }
+        if limits.get("ok") is False or not isinstance(limits.get("data"), dict):
+            checks["queue_capacity"] = "unavailable"
+            warnings.append(
+                {
+                    "path": "runtime.queue_capacity",
+                    "message": "task queue capacity could not be checked",
+                }
+            )
+        else:
+            capacity = limits["data"]
+            checks["queue_capacity"] = capacity
+            for lane, demand in lane_demand.items():
+                if demand <= 0:
+                    continue
+                lane_state = capacity.get(lane)
+                if not isinstance(lane_state, dict):
+                    continue
+                limit = lane_state.get("limit")
+                remaining = lane_state.get("remaining")
+                if isinstance(limit, int) and limit <= 0:
+                    blockers.append(
+                        {
+                            "path": f"runtime.queue_capacity.{lane}",
+                            "message": f"{lane} generation queue is disabled",
+                            "code": "queue_disabled",
+                        }
+                    )
+                elif isinstance(remaining, int) and remaining <= 0:
+                    warnings.append(
+                        {
+                            "path": f"runtime.queue_capacity.{lane}",
+                            "message": f"{lane} generation queue is currently full; tasks will wait",
+                        }
+                    )
+    return {
+        **base,
+        "status": "blocked" if blockers else "ready",
+        "blockers": blockers,
+        "warnings": warnings,
+        "runtime_checks": checks,
+    }
+
+
 def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if not _workflow_draft_dependencies_available():
         return _workflow_draft_unavailable()
@@ -3362,13 +3500,25 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     compiled = compile_workflow_intent(intent)
     if not compiled.get("ok"):
         return tool_result(compiled)
+    project_id = str(
+        args.get("project_id") or args.get("project") or _default_project_id()
+    ).strip()
+    preflight = _workflow_runtime_preflight(compiled, project_id=project_id)
+    compiled["preflight"] = preflight
+    if preflight["blockers"]:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_preflight_failed",
+                "error": preflight["blockers"][0]["message"],
+                "preflight": preflight,
+            }
+        )
     run_after_create = _run_after_create_arg(args)
     payload = create_workflow_draft(
         intent=intent,
         compiled=compiled,
-        project_id=str(
-            args.get("project_id") or args.get("project") or _default_project_id()
-        ).strip(),
+        project_id=project_id,
         canvas_id=str(
             args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()
         ).strip(),
@@ -3518,6 +3668,20 @@ def _handle_confirm_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if run_after_create is None:
         run_after_create = bool(payload.get("run_after_create"))
     compiled = payload.get("compiled") if isinstance(payload.get("compiled"), dict) else {}
+    preflight = _workflow_runtime_preflight(
+        compiled,
+        project_id=explicit_project or stored_project,
+    )
+    if preflight["blockers"]:
+        finish_workflow_draft_confirmation(draft_id, outcome="ready")
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_preflight_failed",
+                "error": preflight["blockers"][0]["message"],
+                "preflight": preflight,
+            }
+        )
     plan = compiled.get("plan")
     built = build_workflow_graph_commands(
         {
