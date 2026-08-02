@@ -2,7 +2,9 @@
 
 > 状态：基于 `freezone-canvas` 当前代码的 2.0 实施基线
 >
-> 当前代码基线：`bd74b4d`（2026-07-26）
+> 设计基线：`bd74b4d`（2026-07-26）
+>
+> 进度复核基线：`671cb07`（2026-08-02）。六项中第 1、2、3、6 项已完成，第 4 项部分完成，第 5 项完成约三分之一；§8.3 收尾项第 1、3 项已完成。逐项状态见 §0.1 的表格，实测数据见 §2.8。
 >
 > 本次修订依据：`src/novelvideo/freezone/agent_catalog/builtins` 下 5 个内置 Skill 与 30 份内置 Recipe 的实测统计（见 §2.8）；一份用户提供的真实 Flova Skill 样本；Flova、Miora、LibTV 的公开文档与公开仓库（见 §5，其中 §5.3 的 LibTV 是形态最接近的对照）
 >
@@ -14,16 +16,21 @@
 
 ### 0.1 要做的六项，一屏看完
 
-| 序 | 做什么 | 主要文件 | 性质 | 依赖 |
-| --- | --- | --- | --- | --- |
-| 1 | 把锚点要求写进规划包与 Agent 规则（**零 Schema 改动**） | `json_workflow_catalog.py`、`.hermes/skills/workflows/SKILL.md`、`skill-studio-authoring-guide.md`、`src/novelvideo/chat/service.py` | 提示词 + 测试 | — |
-| 2 | 修 Skill Studio 保存契约（删非法字段 + 复用已有 validator） | `frontend/src/features/superchat/superchat-panel.tsx:3920` | 减 | — |
-| 3 | 把 Skill 已有约束送进 Recipe Compiler，并修优先级 | `recipe_runtime.py`（含第 33 行系统提示）、`workflowRecipeRuntime.ts`、Recipe 编译 API 模型、四类节点编译入口 | 减 + 接线 | — |
-| 4 | `allowed_recipe_ids` 改真白名单 | `json_workflow_catalog.py:1667` | 减（一个布尔分支） | — |
-| 5 | 内置 Recipe 收敛为共享工艺集 | `src/novelvideo/freezone/agent_catalog/builtins/` | 内容重组，预计约 10–15 份 | 3 |
-| 6 | 默认策略改动态 WorkflowPlan | `.hermes/skills/workflows/SKILL.md:15` | 减（一段文字） | — |
+| 序 | 做什么 | 主要文件 | 性质 | 依赖 | 状态（`671cb07`） |
+| --- | --- | --- | --- | --- | --- |
+| 1 | 把锚点要求写进规划包与 Agent 规则（**零 Schema 改动**） | `json_workflow_catalog.py`、`.hermes/skills/workflows/SKILL.md`、`skill-studio-authoring-guide.md`、`src/novelvideo/chat/service.py` | 提示词 + 测试 | — | ✅ 四处均已落地；**标杆通过率尚未测量**（见 §8.3 第 5 项） |
+| 2 | 修 Skill Studio 保存契约（删非法字段 + 复用已有 validator） | `frontend/src/features/superchat/superchat-panel.tsx:3920` | 减 | — | ✅ 已完成 |
+| 3 | 把 Skill 已有约束送进 Recipe Compiler，并修优先级 | `recipe_runtime.py`（含第 33 行系统提示）、`workflowRecipeRuntime.ts`、Recipe 编译 API 模型、四类节点编译入口 | 减 + 接线 | — | ✅ 已完成 |
+| 4 | `allowed_recipe_ids` 改真白名单 | `json_workflow_catalog.py:1982` | 减（一个布尔分支） | — | ⚠️ 主体已改，但新增了未经设计的 `general-*` 例外，导致三处语义不一致 |
+| 5 | 内置 Recipe 收敛为共享工艺集 | `src/novelvideo/freezone/agent_catalog/builtins/` | 内容重组，预计约 10–15 份 | 3 | ⚠️ 约三分之一：6 个 Skill 中仅 lego、pixar 迁移到位 |
+| 6 | 默认策略改动态 WorkflowPlan | `.hermes/skills/workflows/SKILL.md:15` | 减（一段文字） | — | ✅ 已完成，且主路径已演进为 intent → draft（见 §3.3） |
 
 第 1、2、4、6 项可以独立实施。第 5 项需要在第 3 项把 Skill 约束接入 Recipe Runtime 后进行，并由懂创作工艺的人负责内容重组。
+
+**接手前先读这两条，它们是复核后新增的坑：**
+
+- 第 5 项**不是「还剩几个 Skill 没迁移」**，而是共享集本身还没吸收够工艺就先被当成了迁移目标。直接把剩余 Skill 指过去会造成工艺倒退，**必须先加厚共享集再迁移**——理由与证据见 §8.2 第 5 项的「执行顺序」小节；
+- 第 4 项已经改过一轮但改出了新的不一致，不要当成未开工的项重做，见 §8.2 第 4 项的状态说明。
 
 一句话概括这次改造：**用厚 Skill 指导 Agent 做专业判断，用薄 Schema 保持动态规划空间，用 Recipe 复用跨 Skill 的创作工艺。** 六项做的是三件事——把本来就写在 Skill 里却到不了执行层的约束接通（第 3 项，核心）、把散在 30 份 Recipe 里的重复工艺收敛成共享工艺集（第 5 项）、清掉规则漂移（第 4、6 项）与一个既有 bug（第 2 项）。**不是增加创作状态机，而是让 Agent 真正消费厚 Skill。**
 
@@ -353,7 +360,11 @@ Recipe：决定某个阶段的提示词怎样写好
 - 设置页中的社区 Skill 浏览、安装和“我的 Skill”入口；
 - Bundle 与普通 JSON 配置的后端 API 和回归测试。
 
-因此社区 Bundle 不再属于“需要从零增加”的 2.0 P0。剩余工作主要是发布收口：当前包版本仍是 `1.1.2`，而 Bundle 导出默认声明 `min_dramaclaw_version=2.0.0`，导出后又立即按当前包版本校验。在版本正式提升到 `2.0.0` 前，这条默认导出路径可能被最低版本检查拒绝。它应作为发版条件处理，而不是再设计一套包格式。
+因此社区 Bundle 不再属于“需要从零增加”的 2.0 P0。
+
+~~剩余工作主要是发布收口：当前包版本仍是 `1.1.2`，而 Bundle 导出默认声明 `min_dramaclaw_version=2.0.0`，导出后又立即按当前包版本校验。在版本正式提升到 `2.0.0` 前，这条默认导出路径可能被最低版本检查拒绝。~~
+
+**已解决（`671cb07`）**：导出默认值已改为 `current_dramaclaw_version()`（`agent_bundle_store.py:86`），因此 `_ensure_minimum_dramaclaw_version()` 的 `current < minimum` 自校验在默认导出路径上不再可能失败。包版本（当前 `1.1.5`）提升到 `2.0.0` 现在只是发布节奏决策，不再是会拒收导出的 bug。
 
 ### 2.8 Skill 约束传递缺口的实测证据
 
@@ -372,6 +383,23 @@ Recipe：决定某个阶段的提示词怎样写好
 | 硬编码字面画幅值（16:9、4:3…） | **3 / 30**：`ling-cage-key-elements`、`ling-cage-video-spec`、`retro-kungfu-video-spec` |
 | 正确消费 `input aspect_ratio`（对照组） | 4 / 30 |
 | 按工艺去重后的种类 | 15 种（其中 3 种只是同一工艺换了名字，见 §8.2 第 5 项） |
+
+#### 复核：`671cb07`（2026-08-02）
+
+上表是**设计基线**，保留原值不改。同口径复测结果：
+
+| 观测项 | 基线 `bd74b4d` | 复核 `671cb07` | |
+| --- | --- | --- | --- |
+| Recipe 跨 Skill 复用 | **0 份共用** | **4 份共用** | 主张三开始兑现 |
+| 依赖 `Final_Video_Spec` | 17 / 30 | **0** | `*-video-spec` 已全部删除 |
+| `system_prompt` 里指挥阶段推进 | 12 / 30 | **3** | 残留的 3 份全在未迁移的 Skill 里 |
+| 每个 Skill 引用的 Recipe 数 | 5 ~ 7 | 4 ~ 5 | |
+
+共用的 4 份是 `storyboard-plan`（3 个 Skill）、`video-audio-layer`（3）、`visual-key-elements`（2）、`storyboard-shot-video`（2）。
+
+**口径说明**：`builtins/recipes/` 目录现有 61 份，但其中 38 份带 `actionKeys`，属于主线节点动作路径，不在本节的 workflow-skill 口径内。可比口径是 **30 份 → 23 份被引用**。
+
+本节记录的核心问题——「把运行时规格伪装成 Recipe，下游靠 prose 约定读取，零校验」——**已经消除**：`confirmed_inputs` 与 `skill_constraints` 现在由 §8.2 第 3 项直接传入 Recipe Runtime。剩余缺口是工艺收敛本身，见 §8.2 第 5 项。
 
 统计口径需要说明，否则容易高估违规规模：“提及画幅”有 13 份，但其中多数是在合法消费 `input aspect_ratio`，或者说的是人物体型比例而非画幅；真正写死字面画幅值的只有 3 份。角色一致性同理——按宽口径（含 `Style Lock` 字段名与泛化的“统一比例和灯光”）会得到 14 份，按“确指角色或造型一致性”收紧后只有 4 份。下面的结论只使用收紧后的口径。
 
@@ -530,11 +558,34 @@ Recipe 持有：给定已确定的输入、目标和强约束后，这一个节�
 
 ### 3.3 WorkflowPlan：本次任务唯一的结构化计划
 
-`freezone_workflow_plan.v1` 就是 Agent 本次规划的结果。节点数量、拓扑、并行关系、阶段分组和素材依赖都在这里表达。
+本次任务只有一份结构化计划。节点数量、拓扑、并行关系、阶段分组和素材依赖都在它里面表达。
 
-当前代码的原生审批粒度是“应用画布命令前确认”，并没有独立的阶段检查点协议。阶段性确认由 Skill 的执行规则、WorkflowPlan 的节点分组和 Hermes 对现有 `freezone_run_workflow` 的分范围调用共同实现，不能在文档中假设 Validator 或 Runner 已经原生理解 `pause_after`。
+**主路径已演进（`671cb07`）。** 原设计是让 Agent 直接产出完整 `freezone_workflow_plan.v1`；当前代码改为让 Agent 只产出精简意图，由工具确定性编译成计划：
 
-不增加 CreativePlan，也不增加独立的 Skill Session。
+```text
+Agent 产出 freezone_workflow_intent.v1        （json_workflow_catalog.py:29）
+  → freezone_prepare_workflow_draft(intent=...)   工具确定性编译，返回精确预览
+  → freezone_patch_workflow_draft(...)            用户调整方案时
+  → freezone_confirm_workflow_draft(...)          确认后写入画布
+```
+
+Agent 只决定：用户目标、结构化输入、作品/镜头 PlanItems、每项使用的允许 Recipe、真实输入依赖、是否生成素材锚点、是否自动执行。**节点数据、稳定 ID、连线类型、分组、布局和成片合成由工具完成，不由模型生成。**
+
+这个改动方向与主张二一致且更强：模型产出的面变小，可校验的结构由确定性代码生成，能被模型写错的东西更少。
+
+两个入口的现状必须写清楚，否则容易改错地方：
+
+| 入口 | 现状 |
+| --- | --- |
+| `freezone_prepare/patch/confirm_workflow_draft` | **主路径**，正常规划一律走这里 |
+| `freezone_create_workflow_graph(plan=...)` | **兼容入口**，只在用户明确要求 Skill 蓝图无法表达的自定义拓扑时使用 |
+| `freezone_build_workflow_plan` | **禁止调用**（见 `.hermes/skills/workflows/SKILL.md`） |
+
+`freezone_workflow_plan.v1` 与 `validate_agent_workflow_plan()` 继续存在，服务于兼容入口和最终结构校验；但**不要再把「让 Agent 直接生成完整 Plan」当作要实现的目标**，那条路已经降级。
+
+当前代码的原生审批粒度是“应用画布命令前确认”，并没有独立的阶段检查点协议。阶段性确认由 Skill 的执行规则、计划的节点分组和 Hermes 对现有 `freezone_run_workflow` 的分范围调用共同实现，不能在文档中假设 Validator 或 Runner 已经原生理解 `pause_after`。
+
+不增加 CreativePlan，也不增加独立的 Skill Session。intent 是 Plan 的输入而非第二种计划——它不落盘、不参与执行、确认后即被编译结果取代。
 
 ### 3.4 节点能力：当前代码中的原子 Skill
 
@@ -1381,14 +1432,14 @@ Manual/Auto 不需要设计成新的 Agent 状态机，直接复用当前代码�
 
 按依赖顺序编号。第 5 项依赖第 3 项先接通 Skill 约束；其余项目可以独立推进。
 
-| 序号 | 内容 | 依赖 |
-| --- | --- | --- |
-| 1 | 把锚点要求写进规划包与 Agent 规则（零 Schema 改动） | — |
-| 2 | 修复 Skill Studio 保存契约 | — |
-| 3 | 修正 Skill → Recipe Runtime 约束传递 | — |
-| 4 | Recipe 候选改严格白名单 | — |
-| 5 | 内置 Recipe 收敛为共享工艺集 | 3 |
-| 6 | 默认策略改为动态 WorkflowPlan | — |
+| 序号 | 内容 | 依赖 | 状态（`671cb07`） |
+| --- | --- | --- | --- |
+| 1 | 把锚点要求写进规划包与 Agent 规则（零 Schema 改动） | — | ✅ 代码已落地，标杆未测 |
+| 2 | 修复 Skill Studio 保存契约 | — | ✅ |
+| 3 | 修正 Skill → Recipe Runtime 约束传递 | — | ✅ |
+| 4 | Recipe 候选改严格白名单 | — | ⚠️ 改出新的不一致 |
+| 5 | 内置 Recipe 收敛为共享工艺集 | 3 | ⚠️ 约三分之一，且执行顺序需纠正 |
+| 6 | 默认策略改为动态 WorkflowPlan | — | ✅ 并已演进为 intent → draft |
 
 #### 1. 把锚点要求写进规划包与 Agent 规则（零 Schema 改动）
 
@@ -1406,6 +1457,17 @@ Manual/Auto 不需要设计成新的 Agent 状态机，直接复用当前代码�
 
 这些评测的作用是**测量**：它们在三个标杆 Skill 上的通过率就是 §6.1 里那个待测数据——Agent 到底会不会漏引用边。跑完再决定是否需要把它升级成 Schema 字段加 Validator 不变量。
 
+##### 状态：✅ 代码已落地，⚠️ 标杆通过率尚未测量（`671cb07`）
+
+四处规则均已写入：`json_workflow_catalog.py` 的规划包已下发 `asset_anchor_policy`（含 `strategy: generate_anchor_then_continue` 与 `source_anchor_recipe_ids`）；`.hermes/skills/workflows/SKILL.md` 已写明锚点作为首个 PlanItem、后续项通过 `depends_on` 引用同一语义 item id、锚点节点通过 `media_input_for` 连到所有依赖它的节点；`skill-studio-authoring-guide.md` 与 `chat/service.py` 同步。
+
+**但上面那两条标杆评测还没跑。** 规划包里写了指令 ≠ Agent 会照做，而这正是本项要测的东西。在拿到通过率之前：
+
+- §10 的「Skill Schema 零改动」这条验收标准**处于未验证状态**——是否需要补 `asset_policy.anchors` 字段与 Validator 不变量，完全取决于这个数据；
+- 不要因为「代码已落地」就把本项当作完全结项。
+
+这是当前唯一一处「机制在、效力未知」的地方，静态检查给不出结论，必须真跑 Hermes。
+
 #### 2. 修复 Skill Studio 保存契约
 
 修改 `frontend/src/features/superchat/superchat-panel.tsx`：
@@ -1416,6 +1478,10 @@ Manual/Auto 不需要设计成新的 Agent 状态机，直接复用当前代码�
 - 增加“Skill Studio 产物可以被后端 `AgentCatalogSkillConfig` 直接接受”的跨层回归测试。
 
 `default_aspect_ratios` 是当前代码 Bug，应作为独立的小修复优先完成。
+
+##### 状态：✅ 已完成（`671cb07`）
+
+`default_aspect_ratios` 在 Skill Studio 与后端 Schema 中均已不存在；`superchat-panel.tsx:4748` 已复用 `validateFreezoneAgentConfigPayload()`，与设置页（`freezone-skill-recipe-settings.tsx`）走同一套前端校验。
 
 #### 3. 修正 Skill → Recipe Runtime 约束传递
 
@@ -1450,6 +1516,21 @@ reference_media
 - 缓存键覆盖 Skill 版本、确认输入和实际传入约束，避免规则变化后复用旧提示词；
 - 为语言、画幅、品牌事实和 Recipe 指令冲突增加回归测试，其中必须包含一条：**Recipe 的 `system_prompt` 与 `confirmed_inputs` 的画幅冲突时，以 `confirmed_inputs` 为准。**
 
+##### 状态：✅ 已完成（`671cb07`）
+
+`recipe_runtime.py` 已把 `confirmed_inputs` 与 `skill_constraints` 贯穿到编译入口（`_skill_constraints()` 由后端按 `skillId` 自行提取，不信任客户端提交的完整 Skill），并各自设了字符上限。
+
+第 33 行那句 `Follow the Recipe instructions as the highest-priority creative method` 已删除，改为与 §6.4 一致的优先级链：
+
+```text
+1. Resolve conflicts in this order: explicit user goal, confirmed inputs, Skill hard constraints,
+   Skill prompt guide, Recipe method, then defaults.
+2. Recipe instructions are a reusable production method, not permission to override higher-priority
+   user choices or Skill constraints.
+```
+
+**这一项是 §2.8 那个「运行时伪 Project Spec」问题的根治**：`Final_Video_Spec` 依赖已从 17/30 降到 0，作者不再需要用文本节点手工模拟约束传递。
+
 #### 4. 把 Recipe 候选改为严格白名单
 
 修改 `.hermes/plugins/freezone/json_workflow_catalog.py`。当前 `_workflow_skill_recipe_candidates()`（约 1639 行）的准入条件是 `explicitly_referenced or not output_kinds or output_kind in output_kinds`，因此只要 `output_kind` 对得上就会进入候选，`allowed_recipe_ids` 实际上不是白名单。改为：
@@ -1459,6 +1540,38 @@ reference_media
 - 只有旧 Skill 没有 `allowed_recipe_ids` 时，才保留模板引用和 `output_kind` 推断；
 - `freezone_get_workflow_skill()` 和 `validate_agent_workflow_plan()` 必须复用同一个候选计算结果；
 - 增加“同输出类型但未在白名单中的 Recipe 被拒绝”的回归测试。
+
+##### 状态：⚠️ 改了一轮，但引入了新的不一致（`671cb07`）
+
+`output_kind` 兜底部分**已修对**——`_workflow_skill_recipe_candidates()`（现 `json_workflow_catalog.py:1982`）加了 `not references` 前置，只有旧 Skill 才退化推断，符合上面第 3 条。
+
+但同时新增了一个**上面没有设计过**的分支，且它是无条件的：
+
+```python
+explicitly_referenced
+or recipe_id in general_recipe_ids      # ← 新增，references 非空时也放行
+or (not references and (not output_kinds or output_kind in output_kinds))
+```
+
+结果是同一个「allowed」概念现在有三处计算、两种语义：
+
+| 位置 | 语义 | 是否放行 `general-*` |
+| --- | --- | --- |
+| `json_workflow_catalog.py:1982` `_workflow_skill_recipe_candidates()` | 候选集 | **是** |
+| `json_workflow_catalog.py:951` `_compile_dynamic_recipe_items_intent()` | 原始 `allowed_recipe_ids` | 否 |
+| `workflow_plan.py:462` `_validate_node_catalog_refs()` | 原始 `allowed_recipe_ids` | 否 |
+
+6 个内置 Skill 的 `allowed_recipe_ids` **无一包含 `general-*`**。因此规划包会把 `general-image` 等 4 份作为候选交给 Agent，Agent 一旦选用，下游两条路径都会拒收：
+
+```text
+Recipe general-image is not allowed by Skill <skill_id>
+```
+
+这正是上面第 4 条要防的情况。
+
+**建议做法**：删掉候选函数里 `or recipe_id in general_recipe_ids` 这一个分支。旧 Skill（无 `allowed_recipe_ids`）仍可通过第三个分支按 `output_kind` 拿到 `general-*`，不受影响；新 Skill 则恢复严格。如果确实希望 `general-*` 永远可用，就必须把它写进各 Skill 的 `allowed_recipe_ids` 并在本节补上这条设计，**不能只在候选侧开口子**。
+
+回归测试同时覆盖：同输出类型但未在白名单中的 Recipe 被拒绝；候选集与两处校验对同一个 Skill 给出一致的准入结论。
 
 #### 5. 内置 Recipe 收敛为共享工艺集
 
@@ -1512,6 +1625,55 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 
 **验收指标不是文件数量，而是：新增一个 Skill 需要新增几份 Recipe。当前是 5~7 份；新增的只是风格或题材时，目标是 0 份，只有出现真正的新工艺才新增 Recipe。** 作者的主要工作应是写好厚 Skill，而不是复制一套 Recipe。
 
+##### 状态与执行顺序纠正（`671cb07`）——**动手前必读**
+
+已完成的部分是实打实的：`*-video-spec` 在所有 Skill 上删干净了（`Final_Video_Spec` 依赖 17 → 0），阶段推进指令 12 → 3，跨 Skill 复用 0 → 4。
+
+但**收敛只做了约三分之一，而且执行方式走反了一步**：
+
+| Skill | 共用 | 独占 | 实际发生的动作 |
+| --- | --- | --- | --- |
+| `lego-minifigure-animation-video` | 4 | 1 | ✅ 迁移到共享集（`97207105`） |
+| `pixar-ip-ad-video` | 3 | 2 | ✅ 迁移到共享集（`bc612bce`） |
+| `retro-hong-kong-kungfu-comedy-video` | 2 | 3 | 🔸 部分迁移 + 去 IP 品牌化改名（`18207244`） |
+| `japanese-anime-drama-video` | 1 | 4 | 🔸 **仅改名** `jp-anime-drama-*` → `dialogue-drama-*`（`0dbd2769`） |
+| `outdoor-stage-duel-video` | 0 | 4 | ❌ 仅删 `video-spec`（`6fb6e2c4`） |
+| `ling-cage-cinematic-video` | 0 | 5 | ❌ **仅改名** `ling-cage-*` → `sci-fi-survival-*`（`ce9f456d`） |
+
+去 IP 品牌化本身有价值（社区分发的 Catalog 不该带他人 IP 名，见 §6.3），但**改名不是收敛**。
+
+**关键问题：共享集是「乐高形状」的。** `97207105` 做的是「7 份 `lego-minifig-*` 删除 → 6 份泛化重命名」，即单个 Skill 脱掉风格换通用名，**从未吸收过其他四家的工艺**。后果是共享版比未迁移的私有版还薄：
+
+| Recipe | `system_prompt` 长度 |
+| --- | --- |
+| `storyboard-shot-video`（共享） | 811 |
+| `sci-fi-survival-shot-video`（未迁移） | 831 |
+| `outdoor-stage-duel-shot-video`（未迁移） | 1665 |
+
+`sci-fi-survival-shot-video` 里这些是**与风格无关、任何影视 Skill 都该有、而共享版目前没有**的通用工艺：
+
+- 背对镜头写法：`character seen from behind, back to camera, rear view, facing away from lens` + 必须描述背部装备/发型 + `no turning around` 锁定；
+- 战斗写法：wind-up、follow-through、命中反馈、微震 0.1–0.3s、伤害连续、环境互动；
+- 情绪写法：Cause → 面部肌肉 → 身体动作 → 语气；
+- `generate a single continuous scene, forbid grid/split-screen layouts`；
+- 结构顺序 `Camera → Subject → Space → Audio → Style → Negatives`——**正是本节上文点名要从 Flova 吸收的「镜头→主体→空间→音频」顺序**，而共享版目前是主体在前、运镜排第 5。
+
+**所以直接让剩余 Skill 指向当前共享集，是工艺倒退**，正是本节反复强调的「留一份丢四份」。
+
+**执行顺序必须是：**
+
+```text
+第一步  先加厚共享集——把未迁移 Skill 里的通用工艺提炼进去
+第二步  再让 Skill 指过去——各自身份进 planning.prompt_guide
+```
+
+第二步的归属判断按 §3.2 的切分线，注意两类内容处理方式相反：
+
+- `sci-fi-survival-shot-video` 的上述条目是**通用工艺，要合并进共享 Recipe**；
+- `outdoor-stage-duel-shot-video` 的 1665 字里绝大部分（`First-person audience POV from inside the crowd`、五段 Beat 结构、整个 Avoid block）是**该 Skill 的身份，要上移 `planning.prompt_guide`，绝不能合进共享 Recipe**，否则污染共享集。它还硬编码了「每条 15 秒视频对应 1 个 shot」，属本节要清理的违规项。
+
+**另需回头核对**：`lego` 与 `pixar` 迁移时是否也丢过工艺——对一遍 `97207105` 与 `bc612bce` 的删除内容。尚未逐份比对。
+
 #### 6. 把默认策略改为动态 WorkflowPlan
 
 主要修改 `.hermes/skills/workflows/SKILL.md`。该文件当前第 15 行仍写着“读取 Skill 规划包后，优先让 Catalog 工具展开模板。拓扑不变时，Agent 只决定数量及简短 `items`”，与动态优先的方向相反。改为：
@@ -1521,7 +1683,21 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 - 节点数量、阶段、依赖、并行关系和是否加入关键帧由本次目标、素材和输入决定；
 - `conduct_rules` 里描述的前置资产决策按顺序消费，**不得**展开成固定节点序列；
 - 只有用户明确选择固定模板，或旧 Skill 只有 `workflow_templates` 时，才使用 Catalog 模板展开；
-- 继续一次调用 `freezone_create_workflow_graph(plan=...)`，不逐节点创建，也不增加 Plan Schema。
+- ~~继续一次调用 `freezone_create_workflow_graph(plan=...)`，不逐节点创建，也不增加 Plan Schema。~~ 见下方状态说明，这条已被更好的方案取代。
+
+##### 状态：✅ 已完成，且主路径已演进（`671cb07`）
+
+`SKILL.md` 第 15 行那段“优先展开模板”已删除，默认策略确为 Skill 驱动的动态规划。
+
+但实现方式比本项原先设想的更进一步：**不再让 Agent 直接产出完整 Plan**，而是产出精简 `freezone_workflow_intent.v1`，由工具确定性编译：
+
+```text
+freezone_prepare_workflow_draft(intent=...)  →  patch  →  confirm
+```
+
+Agent 只决定用户目标、结构化输入、PlanItems、每项的 Recipe、输入依赖、是否生成锚点、是否自动执行；节点数据、稳定 ID、连线类型、分组、布局与成片合成由工具完成。`freezone_create_workflow_graph(plan=...)` 降级为兼容入口，`freezone_build_workflow_plan` 被明令禁止调用。
+
+**这个方向与主张二一致且更强**（模型可写错的面更小），完整说明见 §3.3。**接手时不要再按 `plan=` 那条路径动手，它已不是主路径。**
 
 `.hermes/skills/freezone/references/skill-studio-authoring-guide.md` 和 `src/novelvideo/chat/service.py` 已经写明新 Skill 默认动态，不需要再次重做，只需增加契约测试防止三处规则漂移。
 
@@ -1550,10 +1726,10 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 
 这些不阻塞动态主链开发，但应在发布前完成：
 
-1. 在新动态 Plan 的 `workflowCatalog` 中保存 `skillVersion`，Validator 校验其与当前 Skill 一致；旧 Graph 缺失时继续兼容。
-2. 让 `.hermes-version` 成为唯一 Hermes 版本来源，移除 `hermes_pool.py` 中独立的 `0.18.0` fallback。
-3. 将 DramaClaw 包版本提升到 `2.0.0`，解决 Bundle 默认最低版本为 `2.0.0`、当前包仍为 `1.1.2` 时导出自校验失败的问题。
-4. 对 ACP、Memory、Session 恢复、动态 Plan、Recipe Runtime 和 Bundle 做一次发布契约测试。
+1. ✅ **已完成**（`671cb07`）。在新动态 Plan 的 `workflowCatalog` 中保存 `skillVersion`，Validator 校验其与当前 Skill 一致；旧 Graph 缺失时继续兼容。实现见 `workflow_plan.py:442-448`，`if requested_skill_version` 前置即旧 Graph 兼容分支。
+2. ❌ **未开始**。让 `.hermes-version` 成为唯一 Hermes 版本来源，移除 `hermes_pool.py` 中独立的 `0.18.0` fallback。复核时 `.hermes-version` 已是 `0.19.0`，而 `hermes_pool.py:50` 的 `DEFAULT_HERMES_VERSION = "0.18.0"` 原样未动，漂移风险仍在。
+3. 🔸 **bug 部分已解，升版待定**。~~解决 Bundle 默认最低版本为 `2.0.0`、当前包仍为 `1.1.2` 时导出自校验失败的问题~~——导出默认值已改为 `current_dramaclaw_version()`（`agent_bundle_store.py:86`），自校验不再可能自相矛盾（详见 §2.7）。将包版本（现 `1.1.5`）提升到 `2.0.0` 现在只是发布节奏决策。
+4. ❌ **未开始**。对 ACP、Memory、Session 恢复、动态 Plan、Recipe Runtime 和 Bundle 做一次发布契约测试。
 5. 建立标杆用例集，验证范围严格限定在下面第二段。
 
    **已由手工建图的生产使用验证，本次不重复测**：节点执行、DAG 并行与上游失败阻断、局部重跑、生成历史、合成导出、Recipe Compiler 产出可用提示词、大图规模。这条产线在 Agent 接管建图之前已经用于制作真实剧集，重测这些属于浪费。
@@ -1574,7 +1750,11 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
    这套用例集里**涉及 LLM 调用的那部分**（Plan 生成、Recipe 编译）同时可作为 BrainClaw 需要的 DramaClaw 垂直离线评测资产（§6.4），一份投入服务两个项目。媒体生成部分不属于 BrainClaw 范围。手工建图阶段产出的真实剧集素材和成片就是现成基准。
 
    音色身份不纳入本轮标杆断言；当前画布音频引用主要用于配乐参考，等 voice identity / voice clone 链路完成后单独设计验收。
-6. 处理视频合成的两个假功能。`buildComposePayload()` 会发送 `speed` 和 `coverUrl`（`timelineModel.ts` 已在注释里标注 ⚠️），但后端合成链路中搜不到这两个字段：`_render_video_clip()` 不接受倍速参数，`run_freezone_video_compose()` 也不处理封面。因此时间线上的变速在导出时被静默丢弃，封面不会烧进 MP4。发布前二选一：补齐后端，或在 UI 上移除这两个入口。不允许保留“设置了但无效”的状态。
+6. ❌ **未开始**。处理视频合成的两个假功能。`buildComposePayload()` 会发送 `speed` 和 `coverUrl`（`timelineModel.ts` 已在注释里标注 ⚠️），但后端合成链路中搜不到这两个字段：`_render_video_clip()` 不接受倍速参数，`run_freezone_video_compose()` 也不处理封面。因此时间线上的变速在导出时被静默丢弃，封面不会烧进 MP4。发布前二选一：补齐后端，或在 UI 上移除这两个入口。不允许保留“设置了但无效”的状态。
+
+   复核（`671cb07`）：文件已从 `domain/timelineModel.ts` 移到 `frontend/src/features/canvas/compose/timelineModel.ts:241`，内容未变，两处 ⚠️ 注释仍在，后端仍搜不到 `cover_url`。
+
+   **这是当前唯一一条用户已经能碰到、且明确表现为「设置了却无效」的问题，且与 Skill/Recipe 主线完全无关。** 它容易被主线进度掩盖——建议不要排在收尾项里等发布，而是与其他小修一起尽早清掉。
 
 ### 8.4 P1：2.0 后按真实需求迭代
 
@@ -1622,6 +1802,18 @@ LibTV 的 Skill 内容不在参考范围内：它闭源，其 100 多个 Skill �
 - 不把真实供应商 API model name 固化进社区 Skill。
 
 ## 10. 2.0 验收标准
+
+> **复核提示（`671cb07`）**：下列条目当前**只经过静态走查，未跑标杆评测**。走查能确认的是「机制是否存在、代码是否接通」；**不能**确认「Agent 是否真的照做」。
+>
+> 因此以下几条处于**未验证**状态，必须跑完 §8.3 第 5 项的标杆用例集才能勾选——它们全都断言 Agent 的实际行为，而非代码结构：
+>
+> - Agent 能按厚 Skill 声明的视觉参考方法稳定落成拓扑（参考节点存在、相关镜头复用同一参考）；
+> - `execution_mode` 真的影响执行行为，且用户本轮选择高于 Skill 默认值；
+> - 同一 Skill 面对不同分镜数量 / 不同素材与目标能生成不同 Graph（选 15 秒与选 60 秒的拓扑差异）；
+> - 已有素材时能跳过不必要阶段、已有资产不会被默认重新生成；
+> - `planning.prompt_guide` 与 `conduct_rules` 的约束在冲突时确实按 §6.4 优先级胜出。
+>
+> 其中第一条直接决定「Skill Schema 零改动」这条标准能否成立（见 §8.2 第 1 项状态说明）。**在拿到标杆数据前，不要宣布 2.0 验收通过。**
 
 完成时必须满足：
 
@@ -1691,3 +1883,18 @@ Skill Schema 缺观感 / 资产 / 负面约束字段
 2. 漫剧、产品广告、电商图三个标杆 Skill，在素材、数量和目标不同时能否生成不同 Graph 并完整跑通、局部返工（§8.3 第 5 项）。
 
 这两条过了，五条主张就全部成立。没过，六项就只是一次结构整理。
+
+### 复核（`671cb07`，2026-08-02）
+
+上面那条因果链的**前三环已经断开**：Skill 已有字段（`planning.prompt_guide` / `conduct_rules`）真正抵达了节点执行层（第 3 项），`*-video-spec` 全部删除，`Final_Video_Spec` 依赖 17/30 → 0。作者不再需要在运行时用文本节点手工模拟约束传递。
+
+两个判定数字的当前值：
+
+| 判定 | 目标 | 当前 |
+| --- | --- | --- |
+| 1. 新增 Skill 需新增几份 Recipe | 0 份 | **1 ~ 5 份**（`lego` 已达 1，`ling-cage` 仍需 5） |
+| 2. 三个标杆 Skill 的行为验证 | 通过 | **未跑** |
+
+第 1 条已从「全员 5~7」变成「最好 1、最差 5」，说明路径走得通——`lego-minifigure-animation-video` 是现成的达标样本（4 份共用 + 1 份真正的新工艺）。剩下的是把这个形态推广到其余 Skill，**但必须先加厚共享集**（见 §8.2 第 5 项的执行顺序纠正，直接迁移会造成工艺倒退）。
+
+第 2 条完全未动，且它是唯一能证明「厚 Skill 真的在指挥 Agent」的证据。**在它跑出来之前，六项的完成度只能说到「机制齐备」，说不到「主张三已兑现」。**
