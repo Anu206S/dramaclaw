@@ -147,6 +147,28 @@ describe("selectChatTaskItems", () => {
       "completed",
     ]);
   });
+
+  it("shows tasks from every canvas in project scope without stale node links", () => {
+    const first = task({
+      task_key: "first",
+      metadata: { canvas_id: "canvas-1", node_id: "node-1" },
+    });
+    const second = task({
+      task_key: "second",
+      metadata: { canvas_id: "canvas-2" },
+    });
+
+    const result = selectChatTaskItems(
+      [first, second],
+      [node()],
+      null,
+      NOW,
+      "project",
+    );
+
+    expect(result.map(({ task: item }) => item.task_key)).toEqual(["first", "second"]);
+    expect(result.every((item) => item.nodeId === null && item.nodeLabel === null)).toBe(true);
+  });
 });
 
 describe("selectChatWorkflowRun", () => {

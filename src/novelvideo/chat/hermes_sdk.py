@@ -130,11 +130,13 @@ _DRAMACLAW_WRITE_TOOLS = {
     "dramaclaw_detect_sketch_identities",
     "dramaclaw_optimize_video_global",
     "dramaclaw_generate_audio",
+    "dramaclaw_prepare_system_voices",
     "dramaclaw_render_first_frames",
     "dramaclaw_compose_episode",
     "dramaclaw_generate_portrait",
     "dramaclaw_generate_identity_image",
     "dramaclaw_start_single_video",
+    "dramaclaw_start_video_batch",
     "dramaclaw_run_freezone_skill",
     "dramaclaw_save_freezone_canvas",
     "dramaclaw_delete_freezone_canvas",
@@ -583,6 +585,11 @@ class HermesSdkThread:
         # JSON-RPC stdio. Whichever runs first pays the cold start; the other
         # awaits it and then proceeds against the ready session.
         self._setup_lock = asyncio.Lock()
+        # ACP multiplexes one session over one subprocess stdout stream. A
+        # second prompt must not read that stream until the active turn has
+        # consumed its final response, otherwise asyncio raises because two
+        # coroutines are waiting on StreamReader.readline() concurrently.
+        self._turn_lock = asyncio.Lock()
 
     def _next_id(self) -> int:
         self._req_counter += 1
@@ -779,8 +786,19 @@ class HermesSdkThread:
         ``current_project`` is included as a prompt prefix so per-user hermes
         knows which DramaClaw project the user is talking about (see plan).
         """
-        if self._closed:
-            raise RuntimeError("HermesSdkThread is closed")
+        async with self._turn_lock:
+            if self._closed:
+                raise RuntimeError("HermesSdkThread is closed")
+            async for event in self._stream_turn(prompt, current_project=current_project):
+                yield event
+
+    async def _stream_turn(
+        self,
+        prompt: str,
+        *,
+        current_project: str | None = None,
+    ) -> AsyncIterator[ChatBackendEvent]:
+        """Run one prompt while ``_turn_lock`` owns the ACP stdout reader."""
 
         await self._prepare()
         turn_id = uuid.uuid4().hex
