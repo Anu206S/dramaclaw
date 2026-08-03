@@ -63,6 +63,32 @@ def _write_fake_hermes_cli(path: Path) -> None:
     path.chmod(0o755)
 
 
+def test_required_hermes_version_reads_only_pinned_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+
+    (tmp_path / ".hermes-version").write_text("0.19.0\n", encoding="utf-8")
+    monkeypatch.setattr(hermes_pool, "DRAMACLAW_ROOT", tmp_path)
+    monkeypatch.setenv("DRAMACLAW_HERMES_VERSION", "9.9.9")
+
+    assert hermes_pool._required_hermes_version() == ("0.19.0", (0, 19, 0))
+
+
+def test_required_hermes_version_fails_when_pinned_file_is_missing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.chat import hermes_pool
+
+    monkeypatch.setattr(hermes_pool, "DRAMACLAW_ROOT", tmp_path)
+    monkeypatch.setenv("DRAMACLAW_HERMES_VERSION", "0.18.0")
+
+    with pytest.raises(RuntimeError, match="missing DramaClaw Hermes version file"):
+        hermes_pool._required_hermes_version()
+
+
 def _patch_fake_hermes_pool(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
