@@ -2524,6 +2524,7 @@ function FreezoneChatDock({
           freezoneCanvasId={canvasId}
           freezoneAgentId={agent.id}
           connectionEnabled={connectionEnabled}
+          workflowStatusEnabled={active}
           currentCanvasMetadata={currentCanvasMetadata}
           currentCanvasSelection={currentCanvasSelection}
           currentCanvasOntologyContext={currentCanvasOntologyContext}

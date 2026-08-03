@@ -10836,6 +10836,7 @@ interface SuperChatPanelProps {
   freezoneCanvasId?: string | null;
   freezoneAgentId?: string | null;
   connectionEnabled?: boolean;
+  workflowStatusEnabled?: boolean;
   onConnectionStateChange?: (state: {
     busy: boolean;
     connected: boolean;
@@ -10860,6 +10861,7 @@ export function SuperChatPanel({
   freezoneCanvasId = null,
   freezoneAgentId = null,
   connectionEnabled = true,
+  workflowStatusEnabled = true,
   onConnectionStateChange,
   canvasId = null,
   currentCanvasSelection = [],
@@ -13879,7 +13881,7 @@ export function SuperChatPanel({
               variant={isFreezoneLayout ? "freezone" : "default"}
             />
           </div>
-          {isFreezoneLayout ? (
+          {isFreezoneLayout && workflowStatusEnabled ? (
             <ChatTaskStatusBar
               projectId={params.project ?? null}
               canvasId={effectiveFreezoneCanvasId}
