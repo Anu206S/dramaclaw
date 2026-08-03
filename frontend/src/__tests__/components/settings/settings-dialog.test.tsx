@@ -8,6 +8,10 @@ import { toast } from "sonner";
 import { SettingsDialog } from "@/components/settings/settings-dialog";
 
 const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
+const modelGatewayMocks = vi.hoisted(() => ({
+  config: undefined as Record<string, unknown> | undefined,
+  setCustomLlmMode: vi.fn(),
+}));
 const freezoneAgentConfigMocks = vi.hoisted(() => ({
   delete: vi.fn(),
   exportBundle: vi.fn(),
@@ -65,7 +69,10 @@ vi.mock("@/lib/queries/freezone-agent-config", () => ({
 }));
 
 vi.mock("@/lib/queries/model-gateway", () => ({
-  useModelGatewayConfig: () => ({ data: undefined, isLoading: false }),
+  useModelGatewayConfig: () => ({
+    data: modelGatewayMocks.config ? { data: modelGatewayMocks.config } : undefined,
+    isLoading: false,
+  }),
   useOfficialMediaCatalogStatus: () => ({ data: undefined, isLoading: false }),
   useSaveOfficialMediaCatalogPreferences: () => ({
     mutateAsync: vi.fn(),
@@ -76,7 +83,13 @@ vi.mock("@/lib/queries/model-gateway", () => ({
   useEnableOfficial: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useEnableCustom: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useEnableHybrid: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useEnableBrainClaw: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSaveOfficialConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSaveBrainClawConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSetCustomLlmMode: () => ({
+    mutateAsync: modelGatewayMocks.setCustomLlmMode,
+    isPending: false,
+  }),
   useInitCustomNewApi: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSaveCustomChannel: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSaveCustomChannelsBatch: () => ({ mutateAsync: vi.fn(), isPending: false }),
@@ -128,6 +141,15 @@ vi.mock("react-i18next", () => ({
         "settings.modelConfig.official.description": "官方渠道说明",
         "settings.modelConfig.official.registerLink": "注册",
         "settings.modelConfig.official.save": "保存并启用",
+        "settings.modelConfig.brainclaw.tab": "虾驿 BrainClaw（推荐）",
+        "settings.modelConfig.brainclaw.advancedTab": "高级自定义",
+        "settings.modelConfig.brainclaw.title": "虾脑 BrainClaw（推荐）",
+        "settings.modelConfig.brainclaw.description": "虾脑仅通过虾驿提供",
+        "settings.modelConfig.brainclaw.model": "固定模型",
+        "settings.modelConfig.brainclaw.save": "保存并启用 BrainClaw",
+        "settings.modelConfig.featureModels.title": "业务模型映射",
+        "settings.modelConfig.embeddingModel.title": "Embedding 模型",
+        "settings.modelConfig.mediaModels.title": "媒体模型",
         "settings.modelConfig.fields.gatewayBaseUrl": "网关地址",
         "settings.modelConfig.fields.apiKey": "API Key",
         "settings.mediaStorage.title": "图床 / 媒体存储",
@@ -330,6 +352,9 @@ function openRecipesManagement() {
 
 beforeEach(() => {
   runtimeState.isCeRuntime = true;
+  modelGatewayMocks.config = undefined;
+  modelGatewayMocks.setCustomLlmMode.mockReset();
+  modelGatewayMocks.setCustomLlmMode.mockResolvedValue({ ok: true });
   freezoneAgentConfigMocks.delete.mockReset();
   freezoneAgentConfigMocks.exportBundle.mockReset();
   freezoneAgentConfigMocks.installBundle.mockReset();
@@ -363,6 +388,68 @@ describe("SettingsDialog pages", () => {
       "page",
     );
     expect(screen.getByText("选择模型网关渠道")).toBeInTheDocument();
+  });
+
+  it("shows RelayClaw BrainClaw without an editable endpoint in custom mode", () => {
+    modelGatewayMocks.config = {
+      mode: "custom",
+      effective: {
+        source: "custom",
+        baseUrl: "http://local-newapi:3000/v1",
+        apiKeyPreview: "sk-c...cret",
+        configured: true,
+      },
+      llmEffective: {
+        mode: "relayclaw_brainclaw",
+        source: "official",
+        baseUrl: "https://relayclaw.cdnfg.com/v1",
+        apiKeyPreview: "sk-r...cret",
+        configured: true,
+        model: "brainclaw",
+        brainclaw: true,
+      },
+      official: {
+        source: "database",
+        baseUrl: "https://relayclaw.cdnfg.com/v1",
+        apiKeyPreview: "sk-r...cret",
+        configured: true,
+        environment: {
+          baseUrl: "https://relayclaw.cdnfg.com/v1",
+          apiKeyPreview: "",
+          configured: false,
+        },
+      },
+      custom: {
+        llmMode: "relayclaw_brainclaw",
+        baseUrl: "http://local-newapi:3000/v1",
+        apiKeyPreview: "sk-c...cret",
+        configured: true,
+        adminBaseUrl: "http://local-newapi:3000",
+        tokenName: "dramaclaw",
+        tokenId: "1",
+      },
+    };
+
+    renderSettingsDialog();
+
+    expect(screen.getByRole("tab", { name: "虾驿 BrainClaw（推荐）" })).toBeInTheDocument();
+    expect(screen.getByRole("tab", { name: "高级自定义" })).toBeInTheDocument();
+    expect(screen.getByText("虾脑 BrainClaw（推荐）")).toBeInTheDocument();
+    expect(screen.getByDisplayValue("https://relayclaw.cdnfg.com/v1")).toHaveAttribute(
+      "readonly",
+    );
+    expect(screen.getByText("brainclaw")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "保存并启用 BrainClaw" })).toBeEnabled();
+    expect(screen.getByText("Embedding 模型")).toBeInTheDocument();
+    expect(screen.getByText("媒体模型")).toBeInTheDocument();
+    expect(screen.queryByText("业务模型映射")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("tab", { name: "高级自定义" }));
+
+    expect(modelGatewayMocks.setCustomLlmMode).toHaveBeenCalledWith("advanced");
+    expect(screen.getByText("业务模型映射")).toBeInTheDocument();
+    expect(screen.getByText("Embedding 模型")).toBeInTheDocument();
+    expect(screen.getByText("媒体模型")).toBeInTheDocument();
   });
 
   it("limits EE settings to Freezone Skills with Recipes under advanced management", () => {

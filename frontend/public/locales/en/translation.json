@@ -4368,6 +4368,16 @@
         "mediaCatalogUpToDate": "The official media model catalog is up to date.",
         "mediaCatalogCheckFailed": "Could not check the official media model catalog. Try again later."
       },
+      "brainclaw": {
+        "tab": "RelayClaw BrainClaw (Recommended)",
+        "advancedTab": "Advanced Custom",
+        "title": "BrainClaw by RelayClaw (Recommended)",
+        "description": "BrainClaw is RelayClaw's exclusive intelligent model for DramaClaw. It automatically routes text understanding, generation, structured output, tool calling, and vision tasks without per-feature model mappings. BrainClaw is available only through RelayClaw; image, video, audio, and Embedding still use the Local NewAPI settings below.",
+        "model": "Fixed model",
+        "save": "Save & Enable BrainClaw",
+        "enabled": "RelayClaw BrainClaw is enabled.",
+        "advancedEnabled": "Advanced custom LLM is enabled."
+      },
       "custom": {
         "description": "CE uses a local SQLite-backed NewAPI. DramaClaw connects the database, creates a runtime token, and enables the local channel automatically.",
         "init": "Initialize Local NewAPI",

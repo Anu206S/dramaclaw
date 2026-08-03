@@ -263,19 +263,10 @@ def _root_value(*names: str) -> str:
 
 
 def _effective_newapi_gateway() -> tuple[str, str]:
-    """Return effective NewAPI ``(api_key, base_url)`` for Hermes.
+    """Return the independent LLM gateway used by Hermes."""
+    from novelvideo.model_gateway_settings import get_effective_llm_config
 
-    CE resolves the UI-selected gateway from settings.db. EE has no CE settings
-    database and therefore resolves its deployment-level NEWAPI_API_KEY and the
-    fixed official gateway URL.
-    """
-    from novelvideo.model_gateway_settings import get_effective_newapi_config
-    from novelvideo.official_defaults import OFFICIAL_NEWAPI_BASE_URL
-
-    gateway = get_effective_newapi_config(
-        official_base_url=OFFICIAL_NEWAPI_BASE_URL,
-        official_api_key=os.environ.get("NEWAPI_API_KEY", ""),
-    )
+    gateway = get_effective_llm_config()
     return gateway.api_key, gateway.base_url
 
 
@@ -296,11 +287,18 @@ def effective_gateway_credentials() -> tuple[str, str]:
 
 
 def _hermes_model_default() -> str:
-    return _root_value(
-        "HERMES_MODEL",
-        "HERMES_MODEL_DEFAULT",
-        "DRAMACLAW_HERMES_MODEL",
-    ) or _DEFAULT_HERMES_MODEL
+    from novelvideo.model_gateway_settings import get_effective_llm_config
+
+    if get_effective_llm_config().is_brainclaw:
+        return "brainclaw"
+    return (
+        _root_value(
+            "HERMES_MODEL",
+            "HERMES_MODEL_DEFAULT",
+            "DRAMACLAW_HERMES_MODEL",
+        )
+        or _DEFAULT_HERMES_MODEL
+    )
 
 
 def _hermes_model_api_mode() -> str:
@@ -645,7 +643,9 @@ def _ensure_freezone_identity_context(home: Path) -> None:
         memories_dir.mkdir(exist_ok=True)
         (memories_dir / "MEMORY.md").write_text(_FREEZONE_MEMORY_MD, encoding="utf-8")
     except OSError:
-        _log.warning("failed to ensure freezone hermes MEMORY.md under %s", memories_dir)
+        _log.warning(
+            "failed to ensure freezone hermes MEMORY.md under %s", memories_dir
+        )
 
 
 def _freezone_workflow_skill_items(username: str) -> list[dict]:
@@ -654,7 +654,9 @@ def _freezone_workflow_skill_items(username: str) -> list[dict]:
 
         items = list_user_agent_config_items(username, "skills")
     except Exception as exc:
-        _log.warning("failed to load Freezone Workflow Skills for %s: %s", username, exc)
+        _log.warning(
+            "failed to load Freezone Workflow Skills for %s: %s", username, exc
+        )
         return []
     return [
         item
@@ -673,11 +675,11 @@ def _workflow_skill_description(item: dict) -> str:
     description = str(item.get("description") or "").strip()
     triggers = item.get("triggers") if isinstance(item.get("triggers"), dict) else {}
     keywords = triggers.get("keywords") if isinstance(triggers, dict) else []
-    keyword_text = "、".join(
-        str(value).strip()
-        for value in keywords[:10]
-        if str(value).strip()
-    ) if isinstance(keywords, list) else ""
+    keyword_text = (
+        "、".join(str(value).strip() for value in keywords[:10] if str(value).strip())
+        if isinstance(keywords, list)
+        else ""
+    )
     parts = [description]
     if keyword_text:
         parts.append(f"适用于：{keyword_text}。")
@@ -754,18 +756,26 @@ def _sync_freezone_workflow_skills(skills_dir: Path, username: str) -> None:
         target = skills_dir / skill_id
         marker = target / _GENERATED_WORKFLOW_SKILL_MARKER
         if target.is_symlink() or (target.exists() and not marker.is_file()):
-            _log.warning("native Hermes Skill collision at %s; skipping generated wrapper", target)
+            _log.warning(
+                "native Hermes Skill collision at %s; skipping generated wrapper",
+                target,
+            )
             continue
         try:
             target.mkdir(parents=True, exist_ok=True)
             skill_file = target / "SKILL.md"
             marker_text = json.dumps(summary, ensure_ascii=False, indent=2) + "\n"
-            if not skill_file.exists() or skill_file.read_text(encoding="utf-8") != content:
+            if (
+                not skill_file.exists()
+                or skill_file.read_text(encoding="utf-8") != content
+            ):
                 skill_file.write_text(content, encoding="utf-8")
             if not marker.exists() or marker.read_text(encoding="utf-8") != marker_text:
                 marker.write_text(marker_text, encoding="utf-8")
         except OSError as exc:
-            _log.warning("failed to materialize Hermes Workflow Skill %s: %s", skill_id, exc)
+            _log.warning(
+                "failed to materialize Hermes Workflow Skill %s: %s", skill_id, exc
+            )
 
 
 def _materialize_skill_links(skills_dir: Path, *, profile: str = "director") -> None:
@@ -785,8 +795,12 @@ def _materialize_skill_links(skills_dir: Path, *, profile: str = "director") -> 
         )
         return
 
-    env_name = "ST_HERMES_FREEZONE_SKILLS" if profile == "freezone" else "ST_HERMES_SKILLS"
-    defaults = FREEZONE_HERMES_SKILLS if profile == "freezone" else DEFAULT_HERMES_SKILLS
+    env_name = (
+        "ST_HERMES_FREEZONE_SKILLS" if profile == "freezone" else "ST_HERMES_SKILLS"
+    )
+    defaults = (
+        FREEZONE_HERMES_SKILLS if profile == "freezone" else DEFAULT_HERMES_SKILLS
+    )
     allowed = {
         name.strip()
         for name in os.environ.get(env_name, ",".join(sorted(defaults))).split(",")
@@ -852,14 +866,22 @@ def _ensure_default_plugin_enabled(config_yaml: Path) -> None:
     elif re.search(r"(?m)^  enabled:\s*$", text):
         new_text = re.sub(
             r"(?m)^  enabled:\s*$",
-            lambda m: m.group(0) + "\n" + "".join(f"    - {name}\n" for name in missing).rstrip(),
+            lambda m: (
+                m.group(0)
+                + "\n"
+                + "".join(f"    - {name}\n" for name in missing).rstrip()
+            ),
             text,
             count=1,
         )
     else:
         new_text = re.sub(
             r"(?m)^plugins:\s*$",
-            lambda m: m.group(0) + "\n  enabled:\n" + "".join(f"    - {name}\n" for name in missing).rstrip(),
+            lambda m: (
+                m.group(0)
+                + "\n  enabled:\n"
+                + "".join(f"    - {name}\n" for name in missing).rstrip()
+            ),
             text,
             count=1,
         )
@@ -986,7 +1008,9 @@ def _ensure_freezone_config_policy(config_yaml: Path) -> None:
     try:
         config_yaml.write_text(_dump_hermes_config_yaml(config), encoding="utf-8")
     except OSError:
-        _log.warning("failed to enforce freezone hermes config policy at %s", config_yaml)
+        _log.warning(
+            "failed to enforce freezone hermes config policy at %s", config_yaml
+        )
 
 
 def _ensure_default_toolsets_enabled(config_yaml: Path) -> None:
@@ -1016,7 +1040,11 @@ def _ensure_default_toolsets_enabled(config_yaml: Path) -> None:
     else:
         new_text = re.sub(
             r"(?m)^enabled_toolsets:\s*$",
-            lambda m: m.group(0) + "\n" + "".join(f"  - {name}\n" for name in missing).rstrip(),
+            lambda m: (
+                m.group(0)
+                + "\n"
+                + "".join(f"  - {name}\n" for name in missing).rstrip()
+            ),
             text,
             count=1,
         )
@@ -1160,7 +1188,9 @@ def _dump_hermes_config_yaml(config: dict) -> str:
 def _ensure_model_config_from_env(config_yaml: Path) -> None:
     """Apply explicit Hermes model env overrides to existing config.yaml files."""
     overrides: dict[str, object] = {}
-    model = _root_value("HERMES_MODEL", "HERMES_MODEL_DEFAULT", "DRAMACLAW_HERMES_MODEL")
+    model = _root_value(
+        "HERMES_MODEL", "HERMES_MODEL_DEFAULT", "DRAMACLAW_HERMES_MODEL"
+    )
     if model:
         overrides["default"] = model
     api_mode = _root_value("HERMES_MODEL_API_MODE")
@@ -1209,8 +1239,12 @@ def _materialize_plugin_links(plugins_dir: Path, *, profile: str = "director") -
         )
         return
 
-    env_name = "ST_HERMES_FREEZONE_PLUGINS" if profile == "freezone" else "ST_HERMES_PLUGINS"
-    defaults = FREEZONE_HERMES_PLUGINS if profile == "freezone" else DEFAULT_HERMES_PLUGINS
+    env_name = (
+        "ST_HERMES_FREEZONE_PLUGINS" if profile == "freezone" else "ST_HERMES_PLUGINS"
+    )
+    defaults = (
+        FREEZONE_HERMES_PLUGINS if profile == "freezone" else DEFAULT_HERMES_PLUGINS
+    )
     allowed = {
         name.strip()
         for name in os.environ.get(env_name, ",".join(sorted(defaults))).split(",")

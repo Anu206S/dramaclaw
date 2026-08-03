@@ -6,7 +6,10 @@ import hashlib
 import sys
 from typing import Any
 
-from novelvideo.model_gateway_settings import get_effective_newapi_config
+from novelvideo.model_gateway_settings import (
+    get_effective_llm_config,
+    get_effective_newapi_config,
+)
 from novelvideo.shared.runtime_env import is_ce_effective
 
 
@@ -63,9 +66,13 @@ def refresh_model_gateway_runtime() -> dict[str, Any]:
         official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
         official_api_key=app_config.NEWAPI_API_KEY,
     )
+    llm_gateway = get_effective_llm_config()
     api_key = str(gateway.api_key or "").strip()
     base_url = str(gateway.base_url or "").strip().rstrip("/")
-    version = _runtime_version(api_key, base_url)
+    version = _runtime_version(
+        f"{api_key}\n{llm_gateway.api_key}\n{llm_gateway.mode}",
+        f"{base_url}\n{llm_gateway.base_url}",
+    )
 
     cleared = _clear_agent_singletons()
 
@@ -73,6 +80,13 @@ def refresh_model_gateway_runtime() -> dict[str, Any]:
         "mode": gateway.mode,
         "source": gateway.source,
         "configured": bool(api_key and base_url),
+        "llm": {
+            "mode": llm_gateway.mode,
+            "source": llm_gateway.source,
+            "configured": bool(llm_gateway.api_key and llm_gateway.base_url),
+            "model": llm_gateway.model,
+            "brainclaw": llm_gateway.is_brainclaw,
+        },
         "runtimeVersion": version,
         "clearedCaches": cleared,
         "cognee": _cognee_runtime_status(),

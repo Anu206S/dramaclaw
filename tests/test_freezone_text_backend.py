@@ -6,7 +6,10 @@ import json
 import pytest
 
 from novelvideo.api.routes import freezone as freezone_routes
-from novelvideo.api.schemas import FreezoneStoryScriptGenerateData, FreezoneStoryScriptRow
+from novelvideo.api.schemas import (
+    FreezoneStoryScriptGenerateData,
+    FreezoneStoryScriptRow,
+)
 from novelvideo.freezone.text_node import (
     FREEZONE_TEXT_WRITER_MODEL,
     FREEZONE_TRANSLATION_MODEL,
@@ -69,7 +72,9 @@ async def test_translate_freezone_text_trusts_model_detected_direction(
 
             return Response()
 
-    monkeypatch.setattr("novelvideo.freezone.text_node.get_freezone_translation_agent", FakeAgent)
+    monkeypatch.setattr(
+        "novelvideo.freezone.text_node.get_freezone_translation_agent", FakeAgent
+    )
 
     translated, source_language, target_language = await translate_freezone_text(
         text="Generate ONE storyboard sketch panel for this NovelVideo beat. 颜色法则：保留 [CM_6932]",
@@ -98,7 +103,9 @@ async def test_translate_freezone_text_flips_invalid_same_language_result(
 
             return Response()
 
-    monkeypatch.setattr("novelvideo.freezone.text_node.get_freezone_translation_agent", FakeAgent)
+    monkeypatch.setattr(
+        "novelvideo.freezone.text_node.get_freezone_translation_agent", FakeAgent
+    )
 
     translated, source_language, target_language = await translate_freezone_text(
         text="雨夜街头",
@@ -110,9 +117,9 @@ async def test_translate_freezone_text_flips_invalid_same_language_result(
     assert target_language == "en"
 
 
-def test_translation_defaults_use_newapi_gemini_flash() -> None:
+def test_translation_official_default_uses_brainclaw() -> None:
     assert FREEZONE_TRANSLATION_PROVIDER == "newapi"
-    assert FREEZONE_TRANSLATION_MODEL == "DC-freezone-translator-LLM"
+    assert FREEZONE_TRANSLATION_MODEL == "brainclaw"
 
 
 def test_text_writer_uses_plain_text_agent_without_structured_output_settings(
@@ -198,7 +205,9 @@ async def test_freezone_text_translate_route_returns_task_id(
         captured.update(kwargs)
 
     monkeypatch.setattr(
-        freezone_routes, "_start_freezone_text_translate_task", _fake_start_text_translate_task
+        freezone_routes,
+        "_start_freezone_text_translate_task",
+        _fake_start_text_translate_task,
     )
 
     result = await freezone_routes.freezone_text_translate(
@@ -297,7 +306,9 @@ async def test_freezone_story_script_route_uses_source_text(
         captured.update(kwargs)
 
     monkeypatch.setattr(
-        freezone_routes, "_start_freezone_story_script_task", _fake_start_story_script_task
+        freezone_routes,
+        "_start_freezone_story_script_task",
+        _fake_start_story_script_task,
     )
 
     result = await freezone_routes.freezone_story_script_generate(
@@ -337,7 +348,9 @@ async def test_freezone_story_script_route_reads_source_url_file(
         captured.update(kwargs)
 
     monkeypatch.setattr(
-        freezone_routes, "_start_freezone_story_script_task", _fake_start_story_script_task
+        freezone_routes,
+        "_start_freezone_story_script_task",
+        _fake_start_story_script_task,
     )
 
     result = await freezone_routes.freezone_story_script_generate(
@@ -442,7 +455,9 @@ async def test_freezone_story_script_route_forwards_character_refs(
         captured.update(kwargs)
 
     monkeypatch.setattr(
-        freezone_routes, "_start_freezone_story_script_task", _fake_start_story_script_task
+        freezone_routes,
+        "_start_freezone_story_script_task",
+        _fake_start_story_script_task,
     )
 
     result = await freezone_routes.freezone_story_script_generate(
@@ -680,7 +695,13 @@ async def test_freezone_story_script_job_result_returns_json_payload(
 ) -> None:
     project_dir = tmp_path / "project"
     job_id = "storyjob1"
-    out = project_dir / "freezone" / "_outputs" / "freezone_story_script" / f"{job_id}.json"
+    out = (
+        project_dir
+        / "freezone"
+        / "_outputs"
+        / "freezone_story_script"
+        / f"{job_id}.json"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "title": "我在盛唐写天下",
@@ -733,7 +754,13 @@ async def test_freezone_text_translate_job_result_returns_json_payload(
 ) -> None:
     project_dir = tmp_path / "project"
     job_id = "translatejob1"
-    out = project_dir / "freezone" / "_outputs" / "freezone_text_translate" / f"{job_id}.json"
+    out = (
+        project_dir
+        / "freezone"
+        / "_outputs"
+        / "freezone_text_translate"
+        / f"{job_id}.json"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "translated_text": "Today is Monday",
@@ -802,7 +829,13 @@ async def test_freezone_image_reverse_prompt_job_result_returns_json_payload(
 ) -> None:
     project_dir = tmp_path / "project"
     job_id = "reverseprompt1"
-    out = project_dir / "freezone" / "_outputs" / "freezone_image_reverse_prompt" / f"{job_id}.json"
+    out = (
+        project_dir
+        / "freezone"
+        / "_outputs"
+        / "freezone_image_reverse_prompt"
+        / f"{job_id}.json"
+    )
     out.parent.mkdir(parents=True, exist_ok=True)
     payload = {
         "prompt": "雨夜街头，电影感近景特写，人物侧脸被霓虹照亮",
