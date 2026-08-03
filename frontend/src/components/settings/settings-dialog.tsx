@@ -59,7 +59,10 @@ import {
   useEnableOfficial,
   useEnableCustom,
   useEnableHybrid,
+  useEnableBrainClaw,
   useSaveOfficialConfig,
+  useSaveBrainClawConfig,
+  useSetCustomLlmMode,
   useInitCustomNewApi,
   useSaveCustomChannel,
   useSaveCustomChannelsBatch,
@@ -70,6 +73,7 @@ import {
   useSaveMediaRelayConfig,
   useSyncProviderChannel,
   type GatewayMode,
+  type CustomLlmMode,
   type ModelGatewayConfig,
   type CustomChannelInput,
   type NewApiDatabaseConfigInput,
@@ -341,10 +345,15 @@ function ModelConfigSection({ open }: { open: boolean }) {
   const enableOfficialMode = useEnableOfficial();
   const enableCustomMode = useEnableCustom();
   const enableHybridMode = useEnableHybrid();
-  const modelGatewayMissing = config ? !config.effective.configured : false;
+  const modelGatewayMissing = config
+    ? !config.effective.configured || !config.llmEffective.configured
+    : false;
 
   const [mode, setMode] = useState<GatewayMode>("official");
   const modeChosenByUser = useRef(false);
+  const [customLlmMode, setCustomLlmMode] =
+    useState<CustomLlmMode>("relayclaw_brainclaw");
+  const updateCustomLlmMode = useSetCustomLlmMode();
   // 配置加载后，把激活的 tab 同步到服务端当前 mode。
   const serverMode = config?.mode;
   useEffect(() => {
@@ -352,6 +361,30 @@ function ModelConfigSection({ open }: { open: boolean }) {
       setMode((current) => (current === serverMode ? current : serverMode));
     }
   }, [serverMode]);
+  useEffect(() => {
+    if (config?.custom.llmMode) {
+      setCustomLlmMode(config.custom.llmMode);
+    }
+  }, [config?.custom.llmMode]);
+
+  const handleCustomLlmModeChange = async (value: string) => {
+    const nextMode = value as CustomLlmMode;
+    const previousMode = customLlmMode;
+    setCustomLlmMode(nextMode);
+    if (nextMode !== "advanced") return;
+    try {
+      const response = await updateCustomLlmMode.mutateAsync(nextMode);
+      if (!response.ok) {
+        setCustomLlmMode(previousMode);
+        toast.error(getResponseErrorMessage(response, t("settings.modelConfig.requestFailed")));
+        return;
+      }
+      toast.success(t("settings.modelConfig.brainclaw.advancedEnabled"));
+    } catch (error) {
+      setCustomLlmMode(previousMode);
+      toast.error(await getRequestErrorMessage(error, t("settings.modelConfig.requestFailed")));
+    }
+  };
 
   // CE 运行环境提供本地 NewAPI 管理地址；初始化与下方模型映射共用该地址。
   const [customBaseUrl, setCustomBaseUrl] = useState(DEFAULT_CUSTOM_NEWAPI_URL);
@@ -528,12 +561,32 @@ function ModelConfigSection({ open }: { open: boolean }) {
             activateHybrid={mode === "hybrid"}
           />
           {mode === "custom" ? (
-            <QuickLocalNewApiSetup
-              config={config}
-              loading={loading}
-              newApiBaseUrl={customBaseUrl}
-              database={customDatabase}
-            />
+            <>
+              <QuickLocalNewApiSetup
+                config={config}
+                loading={loading}
+                newApiBaseUrl={customBaseUrl}
+                database={customDatabase}
+              />
+              <div className="mt-5">
+                <Tabs
+                  value={customLlmMode}
+                  onValueChange={handleCustomLlmModeChange}
+                >
+                  <TabsList>
+                    <TabsTrigger value="relayclaw_brainclaw">
+                      {t("settings.modelConfig.brainclaw.tab")}
+                    </TabsTrigger>
+                    <TabsTrigger value="advanced">
+                      {t("settings.modelConfig.brainclaw.advancedTab")}
+                    </TabsTrigger>
+                  </TabsList>
+                </Tabs>
+              </div>
+              {customLlmMode === "relayclaw_brainclaw" ? (
+                <BrainClawGatewayPanel config={config} loading={loading} />
+              ) : null}
+            </>
           ) : null}
           {mode === "hybrid" ? (
             <details className="mt-5 rounded-md border border-border/70">
@@ -560,7 +613,7 @@ function ModelConfigSection({ open }: { open: boolean }) {
               </div>
             </details>
           ) : null}
-          {mode === "custom" ? (
+          {mode === "custom" && customLlmMode === "advanced" ? (
             <details className="mt-5 rounded-md border border-border/70">
               <summary className="cursor-pointer px-3 py-3 text-xs font-medium text-foreground">
                 {t("settings.modelConfig.quick.advanced")}
@@ -909,6 +962,128 @@ function OfficialGatewayPanel({
             <Loader2 className="size-3.5 animate-spin" />
           ) : null}
           {t("settings.modelConfig.official.save")}
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function BrainClawGatewayPanel({
+  config,
+  loading,
+}: {
+  config: ModelGatewayConfig | undefined;
+  loading: boolean;
+}) {
+  const { t } = useTranslation();
+  const saveBrainClaw = useSaveBrainClawConfig();
+  const enableBrainClaw = useEnableBrainClaw();
+  const [apiKey, setApiKey] = useState("");
+  const [revealKey, setRevealKey] = useState(false);
+  const official = config?.official;
+  const savedApiKeyPreview = official?.configured ? official.apiKeyPreview : "";
+
+  const handleSave = async () => {
+    const trimmedApiKey = apiKey.trim();
+    try {
+      const response = trimmedApiKey
+        ? await saveBrainClaw.mutateAsync({ newApiApiKey: trimmedApiKey })
+        : await enableBrainClaw.mutateAsync();
+      if (!response.ok) {
+        toast.error(getResponseErrorMessage(response, t("settings.modelConfig.requestFailed")));
+        return;
+      }
+      setApiKey("");
+      setRevealKey(false);
+      toast.success(t("settings.modelConfig.brainclaw.enabled"));
+    } catch (error) {
+      toast.error(await getRequestErrorMessage(error, t("settings.modelConfig.requestFailed")));
+    }
+  };
+
+  return (
+    <div className="mt-4 rounded-md border border-primary/30 bg-primary/[0.04] px-3 py-3">
+      <h4 className="text-xs font-medium text-foreground">
+        {t("settings.modelConfig.brainclaw.title")}
+      </h4>
+      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+        {t("settings.modelConfig.brainclaw.description")}
+      </p>
+
+      <div className="mt-3 space-y-2.5">
+        <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+          <Label className="justify-start text-[11px] font-normal tracking-wide text-muted-foreground uppercase">
+            {t("settings.modelConfig.fields.gatewayBaseUrl")}
+          </Label>
+          <Input value={official?.baseUrl ?? ""} readOnly className="h-9 bg-muted/30" />
+        </div>
+        <div className="grid grid-cols-[120px_1fr] items-center gap-3">
+          <Label className="justify-start text-[11px] font-normal tracking-wide text-muted-foreground uppercase">
+            {t("settings.modelConfig.fields.apiKey")}
+          </Label>
+          <div className="relative">
+            <Input
+              name="relayclaw-brainclaw-api-key"
+              autoComplete="new-password"
+              data-1p-ignore="true"
+              data-lpignore="true"
+              type={revealKey ? "text" : "password"}
+              value={apiKey}
+              onChange={(event) => {
+                setApiKey(event.target.value);
+                if (!event.target.value) setRevealKey(false);
+              }}
+              placeholder={
+                savedApiKeyPreview
+                  ? t("settings.secretSavedPlaceholder", { preview: savedApiKeyPreview })
+                  : "sk-..."
+              }
+              autoCapitalize="none"
+              spellCheck={false}
+              className={cn("h-9", apiKey ? "pr-9" : savedApiKeyPreview ? "pr-16" : "")}
+            />
+            {apiKey ? (
+              <button
+                type="button"
+                onClick={() => setRevealKey((value) => !value)}
+                aria-label={
+                  revealKey
+                    ? t("settings.mediaStorage.hideSecret")
+                    : t("settings.mediaStorage.showSecret")
+                }
+                className="absolute top-1/2 right-2 -translate-y-1/2 text-muted-foreground transition-colors hover:text-foreground"
+              >
+                {revealKey ? <EyeOff className="size-4" /> : <Eye className="size-4" />}
+              </button>
+            ) : savedApiKeyPreview ? (
+              <span className="absolute top-1/2 right-2 -translate-y-1/2 rounded bg-emerald-400/10 px-1.5 py-0.5 text-[10px] font-medium text-emerald-400">
+                {t("settings.secretSavedBadge")}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <div className="grid grid-cols-[120px_1fr] items-center gap-3 text-[11px]">
+          <span className="text-muted-foreground">{t("settings.modelConfig.brainclaw.model")}</span>
+          <code className="text-foreground">brainclaw</code>
+        </div>
+      </div>
+
+      <div className="mt-3 flex justify-end">
+        <Button
+          type="button"
+          size="sm"
+          onClick={handleSave}
+          disabled={
+            loading ||
+            saveBrainClaw.isPending ||
+            enableBrainClaw.isPending ||
+            (!apiKey.trim() && !official?.configured)
+          }
+        >
+          {saveBrainClaw.isPending || enableBrainClaw.isPending ? (
+            <Loader2 className="size-3.5 animate-spin" />
+          ) : null}
+          {t("settings.modelConfig.brainclaw.save")}
         </Button>
       </div>
     </div>
@@ -2718,7 +2893,6 @@ function FeatureModelsBlock({
           </div>
         </>
       ) : null}
-
       <MediaModelsBlock
         configuredProviders={configuredProviders}
         newApiBaseUrl={newApiBaseUrl}

@@ -31,11 +31,13 @@ from novelvideo.embedding_models import (
     require_current_embedding_model_spec,
 )
 from novelvideo.llm_instrumentation import (
+    install_litellm_brainclaw_profile_routing,
     reset_model_call_reservation_active,
     set_model_call_reservation_active,
 )
 from novelvideo.cognee.ladybug_access import install_cognee_ladybug_access_patch
 from novelvideo.official_defaults import (
+    ADVANCED_TEXT_MODEL_BY_ENV,
     DEFAULT_COGNEE_LLM_MODEL,
     DEFAULT_COGNEE_LLM_PROVIDER,
     OFFICIAL_NEWAPI_BASE_URL,
@@ -341,9 +343,32 @@ def _effective_newapi_gateway() -> tuple[str, str]:
         )
 
 
+def _effective_llm_gateway() -> tuple[str, str, bool]:
+    """Resolve the independent LLM route without affecting media/embedding."""
+    try:
+        from novelvideo.model_gateway_settings import get_effective_llm_config
+
+        config = get_effective_llm_config()
+        return config.api_key, config.base_url, config.is_brainclaw
+    except Exception:
+        api_key, base_url = _effective_newapi_gateway()
+        return api_key, base_url, False
+
+
+def _get_llm_endpoint_env(provider: str) -> str:
+    if _uses_newapi_gateway(provider):
+        gateway_key, gateway_base_url, _is_brainclaw = _effective_llm_gateway()
+        if gateway_key and gateway_base_url:
+            return gateway_base_url
+    return _get_endpoint_env(provider, "COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT")
+
+
 def _current_gateway_fingerprint() -> str:
-    api_key, base_url = _effective_newapi_gateway()
-    material = f"{base_url}\n{api_key}".encode("utf-8")
+    media_key, media_base_url = _effective_newapi_gateway()
+    llm_key, llm_base_url, is_brainclaw = _effective_llm_gateway()
+    material = (
+        f"{media_base_url}\n{media_key}\n{llm_base_url}\n{llm_key}\n{is_brainclaw}"
+    ).encode("utf-8")
     return hashlib.sha256(material).hexdigest()
 
 
@@ -361,7 +386,7 @@ def cognee_gateway_restart_required() -> bool:
 
 def _resolve_llm_api_key(llm_provider: str, llm_model: str) -> str:
     if _is_newapi_provider(llm_provider):
-        return _effective_newapi_gateway()[0]
+        return _effective_llm_gateway()[0]
     api_key = os.getenv("COGNEE_LLM_API_KEY", "")
     if api_key:
         return api_key
@@ -373,10 +398,21 @@ def _resolve_llm_api_key(llm_provider: str, llm_model: str) -> str:
         _get_scoped_env("COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT"),
     ):
         return os.getenv("OPENROUTER_API_KEY", "")
-    gateway_key, _gateway_base_url = _effective_newapi_gateway()
+    gateway_key, _gateway_base_url, _is_brainclaw = _effective_llm_gateway()
     return (
         gateway_key or os.getenv("OPENAI_API_KEY", "") or os.getenv("LLM_API_KEY", "")
     )
+
+
+def _resolve_llm_model(llm_provider: str) -> str:
+    _api_key, _base_url, is_brainclaw = _effective_llm_gateway()
+    configured = (
+        "brainclaw"
+        if is_brainclaw
+        else os.getenv("COGNEE_LLM_MODEL", "").strip()
+        or ADVANCED_TEXT_MODEL_BY_ENV["COGNEE_LLM_MODEL"]
+    )
+    return _normalize_llm_model(llm_provider, configured)
 
 
 def _set_or_clear_env(key: str, value: str) -> None:
@@ -734,12 +770,10 @@ async def _run_project_embedding_with_billing(
     }
     try:
         try:
-            reservation_id = (
-                await get_usage_meter().reserve_current_model_call_credit(
-                    model=spec.internal_model,
-                    billing_kind="embedding",
-                    metadata=metadata,
-                )
+            reservation_id = await get_usage_meter().reserve_current_model_call_credit(
+                model=spec.internal_model,
+                billing_kind="embedding",
+                metadata=metadata,
             )
         except Exception as exc:
             insufficient = find_insufficient_credits_error(exc)
@@ -963,7 +997,7 @@ def _apply_embedding_runtime_defaults(llm_provider: str) -> None:
 
 def _apply_llm_env(provider: str, model: str, api_key: str) -> None:
     """应用 LLM 相关环境变量。"""
-    llm_endpoint = _get_endpoint_env(provider, "COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT")
+    llm_endpoint = _get_llm_endpoint_env(provider)
     llm_api_version = _get_scoped_env("COGNEE_LLM_API_VERSION", "LLM_API_VERSION")
     cognee_provider = _to_cognee_provider(provider)
 
@@ -1059,10 +1093,7 @@ def _apply_embedding_env(llm_provider: str, api_key: str) -> tuple[str, str, str
 
 
 llm_provider = _resolve_llm_provider()
-llm_model = _normalize_llm_model(
-    llm_provider,
-    os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL,
-)
+llm_model = _resolve_llm_model(llm_provider)
 _apply_embedding_runtime_defaults(llm_provider)
 
 api_key = _resolve_llm_api_key(llm_provider, llm_model)
@@ -1074,6 +1105,7 @@ if api_key:
 _apply_cognee_runtime_defaults()
 
 try:
+    install_litellm_brainclaw_profile_routing()
     with preserve_st_env():
         cognee = _import_cognee_without_logging_takeover()
 
@@ -1129,20 +1161,14 @@ def init_cognee() -> None:
 
     llm_provider = _resolve_llm_provider()
 
-    api_key = _resolve_llm_api_key(
-        llm_provider,
-        os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL,
-    )
+    api_key = _resolve_llm_api_key(llm_provider, _resolve_llm_model(llm_provider))
     if not api_key:
         raise ValueError(
             "未设置 Cognee LLM Key。请配置 DramaClaw 模型网关；"
             "CE 在设置页配置，EE 通过 NEWAPI_API_KEY 配置。"
         )
 
-    llm_model = _normalize_llm_model(
-        llm_provider,
-        os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL,
-    )
+    llm_model = _resolve_llm_model(llm_provider)
 
     _apply_llm_env(llm_provider, llm_model, api_key)
     (

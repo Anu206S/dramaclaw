@@ -37,6 +37,12 @@ MODE_OFFICIAL = "official"
 MODE_CUSTOM = "custom"
 MODE_HYBRID = "hybrid"
 VALID_MODES = {MODE_OFFICIAL, MODE_CUSTOM, MODE_HYBRID}
+CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW = "relayclaw_brainclaw"
+CUSTOM_LLM_MODE_ADVANCED = "advanced"
+VALID_CUSTOM_LLM_MODES = {
+    CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
+    CUSTOM_LLM_MODE_ADVANCED,
+}
 PLACEHOLDER_API_KEYS = {
     "your_newapi_token",
     "your_model_api_key",
@@ -60,6 +66,16 @@ class EffectiveNewApiConfig:
     source: str
     base_url: str
     api_key: str
+
+
+@dataclass(frozen=True)
+class EffectiveLlmConfig:
+    mode: str
+    source: str
+    base_url: str
+    api_key: str
+    model: str
+    is_brainclaw: bool
 
 
 @dataclass(frozen=True)
@@ -114,6 +130,11 @@ def normalize_gateway_mode(value: str | None) -> str:
     return mode if mode in VALID_MODES else MODE_OFFICIAL
 
 
+def normalize_custom_llm_mode(value: str | None) -> str:
+    mode = str(value or "").strip().lower()
+    return mode if mode in VALID_CUSTOM_LLM_MODES else CUSTOM_LLM_MODE_ADVANCED
+
+
 def normalize_relay_base_url(value: str | None) -> str:
     base = str(value or "").strip().rstrip("/")
     if not base:
@@ -156,7 +177,11 @@ def _connect() -> sqlite3.Connection:
                 conn.close()
             retryable = any(
                 marker in str(exc).lower()
-                for marker in ("disk i/o error", "database is locked", "database is busy")
+                for marker in (
+                    "disk i/o error",
+                    "database is locked",
+                    "database is busy",
+                )
             )
             if not retryable or attempt == 2:
                 raise
@@ -208,6 +233,26 @@ def _write_many(values: dict[str, str]) -> None:
 
 def set_model_gateway_mode(mode: str) -> None:
     _write_many({"model_gateway_mode": normalize_gateway_mode(mode)})
+
+
+def set_custom_llm_mode(mode: str) -> None:
+    normalized = normalize_custom_llm_mode(mode)
+    _write_many(
+        {
+            "custom_llm_mode": normalized,
+            "model_gateway_mode": MODE_CUSTOM,
+        }
+    )
+
+
+def save_relayclaw_brainclaw_key(*, api_key: str, activate: bool = True) -> None:
+    values = {
+        "official_newapi_api_key": str(api_key or "").strip(),
+        "custom_llm_mode": CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
+    }
+    if activate:
+        values["model_gateway_mode"] = MODE_CUSTOM
+    _write_many(values)
 
 
 def save_official_newapi_key(
@@ -928,6 +973,7 @@ def save_media_relay_config(
 def get_model_gateway_settings() -> dict[str, str]:
     data = _read_all()
     data.setdefault("model_gateway_mode", MODE_OFFICIAL)
+    data.setdefault("custom_llm_mode", CUSTOM_LLM_MODE_ADVANCED)
     return data
 
 
@@ -984,6 +1030,50 @@ def get_ce_newapi_config_for_mode(mode: str) -> EffectiveNewApiConfig:
         source="hybrid" if mode == MODE_HYBRID else "official",
         base_url=normalize_relay_base_url(OFFICIAL_NEWAPI_BASE_URL),
         api_key=db_official_api_key,
+    )
+
+
+def get_effective_llm_config() -> EffectiveLlmConfig:
+    """Resolve LLM independently from media and embedding gateways."""
+    if not _uses_ce_gateway_settings():
+        base_url = normalize_relay_base_url(
+            os.environ.get("NEWAPI_BASE_URL", "") or OFFICIAL_NEWAPI_BASE_URL
+        )
+        api_key = normalize_api_key(os.environ.get("NEWAPI_API_KEY", ""))
+        is_brainclaw = base_url == normalize_relay_base_url(OFFICIAL_NEWAPI_BASE_URL)
+        return EffectiveLlmConfig(
+            mode=MODE_OFFICIAL if is_brainclaw else MODE_CUSTOM,
+            source="environment",
+            base_url=base_url,
+            api_key=api_key,
+            model="brainclaw" if is_brainclaw else "",
+            is_brainclaw=is_brainclaw,
+        )
+
+    settings = get_model_gateway_settings()
+    gateway_mode = normalize_gateway_mode(settings.get("model_gateway_mode"))
+    custom_llm_mode = normalize_custom_llm_mode(settings.get("custom_llm_mode"))
+    use_brainclaw = gateway_mode == MODE_OFFICIAL or (
+        gateway_mode == MODE_CUSTOM
+        and custom_llm_mode == CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW
+    )
+    if use_brainclaw:
+        return EffectiveLlmConfig(
+            mode=CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
+            source="official",
+            base_url=normalize_relay_base_url(OFFICIAL_NEWAPI_BASE_URL),
+            api_key=normalize_api_key(settings.get("official_newapi_api_key", "")),
+            model="brainclaw",
+            is_brainclaw=True,
+        )
+    custom = get_ce_newapi_config_for_mode(MODE_CUSTOM)
+    return EffectiveLlmConfig(
+        mode=CUSTOM_LLM_MODE_ADVANCED,
+        source=custom.source,
+        base_url=custom.base_url,
+        api_key=custom.api_key,
+        model="",
+        is_brainclaw=False,
     )
 
 
@@ -1210,6 +1300,8 @@ def build_model_gateway_status(
         official_base_url=official_base_url,
         official_api_key=official_api_key,
     )
+    effective_llm = get_effective_llm_config()
+    custom_llm_mode = normalize_custom_llm_mode(settings.get("custom_llm_mode"))
     return {
         "mode": effective.mode,
         "effective": {
@@ -1217,6 +1309,15 @@ def build_model_gateway_status(
             "baseUrl": effective.base_url,
             "apiKeyPreview": mask_secret(effective.api_key),
             "configured": bool(effective.base_url and effective.api_key),
+        },
+        "llmEffective": {
+            "mode": effective_llm.mode,
+            "source": effective_llm.source,
+            "baseUrl": effective_llm.base_url,
+            "apiKeyPreview": mask_secret(effective_llm.api_key),
+            "configured": bool(effective_llm.base_url and effective_llm.api_key),
+            "model": effective_llm.model,
+            "brainclaw": effective_llm.is_brainclaw,
         },
         "official": {
             "baseUrl": official_base_url_value,
@@ -1230,6 +1331,7 @@ def build_model_gateway_status(
             },
         },
         "custom": {
+            "llmMode": custom_llm_mode,
             "baseUrl": custom_base_url,
             "apiKeyPreview": mask_secret(custom_api_key),
             "configured": bool(custom_base_url and custom_api_key),

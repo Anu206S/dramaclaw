@@ -29,6 +29,7 @@ from novelvideo.config import (
     get_newapi_structured_output_model_settings,
     get_pydantic_model,
 )
+from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.cognee.tools import create_episode_planner_tools
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.utils.logging import log_agent_start, log_agent_end
@@ -166,7 +167,7 @@ def create_episode_planner_agent(tools: List[Callable]) -> Agent:
         配置好的 Agent
     """
     return Agent(
-        get_pydantic_model(),
+        get_pydantic_model(brainclaw_profile=BrainClawProfile.EPISODE_STORY_PLANNING),
         system_prompt=EPISODE_PLANNER_PROMPT,
         tools=tools,
         output_type=EpisodePlannerOutput,
@@ -252,7 +253,7 @@ class EpisodePlannerAgent:
 
 ## 已知角色列表
 以下是已确认的角色，character_names 字段只能从此列表选择：
-{', '.join(known_characters)}
+{", ".join(known_characters)}
 """
 
         # 创建 Agent

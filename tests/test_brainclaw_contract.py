@@ -1,0 +1,254 @@
+from __future__ import annotations
+
+from types import SimpleNamespace
+
+import pytest
+from fastapi import FastAPI
+from fastapi.testclient import TestClient
+
+from novelvideo import config
+from novelvideo.api.routes import model_gateway
+from novelvideo.brainclaw_contract import (
+    PROFILE_HEADER,
+    PROFILE_VERSION,
+    PROFILE_VERSION_HEADER,
+    BrainClawProfile,
+    brainclaw_profile_scope,
+    merge_brainclaw_headers,
+)
+from novelvideo.model_gateway_settings import (
+    CUSTOM_LLM_MODE_ADVANCED,
+    CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
+    get_effective_llm_config,
+    get_effective_newapi_config,
+    save_custom_newapi_gateway,
+    save_relayclaw_brainclaw_key,
+    set_custom_llm_mode,
+)
+from novelvideo.official_defaults import OFFICIAL_NEWAPI_BASE_URL
+
+
+def _isolate_settings_db(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
+    monkeypatch.setattr(config, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("ST_EDITION", "ce")
+    monkeypatch.delenv("ST_CONTROL_PLANE_DSN", raising=False)
+
+
+def _configure_custom_media() -> None:
+    save_custom_newapi_gateway(
+        base_url="http://local-newapi:3000",
+        api_key="sk-custom-media-secret",
+        activate=True,
+    )
+
+
+def test_mixed_mode_routes_llm_to_relayclaw_without_changing_media(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    save_relayclaw_brainclaw_key(api_key="sk-relay-secret", activate=True)
+
+    llm = get_effective_llm_config()
+    media = get_effective_newapi_config()
+
+    assert llm.mode == CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW
+    assert llm.base_url == OFFICIAL_NEWAPI_BASE_URL
+    assert llm.api_key == "sk-relay-secret"
+    assert llm.model == "brainclaw"
+    assert llm.is_brainclaw is True
+    assert media.base_url == "http://local-newapi:3000/v1"
+    assert media.api_key == "sk-custom-media-secret"
+
+
+def test_cognee_brainclaw_llm_and_custom_embedding_use_separate_gateways(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    save_relayclaw_brainclaw_key(api_key="sk-relay-secret", activate=True)
+
+    from novelvideo.cognee import config as cognee_config
+
+    assert cognee_config._effective_llm_gateway() == (
+        "sk-relay-secret",
+        OFFICIAL_NEWAPI_BASE_URL,
+        True,
+    )
+    assert cognee_config._get_llm_endpoint_env("newapi") == OFFICIAL_NEWAPI_BASE_URL
+    assert (
+        cognee_config._get_endpoint_env(
+            "newapi", "COGNEE_EMBEDDING_ENDPOINT", "EMBEDDING_ENDPOINT"
+        )
+        == "http://local-newapi:3000/v1"
+    )
+    assert cognee_config._resolve_llm_model("newapi") == "openai/brainclaw"
+
+
+def test_advanced_mode_preserves_custom_llm_model_and_has_no_profile_headers(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    set_custom_llm_mode(CUSTOM_LLM_MODE_ADVANCED)
+    captured: dict[str, object] = {}
+
+    def fake_model(model_name, **kwargs):
+        captured.update(model_name=model_name, **kwargs)
+        return "model"
+
+    monkeypatch.setattr(config, "_newapi_text_openai_model", fake_model)
+    result = config.get_newapi_text_pydantic_model(
+        "CONTENT_REWRITER_MODEL",
+        "DC-content-rewriter-LLM",
+        model_name_override="custom-text-model",
+        brainclaw_profile=BrainClawProfile.CONTENT_REWRITE,
+    )
+
+    assert result == "model"
+    assert captured["model_name"] == "custom-text-model"
+    assert captured["base_url"] == "http://local-newapi:3000/v1"
+    assert captured["api_key"] == "sk-custom-media-secret"
+    assert captured["default_headers"] == {}
+
+
+def test_advanced_mode_preserves_historical_dc_alias_default(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    set_custom_llm_mode(CUSTOM_LLM_MODE_ADVANCED)
+    captured: dict[str, object] = {}
+
+    def fake_model(model_name, **kwargs):
+        captured.update(model_name=model_name, **kwargs)
+        return "model"
+
+    monkeypatch.setattr(config, "_newapi_text_openai_model", fake_model)
+    config.get_newapi_text_pydantic_model(
+        "CONTENT_REWRITER_MODEL",
+        "fallback-that-must-not-win",
+    )
+
+    assert captured["model_name"] == "DC-content-rewriter-LLM"
+
+
+def test_brainclaw_factory_forces_model_and_central_profile_headers(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    save_relayclaw_brainclaw_key(api_key="sk-relay-secret", activate=True)
+    captured: dict[str, object] = {}
+
+    def fake_model(model_name, **kwargs):
+        captured.update(model_name=model_name, **kwargs)
+        return "model"
+
+    monkeypatch.setattr(config, "_newapi_text_openai_model", fake_model)
+    result = config.get_newapi_text_pydantic_model(
+        "CONTENT_REWRITER_MODEL",
+        "ignored-model",
+        model_name_override="also-ignored",
+        brainclaw_profile=BrainClawProfile.CONTENT_REWRITE,
+    )
+
+    assert result == "model"
+    assert captured["model_name"] == "brainclaw"
+    assert captured["base_url"] == OFFICIAL_NEWAPI_BASE_URL
+    assert captured["api_key"] == "sk-relay-secret"
+    assert captured["default_headers"] == {
+        PROFILE_HEADER: "content_rewrite",
+        PROFILE_VERSION_HEADER: PROFILE_VERSION,
+    }
+
+
+def test_hermes_brainclaw_has_no_fixed_profile(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    save_relayclaw_brainclaw_key(api_key="sk-relay-secret", activate=True)
+
+    from novelvideo.chat import hermes_workspace
+
+    assert hermes_workspace._hermes_model_default() == "brainclaw"
+    assert hermes_workspace.effective_gateway_credentials() == (
+        "sk-relay-secret",
+        OFFICIAL_NEWAPI_BASE_URL,
+    )
+    assert merge_brainclaw_headers({"X-Caller": "kept"}, brainclaw_active=True) == {
+        "X-Caller": "kept"
+    }
+
+
+def test_scoped_litellm_profile_preserves_existing_headers():
+    with brainclaw_profile_scope(BrainClawProfile.COGNEE_GRAPH_INGEST):
+        headers = merge_brainclaw_headers({"X-Caller": "kept"}, brainclaw_active=True)
+
+    assert headers == {
+        "X-Caller": "kept",
+        PROFILE_HEADER: "cognee_graph_ingest",
+        PROFILE_VERSION_HEADER: PROFILE_VERSION,
+    }
+
+
+@pytest.mark.asyncio
+async def test_litellm_scope_adds_profile_without_changing_request_fields(monkeypatch):
+    from novelvideo import brainclaw_contract, llm_instrumentation
+
+    captured: dict[str, object] = {}
+
+    async def fake_acompletion(*args, **kwargs):
+        captured.update(kwargs)
+        return "response"
+
+    fake_litellm = SimpleNamespace(acompletion=fake_acompletion)
+    monkeypatch.setattr(llm_instrumentation, "_litellm_acompletion_patched", False)
+    monkeypatch.setattr(brainclaw_contract, "is_brainclaw_runtime", lambda: True)
+    llm_instrumentation._patch_litellm_acompletion(fake_litellm)
+
+    with brainclaw_profile_scope(BrainClawProfile.COGNEE_GRAPH_INGEST):
+        result = await fake_litellm.acompletion(
+            model="openai/brainclaw",
+            messages=[{"role": "user", "content": "hello"}],
+            tools=[{"type": "function", "function": {"name": "lookup"}}],
+            response_format={"type": "json_object"},
+            stream=True,
+            extra_headers={"X-Caller": "kept"},
+        )
+
+    assert result == "response"
+    assert captured["tools"] == [{"type": "function", "function": {"name": "lookup"}}]
+    assert captured["response_format"] == {"type": "json_object"}
+    assert captured["stream"] is True
+    assert captured["extra_headers"] == {
+        "X-Caller": "kept",
+        PROFILE_HEADER: "cognee_graph_ingest",
+        PROFILE_VERSION_HEADER: PROFILE_VERSION,
+    }
+
+
+def test_brainclaw_api_masks_key_and_does_not_accept_endpoint(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("NEWAPI_PROVISIONER_ENABLED", "true")
+    _configure_custom_media()
+    monkeypatch.setattr(
+        model_gateway,
+        "refresh_model_gateway_runtime",
+        lambda: {"refreshed": True},
+    )
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/model-gateway/custom/brainclaw/config",
+        json={
+            "newApiApiKey": "sk-user-relay-secret",
+            "newApiBaseUrl": "https://attacker.example/v1",
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["data"]["llmEffective"]["baseUrl"] == OFFICIAL_NEWAPI_BASE_URL
+    assert payload["data"]["llmEffective"]["model"] == "brainclaw"
+    assert "sk-user-relay-secret" not in response.text
+    assert "attacker.example" not in response.text

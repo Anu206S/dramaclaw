@@ -4368,6 +4368,16 @@
         "mediaCatalogUpToDate": "官方媒体模型列表已是最新版本。",
         "mediaCatalogCheckFailed": "检查官方媒体模型列表失败，请稍后重试。"
       },
+      "brainclaw": {
+        "tab": "虾驿 BrainClaw（推荐）",
+        "advancedTab": "高级自定义",
+        "title": "虾脑 BrainClaw（推荐）",
+        "description": "虾脑 BrainClaw 是虾驿专为 DramaClaw 打造的独家智能模型。文本理解、内容生成、结构化输出、工具调用和视觉理解请求统一交给虾脑自动选模，无需逐项维护模型映射。虾脑仅通过虾驿提供；图片、视频、音频和 Embedding 仍使用下方本地 NewAPI 配置。",
+        "model": "固定模型",
+        "save": "保存并启用 BrainClaw",
+        "enabled": "已启用虾驿 BrainClaw。",
+        "advancedEnabled": "已切换为高级自定义 LLM。"
+      },
       "custom": {
         "description": "CE 使用本机 SQLite NewAPI。DramaClaw 会自动连接数据库、创建运行令牌并启用本地渠道。",
         "init": "初始化本地 NewAPI",

@@ -41,9 +41,7 @@ def _enabled_toolsets(config: str) -> list[str]:
 
 def _dramaclaw_provider(config: dict) -> dict:
     return next(
-        item
-        for item in config["custom_providers"]
-        if item.get("name") == "dramaclaw"
+        item for item in config["custom_providers"] if item.get("name") == "dramaclaw"
     )
 
 
@@ -159,7 +157,9 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     assert "我是虾导，DramaClaw 的小说转视频创作助手。" not in memory
 
 
-def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skills, repo_plugins):
+def test_freezone_profile_uses_isolated_workspace(
+    isolated_workspace, repo_skills, repo_plugins
+):
     home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
 
     assert home == isolated_workspace / "state" / "admin" / ".hermes-freezone"
@@ -257,7 +257,7 @@ def test_freezone_profile_materializes_native_workflow_skills(
     summaries = hw.list_freezone_hermes_workflow_skills("admin")
 
     assert "name: ecommerce-ad" in content
-    assert "skill_id=\"ecommerce-ad\"" in content
+    assert 'skill_id="ecommerce-ad"' in content
     assert "freezone_prepare_workflow_draft" in content
     assert "freezone_patch_workflow_draft" in content
     assert "freezone_confirm_workflow_draft" in content
@@ -405,17 +405,23 @@ def test_hermes_translates_thought_plan_and_usage_updates():
             {
                 "sessionUpdate": "plan",
                 "entries": [
-                    {"content": "读取资产", "status": "completed", "priority": "medium"},
-                    {"content": "生成分镜", "status": "in_progress", "priority": "high"},
+                    {
+                        "content": "读取资产",
+                        "status": "completed",
+                        "priority": "medium",
+                    },
+                    {
+                        "content": "生成分镜",
+                        "status": "in_progress",
+                        "priority": "high",
+                    },
                 ],
             }
         ),
         "turn-a",
     )
     usage = thread._translate_notification(
-        _session_update(
-            {"sessionUpdate": "usage_update", "used": 128, "size": 4096}
-        ),
+        _session_update({"sessionUpdate": "usage_update", "used": 128, "size": 4096}),
         "turn-a",
     )
 
@@ -547,7 +553,11 @@ async def test_hermes_rejects_expired_permission_response(monkeypatch):
                 "sessionId": "session-a",
                 "toolCall": {"title": "运行命令"},
                 "options": [
-                    {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"}
+                    {
+                        "optionId": "allow_once",
+                        "kind": "allow_once",
+                        "name": "Allow once",
+                    }
                 ],
             },
         },
@@ -585,7 +595,11 @@ def test_hermes_clears_pending_permissions_for_completed_turn():
 
 
 def test_hermes_detects_content_filter_error_text():
-    payload = {"error": {"message": "Content filter triggered. Finish reason: 'content_filter'"}}
+    payload = {
+        "error": {
+            "message": "Content filter triggered. Finish reason: 'content_filter'"
+        }
+    }
 
     assert hermes_sdk._has_content_filter_signal(payload)
 
@@ -612,7 +626,9 @@ def test_hermes_detects_nested_session_unavailable_error_payload():
         "message": "prompt failed",
         "data": {
             "details": [
-                {"message": "prompt: session 5e14b825-b50c-4fed-be9e-aaa2a3882b7e not found"},
+                {
+                    "message": "prompt: session 5e14b825-b50c-4fed-be9e-aaa2a3882b7e not found"
+                },
             ],
         },
     }
@@ -780,7 +796,9 @@ def test_hermes_tool_call_guard_does_not_double_count_start_and_update():
 
 
 def test_hermes_freezone_tool_limit_message_uses_freezone_context():
-    message = hermes_sdk._tool_call_limit_stop_message("freezone_put_agent_catalog_recipe")
+    message = hermes_sdk._tool_call_limit_stop_message(
+        "freezone_put_agent_catalog_recipe"
+    )
 
     assert "虾画" in message
     assert "虾导" not in message
@@ -800,7 +818,7 @@ def test_state_root_falls_back_to_repo(monkeypatch, tmp_path):
     assert hw._state_root() == tmp_path / "repo" / "state"
 
 
-def test_fresh_config_uses_model_env_but_keeps_newapi_transport(
+def test_official_brainclaw_ignores_legacy_hermes_model_env(
     isolated_workspace, repo_skills, repo_plugins, monkeypatch
 ):
     save_official_newapi_key(api_key="root-key", activate=True)
@@ -822,10 +840,10 @@ def test_fresh_config_uses_model_env_but_keeps_newapi_transport(
     home = hw.ensure_user_hermes_workspace("admin")
     config = (home / "config.yaml").read_text(encoding="utf-8")
 
-    assert "  default: gemini-3.5-flash" in config
+    assert "  default: brainclaw" in config
     parsed = yaml.safe_load(config)
     assert parsed["model"]["provider"] == "custom:dramaclaw"
-    assert parsed["model"]["default"] == "gemini-3.5-flash"
+    assert parsed["model"]["default"] == "brainclaw"
     assert parsed["model"]["context_length"] == 65536
     assert "api_key" not in parsed["model"]
     provider = _dramaclaw_provider(parsed)
@@ -913,8 +931,7 @@ def test_hermes_env_syncs_current_newapi_key_and_replaces_stale_openai_key(
     home = isolated_workspace / "state" / "admin" / ".hermes-freezone"
     home.mkdir(parents=True)
     (home / ".env").write_text(
-        "OPENAI_API_KEY=stale-test-key\n"
-        "UNRELATED_SECRET=keep-me\n",
+        "OPENAI_API_KEY=stale-test-key\nUNRELATED_SECRET=keep-me\n",
         encoding="utf-8",
     )
 
@@ -989,8 +1006,7 @@ custom_providers:
     assert "api_key" not in config["model"]
     assert "legacy-key" not in text
     assert any(
-        item.get("name") == "user-provider"
-        for item in config["custom_providers"]
+        item.get("name") == "user-provider" for item in config["custom_providers"]
     )
     assert _dramaclaw_provider(config)["key_env"] == "NEWAPI_API_KEY"
 
@@ -1021,7 +1037,9 @@ def test_existing_openai_env_is_synced_to_current_newapi_key(
     assert "OPENROUTER_API_KEY=plugin-key" in env_text
 
 
-def test_legacy_config_gets_default_plugin_block(isolated_workspace, repo_skills, repo_plugins):
+def test_legacy_config_gets_default_plugin_block(
+    isolated_workspace, repo_skills, repo_plugins
+):
     home = isolated_workspace / "state" / "admin" / ".hermes"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text("enabled_toolsets:\n  - dramaclaw\n")
@@ -1033,7 +1051,7 @@ def test_legacy_config_gets_default_plugin_block(isolated_workspace, repo_skills
     assert _enabled_toolsets(config) == ["hermes-acp", "memory"]
     assert "plugins:\n  enabled:\n    - dramaclaw" in config
     assert "    - freezone" not in config
-    assert parsed["model"]["default"] == "DC-hermes-LLM"
+    assert parsed["model"]["default"] == "brainclaw"
     assert parsed["model"]["provider"] == "custom:dramaclaw"
     assert _dramaclaw_provider(parsed)["key_env"] == "NEWAPI_API_KEY"
     assert parsed["agent"]["max_turns"] == 4
@@ -1045,11 +1063,7 @@ def test_existing_plugin_block_gets_missing_freezone_plugin(
     home = isolated_workspace / "state" / "admin" / ".hermes"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text(
-        "enabled_toolsets:\n"
-        "  - hermes-acp\n"
-        "plugins:\n"
-        "  enabled:\n"
-        "    - dramaclaw\n",
+        "enabled_toolsets:\n  - hermes-acp\nplugins:\n  enabled:\n    - dramaclaw\n",
         encoding="utf-8",
     )
 
@@ -1063,7 +1077,9 @@ def test_existing_plugin_block_gets_missing_freezone_plugin(
     assert parsed["agent"]["max_turns"] == 4
 
 
-def test_legacy_identity_context_is_migrated(isolated_workspace, repo_skills, repo_plugins):
+def test_legacy_identity_context_is_migrated(
+    isolated_workspace, repo_skills, repo_plugins
+):
     home = isolated_workspace / "state" / "admin" / ".hermes"
     memories = home / "memories"
     memories.mkdir(parents=True)
