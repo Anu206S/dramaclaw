@@ -23,14 +23,14 @@ PROJECT_LANE_MIN_DEFAULTS = {
 
 PROJECT_USER_LANE_LIMIT_DEFAULTS = {
     "default": 3,
-    "video": 1,
+    "video": 3,
     "world": 1,
     "ffmpeg": 1,
 }
 
 GLOBAL_LANE_CONCURRENCY_DEFAULTS = {
     "default": 8,
-    "video": 2,
+    "video": 3,
     "world": 1,
     "ffmpeg": 1,
 }

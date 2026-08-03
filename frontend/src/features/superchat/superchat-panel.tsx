@@ -34,7 +34,16 @@ import {
   VolumeX,
 } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
-import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from "react";
+import {
+  Children,
+  memo,
+  useCallback,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 import type {
   CSSProperties,
   DragEvent as ReactDragEvent,
@@ -92,11 +101,17 @@ import {
 } from "@/features/superchat/use-superchat";
 import { useAiAvatarUrl } from "@/features/superchat/ai-avatar";
 import { buildChatTaskLabel } from "@/features/superchat/task-notification-label";
+import {
+  buildChatTaskBatchNotification,
+  resolveChatTaskBatchSummary,
+  taskBatchId,
+} from "@/features/superchat/task-notification-batch";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
 import { ChatTaskStatusBar } from "@/features/superchat/chat-task-status-bar";
 import { CommunitySkillDialog } from "@/components/settings/freezone-skill-recipe-settings";
 import { calculateTimelineContextDelta } from "@/features/superchat/timeline-scroll";
 import { useEventBus } from "@/task-center/event-bus-context";
+import { useTaskCenterStore } from "@/task-center/store";
 import {
   extractStructuredBlocks,
   isUiSpec,
@@ -541,11 +556,34 @@ function normalizeMessageText(text: string): string {
 // 而输入框压在上面带 backdrop-blur，背景重采样会让框内跟着闪。
 const MARKDOWN_REMARK_PLUGINS = [remarkGfm, remarkBreaks];
 
+export function isGenerationSuccessSummaryText(text: string): boolean {
+  return /^生成成功[，,]\s*无失败[。.]?$/.test(text.trim());
+}
+
+function markdownChildrenText(children: ReactNode): string {
+  return Children.toArray(children)
+    .map((child) => typeof child === "string" || typeof child === "number" ? String(child) : "")
+    .join("");
+}
+
 const MARKDOWN_COMPONENTS: MarkdownComponents = {
   h1: ({ children }) => <h1 className="mb-2 mt-3 text-lg font-semibold leading-7 first:mt-0">{children}</h1>,
   h2: ({ children }) => <h2 className="mb-2 mt-3 text-base font-semibold leading-6 first:mt-0">{children}</h2>,
   h3: ({ children }) => <h3 className="mb-1.5 mt-2.5 text-sm font-semibold leading-6 first:mt-0">{children}</h3>,
-  p: ({ children }) => <p className="my-1.5 first:mt-0 last:mb-0">{children}</p>,
+  p: ({ children }) => {
+    const successSummary = isGenerationSuccessSummaryText(markdownChildrenText(children));
+    return (
+      <p
+        className={cn(
+          "my-1.5 first:mt-0 last:mb-0",
+          successSummary && "flex items-center gap-1.5 font-medium text-success",
+        )}
+      >
+        {successSummary ? <CheckCircle2 className="size-4 shrink-0" aria-hidden="true" /> : null}
+        {children}
+      </p>
+    );
+  },
   ul: ({ children }) => <ul className="my-1.5 list-disc space-y-1 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-1.5 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="pl-0.5">{children}</li>,
@@ -11390,9 +11428,29 @@ export function SuperChatPanel({
     const project = params.project?.trim();
     if (!project) return;
     return taskEventBus.on("*", (event) => {
-      if (event.type !== "task_complete" && event.type !== "task_failed") return;
+      if (
+        event.type !== "task_updated" &&
+        event.type !== "task_complete" &&
+        event.type !== "task_failed"
+      ) return;
       const taskProject = (event.task.project_id ?? event.task.project).trim();
       if (taskProject !== project) return;
+
+      const batchId = taskBatchId(event.task);
+      if (batchId) {
+        const summary = resolveChatTaskBatchSummary(
+          useTaskCenterStore.getState().tasks.values(),
+          event.task,
+        );
+        if (!summary) return;
+        const dedupeKey = `batch:${summary.batchId}`;
+        if (notifiedTaskKeysRef.current.has(dedupeKey)) return;
+        notifiedTaskKeysRef.current.add(dedupeKey);
+        void chat.appendNotification(buildChatTaskBatchNotification(summary));
+        return;
+      }
+
+      if (event.type !== "task_complete" && event.type !== "task_failed") return;
 
       const dedupeKey = `${event.type}:${event.task.task_key || event.task.task_id}`;
       if (notifiedTaskKeysRef.current.has(dedupeKey)) return;
@@ -13881,10 +13939,11 @@ export function SuperChatPanel({
               variant={isFreezoneLayout ? "freezone" : "default"}
             />
           </div>
-          {isFreezoneLayout && workflowStatusEnabled ? (
+          {!isFreezoneLayout || workflowStatusEnabled ? (
             <ChatTaskStatusBar
               projectId={params.project ?? null}
-              canvasId={effectiveFreezoneCanvasId}
+              canvasId={isFreezoneLayout ? effectiveFreezoneCanvasId : null}
+              scope={isFreezoneLayout ? "canvas" : "project"}
             />
           ) : null}
           <div

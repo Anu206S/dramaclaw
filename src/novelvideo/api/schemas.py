@@ -359,6 +359,8 @@ class SingleVideoRequest(BaseModel):
     audio_setting: Optional[str] = None
     prompt_guidance: Optional[str] = None
     text_overlay: Optional[dict[str, Any]] = None
+    batch_id: Optional[str] = Field(default=None, max_length=100)
+    batch_size: Optional[int] = Field(default=None, ge=1, le=3)
 
 
 # ── 风格 ──────────────────────────────────────────────────────────────────────
@@ -2102,6 +2104,10 @@ class AssetImageSourceSelectionRequest(BaseModel):
 
 class CharacterVoiceRecordRequest(BaseModel):
     data_url: str
+
+
+class SystemVoicePrepareRequest(BaseModel):
+    confirmed: bool = False
 
 
 class NarratorVoiceCopyRequest(BaseModel):

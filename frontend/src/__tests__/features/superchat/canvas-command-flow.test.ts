@@ -5,6 +5,7 @@ import {
   canvasCommandFeedbackVisualToneForTest,
   canvasCommandFeedbackIsValidationOnlyForTest,
   canvasContextActivityVisualToneForTest,
+  isGenerationSuccessSummaryText,
   mergeCanvasContextActivitiesForTest,
   mergeCanvasCommandFeedbacksForTest,
   mergePendingCanvasCommandApprovalForTest,
@@ -12,6 +13,14 @@ import {
 } from "@/features/superchat/superchat-panel";
 import { looksLikeCanvasExecutionNarration } from "@/features/superchat/canvas-execution-narration";
 import { upsertAssistantMessageForTest } from "@/features/superchat/use-superchat";
+
+describe("assistant success summary", () => {
+  it("recognizes only the standalone generation success summary", () => {
+    expect(isGenerationSuccessSummaryText("生成成功，无失败。")).toBe(true);
+    expect(isGenerationSuccessSummaryText("生成成功, 无失败")).toBe(true);
+    expect(isGenerationSuccessSummaryText("图片生成成功，下一步生成视频。")).toBe(false);
+  });
+});
 
 describe("canvas command flow placement", () => {
   it("orders Skill Studio cards with later canvas approvals in the same message", () => {
