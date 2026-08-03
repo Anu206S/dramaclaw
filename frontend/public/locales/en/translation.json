@@ -4523,6 +4523,7 @@
           "FREEZONE_TRANSLATION": "Prompt zh/en translation",
           "FREEZONE_TEXT_WRITER": "AI text generation",
           "FREEZONE_STORY_SCRIPT": "Story script generation",
+          "FREEZONE_RECIPE_COMPILER": "Compile and execute Freezone recipes",
           "FREEZONE_VISION": "Image and video content analysis",
           "STYLE_ANALYZER": "Analyze a custom style from reference images",
           "CONTENT_REWRITER": "Rewrite source text as short-video voiceover",
