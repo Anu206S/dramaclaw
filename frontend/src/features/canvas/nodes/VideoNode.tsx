@@ -1995,6 +1995,14 @@ export const VideoNode = memo(
       if (!videoSource) return null;
       return videoSource.includes("#t=") ? videoSource : `${videoSource}#t=0.1`;
     }, [videoSource]);
+    const videoPosterImage = useMemo(() => {
+      if (!data.previewImageUrl) return null;
+      return resolveImageDisplayUrl(data.previewImageUrl);
+    }, [data.previewImageUrl]);
+    const [showVideoPosterOverlay, setShowVideoPosterOverlay] = useState(false);
+    useEffect(() => {
+      setShowVideoPosterOverlay(Boolean(videoPosterImage));
+    }, [videoPosterImage, videoSource]);
 
     useEffect(() => {
       updateNodeInternals(id);
@@ -2987,43 +2995,55 @@ export const VideoNode = memo(
               若不加这层 guard，旧视频会一直占位、isGenerating 分支永远到不了。
               失败时 isGenerating 归 false，旧视频自动复现（videoUrl 未被清空）。 */}
           {!isGenerating && !isUploading && videoSource ? (
-            <video
-              ref={setVideoRef}
-              src={videoPosterSource ?? undefined}
-              className="h-full w-full object-contain"
-              playsInline
-              preload="metadata"
-              onClick={() => {
-                // 点击视频本体只负责选中节点 —— 播放/暂停统一交给左下角按钮。
-                setSelectedNode(id);
-              }}
-              onLoadedMetadata={(event) => {
-                const el = event.currentTarget;
-                setHasMetadata(true);
-                setVideoLoadError(false);
-                if (el.videoWidth && el.videoHeight) {
-                  // 只把视频真实像素记到 widthPx/heightPx；不要写回 aspectRatio。
-                  // aspectRatio 仅保存用户选的比例预设（16:9 / auto…），否则
-                  // chip 会显示成像素串(1248:704)，且会作为非法 aspect_ratio 带进
-                  // 下一次生成请求。
-                  const updates: Partial<VideoNodeData> = {};
-                  if (data.widthPx !== el.videoWidth)
-                    updates.widthPx = el.videoWidth;
-                  if (data.heightPx !== el.videoHeight)
-                    updates.heightPx = el.videoHeight;
-                  if (data.durationMs !== Math.round(el.duration * 1000)) {
-                    updates.durationMs = Math.round(el.duration * 1000);
+            <div className="relative h-full w-full">
+              <video
+                ref={setVideoRef}
+                src={videoPosterSource ?? undefined}
+                poster={videoPosterImage ?? undefined}
+                className="h-full w-full object-contain"
+                playsInline
+                preload="metadata"
+                onClick={() => {
+                  // 点击视频本体只负责选中节点 —— 播放/暂停统一交给左下角按钮。
+                  setSelectedNode(id);
+                }}
+                onPlay={() => setShowVideoPosterOverlay(false)}
+                onLoadedMetadata={(event) => {
+                  const el = event.currentTarget;
+                  setHasMetadata(true);
+                  setVideoLoadError(false);
+                  if (el.videoWidth && el.videoHeight) {
+                    // 只把视频真实像素记到 widthPx/heightPx；不要写回 aspectRatio。
+                    // aspectRatio 仅保存用户选的比例预设（16:9 / auto…），否则
+                    // chip 会显示成像素串(1248:704)，且会作为非法 aspect_ratio 带进
+                    // 下一次生成请求。
+                    const updates: Partial<VideoNodeData> = {};
+                    if (data.widthPx !== el.videoWidth)
+                      updates.widthPx = el.videoWidth;
+                    if (data.heightPx !== el.videoHeight)
+                      updates.heightPx = el.videoHeight;
+                    if (data.durationMs !== Math.round(el.duration * 1000)) {
+                      updates.durationMs = Math.round(el.duration * 1000);
+                    }
+                    if (Object.keys(updates).length > 0) {
+                      updateNodeData(id, updates);
+                    }
                   }
-                  if (Object.keys(updates).length > 0) {
-                    updateNodeData(id, updates);
-                  }
-                }
-              }}
-              onError={() => {
-                setHasMetadata(true);
-                setVideoLoadError(true);
-              }}
-            />
+                }}
+                onError={() => {
+                  setHasMetadata(true);
+                  setVideoLoadError(true);
+                }}
+              />
+              {videoPosterImage && showVideoPosterOverlay ? (
+                <img
+                  src={videoPosterImage}
+                  alt=""
+                  className="pointer-events-none absolute inset-0 h-full w-full object-contain"
+                  draggable={false}
+                />
+              ) : null}
+            </div>
           ) : isUploading ? (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2 text-text-muted/85">
               <Loader2 className="h-7 w-7 animate-spin opacity-70" />

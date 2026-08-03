@@ -150,6 +150,7 @@ export const VideoComposeNode = memo(
           ref.job_id,
         );
         if (!result.url) throw new Error("视频合成完成但未返回成片地址");
+        const resultCoverUrl = result.cover_url ?? timeline.cover?.url ?? null;
         const store = useCanvasStore.getState();
         const existingResult = store.nodes.find((node) =>
           isVideoNode(node) && node.data.composeSourceNodeId === id,
@@ -157,13 +158,13 @@ export const VideoComposeNode = memo(
         if (existingResult && isVideoNode(existingResult)) {
           store.updateNodeData(existingResult.id, {
             videoUrl: result.url,
-            previewImageUrl: timeline.cover?.url ?? null,
+            previewImageUrl: resultCoverUrl,
           });
         } else {
           const position = store.findNodePosition(id, 580, 380);
           const resultNodeId = store.addNode(CANVAS_NODE_TYPES.video, position, {
             videoUrl: result.url,
-            previewImageUrl: timeline.cover?.url ?? null,
+            previewImageUrl: resultCoverUrl,
             displayName: t("videoCompose.node.resultName"),
             sourceFileName: null,
             composeSourceNodeId: id,
@@ -172,7 +173,7 @@ export const VideoComposeNode = memo(
         }
         updateNodeData(id, {
           resultVideoUrl: result.url,
-          previewImageUrl: timeline.cover?.url ?? null,
+          previewImageUrl: resultCoverUrl,
           resolution: timeline.resolution,
           draftTimeline: timeline,
           isGenerating: false,
