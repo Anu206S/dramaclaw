@@ -110,7 +110,9 @@ class CogneeStore:
         sqlite_project_dir = (
             str(getattr(sqlite_store, "project_dir", "") or "") if sqlite_store else ""
         )
-        sqlite_state_dir = str(getattr(sqlite_store, "state_dir", "") or "") if sqlite_store else ""
+        sqlite_state_dir = (
+            str(getattr(sqlite_store, "state_dir", "") or "") if sqlite_store else ""
+        )
         if output_dir:
             self.project_dir = output_dir
             if (
@@ -173,7 +175,9 @@ class CogneeStore:
         # ad-hoc scripts construct CogneeStore through __init__ consistently.
         if name == "sqlite_store":
             return self._ensure_sqlite_store()
-        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
+        raise AttributeError(
+            f"{type(self).__name__!s} object has no attribute {name!r}"
+        )
 
     @property
     def _db(self):
@@ -218,7 +222,9 @@ class CogneeStore:
         if "db_path" not in self.__dict__:
             self.db_path = str(Path(state_dir) / "data.db")
 
-        store = SQLiteStore(project_name, output_dir=str(project_dir), state_dir=str(state_dir))
+        store = SQLiteStore(
+            project_name, output_dir=str(project_dir), state_dir=str(state_dir)
+        )
         self.__dict__["sqlite_store"] = store
         self._share_sqlite_caches()
         return store
@@ -339,9 +345,7 @@ class CogneeStore:
                     continue
                 status_text = pipeline_status_text(status) or "unknown status"
                 payload = read_field(run_info, "payload")
-                nested_failures.append(
-                    f"{status_text}: {truncate(payload, limit=600)}"
-                )
+                nested_failures.append(f"{status_text}: {truncate(payload, limit=600)}")
             return nested_failures
 
         if isinstance(result, dict):
@@ -508,14 +512,20 @@ class CogneeStore:
         on_log: Optional[Callable[[str], None]] = None,
     ) -> dict:
         """快速导入，并独占当前项目的 Cognee/Ladybug 图谱。"""
-        async with ladybug_graph_access(self.state_dir, read_only=False):
-            return await self._ingest_novel_fast_locked(
-                novel_path,
-                rebuild=rebuild,
-                spine_template=spine_template,
-                on_progress=on_progress,
-                on_log=on_log,
-            )
+        from novelvideo.brainclaw_contract import (
+            BrainClawProfile,
+            brainclaw_profile_scope,
+        )
+
+        with brainclaw_profile_scope(BrainClawProfile.COGNEE_GRAPH_INGEST):
+            async with ladybug_graph_access(self.state_dir, read_only=False):
+                return await self._ingest_novel_fast_locked(
+                    novel_path,
+                    rebuild=rebuild,
+                    spine_template=spine_template,
+                    on_progress=on_progress,
+                    on_log=on_log,
+                )
 
     async def _ingest_novel_fast_locked(
         self,
@@ -560,7 +570,8 @@ class CogneeStore:
 
         if not os.getenv("LLM_API_KEY") and not os.getenv("OPENAI_API_KEY"):
             raise ValueError(
-                "LLM API key 未设置。请在 .env 文件中添加:\n" "  OPENAI_API_KEY=your_key_here"
+                "LLM API key 未设置。请在 .env 文件中添加:\n"
+                "  OPENAI_API_KEY=your_key_here"
             )
 
         if rebuild:
@@ -695,7 +706,9 @@ class CogneeStore:
                 result = {}
                 for key, item in list(value.items())[:16]:
                     key_text = str(key)
-                    if any(token in key_text.lower() for token in ("embedding", "vector")):
+                    if any(
+                        token in key_text.lower() for token in ("embedding", "vector")
+                    ):
                         continue
                     result[key_text] = compact(item, depth=depth + 1)
                 return result
@@ -996,7 +1009,9 @@ class CogneeStore:
         log(f"已原子替换 {old_episode_count} 个旧剧集")
 
         if len(self._episodes) != len(episodes):
-            log(f"⚠️ 警告：内存缓存 ({len(self._episodes)}) 与返回结果 ({len(episodes)}) 不一致")
+            log(
+                f"⚠️ 警告：内存缓存 ({len(self._episodes)}) 与返回结果 ({len(episodes)}) 不一致"
+            )
 
         report(1.0, "剧集规划完成")
         log(f"剧集规划完成: {len(episodes)} 集，编号: {list(self._episodes.keys())}")
@@ -1055,7 +1070,9 @@ class CogneeStore:
 
             if generate_metadata:
                 log(f"为第 {chapter.number} 章生成元数据...")
-                metadata = await self._generate_episode_metadata(chapter.number, chapter.content)
+                metadata = await self._generate_episode_metadata(
+                    chapter.number, chapter.content
+                )
             else:
                 summary = chapter.content[:200].strip()
                 if len(chapter.content) > 200:
@@ -1197,7 +1214,9 @@ class CogneeStore:
                 log(f"⚠️ 第 {ep_num} 集没有分配到事件，跳过")
                 continue
 
-            combined_content = "\n\n---\n\n".join(e.content for e in ep_events if e.content)
+            combined_content = "\n\n---\n\n".join(
+                e.content for e in ep_events if e.content
+            )
 
             key_events = [e.description for e in ep_events]
             characters = list(set(c for e in ep_events for c in e.characters))
@@ -1446,7 +1465,9 @@ class CogneeStore:
                 return candidate
         return None
 
-    def _normalize_prop_menu_items(self, prop_menu: Iterable[Any] | None) -> list[PropMenuItem]:
+    def _normalize_prop_menu_items(
+        self, prop_menu: Iterable[Any] | None
+    ) -> list[PropMenuItem]:
         """将 episode prop_menu 规范化为资产库标准 prop_id。"""
         normalized_items = build_prop_menu(prop_menu=list(prop_menu or []))
         canonical_items: list[PropMenuItem] = []
@@ -1459,7 +1480,9 @@ class CogneeStore:
             canonical_items.append(
                 PropMenuItem(
                     prop_id=canonical_id,
-                    prop_type=(getattr(cached, "prop_type", "") if cached else item.prop_type)
+                    prop_type=(
+                        getattr(cached, "prop_type", "") if cached else item.prop_type
+                    )
                     or "object",
                     visual_prompt=(
                         getattr(cached, "visual_prompt", "")
@@ -1471,7 +1494,8 @@ class CogneeStore:
                         or getattr(cached, "description", "")
                         or item.description
                     ),
-                    owner_identity_id=item.owner_identity_id or getattr(cached, "owner", ""),
+                    owner_identity_id=item.owner_identity_id
+                    or getattr(cached, "owner", ""),
                 )
             )
         return build_prop_menu(prop_menu=canonical_items)
@@ -1494,7 +1518,9 @@ class CogneeStore:
                     canonical_id = candidate.name
                     break
                 aliases = getattr(candidate, "aliases", []) or []
-                if any(self._normalize_alias_lookup(alias) == lookup for alias in aliases):
+                if any(
+                    self._normalize_alias_lookup(alias) == lookup for alias in aliases
+                ):
                     canonical_id = candidate.name
                     break
             canonical_items.append(
@@ -1533,7 +1559,9 @@ class CogneeStore:
         """语义检索。"""
         async with ladybug_graph_access(self.state_dir, read_only=True):
             with preserve_st_env():
-                from cognee.modules.data.exceptions.exceptions import DatasetNotFoundError
+                from cognee.modules.data.exceptions.exceptions import (
+                    DatasetNotFoundError,
+                )
 
             mode_map = {
                 "graph": SearchType.GRAPH_COMPLETION,
@@ -1561,7 +1589,9 @@ class CogneeStore:
             parts = []
             for item in result:
                 if isinstance(item, dict):
-                    parts.append(self._stringify_search_fragment(item.get("search_result", item)))
+                    parts.append(
+                        self._stringify_search_fragment(item.get("search_result", item))
+                    )
                 elif hasattr(item, "model_dump"):
                     parts.append(self._stringify_search_fragment(item.model_dump()))
                 else:
@@ -1599,7 +1629,9 @@ class CogneeStore:
             self._props = {prop.name: prop for prop in props}
 
             for episode in self._episodes.values():
-                episode.scene_menu = await self._normalize_scene_menu_items(episode.scene_menu)
+                episode.scene_menu = await self._normalize_scene_menu_items(
+                    episode.scene_menu
+                )
                 episode.prop_menu = self._normalize_prop_menu_items(episode.prop_menu)
 
             print(
@@ -1633,7 +1665,9 @@ class CogneeStore:
                 setattr(char, key, value)
 
         if "aliases" in updates:
-            updated_alias_index = {k: v for k, v in self._alias_index.items() if v != name}
+            updated_alias_index = {
+                k: v for k, v in self._alias_index.items() if v != name
+            }
             self._alias_index.clear()
             self._alias_index.update(updated_alias_index)
             for alias in char.aliases:
@@ -1673,7 +1707,9 @@ class CogneeStore:
         **updates,
     ) -> None:
         """更新角色的某个身份。"""
-        await self.sqlite_store.update_character_identity(character_name, identity_id, **updates)
+        await self.sqlite_store.update_character_identity(
+            character_name, identity_id, **updates
+        )
         self._sync_sqlite_caches()
 
     async def delete_character_identity(
@@ -1761,9 +1797,13 @@ class CogneeStore:
             return None
 
         episode = self.get_episode(episode_number)
-        ep_identity_ids = set(episode.identity_ids) if episode and episode.identity_ids else set()
+        ep_identity_ids = (
+            set(episode.identity_ids) if episode and episode.identity_ids else set()
+        )
 
-        valid_identities = [id_ for id_ in char.identities if id_.identity_id in ep_identity_ids]
+        valid_identities = [
+            id_ for id_ in char.identities if id_.identity_id in ep_identity_ids
+        ]
 
         if len(valid_identities) == 1:
             return valid_identities[0]
@@ -1796,7 +1836,7 @@ class CogneeStore:
 
             identity_options = []
             for i, identity in enumerate(identities):
-                desc = f"{i+1}. {identity.identity_name}"
+                desc = f"{i + 1}. {identity.identity_name}"
                 if identity.appearance_details:
                     desc += f" - {identity.appearance_details}"
                 identity_options.append(desc)
@@ -1884,7 +1924,10 @@ class CogneeStore:
             elif hasattr(episode, key):
                 setattr(episode, key, value)
             else:
-                print(f"[update_episode] 警告: ep{episode_number} 没有属性 {key}", flush=True)
+                print(
+                    f"[update_episode] 警告: ep{episode_number} 没有属性 {key}",
+                    flush=True,
+                )
 
         print(
             f"[update_episode] ep{episode_number} 更新后: identity_ids={episode.identity_ids}",
@@ -1912,16 +1955,24 @@ class CogneeStore:
         self, episode_number: int, detections: dict[int, list[str]]
     ) -> int:
         """批量写入 per-beat 检测身份。"""
-        count = await self.sqlite_store.set_beat_detected_identities(episode_number, detections)
-        print(f"[store] set_beat_detected_identities: ep{episode_number} updated {count} beats")
+        count = await self.sqlite_store.set_beat_detected_identities(
+            episode_number, detections
+        )
+        print(
+            f"[store] set_beat_detected_identities: ep{episode_number} updated {count} beats"
+        )
         return count
 
     async def set_beat_detected_props(
         self, episode_number: int, detections: dict[int, list[str]]
     ) -> int:
         """批量写入 per-beat 检测道具。"""
-        count = await self.sqlite_store.set_beat_detected_props(episode_number, detections)
-        print(f"[store] set_beat_detected_props: ep{episode_number} updated {count} beats")
+        count = await self.sqlite_store.set_beat_detected_props(
+            episode_number, detections
+        )
+        print(
+            f"[store] set_beat_detected_props: ep{episode_number} updated {count} beats"
+        )
         return count
 
     async def add_visual_beats(self, beats: List[NovelVisualBeat]):
@@ -1937,7 +1988,9 @@ class CogneeStore:
         """删除指定剧集的所有 Beat。"""
         deleted = await self.sqlite_store.delete_beats_for_episode(episode_number)
         if deleted > 0:
-            console.print(f"[dim]已删除第 {episode_number} 集的 {deleted} 个旧 Beat[/dim]")
+            console.print(
+                f"[dim]已删除第 {episode_number} 集的 {deleted} 个旧 Beat[/dim]"
+            )
         return deleted
 
     # ============================================================
@@ -2032,11 +2085,15 @@ class CogneeStore:
             existing_prop_aliases[prop.name] = alias_list
             canonical_prop_hints.add(prop.name)
             normalized_name = self._normalize_alias_lookup(prop.name)
-            canonical_prop_alias_targets.setdefault(normalized_name, set()).add(prop.name)
+            canonical_prop_alias_targets.setdefault(normalized_name, set()).add(
+                prop.name
+            )
             for alias in alias_list:
                 normalized_alias = self._normalize_alias_lookup(alias)
                 if normalized_alias:
-                    canonical_prop_alias_targets.setdefault(normalized_alias, set()).add(prop.name)
+                    canonical_prop_alias_targets.setdefault(
+                        normalized_alias, set()
+                    ).add(prop.name)
         canonical_prop_hints.update(
             item.prop_id
             for episode in self._episodes.values()
@@ -2083,7 +2140,9 @@ class CogneeStore:
 
             candidate_names: set[str] = set()
             normalized_prop_name = self._normalize_alias_lookup(prop.name)
-            candidate_names.update(canonical_prop_alias_targets.get(normalized_prop_name, set()))
+            candidate_names.update(
+                canonical_prop_alias_targets.get(normalized_prop_name, set())
+            )
             for alias in prop.aliases or []:
                 normalized_alias = self._normalize_alias_lookup(alias)
                 if normalized_alias:
@@ -2095,7 +2154,9 @@ class CogneeStore:
                 [
                     candidate
                     for candidate in candidate_names
-                    if candidate and candidate != prop.name and candidate not in used_prop_names
+                    if candidate
+                    and candidate != prop.name
+                    and candidate not in used_prop_names
                 ],
                 key=len,
             )
@@ -2147,15 +2208,21 @@ class CogneeStore:
 
         return props
 
-    async def attach_beats_to_episode(self, episode_number: int, beats: List[NovelVisualBeat]):
+    async def attach_beats_to_episode(
+        self, episode_number: int, beats: List[NovelVisualBeat]
+    ):
         """将视觉节拍关联到指定剧集（SQLite 中通过 episode_number 自动关联）。"""
         pass  # beats 表已有 episode_number 外键
 
-    async def persist_beats_from_script(self, episode_number: int, beats_data: List[dict]):
+    async def persist_beats_from_script(
+        self, episode_number: int, beats_data: List[dict]
+    ):
         """从脚本数据持久化 Beats。"""
         existing_rows = await self.get_beats_for_episode(episode_number)
         existing_by_num = {beat.beat_number: beat for beat in existing_rows}
-        await self._do_persist_beats(episode_number, beats_data, existing_by_num=existing_by_num)
+        await self._do_persist_beats(
+            episode_number, beats_data, existing_by_num=existing_by_num
+        )
 
     async def _patch_beats_missing_fields(
         self,
@@ -2163,9 +2230,13 @@ class CogneeStore:
         beats_data: List[dict],
     ) -> int:
         """只更新 beats 的缺失字段。"""
-        return await self.sqlite_store.patch_beats_missing_fields(episode_number, beats_data)
+        return await self.sqlite_store.patch_beats_missing_fields(
+            episode_number, beats_data
+        )
 
-    async def _episode_asset_ref_scope(self, episode_number: int) -> tuple[set[str], set[str]]:
+    async def _episode_asset_ref_scope(
+        self, episode_number: int
+    ) -> tuple[set[str], set[str]]:
         episode = await self.get_episode_from_graph(episode_number)
         allowed_identity_ids = {
             str(identity_id or "").strip()
@@ -2175,7 +2246,9 @@ class CogneeStore:
         if not allowed_identity_ids:
             for character in await self.list_characters():
                 for identity in getattr(character, "identities", []) or []:
-                    identity_id = str(getattr(identity, "identity_id", "") or "").strip()
+                    identity_id = str(
+                        getattr(identity, "identity_id", "") or ""
+                    ).strip()
                     if identity_id:
                         allowed_identity_ids.add(identity_id)
 
@@ -2194,12 +2267,16 @@ class CogneeStore:
         allowed_identity_ids: set[str],
         allowed_prop_ids: set[str],
     ) -> dict:
-        detected_identities, detected_props = complete_detected_refs_from_visual_description(
-            visual_description=str(beat_payload.get("visual_description", "") or ""),
-            detected_identities=beat_payload.get("detected_identities"),
-            detected_props=beat_payload.get("detected_props"),
-            allowed_identity_ids=allowed_identity_ids,
-            allowed_prop_ids=allowed_prop_ids,
+        detected_identities, detected_props = (
+            complete_detected_refs_from_visual_description(
+                visual_description=str(
+                    beat_payload.get("visual_description", "") or ""
+                ),
+                detected_identities=beat_payload.get("detected_identities"),
+                detected_props=beat_payload.get("detected_props"),
+                allowed_identity_ids=allowed_identity_ids,
+                allowed_prop_ids=allowed_prop_ids,
+            )
         )
         beat_payload["detected_identities_json"] = _json_list_payload(
             normalize_detected_identities(detected_identities)
@@ -2218,7 +2295,9 @@ class CogneeStore:
         """实际执行 Beat 持久化。"""
         existing_by_num = existing_by_num or {}
         keep_numbers = {
-            int(b.get("beat_number", 0)) for b in beats_data if int(b.get("beat_number", 0))
+            int(b.get("beat_number", 0))
+            for b in beats_data
+            if int(b.get("beat_number", 0))
         }
         manual_keep_numbers = {
             int(beat_number)
@@ -2232,7 +2311,9 @@ class CogneeStore:
             await self._delete_old_beats_for_episode(episode_number)
             return
 
-        allowed_identity_ids, allowed_prop_ids = await self._episode_asset_ref_scope(episode_number)
+        allowed_identity_ids, allowed_prop_ids = await self._episode_asset_ref_scope(
+            episode_number
+        )
         beats = []
         for b in beats_data:
             beat_payload = sync_beat_asset_refs(dict(b))
@@ -2259,7 +2340,8 @@ class CogneeStore:
                     )
                     or "",
                     detected_identities_json=(
-                        beat_payload.get("detected_identities_json") or '["__NO_CHARACTER__"]'
+                        beat_payload.get("detected_identities_json")
+                        or '["__NO_CHARACTER__"]'
                     ),
                     detected_props_json=(
                         beat_payload.get("detected_props_json") or '["__NO_PROP__"]'
@@ -2272,7 +2354,9 @@ class CogneeStore:
                     audio_type=beat_payload.get(
                         "audio_type", existing.audio_type if existing else "narration"
                     ),
-                    speaker=beat_payload.get("speaker", existing.speaker if existing else ""),
+                    speaker=beat_payload.get(
+                        "speaker", existing.speaker if existing else ""
+                    ),
                     speaker_kind=beat_payload.get(
                         "speaker_kind",
                         existing.speaker_kind if existing else "character",
@@ -2330,12 +2414,16 @@ class CogneeStore:
         )
         beats = []
         for beat in script.beats:
-            detected_identities, detected_props = complete_detected_refs_from_visual_description(
-                visual_description=str(getattr(beat, "visual_description", "") or ""),
-                detected_identities=getattr(beat, "detected_identities", None),
-                detected_props=getattr(beat, "detected_props", None),
-                allowed_identity_ids=allowed_identity_ids,
-                allowed_prop_ids=allowed_prop_ids,
+            detected_identities, detected_props = (
+                complete_detected_refs_from_visual_description(
+                    visual_description=str(
+                        getattr(beat, "visual_description", "") or ""
+                    ),
+                    detected_identities=getattr(beat, "detected_identities", None),
+                    detected_props=getattr(beat, "detected_props", None),
+                    allowed_identity_ids=allowed_identity_ids,
+                    allowed_prop_ids=allowed_prop_ids,
+                )
             )
             beats.append(
                 NovelVisualBeat(
@@ -2352,7 +2440,8 @@ class CogneeStore:
                     ),
                     scene_ref_json=(
                         json.dumps(
-                            getattr(beat, "scene_ref", None).model_dump(), ensure_ascii=False
+                            getattr(beat, "scene_ref", None).model_dump(),
+                            ensure_ascii=False,
                         )
                         if getattr(beat, "scene_ref", None)
                         else ""

@@ -9,6 +9,8 @@ from pydantic import BaseModel, Field
 
 from novelvideo import config as app_config
 from novelvideo.model_gateway_settings import (
+    CUSTOM_LLM_MODE_ADVANCED,
+    CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
     MODE_OFFICIAL,
     build_media_relay_status,
     build_model_gateway_status,
@@ -17,6 +19,7 @@ from novelvideo.model_gateway_settings import (
     normalize_api_key,
     save_media_relay_config,
     save_official_newapi_key,
+    save_relayclaw_brainclaw_key,
     save_custom_newapi_gateway,
     save_newapi_database_config,
     save_newapi_embedding_model_config,
@@ -24,6 +27,7 @@ from novelvideo.model_gateway_settings import (
     save_newapi_provider_channels,
     get_newapi_provider_channel,
     set_model_gateway_mode,
+    set_custom_llm_mode,
 )
 from novelvideo.model_gateway_runtime import refresh_model_gateway_runtime
 from novelvideo.shared.runtime_env import is_ce_effective
@@ -70,6 +74,14 @@ def require_ce_gateway_management() -> None:
 
 class OfficialGatewayBody(BaseModel):
     new_api_api_key: str = Field(alias="newApiApiKey")
+
+
+class BrainClawGatewayBody(BaseModel):
+    new_api_api_key: str = Field(alias="newApiApiKey")
+
+
+class CustomLlmModeBody(BaseModel):
+    mode: str
 
 
 class MediaRelayConfigBody(BaseModel):
@@ -386,6 +398,88 @@ async def save_official_gateway_config(body: OfficialGatewayBody) -> dict[str, A
     if not api_key:
         raise HTTPException(status_code=400, detail="newApiApiKey is required")
     save_official_newapi_key(api_key=api_key, activate=True)
+    runtime = refresh_model_gateway_runtime()
+    return {
+        "ok": True,
+        "data": build_model_gateway_status(
+            official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
+            official_api_key=app_config.NEWAPI_API_KEY,
+        ),
+        "runtime": runtime,
+    }
+
+
+@router.post("/custom/brainclaw/config")
+async def save_custom_brainclaw_config(
+    body: BrainClawGatewayBody,
+) -> dict[str, Any]:
+    """Save the RelayClaw key and activate mixed custom-media/BrainClaw LLM."""
+    try:
+        require_ce_gateway_management()
+    except PermissionError as exc:
+        raise _permission_error(exc) from exc
+    api_key = normalize_api_key(body.new_api_api_key)
+    if not api_key:
+        raise HTTPException(status_code=400, detail="newApiApiKey is required")
+    save_relayclaw_brainclaw_key(api_key=api_key, activate=True)
+    runtime = refresh_model_gateway_runtime()
+    return {
+        "ok": True,
+        "data": build_model_gateway_status(
+            official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
+            official_api_key=app_config.NEWAPI_API_KEY,
+        ),
+        "runtime": runtime,
+    }
+
+
+@router.post("/custom/brainclaw/enable")
+async def enable_custom_brainclaw() -> dict[str, Any]:
+    try:
+        require_ce_gateway_management()
+    except PermissionError as exc:
+        raise _permission_error(exc) from exc
+    status = build_model_gateway_status(
+        official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
+        official_api_key=app_config.NEWAPI_API_KEY,
+    )
+    if not status["official"]["configured"]:
+        raise HTTPException(
+            status_code=400, detail="RelayClaw API key is not configured"
+        )
+    set_custom_llm_mode(CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW)
+    runtime = refresh_model_gateway_runtime()
+    return {
+        "ok": True,
+        "data": build_model_gateway_status(
+            official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
+            official_api_key=app_config.NEWAPI_API_KEY,
+        ),
+        "runtime": runtime,
+    }
+
+
+@router.post("/custom/llm-mode")
+async def save_custom_llm_routing_mode(body: CustomLlmModeBody) -> dict[str, Any]:
+    try:
+        require_ce_gateway_management()
+    except PermissionError as exc:
+        raise _permission_error(exc) from exc
+    if body.mode not in {
+        CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
+        CUSTOM_LLM_MODE_ADVANCED,
+    }:
+        raise HTTPException(status_code=400, detail="unsupported custom LLM mode")
+    if body.mode == CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW:
+        status = build_model_gateway_status(
+            official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
+            official_api_key=app_config.NEWAPI_API_KEY,
+        )
+        if not status["official"]["configured"]:
+            raise HTTPException(
+                status_code=400, detail="RelayClaw API key is not configured"
+            )
+    set_custom_llm_mode(body.mode)
     runtime = refresh_model_gateway_runtime()
     return {
         "ok": True,

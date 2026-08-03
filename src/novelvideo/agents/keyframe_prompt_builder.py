@@ -11,6 +11,7 @@ from typing import Optional
 from pydantic_ai import Agent, BinaryContent
 from PIL import Image as PILImage
 
+from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.utils.logging import log_agent_start, log_agent_end
 
 
@@ -63,6 +64,7 @@ The clip is ~5 seconds. Describe a **chain of 2–3 connected actions** that bri
 Output ONLY the transition prompt in Chinese. 4–6 句, ~50–90 字.
 """
 
+
 def create_keyframe_prompt_builder_agent(language: str = "en") -> Agent:
     """创建首尾帧过渡提示词生成 Agent。"""
     from novelvideo.config import get_newapi_text_pydantic_model
@@ -71,8 +73,14 @@ def create_keyframe_prompt_builder_agent(language: str = "en") -> Agent:
     model = get_newapi_text_pydantic_model(
         "KEYFRAME_PROMPT_MODEL",
         DEFAULT_VIDEO_PROMPT_OPTIMIZER_MODEL,
+        brainclaw_profile=BrainClawProfile.KEYFRAME_TRANSITION_PROMPT_GENERATION,
     )
-    return Agent(model, system_prompt=KEYFRAME_PROMPT_BUILDER_INSTRUCTIONS_EN, output_type=str, name="Keyframe Prompt Builder")
+    return Agent(
+        model,
+        system_prompt=KEYFRAME_PROMPT_BUILDER_INSTRUCTIONS_EN,
+        output_type=str,
+        name="Keyframe Prompt Builder",
+    )
 
 
 class KeyframePromptBuilder:
@@ -118,18 +126,18 @@ class KeyframePromptBuilder:
         img = PILImage.open(image_path)
         original_size = os.path.getsize(image_path)
 
-        if img.mode in ('RGBA', 'P'):
-            img = img.convert('RGB')
+        if img.mode in ("RGBA", "P"):
+            img = img.convert("RGB")
 
         buffer = io.BytesIO()
-        img.save(buffer, format='JPEG', quality=compress_quality, optimize=True)
+        img.save(buffer, format="JPEG", quality=compress_quality, optimize=True)
         image_bytes = buffer.getvalue()
 
         compressed_size = len(image_bytes)
         ratio = (1 - compressed_size / original_size) * 100
         print(
             f"[KeyframePromptBuilder] 压缩图片: {os.path.basename(image_path)}: "
-            f"{original_size/1024:.0f}KB → {compressed_size/1024:.0f}KB "
+            f"{original_size / 1024:.0f}KB → {compressed_size / 1024:.0f}KB "
             f"({ratio:.0f}% 压缩)"
         )
 
@@ -169,13 +177,17 @@ class KeyframePromptBuilder:
         first_frame_bytes = self._compress_image(first_frame_path)
         last_frame_bytes = self._compress_image(last_frame_path)
 
-        first_frame_image = BinaryContent(data=first_frame_bytes, media_type='image/jpeg')  # 首帧
-        last_frame_image = BinaryContent(data=last_frame_bytes, media_type='image/jpeg')   # 尾帧
+        first_frame_image = BinaryContent(
+            data=first_frame_bytes, media_type="image/jpeg"
+        )  # 首帧
+        last_frame_image = BinaryContent(
+            data=last_frame_bytes, media_type="image/jpeg"
+        )  # 尾帧
 
         # 构建 dialogue 提示
         dialogue_hint = ""
         if audio_type == "dialogue" and dialogue_line:
-            dialogue_hint = '\n⚠️ This Beat is DIALOGUE — speaking is the primary motion. Describe lips moving, gestures while talking. Dialogue text is appended by the system; only describe physical action.\n'
+            dialogue_hint = "\n⚠️ This Beat is DIALOGUE — speaking is the primary motion. Describe lips moving, gestures while talking. Dialogue text is appended by the system; only describe physical action.\n"
 
         # 构建任务提示
         if color_map_text:
@@ -232,10 +244,7 @@ Output the transition prompt in Chinese directly."""
 Output the transition prompt in Chinese directly."""
 
         lang_hint = "中文"
-        log_agent_start(
-            "首尾帧过渡提示词生成师",
-            f"生成过渡描述 ({lang_hint})"
-        )
+        log_agent_start("首尾帧过渡提示词生成师", f"生成过渡描述 ({lang_hint})")
 
         # 存储上下文供调试
         self._last_context = task
@@ -245,7 +254,9 @@ Output the transition prompt in Chinese directly."""
             response = await agent.run([task, first_frame_image, last_frame_image])
 
             # 提取过渡描述
-            result = response.output.strip() if response.output else str(response).strip()
+            result = (
+                response.output.strip() if response.output else str(response).strip()
+            )
 
             # 检测错误响应
             error_indicators = [
@@ -259,7 +270,9 @@ Output the transition prompt in Chinese directly."""
             if any(indicator in result for indicator in error_indicators):
                 raise RuntimeError(f"API 返回错误响应: {result[:200]}")
 
-            log_agent_end("首尾帧过渡提示词生成师", success=True, result=f"{len(result)}字")
+            log_agent_end(
+                "首尾帧过渡提示词生成师", success=True, result=f"{len(result)}字"
+            )
             # dialogue beat：追加台词内容
             if audio_type == "dialogue" and dialogue_line:
                 result = f"{result}，说：{dialogue_line}"

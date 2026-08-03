@@ -197,10 +197,12 @@ class FreezoneTranslationResult(BaseModel):
 def create_freezone_translation_agent() -> Agent:
     """创建 Freezone 中英互译 Agent。"""
     from novelvideo.config import get_newapi_text_pydantic_model
+    from novelvideo.brainclaw_contract import BrainClawProfile
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_TRANSLATION_MODEL",
         FREEZONE_TRANSLATION_MODEL,
+        brainclaw_profile=BrainClawProfile.FREEZONE_TRANSLATION,
     )
     return Agent(
         model,
@@ -235,11 +237,13 @@ def create_freezone_story_script_agent(model: str | None = None) -> Agent:
     """创建故事脚本生成 Agent。"""
     from novelvideo.api.schemas import FreezoneStoryScriptGenerateData
     from novelvideo.config import get_newapi_text_pydantic_model
+    from novelvideo.brainclaw_contract import BrainClawProfile
 
     resolved = resolve_freezone_story_script_model(model)
     llm_model = get_newapi_text_pydantic_model(
         "FREEZONE_STORY_SCRIPT_MODEL",
         resolved["model"],
+        brainclaw_profile=BrainClawProfile.FREEZONE_STORY_SCRIPT_WRITING,
     )
     return Agent(
         llm_model,
@@ -483,6 +487,7 @@ def create_freezone_video_story_script_agent() -> Agent:
     """
     from novelvideo.api.schemas import FreezoneStoryScriptGenerateData
     from novelvideo.config import get_newapi_text_pydantic_model
+    from novelvideo.brainclaw_contract import BrainClawProfile
     from novelvideo.official_defaults import DEFAULT_FREEZONE_VISION_MODEL
 
     return Agent(
@@ -490,6 +495,7 @@ def create_freezone_video_story_script_agent() -> Agent:
             "FREEZONE_VISION_MODEL",
             DEFAULT_FREEZONE_VISION_MODEL,
             timeout_seconds_override=300.0,
+            brainclaw_profile=BrainClawProfile.FREEZONE_VISION_ANALYSIS,
         ),
         system_prompt=FREEZONE_VIDEO_STORY_SCRIPT_SYSTEM_PROMPT,
         output_type=FreezoneStoryScriptGenerateData,

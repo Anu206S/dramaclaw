@@ -57,6 +57,7 @@ async def call_freezone_vision_model(
     from pydantic_ai import Agent, BinaryContent
 
     from novelvideo.config import get_newapi_text_pydantic_model
+    from novelvideo.brainclaw_contract import BrainClawProfile
 
     model = resolve_freezone_vision_model(model_override)
     agent = Agent(
@@ -65,6 +66,7 @@ async def call_freezone_vision_model(
             DEFAULT_FREEZONE_VISION_MODEL,
             model_name_override=model,
             timeout_seconds_override=timeout_seconds,
+            brainclaw_profile=BrainClawProfile.FREEZONE_VISION_ANALYSIS,
         ),
         output_type=str,
         name="Freezone Vision Analyzer",

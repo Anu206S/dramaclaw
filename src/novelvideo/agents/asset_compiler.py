@@ -9,6 +9,7 @@ from pydantic import BaseModel, Field, ValidationError, ValidationInfo, model_va
 from pydantic_ai import Agent
 from pydantic_ai.exceptions import UnexpectedModelBehavior
 
+from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.config import (
     get_newapi_text_pydantic_model,
     get_newapi_text_pydantic_model_settings,
@@ -39,7 +40,9 @@ class DerivedSceneRequirement(BaseModel):
         description="派生场景的简短视觉说明，描述区别于基础场景的稳定视觉特征",
     )
     lighting: str = Field(default="", description="派生场景特有的光照条件；没有就留空")
-    atmosphere: str = Field(default="", description="派生场景特有的氛围/天气/空气感；没有就留空")
+    atmosphere: str = Field(
+        default="", description="派生场景特有的氛围/天气/空气感；没有就留空"
+    )
 
 
 PROP_OUTPUT_SCHEMA_HINT = (
@@ -61,7 +64,9 @@ class PropRequirement(BaseModel):
         default="",
         description="用于生成参考图的视觉提示词，必须写清形状、材质、颜色、可识别细节，80字内",
     )
-    description: str = Field(default="", description="一句话叙述描述（用途/剧情关系，50字内）")
+    description: str = Field(
+        default="", description="一句话叙述描述（用途/剧情关系，50字内）"
+    )
 
 
 class BlockDerivedSceneOutput(BaseModel):
@@ -101,10 +106,16 @@ class BlockPropRequirements(BaseModel):
 
 class NarratedSceneRequirement(BaseModel):
     scene_name: str = Field(description="基础场景名，必须是可复用的物理地点")
-    scene_type: str = Field(default="interior", description="interior / exterior / nature")
-    aliases: list[str] = Field(default_factory=list, description="原文中出现过的自然别名")
+    scene_type: str = Field(
+        default="interior", description="interior / exterior / nature"
+    )
+    aliases: list[str] = Field(
+        default_factory=list, description="原文中出现过的自然别名"
+    )
     description: str = Field(default="", description="一句话说明该地点在本集中的作用")
-    evidence_lines: list[str] = Field(default_factory=list, description="支持该场景的原文证据")
+    evidence_lines: list[str] = Field(
+        default_factory=list, description="支持该场景的原文证据"
+    )
 
     @model_validator(mode="after")
     def validate_scene(self, info: ValidationInfo) -> "NarratedSceneRequirement":
@@ -117,7 +128,9 @@ class NarratedSceneRequirement(BaseModel):
         self.scene_name = str(self.scene_name or "").strip()
         self.scene_type = AssetCompiler._normalize_scene_type(self.scene_type)
         self.aliases = [
-            str(alias or "").strip() for alias in (self.aliases or []) if str(alias or "").strip()
+            str(alias or "").strip()
+            for alias in (self.aliases or [])
+            if str(alias or "").strip()
         ]
         self.description = str(self.description or "").strip()
         self.evidence_lines = [
@@ -125,7 +138,11 @@ class NarratedSceneRequirement(BaseModel):
             for line in (self.evidence_lines or [])
             if str(line or "").strip()
         ]
-        if source_text and self.scene_name and self.scene_name not in existing_scene_names:
+        if (
+            source_text
+            and self.scene_name
+            and self.scene_name not in existing_scene_names
+        ):
             tokens = [self.scene_name, *self.aliases]
             if not any(token and token in source_text for token in tokens):
                 raise ValueError(f"场景名 '{self.scene_name}' 未在本集文本中出现")
@@ -143,10 +160,14 @@ class BaseSceneReconcileDecision(BaseModel):
     action: str = Field(description="reuse / create / ignore")
     scene_name: str = Field(default="", description="需要创建或引用的基础场景名")
     matched_existing_name: str = Field(default="", description="复用已有基础场景时填写")
-    scene_type: str = Field(default="interior", description="interior / exterior / nature")
+    scene_type: str = Field(
+        default="interior", description="interior / exterior / nature"
+    )
     aliases: list[str] = Field(default_factory=list, description="原文中出现的自然别名")
     description: str = Field(default="", description="一句话说明该物理地点")
-    evidence_lines: list[str] = Field(default_factory=list, description="支持该决策的原文证据")
+    evidence_lines: list[str] = Field(
+        default_factory=list, description="支持该决策的原文证据"
+    )
     confidence: float = Field(default=0.0, description="0-1 置信度")
 
     @model_validator(mode="after")
@@ -158,7 +179,9 @@ class BaseSceneReconcileDecision(BaseModel):
         self.matched_existing_name = str(self.matched_existing_name or "").strip()
         self.scene_type = AssetCompiler._normalize_scene_type(self.scene_type)
         self.aliases = [
-            str(alias or "").strip() for alias in (self.aliases or []) if str(alias or "").strip()
+            str(alias or "").strip()
+            for alias in (self.aliases or [])
+            if str(alias or "").strip()
         ]
         self.description = str(self.description or "").strip()
         self.evidence_lines = [
@@ -431,7 +454,9 @@ class AssetCompiler:
         await self._reconcile_base_scenes_from_text(source_text, episode, log)
 
         report(0.2, "编译场景资产...")
-        scene_menu, pending_scenes = await self._compile_scenes(scene_blocks, episode, log)
+        scene_menu, pending_scenes = await self._compile_scenes(
+            scene_blocks, episode, log
+        )
         if not scene_menu:
             report(0.3, "从解说稿规划场景资产...")
             scene_menu, pending_scenes = await self._compile_narrated_scenes(
@@ -611,6 +636,7 @@ class AssetCompiler:
             get_newapi_text_pydantic_model(
                 "EPISODE_SCENE_RECONCILE_MODEL",
                 "gemini-3.5-flash",
+                brainclaw_profile=BrainClawProfile.EPISODE_SCENE_RECONCILIATION,
             ),
             system_prompt=BASE_SCENE_RECONCILE_PROMPT,
             model_settings=get_newapi_text_pydantic_model_settings(
@@ -627,7 +653,9 @@ class AssetCompiler:
 ## 第 {episode.number} 集文本
 {source_text}
 """)
-        return await self._apply_base_scene_reconcile_output(result.output, source_text, episode, log)
+        return await self._apply_base_scene_reconcile_output(
+            result.output, source_text, episode, log
+        )
 
     async def _apply_base_scene_reconcile_output(
         self,
@@ -666,7 +694,8 @@ class AssetCompiler:
                 dict.fromkeys(
                     str(alias or "").strip()
                     for alias in (decision.aliases or [])
-                    if str(alias or "").strip() and str(alias or "").strip() != scene_name
+                    if str(alias or "").strip()
+                    and str(alias or "").strip() != scene_name
                 )
             )
             if decision.description and not str(scene.description or "").strip():
@@ -684,9 +713,7 @@ class AssetCompiler:
         """Return an existing base scene when any candidate matches a name or alias."""
 
         candidates = [
-            str(name or "").strip()
-            for name in (names or [])
-            if str(name or "").strip()
+            str(name or "").strip() for name in (names or []) if str(name or "").strip()
         ]
         for name in candidates:
             scene = await self.cognee_store.sqlite_store.get_scene(name)
@@ -744,7 +771,9 @@ class AssetCompiler:
             if not location:
                 continue
 
-            existing = pending_scene_map.get(location) or await self._find_matching_scene(location)
+            existing = pending_scene_map.get(
+                location
+            ) or await self._find_matching_scene(location)
             if not existing:
                 log(f"  跳过缺失基础场景: {location}（AI校对未创建或未复用）")
                 continue
@@ -757,10 +786,14 @@ class AssetCompiler:
                     log=log,
                 )
 
-            derived_requirements = await self._analyze_derived_scenes(existing.name, block)
+            derived_requirements = await self._analyze_derived_scenes(
+                existing.name, block
+            )
             normalized_derived = self._build_derived_scene_specs(derived_requirements)
             self._add_to_scene_menu(existing.name, scene_menu, seen_scene_ids)
-            for scene_time, count in sorted(time_plate_counts.get(location, {}).items()):
+            for scene_time, count in sorted(
+                time_plate_counts.get(location, {}).items()
+            ):
                 if count < 2:
                     continue
                 time_plate = self._build_time_plate_scene(existing, scene_time, episode)
@@ -792,7 +825,9 @@ class AssetCompiler:
                     base_scene_id=existing.name,
                     variant_id=requirement.label,
                 )
-            extra = f" ({len(normalized_derived)} 派生场景)" if normalized_derived else ""
+            extra = (
+                f" ({len(normalized_derived)} 派生场景)" if normalized_derived else ""
+            )
             log(f"  场景: {existing.name}{extra}")
 
         return scene_menu, pending_scenes
@@ -813,9 +848,9 @@ class AssetCompiler:
             scene_name = str(getattr(scene, "name", "") or "").strip()
             if not scene_name:
                 continue
-            existing = pending_scene_map.get(scene_name) or await self._find_matching_scene(
+            existing = pending_scene_map.get(
                 scene_name
-            )
+            ) or await self._find_matching_scene(scene_name)
             canonical_name = scene_name
             if existing:
                 canonical_name = existing.name
@@ -846,7 +881,9 @@ class AssetCompiler:
         if not source_text:
             return []
 
-        requirements = await self._analyze_narrated_scene_requirements(source_text, episode, log)
+        requirements = await self._analyze_narrated_scene_requirements(
+            source_text, episode, log
+        )
         if not requirements:
             requirements = self._heuristic_narrated_scene_requirements(source_text)
         if not requirements:
@@ -860,7 +897,9 @@ class AssetCompiler:
             if not scene_name or scene_name in seen:
                 continue
             seen.add(scene_name)
-            context_lines = [line for line in req.evidence_lines if str(line or "").strip()]
+            context_lines = [
+                line for line in req.evidence_lines if str(line or "").strip()
+            ]
             if not context_lines:
                 context_lines = source_lines[:12]
             scene_type = self._normalize_scene_type(req.scene_type)
@@ -911,6 +950,7 @@ class AssetCompiler:
             get_newapi_text_pydantic_model(
                 "NARRATED_SCENE_ASSET_MODEL",
                 "gemini-3.5-flash",
+                brainclaw_profile=BrainClawProfile.NARRATED_SCENE_ASSET_PLANNING,
             ),
             system_prompt=NARRATED_SCENE_PROMPT,
             model_settings=get_newapi_text_pydantic_model_settings(
@@ -976,7 +1016,9 @@ class AssetCompiler:
         block: SceneBlock,
     ) -> list[DerivedSceneRequirement]:
         content_lines = [line for line in block.lines if str(line or "").strip()]
-        has_env_desc = any(str(line or "").strip().startswith("△") for line in content_lines)
+        has_env_desc = any(
+            str(line or "").strip().startswith("△") for line in content_lines
+        )
         if len(content_lines) < 3 and not has_env_desc:
             return []
         block_text = "\n".join(content_lines)
@@ -994,6 +1036,7 @@ class AssetCompiler:
             get_newapi_text_pydantic_model(
                 "EPISODE_SCENE_PLANNER_MODEL",
                 "gemini-3.5-flash",
+                brainclaw_profile=BrainClawProfile.EPISODE_SCENE_PLANNING,
             ),
             system_prompt=DERIVED_SCENE_PROMPT,
             model_settings=get_newapi_text_pydantic_model_settings(
@@ -1020,14 +1063,20 @@ class AssetCompiler:
 
         for block_index, block in enumerate(scene_blocks):
             block_text = "\n".join(
-                item for item in [block.header_line, *block.lines] if str(item or "").strip()
+                item
+                for item in [block.header_line, *block.lines]
+                if str(item or "").strip()
             )
             if not block_text.strip():
                 continue
 
             preselected = self._preselect_existing_props(block_text, existing_props)
-            prior_reuse = self._prior_selected_props_in_block(block, episode_selected_props)
-            if prior_reuse and self._is_short_prior_prop_reuse_block(block, preselected):
+            prior_reuse = self._prior_selected_props_in_block(
+                block, episode_selected_props
+            )
+            if prior_reuse and self._is_short_prior_prop_reuse_block(
+                block, preselected
+            ):
                 requirements = prior_reuse
             else:
                 try:
@@ -1046,7 +1095,9 @@ class AssetCompiler:
                     prop_id = existing.name
                     source = "复用"
                 else:
-                    prop_id = self._match_selected_prop(req.prop_name, episode_selected_props)
+                    prop_id = self._match_selected_prop(
+                        req.prop_name, episode_selected_props
+                    )
                     source = "本集复用" if prop_id else "本集局部"
                 prop_id = prop_id or str(req.prop_name or "").strip()
                 if not prop_id:
@@ -1065,17 +1116,25 @@ class AssetCompiler:
         episode_selected_props: dict[str, str],
     ) -> list[PropRequirement]:
         block_text = "\n".join(
-            item for item in [block.header_line, *block.lines] if str(item or "").strip()
+            item
+            for item in [block.header_line, *block.lines]
+            if str(item or "").strip()
         )
         result: list[PropRequirement] = []
         seen: set[str] = set()
         prior_ids = sorted(
-            {value for value in episode_selected_props.values() if str(value or "").strip()}
+            {
+                value
+                for value in episode_selected_props.values()
+                if str(value or "").strip()
+            }
         )
         for prop_id in prior_ids:
             if prop_id in seen:
                 continue
-            if cls._contains_text(block_text, prop_id) or cls._contains_text(prop_id, block_text):
+            if cls._contains_text(block_text, prop_id) or cls._contains_text(
+                prop_id, block_text
+            ):
                 seen.add(prop_id)
                 result.append(PropRequirement(prop_name=prop_id))
         return result
@@ -1086,7 +1145,9 @@ class AssetCompiler:
         preselected: list[NovelProp],
     ) -> bool:
         content_lines = [line for line in block.lines if str(line or "").strip()]
-        has_env_desc = any(str(line or "").strip().startswith("△") for line in content_lines)
+        has_env_desc = any(
+            str(line or "").strip().startswith("△") for line in content_lines
+        )
         return len(content_lines) <= 3 and not has_env_desc and not preselected
 
     def _preselect_existing_props(
@@ -1117,10 +1178,14 @@ class AssetCompiler:
         prior_selected_prop_ids: list[str],
     ) -> list[PropRequirement]:
         block_text = "\n".join(
-            item for item in [block.header_line, *block.lines] if str(item or "").strip()
+            item
+            for item in [block.header_line, *block.lines]
+            if str(item or "").strip()
         )
         content_lines = [line for line in block.lines if str(line or "").strip()]
-        has_env_desc = any(str(line or "").strip().startswith("△") for line in content_lines)
+        has_env_desc = any(
+            str(line or "").strip().startswith("△") for line in content_lines
+        )
         if (
             len(content_lines) < 2
             and not preselected
@@ -1143,7 +1208,9 @@ class AssetCompiler:
                 candidate_lines.append(f"- {prop_id}")
                 allowed_existing_names.add(str(prop_id or "").strip())
 
-        candidate_section = "\n".join(candidate_lines) if candidate_lines else "（无预筛候选）"
+        candidate_section = (
+            "\n".join(candidate_lines) if candidate_lines else "（无预筛候选）"
+        )
         task = f"""分析当前场景块中的关键道具。
 
 ## 场次头
@@ -1159,6 +1226,7 @@ class AssetCompiler:
             get_newapi_text_pydantic_model(
                 "EPISODE_PROP_PLANNER_MODEL",
                 "gemini-3.5-flash",
+                brainclaw_profile=BrainClawProfile.EPISODE_PROP_PLANNING,
             ),
             system_prompt=BLOCK_PROP_PROMPT,
             model_settings=get_newapi_text_pydantic_model_settings(
@@ -1185,7 +1253,9 @@ class AssetCompiler:
         if not name:
             return False
         lines = [
-            str(line or "").strip() for line in block_text.splitlines() if str(line or "").strip()
+            str(line or "").strip()
+            for line in block_text.splitlines()
+            if str(line or "").strip()
         ]
         for line in lines:
             for verb in INTERACTION_VERBS:
@@ -1218,7 +1288,9 @@ class AssetCompiler:
         return filtered
 
     @classmethod
-    def _match_selected_prop(cls, prop_name: str, episode_selected_props: dict[str, str]) -> str:
+    def _match_selected_prop(
+        cls, prop_name: str, episode_selected_props: dict[str, str]
+    ) -> str:
         normalized_name = str(prop_name or "").strip()
         if not normalized_name:
             return ""
@@ -1226,7 +1298,11 @@ class AssetCompiler:
         if exact:
             return exact
         canonical_ids = sorted(
-            {value for value in episode_selected_props.values() if str(value or "").strip()}
+            {
+                value
+                for value in episode_selected_props.values()
+                if str(value or "").strip()
+            }
         )
         for canonical in canonical_ids:
             if cls._contains_text(canonical, normalized_name) or cls._contains_text(
@@ -1252,7 +1328,10 @@ class AssetCompiler:
     def _guess_scene_type_from_name(cls, name: str) -> str:
         if any(token in name for token in ("山", "林", "河", "湖", "海", "谷", "荒野")):
             return "nature"
-        if any(token in name for token in ("街", "路", "巷", "广场", "码头", "城门", "山路")):
+        if any(
+            token in name
+            for token in ("街", "路", "巷", "广场", "码头", "城门", "山路")
+        ):
             return "exterior"
         return "interior"
 
@@ -1342,17 +1421,27 @@ class AssetCompiler:
         if prop_id not in seen_prop_ids:
             description = str(getattr(requirement, "description", "") or "").strip()
             visual_prompt = str(getattr(requirement, "visual_prompt", "") or "").strip()
-            prop_type = str(getattr(requirement, "prop_type", "") or "").strip() or "object"
+            prop_type = (
+                str(getattr(requirement, "prop_type", "") or "").strip() or "object"
+            )
             existing_visual = str(getattr(existing, "visual_prompt", "") or "").strip()
-            existing_description = str(getattr(existing, "description", "") or "").strip()
+            existing_description = str(
+                getattr(existing, "description", "") or ""
+            ).strip()
             fallback_visual = visual_prompt or description or prop_id
             prop_menu.append(
                 PropMenuItem(
                     prop_id=prop_id,
-                    prop_type=getattr(existing, "prop_type", "") if existing else prop_type,
-                    visual_prompt=existing_visual or existing_description or fallback_visual,
+                    prop_type=getattr(existing, "prop_type", "")
+                    if existing
+                    else prop_type,
+                    visual_prompt=existing_visual
+                    or existing_description
+                    or fallback_visual,
                     description=description or existing_description or existing_visual,
-                    owner_identity_id=getattr(existing, "owner", "") if existing else "",
+                    owner_identity_id=getattr(existing, "owner", "")
+                    if existing
+                    else "",
                 )
             )
             seen_prop_ids.add(prop_id)
@@ -1412,7 +1501,9 @@ class AssetCompiler:
         counts: dict[str, dict[str, int]] = {}
         for block in scene_blocks or []:
             location = str(getattr(block, "location", "") or "").strip()
-            scene_time = normalize_time_of_day(str(getattr(block, "time_of_day", "") or ""))
+            scene_time = normalize_time_of_day(
+                str(getattr(block, "time_of_day", "") or "")
+            )
             if not location or not scene_time:
                 continue
             counts.setdefault(location, {})
@@ -1539,7 +1630,9 @@ class AssetCompiler:
         lookup = self._normalize_alias_lookup(name)
         all_props = await self.cognee_store.sqlite_store.list_props()
         for item in all_props:
-            if any(self._normalize_alias_lookup(alias) == lookup for alias in item.aliases):
+            if any(
+                self._normalize_alias_lookup(alias) == lookup for alias in item.aliases
+            ):
                 return item
             if name in item.name or item.name in name:
                 return item

@@ -196,7 +196,9 @@ async def test_generate_rewrite_applies_output_to_beat_source_text(monkeypatch) 
 
 
 @pytest.mark.asyncio
-async def test_generate_rewrite_uses_evidence_settlement_on_failure(monkeypatch) -> None:
+async def test_generate_rewrite_uses_evidence_settlement_on_failure(
+    monkeypatch,
+) -> None:
     from novelvideo.agents import content_rewriter
     from novelvideo.api.routes import content
     from novelvideo.api.schemas import RewriteGenerateRequest
@@ -309,7 +311,7 @@ async def test_content_rewriter_uses_newapi_text_model(monkeypatch) -> None:
                 },
             )()
 
-    def fake_newapi_model(model_env: str, default_model: str):
+    def fake_newapi_model(model_env: str, default_model: str, **_kwargs):
         calls["model_env"] = model_env
         calls["default_model"] = default_model
         return "newapi-model"
