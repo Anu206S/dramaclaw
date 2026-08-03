@@ -496,6 +496,7 @@ frontend/src/__tests__/features/freezone/projections.test.ts,Elastic-2.0,2026 Su
 frontend/src/__tests__/features/freezone/scene-director-world-commit.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/features/freezone/skill-node-inputs.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/features/freezone/use-canvas-sync.test.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+frontend/src/__tests__/features/freezone/workflow-node-action-contract.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/features/freezone/workflow-run-recovery-bar.test.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/features/rewards/reward-events-store.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/__tests__/features/superchat/canvas-command-flow.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1056,6 +1057,7 @@ frontend/src/features/canvas/ui/CommitTargetHint.tsx,Elastic-2.0,2026 SuperTale 
 frontend/src/features/canvas/ui/DirectorControlBundleBadge.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/ui/EditableTableCell.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/ui/EraseOverlay.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+frontend/src/features/canvas/ui/GridActionConfirmOverlay.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/ui/ImageViewerModal.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/ui/LightEditorCanvasOverlay.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/ui/LightEditorContent.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
