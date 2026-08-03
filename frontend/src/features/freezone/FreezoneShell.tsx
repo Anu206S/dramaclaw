@@ -40,6 +40,8 @@ import { currentCanvasParam } from "@/lib/app-router";
 import { rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
+import { isCeRuntime } from "@/lib/runtime-config";
+import { XIADAO_ENABLED } from "@/lib/xiadao-flag";
 import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
   SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT,
@@ -847,7 +849,8 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   const [assetLibraryReloadToken, setAssetLibraryReloadToken] = useState(0);
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
-  const [chatOpen, setChatOpen] = useState(loadChatOpen);
+  const showChatDock = XIADAO_ENABLED && !isCeRuntime();
+  const [chatOpen, setChatOpen] = useState(() => showChatDock && loadChatOpen());
   const [pendingChatAttachments, setPendingChatAttachments] = useState<ChatAttachment[]>([]);
   const [pendingChatNodeMentions, setPendingChatNodeMentions] = useState<string[]>([]);
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
@@ -990,6 +993,9 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   useEffect(() => {
     storeChatOpen(chatOpen);
   }, [chatOpen]);
+  useEffect(() => {
+    if (!showChatDock) setChatOpen(false);
+  }, [showChatDock]);
 
   const handleBlankPaneClick = useCallback(() => {
     setAssetPanelCollapsed(true);
@@ -2121,25 +2127,27 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             </div>
           )}
         </main>
-        <FreezoneChatDock
-          projectId={projectId}
-          canvasId={canvasId}
-          currentCanvasMetadata={sync.metadata}
-          currentCanvasSelection={currentCanvasSelection}
-          currentCanvasOntologyContext={currentCanvasOntologyContext}
-          pendingAttachments={pendingChatAttachments}
-          onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
-          pendingNodeMentions={pendingChatNodeMentions}
-          onPendingNodeMentionsConsumed={() => setPendingChatNodeMentions([])}
-          open={chatOpen}
-          onOpenChange={handleChatOpenChange}
-          // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
-          // 画布视口不受影响（否则每次开合聊天都会让 ReactFlow 重排一次视口）。
-          pushesContent={viewMode === "board"}
-          title={t("freezone.chat.title")}
-          description={t("freezone.chat.description")}
-          toggleLabel={t("freezone.chat.toggle")}
-        />
+        {showChatDock && (
+          <FreezoneChatDock
+            projectId={projectId}
+            canvasId={canvasId}
+            currentCanvasMetadata={sync.metadata}
+            currentCanvasSelection={currentCanvasSelection}
+            currentCanvasOntologyContext={currentCanvasOntologyContext}
+            pendingAttachments={pendingChatAttachments}
+            onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
+            pendingNodeMentions={pendingChatNodeMentions}
+            onPendingNodeMentionsConsumed={() => setPendingChatNodeMentions([])}
+            open={chatOpen}
+            onOpenChange={handleChatOpenChange}
+            // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
+            // 画布视口不受影响（否则每次开合聊天都会让 ReactFlow 重排一次视口）。
+            pushesContent={viewMode === "board"}
+            title={t("freezone.chat.title")}
+            description={t("freezone.chat.description")}
+            toggleLabel={t("freezone.chat.toggle")}
+          />
+        )}
       </div>
       <NodeReplaceDragPreview />
       {pushState && (
