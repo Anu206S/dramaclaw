@@ -151,6 +151,25 @@ def get_newapi_text_model_name(model_env: str, default_model: str) -> str:
     )
 
 
+def get_effective_newapi_text_model_name(
+    model_env: str,
+    default_model: str,
+    *,
+    model_name_override: str | None = None,
+) -> str:
+    """Resolve a text model against the active BrainClaw or advanced route."""
+    from novelvideo.model_gateway_settings import get_effective_llm_config
+    from novelvideo.official_defaults import ADVANCED_TEXT_MODEL_BY_ENV
+
+    if get_effective_llm_config().is_brainclaw:
+        return "brainclaw"
+    return (
+        str(model_name_override or "").strip()
+        or _clean_env_value(model_env)
+        or ADVANCED_TEXT_MODEL_BY_ENV.get(model_env, default_model)
+    )
+
+
 def _get_newapi_text_model_profile(model_name: str):
     """Attach Gemini-compatible model profile while routing through newAPI."""
     normalized = (model_name or "").strip()
@@ -258,15 +277,12 @@ def get_newapi_text_pydantic_model(
     """Create a PydanticAI OpenAI-compatible model that routes through newAPI."""
     from novelvideo.brainclaw_contract import brainclaw_profile_headers
     from novelvideo.model_gateway_settings import get_effective_llm_config
-    from novelvideo.official_defaults import ADVANCED_TEXT_MODEL_BY_ENV
 
     llm_config = get_effective_llm_config()
-    model_name = (
-        "brainclaw"
-        if llm_config.is_brainclaw
-        else str(model_name_override or "").strip()
-        or _clean_env_value(model_env)
-        or ADVANCED_TEXT_MODEL_BY_ENV.get(model_env, default_model)
+    model_name = get_effective_newapi_text_model_name(
+        model_env,
+        default_model,
+        model_name_override=model_name_override,
     )
     api_key, base_url = llm_config.api_key, llm_config.base_url
     if not api_key:
