@@ -1,3 +1,4 @@
+import asyncio
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -116,6 +117,46 @@ async def test_hermes_session_load_result_keeps_resumed_session(tmp_path, monkey
     await thread._ensure_session()
 
     assert sent_methods == ["session/load"]
+
+
+@pytest.mark.anyio
+async def test_hermes_thread_serializes_concurrent_prompt_streams(tmp_path, monkeypatch):
+    thread = hermes_sdk.HermesSdkThread(
+        cli_path=tmp_path / "hermes",
+        cwd=tmp_path,
+        env={},
+        model=None,
+        username="local",
+        session_id="existing-session",
+    )
+    entered: list[str] = []
+    first_entered = asyncio.Event()
+    release_first = asyncio.Event()
+
+    async def fake_stream_turn(prompt: str, *, current_project=None):  # noqa: ARG001
+        entered.append(prompt)
+        if prompt == "first":
+            first_entered.set()
+            await release_first.wait()
+        yield backend_sdk.ChatBackendEvent(type="complete", text=prompt)
+
+    async def collect(prompt: str):
+        return [event async for event in thread.stream(prompt)]
+
+    monkeypatch.setattr(thread, "_stream_turn", fake_stream_turn)
+    first_task = asyncio.create_task(collect("first"))
+    await first_entered.wait()
+    second_task = asyncio.create_task(collect("second"))
+    await asyncio.sleep(0)
+
+    assert entered == ["first"]
+
+    release_first.set()
+    first_events, second_events = await asyncio.gather(first_task, second_task)
+
+    assert entered == ["first", "second"]
+    assert first_events[-1].text == "first"
+    assert second_events[-1].text == "second"
     assert thread.id == "existing-session"
 
 

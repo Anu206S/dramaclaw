@@ -59,3 +59,34 @@ async def test_audio_generate_prereq_error_does_not_start_task(monkeypatch, tmp_
         "code": "voice_prereq_required",
         "error": "Beat 01 解说声线缺失：请上传旁白声线",
     }
+
+
+@pytest.mark.asyncio
+async def test_prepare_system_voices_is_agent_only(monkeypatch):
+    from fastapi import HTTPException
+
+    from novelvideo.api.routes import generation
+    from novelvideo.api.schemas import SystemVoicePrepareRequest
+
+    with pytest.raises(HTTPException, match="system voice setup is agent-only"):
+        await generation.prepare_system_voices_for_agent(
+            project="demo",
+            episode_num=1,
+            body=SystemVoicePrepareRequest(confirmed=True),
+            user={"username": "alice", "credential_kind": "browser_session"},
+        )
+
+
+@pytest.mark.asyncio
+async def test_prepare_system_voices_requires_explicit_confirmation():
+    from novelvideo.api.routes import generation
+    from novelvideo.api.schemas import SystemVoicePrepareRequest
+
+    response = await generation.prepare_system_voices_for_agent(
+        project="demo",
+        episode_num=1,
+        body=SystemVoicePrepareRequest(confirmed=False),
+        user={"username": "alice", "agent_kind": "hermes"},
+    )
+
+    assert response["code"] == "system_voice_confirmation_required"

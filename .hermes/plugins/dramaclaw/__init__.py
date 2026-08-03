@@ -14,6 +14,7 @@ from typing import Any
 from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
+from uuid import uuid4
 
 from tools.registry import tool_error, tool_result
 
@@ -36,7 +37,7 @@ TEXT_CONTENT_FILTER_CHAT_ERROR = (
 )
 VOICE_PREREQ_CHAT_PREFIX = (
     "配音任务没有成功启动：当前缺少声线前置。请到「虾塘」上传或录制缺失的"
-    "项目解说人声线/角色声线后，再回来继续生成配音。"
+    "项目解说人声线/角色声线，或明确同意由虾导准备系统声线后，再继续生成配音。"
 )
 RENDER_PREREQ_CHAT_PREFIX = (
     "Render 任务没有生成可用图片：当前缺少必要草图前置。请先在「虾塘」生成或确认对应 "
@@ -63,11 +64,13 @@ FREEZONE_DENIED_MAINLINE_WRITE_TOOLS = {
     "dramaclaw_detect_sketch_identities",
     "dramaclaw_optimize_video_global",
     "dramaclaw_generate_audio",
+    "dramaclaw_prepare_system_voices",
     "dramaclaw_render_first_frames",
     "dramaclaw_compose_episode",
     "dramaclaw_generate_portrait",
     "dramaclaw_generate_identity_image",
     "dramaclaw_start_single_video",
+    "dramaclaw_start_video_batch",
 }
 
 
@@ -113,6 +116,18 @@ def _voice_prereq_error_text(value: Any) -> str:
     return ""
 
 
+def _voice_setup_prerequisites(value: Any) -> dict[str, Any] | None:
+    if not isinstance(value, dict):
+        return None
+    candidate = value
+    if value.get("next_step") != "voice_setup" and isinstance(value.get("data"), dict):
+        candidate = value["data"]
+    prerequisites = candidate.get("audio_prerequisites")
+    if candidate.get("next_step") != "voice_setup" or not isinstance(prerequisites, dict):
+        return None
+    return prerequisites
+
+
 def _render_prereq_error_text(value: Any) -> str:
     if isinstance(value, str):
         text = value.strip()
@@ -142,8 +157,33 @@ def _with_chat_error_hints(value: Any) -> Any:
     if not isinstance(value, dict):
         return value
 
-    result = {key: _with_chat_error_hints(item) for key, item in value.items()}
-    voice_error = _voice_prereq_error_text(value)
+    result = {
+        key: item if key == "audio_prerequisites" else _with_chat_error_hints(item)
+        for key, item in value.items()
+    }
+    audio_prerequisites = _voice_setup_prerequisites(value)
+    if audio_prerequisites is not None:
+        raw_errors = audio_prerequisites.get("errors")
+        errors = [str(item).strip() for item in raw_errors or [] if str(item).strip()]
+        detail = "；".join(errors[:5]) or "配音所需声线尚未准备好"
+        result.setdefault(
+            "chat_notice",
+            (
+                f"下一步需要先准备配音声线。缺失项：{detail}。"
+                "可以去虾塘上传或录制，也可以确认使用系统声线。"
+            ),
+        )
+        result.setdefault(
+            "agent_instruction",
+            (
+                "Tell the user in natural Chinese that first-frame generation is complete, but "
+                "audio generation cannot start yet. Offer two choices: upload or record the listed "
+                "voices in 虾塘, or explicitly approve system voices. Do not prepare system voices "
+                "without explicit approval. Do not claim TTS started and do not call "
+                "dramaclaw_generate_audio in this turn."
+            ),
+        )
+    voice_error = "" if audio_prerequisites is not None else _voice_prereq_error_text(value)
     if voice_error:
         result.setdefault(
             "chat_error",
@@ -153,8 +193,9 @@ def _with_chat_error_hints(value: Any) -> Any:
             "agent_instruction",
             (
                 "Reply to the user with chat_error in natural Chinese. Make clear the audio task "
-                "was not started. Tell the user they can go to 虾塘 to upload or record the missing "
-                "voice lines, then continue. Do not start another tool in this turn."
+                "was not started. Offer two choices: go to 虾塘 to upload or record the missing "
+                "voice lines, or explicitly approve system voices. Do not prepare system voices "
+                "until the user explicitly chooses that option. Do not start another tool in this turn."
             ),
         )
     render_error = _render_prereq_error_text(value)
@@ -1218,6 +1259,28 @@ def _handle_generate_audio(args: dict[str, Any], **_: Any) -> str:
         return tool_error(str(exc))
 
 
+def _handle_prepare_system_voices(args: dict[str, Any], **_: Any) -> str:
+    """Prepare system-generated references after explicit user confirmation."""
+    try:
+        if args.get("confirmed") is not True:
+            return tool_error(
+                {
+                    "ok": False,
+                    "code": "system_voice_confirmation_required",
+                    "error": "使用系统声线前需要用户明确确认",
+                }
+            )
+        return tool_result(
+            _episode_post(
+                args,
+                "audio/system-voices/prepare",
+                body={"confirmed": True},
+            )
+        )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
 def _resolve_episode_beats(project: str, episode: int) -> list[int]:
     """Fetch the episode's beat numbers via GET /episodes/{ep}/beats."""
     resp = _request("GET", f"/api/v1/projects/{project}/episodes/{episode}/beats")
@@ -1889,6 +1952,62 @@ def _handle_start_single_video(args: dict[str, Any], **_: Any) -> str:
             if args.get(key) is not None:
                 body[key] = args[key]
         return tool_result(_request("POST", f"/api/v1/projects/{project}/episodes/{episode}/beats/{beat}/video", body=body))
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_start_video_batch(args: dict[str, Any], **_: Any) -> str:
+    """Queue up to three beat video tasks in one agent write operation."""
+    try:
+        project = _project_from_args(args)
+        episode = int(args.get("episode") or 1)
+        beats = sorted(_requested_beats(args) or set())
+        if not beats:
+            raise ValueError("beats must contain at least one positive beat number")
+        if len(beats) > 3:
+            raise ValueError("at most 3 beats can be started in one batch")
+
+        batch_id = f"video-{uuid4().hex}"
+        body: dict[str, Any] = {
+            "batch_id": batch_id,
+            "batch_size": len(beats),
+        }
+        for key in ("video_backend", "duration", "resolution", "mode"):
+            if args.get(key) is not None:
+                body[key] = args[key]
+
+        items: list[dict[str, Any]] = []
+        started: list[int] = []
+        failed: list[int] = []
+        for beat in beats:
+            result = _request(
+                "POST",
+                f"/api/v1/projects/{project}/episodes/{episode}/beats/{beat}/video",
+                body=body,
+            )
+            item = {"beat": beat, "result": result}
+            items.append(item)
+            if result.get("ok") is False:
+                failed.append(beat)
+            else:
+                started.append(beat)
+
+        return tool_result(
+            {
+                "ok": not failed,
+                "episode": episode,
+                "batch_id": batch_id,
+                "requested": beats,
+                "started": started,
+                "failed": failed,
+                "items": items,
+                "message": (
+                    f"第 {episode} 集已启动 {len(started)} 个视频任务"
+                    if not failed
+                    else f"第 {episode} 集启动 {len(started)} 个视频任务，{len(failed)} 个失败"
+                ),
+            }
+        )
     except Exception as exc:
         return tool_error(str(exc))
 
@@ -2648,6 +2767,28 @@ TOOLS = (
         _handle_generate_audio,
     ),
     (
+        "dramaclaw_prepare_system_voices",
+        _schema(
+            "dramaclaw_prepare_system_voices",
+            "Prepare missing narrator and character reference voices from system presets. "
+            "This is an outer-assistant convenience and does not start episode TTS. Call only "
+            "after the user explicitly agrees to use system voices.",
+            {
+                "project_id": {
+                    "type": "string",
+                    "description": "Defaults to DRAMACLAW_PROJECT_ID.",
+                },
+                "episode": {"type": "integer", "description": "Episode number (required)."},
+                "confirmed": {
+                    "type": "boolean",
+                    "description": "Must be true after explicit user confirmation.",
+                },
+            },
+            ["episode", "confirmed"],
+        ),
+        _handle_prepare_system_voices,
+    ),
+    (
         "dramaclaw_optimize_video_global",
         _schema(
             "dramaclaw_optimize_video_global",
@@ -2713,6 +2854,30 @@ TOOLS = (
             ["episode", "beat"],
         ),
         _handle_start_single_video,
+    ),
+    (
+        "dramaclaw_start_video_batch",
+        _schema(
+            "dramaclaw_start_video_batch",
+            "Generate videos for up to three ready beats in one write operation. Each beat uses its "
+            "stored video_prompt and must already have a first frame. Use this instead of repeated "
+            "dramaclaw_start_single_video calls when two or three beats are ready.",
+            {
+                "project_id": {"type": "string"},
+                "episode": {"type": "integer"},
+                "beats": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "minItems": 1,
+                    "maxItems": 3,
+                    "description": "One to three ready beat numbers.",
+                },
+                "video_backend": {"type": "string", "description": "Optional backend override."},
+                "duration": {"type": "number", "description": "Optional seconds."},
+            },
+            ["episode", "beats"],
+        ),
+        _handle_start_video_batch,
     ),
 )
 
