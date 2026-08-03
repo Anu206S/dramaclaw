@@ -2246,6 +2246,10 @@ function agentActivityLabelFromMessage(message: ChatMessage | undefined): string
         return `正在${String((active as Record<string, unknown>).content)}`;
       }
     }
+    if (part.type === "agent_thought" && part.event && typeof part.event === "object" && !Array.isArray(part.event)) {
+      const status = (part.event as Record<string, unknown>).status;
+      if (status === "running") return "正在分析当前信息";
+    }
   }
   return null;
 }
@@ -12311,6 +12315,9 @@ export function SuperChatPanel({
       )
       : undefined,
   );
+  const composerAgentActivityLabel = chat.busy && !chat.connected
+    ? t("aiAssistant.reconnectingAgent")
+    : activeAgentActivityLabel;
   const lastUserHasAssistantReply = Boolean(
     lastUserMessage?.turnId
     && activeMessages.some(
@@ -13867,7 +13874,7 @@ export function SuperChatPanel({
           <div className={cn("relative mx-auto mb-2.5 h-7 w-full max-w-[760px]", isFreezoneLayout && "max-w-none")}>
             <ComposerWaitingStatus
               label={isFreezoneLayout ? t("aiAssistant.freezoneWaitingResponse") : t("aiAssistant.waitingResponse")}
-              activityLabel={activeAgentActivityLabel}
+              activityLabel={composerAgentActivityLabel}
               visible={showWaitingIndicator}
               variant={isFreezoneLayout ? "freezone" : "default"}
             />

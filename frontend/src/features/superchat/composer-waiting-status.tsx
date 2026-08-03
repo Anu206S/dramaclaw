@@ -32,7 +32,27 @@ export function ComposerWaitingStatus({
   const [slotLabels, setSlotLabels] = useState<[string, string]>([label, ""]);
   const [activeSlot, setActiveSlot] = useState<0 | 1>(0);
   const [phase, setPhase] = useState<WaitingPhase>("hidden");
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const activeSlotRef = useRef<0 | 1>(0);
+  const visibleSinceRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (!visible) {
+      visibleSinceRef.current = null;
+      setElapsedSeconds(0);
+      return;
+    }
+    if (visibleSinceRef.current === null) {
+      visibleSinceRef.current = Date.now();
+      setElapsedSeconds(0);
+    }
+    const updateElapsed = () => {
+      if (visibleSinceRef.current === null) return;
+      setElapsedSeconds(Math.max(0, Math.floor((Date.now() - visibleSinceRef.current) / 1000)));
+    };
+    const timer = window.setInterval(updateElapsed, 1_000);
+    return () => window.clearInterval(timer);
+  }, [visible]);
 
   useEffect(() => {
     if (!visible) {
@@ -131,7 +151,21 @@ export function ComposerWaitingStatus({
     };
   }, [activityLabel, label, longWaitingLabel, veryLongWaitingLabel, waitingLabelsKey, visible]);
 
-  const displayLabels = slotLabels.map((item) => item.replace(/[.。…\s]+$/u, "")) as [string, string];
+  const liveActivityLabel = activityLabel?.trim() || "";
+  const displayLabels = slotLabels.map((item) => {
+    const normalized = item.replace(/[.。…\s]+$/u, "");
+    if (variant !== "default" || !liveActivityLabel || elapsedSeconds < 10) return normalized;
+    if (elapsedSeconds >= 45) {
+      return t("aiAssistant.waitingStageVeryLong", {
+        label: normalized.replace(/^正在/u, ""),
+        seconds: elapsedSeconds,
+      });
+    }
+    return t("aiAssistant.waitingStageElapsed", {
+      label: normalized,
+      seconds: elapsedSeconds,
+    });
+  }) as [string, string];
   const shown = visible && phase !== "hidden";
   return (
     <div
