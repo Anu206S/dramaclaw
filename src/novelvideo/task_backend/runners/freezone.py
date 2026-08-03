@@ -710,6 +710,7 @@ async def _run_freezone_video_compose_async(
     payload = envelope.get("payload") or {}
     job_id = str(payload["job_id"])
     project_dir = Path(str(payload.get("project_dir") or ctx.output_dir))
+    cover_url = str(payload.get("cover_url") or payload.get("coverUrl") or "").strip()
     ensure_freezone_dirs(project_dir)
     _update(ctx, "freezone_video_compose", job_id, 0.1, "开始合成视频时间线...")
     output_path = await run_freezone_video_compose(
@@ -730,6 +731,8 @@ async def _run_freezone_video_compose_async(
         "output_path": str(output_path),
         "output_url": make_static_url_for_context(ctx, rel),
     }
+    if cover_url:
+        result["cover_url"] = cover_url
     history_record = _append_node_history(
         ctx=ctx,
         project_dir=project_dir,
