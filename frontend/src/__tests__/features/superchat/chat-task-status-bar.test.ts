@@ -10,6 +10,7 @@ import {
   selectChatTaskItems,
   selectChatWorkflowRun,
   selectWorkflowActivityLabels,
+  workflowRunStatusPollMs,
   workflowSettledCount,
   workflowStatusCounts,
 } from "@/features/superchat/chat-task-status-bar";
@@ -189,6 +190,22 @@ describe("selectChatWorkflowRun", () => {
     });
 
     expect(selectChatWorkflowRun([interrupted], NOW)?.run_id).toBe("run-1");
+  });
+});
+
+describe("workflowRunStatusPollMs", () => {
+  it("polls actively only while a workflow is running", () => {
+    expect(workflowRunStatusPollMs([workflowRun()])).toBe(5_000);
+  });
+
+  it("keeps a low-frequency idle poll for cross-tab workflow starts", () => {
+    expect(workflowRunStatusPollMs([
+      workflowRun({
+        status: "completed",
+        resumable: false,
+      }),
+    ])).toBe(60_000);
+    expect(workflowRunStatusPollMs([])).toBe(60_000);
   });
 });
 

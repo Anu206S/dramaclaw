@@ -40,6 +40,8 @@ import type { TaskState } from "@/task-center/types";
 
 const RECENT_COMPLETED_MS = 5_000;
 const RECENT_FAILED_MS = 60_000;
+const WORKFLOW_RUN_ACTIVE_POLL_MS = 5_000;
+const WORKFLOW_RUN_IDLE_POLL_MS = 60_000;
 const TERMINAL_ACTION_STATUSES = new Set([
   "completed",
   "failed",
@@ -91,6 +93,14 @@ export function selectChatWorkflowRun(
       const activeDelta = priority(right) - priority(left);
       return activeDelta || timestamp(right.updated_at) - timestamp(left.updated_at);
     })[0] ?? null;
+}
+
+export function workflowRunStatusPollMs(
+  runs: readonly FreezoneWorkflowRun[],
+): number {
+  return runs.some((run) => run.status === "running")
+    ? WORKFLOW_RUN_ACTIVE_POLL_MS
+    : WORKFLOW_RUN_IDLE_POLL_MS;
 }
 
 export function isStatusBarWorkflowContinuable(
@@ -447,12 +457,19 @@ export function ChatTaskStatusBar({
       void refreshWorkflowRuns();
     };
     window.addEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdate);
-    const timer = window.setInterval(() => void refreshWorkflowRuns(), 5_000);
     return () => {
       window.removeEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdate);
-      window.clearInterval(timer);
     };
   }, [canvasId, projectId, refreshWorkflowRuns]);
+
+  useEffect(() => {
+    if (!projectId || !canvasId) return;
+    const timer = window.setInterval(
+      () => void refreshWorkflowRuns(),
+      workflowRunStatusPollMs(workflowRuns),
+    );
+    return () => window.clearInterval(timer);
+  }, [canvasId, projectId, refreshWorkflowRuns, workflowRuns]);
 
   useEffect(() => {
     if (!hasTerminalItems) return;
