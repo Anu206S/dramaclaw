@@ -513,6 +513,14 @@ function currentTurnIsLive(
   return activeTurnIsPending(messages, turnId);
 }
 
+export function shouldKeepActiveTurnAfterScopeSync(
+  serverBusy: unknown,
+  turnId: string | null | undefined,
+  messages: ChatMessage[],
+): boolean {
+  return serverBusy === true && currentTurnIsLive(turnId, messages);
+}
+
 function scopeMatches(a: ChatScope | undefined, b: ChatScope): boolean {
   if (!a) return false;
   if (a.kind !== b.kind) return false;
@@ -2140,16 +2148,13 @@ export function useSuperChat({
           return merged;
         });
         const activeTurnId = activeTurnIdRef.current;
-        if (frame.busy === true && currentTurnIsLive(activeTurnId, currentMessages)) {
+        if (shouldKeepActiveTurnAfterScopeSync(frame.busy, activeTurnId, currentMessages)) {
           setBusy(true);
         } else if (activeTurnId) {
-          if (turnCompletedInHistory(activeTurnId, history, currentMessages)) {
-            markTurnInactive(activeTurnId);
-          } else if (!currentTurnIsLive(activeTurnId, currentMessages)) {
-            markTurnInactive(activeTurnId);
-          } else {
-            setBusy(true);
-          }
+          // scope.changed is the server-authoritative recovery snapshot. If
+          // the server no longer owns a live turn, clear any cached local
+          // activeTurn instead of reviving a permanently busy composer.
+          markTurnInactive(activeTurnId);
         } else if (!activeTurnIdRef.current) {
           streamTextRef.current = "";
           recentlyCompletedTurnIdRef.current = null;

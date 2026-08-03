@@ -17,6 +17,7 @@ import {
   pruneOldMessageCaches,
   resolveUiEventTurnIdForTest,
   sanitizeMessagesForCache,
+  shouldKeepActiveTurnAfterScopeSync,
   shouldRenderAgentToolStatusPart,
   shouldRenderToolStatusPart,
   scopeForProjectForTest,
@@ -92,6 +93,24 @@ import type { ChatMessage, ChatMessagePart, ChatRole } from "@/features/supercha
 const MESSAGE_CACHE_PREFIX = "superchat:messages:v2:";
 const DAY_MS = 24 * 60 * 60 * 1000;
 const apiPostMock = vi.hoisted(() => vi.fn(() => Promise.resolve({})));
+
+describe("scope sync active turn recovery", () => {
+  const pendingMessages: ChatMessage[] = [
+    {
+      id: "user-turn-1",
+      role: "user",
+      text: "继续生成",
+      turnId: "turn-1",
+      timestamp: 1,
+    },
+  ];
+
+  it("keeps a pending local turn only when the server reports it busy", () => {
+    expect(shouldKeepActiveTurnAfterScopeSync(true, "turn-1", pendingMessages)).toBe(true);
+    expect(shouldKeepActiveTurnAfterScopeSync(false, "turn-1", pendingMessages)).toBe(false);
+    expect(shouldKeepActiveTurnAfterScopeSync(undefined, "turn-1", pendingMessages)).toBe(false);
+  });
+});
 
 vi.mock("@/lib/api", () => ({
   api: {
