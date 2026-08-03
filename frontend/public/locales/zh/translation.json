@@ -4402,6 +4402,7 @@
           "SCENE_BUILD": "解析并完善场景描述",
           "FREEZONE_TRANSLATION": "文本提示词中英互译",
           "FREEZONE_STORY_SCRIPT": "故事脚本生成",
+          "FREEZONE_RECIPE_COMPILER": "编译并执行自由区配方",
           "FREEZONE_VISION": "图片与视频内容解析",
           "STYLE_ANALYZER": "从参考图分析自定义风格",
           "CONTENT_REWRITER": "将原文改写为短视频口播",

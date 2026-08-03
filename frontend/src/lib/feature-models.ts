@@ -65,6 +65,7 @@ export const FEATURE_MODEL_GROUPS: readonly FeatureModelGroup[] = [
     features: [
       { id: "FREEZONE_TRANSLATION", defaultModel: "DC-freezone-translator-LLM" },
       { id: "FREEZONE_STORY_SCRIPT", defaultModel: "DC-freezone-story-script-writer-LLM" },
+      { id: "FREEZONE_RECIPE_COMPILER", defaultModel: "DC-freezone-recipe-compiler-LLM" },
       {
         id: "FREEZONE_VISION",
         defaultModel: "DC-freezone-vision-LLM",
@@ -127,6 +128,7 @@ export const FEATURE_MODEL_PRODUCT_GROUPS: readonly FeatureModelGroup[] = [
     features: [
       productFeature("FREEZONE_TRANSLATION"),
       productFeature("FREEZONE_STORY_SCRIPT"),
+      productFeature("FREEZONE_RECIPE_COMPILER"),
       productFeature("FREEZONE_VISION"),
       productFeature("STAGING_PROP"),
     ],

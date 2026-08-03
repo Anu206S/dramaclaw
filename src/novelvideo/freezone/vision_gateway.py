@@ -32,14 +32,12 @@ def image_media_type(path: str) -> str:
 def resolve_freezone_vision_model(model_override: str | None = None) -> str:
     """Return the logical NewAPI model shared by Freezone vision tasks."""
     clean_override = str(model_override or "").strip()
-    if clean_override:
-        return clean_override
+    from novelvideo.config import get_effective_newapi_text_model_name
 
-    from novelvideo.config import get_newapi_text_model_name
-
-    return get_newapi_text_model_name(
+    return get_effective_newapi_text_model_name(
         "FREEZONE_VISION_MODEL",
         DEFAULT_FREEZONE_VISION_MODEL,
+        model_name_override=clean_override or None,
     )
 
 

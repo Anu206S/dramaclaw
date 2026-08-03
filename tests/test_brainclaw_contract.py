@@ -25,7 +25,11 @@ from novelvideo.model_gateway_settings import (
     save_relayclaw_brainclaw_key,
     set_custom_llm_mode,
 )
-from novelvideo.official_defaults import OFFICIAL_NEWAPI_BASE_URL
+from novelvideo.official_defaults import (
+    ADVANCED_TEXT_MODEL_BY_ENV,
+    DEFAULT_TEXT_MODEL_BY_ENV,
+    OFFICIAL_NEWAPI_BASE_URL,
+)
 
 
 def _isolate_settings_db(monkeypatch: pytest.MonkeyPatch, tmp_path) -> None:
@@ -129,6 +133,53 @@ def test_advanced_mode_preserves_historical_dc_alias_default(monkeypatch, tmp_pa
     )
 
     assert captured["model_name"] == "DC-content-rewriter-LLM"
+
+
+def test_effective_text_defaults_cover_freezone_advanced_paths(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    set_custom_llm_mode(CUSTOM_LLM_MODE_ADVANCED)
+
+    assert config.get_effective_newapi_text_model_name(
+        "FREEZONE_VISION_MODEL",
+        "brainclaw",
+    ) == "DC-freezone-vision-LLM"
+    assert config.get_effective_newapi_text_model_name(
+        "FREEZONE_RECIPE_COMPILER_MODEL",
+        "brainclaw",
+    ) == "DC-freezone-recipe-compiler-LLM"
+
+
+def test_official_text_defaults_are_brainclaw_and_advanced_tasks_are_distinct():
+    assert set(DEFAULT_TEXT_MODEL_BY_ENV.values()) == {"brainclaw"}
+    assert (
+        ADVANCED_TEXT_MODEL_BY_ENV["FREEZONE_RECIPE_COMPILER_MODEL"]
+        == "DC-freezone-recipe-compiler-LLM"
+    )
+    assert (
+        ADVANCED_TEXT_MODEL_BY_ENV["FREEZONE_RECIPE_COMPILER_MODEL"]
+        != ADVANCED_TEXT_MODEL_BY_ENV["FREEZONE_STORY_SCRIPT_MODEL"]
+    )
+
+
+def test_effective_text_defaults_force_brainclaw_for_mixed_mode(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    save_relayclaw_brainclaw_key(api_key="sk-relay-secret", activate=True)
+
+    assert config.get_effective_newapi_text_model_name(
+        "FREEZONE_VISION_MODEL",
+        "DC-freezone-vision-LLM",
+        model_name_override="custom-vision-model",
+    ) == "brainclaw"
+    assert config.get_effective_newapi_text_model_name(
+        "FREEZONE_RECIPE_COMPILER_MODEL",
+        "DC-freezone-story-script-writer-LLM",
+    ) == "brainclaw"
+
+    from novelvideo.freezone.vision_gateway import resolve_freezone_vision_model
+
+    assert resolve_freezone_vision_model("custom-vision-model") == "brainclaw"
 
 
 def test_brainclaw_factory_forces_model_and_central_profile_headers(

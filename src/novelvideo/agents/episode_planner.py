@@ -181,7 +181,6 @@ def create_episode_planner_agent(tools: List[Callable]) -> Agent:
 class EpisodePlannerAgent:
     """剧集规划 Agent - 使用图谱搜索进行多轮迭代式规划。
 
-    替代原来 pipeline.py 中的 extract_episodes_with_characters() 函数。
     通过充分利用 Cognee 图谱搜索能力，生成更高质量的剧集规划。
 
     示例:
@@ -314,15 +313,8 @@ class EpisodePlannerAgent:
 
         except Exception as e:
             log_agent_end("剧集规划师", success=False, result=str(e))
-            log(f"Agent 规划失败: {e}，回退到旧方案...")
-
-            # 回退到旧的单次 LLM 调用
-            return await self._fallback_planning(
-                target_episodes,
-                known_characters,
-                on_progress,
-                on_log,
-            )
+            log(f"Agent 规划失败: {e}")
+            raise
 
     def _validate_and_fix_episodes(
         self,
@@ -370,51 +362,6 @@ class EpisodePlannerAgent:
             log(f"警告：规划的集数 ({len(episodes)}) 多于目标 ({target_count})")
 
         return episodes
-
-    async def _fallback_planning(
-        self,
-        target_episodes: int,
-        known_characters: Optional[List[str]],
-        on_progress: Optional[Callable[[float, str], None]],
-        on_log: Optional[Callable[[str], None]],
-    ) -> List["NovelEpisode"]:
-        """回退到旧的规划方案（单次 LLM 调用）。
-
-        当 Agent 规划失败时使用。
-
-        Args:
-            target_episodes: 目标剧集数
-            known_characters: 已知角色列表
-            on_progress: 进度回调
-            on_log: 日志回调
-
-        Returns:
-            规划的剧集列表
-        """
-        from novelvideo.cognee.pipeline import extract_episodes_with_characters
-        from novelvideo.novel_source import require_imported_novel
-
-        def log(message: str):
-            if on_log:
-                on_log(message)
-            print(f"[EpisodePlanner.fallback] {message}")
-
-        log("使用旧方案（单次 LLM 调用）...")
-
-        # 从文件加载原文
-        novel_content = require_imported_novel(self.store.project_dir)
-
-        episodes = await extract_episodes_with_characters(
-            novel_content,
-            target_episodes=target_episodes,
-            known_characters=known_characters,
-            dataset_name=self.store.dataset_name,
-            project_name=self.store.project_name,
-        )
-
-        log(f"旧方案完成: {len(episodes)} 集")
-        return episodes
-
 
 # =============================================================================
 # 工厂函数

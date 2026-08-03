@@ -15,7 +15,7 @@ from pydantic_ai import Agent
 
 from novelvideo.freezone.agent_config_store import list_user_agent_config_items
 from novelvideo.config import OUTPUT_DIR
-from novelvideo.official_defaults import DEFAULT_FREEZONE_STORY_SCRIPT_MODEL
+from novelvideo.official_defaults import DEFAULT_FREEZONE_RECIPE_COMPILER_MODEL
 
 RecipeNodeKind = Literal["image", "video", "audio", "text"]
 RecipePromptStrategy = Literal[
@@ -255,7 +255,7 @@ async def _run_recipe_compiler(task: str) -> str:
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
-        DEFAULT_FREEZONE_STORY_SCRIPT_MODEL,
+        DEFAULT_FREEZONE_RECIPE_COMPILER_MODEL,
     )
     agent = Agent(
         model,
@@ -696,7 +696,7 @@ async def generate_recipe_text(**compile_args: Any) -> str:
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
-        DEFAULT_FREEZONE_STORY_SCRIPT_MODEL,
+        DEFAULT_FREEZONE_RECIPE_COMPILER_MODEL,
     )
     agent = Agent(
         model,
