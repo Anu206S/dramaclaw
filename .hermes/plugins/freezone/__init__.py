@@ -2016,11 +2016,11 @@ def _handle_mainline_projection_assets(args: dict[str, Any], **_: Any) -> str:
 
 
 def _validation_payload(args: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(args.get("body"), dict):
+    if isinstance(args.get("body"), dict) and args["body"]:
         return dict(args["body"])
-    if isinstance(args.get("envelope"), dict):
+    if isinstance(args.get("envelope"), dict) and args["envelope"]:
         return dict(args["envelope"])
-    if isinstance(args.get("commands"), list):
+    if isinstance(args.get("commands"), list) and args["commands"]:
         return {
             "schema_version": "canvas_chat_commands.v1",
             "commands": args["commands"],
