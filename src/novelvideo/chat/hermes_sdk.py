@@ -77,6 +77,10 @@ REPEATED_FAILED_TOOL_CALL_LIMIT = max(
     2,
     _env_int("HERMES_REPEATED_FAILED_TOOL_CALL_LIMIT", 2),
 )
+REPEATED_VALIDATION_TOOL_CALL_LIMIT = max(
+    2,
+    _env_int("HERMES_REPEATED_VALIDATION_TOOL_CALL_LIMIT", 3),
+)
 TOOL_DETAIL_LIMIT = 1600
 PERMISSION_REQUEST_TIMEOUT_SECONDS = 60.0
 CONTENT_FILTER_MESSAGE = (
@@ -320,8 +324,8 @@ class _TurnToolCallGuard:
         self.total = 0
         self._counted_call_ids: set[str] = set()
         self._read_signature_counts: dict[str, int] = {}
-        self._last_failed_signature: str | None = None
-        self._repeated_failed_count = 0
+        self._failed_signature_counts: dict[str, int] = {}
+        self._validation_signature_counts: dict[str, int] = {}
 
     def observe(self, event: ChatBackendEvent) -> str | None:
         if event.type not in {"tool_started", "tool_updated"}:
@@ -329,19 +333,13 @@ class _TurnToolCallGuard:
         if event.type == "tool_updated":
             failure_signature = _failed_tool_call_signature(event)
             if failure_signature is not None:
-                if failure_signature == self._last_failed_signature:
-                    self._repeated_failed_count += 1
-                else:
-                    self._last_failed_signature = failure_signature
-                    self._repeated_failed_count = 1
-                if self._repeated_failed_count >= REPEATED_FAILED_TOOL_CALL_LIMIT:
+                failure_count = self._failed_signature_counts.get(failure_signature, 0) + 1
+                self._failed_signature_counts[failure_signature] = failure_count
+                if failure_count >= REPEATED_FAILED_TOOL_CALL_LIMIT:
                     return (
-                        "本轮操作已停止：同一个工具以相同参数连续返回相同错误。"
+                        "本轮操作已停止：同一个工具以相同参数重复返回相同错误。"
                         "请检查工具参数或等待相关状态变化后再重试。"
                     )
-            elif _is_terminal_tool_update(event):
-                self._last_failed_signature = None
-                self._repeated_failed_count = 0
         call_id = str(event.call_id or "").strip()
         if call_id:
             if call_id in self._counted_call_ids:
@@ -357,7 +355,28 @@ class _TurnToolCallGuard:
         # loader consume the per-turn action budget.
         if not _is_skill_loading_tool(tool_name):
             self.total += 1
-        if not _is_dramaclaw_write_tool(tool_name) and not _is_freezone_canvas_write_tool(tool_name):
+        if tool_name == "freezone_validate_canvas_commands":
+            try:
+                encoded_input = json.dumps(
+                    event.input,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError):
+                encoded_input = repr(event.input)
+            signature = f"{tool_name}:{encoded_input}"
+            validation_count = self._validation_signature_counts.get(signature, 0) + 1
+            self._validation_signature_counts[signature] = validation_count
+            if validation_count >= REPEATED_VALIDATION_TOOL_CALL_LIMIT:
+                return (
+                    "本轮操作已停止：虾画重复校验同一批画布命令，且没有执行新的写入。"
+                    "请重新发送一条明确的继续或重试指令。"
+                )
+        if not _is_dramaclaw_write_tool(
+            tool_name
+        ) and not _is_freezone_canvas_write_tool(tool_name):
             try:
                 encoded_input = json.dumps(event.input, ensure_ascii=False, sort_keys=True, default=str)
             except (TypeError, ValueError):
@@ -398,7 +417,7 @@ def _failed_tool_call_signature(event: ChatBackendEvent) -> str | None:
         {
             "tool": str(event.name or "").strip(),
             "input": event.input,
-            "failure": failure_payload,
+            "failure": _stable_tool_failure_payload(failure_payload),
         },
         ensure_ascii=False,
         sort_keys=True,
@@ -441,7 +460,33 @@ def _coerce_tool_result(value: object) -> object:
     try:
         return json.loads(value)
     except (TypeError, ValueError):
-        return value
+        try:
+            decoded, _ = json.JSONDecoder().raw_decode(value.lstrip())
+        except (TypeError, ValueError):
+            return value
+        return decoded
+
+
+_VOLATILE_TOOL_RESULT_KEYS = {
+    "bridge_key",
+    "key",
+    "resolved_at",
+    "timestamp",
+    "tool_call_id",
+}
+
+
+def _stable_tool_failure_payload(value: object) -> object:
+    value = _coerce_tool_result(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _stable_tool_failure_payload(item)
+            for key, item in value.items()
+            if str(key) not in _VOLATILE_TOOL_RESULT_KEYS
+        }
+    if isinstance(value, list):
+        return [_stable_tool_failure_payload(item) for item in value]
+    return value
 
 
 def _should_stop_after_write_tool(first_write_tool: str | None, next_tool_name: object) -> bool:
