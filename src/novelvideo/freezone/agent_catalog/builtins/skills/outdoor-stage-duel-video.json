@@ -87,17 +87,6 @@
         "英文短句",
         "无旁白"
       ]
-    },
-    {
-      "id": "execution_mode",
-      "label": "执行方式",
-      "type": "single_select",
-      "required": true,
-      "default": "阶段确认后继续",
-      "options": [
-        "阶段确认后继续",
-        "只创建规划草稿"
-      ]
     }
   ],
   "allowed_recipe_ids": [
@@ -107,7 +96,7 @@
     "outdoor-stage-duel-audio-layers"
   ],
   "planning": {
-    "planning_notes": "动态执行路径：先根据 clip_count、aspect_ratio、resolution、venue_type、vo_language、execution_mode、用户角色/能力描述和画布素材判断入口。正式生成节点前先在 Skill 层整理创意规格，锁定每条视频 15 秒、一个 clip 对应一个 shot、双角色 A/B、双方能力、舞台站位、冲突关系、画幅、清晰度、户外舞台真实感和旁白语言；这个规格不创建独立节点。若用户只给一个角色，必须先补全或提出第二个原创对手/搭档，不得直接做单人能力展示。规格确认后创建分镜：每条视频只设计 1 个 shot，用 Beat 1 → Beat 2 → Beat 3 → Beat 4 → Final beat 写一镜到底内部升级，不用秒数和硬切。分镜确认后创建关键元素，只生成或绑定 Character A、Character B、完整户外舞台/剧场空间、必要道具或效果源，不创建 audience POV 资产。关键元素确认后创建单镜视频，每条 15 秒视频引用已确认 Character A、Character B、舞台/场景和必要道具/效果源；先只生成视觉，不生成 VO/BGM。视觉确认后创建音频层，一次生成 VO 和 BGM 提示。最终合成不作为 Recipe；流程结束时提醒用户在画布追加到时间线，BGM 默认 0.7、VO 默认 1.0，每条 clip 末尾淡出 2 秒。",
+    "planning_notes": "动态执行路径：先根据 clip_count、aspect_ratio、resolution、venue_type、vo_language、用户角色/能力描述和画布素材判断入口。正式生成节点前先在 Skill 层整理创意规格，锁定每条视频 15 秒、一个 clip 对应一个 shot、双角色 A/B、双方能力、舞台站位、冲突关系、画幅、清晰度、户外舞台真实感和旁白语言；这个规格不创建独立节点。若用户只给一个角色，必须先补全或提出第二个原创对手/搭档，不得直接做单人能力展示。规格确认后创建分镜：每条视频只设计 1 个 shot，用 Beat 1 → Beat 2 → Beat 3 → Beat 4 → Final beat 写一镜到底内部升级，不用秒数和硬切。分镜确认后创建关键元素，只生成或绑定 Character A、Character B、完整户外舞台/剧场空间、必要道具或效果源，不创建 audience POV 资产。关键元素确认后创建单镜视频，每条 15 秒视频引用已确认 Character A、Character B、舞台/场景和必要道具/效果源；先只生成视觉，不生成 VO/BGM。视觉确认后创建音频层，一次生成 VO 和 BGM 提示。最终合成不作为 Recipe；流程结束时提醒用户在画布追加到时间线，BGM 默认 0.7、VO 默认 1.0，每条 clip 末尾淡出 2 秒。",
     "prompt_guide": "核心是观众第一人称看户外舞台上的双人超自然演出/对决。镜头像观众眼睛或手机镜头，但不能出现手机机身、录制界面、屏中屏或居中的大手机。默认不是专业机位、无人机、广播机位或第三人称电影镜头。每条 15 秒视频是一条连续手持长镜头，内部节奏只写 narrative beats，不写时间戳、不写 hard cut/switch angle/new shot。角色必须像真实舞台演员/特技演员，真实人体比例、布料褶皱、皮革/金属/护甲质感、道具有重量；能力效果必须翻译成舞台灯光、烟雾、火圈、LED 光幕、光柱、冲击波、投影和现场后期增强。",
     "conduct_rules": [
       "默认双角色 A/B；用户只给一个角色时必须补全或询问第二个原创对手/搭档，不得默认单人能力秀。",

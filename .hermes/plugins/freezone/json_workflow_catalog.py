@@ -1653,7 +1653,10 @@ def _intent_link_type(source_type: str, target_type: str) -> str:
     if source_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
         if target_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
             return "context_for"
-        return "prompt_for"
+        # A planning document can gate a media stage, but it is not the stage's
+        # final execution prompt. The Recipe compiles that prompt from the
+        # item's own prompt and the Skill constraints.
+        return "dependency_for"
     if source_type in {"imageGenNode", "videoNode", "audioNode"}:
         return "media_input_for"
     return "context_for"
