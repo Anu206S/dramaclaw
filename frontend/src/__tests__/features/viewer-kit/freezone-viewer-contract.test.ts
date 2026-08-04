@@ -10,6 +10,15 @@ function read(path: string) {
 }
 
 describe("freezone viewer contracts", () => {
+  it("keeps the Xiadao chat dock available in the CE runtime on this branch", () => {
+    const shell = read("src/features/freezone/FreezoneShell.tsx");
+    const flag = read("src/lib/xiadao-flag.ts");
+
+    expect(flag).toContain("XIADAO_ENABLED: boolean = true");
+    expect(shell).toContain("const showChatDock = XIADAO_ENABLED;");
+    expect(shell).not.toContain("XIADAO_ENABLED && !isCeRuntime()");
+  });
+
   it("keeps Pano360ViewerNode as a compatible freezone canvas tool", () => {
     const node = read("src/features/canvas/nodes/Pano360ViewerNode.tsx");
     const canvasNodes = read("src/features/canvas/domain/canvasNodes.ts");
