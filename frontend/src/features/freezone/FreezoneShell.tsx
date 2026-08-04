@@ -37,7 +37,6 @@ import {
 } from "@/components/ui/sheet";
 import { useMediaQuery } from "@/hooks/use-media-query";
 import { currentCanvasParam } from "@/lib/app-router";
-import { isCeRuntime } from "@/lib/runtime-config";
 import { rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
@@ -864,7 +863,7 @@ export function FreezoneShell({
   const [chatOpen, setChatOpen] = useState(loadChatOpen);
   const [pendingChatAttachments, setPendingChatAttachments] = useState<ChatAttachment[]>([]);
   const [pendingChatNodeMentions, setPendingChatNodeMentions] = useState<string[]>([]);
-  const showChatDock = XIADAO_ENABLED && !isCeRuntime();
+  const showChatDock = XIADAO_ENABLED;
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
