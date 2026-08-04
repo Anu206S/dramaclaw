@@ -6,6 +6,7 @@ import {
   buildInitialTimeline,
   reconcileDraftWithUpstream,
 } from '@/features/canvas/compose/VideoComposeModal';
+import { orderedComposeSeedNodeIds } from '@/features/canvas/compose/composeInputOrdering';
 import {
   CANVAS_NODE_TYPES,
   type CanvasNode,
@@ -213,5 +214,27 @@ describe('reconcileDraftWithUpstream', () => {
     expect(migratedVoice?.clips[0].timelineStartMs).toBe(500);
     expect(migratedBgm?.clips[0].timelineStartMs).toBe(0);
     expect(migratedBgm?.clips[0].volume).toBe(0.25);
+  });
+});
+
+describe('orderedComposeSeedNodeIds', () => {
+  it('prefers dynamic workflow plan order over canvas layout order', () => {
+    const nodes = [
+      workflowNode('shot-3', CANVAS_NODE_TYPES.video, 3),
+      workflowNode('shot-2', CANVAS_NODE_TYPES.video, 2),
+      workflowNode('shot-4', CANVAS_NODE_TYPES.video, 4),
+      workflowNode('shot-1', CANVAS_NODE_TYPES.video, 1),
+    ];
+    nodes.forEach((node, index) => {
+      node.position.y = index * 100;
+      node.data.workflowPlanNodeId = node.id;
+    });
+
+    expect(orderedComposeSeedNodeIds(nodes, [
+      'shot-1',
+      'shot-2',
+      'shot-3',
+      'shot-4',
+    ])).toEqual(['shot-1', 'shot-2', 'shot-3', 'shot-4']);
   });
 });
