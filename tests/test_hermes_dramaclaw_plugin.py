@@ -171,6 +171,28 @@ def test_start_video_batch_rejects_more_than_three_beats():
     assert "at most 3 beats" in result
 
 
+def test_compose_episode_sends_canonical_body(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_episode_post(args, suffix, *, body=None):
+        calls.append((args, suffix, body))
+        return {"ok": True, "task_type": "compose_episode", "status": "queued"}
+
+    monkeypatch.setattr(plugin, "_episode_post", fake_episode_post)
+
+    result = plugin._handle_compose_episode({"project_id": "proj-1", "episode": 2})
+
+    assert result["ok"] is True
+    assert calls == [
+        (
+            {"project_id": "proj-1", "episode": 2},
+            "videos/compose",
+            {"add_subtitles": True, "add_bgm": False},
+        )
+    ]
+
+
 def test_prepare_system_voices_tool_requires_explicit_confirmation():
     plugin = _load_plugin_module()
 

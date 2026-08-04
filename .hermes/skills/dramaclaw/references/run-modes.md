@@ -8,15 +8,7 @@ pipeline 步骤顺序与专用工具，只是「是否每步解释并确认」�
 - 用户说「一次性 / 全自动 / 自动驾驶 / 一口气跑完 / 不用问我」→ **自动推进模式（每轮一步）**；这些说法只表示下次“继续”时不重复解释流程，不表示本轮可以跑完整集
 - 用户没说 → 默认先问一句「要我**每步确认**还是**自动推进（每轮一步）**？」，问完按回答走
 
-大任务例外：用户说「完成第 N 集视频制作 / 完成第 N 集视频生成 / 做完这一集 / 帮我生成第 N 集视频 / 生成整集视频 / 做成片」这类跨多个阶段的目标时，即使用户没有明确要求每步确认，也必须先进入“拆解确认”：
-
-1. 第一轮不要启动写工具，也不要先自动查完整状态。
-2. 先告诉用户需要拆成明确小任务，例如检查进度、补前置、生成单个 beat 音频、生成单个 beat 视频、合成成片。
-3. 询问用户是否需要先列出当前制作进度和建议下一步，然后结束本轮。
-4. 用户确认后，下一轮只读查询 `pipeline/status` 和必要状态。
-5. 用 3-5 条列出当前卡点、缺失阶段和建议下一步。
-6. 只询问是否执行下一步这一个任务。
-7. 用户再次确认后，下一轮最多启动这一个任务，启动后收口。
+跨阶段大任务始终遵守根 `SKILL.md` 的拆解确认协议；运行模式不能绕过该协议。
 
 ---
 
@@ -44,35 +36,12 @@ pipeline 步骤顺序与专用工具，只是「是否每步解释并确认」�
 - ❌ 把「报结果」和「执行下一步」合并——必须报完结果/启动状态后结束本轮，等用户下一条消息
 - ❌ 启动异步任务后继续轮询到 completed，再自动进入下一步
 
-### 步骤顺序（按 pipeline 主线，逐步走）
+### 步骤来源
 
-当前项目准备（init.md Steps 1-7，项目已由前端/系统创建并绑定）：
-1. 上传小说 → 2. 摄入(ingest) → 3. 配置项目 →
-4. 角色提取 `dramaclaw_build_characters` →
-5. 角色 face_prompt 检查/补齐 `dramaclaw_update_character_face_prompt`（仅缺失角色） →
-6. 分集规划 `dramaclaw_plan_episodes` →
-7. 角色肖像 `dramaclaw_generate_portrait`（逐个核心角色）
-
-> Steps 1-2 是摄入准备动作，可合并成「准备阶段」一次确认；
-> 从 **Step 3 配置项目起**，每个写操作步骤都单独确认。
-
-每集制作（episode.md，对每一集 N 重复）：
-8. 身份规划 `dramaclaw_plan_identities`(ep=N) →
-9. 身份图生成 `dramaclaw_generate_identity_image`(逐身份) →
-10. 脚本生成 `dramaclaw_generate_script`(ep=N) →
-11. 场景规划 `dramaclaw_plan_scenes`(ep=N) →
-12. 道具规划 `dramaclaw_plan_props`(ep=N) →
-13. 场景参考图 `dramaclaw_generate_scene_master` / `dramaclaw_generate_scene_reverse`(按本集场景需要逐个生成) →
-14. 草图生成 `dramaclaw_generate_sketches`(ep=N) →
-15. AI 检测 `dramaclaw_detect_sketch_identities`(ep=N) →
-16. 全局视频优化 `dramaclaw_optimize_video_global`(ep=N) →
-17. 首帧生成 `dramaclaw_render_first_frames`(ep=N) →
-18. 音频生成 `dramaclaw_generate_audio`(ep=N) →
-19. 单 beat 视频 `dramaclaw_start_single_video`(逐 beat) →
-20. 合成导出 `dramaclaw_compose_episode`(ep=N) →
-21. 最终成片展示 `dramaclaw_get_final_video`(ep=N)
-
-每完成一集，问「继续做第 N+1 集吗？」再进入下一集。
+- 当前项目准备顺序只读 `playbooks/init.md`。
+- 逐集制作顺序只读 `playbooks/episode.md`。
+- 本文件只决定执行前是否再次询问用户，不增加、删除或重排步骤。
+- 每完成一集后，询问是否继续下一集。
 
 ### 状态回执（每步执行后）
 

@@ -1012,6 +1012,14 @@ async def resolve_clarification_tool_result(
     return {"ok": True, "data": resolved}
 
 
+def _is_websocket_disconnected_runtime_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return (
+        "WebSocket is not connected" in message
+        or 'Cannot call "receive" once a disconnect message has been received.' in message
+    )
+
+
 async def _receive_bridge_results_during_turn(
     *,
     websocket: WebSocket,
@@ -1024,7 +1032,7 @@ async def _receive_bridge_results_during_turn(
         except asyncio.CancelledError:
             raise
         except RuntimeError as exc:
-            if "WebSocket is not connected" in str(exc):
+            if _is_websocket_disconnected_runtime_error(exc):
                 return
             raise
         except WebSocketDisconnect:
@@ -2606,7 +2614,7 @@ async def chat_ws(websocket: WebSocket) -> None:
             try:
                 raw = await websocket.receive_json()
             except RuntimeError as exc:
-                if "WebSocket is not connected" in str(exc):
+                if _is_websocket_disconnected_runtime_error(exc):
                     return
                 raise
             event_type = str(raw.get("type") or "")
