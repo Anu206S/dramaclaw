@@ -3270,8 +3270,10 @@ def _handle_get_workflow_skill(args: dict[str, Any], **_: Any) -> str:
             "Freezone Workflow Skill catalog is unavailable. "
             f"Import error: {_JSON_WORKFLOW_CATALOG_IMPORT_ERROR}"
         )
+    request = dict(args)
+    request["compact"] = True
     return _structured_tool_result(
-        get_workflow_skill(args),
+        get_workflow_skill(request),
         tool_name="freezone_get_workflow_skill",
     )
 

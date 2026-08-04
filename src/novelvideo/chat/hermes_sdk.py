@@ -61,16 +61,16 @@ HERMES_STDIO_LINE_LIMIT_BYTES = max(
 STREAM_IDLE_TIMEOUT = 300.0
 STREAM_TOTAL_TIMEOUT = max(1800.0, STREAM_IDLE_TIMEOUT)
 try:
-    TURN_TOOL_CALL_LIMIT = max(1, int(os.environ.get("HERMES_TURN_TOOL_CALL_LIMIT", "20")))
+    TURN_TOOL_CALL_LIMIT = max(0, int(os.environ.get("HERMES_TURN_TOOL_CALL_LIMIT", "0")))
 except ValueError:
-    TURN_TOOL_CALL_LIMIT = 20
+    TURN_TOOL_CALL_LIMIT = 0
 FREEZONE_TURN_TOOL_CALL_LIMIT = max(
-    TURN_TOOL_CALL_LIMIT,
-    80,
+    1,
+    _env_int("HERMES_FREEZONE_TURN_TOOL_CALL_LIMIT", 12),
 )
 REPEATED_READ_TOOL_CALL_LIMIT = max(
-    2,
-    _env_int("HERMES_REPEATED_READ_TOOL_CALL_LIMIT", 5),
+    1,
+    _env_int("HERMES_REPEATED_READ_TOOL_CALL_LIMIT", 2),
 )
 TOOL_DETAIL_LIMIT = 1600
 PERMISSION_REQUEST_TIMEOUT_SECONDS = 60.0
@@ -83,8 +83,7 @@ DRAMACLAW_ONE_STEP_STOP_MESSAGE = (
     "当前任务已开始处理。请稍后让我查看当前任务进度，或在任务完成后再继续下一步。"
 )
 DRAMACLAW_WRITE_FAILED_STOP_MESSAGE = (
-    "刚才这一步没有成功启动任务。请先根据返回的错误补齐前置条件；"
-    "如果是配音缺少声线，可以到「虾塘」上传或录制缺失声线后再继续。"
+    "刚才这一步没有成功启动任务，系统已阻止重复提交。请根据本轮返回的具体错误处理后再重试。"
 )
 
 
@@ -289,10 +288,14 @@ def _is_freezone_tool(name: object) -> bool:
     return str(name or "").strip().startswith("freezone_")
 
 
-def _turn_tool_call_limit_for_tool(name: object) -> int:
+def _is_skill_loading_tool(name: object) -> bool:
+    return str(name or "").strip() in {"skill", "skill_view"}
+
+
+def _turn_tool_call_limit_for_tool(name: object) -> int | None:
     if _is_freezone_tool(name):
         return FREEZONE_TURN_TOOL_CALL_LIMIT
-    return TURN_TOOL_CALL_LIMIT
+    return TURN_TOOL_CALL_LIMIT or None
 
 
 def _tool_call_limit_stop_message(name: object) -> str:
@@ -307,19 +310,11 @@ def _tool_call_limit_stop_message(name: object) -> str:
     )
 
 
-_FREEZONE_READ_TOOLS_WITH_REPEAT_GUARD = {
-    "freezone_get_node_detail",
-    "freezone_get_node_action_catalog",
-    "freezone_summarize_canvas",
-}
-
-
 class _TurnToolCallGuard:
     def __init__(self) -> None:
         self.total = 0
         self._counted_call_ids: set[str] = set()
-        self._last_read_signature: str | None = None
-        self._repeated_read_count = 0
+        self._read_signature_counts: dict[str, int] = {}
 
     def observe(self, event: ChatBackendEvent) -> str | None:
         if event.type not in {"tool_started", "tool_updated"}:
@@ -333,29 +328,29 @@ class _TurnToolCallGuard:
             # Anonymous updates cannot be distinguished from a matching start.
             return None
 
-        self.total += 1
         tool_name = str(event.name or "").strip()
-        if tool_name in _FREEZONE_READ_TOOLS_WITH_REPEAT_GUARD:
+        # Loading the workflow instructions is mandatory setup, not a business
+        # operation. Keep repeated-read detection below, but do not let the
+        # loader consume the per-turn action budget.
+        if not _is_skill_loading_tool(tool_name):
+            self.total += 1
+        if not _is_dramaclaw_write_tool(tool_name) and not _is_freezone_canvas_write_tool(tool_name):
             try:
                 encoded_input = json.dumps(event.input, ensure_ascii=False, sort_keys=True, default=str)
             except (TypeError, ValueError):
                 encoded_input = repr(event.input)
             signature = f"{tool_name}:{encoded_input}"
-            if signature == self._last_read_signature:
-                self._repeated_read_count += 1
-            else:
-                self._last_read_signature = signature
-                self._repeated_read_count = 1
-            if self._repeated_read_count > REPEATED_READ_TOOL_CALL_LIMIT:
+            repeat_count = self._read_signature_counts.get(signature, 0) + 1
+            self._read_signature_counts[signature] = repeat_count
+            if repeat_count > REPEATED_READ_TOOL_CALL_LIMIT:
+                subject = "同一个画布节点" if _is_freezone_tool(tool_name) else "同一项状态"
                 return (
-                    "本轮操作已停止：虾导重复读取同一个画布节点，且没有产生新的操作。"
+                    f"本轮操作已停止：虾导重复读取{subject}，且没有产生新的操作。"
                     "请重新发送一条明确的继续或重试指令。"
                 )
-        else:
-            self._last_read_signature = None
-            self._repeated_read_count = 0
 
-        if self.total > _turn_tool_call_limit_for_tool(tool_name):
+        call_limit = _turn_tool_call_limit_for_tool(tool_name)
+        if call_limit is not None and self.total > call_limit:
             return _tool_call_limit_stop_message(tool_name)
         return None
 
@@ -389,13 +384,43 @@ def _is_failed_tool_update(value: object) -> bool:
     status = str(value.get("status") or "").strip().lower()
     if status in {"failed", "error", "cancelled", "canceled"}:
         return True
-    for key in ("error", "message", "result"):
-        item = value.get(key)
-        if isinstance(item, dict):
-            if item.get("ok") is False:
-                return True
-            if str(item.get("status") or "").strip().lower() in {"failed", "error"}:
-                return True
+    return any(
+        _is_failed_tool_payload(value.get(key))
+        for key in (
+            "rawOutput",
+            "raw_output",
+            "output",
+            "content",
+            "data",
+            "error",
+            "message",
+            "result",
+        )
+        if key in value
+    )
+
+
+def _is_failed_tool_payload(value: object) -> bool:
+    if isinstance(value, dict):
+        if value.get("ok") is False:
+            return True
+        if str(value.get("status") or "").strip().lower() in {
+            "failed",
+            "error",
+            "cancelled",
+            "canceled",
+        }:
+            return True
+        return any(_is_failed_tool_payload(item) for item in value.values())
+    if isinstance(value, list):
+        return any(_is_failed_tool_payload(item) for item in value)
+    if isinstance(value, str):
+        text = value.strip()
+        if text.startswith(("{", "[")):
+            try:
+                return _is_failed_tool_payload(json.loads(text))
+            except json.JSONDecodeError:
+                return False
     return False
 
 

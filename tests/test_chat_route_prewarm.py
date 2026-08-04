@@ -845,6 +845,19 @@ async def test_receive_bridge_results_during_turn_resolves_clarification_result(
 
 
 @pytest.mark.anyio
+async def test_receive_bridge_results_during_turn_accepts_consumed_disconnect() -> None:
+    class DisconnectedWebSocket:
+        async def receive_json(self):
+            raise RuntimeError('Cannot call "receive" once a disconnect message has been received.')
+
+    await chat_route._receive_bridge_results_during_turn(
+        websocket=DisconnectedWebSocket(),  # type: ignore[arg-type]
+        user={"username": "admin"},
+        username="admin",
+    )
+
+
+@pytest.mark.anyio
 async def test_watch_pending_clarification_events_emits_freezone_bridge_event(monkeypatch, tmp_path) -> None:
     class CapturingWebSocket:
         def __init__(self) -> None:
