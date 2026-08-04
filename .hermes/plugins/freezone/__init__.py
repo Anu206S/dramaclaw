@@ -2275,7 +2275,7 @@ def _validate_write_commands_shape(
         missing_required = [
             field
             for field in _COMMAND_REQUIRED_FIELDS.get(command_type, ())
-            if command.get(field) in (None, "", [])
+            if command.get(field) in (None, "", [], {})
         ]
         if missing_required:
             return _emit_command_error(
@@ -2299,6 +2299,23 @@ def _validate_write_commands_shape(
                         "nodes, and only use creatable node types exposed by the command catalog."
                     ),
                 )
+            if node_type == "textAnnotationNode":
+                node_data = command.get("data")
+                missing_text_fields = [
+                    field
+                    for field in ("title", "content")
+                    if not isinstance(node_data, dict) or not str(node_data.get(field) or "").strip()
+                ]
+                if missing_text_fields:
+                    return _emit_command_error(
+                        project,
+                        canvas,
+                        "invalid_command_schema",
+                        (
+                            f"commands[{index}] create_node requires textAnnotationNode "
+                            f"{', '.join(missing_text_fields)} in data"
+                        ),
+                    )
         if command.get("type") == "create_edge":
             missing = [
                 field for field in ("source", "target", "link_type") if not command.get(field)
@@ -4971,7 +4988,11 @@ _CANVAS_COMMAND_ITEM_SCHEMA = {
         },
         "data": {
             "type": "object",
-            "description": "Node data. Do not put nodeType or imageGenerationParams here.",
+            "description": (
+                "Node data. For textAnnotationNode, include non-empty title and content. "
+                "Other node types follow the runtime node-create schema. Do not put "
+                "nodeType or imageGenerationParams here."
+            ),
         },
         "client_id": {"type": "string", "description": "Same-batch alias for newly created nodes."},
         "node_id": {"type": "string", "description": "Existing node id for update_node_data or run_node_action."},

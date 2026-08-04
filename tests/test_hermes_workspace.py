@@ -751,11 +751,11 @@ def test_hermes_tool_call_guard_stops_repeated_identical_failures():
         )
 
     assert stop_message is not None
-    assert "连续返回相同错误" in stop_message
+    assert "重复返回相同错误" in stop_message
     assert guard.total == 2
 
 
-def test_hermes_tool_call_guard_resets_failure_streak_after_success():
+def test_hermes_tool_call_guard_tracks_same_failure_across_unrelated_success():
     guard = hermes_sdk._TurnToolCallGuard()
 
     first_failure = hermes_sdk.ChatBackendEvent(
@@ -785,7 +785,67 @@ def test_hermes_tool_call_guard_resets_failure_streak_after_success():
 
     assert guard.observe(first_failure) is None
     assert guard.observe(success) is None
-    assert guard.observe(second_failure) is None
+    stop_message = guard.observe(second_failure)
+
+    assert stop_message is not None
+    assert "重复返回相同错误" in stop_message
+
+
+def test_hermes_tool_call_guard_normalizes_volatile_failure_fields():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+
+    for index in range(2):
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_emit_canvas_command",
+                call_id=f"failed-{index}",
+                input={"commands": [{"type": "create_node", "data": {}}]},
+                output=json.dumps(
+                    {
+                        "ok": False,
+                        "tool_call_status": "failed",
+                        "bridge_key": f"bridge-{index}",
+                        "resolved_at": 100.0 + index,
+                        "errors": ["create_node requires title and content"],
+                    }
+                ),
+                status="failed",
+            )
+        )
+
+    assert stop_message is not None
+    assert "重复返回相同错误" in stop_message
+
+
+def test_hermes_tool_call_guard_stops_repeated_successful_validation():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+    tool_input = {
+        "commands": [
+            {
+                "type": "create_node",
+                "node_type": "textAnnotationNode",
+                "data": {"title": "线索核对", "content": "核对账册"},
+            }
+        ]
+    }
+
+    for index in range(hermes_sdk.REPEATED_VALIDATION_TOOL_CALL_LIMIT):
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_validate_canvas_commands",
+                call_id=f"validation-{index}",
+                input=tool_input,
+                output={"ok": True, "validation": {"valid": True}},
+                status="completed",
+            )
+        )
+
+    assert stop_message is not None
+    assert "重复校验同一批画布命令" in stop_message
 
 
 def test_hermes_freezone_tool_limit_message_uses_freezone_context():
