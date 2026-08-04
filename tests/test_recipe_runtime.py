@@ -1,11 +1,30 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
 
 from novelvideo.freezone import recipe_runtime
+
+
+def test_retro_skill_keeps_entry_guard_out_of_recipe_runtime_constraints():
+    skill_path = (
+        Path(__file__).resolve().parents[1]
+        / "src/novelvideo/freezone/agent_catalog/builtins/skills"
+        / "retro-hong-kong-kungfu-comedy-video.json"
+    )
+    skill = json.loads(skill_path.read_text(encoding="utf-8"))
+
+    constraints = recipe_runtime._skill_constraints(skill)
+    compiled_constraints = "\n".join(constraints["hard_constraints"])
+
+    assert "请先上传至少一张角色参考图或一句文字灵感" not in compiled_constraints
+    assert "暂停等待导演确认" not in compiled_constraints
+    assert "阶段标题使用【模块名】格式" not in constraints["prompt_guide"]
+    assert "一次性在草稿中列出完整工作流" in skill["planning"]["planning_notes"]
 
 
 def test_build_recipe_compiler_task_checks_output_kind():

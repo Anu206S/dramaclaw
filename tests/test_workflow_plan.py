@@ -196,6 +196,76 @@ def test_custom_video_item_keeps_structured_or_prompt_duration(monkeypatch):
     )
 
 
+def test_dynamic_text_dependencies_gate_media_without_becoming_prompts(monkeypatch):
+    catalog = _load_catalog_module()
+    recipes = copy.deepcopy(_MINIMAL_ECOMMERCE_RECIPES)
+    recipes.append(
+        {
+            "id": "general-text",
+            "name": "通用文本",
+            "version": 1,
+            "enabled": True,
+            "output_kind": "text",
+            "requires_source_media": False,
+        }
+    )
+    skill = copy.deepcopy(_MINIMAL_ECOMMERCE_SKILL)
+    skill["allowed_recipe_ids"].extend(["general-text", "general-video"])
+    skill["triggers"]["node_scopes"].append("videoGeneration")
+
+    def fake_load_json_dir(path):
+        if path == catalog._SKILLS_DIR:
+            return [copy.deepcopy(skill)]
+        if path == catalog._RECIPES_DIR:
+            return copy.deepcopy(recipes)
+        return []
+
+    monkeypatch.setattr(catalog, "_load_json_dir", fake_load_json_dir)
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    result = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-product",
+            "user_goal": "先写商品 Brief，再生成商品主图",
+            "items": [
+                {
+                    "id": "brief",
+                    "title": "商品 Brief",
+                    "recipe_id": "general-text",
+                },
+                {
+                    "id": "outline",
+                    "title": "商品大纲",
+                    "recipe_id": "general-text",
+                    "depends_on": ["brief"],
+                },
+                {
+                    "id": "hero-image",
+                    "title": "商品主图",
+                    "recipe_id": "general-image",
+                    "depends_on": ["outline"],
+                },
+                {
+                    "id": "hero-video",
+                    "title": "商品视频",
+                    "recipe_id": "general-video",
+                    "depends_on": ["hero-image"],
+                },
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert result["ok"] is True, result
+    edges = {
+        (edge["source"], edge["target"]): edge["link_type"]
+        for edge in result["plan"]["edges"]
+    }
+    assert edges[("brief", "outline")] == "context_for"
+    assert edges[("outline", "hero-image")] == "dependency_for"
+    assert edges[("hero-image", "hero-video")] == "media_input_for"
+
+
 def test_standard_skill_planners_expand_without_agent_authored_topology(monkeypatch):
     catalog = _load_catalog_module()
     _install_real_builtin_catalog(monkeypatch, catalog)
@@ -1332,6 +1402,12 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert skills["outdoor-stage-duel-video"]["name"] == "户外舞台双人能力秀"
     assert skills["ling-cage-cinematic-video"]["name"] == "灵笼风格科幻短片"
     assert skills["japanese-anime-drama-video"]["name"] == "日系漫剧梦工坊"
+    assert all(
+        parameter.get("id") != "execution_mode"
+        for skill in skills.values()
+        for parameter in skill.get("input_parameters") or []
+        if isinstance(parameter, dict)
+    )
     assert "pixar-ip-brand-ad-short-film" not in skills
     assert skills["pixar-ip-ad-video"]["allowed_recipe_ids"] == [
         "ad-ip-character-anchor",
@@ -1604,6 +1680,10 @@ def test_retro_kungfu_skill_keeps_style_while_recipes_stay_stage_focused(monkeyp
     assert "拟人功夫关键元素图" in planning["planning_notes"]
     assert "拟人功夫单段视频" in planning["planning_notes"]
     assert "视频音频层" in planning["planning_notes"]
+    assert "独立关键元素节点" in planning["planning_notes"]
+    assert "不得把多个主体合并为一个关键元素节点" in planning["planning_notes"]
+    assert "默认并行" in planning["planning_notes"]
+    assert "真实连续性输入" in planning["planning_notes"]
     assert "Final_Video_Spec" not in planning_text
     assert "retro-kungfu" not in planning_text
     assert "four-act-comedy-story-outline" not in planning_text
