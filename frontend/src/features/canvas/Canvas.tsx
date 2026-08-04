@@ -1435,6 +1435,7 @@ export function Canvas({
                 generationStoryboardMetadata: undefined,
                 generationError: null,
                 generationErrorDetails: null,
+                generationErrorRequestId: null,
                 generationDebugContext: undefined,
               });
               break;

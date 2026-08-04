@@ -289,6 +289,7 @@
       "noIssues": "未发现具体问题"
     },
     "title": "虾导",
+    "upgrading": "虾导升级中，请敬请期待！",
     "description": "在当前创作页面旁打开虾导。",
     "toggle": "展开或收起虾导",
     "close": "收起虾导",
@@ -1313,8 +1314,6 @@
     "props": {
       "title": "道具管理",
       "count": "{{count}} 个道具",
-      "batchGenerate": "批量生成参考图",
-      "batchStatusTitle": "批量参考图生成",
       "newProp": "新建道具",
       "newPropHint": "AI自动提取道具需要在虾镜中按集数分集提取",
       "editProp": "编辑道具",
@@ -1450,6 +1449,7 @@
     "settingsSaved": "项目设置已保存",
     "settingsSaveFailed": "项目设置保存失败",
     "processing": "处理中...",
+    "elapsed": "已耗时 {{time}}",
     "projectSettings": "项目设置",
     "advancedSettings": "高级设置",
     "visualStyle": "视觉风格",
