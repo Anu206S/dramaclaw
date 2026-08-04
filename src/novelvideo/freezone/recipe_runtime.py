@@ -114,9 +114,9 @@ def compose_deterministic_prompt(
 
 def _recipe_compiler_timeout_seconds() -> float:
     try:
-        value = float(os.getenv("FREEZONE_RECIPE_COMPILER_TIMEOUT_SECONDS", "20"))
+        value = float(os.getenv("FREEZONE_RECIPE_COMPILER_TIMEOUT_SECONDS", "30"))
     except (TypeError, ValueError):
-        value = 20.0
+        value = 30.0
     return min(max(value, 0.1), 120.0)
 
 
@@ -252,7 +252,10 @@ def _finalize_compiler_task(
 
 
 async def _run_recipe_compiler(task: str) -> str:
-    from novelvideo.config import get_newapi_text_pydantic_model
+    from novelvideo.config import (
+        get_newapi_text_pydantic_model,
+        get_newapi_text_pydantic_model_settings,
+    )
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
@@ -265,7 +268,13 @@ async def _run_recipe_compiler(task: str) -> str:
         output_type=str,
         name="Freezone Recipe Compiler",
     )
-    response = await agent.run(task)
+    response = await agent.run(
+        task,
+        model_settings=get_newapi_text_pydantic_model_settings(
+            "FREEZONE_RECIPE_COMPILER_THINKING_LEVEL",
+            "none",
+        ),
+    )
     compiled = str(response.output or "").strip()
     if not compiled:
         raise RuntimeError("recipe compiler returned an empty prompt")
