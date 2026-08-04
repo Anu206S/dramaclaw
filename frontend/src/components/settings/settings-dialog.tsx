@@ -594,16 +594,40 @@ function BrainClawGatewayPanel({
   const { t } = useTranslation();
   const saveBrainClaw = useSaveBrainClawConfig();
   const enableBrainClaw = useEnableBrainClaw();
+  const savedBrainClaw = config?.brainclaw;
+  const savedBaseUrl =
+    savedBrainClaw?.baseUrl ||
+    (config?.llmEffective.brainclaw ? config.llmEffective.baseUrl : "") ||
+    config?.official.baseUrl ||
+    "";
+  const [baseUrl, setBaseUrl] = useState(savedBaseUrl);
   const [apiKey, setApiKey] = useState("");
   const [revealKey, setRevealKey] = useState(false);
-  const official = config?.official;
-  const savedApiKeyPreview = official?.configured ? official.apiKeyPreview : "";
+  const savedApiKeyPreview =
+    savedBrainClaw?.apiKeyPreview ||
+    (config?.llmEffective.brainclaw ? config.llmEffective.apiKeyPreview : "") ||
+    config?.official.apiKeyPreview ||
+    "";
+
+  useEffect(() => {
+    if (savedBaseUrl) {
+      setBaseUrl((current) => (current === savedBaseUrl ? current : savedBaseUrl));
+    }
+  }, [savedBaseUrl]);
 
   const handleSave = async () => {
     const trimmedApiKey = apiKey.trim();
+    const trimmedBaseUrl = baseUrl.trim();
+    if (!trimmedBaseUrl) {
+      toast.error(t("settings.modelConfig.brainclaw.missingEndpoint"));
+      return;
+    }
     try {
-      const response = trimmedApiKey
-        ? await saveBrainClaw.mutateAsync({ newApiApiKey: trimmedApiKey })
+      const response = trimmedApiKey || trimmedBaseUrl !== savedBaseUrl
+        ? await saveBrainClaw.mutateAsync({
+            newApiBaseUrl: trimmedBaseUrl,
+            ...(trimmedApiKey ? { newApiApiKey: trimmedApiKey } : {}),
+          })
         : await enableBrainClaw.mutateAsync();
       if (!response.ok) {
         toast.error(getResponseErrorMessage(response, t("settings.modelConfig.requestFailed")));
@@ -631,7 +655,15 @@ function BrainClawGatewayPanel({
           <Label className="justify-start text-[11px] font-normal tracking-wide text-muted-foreground uppercase">
             {t("settings.modelConfig.fields.gatewayBaseUrl")}
           </Label>
-          <Input value={official?.baseUrl ?? ""} readOnly className="h-9 bg-muted/30" />
+          <Input
+            name="brainclaw-newapi-base-url"
+            value={baseUrl}
+            onChange={(event) => setBaseUrl(event.target.value)}
+            placeholder="http://127.0.0.1:3000/v1"
+            autoCapitalize="none"
+            spellCheck={false}
+            className="h-9"
+          />
         </div>
         <div className="grid grid-cols-[120px_1fr] items-center gap-3">
           <Label className="justify-start text-[11px] font-normal tracking-wide text-muted-foreground uppercase">
@@ -693,7 +725,8 @@ function BrainClawGatewayPanel({
             loading ||
             saveBrainClaw.isPending ||
             enableBrainClaw.isPending ||
-            (!apiKey.trim() && !official?.configured)
+            !baseUrl.trim() ||
+            (!apiKey.trim() && !savedApiKeyPreview)
           }
         >
           {saveBrainClaw.isPending || enableBrainClaw.isPending ? (

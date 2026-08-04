@@ -228,11 +228,20 @@ def set_custom_llm_mode(mode: str) -> None:
     )
 
 
-def save_relayclaw_brainclaw_key(*, api_key: str, activate: bool = True) -> None:
-    values = {
-        "official_newapi_api_key": str(api_key or "").strip(),
-        "custom_llm_mode": CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
-    }
+def save_relayclaw_brainclaw_key(
+    *,
+    api_key: str = "",
+    base_url: str = "",
+    activate: bool = True,
+) -> None:
+    """Persist the BrainClaw LLM endpoint without changing official credentials."""
+    values = {"custom_llm_mode": CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW}
+    clean_api_key = str(api_key or "").strip()
+    clean_base_url = normalize_relay_base_url(base_url)
+    if clean_api_key:
+        values["brainclaw_newapi_api_key"] = clean_api_key
+    if clean_base_url:
+        values["brainclaw_newapi_base_url"] = clean_base_url
     if activate:
         values["model_gateway_mode"] = MODE_CUSTOM
     _write_many(values)
@@ -642,16 +651,34 @@ def get_effective_llm_config() -> EffectiveLlmConfig:
     settings = get_model_gateway_settings()
     gateway_mode = normalize_gateway_mode(settings.get("model_gateway_mode"))
     custom_llm_mode = normalize_custom_llm_mode(settings.get("custom_llm_mode"))
-    use_brainclaw = gateway_mode == MODE_OFFICIAL or (
-        gateway_mode == MODE_CUSTOM
-        and custom_llm_mode == CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW
-    )
-    if use_brainclaw:
+    if gateway_mode == MODE_OFFICIAL:
         return EffectiveLlmConfig(
-            mode=CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
+            mode=MODE_OFFICIAL,
             source="official",
             base_url=normalize_relay_base_url(OFFICIAL_NEWAPI_BASE_URL),
             api_key=normalize_api_key(settings.get("official_newapi_api_key", "")),
+            model="brainclaw",
+            is_brainclaw=True,
+        )
+    if custom_llm_mode == CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW:
+        brainclaw_base_url = normalize_relay_base_url(
+            settings.get("brainclaw_newapi_base_url", "")
+            or OFFICIAL_NEWAPI_BASE_URL
+        )
+        brainclaw_api_key = normalize_api_key(
+            settings.get("brainclaw_newapi_api_key", "")
+            or settings.get("official_newapi_api_key", "")
+        )
+        return EffectiveLlmConfig(
+            mode=CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
+            source=(
+                "custom"
+                if settings.get("brainclaw_newapi_base_url", "")
+                or settings.get("brainclaw_newapi_api_key", "")
+                else "official"
+            ),
+            base_url=brainclaw_base_url,
+            api_key=brainclaw_api_key,
             model="brainclaw",
             is_brainclaw=True,
         )
@@ -891,6 +918,12 @@ def build_model_gateway_status(
     )
     effective_llm = get_effective_llm_config()
     custom_llm_mode = normalize_custom_llm_mode(settings.get("custom_llm_mode"))
+    brainclaw_base_url = normalize_relay_base_url(
+        settings.get("brainclaw_newapi_base_url", "") or OFFICIAL_NEWAPI_BASE_URL
+    )
+    brainclaw_api_key = normalize_api_key(
+        settings.get("brainclaw_newapi_api_key", "") or official_api_key_value
+    )
     return {
         "mode": effective.mode,
         "effective": {
@@ -918,6 +951,11 @@ def build_model_gateway_status(
                 "apiKeyPreview": mask_secret(env_official_api_key),
                 "configured": bool(official_base_url_value and env_official_api_key),
             },
+        },
+        "brainclaw": {
+            "baseUrl": brainclaw_base_url,
+            "apiKeyPreview": mask_secret(brainclaw_api_key),
+            "configured": bool(brainclaw_base_url and brainclaw_api_key),
         },
         "custom": {
             "llmMode": custom_llm_mode,

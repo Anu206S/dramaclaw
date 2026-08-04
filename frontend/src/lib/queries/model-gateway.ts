@@ -106,6 +106,7 @@ export interface ModelGatewayConfig {
   effective: EffectiveGatewayConfig;
   llmEffective: EffectiveLlmConfig;
   official: OfficialGatewayConfig;
+  brainclaw?: GatewayEndpointPreview;
   custom: CustomGatewayConfig;
   provisioner?: ModelGatewayProvisionerConfig;
   mediaRelay?: MediaRelayConfig;
@@ -116,7 +117,8 @@ export interface SaveOfficialConfigInput {
 }
 
 export interface SaveBrainClawConfigInput {
-  newApiApiKey: string;
+  newApiBaseUrl: string;
+  newApiApiKey?: string;
 }
 
 export interface NewApiDatabaseConfigInput {
