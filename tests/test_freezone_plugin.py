@@ -267,6 +267,28 @@ def test_validation_payload_keeps_non_empty_explicit_body_precedence():
     assert payload == body
 
 
+def test_validate_canvas_commands_rejects_empty_required_data():
+    plugin = _load_plugin_module()
+    result = plugin._handle_validate_commands(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "commands": [
+                {
+                    "type": "create_node",
+                    "node_type": "textAnnotationNode",
+                    "client_id": "node-a",
+                    "data": {},
+                }
+            ],
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "invalid_command_schema"
+    assert "data" in result["error"]
+
+
 def test_freezone_run_workflow_emits_one_deterministic_runner_command(monkeypatch):
     plugin = _load_plugin_module()
     captured = {}
