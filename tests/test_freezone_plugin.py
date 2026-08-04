@@ -235,6 +235,38 @@ def test_freezone_plugin_registers_canvas_command_tools():
     ]
 
 
+def test_validation_payload_ignores_empty_wrappers_and_uses_commands():
+    plugin = _load_plugin_module()
+    commands = [{"type": "create_node", "client_id": "node-a"}]
+
+    payload = plugin._validation_payload(
+        {"body": {}, "envelope": {}, "commands": commands}
+    )
+
+    assert payload == {
+        "schema_version": "canvas_chat_commands.v1",
+        "commands": commands,
+    }
+
+
+def test_validation_payload_keeps_non_empty_explicit_body_precedence():
+    plugin = _load_plugin_module()
+    body = {
+        "schema_version": "canvas_chat_commands.v1",
+        "commands": [{"type": "create_node", "client_id": "body-node"}],
+    }
+
+    payload = plugin._validation_payload(
+        {
+            "body": body,
+            "envelope": {"commands": [{"type": "create_node"}]},
+            "commands": [{"type": "create_edge"}],
+        }
+    )
+
+    assert payload == body
+
+
 def test_freezone_run_workflow_emits_one_deterministic_runner_command(monkeypatch):
     plugin = _load_plugin_module()
     captured = {}

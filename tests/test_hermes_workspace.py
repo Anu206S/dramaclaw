@@ -708,6 +708,86 @@ def test_hermes_tool_call_guard_does_not_double_count_start_and_update():
     assert guard.total == 1
 
 
+def test_hermes_tool_call_guard_stops_repeated_identical_failures():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+    tool_input = {
+        "body": {},
+        "envelope": {},
+        "commands": [{"type": "create_node", "client_id": "node-a"}],
+    }
+    tool_output = [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": "freezone_validate_canvas_commands failed: commands required",
+            },
+        }
+    ]
+
+    for index in range(2):
+        call_id = f"call-{index}"
+        assert (
+            guard.observe(
+                hermes_sdk.ChatBackendEvent(
+                    type="tool_started",
+                    name="freezone_validate_canvas_commands",
+                    call_id=call_id,
+                    input=tool_input,
+                )
+            )
+            is None
+        )
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_validate_canvas_commands",
+                call_id=call_id,
+                input=tool_input,
+                output=tool_output,
+                status="failed",
+            )
+        )
+
+    assert stop_message is not None
+    assert "连续返回相同错误" in stop_message
+    assert guard.total == 2
+
+
+def test_hermes_tool_call_guard_resets_failure_streak_after_success():
+    guard = hermes_sdk._TurnToolCallGuard()
+
+    first_failure = hermes_sdk.ChatBackendEvent(
+        type="tool_updated",
+        name="freezone_validate_canvas_commands",
+        call_id="failed-a",
+        input={"commands": []},
+        output={"ok": False, "status": "empty_validation_payload"},
+        status="completed",
+    )
+    success = hermes_sdk.ChatBackendEvent(
+        type="tool_updated",
+        name="freezone_summarize_canvas",
+        call_id="success",
+        input={},
+        output={"ok": True},
+        status="completed",
+    )
+    second_failure = hermes_sdk.ChatBackendEvent(
+        type="tool_updated",
+        name="freezone_validate_canvas_commands",
+        call_id="failed-b",
+        input={"commands": []},
+        output={"ok": False, "status": "empty_validation_payload"},
+        status="completed",
+    )
+
+    assert guard.observe(first_failure) is None
+    assert guard.observe(success) is None
+    assert guard.observe(second_failure) is None
+
+
 def test_hermes_freezone_tool_limit_message_uses_freezone_context():
     message = hermes_sdk._tool_call_limit_stop_message(
         "freezone_put_agent_catalog_recipe"
