@@ -5,7 +5,37 @@ from types import SimpleNamespace
 
 import pytest
 
+from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.freezone import recipe_runtime
+
+
+def test_recipe_compiler_uses_the_dedicated_brainclaw_profile(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_model(model_env, default_model, **kwargs):
+        captured.update(
+            model_env=model_env,
+            default_model=default_model,
+            **kwargs,
+        )
+        return "model"
+
+    class FakeAgent:
+        def __init__(self, model, **kwargs):
+            captured.update(model=model, agent_kwargs=kwargs)
+
+        async def run(self, _task):
+            return SimpleNamespace(output="compiled prompt")
+
+    from novelvideo import config
+
+    monkeypatch.setattr(config, "get_newapi_text_pydantic_model", fake_model)
+    monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
+
+    result = asyncio.run(recipe_runtime._run_recipe_compiler("compile this"))
+
+    assert result == "compiled prompt"
+    assert captured["brainclaw_profile"] is BrainClawProfile.FREEZONE_RECIPE_COMPILATION
 
 
 def test_build_recipe_compiler_task_checks_output_kind():

@@ -25,6 +25,7 @@ class BrainClawProfile(StrEnum):
     SCENE_ENVIRONMENT_ENRICHMENT = "scene_environment_enrichment"
     FREEZONE_TRANSLATION = "freezone_translation"
     FREEZONE_STORY_SCRIPT_WRITING = "freezone_story_script_writing"
+    FREEZONE_RECIPE_COMPILATION = "freezone_recipe_compilation"
     FREEZONE_VISION_ANALYSIS = "freezone_vision_analysis"
     STYLE_ANALYSIS = "style_analysis"
     CONTENT_REWRITE = "content_rewrite"
