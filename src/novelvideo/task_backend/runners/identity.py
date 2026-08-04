@@ -64,55 +64,63 @@ async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -
         output_dir=str(ctx.output_dir),
         state_dir=str(ctx.state_dir),
     )
-    await sqlite_store.initialize()
-    await sqlite_store.load_graph_state()
+    try:
+        await sqlite_store.initialize()
+        await sqlite_store.load_graph_state()
 
-    cognee_store = CogneeStore(
-        ctx.owner_project_label,
-        output_dir=str(ctx.output_dir),
-        state_dir=str(ctx.state_dir),
-        sqlite_store=sqlite_store,
-    )
-    await cognee_store.initialize()
-    await cognee_store.load_graph_state()
+        cognee_store = CogneeStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+            sqlite_store=sqlite_store,
+        )
+        await cognee_store.initialize()
+        await cognee_store.load_graph_state()
 
-    episode_obj = cognee_store.get_episode(episode)
-    if episode_obj is None:
-        raise ValueError(f"Episode {episode} not found")
+        episode_obj = cognee_store.get_episode(episode)
+        if episode_obj is None:
+            raise ValueError(f"Episode {episode} not found")
 
-    update(0.10, "分析身份需求...")
-    planner = IdentityPlanner(cognee_store)
+        update(0.10, "分析身份需求...")
+        planner = IdentityPlanner(cognee_store)
 
-    def on_log(message: str) -> None:
-        update(log=message)
+        def on_log(message: str) -> None:
+            update(log=message)
 
-    new_count, resolved_count = await planner.plan_single_episode(episode_obj, on_log=on_log)
-    refreshed = cognee_store.get_episode(episode) or episode_obj
+        new_count, resolved_count = await planner.plan_single_episode(
+            episode_obj,
+            on_log=on_log,
+        )
+        refreshed = cognee_store.get_episode(episode) or episode_obj
 
-    identities: list[dict[str, str]] = []
-    episode_identity_ids = set(getattr(refreshed, "identity_ids", []) or [])
-    for character in cognee_store.get_all_characters():
-        for identity in getattr(character, "identities", []) or []:
-            identity_id = getattr(identity, "identity_id", "") or ""
-            if not identity_id or identity_id not in episode_identity_ids:
-                continue
-            identities.append(
-                {
-                    "character_name": character.name,
-                    "identity_id": identity_id,
-                    "identity_name": getattr(identity, "identity_name", "") or identity_id,
-                    "appearance_details": getattr(identity, "appearance_details", "") or "",
-                }
-            )
+        identities: list[dict[str, str]] = []
+        episode_identity_ids = set(getattr(refreshed, "identity_ids", []) or [])
+        for character in cognee_store.get_all_characters():
+            for identity in getattr(character, "identities", []) or []:
+                identity_id = getattr(identity, "identity_id", "") or ""
+                if not identity_id or identity_id not in episode_identity_ids:
+                    continue
+                identities.append(
+                    {
+                        "character_name": character.name,
+                        "identity_id": identity_id,
+                        "identity_name": getattr(identity, "identity_name", "") or identity_id,
+                        "appearance_details": getattr(identity, "appearance_details", "") or "",
+                    }
+                )
 
-    update(0.95, "身份规划完成", f"新增 {new_count} 个身份，复用 {resolved_count} 个身份")
-    return _build_identity_planner_result(
-        episode=episode,
-        new_count=new_count,
-        resolved_count=resolved_count,
-        identities=identities,
-        auto_promoted_characters=list(getattr(planner, "auto_promoted_characters", []) or []),
-    )
+        update(0.95, "身份规划完成", f"新增 {new_count} 个身份，复用 {resolved_count} 个身份")
+        return _build_identity_planner_result(
+            episode=episode,
+            new_count=new_count,
+            resolved_count=resolved_count,
+            identities=identities,
+            auto_promoted_characters=list(
+                getattr(planner, "auto_promoted_characters", []) or []
+            ),
+        )
+    finally:
+        await sqlite_store.close()
 
 
 register_project_task_runner("identity_planner", run_identity_planner)

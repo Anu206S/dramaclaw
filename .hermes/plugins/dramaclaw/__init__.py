@@ -1862,7 +1862,13 @@ def _handle_compose_episode(args: dict[str, Any], **_: Any) -> str:
     Poll task_type="compose_episode", episode=N.
     """
     try:
-        return tool_result(_episode_post(args, "videos/compose"))
+        return tool_result(
+            _episode_post(
+                args,
+                "videos/compose",
+                body={"add_subtitles": True, "add_bgm": False},
+            )
+        )
     except Exception as exc:
         return tool_error(str(exc))
 

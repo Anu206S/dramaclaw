@@ -463,8 +463,7 @@ def ensure_user_hermes_workspace(username: str, *, profile: str = "director") ->
         _ensure_freezone_config_policy(config_yaml)
         _ensure_freezone_python_hooks(home)
     else:
-        _ensure_default_plugin_enabled(config_yaml)
-        _ensure_default_toolsets_enabled(config_yaml)
+        _ensure_director_config_policy(config_yaml)
     _ensure_model_config_from_env(config_yaml)
     _ensure_model_gateway_config(config_yaml)
     _ensure_identity_context(home, profile=normalized_profile)
@@ -867,6 +866,50 @@ def _ensure_default_plugin_enabled(config_yaml: Path) -> None:
         return
 
 
+def _configured_max_turns(env_name: str, default: int) -> int:
+    raw = _root_value(env_name)
+    if not raw:
+        return default
+    try:
+        return max(1, int(raw))
+    except ValueError:
+        _log.warning("invalid %s=%r, using default %d", env_name, raw, default)
+        return default
+
+
+def _ensure_director_config_policy(config_yaml: Path) -> None:
+    """Keep the outer assistant on a small, DramaClaw-only agent surface."""
+    try:
+        text = config_yaml.read_text(encoding="utf-8")
+    except OSError:
+        return
+    try:
+        config = yaml.safe_load(text) or {}
+    except yaml.YAMLError:
+        _log.warning("failed to parse director hermes config yaml at %s", config_yaml)
+        return
+    if not isinstance(config, dict):
+        config = {}
+
+    config["enabled_toolsets"] = ["hermes-acp", "memory"]
+    plugins = config.get("plugins")
+    if not isinstance(plugins, dict):
+        plugins = {}
+    plugins["enabled"] = ["dramaclaw"]
+    config["plugins"] = plugins
+
+    agent = config.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+    agent["max_turns"] = _configured_max_turns("HERMES_DIRECTOR_MAX_TURNS", 4)
+    config["agent"] = agent
+
+    try:
+        config_yaml.write_text(_dump_hermes_config_yaml(config), encoding="utf-8")
+    except OSError:
+        _log.warning("failed to enforce director hermes config policy at %s", config_yaml)
+
+
 def _ensure_freezone_config_policy(config_yaml: Path) -> None:
     """Force the Freezone Hermes profile to expose only canvas-oriented tools."""
     try:
@@ -887,6 +930,12 @@ def _ensure_freezone_config_policy(config_yaml: Path) -> None:
         plugins = {}
     plugins["enabled"] = ["freezone"]
     config["plugins"] = plugins
+
+    agent = config.get("agent")
+    if not isinstance(agent, dict):
+        agent = {}
+    agent["max_turns"] = _configured_max_turns("HERMES_FREEZONE_MAX_TURNS", 12)
+    config["agent"] = agent
 
     tools = config.get("tools")
     if not isinstance(tools, dict):
