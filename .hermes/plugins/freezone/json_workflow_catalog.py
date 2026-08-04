@@ -1220,6 +1220,10 @@ def _compile_dynamic_recipe_items_intent(
                         "title": "成片合成",
                         "content": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
                         "prompt": "汇总视频片段、配乐和旁白，进入时间线完成最终编排。",
+                        # Keep the intent's semantic source order. Canvas node ids
+                        # are allocated later, so the frontend resolves these plan
+                        # ids through each node's workflowPlanNodeId.
+                        "compositionInputOrder": compose_sources,
                         "workflowCatalog": {
                             "skillId": _text(skill.get("id")),
                             "skillVersion": skill.get("version"),
