@@ -10,6 +10,7 @@ import { SettingsDialog } from "@/components/settings/settings-dialog";
 const runtimeState = vi.hoisted(() => ({ isCeRuntime: true }));
 const modelGatewayMocks = vi.hoisted(() => ({
   config: undefined as Record<string, unknown> | undefined,
+  saveBrainClaw: vi.fn(),
   setCustomLlmMode: vi.fn(),
 }));
 const freezoneAgentConfigMocks = vi.hoisted(() => ({
@@ -85,7 +86,10 @@ vi.mock("@/lib/queries/model-gateway", () => ({
   useEnableHybrid: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useEnableBrainClaw: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSaveOfficialConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
-  useSaveBrainClawConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useSaveBrainClawConfig: () => ({
+    mutateAsync: modelGatewayMocks.saveBrainClaw,
+    isPending: false,
+  }),
   useSetCustomLlmMode: () => ({
     mutateAsync: modelGatewayMocks.setCustomLlmMode,
     isPending: false,
@@ -353,6 +357,7 @@ function openRecipesManagement() {
 beforeEach(() => {
   runtimeState.isCeRuntime = true;
   modelGatewayMocks.config = undefined;
+  modelGatewayMocks.saveBrainClaw.mockReset();
   modelGatewayMocks.setCustomLlmMode.mockReset();
   modelGatewayMocks.setCustomLlmMode.mockResolvedValue({ ok: true });
   freezoneAgentConfigMocks.delete.mockReset();
@@ -390,7 +395,7 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByText("选择模型网关渠道")).toBeInTheDocument();
   });
 
-  it("shows RelayClaw BrainClaw without an editable endpoint in custom mode", () => {
+  it("lets BrainClaw use an editable NewAPI endpoint in custom mode", async () => {
     modelGatewayMocks.config = {
       mode: "custom",
       effective: {
@@ -419,6 +424,11 @@ describe("SettingsDialog pages", () => {
           configured: false,
         },
       },
+      brainclaw: {
+        baseUrl: "https://relayclaw.cdnfg.com/v1",
+        apiKeyPreview: "sk-r...cret",
+        configured: true,
+      },
       custom: {
         llmMode: "relayclaw_brainclaw",
         baseUrl: "http://local-newapi:3000/v1",
@@ -435,14 +445,22 @@ describe("SettingsDialog pages", () => {
     expect(screen.getByRole("tab", { name: "虾驿 BrainClaw（推荐）" })).toBeInTheDocument();
     expect(screen.getByRole("tab", { name: "高级自定义" })).toBeInTheDocument();
     expect(screen.getByText("虾脑 BrainClaw（推荐）")).toBeInTheDocument();
-    expect(screen.getByDisplayValue("https://relayclaw.cdnfg.com/v1")).toHaveAttribute(
-      "readonly",
-    );
+    const endpoint = screen.getByDisplayValue("https://relayclaw.cdnfg.com/v1");
+    expect(endpoint).not.toHaveAttribute("readonly");
     expect(screen.getByText("brainclaw")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "保存并启用 BrainClaw" })).toBeEnabled();
     expect(screen.getByText("Embedding 模型")).toBeInTheDocument();
     expect(screen.getByText("媒体模型")).toBeInTheDocument();
     expect(screen.queryByText("业务模型映射")).not.toBeInTheDocument();
+
+    modelGatewayMocks.saveBrainClaw.mockResolvedValue({ ok: true, data: modelGatewayMocks.config });
+    fireEvent.change(endpoint, { target: { value: "http://127.0.0.1:8317" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存并启用 BrainClaw" }));
+    await waitFor(() => {
+      expect(modelGatewayMocks.saveBrainClaw).toHaveBeenCalledWith({
+        newApiBaseUrl: "http://127.0.0.1:8317",
+      });
+    });
 
     fireEvent.click(screen.getByRole("tab", { name: "高级自定义" }));
 

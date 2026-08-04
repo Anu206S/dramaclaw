@@ -22,8 +22,10 @@ from novelvideo.model_gateway_settings import (
     get_effective_llm_config,
     get_effective_newapi_config,
     save_custom_newapi_gateway,
+    save_official_newapi_key,
     save_relayclaw_brainclaw_key,
     set_custom_llm_mode,
+    set_model_gateway_mode,
 )
 from novelvideo.official_defaults import (
     ADVANCED_TEXT_MODEL_BY_ENV,
@@ -276,7 +278,9 @@ async def test_litellm_scope_adds_profile_without_changing_request_fields(monkey
     }
 
 
-def test_brainclaw_api_masks_key_and_does_not_accept_endpoint(monkeypatch, tmp_path):
+def test_brainclaw_api_accepts_custom_newapi_endpoint_and_masks_key(
+    monkeypatch, tmp_path
+):
     _isolate_settings_db(monkeypatch, tmp_path)
     monkeypatch.setenv("NEWAPI_PROVISIONER_ENABLED", "true")
     _configure_custom_media()
@@ -293,13 +297,37 @@ def test_brainclaw_api_masks_key_and_does_not_accept_endpoint(monkeypatch, tmp_p
         "/model-gateway/custom/brainclaw/config",
         json={
             "newApiApiKey": "sk-user-relay-secret",
-            "newApiBaseUrl": "https://attacker.example/v1",
+            "newApiBaseUrl": "http://127.0.0.1:8317",
         },
     )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["data"]["llmEffective"]["baseUrl"] == OFFICIAL_NEWAPI_BASE_URL
+    assert payload["data"]["llmEffective"]["baseUrl"] == "http://127.0.0.1:8317/v1"
     assert payload["data"]["llmEffective"]["model"] == "brainclaw"
+    assert payload["data"]["llmEffective"]["brainclaw"] is True
+    assert payload["data"]["brainclaw"]["baseUrl"] == "http://127.0.0.1:8317/v1"
     assert "sk-user-relay-secret" not in response.text
-    assert "attacker.example" not in response.text
+
+
+def test_custom_brainclaw_endpoint_does_not_replace_official_gateway(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    save_official_newapi_key(api_key="sk-official-secret")
+    save_relayclaw_brainclaw_key(
+        api_key="sk-local-secret",
+        base_url="http://127.0.0.1:8317",
+        activate=True,
+    )
+
+    custom_llm = get_effective_llm_config()
+    assert custom_llm.base_url == "http://127.0.0.1:8317/v1"
+    assert custom_llm.api_key == "sk-local-secret"
+    assert custom_llm.model == "brainclaw"
+
+    set_model_gateway_mode("official")
+    official_llm = get_effective_llm_config()
+    assert official_llm.base_url == OFFICIAL_NEWAPI_BASE_URL
+    assert official_llm.api_key == "sk-official-secret"
+    assert official_llm.model == "brainclaw"

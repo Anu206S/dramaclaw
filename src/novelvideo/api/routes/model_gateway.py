@@ -639,10 +639,21 @@ async def save_custom_brainclaw_config(
         require_ce_gateway_management()
     except PermissionError as exc:
         raise _permission_error(exc) from exc
+    current = build_model_gateway_status(
+        official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
+        official_api_key=app_config.NEWAPI_API_KEY,
+    )
     api_key = normalize_api_key(body.new_api_api_key)
-    if not api_key:
+    base_url = normalize_relay_base_url(body.new_api_base_url)
+    if not api_key and not current["brainclaw"]["apiKeyPreview"]:
         raise HTTPException(status_code=400, detail="newApiApiKey is required")
-    save_relayclaw_brainclaw_key(api_key=api_key, activate=True)
+    if body.new_api_base_url is not None and not base_url:
+        raise HTTPException(status_code=400, detail="newApiBaseUrl is required")
+    save_relayclaw_brainclaw_key(
+        api_key=api_key,
+        base_url=base_url,
+        activate=True,
+    )
     runtime = refresh_model_gateway_runtime()
     return {
         "ok": True,
@@ -664,7 +675,7 @@ async def enable_custom_brainclaw() -> dict[str, Any]:
         official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
         official_api_key=app_config.NEWAPI_API_KEY,
     )
-    if not status["official"]["configured"]:
+    if not status["brainclaw"]["configured"]:
         raise HTTPException(
             status_code=400, detail="RelayClaw API key is not configured"
         )

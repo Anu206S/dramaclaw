@@ -4372,10 +4372,11 @@
         "tab": "RelayClaw BrainClaw (Recommended)",
         "advancedTab": "Advanced Custom",
         "title": "BrainClaw by RelayClaw (Recommended)",
-        "description": "BrainClaw is RelayClaw's exclusive intelligent model for DramaClaw. It automatically routes text understanding, generation, structured output, tool calling, and vision tasks without per-feature model mappings. BrainClaw is available only through RelayClaw; image, video, audio, and Embedding still use the Local NewAPI settings below.",
+        "description": "BrainClaw handles text understanding, generation, structured output, tool calling, and vision tasks without per-feature mappings. It connects to RelayClaw by default; development setups may point it at a NewAPI-compatible endpoint that exposes BrainClaw. Image, video, audio, and Embedding still use the Local NewAPI settings below.",
         "model": "Fixed model",
         "save": "Save & Enable BrainClaw",
         "enabled": "RelayClaw BrainClaw is enabled.",
+        "missingEndpoint": "Enter the BrainClaw NewAPI URL.",
         "advancedEnabled": "Advanced custom LLM is enabled."
       },
       "custom": {
