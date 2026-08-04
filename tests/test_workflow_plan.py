@@ -722,6 +722,7 @@ def test_compact_dynamic_intent_compiles_recipe_items_to_valid_plan(monkeypatch)
     assert node_catalog["skillVersion"] == plan["skill"]["version"]
     assert node_catalog["confirmedInputs"]["aspect_ratio"] == "9:16"
     assert plan["nodes"][-1]["node_type"] == "videoComposeNode"
+    assert plan["nodes"][-1]["data"]["compositionInputOrder"] == ["video_clip"]
     assert catalog.validate_agent_workflow_plan(plan)["ok"] is True
 
 
