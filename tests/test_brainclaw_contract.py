@@ -164,6 +164,13 @@ def test_official_text_defaults_are_brainclaw_and_advanced_tasks_are_distinct():
     )
 
 
+def test_recipe_compilation_has_a_dedicated_declared_profile():
+    assert (
+        BrainClawProfile.FREEZONE_RECIPE_COMPILATION.value
+        == "freezone_recipe_compilation"
+    )
+
+
 def test_effective_text_defaults_force_brainclaw_for_mixed_mode(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     _configure_custom_media()
