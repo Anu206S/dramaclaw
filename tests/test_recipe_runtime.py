@@ -55,7 +55,8 @@ def test_recipe_compiler_uses_the_dedicated_brainclaw_profile(monkeypatch):
         def __init__(self, model, **kwargs):
             captured.update(model=model, agent_kwargs=kwargs)
 
-        async def run(self, _task):
+        async def run(self, _task, **kwargs):
+            captured.update(run_kwargs=kwargs)
             return SimpleNamespace(output="compiled prompt")
 
     from novelvideo import config
@@ -67,6 +68,9 @@ def test_recipe_compiler_uses_the_dedicated_brainclaw_profile(monkeypatch):
 
     assert result == "compiled prompt"
     assert captured["brainclaw_profile"] is BrainClawProfile.FREEZONE_RECIPE_COMPILATION
+    assert captured["run_kwargs"] == {
+        "model_settings": {"openai_reasoning_effort": "none"}
+    }
 
 
 def test_build_recipe_compiler_task_checks_output_kind():
@@ -221,7 +225,7 @@ async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt
         def __init__(self, *_args, **_kwargs):
             pass
 
-        async def run(self, task):
+        async def run(self, task, **_kwargs):
             nonlocal calls
             calls += 1
             assert "trusted internal method" in task
@@ -299,7 +303,7 @@ async def test_compile_recipe_prompt_deduplicates_concurrent_model_calls(
         def __init__(self, *_args, **_kwargs):
             pass
 
-        async def run(self, _task):
+        async def run(self, _task, **_kwargs):
             nonlocal calls
             calls += 1
             await asyncio.sleep(0.01)
