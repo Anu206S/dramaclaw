@@ -40,6 +40,8 @@ import type { TaskState } from "@/task-center/types";
 
 const RECENT_COMPLETED_MS = 5_000;
 const RECENT_FAILED_MS = 60_000;
+const WORKFLOW_RUN_ACTIVE_POLL_MS = 5_000;
+const WORKFLOW_RUN_IDLE_POLL_MS = 60_000;
 const TERMINAL_ACTION_STATUSES = new Set([
   "completed",
   "failed",
@@ -52,6 +54,8 @@ export interface ChatTaskItem {
   nodeId: string | null;
   nodeLabel: string | null;
 }
+
+export type ChatTaskStatusScope = "canvas" | "project";
 
 function timestamp(value: string | null | undefined): number {
   const parsed = Date.parse(value ?? "");
@@ -91,6 +95,14 @@ export function selectChatWorkflowRun(
       const activeDelta = priority(right) - priority(left);
       return activeDelta || timestamp(right.updated_at) - timestamp(left.updated_at);
     })[0] ?? null;
+}
+
+export function workflowRunStatusPollMs(
+  runs: readonly FreezoneWorkflowRun[],
+): number {
+  return runs.some((run) => run.status === "running")
+    ? WORKFLOW_RUN_ACTIVE_POLL_MS
+    : WORKFLOW_RUN_IDLE_POLL_MS;
 }
 
 export function isStatusBarWorkflowContinuable(
@@ -266,8 +278,9 @@ export function selectChatTaskItems(
   nodes: readonly CanvasNode[],
   canvasId: string | null,
   now = Date.now(),
+  scope: ChatTaskStatusScope = "canvas",
 ): ChatTaskItem[] {
-  if (!canvasId) return [];
+  if (scope === "canvas" && !canvasId) return [];
 
   const nodeIds = new Set(nodes.map((node) => node.id));
   const nodesByTaskKey = new Map<string, CanvasNode>();
@@ -289,7 +302,7 @@ export function selectChatTaskItems(
       Boolean(mappedNode) ||
       metadataCanvasId === canvasId ||
       Boolean(metadataNodeId && nodeIds.has(metadataNodeId));
-    if (!belongsToCanvas) continue;
+    if (scope === "canvas" && !belongsToCanvas) continue;
 
     const visible =
       isActive(task) ||
@@ -301,7 +314,9 @@ export function selectChatTaskItems(
       );
     if (!visible) continue;
 
-    const node = mappedNode ?? nodes.find((candidate) => candidate.id === metadataNodeId) ?? null;
+    const node = scope === "canvas"
+      ? mappedNode ?? nodes.find((candidate) => candidate.id === metadataNodeId) ?? null
+      : null;
     items.push({
       task,
       nodeId: node?.id ?? null,
@@ -327,12 +342,15 @@ function taskProgress(task: TaskState): number {
 export function ChatTaskStatusBar({
   projectId,
   canvasId,
+  scope = "canvas",
 }: {
   projectId: string | null;
   canvasId: string | null;
+  scope?: ChatTaskStatusScope;
 }) {
   const { t } = useTranslation();
   const tasks = useTaskCenterStore((state) => state.tasks);
+  const taskProjectId = useTaskCenterStore((state) => state.projectId);
   const nodes = useCanvasStore((state) => state.nodes);
   const setTaskPanelOpen = useAppStore((state) => state.setTaskPanelOpen);
   const setSelectedTask = useTaskCenterStore((state) => state.setSelected);
@@ -342,8 +360,19 @@ export function ChatTaskStatusBar({
   const [resuming, setResuming] = useState(false);
 
   const items = useMemo(
-    () => selectChatTaskItems(tasks.values(), nodes, canvasId, now),
-    [tasks, nodes, canvasId, now],
+    () => {
+      const projectScopeUnavailable =
+        scope === "project" &&
+        (!projectId || Boolean(taskProjectId && taskProjectId !== projectId));
+      return selectChatTaskItems(
+        projectScopeUnavailable ? [] : tasks.values(),
+        scope === "canvas" ? nodes : [],
+        canvasId,
+        now,
+        scope,
+      );
+    },
+    [tasks, taskProjectId, nodes, canvasId, now, projectId, scope],
   );
   const selectedWorkflowRun = useMemo(
     () => selectChatWorkflowRun(workflowRuns, now),
@@ -401,7 +430,7 @@ export function ChatTaskStatusBar({
     Boolean(workflowRun && workflowRun.status !== "running");
 
   const refreshWorkflowRuns = useCallback(async () => {
-    if (!projectId || !canvasId) {
+    if (scope !== "canvas" || !projectId || !canvasId) {
       setWorkflowRuns([]);
       return;
     }
@@ -411,7 +440,7 @@ export function ChatTaskStatusBar({
     } catch {
       // Generation tasks remain visible even if optional workflow status is unavailable.
     }
-  }, [canvasId, projectId]);
+  }, [canvasId, projectId, scope]);
 
   useEffect(() => {
     setWorkflowRuns([]);
@@ -419,6 +448,7 @@ export function ChatTaskStatusBar({
   }, [refreshWorkflowRuns]);
 
   useEffect(() => {
+    if (scope !== "canvas") return;
     const handleRunUpdate = (event: Event) => {
       const detail = (event as CustomEvent<WorkflowRunUpdatedDetail>).detail;
       if (detail?.projectId && detail.projectId !== projectId) return;
@@ -447,12 +477,19 @@ export function ChatTaskStatusBar({
       void refreshWorkflowRuns();
     };
     window.addEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdate);
-    const timer = window.setInterval(() => void refreshWorkflowRuns(), 5_000);
     return () => {
       window.removeEventListener(WORKFLOW_RUN_UPDATED_EVENT, handleRunUpdate);
-      window.clearInterval(timer);
     };
-  }, [canvasId, projectId, refreshWorkflowRuns]);
+  }, [canvasId, projectId, refreshWorkflowRuns, scope]);
+
+  useEffect(() => {
+    if (!projectId || !canvasId) return;
+    const timer = window.setInterval(
+      () => void refreshWorkflowRuns(),
+      workflowRunStatusPollMs(workflowRuns),
+    );
+    return () => window.clearInterval(timer);
+  }, [canvasId, projectId, refreshWorkflowRuns, workflowRuns]);
 
   useEffect(() => {
     if (!hasTerminalItems) return;
@@ -630,7 +667,12 @@ export function ChatTaskStatusBar({
     );
 
   return (
-    <section className="mx-auto mb-2 w-full overflow-hidden rounded-lg border border-white/10 bg-background/92 shadow-sm backdrop-blur-xl">
+    <section
+      className={cn(
+        "mx-auto mb-2 w-full overflow-hidden rounded-lg border border-white/10 bg-background/92 shadow-sm backdrop-blur-xl",
+        scope === "project" && "max-w-[760px]",
+      )}
+    >
       <div className="flex h-10 min-w-0 items-center gap-2 px-2.5">
         {hasActiveStatus ? (
           <LoaderCircle className="size-4 shrink-0 animate-spin text-primary" />

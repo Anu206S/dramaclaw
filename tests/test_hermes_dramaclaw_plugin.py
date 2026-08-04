@@ -66,6 +66,31 @@ def test_dramaclaw_plugin_adds_voice_prereq_chat_error():
     assert "Do not start another tool" in result["agent_instruction"]
 
 
+def test_dramaclaw_plugin_stops_before_tts_when_pipeline_requires_voice_setup():
+    plugin = _load_plugin_module()
+
+    result = plugin._with_chat_error_hints(
+        {
+            "ok": True,
+            "data": {
+                "next_step": "voice_setup",
+                "next_step_name": "准备配音声线",
+                "audio_prerequisites": {
+                    "checked": True,
+                    "ready": False,
+                    "errors": ["Beat 01 解说声线缺失：请上传或录制解说人音频"],
+                },
+            },
+        }
+    )
+
+    data = result["data"]
+    assert "下一步需要先准备配音声线" in result["chat_notice"]
+    assert "虾塘" in result["agent_instruction"]
+    assert "Do not claim TTS started" in result["agent_instruction"]
+    assert "chat_error" not in data["audio_prerequisites"]
+
+
 def test_dramaclaw_plugin_adds_render_prereq_chat_error():
     plugin = _load_plugin_module()
     raw_error = (
@@ -106,6 +131,54 @@ def test_dramaclaw_plugin_registers_freezone_canvas_tools():
     assert "dramaclaw_save_freezone_canvas" in names
     assert "dramaclaw_delete_freezone_canvas" in names
     assert "dramaclaw_create_freezone_canvas_from_preset" in names
+    assert "dramaclaw_prepare_system_voices" in names
+    assert "dramaclaw_start_video_batch" in names
+
+
+def test_start_video_batch_starts_up_to_three_beats(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, *, query=None, body=None):
+        calls.append((method, path, body))
+        return {"ok": True, "task_id": f"task-{len(calls)}"}
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    result = plugin._handle_start_video_batch(
+        {"project_id": "proj-1", "episode": 2, "beats": [3, 1, 2]}
+    )
+
+    assert result["ok"] is True
+    assert result["started"] == [1, 2, 3]
+    batch_ids = {call[2]["batch_id"] for call in calls}
+    assert batch_ids == {result["batch_id"]}
+    assert all(call[2]["batch_size"] == 3 for call in calls)
+    assert [call[1] for call in calls] == [
+        "/api/v1/projects/proj-1/episodes/2/beats/1/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/2/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/3/video",
+    ]
+
+
+def test_start_video_batch_rejects_more_than_three_beats():
+    plugin = _load_plugin_module()
+
+    result = plugin._handle_start_video_batch(
+        {"project_id": "proj-1", "episode": 1, "beats": [1, 2, 3, 4]}
+    )
+
+    assert "at most 3 beats" in result
+
+
+def test_prepare_system_voices_tool_requires_explicit_confirmation():
+    plugin = _load_plugin_module()
+
+    result = plugin._handle_prepare_system_voices(
+        {"episode": 1, "confirmed": False}
+    )
+
+    assert result["code"] == "system_voice_confirmation_required"
 
 
 def test_dramaclaw_run_freezone_skill_uses_typed_endpoint(monkeypatch):

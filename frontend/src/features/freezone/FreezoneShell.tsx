@@ -168,6 +168,14 @@ export { hasLegacyPresetCanvasMetadata } from "@/features/freezone/projections";
 interface FreezoneShellProps {
   project: SupertaleProjectSummary;
   canvasId: string;
+  /**
+   * 画布是否是当前正在看的页面。顶栏切到「虾集」时宿主不再卸载本组件，只把
+   * active 置 false（见 FreezoneCanvasHost）——保活换来的是切换不掉帧，代价是
+   * 得手动交出那些「只有前台该做」的事：全局快捷键（透传成 Canvas 的
+   * suspended）和两条轮询。默认 true，让直接挂载 FreezoneShell 的调用方
+   * （测试、未来的独立入口）保持原来的行为。
+   */
+  active?: boolean;
 }
 
 type CurrentCanvasSelectionItem = {
@@ -827,7 +835,11 @@ const canvasKey = (projectId: string, canvasId: string) => `${projectId}::${canv
 /** 上一次真正画出来的画布；跨挂载保留，用来判断重进时能否直接复用 store 里的内容。 */
 let lastRenderedCanvasKey: string | null = null;
 
-export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
+export function FreezoneShell({
+  project,
+  canvasId,
+  active = true,
+}: FreezoneShellProps) {
   const { t } = useTranslation();
   const queryClient = useQueryClient();
   const projectId = project.id;
@@ -1012,12 +1024,17 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     prefetchFreezoneVideoCameraTemplates(projectId);
   }, [projectId]);
 
+  // 依赖里带 active，是因为离开虾画时地址栏的 ?canvas= 会跟着路由一起没掉，而
+  // 保活之后 canvasId / projectId 都是钉住不变的 —— 切回来这个 effect 不会重跑，
+  // 结果就是屏幕上开着某张画布，地址栏却是光秃秃的 /freezone，复制出去的链接
+  // 打不开这张画布。非激活时直接跳过：那会儿地址栏归虾集管。
   useEffect(() => {
+    if (!active) return;
     rememberLastCanvas(projectId, canvasId);
     if (canvasId !== "default" && currentCanvasParam() !== canvasId) {
       writeUrl({ canvas: canvasId }, { replace: true, notify: false });
     }
-  }, [canvasId, projectId]);
+  }, [active, canvasId, projectId]);
 
   useEffect(() => {
     if (sync.status === "ready" && sync.hydratedCanvasId === canvasId) {
@@ -1027,6 +1044,11 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
   }, [canvasId, projectId, sync.hydratedCanvasId, sync.status]);
 
   useEffect(() => {
+    // 在虾集时不轮询：保活期间画布没人看，没必要为它占着请求配额。
+    // `active` 在依赖里，切回虾画会重跑本 effect —— 末尾那次立即调用就顺带
+    // 补上了「离开这段时间里画布有没有被别处改过」的新鲜度检查。以前靠整体
+    // 重新挂载触发 hydrate 来保证这件事，保活之后这里是唯一的补偿点。
+    if (!active) return;
     if (
       sync.status !== "ready" ||
       sync.hydratedCanvasId !== canvasId ||
@@ -1077,6 +1099,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       document.removeEventListener("visibilitychange", handleVisibilityChange);
     };
   }, [
+    active,
     canvasId,
     projectId,
     sync.hydratedCanvasId,
@@ -1089,6 +1112,10 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     [sync.metadata],
   );
   useEffect(() => {
+    // 同上：保活期间停掉 30s 一次的投影状态刷新。它只负责踩节拍（本身不发请求，
+    // 是 bump token 让下面那个 effect 去拉），所以切回来的即时补拉由后面专门的
+    // 「重新激活」effect 负责——这里重启定时器只保证之后的节拍继续。
+    if (!active) return;
     if (projectionMonitoringExpired) return;
     if (!shouldFetchProjectionStatuses({
       canvasId,
@@ -1105,6 +1132,7 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
       setProjectionMonitoringExpired(true);
     });
   }, [
+    active,
     canvasId,
     projectionMonitoringExpired,
     projectionKeys.length,
@@ -1112,6 +1140,18 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
     sync.revision,
     sync.status,
   ]);
+  // 从虾集切回虾画时补一次投影状态。下面那个拉取 effect 用
+  // (canvasId, revision, refreshToken) 去重，光把 `active` 加进它的依赖并不会
+  // 真的重新拉；推一下 token 才是它认的信号。只在 false → true 这一沿触发，
+  // 避免每次依赖变化都多打一发请求。
+  const wasActiveRef = useRef(active);
+  useEffect(() => {
+    const reactivated = active && !wasActiveRef.current;
+    wasActiveRef.current = active;
+    if (reactivated) {
+      setProjectionStatusRefreshToken((value) => value + 1);
+    }
+  }, [active]);
   useEffect(() => {
     if (projectionMonitoringExpired) return;
     if (shouldClearProjectionStatuses({
@@ -2002,7 +2042,10 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             <Canvas
               onBlankPaneClick={handleBlankPaneClick}
               controlsPlacement="bottom-right"
-              suspended={viewMode === "board"}
+              // 保活到虾集时也算 suspended：Canvas 的 6 处 window/document 键盘
+              // 监听（含 capture 阶段）都读这个开关，否则在虾集的输入框里打字会
+              // 被画布快捷键截走。
+              suspended={!active || viewMode === "board"}
             />
           )}
           {showLoadingOverlay && <CanvasLoadingOverlay />}
@@ -2023,7 +2066,8 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             />
           )}
           <BackupStatusIndicator status={sync.backupStatus} />
-          {sync.status === "ready" && sync.hydratedCanvasId === canvasId && (
+          {active && sync.status === "ready" && sync.hydratedCanvasId === canvasId && (
+            // 自带 15s 轮询，保活期间不挂载。
             <WorkflowRunRecoveryBar projectId={projectId} canvasId={canvasId} />
           )}
           {/* 调试面板暂时隐藏，恢复时去掉 `false &&` 即可 */}
@@ -2066,7 +2110,11 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
           {/* 故事板视图：懒挂载 + 保活（对标 liblib，秒切且滚动/筛选状态保留）。 */}
           {!showBlockingLoading && boardMounted && (
             <AssetBoardView
-              visible={viewMode === "board"}
+              // 必须带上 active：故事板保活用的是 `visibility: visible`
+              // （AssetBoardView.tsx:435），会穿透宿主容器上的 invisible ——
+              // 不接这个开关，故事板视图下切到虾集，它会浮在虾集页面上。
+              // 顺带也停掉它对 canvas store 的订阅和媒体播放（paused={!visible}）。
+              visible={active && viewMode === "board"}
               onLocateNode={handleLocateNode}
             />
           )}
@@ -2127,27 +2175,30 @@ export function FreezoneShell({ project, canvasId }: FreezoneShellProps) {
             </div>
           )}
         </main>
-        {showChatDock && (
-          <FreezoneChatDock
-            projectId={projectId}
-            canvasId={canvasId}
-            currentCanvasMetadata={sync.metadata}
-            currentCanvasSelection={currentCanvasSelection}
-            currentCanvasOntologyContext={currentCanvasOntologyContext}
-            pendingAttachments={pendingChatAttachments}
-            onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
-            pendingNodeMentions={pendingChatNodeMentions}
-            onPendingNodeMentionsConsumed={() => setPendingChatNodeMentions([])}
-            open={chatOpen}
-            onOpenChange={handleChatOpenChange}
-            // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
-            // 画布视口不受影响（否则每次开合聊天都会让 ReactFlow 重排一次视口）。
-            pushesContent={viewMode === "board"}
-            title={t("freezone.chat.title")}
-            description={t("freezone.chat.description")}
-            toggleLabel={t("freezone.chat.toggle")}
-          />
-        )}
+        <FreezoneChatDock
+          projectId={projectId}
+          canvasId={canvasId}
+          currentCanvasMetadata={sync.metadata}
+          currentCanvasSelection={currentCanvasSelection}
+          currentCanvasOntologyContext={currentCanvasOntologyContext}
+          pendingAttachments={pendingChatAttachments}
+          onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
+          pendingNodeMentions={pendingChatNodeMentions}
+          onPendingNodeMentionsConsumed={() => setPendingChatNodeMentions([])}
+          open={chatOpen}
+          onOpenChange={handleChatOpenChange}
+          // 抽屉会往 <html> 上广播 --freezone-dock-width，顶栏 / 任务状态条 / 任务
+          // 面板据此整条往左收。以前离开虾画会整棵卸载、effect 清理顺手把变量删掉；
+          // 保活之后没人卸载，虾集的顶栏就一直挂着虾导抽屉的让位量（顶栏被挤窄、
+          // 虾画·虾集 与右上角那组入口整体左移）。所以非激活时按「抽屉没开」广播。
+          hostActive={active}
+          // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
+          // 画布视口不受影响（否则每次开合聊天都会让 ReactFlow 重排一次视口）。
+          pushesContent={viewMode === "board"}
+          title={t("freezone.chat.title")}
+          description={t("freezone.chat.description")}
+          toggleLabel={t("freezone.chat.toggle")}
+        />
       </div>
       <NodeReplaceDragPreview />
       {pushState && (
@@ -2225,6 +2276,7 @@ function FreezoneChatDock({
   title,
   description,
   toggleLabel,
+  hostActive,
 }: {
   projectId: string;
   canvasId: string;
@@ -2242,6 +2294,8 @@ function FreezoneChatDock({
   title: string;
   description: string;
   toggleLabel: string;
+  /** 画布是否在前台。false 时抽屉不再向全局广播让位宽度（见下方 effect）。 */
+  hostActive: boolean;
 }) {
   const isDesktop = useMediaQuery("(min-width: 1024px)");
   const [shouldRenderPanel, setShouldRenderPanel] = useState(open);
@@ -2532,6 +2586,7 @@ function FreezoneChatDock({
           freezoneCanvasId={canvasId}
           freezoneAgentId={agent.id}
           connectionEnabled={connectionEnabled}
+          workflowStatusEnabled={active}
           currentCanvasMetadata={currentCanvasMetadata}
           currentCanvasSelection={currentCanvasSelection}
           currentCanvasOntologyContext={currentCanvasOntologyContext}
@@ -2585,12 +2640,14 @@ function FreezoneChatDock({
     const root = document.documentElement;
     root.style.setProperty(
       FREEZONE_DOCK_WIDTH_VAR,
-      isDesktop && panelVisible ? freezoneDockOffsetCss(dockWidth, minContentWidth) : "0px",
+      isDesktop && panelVisible && hostActive
+        ? freezoneDockOffsetCss(dockWidth, minContentWidth)
+        : "0px",
     );
     return () => {
       root.style.removeProperty(FREEZONE_DOCK_WIDTH_VAR);
     };
-  }, [dockWidth, isDesktop, minContentWidth, panelVisible]);
+  }, [dockWidth, hostActive, isDesktop, minContentWidth, panelVisible]);
 
   // 拖宽期间把让位动画压成 0ms：留着 300ms 缓动的话，每一帧都会重排一段新的缓动，
   // 顶栏边缘会像橡皮筋一样吊在抽屉后面。

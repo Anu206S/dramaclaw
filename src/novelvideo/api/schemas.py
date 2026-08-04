@@ -359,6 +359,8 @@ class SingleVideoRequest(BaseModel):
     audio_setting: Optional[str] = None
     prompt_guidance: Optional[str] = None
     text_overlay: Optional[dict[str, Any]] = None
+    batch_id: Optional[str] = Field(default=None, max_length=100)
+    batch_size: Optional[int] = Field(default=None, ge=1, le=3)
 
 
 # ── 风格 ──────────────────────────────────────────────────────────────────────
@@ -1578,6 +1580,7 @@ class FreezoneVideoComposeItem(BaseModel):
     source_end: float = Field(gt=0.0, description="源媒体裁剪结束秒，必须大于 source_start")
     volume: float = Field(default=1.0, ge=0.0, le=2.0, description="音量倍率")
     muted: bool = Field(default=False, description="是否静音")
+    speed: float = Field(default=1.0, gt=0.0, le=4.0, description="播放倍速")
 
 
 class FreezoneVideoComposeTrack(BaseModel):
@@ -1594,6 +1597,11 @@ class FreezoneVideoComposeRequest(BaseModel):
     fps: int = Field(default=30, ge=1, le=60, description="输出帧率")
     background_color: str = Field(default="#000000", description="补边或空隙使用的背景色")
     keep_original_audio: bool = Field(default=True, description="是否保留视频片段自带音频")
+    cover_url: str | None = Field(
+        default=None,
+        validation_alias=AliasChoices("cover_url", "coverUrl"),
+        description="合成封面图 URL，可为空。仅作为成片封面元信息返回，不改变视频内容。",
+    )
     tracks: list[FreezoneVideoComposeTrack] = Field(
         default_factory=list, description="时间线轨道列表"
     )
@@ -2096,6 +2104,10 @@ class AssetImageSourceSelectionRequest(BaseModel):
 
 class CharacterVoiceRecordRequest(BaseModel):
     data_url: str
+
+
+class SystemVoicePrepareRequest(BaseModel):
+    confirmed: bool = False
 
 
 class NarratorVoiceCopyRequest(BaseModel):

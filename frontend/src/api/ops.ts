@@ -2057,6 +2057,7 @@ export async function submitFreezoneTemplateEdit(
 export interface FreezoneJobResult {
   url: string;
   size: number;
+  cover_url?: string | null;
 }
 
 export async function fetchFreezoneJobResult(

@@ -266,8 +266,7 @@ export function buildComposePayload(
     nodeId: options.nodeId,
     resolution: state.resolution,
     fps: options.fps ?? 30,
-    // ⚠️ 后端需支持 cover_url 才会把封面烧进导出的 MP4；未支持时被忽略，
-    // 前端的画布缩略图/poster 仍正常工作（封面来自同一个 url）。
+    // 封面作为成片元信息返回，前端写入结果视频节点的 previewImageUrl / poster。
     coverUrl: state.cover?.url ?? null,
     tracks,
   };

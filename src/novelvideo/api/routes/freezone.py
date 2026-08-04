@@ -6091,7 +6091,11 @@ def _start_freezone_video_compose_task(
                 project,
                 episode=0,
                 scope=job_id,
-                result={"output_format": "mp4", "output_path": str(output_path)},
+                result={
+                    "output_format": "mp4",
+                    "output_path": str(output_path),
+                    "cover_url": body.cover_url or None,
+                },
                 current_task="completed",
                 logs=["视频合成完成"],
             )
@@ -8763,6 +8767,7 @@ async def freezone_video_compose(
                     "fps": body.fps,
                     "background_color": body.background_color,
                     "keep_original_audio": body.keep_original_audio,
+                    "cover_url": body.cover_url,
                     "tracks": resolved_tracks,
                 },
             )
@@ -9070,6 +9075,10 @@ async def freezone_job_result(
             push_metadata["pushable"] = True
         if isinstance(task_result.get("slot_target"), dict):
             push_metadata["slot_target"] = task_result["slot_target"]
+        if task_type == "freezone_video_compose" and isinstance(
+            task_result.get("cover_url"), str
+        ):
+            push_metadata["cover_url"] = task_result["cover_url"]
     return {
         "ok": True,
         "data": {

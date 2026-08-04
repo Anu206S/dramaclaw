@@ -27,6 +27,7 @@ from novelvideo.api.schemas import (
     VideoComposeRequest,
     TTSGenerateRequest,
     TTSPreviewRequest,
+    SystemVoicePrepareRequest,
     SketchGenerateRequest,
     GridRegenerateRequest,
     BeatsRegenerateRequest,
@@ -2256,6 +2257,52 @@ def _voice_prereq_error_response(errors: list[str]) -> dict:
         "ok": False,
         "code": "voice_prereq_required",
         "error": f"{preview}{suffix}",
+    }
+
+
+@router.post("/projects/{project}/episodes/{episode_num}/audio/system-voices/prepare")
+async def prepare_system_voices_for_agent(
+    project: str,
+    episode_num: int,
+    body: SystemVoicePrepareRequest,
+    user: dict = Depends(get_api_user),
+):
+    """Prepare missing system voice references for the outer Hermes assistant only."""
+
+    agent_kind = str(user.get("agent_kind") or "").strip()
+    if agent_kind not in {"hermes", "local_mcp"}:
+        raise HTTPException(status_code=403, detail="system voice setup is agent-only")
+    if not body.confirmed:
+        return {
+            "ok": False,
+            "code": "system_voice_confirmation_required",
+            "error": "使用系统声线前需要用户明确确认",
+        }
+
+    from novelvideo.audio.system_voice_setup import prepare_missing_system_voices
+
+    resolved = await _resolve_generation_project(project, user, required_role="editor")
+    store = (
+        await make_sqlite_store_for_context(resolved.ctx)
+        if resolved.ctx
+        else await make_sqlite_store(resolved.username, resolved.project_name)
+    )
+    result = await prepare_missing_system_voices(
+        store=store,
+        username=resolved.username,
+        project=resolved.project_name,
+        project_dir=resolved.output_dir,
+        episode=episode_num,
+    )
+    return {
+        "ok": result["ready"],
+        "code": "system_voices_ready" if result["ready"] else "voice_prereq_required",
+        "data": result,
+        **(
+            {"error": "；".join(result["remaining_errors"][:5])}
+            if result["remaining_errors"]
+            else {}
+        ),
     }
 
 
@@ -4714,7 +4761,13 @@ async def generate_single_video(
             queue_kind="video",
             episode=episode_num,
             beat_num=beat_num,
-            payload={"config": config, "output_dir": output_dir, "billing": billing},
+            payload={
+                "config": config,
+                "output_dir": output_dir,
+                "billing": billing,
+                **({"batch_id": body.batch_id} if body.batch_id else {}),
+                **({"batch_size": body.batch_size} if body.batch_size else {}),
+            },
         )
         return {
             "ok": True,

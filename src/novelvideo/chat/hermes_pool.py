@@ -47,7 +47,6 @@ DEFAULT_TOKEN_TTL_SECS = 2 * 3600  # 2 hours
 DEFAULT_TOKEN_RENEW_SKEW_SECS = 15 * 60  # rotate 15 min before expiry
 DEFAULT_API_URL = "http://127.0.0.1:8780"
 DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
-DEFAULT_HERMES_VERSION = "0.18.0"
 _checked_hermes_versions: dict[Path, str] = {}
 
 
@@ -108,12 +107,11 @@ def _parse_hermes_version(output: str) -> tuple[int, int, int] | None:
 
 
 def _required_hermes_version() -> tuple[str, tuple[int, int, int]]:
-    raw = os.environ.get("DRAMACLAW_HERMES_VERSION", "").strip()
-    if not raw:
-        try:
-            raw = (DRAMACLAW_ROOT / ".hermes-version").read_text(encoding="utf-8").strip()
-        except OSError:
-            raw = DEFAULT_HERMES_VERSION
+    version_file = DRAMACLAW_ROOT / ".hermes-version"
+    try:
+        raw = version_file.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        raise RuntimeError(f"missing DramaClaw Hermes version file: {version_file}") from exc
     match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", raw)
     if not match:
         raise RuntimeError(f"invalid DramaClaw Hermes version requirement: {raw!r}")

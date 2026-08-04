@@ -10,6 +10,7 @@ import {
   selectChatTaskItems,
   selectChatWorkflowRun,
   selectWorkflowActivityLabels,
+  workflowRunStatusPollMs,
   workflowSettledCount,
   workflowStatusCounts,
 } from "@/features/superchat/chat-task-status-bar";
@@ -146,6 +147,28 @@ describe("selectChatTaskItems", () => {
       "completed",
     ]);
   });
+
+  it("shows tasks from every canvas in project scope without stale node links", () => {
+    const first = task({
+      task_key: "first",
+      metadata: { canvas_id: "canvas-1", node_id: "node-1" },
+    });
+    const second = task({
+      task_key: "second",
+      metadata: { canvas_id: "canvas-2" },
+    });
+
+    const result = selectChatTaskItems(
+      [first, second],
+      [node()],
+      null,
+      NOW,
+      "project",
+    );
+
+    expect(result.map(({ task: item }) => item.task_key)).toEqual(["first", "second"]);
+    expect(result.every((item) => item.nodeId === null && item.nodeLabel === null)).toBe(true);
+  });
 });
 
 describe("selectChatWorkflowRun", () => {
@@ -189,6 +212,22 @@ describe("selectChatWorkflowRun", () => {
     });
 
     expect(selectChatWorkflowRun([interrupted], NOW)?.run_id).toBe("run-1");
+  });
+});
+
+describe("workflowRunStatusPollMs", () => {
+  it("polls actively only while a workflow is running", () => {
+    expect(workflowRunStatusPollMs([workflowRun()])).toBe(5_000);
+  });
+
+  it("keeps a low-frequency idle poll for cross-tab workflow starts", () => {
+    expect(workflowRunStatusPollMs([
+      workflowRun({
+        status: "completed",
+        resumable: false,
+      }),
+    ])).toBe(60_000);
+    expect(workflowRunStatusPollMs([])).toBe(60_000);
   });
 });
 

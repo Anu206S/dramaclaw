@@ -1677,14 +1677,14 @@ export function VideoComposeModal({
 
   // 导出到画布：先把合成视频经 upload 接口落成稳定素材，再回显到本节点的合成结果上。
   const exportToCanvas = useCallback(
-    async (url: string) => {
+    async (url: string, coverUrl?: string | null) => {
       const blob = await fetchComposedBlob(url);
       const uploaded = await uploadFreezoneVideo(
         project,
         blob,
         composedFileName(url),
       );
-      onComposed(uploaded.url, timelineRef.current.cover?.url ?? null);
+      onComposed(uploaded.url, coverUrl ?? timelineRef.current.cover?.url ?? null);
     },
     [composedFileName, fetchComposedBlob, onComposed, project],
   );
@@ -1719,7 +1719,7 @@ export function VideoComposeModal({
           return;
         }
         if (target === "local") await exportToLocal(result.url);
-        else await exportToCanvas(result.url);
+        else await exportToCanvas(result.url, result.cover_url);
       } catch (error) {
         setExportError(error instanceof Error ? error.message : String(error));
       } finally {

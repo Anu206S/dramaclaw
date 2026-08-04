@@ -50,14 +50,16 @@ requires:
   - 用户明确索要最终成片时，如果接口已经返回正式相对路径，就只交付该相对路径并立即收口；不要再补“可直接打开”绝对 URL、host 前缀或下载直链。
   - 对于身份图、肖像这类生成型图片请求，只要接口已返回业务结果相对路径，就视为交付完成；不要再做路径校验或拼接绝对 URL。
 - 长时间任务后台执行；对用户只用自然语言表达当前状态、完成情况和下一步。
+- 虾导不会在一轮回复结束后自行等待或后台轮询。禁止说“我先等状态更新”“稍等后我再继续”等容易让用户误以为虾导仍在工作的表述。若当前没有 `queued` / `running` 任务，必须明确说“当前没有新任务在执行”；若任务结果与流水线阶段暂时不一致，只说明尚未满足的状态和用户下一次可执行的明确动作，不得把不一致猜成短暂延迟。
 - **状态驱动的一步执行协议**：任何“继续 / 生成视频 / 做完本集 / 自动跑 / 一次性跑完”类请求，在用户已确认可以推进后，也只能按下面顺序处理：① 读取 `pipeline/status` 和必要任务状态；② 如果存在 `queued` / `running` 任务，立即告诉用户“后台正在生成中”，说明任务名/当前状态/需要等待，停止本轮；③ 如果没有运行中任务，只执行当前 `next_step` 对应的一个写任务；④ 启动成功后立即反馈“已启动/已进入队列”，询问用户稍后是否继续查看进度或执行下一步。禁止在同一轮等待完成后继续提交下一步。
 - **笼统大任务先澄清拆解**：用户说“完成第 N 集视频制作 / 完成第 N 集视频生成 / 帮我做完第 N 集 / 帮我生成第 N 集视频 / 生成整集视频 / 做成片 / 继续把这一集做完 / 继续生成第 N 集视频”等覆盖多个流水线阶段的大目标时，不得立即启动任何写工具，也不要立刻自动读取一堆状态。第一轮必须先告诉用户这类需求需要拆成明确小任务，例如：检查进度、补前置、生成单个 beat 音频、生成单个 beat 视频、合成成片；然后询问用户是否需要先列出当前制作进度和建议下一步。
 - 用户确认“列进度 / 看进度 / 好 / 继续 / 可以”后，下一轮才调用 `dramaclaw_pipeline_status` 和必要的只读状态工具，给出一个按当前 `next_step` 排序的短计划，并只询问用户是否执行“下一步”这一个任务。用户再次确认后，下一轮也只能执行这一个任务。
 - 大任务拆解回复格式应简短：需要拆成的小任务、是否列当前进度的确认问题。读取进度后再输出当前卡点、还缺哪些阶段、建议下一步、确认问题。不要把 8-21 全流程长篇展开；只列与当前集相关的 3-5 个最近步骤。
 - **单轮执行上限（防超时硬规则）**：一次用户消息最多只能启动 **1 个**写操作/异步任务（plan/build/generate/optimize/render/audio/video/compose/reingest 等）。任务启动成功后必须立即收口回复“已进入队列/已启动”，不要继续轮询到完成，不要继续启动下一步，不要在同一轮补跑整条流水线。
-- **视频请求的收口规则**：用户说“创建/生成第 N 集视频/成片/短剧视频”且意图覆盖整集或多个阶段时，必须先按“笼统大任务先澄清拆解”处理，不得直接查状态或启动任务。只有用户确认要列进度后，才调用 `dramaclaw_pipeline_status` 检查前置状态；若缺身份、剧本、场景、草图、首帧、音频、video_prompt 或队列未空，只列出缺项和建议下一步，不自动补齐。只有用户明确指定“只启动某一个 beat 的视频”且前置已满足时，才调用一次 `dramaclaw_start_single_video`；启动后立即回复，不继续 compose。
+- **视频请求的收口规则**：用户说“创建/生成第 N 集视频/成片/短剧视频”且意图覆盖整集或多个阶段时，必须先按“笼统大任务先澄清拆解”处理，不得直接查状态或启动任务。只有用户确认要列进度后，才调用 `dramaclaw_pipeline_status` 检查前置状态；若缺身份、剧本、场景、草图、首帧、音频或 video_prompt，只列出缺项和建议下一步，不自动补齐。没有运行中的视频任务且有多个 Beat 已满足前置时，调用一次 `dramaclaw_start_video_batch`，按 Beat 顺序最多提交 3 个；只有一个 Beat 时调用 `dramaclaw_start_single_video`。启动后立即回复，不继续 compose。
 - **错误即停**：任一写工具返回 `ok:false`、HTTP 4xx/5xx、`identity_plan_required`、`Task not found`、`当前项目 ... 队列任务已满`、404 或网络错误时，本轮必须立即停止所有后续工具调用，把后端 `error/detail/message` 原文转成简短自然语言告诉用户，并说明应该等待、补哪个前置或重新选择正确入口。禁止在同一轮反复重试同一工具、改猜其它路径或继续往下执行。
 - `dramaclaw_generate_audio` 返回 `voice_prereq_required` 或“声线缺失”时，必须明确告诉用户配音任务没有启动，并按返回的缺失项说明需要补项目解说人声线或角色声线；提醒用户可以到“虾塘”上传或录制缺失声线后再继续。不要继续启动视频、合成或其它写任务。
+- `dramaclaw_pipeline_status` 返回 `next_step=voice_setup`，或 `audio_prerequisites.ready=false` 时，表示首帧之后仍缺配音参考声线。必须先按 `audio_prerequisites.errors` 给用户两个选择：① 去“虾塘”上传或录制对应声线；② 由虾导自动匹配系统声线。禁止声称正在发起 TTS，禁止调用 `dramaclaw_generate_audio`。只有用户明确选择系统声线后，才能调用一次 `dramaclaw_prepare_system_voices(confirmed=true)`；该工具只准备声线，不启动 TTS，成功后立即收口。只有后续状态返回 `next_step=tts` 且 `audio_prerequisites.ready=true` 时，才能在用户确认后发起配音。不得替用户默认选择系统声线，也不得改变界面上传/录制声线的校验规则。
 - **不要为完成大目标自动扩展范围**：用户没明确要求“自动驾驶/一口气跑完整集”时，不得从“生成视频”自动扩展为身份规划→剧本→场景→草图→首帧→音频→视频→合成。即使用户要求自动驾驶，也必须遵守本节“单轮最多 1 个异步任务”的上限，按多轮推进。
 - 业务结果路径、只读行为、更新行为和异步策略的细则都在对应 reference 中，不要在主 skill 里临时重写一套。
 - 当用户问“我上传了哪些文件 / 当前上传文件 / 刚才传了什么 / 已上传剧本列表”时，优先调用 `dramaclaw_list_ingest_uploads` 查询当前项目本地摄入上传目录，并直接按返回的 `files` 列表回答；不要凭对话记忆猜测。若当前消息包含前端注入的 `[DRAMACLAW_UPLOADED_FILES]`，可以用它作为刚上传文件的即时上下文，但本地目录工具仍是权威来源。
@@ -83,7 +85,7 @@ requires:
 - **工具约束**：
   - DramaClaw 管理的虾导会话禁用了 `bash`、`shell`、`terminal`、`subprocess`，因此不要尝试通过终端运行 `curl`、Python requests 或其它 shell 命令。
   - 调用后端时必须使用已启用的 `hermes-acp` 工具入口中的 DramaClaw 插件工具。文档中的 `GET/POST/PATCH/DELETE ...` 是要通过插件 HTTP 工具执行的 API 语义，不是要求用 curl。
-  - 优先使用业务工具：`dramaclaw_pipeline_status`、`dramaclaw_list_tasks`、`dramaclaw_get_task`、`dramaclaw_get_episode_script`、`dramaclaw_list_ingest_uploads`、`dramaclaw_update_character_face_prompt`、`dramaclaw_plan_scenes`、`dramaclaw_plan_props`、`dramaclaw_generate_scene_master`、`dramaclaw_generate_scene_reverse`、`dramaclaw_detect_sketch_identities`、`dramaclaw_generate_audio`、`dramaclaw_start_single_video`、`dramaclaw_get_final_video`。
+  - 优先使用业务工具：`dramaclaw_pipeline_status`、`dramaclaw_list_tasks`、`dramaclaw_get_task`、`dramaclaw_get_episode_script`、`dramaclaw_list_ingest_uploads`、`dramaclaw_update_character_face_prompt`、`dramaclaw_plan_scenes`、`dramaclaw_plan_props`、`dramaclaw_generate_scene_master`、`dramaclaw_generate_scene_reverse`、`dramaclaw_detect_sketch_identities`、`dramaclaw_generate_audio`、`dramaclaw_start_single_video`、`dramaclaw_start_video_batch`、`dramaclaw_get_final_video`。
   - 业务工具不覆盖的端点，使用受限通用工具：`dramaclaw_get`、`dramaclaw_post`、`dramaclaw_patch`、`dramaclaw_delete`。这些工具只接受 `/api/v1/...` 或 `/projects/...` 相对路径；不要传完整 URL。
   - 摄入路由只有两个：`/projects/{project}/ingest/upload` 和 `/projects/{project}/ingest/start`。`ingest_fast` 是任务类型，不是 HTTP endpoint。禁止推断或尝试 `/ingest/init`、`/ingest/setup`、`/ingest_script`、`/ingest_fast`、`/projects/{project}/ingest`、`/projects/{project}/ingest/init`、`/projects/{project}/ingest/setup`、`/projects/{project}/ingest_script`、`/projects/{project}/ingest_fast` 等路径；这类 404 不代表摄入模块未启用，只代表路径是错的。
   - 如果插件工具不可用，直接向用户说明“DramaClaw API 工具不可用”，停止本轮；不要退回终端命令。
