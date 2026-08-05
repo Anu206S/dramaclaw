@@ -12,6 +12,7 @@ from httpx import Response
 
 from novelvideo import config
 from novelvideo import model_gateway_settings as gateway_settings
+from novelvideo.shared import runtime_env
 from novelvideo.api.routes import model_gateway
 from novelvideo.official_defaults import OFFICIAL_NEWAPI_BASE_URL
 from novelvideo.model_gateway_settings import (
@@ -48,6 +49,7 @@ from novelvideo.newapi_provisioner import (
 
 def _isolate_settings_db(monkeypatch: pytest.MonkeyPatch, tmp_path):
     monkeypatch.setattr(config, "STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(runtime_env, "load_project_dotenv", lambda override=False: None)
     monkeypatch.setenv("ST_EDITION", "ce")
     for key in (
         "ST_CONTROL_PLANE_DSN",
