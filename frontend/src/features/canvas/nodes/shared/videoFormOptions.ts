@@ -25,8 +25,11 @@ export const ASPECT_RATIOS: ReadonlyArray<FreezoneVideoAspectRatio> = [
 // 场景下）显式表达出来：超额 chip 标灰 + 从 @ 候选剔除，避免「prompt 引用了
 // @图片10 但提交时被静默丢掉」。
 //
-// 表里没出现的模式默认不限制（textToVideo 不消费上游、imageToVideo 走
-// `.slice(0, 9)` 自带兜底），各自走原有路径。
+// 这里是**默认**上限；媒体目录（Admin 配置）给模型声明了 referenceImageMax /
+// referenceVideoMax / referenceAudioMax 时，按模型覆盖，见 referenceCapsForMode()。
+// 表里没出现的模式默认不限制（textToVideo 不消费上游），走原有路径。
+//   - imageToVideo / imageReference：走同一个 i2v 端点，image 1-9。
+//   - videoEdit            ：video 1 + image ≤5（HappyHorse 视频编辑）。
 //   - allReference (omni)  ：image 1-9 / video 0-3 / audio 0-3。总时长 ≤ 15s
 //                            的部分前端拿不到精确媒体元数据，延后交给服务端。
 //   - firstLastFrame       ：仅图片 2 张（首帧 + 尾帧），不允许任何视频 / 音频。
@@ -35,9 +38,47 @@ export const ASPECT_RATIOS: ReadonlyArray<FreezoneVideoAspectRatio> = [
 export const REFERENCE_CAPS_BY_MODE: Partial<
   Record<VideoGenMode, { image: number; video: number; audio: number }>
 > = {
+  imageToVideo: { image: 9, video: 0, audio: 0 },
+  imageReference: { image: 9, video: 0, audio: 0 },
+  videoEdit: { image: 5, video: 1, audio: 0 },
   allReference: { image: 9, video: 3, audio: 3 },
   firstLastFrame: { image: 2, video: 0, audio: 0 },
 };
+
+/** 媒体目录里能声明逐类型素材上限的那部分模型字段（#210）。 */
+export interface ReferenceCapModel {
+  referenceImageMax?: number | null;
+  referenceVideoMax?: number | null;
+  referenceAudioMax?: number | null;
+}
+
+/**
+ * 当前模式的实际素材上限：以 REFERENCE_CAPS_BY_MODE 为底，被媒体目录里模型自己
+ * 声明的上限逐项覆盖。模式不在表里（textToVideo）返回 null = 不限制。
+ */
+export function referenceCapsForMode(
+  model: ReferenceCapModel | null | undefined,
+  mode: VideoGenMode,
+): { image: number; video: number; audio: number } | null {
+  const defaults = REFERENCE_CAPS_BY_MODE[mode];
+  if (!defaults) return null;
+  return {
+    image: model?.referenceImageMax ?? defaults.image,
+    video: model?.referenceVideoMax ?? defaults.video,
+    audio: model?.referenceAudioMax ?? defaults.audio,
+  };
+}
+
+/** 模型是否自带 Admin 配置的素材上限（决定 omni 的总数上限用配置值还是旧的 12）。 */
+export function hasConfiguredReferenceCaps(
+  model: ReferenceCapModel | null | undefined,
+): boolean {
+  return (
+    model?.referenceImageMax != null ||
+    model?.referenceVideoMax != null ||
+    model?.referenceAudioMax != null
+  );
+}
 
 export function clampVideoDuration(
   value: number,

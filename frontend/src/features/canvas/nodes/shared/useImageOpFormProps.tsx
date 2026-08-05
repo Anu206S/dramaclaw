@@ -12,6 +12,7 @@ import {
 import { imageModelSupportsQuality } from '@/features/canvas/application/gridTemplateAction';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import { AssetBoardImageOpChip } from '@/features/canvas/ui/asset-board/AssetBoardImageOpChip';
+import type { CreditPromotionDisplay } from '@/components/credits/credit-visual';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
 import { useCanvasStore } from '@/stores/canvasStore';
 
@@ -23,6 +24,11 @@ export interface ImageOpFormProps {
   onSubmit: () => void;
   submitDisabled: boolean;
   totalCreditCostDisplay: string | null;
+  /**
+   * 必须跟着 `totalCreditCostDisplay` 一起覆盖：这两个 prop 是 spread 在宿主表单
+   * 之后的，只盖 display 会让宫格的价格配上底图询价的促销标签。
+   */
+  creditPromotion: CreditPromotionDisplay | null;
 }
 
 /**
@@ -88,5 +94,6 @@ export function useImageOpFormProps(
     totalCreditCostDisplay: isGridOp
       ? (creditCost.data?.data.display ?? String(ASSET_BOARD_IMAGE_OP_MAP[opKey].cost))
       : null,
+    creditPromotion: isGridOp ? (creditCost.data?.data.promotion ?? null) : null,
   };
 }
