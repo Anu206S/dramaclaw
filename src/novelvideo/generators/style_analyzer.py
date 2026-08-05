@@ -65,7 +65,10 @@ Return ONLY valid JSON with no markdown formatting:
         self,
         model: str | None = None,
     ):
-        from novelvideo.config import get_newapi_text_pydantic_model
+        from novelvideo.config import (
+            get_newapi_structured_output_model_settings,
+            get_newapi_text_pydantic_model,
+        )
 
         self.model = (
             model
@@ -79,6 +82,7 @@ Return ONLY valid JSON with no markdown formatting:
                 brainclaw_profile=BrainClawProfile.STYLE_ANALYSIS,
             ),
             system_prompt="You analyze reference images and return reusable visual style settings.",
+            model_settings=get_newapi_structured_output_model_settings(),
             output_type=StyleAnalysisResult,
             name="Style Analyzer",
         )

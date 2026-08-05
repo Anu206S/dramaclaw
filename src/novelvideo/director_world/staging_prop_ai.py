@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from .paths import shape_hint_registry_path, shape_hints_dir
 
 STAGING_PROP_MODEL = "DC-staging-prop-planner-LLM"
-STAGING_PROP_THINKING_LEVEL = "low"
 
 
 SYSTEM_PROMPT = """You are BuilderGPT inside SuperTale's DirectorWorld editor.
@@ -258,7 +257,7 @@ def create_staging_prop_agent(
         _env_float,
         _get_newapi_text_model_profile,
         _newapi_text_openai_model,
-        get_newapi_text_pydantic_model_settings,
+        get_newapi_structured_output_model_settings,
     )
     from novelvideo.brainclaw_contract import (
         BrainClawProfile,
@@ -266,13 +265,6 @@ def create_staging_prop_agent(
     )
     from novelvideo.official_defaults import OFFICIAL_NEWAPI_BASE_URL
 
-    model_settings = get_newapi_text_pydantic_model_settings(
-        "STAGING_PROP_THINKING_LEVEL",
-        STAGING_PROP_THINKING_LEVEL,
-    )
-    agent_kwargs: dict[str, Any] = {}
-    if model_settings is not None:
-        agent_kwargs["model_settings"] = model_settings
     brainclaw_headers = brainclaw_profile_headers(
         BrainClawProfile.STAGING_PROP_PLANNING,
         brainclaw_active=(
@@ -280,7 +272,6 @@ def create_staging_prop_agent(
             and base_url.rstrip("/") == OFFICIAL_NEWAPI_BASE_URL.rstrip("/")
         ),
     )
-
     return Agent(
         _newapi_text_openai_model(
             model,
@@ -291,10 +282,10 @@ def create_staging_prop_agent(
             **({"default_headers": brainclaw_headers} if brainclaw_headers else {}),
         ),
         system_prompt=SYSTEM_PROMPT,
+        model_settings=get_newapi_structured_output_model_settings(),
         output_type=StagingPropAgentOutput,
         output_retries=2,
         name="DirectorWorld Staging Prop Planner",
-        **agent_kwargs,
     )
 
 

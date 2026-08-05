@@ -7,8 +7,8 @@ from pydantic_ai import Agent
 
 from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.config import (
+    get_newapi_structured_output_model_settings,
     get_newapi_text_pydantic_model,
-    get_newapi_text_pydantic_model_settings,
 )
 
 
@@ -196,10 +196,7 @@ async def rewrite_episode_content(
         system_prompt=REWRITE_PROMPT,
         output_type=AdaptedContentOutput,
         output_retries=3,
-        model_settings=get_newapi_text_pydantic_model_settings(
-            "CONTENT_REWRITER_THINKING_LEVEL",
-            "medium",
-        ),
+        model_settings=get_newapi_structured_output_model_settings(),
         name="短视频解说改写师",
     )
     result = await agent.run(task)

@@ -196,8 +196,11 @@ class FreezoneTranslationResult(BaseModel):
 
 def create_freezone_translation_agent() -> Agent:
     """创建 Freezone 中英互译 Agent。"""
-    from novelvideo.config import get_newapi_text_pydantic_model
     from novelvideo.brainclaw_contract import BrainClawProfile
+    from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
+        get_newapi_text_pydantic_model,
+    )
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_TRANSLATION_MODEL",
@@ -207,6 +210,7 @@ def create_freezone_translation_agent() -> Agent:
     return Agent(
         model,
         system_prompt=FREEZONE_TRANSLATION_SYSTEM_PROMPT,
+        model_settings=get_newapi_structured_output_model_settings(),
         output_type=FreezoneTranslationResult,
         name="Freezone Prompt Translator",
     )
@@ -236,8 +240,11 @@ def resolve_freezone_story_script_model(model: str | None) -> dict[str, str]:
 def create_freezone_story_script_agent(model: str | None = None) -> Agent:
     """创建故事脚本生成 Agent。"""
     from novelvideo.api.schemas import FreezoneStoryScriptGenerateData
-    from novelvideo.config import get_newapi_text_pydantic_model
     from novelvideo.brainclaw_contract import BrainClawProfile
+    from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
+        get_newapi_text_pydantic_model,
+    )
 
     resolved = resolve_freezone_story_script_model(model)
     llm_model = get_newapi_text_pydantic_model(
@@ -248,6 +255,7 @@ def create_freezone_story_script_agent(model: str | None = None) -> Agent:
     return Agent(
         llm_model,
         system_prompt=FREEZONE_STORY_SCRIPT_SYSTEM_PROMPT,
+        model_settings=get_newapi_structured_output_model_settings(),
         output_type=FreezoneStoryScriptGenerateData,
         # 结构化脚本表字段多、且 shot_no/duration 是严格 int，模型偶尔会把时长写成
         # "2-5"/"3秒" 之类而过不了校验。默认 output_retries=1 只给一次纠正机会不够，
@@ -486,8 +494,11 @@ def create_freezone_video_story_script_agent() -> Agent:
     story-script 别名 —— 带图请求只有视觉渠道能接。
     """
     from novelvideo.api.schemas import FreezoneStoryScriptGenerateData
-    from novelvideo.config import get_newapi_text_pydantic_model
     from novelvideo.brainclaw_contract import BrainClawProfile
+    from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
+        get_newapi_text_pydantic_model,
+    )
     from novelvideo.official_defaults import DEFAULT_FREEZONE_VISION_MODEL
 
     return Agent(
@@ -498,6 +509,7 @@ def create_freezone_video_story_script_agent() -> Agent:
             brainclaw_profile=BrainClawProfile.FREEZONE_VISION_ANALYSIS,
         ),
         system_prompt=FREEZONE_VIDEO_STORY_SCRIPT_SYSTEM_PROMPT,
+        model_settings=get_newapi_structured_output_model_settings(),
         output_type=FreezoneStoryScriptGenerateData,
         output_retries=3,
         name="Freezone Video Story Script Generator",

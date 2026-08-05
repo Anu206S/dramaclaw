@@ -62,7 +62,10 @@ class EventExtractor:
             事件列表
         """
         from pydantic_ai import Agent
-        from novelvideo.config import get_pydantic_model
+        from novelvideo.config import (
+            get_newapi_structured_output_model_settings,
+            get_pydantic_model,
+        )
 
         def log(msg: str):
             if on_log:
@@ -103,6 +106,7 @@ class EventExtractor:
                 get_pydantic_model(
                     brainclaw_profile=BrainClawProfile.COGNEE_EVENT_EXTRACTION
                 ),
+                model_settings=get_newapi_structured_output_model_settings(),
                 output_type=ExtractedEventList,
             )
             ai_result = await agent.run(prompt)

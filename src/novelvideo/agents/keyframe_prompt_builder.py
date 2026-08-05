@@ -81,8 +81,6 @@ def create_keyframe_prompt_builder_agent(language: str = "en") -> Agent:
         output_type=str,
         name="Keyframe Prompt Builder",
     )
-
-
 class KeyframePromptBuilder:
     """首尾帧过渡提示词构建器。
 

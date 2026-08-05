@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.shared.env_guard import preserve_st_env
+from novelvideo.config import get_newapi_structured_output_litellm_kwargs
 from novelvideo.models import (
     CharacterIdentity,
     NovelCharacter,
@@ -22,7 +23,6 @@ from novelvideo.models import (
     NovelEvent,
     NovelVisualBeat,
 )
-from novelvideo.config import get_newapi_reasoning_kwargs
 from novelvideo.cognee.screenplay_normalizer import (
     NormalizedSceneBlock,
     clean_scene_name_and_time,
@@ -361,10 +361,7 @@ async def extract_characters_from_graph(
             context_text,
             system_prompt,
             CharacterEnrichmentList,
-            **get_newapi_reasoning_kwargs(
-                thinking_env="COGNEE_LLM_THINKING_LEVEL",
-                default_thinking_level="high",
-            ),
+            **get_newapi_structured_output_litellm_kwargs(),
         )
         characters = []
         for enriched in result.characters:
@@ -578,8 +575,8 @@ def _create_scene_build_agent(system_prompt: str, output_type: Any, name: str):
     """
     from pydantic_ai import Agent
     from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
         get_newapi_text_pydantic_model,
-        get_newapi_text_pydantic_model_settings,
     )
 
     return Agent(
@@ -589,10 +586,7 @@ def _create_scene_build_agent(system_prompt: str, output_type: Any, name: str):
             brainclaw_profile=BrainClawProfile.SCENE_ENVIRONMENT_ENRICHMENT,
         ),
         system_prompt=system_prompt,
-        model_settings=get_newapi_text_pydantic_model_settings(
-            "SCENE_BUILD_THINKING_LEVEL",
-            "high",
-        ),
+        model_settings=get_newapi_structured_output_model_settings(),
         output_type=output_type,
         name=name,
     )
@@ -848,10 +842,7 @@ async def extract_scenes_from_graph(
             context_text,
             system_prompt,
             GraphSceneCandidateList,
-            **get_newapi_reasoning_kwargs(
-                thinking_env="COGNEE_LLM_THINKING_LEVEL",
-                default_thinking_level="high",
-            ),
+            **get_newapi_structured_output_litellm_kwargs(),
         )
     except Exception as exc:
         import logging
@@ -1342,10 +1333,7 @@ async def extract_props_from_graph(
             context_text,
             system_prompt,
             PropEnrichmentList,
-            **get_newapi_reasoning_kwargs(
-                thinking_env="COGNEE_LLM_THINKING_LEVEL",
-                default_thinking_level="high",
-            ),
+            **get_newapi_structured_output_litellm_kwargs(),
         )
         props = [
             NovelProp(

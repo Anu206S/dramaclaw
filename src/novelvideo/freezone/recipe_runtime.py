@@ -253,8 +253,8 @@ def _finalize_compiler_task(
 
 async def _run_recipe_compiler(task: str) -> str:
     from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
         get_newapi_text_pydantic_model,
-        get_newapi_text_pydantic_model_settings,
     )
 
     model = get_newapi_text_pydantic_model(
@@ -270,10 +270,7 @@ async def _run_recipe_compiler(task: str) -> str:
     )
     response = await agent.run(
         task,
-        model_settings=get_newapi_text_pydantic_model_settings(
-            "FREEZONE_RECIPE_COMPILER_THINKING_LEVEL",
-            "none",
-        ),
+        model_settings=get_newapi_structured_output_model_settings(),
     )
     compiled = str(response.output or "").strip()
     if not compiled:

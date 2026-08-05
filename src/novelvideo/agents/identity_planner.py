@@ -17,8 +17,8 @@ from pydantic import BaseModel, Field, ValidationInfo, field_validator, model_va
 from pydantic_ai import Agent
 from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.config import (
+    get_newapi_structured_output_model_settings,
     get_newapi_text_pydantic_model,
-    get_newapi_text_pydantic_model_settings,
 )
 from novelvideo.models import CharacterIdentity
 from novelvideo.shared.env_guard import preserve_st_env
@@ -417,14 +417,8 @@ class IdentityPlanner:
         )
 
     @staticmethod
-    def _identity_model_settings(
-        thinking_env: str,
-        default_thinking_level: str,
-    ) -> dict | None:
-        return get_newapi_text_pydantic_model_settings(
-            thinking_env,
-            default_thinking_level,
-        )
+    def _identity_model_settings() -> dict:
+        return get_newapi_structured_output_model_settings()
 
     async def plan_single_episode(
         self,
@@ -656,10 +650,7 @@ class IdentityPlanner:
 
             cast_agent = Agent(
                 self._identity_model("IDENTITY_PLANNER_CAST_MODEL"),
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_CAST_THINKING_LEVEL",
-                    "low",
-                ),
+                model_settings=self._identity_model_settings(),
                 output_type=EpisodeCastList,
             )
             cast_result = await cast_agent.run(f"""以下是全部已知角色：
@@ -903,10 +894,7 @@ class IdentityPlanner:
                     brainclaw_profile=BrainClawProfile.IDENTITY_DEFAULT_ANALYSIS,
                 ),
                 system_prompt=DEFAULT_IDENTITY_PROMPT,
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_ANALYSIS_THINKING_LEVEL",
-                    "high",
-                ),
+                model_settings=self._identity_model_settings(),
                 output_type=EpisodeDefaultIdentities,
             )
             result = await agent.run(task)
@@ -989,10 +977,7 @@ class IdentityPlanner:
                     brainclaw_profile=BrainClawProfile.IDENTITY_SPECIAL_ANALYSIS,
                 ),
                 system_prompt=OTHER_IDENTITY_PROMPT,
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_ANALYSIS_THINKING_LEVEL",
-                    "high",
-                ),
+                model_settings=self._identity_model_settings(),
                 output_type=EpisodeIdentityRequirements,
             )
             result = await agent.run(task)
@@ -1431,10 +1416,7 @@ class IdentityPlanner:
             appearance_agent = Agent(
                 self._identity_model("IDENTITY_PLANNER_APPEARANCE_MODEL"),
                 system_prompt=APPEARANCE_GENERATION_PROMPT,
-                model_settings=self._identity_model_settings(
-                    "IDENTITY_PLANNER_APPEARANCE_THINKING_LEVEL",
-                    "high",
-                ),
+                model_settings=self._identity_model_settings(),
                 output_type=AppearanceDescription,
                 retries={"output": 2},
                 validation_context={"planned_age_group": planned_age_group},
