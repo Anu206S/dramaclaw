@@ -27,6 +27,18 @@ def test_retro_skill_keeps_entry_guard_out_of_recipe_runtime_constraints():
     assert "一次性在草稿中列出完整工作流" in skill["planning"]["planning_notes"]
 
 
+def test_outdoor_stage_duel_character_elements_use_one_turnaround_reference():
+    recipe_path = (
+        Path(__file__).resolve().parents[1]
+        / "src/novelvideo/freezone/agent_catalog/builtins/recipes"
+        / "outdoor-stage-duel-key-elements.json"
+    )
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+
+    assert "正面、侧面、背面" in recipe["system_prompt"]
+    assert "全身三视图" in "\n".join(recipe["must_have_items"])
+
+
 def test_build_recipe_compiler_task_checks_output_kind():
     with pytest.raises(recipe_runtime.RecipeRuntimeError, match="incompatible"):
         recipe_runtime.build_recipe_compiler_task(

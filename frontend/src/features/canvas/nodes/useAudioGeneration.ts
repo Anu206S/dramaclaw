@@ -142,9 +142,11 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
             upstreamText: upstreamTextJoined,
             upstreamContents,
             fallbackPrompt,
-            onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(nodeId, {
+            onCompileMetadata: ({ mode, prompt: compiledPrompt, recipeIds }) => updateNodeData(nodeId, {
               workflowRecipeCompileMode: mode,
               workflowRecipeCompiledAt: new Date().toISOString(),
+              workflowRecipeCompiledPrompt: compiledPrompt,
+              text: compiledPrompt,
               workflowRecipeIds: recipeIds,
             }),
           })
