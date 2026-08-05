@@ -3,8 +3,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+// 询价与提交禁用条件住在共用 hook 里：工作流的 ImageGenNode 和故事板的
+// AssetBoardImageGenForm 都挂它，一处口径两个视图同价。扫宿主只会扫到一个
+// spread，扫不到真正的计费逻辑。
 const nodeSource = readFileSync(
-  "src/features/canvas/nodes/ImageGenNode.tsx",
+  "src/features/canvas/nodes/shared/useImageGenerationForm.ts",
   "utf8",
 );
 
