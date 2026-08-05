@@ -1151,9 +1151,11 @@ export function useVideoGenerationForm(
           kind: item.kind,
           label: item.nodeId,
         })),
-        onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(id, {
+        onCompileMetadata: ({ mode, prompt: compiledPrompt, recipeIds }) => updateNodeData(id, {
           workflowRecipeCompileMode: mode,
           workflowRecipeCompiledAt: new Date().toISOString(),
+          workflowRecipeCompiledPrompt: compiledPrompt,
+          prompt: compiledPrompt,
           workflowRecipeIds: recipeIds,
         }),
       });

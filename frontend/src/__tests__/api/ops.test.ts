@@ -75,6 +75,7 @@ describe("freezone recipe API", () => {
     );
     expect(onCompileMetadata).toHaveBeenCalledWith({
       mode: "timeout_fallback",
+      prompt: "编译后的图片提示词",
       recipeIds: ["video-storyboard-grid", "cinematic-lighting"],
     });
   });
@@ -131,10 +132,12 @@ describe("freezone recipe API", () => {
     );
     expect(firstMetadata).toHaveBeenCalledWith({
       mode: "model",
+      prompt: "compiled-1",
       recipeIds: ["product-hero"],
     });
     expect(secondMetadata).toHaveBeenCalledWith({
       mode: "memory_cache",
+      prompt: "compiled-2",
       recipeIds: ["product-detail"],
     });
   });

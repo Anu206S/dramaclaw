@@ -646,9 +646,11 @@ export const ImageEditNode = memo(({ id, data, selected, width, height }: ImageE
         kind: 'image',
         label: `reference-${index + 1}`,
       })),
-      onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(id, {
+      onCompileMetadata: ({ mode, prompt: compiledPrompt, recipeIds }) => updateNodeData(id, {
         workflowRecipeCompileMode: mode,
         workflowRecipeCompiledAt: new Date().toISOString(),
+        workflowRecipeCompiledPrompt: compiledPrompt,
+        prompt: compiledPrompt,
         workflowRecipeIds: recipeIds,
       }),
     });
