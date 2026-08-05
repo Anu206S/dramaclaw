@@ -1668,6 +1668,12 @@
       "selected_regen": "选中重生成",
       "compose_episode": "视频合成",
       "freezone_image_reverse_prompt": "图片反推提示词"
+    },
+    "cancelRunning": {
+      "title": "终止任务",
+      "fallbackMessage": "任务已开始执行。现在终止不会退还积分，是否确认终止？",
+      "confirm": "确认终止",
+      "keepRunning": "继续执行"
     }
   },
   "taskCenter": {
@@ -4620,7 +4626,9 @@
     "copyReport": "复制报错信息",
     "technicalDetails": "技术详情",
     "serviceConfigTitle": "生成服务未配置",
-    "openRouterConfigMessage": "当前模型需要 OpenRouter 服务，但后端还没有配置 API Key。请联系管理员处理。"
+    "openRouterConfigMessage": "当前模型需要 OpenRouter 服务，但后端还没有配置 API Key。请联系管理员处理。",
+    "stillRunningTitle": "仍在生成中",
+    "stillRunningMessage": "本次生成耗时较长，页面已停止等待，但任务仍在后台继续。可稍后刷新页面查看结果，或到任务中心查看进度。"
   },
   "videoCompose": {
     "title": "视频合成",

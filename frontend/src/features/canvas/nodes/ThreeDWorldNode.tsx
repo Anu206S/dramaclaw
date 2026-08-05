@@ -12,9 +12,11 @@ import {
 import {
   Handle,
   Position,
+  useStore,
   useUpdateNodeInternals,
   type NodeProps,
 } from '@xyflow/react';
+import { isLowDetailZoom } from '@/features/canvas/application/canvasLod';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -26,7 +28,8 @@ import {
   type FreezoneImageTo3GSKind,
   type FreezoneGenerationHistoryRecord,
 } from '@/api/ops';
-import { awaitTaskCompletion, type TaskState } from '@/api/tasks';
+import { awaitTaskCompletion, isTaskPollTimeoutError, type TaskState } from '@/api/tasks';
+import { notifyTaskStillRunning } from '@/features/canvas/application/errorDialog';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
 import {
   publishNodeActionAccepted,
@@ -833,6 +836,16 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
       ? t('common.billingRuleNotConfiguredShort')
       : null);
   const updateNodeInternals = useUpdateNodeInternals();
+  // 入口按钮的循环动效在低缩放档下只有几十像素宽，看不出是动的，却要每帧上传
+  // 一次视频纹理。选择器返回 boolean，只在跨过阈值那一次触发重渲染。
+  const lowDetailZoom = useStore((state) => isLowDetailZoom(state.transform[2]));
+  const entryMotionRef = useRef<HTMLVideoElement | null>(null);
+  useEffect(() => {
+    const video = entryMotionRef.current;
+    if (!video) return;
+    if (lowDetailZoom) video.pause();
+    else void video.play().catch(() => {});
+  }, [lowDetailZoom]);
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const addPanoCaptureGroup = useCanvasStore((state) => state.addPanoCaptureGroup);
@@ -1069,7 +1082,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
         nodeId: id,
       });
       updateNodeData(id, { taskKey: ref.task_key, ...generationTaskDescriptor(ref) });
-      const completed = await awaitTaskCompletion(ref.task_key, projectId);
+      const completed = await awaitTaskCompletion(ref.task_key, projectId, { taskType: ref.task_type });
       const generatedSource = sourceFromImageTo3gsResult(completed.result, {
         id: `generated-sog:${sourceKind}:${Date.now()}`,
         sourceKind,
@@ -1101,6 +1114,12 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
         ...(nextPanoUrl ? { panoUrl: nextPanoUrl } : {}),
       };
     } catch (error) {
+      // 轮询超时 ≠ 生成失败：后端还在跑，节点上的任务句柄仍可续接。
+      // 写错误横幅会把一个还活着的任务标成失败，并清掉句柄。
+      if (isTaskPollTimeoutError(error)) {
+        notifyTaskStillRunning(t);
+        return {};
+      }
       updateNodeData(id, {
         isGenerating: false,
         taskKey: null,
@@ -1118,6 +1137,7 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
     refreshHistory,
     selectedImageSourceKind,
     sourceNodeForGeneration,
+    t,
     updateNodeData,
     upstream,
   ]);
@@ -1448,10 +1468,11 @@ export const ThreeDWorldNode = memo(({ id, data, selected, width, height }: Thre
             aria-label={directorBusy ? t('viewer.threeD.openingDirectorWorld') : t('viewer.threeD.enterDirectorWorld')}
           >
             <video
+              ref={entryMotionRef}
               src="/images/btnmotion.mp4"
               className="block h-auto select-none"
               style={{ width: '100%' }}
-              autoPlay
+              autoPlay={!lowDetailZoom}
               loop
               muted
               playsInline
