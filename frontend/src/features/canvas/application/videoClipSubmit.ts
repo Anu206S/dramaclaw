@@ -50,8 +50,11 @@ export async function submitVideoClip(
     console.error('[video-clip] no project in URL');
     return { nodeId: null, error: null };
   }
-  // Compose only supports 720p / 1080p — fall back to 720p for 480P sources.
-  const composeResolution = opts.quality === '1080P' ? '1080p' : '720p';
+  // Compose only supports 720p / 1080p — fall back to 720p for 480p sources.
+  // 大小写不敏感：媒体目录里的档位现在是小写（"1080p"），老节点上仍可能存着
+  // "1080P"，硬比较会把 1080p 源悄悄降到 720p。
+  const composeResolution =
+    (opts.quality ?? '').toLowerCase() === '1080p' ? '1080p' : '720p';
   const sourceStart = opts.startMs / 1000;
   const sourceEnd = opts.endMs / 1000;
 
