@@ -650,6 +650,44 @@ async def test_fallback_display_prefers_api_project_id(monkeypatch):
     assert specs[0]["elements"][first_child]["props"]["src"] == "/static/projects/api-project/sketch.png?v=1"
 
 
+@pytest.mark.anyio
+async def test_fallback_display_groups_all_final_videos_into_one_spec(monkeypatch):
+    seen_paths = []
+
+    def fake_backend_api_get(path, token):
+        seen_paths.append(path)
+        if path.endswith("/episodes"):
+            return {"ok": True, "data": [{"number": 1}, {"number": 2}, {"number": 3}]}
+        episode = int(path.split("/")[-2])
+        return {
+            "ok": True,
+            "data": {
+                "exists": True,
+                "video_url": f"/static/projects/api-project/ep{episode:03d}.mp4",
+            },
+        }
+
+    monkeypatch.setattr(chat_service, "_backend_api_get", fake_backend_api_get)
+
+    specs = await chat_service._fallback_display_tool_ui_specs(
+        "local",
+        "chat-scope",
+        "dramaclaw_get_final_video",
+        {"project_id": "api-project"},
+        token="token",
+    )
+
+    assert len(specs) == 1
+    root = specs[0]["root"]
+    assert len(specs[0]["elements"][root]["children"]) == 3
+    assert seen_paths == [
+        "/api/v1/projects/api-project/episodes",
+        "/api/v1/projects/api-project/episodes/1/final",
+        "/api/v1/projects/api-project/episodes/2/final",
+        "/api/v1/projects/api-project/episodes/3/final",
+    ]
+
+
 def test_claude_and_codex_sessions_are_scope_scoped(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))

@@ -99,7 +99,7 @@ CP2 判定：脚本、场景/道具上下文足够推进草图；当前后端没
   必须等该 beat 的音频重做请求已经发出并返回成功后，才允许进入 `compose`。
 - 不要在该 beat 的音频重做之前先发起 `compose`
 
-**Step 15 视频模型**：当前后端没有整集 `/videos/generate` 路由。默认用 `POST /episodes/{ep}/beats/{beat}/video` 单 beat 生成；如需整集片段，优先调用一次 `dramaclaw_start_video_batch`，按 beat 顺序最多提交 3 个；只有一个 eligible beat 时调用 `dramaclaw_start_single_video`。默认 `huimeng_seedance-1.0-pro-fast`。
+**Step 15 视频模型**：当前后端没有整集 `/videos/generate` 路由。默认用 `POST /episodes/{ep}/beats/{beat}/video` 单 beat 生成；如需整集片段，优先调用一次 `dramaclaw_start_video_batch`，工具默认从缺少视频且已有首帧的 beat 中自动补足并按顺序提交最多 9 个独立任务；实际视频并发仍由共享队列限制为 3，其余任务排队。只有用户明确指定单个 beat 时调用 `dramaclaw_start_single_video`；明确指定少量 beat 时才为批量工具设置 `auto_fill=false`。默认 `huimeng_seedance-1.0-pro-fast`。
 
 **Step 15-16**：所有 `single_video` 完成后才能启动 `compose_episode`；当
 `pipeline/status.next_step == "compose_episode"` 且没有运行中的合成任务时，直接调用一次

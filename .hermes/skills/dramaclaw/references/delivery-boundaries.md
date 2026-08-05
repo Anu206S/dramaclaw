@@ -24,7 +24,7 @@
 | 场景图 | `dramaclaw_get_scene_images(name="场景名片段")` | 多关键词用 `names`，序号用 `index`/`scene_indices`，类型用 `scene_type` |
 | 视频片段 | `dramaclaw_get_episode_media(episode=N, media_type="video", beat=M)` | 内容检索用 `query`，多个 beat 用 `beat_indices` |
 | 音频/配音 | `dramaclaw_get_episode_media(episode=N, media_type="audio", beat=M)` | 内容检索用 `query`，多个 beat 用 `beat_indices` |
-| 最终成片 | `dramaclaw_get_final_video(episode=N)` | 仅在正式成片存在时展示 |
+| 最终成片 | 单集用 `dramaclaw_get_final_video(episode=N)`；全部成片省略 `episode`，分页用 `offset` + `limit` | 仅在正式成片存在时展示；“全部成片”只调用一次工具 |
 
 批量媒体统一用 `offset` + `limit` 分页，不为展示而遍历任务列表或扫描文件系统。
 

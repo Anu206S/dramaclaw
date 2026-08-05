@@ -9,7 +9,7 @@ from novelvideo.task_backend.queues import normalize_queue_kind
 
 PROJECT_LANE_LIMIT_DEFAULTS = {
     "default": 12,
-    "video": 4,
+    "video": 12,
     "world": 2,
     "ffmpeg": 2,
 }
@@ -23,7 +23,7 @@ PROJECT_LANE_MIN_DEFAULTS = {
 
 PROJECT_USER_LANE_LIMIT_DEFAULTS = {
     "default": 3,
-    "video": 3,
+    "video": 9,
     "world": 1,
     "ffmpeg": 1,
 }
