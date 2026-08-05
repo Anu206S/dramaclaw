@@ -35,13 +35,14 @@ import type {
 } from "@/features/canvas/domain/canvasNodes";
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import type { UpstreamContent } from "@/features/canvas/application/ports";
-import type { FreezoneVideoAspectRatio } from "@/api/ops";
+import type {
+  FreezoneVideoAspectRatio,
+  MediaModelParameterDefinition,
+} from "@/api/ops";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { ReferenceTextChip } from "@/features/canvas/nodes/shared/ReferenceTextChip";
 import { ReferenceDetachButton } from "@/features/canvas/nodes/shared/ReferenceDetachButton";
 import {
-  ASPECT_RATIOS,
-  REFERENCE_CAPS_BY_MODE,
   clampVideoDuration,
   isHappyHorseVideoModel,
   type ReferenceMediaCapEntry,
@@ -67,7 +68,14 @@ import {
   type CameraMovementPreset,
 } from "@/features/canvas/domain/cameraMovementPresets";
 import { ProviderModelPicker } from "@/features/canvas/ui/ProviderModelPicker";
-import { CreditCostPill } from "@/components/credits/credit-visual";
+import {
+  filterMediaModelParamsForMode,
+  MediaModelParameterChip,
+} from "@/features/canvas/ui/MediaModelParameterChip";
+import {
+  CreditCostPill,
+  type CreditPromotionDisplay,
+} from "@/components/credits/credit-visual";
 import { CANVAS_NODE_INPUT_PLACEHOLDER_CLASS } from "@/features/canvas/ui/nodeFrameStyles";
 import {
   NODE_COUNT_POPOVER_CLASS,
@@ -128,6 +136,7 @@ const VIDEO_MODE_TOOLTIP_CLASS =
 interface GenModeSelectProps {
   value: VideoGenMode;
   modelId: string | null | undefined;
+  supportedModes?: string[];
   upstreamCounts: { videos: number; images: number; audios: number };
   onChange: (next: VideoGenMode) => void;
 }
@@ -186,7 +195,13 @@ function videoModeDisabledReason(
   return null;
 }
 
-function GenModeSelect({ value, modelId, upstreamCounts, onChange }: GenModeSelectProps) {
+function GenModeSelect({
+  value,
+  modelId,
+  supportedModes,
+  upstreamCounts,
+  onChange,
+}: GenModeSelectProps) {
   const { t } = useTranslation();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -203,7 +218,20 @@ function GenModeSelect({ value, modelId, upstreamCounts, onChange }: GenModeSele
   //   - 上游接入视频后，「首帧」「图片参考」整项隐藏（文档：视频节点下没有这两个
   //     选项），只保留「文生视频」(禁用) 与「视频编辑」。
   // 非 HappyHorse 不暴露「视频编辑」(它是 HappyHorse 专属功能)。
+  // 媒体目录声明了 supportedModes 就完全以它为准（Admin 配置是最新事实），
+  // 下面那套按模型 id 推断的规则只是没配置时的兜底。
   const visibleTabs = useMemo(() => {
+    if (supportedModes?.length) {
+      const keyMap: Record<VideoGenMode, string> = {
+        textToVideo: "text_to_video",
+        imageToVideo: "first_frame",
+        firstLastFrame: "first_last_frame",
+        imageReference: "image_reference",
+        allReference: "all_reference",
+        videoEdit: "video_edit",
+      };
+      return MODE_TABS.filter((tab) => supportedModes.includes(keyMap[tab.key]));
+    }
     if (!isHappyHorseVideoModel(modelId)) {
       return MODE_TABS.filter((tab) =>
         isVideoModeSupportedByModel(tab.key, modelId),
@@ -221,7 +249,7 @@ function GenModeSelect({ value, modelId, upstreamCounts, onChange }: GenModeSele
           ? { ...tab, labelKey: "node.videoNode.tabs.firstFrame" }
           : tab,
       );
-  }, [modelId, upstreamCounts.videos]);
+  }, [modelId, supportedModes, upstreamCounts.videos]);
   const activeTab = visibleTabs.find((tab) => tab.key === value) ?? visibleTabs[0];
 
   const syncPopoverPosition = useCallback(() => {
@@ -336,6 +364,7 @@ function GenModeSelect({ value, modelId, upstreamCounts, onChange }: GenModeSele
 
 interface VideoConfigChipProps {
   aspectRatio: FreezoneVideoAspectRatio;
+  aspectRatioOptions: readonly FreezoneVideoAspectRatio[];
   quality: VideoGenQuality;
   qualityOptions: readonly VideoGenQuality[];
   durationSec: number;
@@ -348,6 +377,7 @@ interface VideoConfigChipProps {
 
 function VideoConfigChip({
   aspectRatio,
+  aspectRatioOptions,
   quality,
   qualityOptions,
   durationSec,
@@ -449,7 +479,7 @@ function VideoConfigChip({
             {t("node.videoNode.aspect.title")}
           </div>
           <div className={`grid grid-cols-5 ${VIDEO_PARAM_ROW_CLASS}`}>
-            {ASPECT_RATIOS.map((ratio) => {
+            {aspectRatioOptions.map((ratio) => {
               const isActive = aspectRatio === ratio;
               return (
                 <button
@@ -825,9 +855,8 @@ function CountPicker({ value, onChange }: CountPickerProps) {
 
 interface ReferenceMediaRowProps {
   items: ReadonlyArray<ReferenceMediaCapEntry>;
-  /** 当前 genMode 是否在 REFERENCE_CAPS_BY_MODE 表里 —— 只有有 cap 的模式
-   *  才把超额 chip 标灰。 */
-  enforceCap: boolean;
+  /** 当前模式的逐类型上限（含模型覆盖）；null = 该模式不限制，不标灰任何 chip。 */
+  caps: { image: number; video: number; audio: number } | null;
   /** 当前 genMode；用来决定 firstLastFrame 模式下给前两张图片打 首帧/尾帧 角标。 */
   genMode: VideoGenMode;
   onFocus: (nodeId: string) => void;
@@ -838,7 +867,7 @@ interface ReferenceMediaRowProps {
 
 function ReferenceMediaRow({
   items,
-  enforceCap,
+  caps,
   genMode,
   onFocus,
   onDetach,
@@ -878,14 +907,18 @@ function ReferenceMediaRow({
     <div className="ml-4 flex shrink-0 items-center gap-1.5">
       {items.map((entry) => {
         const { item, typeIndex, withinCap } = entry;
-        // 「超出当前模式上限」只在 REFERENCE_CAPS_BY_MODE 里登记过的模式生效
-        // （目前是 allReference / firstLastFrame）；其它模式即便挂了 12 张图，
-        // imageReference / firstLastFrame 自己有 slice 兜底，不在 chip 行额
-        // 外标记。
-        const overCap = enforceCap && !withinCap;
-        const modeCap = REFERENCE_CAPS_BY_MODE[genMode]?.[item.kind] ?? 0;
+        // 「超出当前模式上限」只在 REFERENCE_CAPS_BY_MODE 里登记过的模式生效。
+        const overCap = caps != null && !withinCap;
+        const modeCap = caps?.[item.kind] ?? 0;
         const modeLabel =
-          genMode === "firstLastFrame" ? "首尾帧" : "全能参考";
+          {
+            textToVideo: "文生视频",
+            imageToVideo: "图生视频",
+            imageReference: "多图参考",
+            firstLastFrame: "首尾帧",
+            videoEdit: "视频编辑",
+            allReference: "全能参考",
+          }[genMode] ?? "当前模式";
         const overCapTitle = overCap
           ? `${
               item.kind === "image"
@@ -1299,6 +1332,8 @@ export interface VideoGenerationFormProps {
   genMode: VideoGenMode;
   /** 送进模式菜单判可用性的模型标识（优先 apiModel，回落 id）。 */
   genModeModelId: string | null | undefined;
+  /** 媒体目录声明的可用模式（后端 key）；有它就以它为准，能力推断只是兜底。 */
+  genModeSupportedModes?: string[];
   /**
    * 模式菜单用的上游计数。**与 `modelUpstreamCounts` 是两份**：HappyHorse 的可选
    * 模式由上游节点类型（含未填图的空节点）决定，其余模型按已解析素材 URL 计数，
@@ -1309,6 +1344,8 @@ export interface VideoGenerationFormProps {
   onDetachUpstream: (sourceNodeId: string) => void;
   /** 已按引用顺序排好、并补过「同类型序号 + 是否在模式上限内」的引用素材。 */
   referenceMediaItems: ReadonlyArray<ReferenceMediaCapEntry>;
+  /** 当前模式的逐类型素材上限（含模型覆盖）；null = 该模式不限制。 */
+  referenceCaps: { image: number; video: number; audio: number } | null;
 
   // ── 提示词编辑器 ──
   // prompt 的 draft 状态、IME 合成态由宿主持有——节点上「生成失败」横幅的重试按钮
@@ -1331,6 +1368,8 @@ export interface VideoGenerationFormProps {
   /** 模型下拉里判「该模型吃不下当前素材」用的上游计数（始终按已解析素材 URL）。 */
   modelUpstreamCounts: { images: number; videos: number; audios: number };
   aspectRatio: FreezoneVideoAspectRatio;
+  /** 可选比例：模型在媒体目录里声明了就用它的，否则是内置的 7 个预设。 */
+  aspectRatioOptions: readonly FreezoneVideoAspectRatio[];
   quality: VideoGenQuality;
   qualityOptions: readonly VideoGenQuality[];
   durationSec: number;
@@ -1338,9 +1377,12 @@ export interface VideoGenerationFormProps {
   sceneOptimize?: Seedance2SceneOptimize;
   sceneOptimizeOptions: readonly Seedance2SceneOptimize[];
   generateAudio: boolean;
-  /** Seedance 2.0 系模型才显示「真人验证」开关。 */
+  /** 媒体目录里勾了 humanReview 的模型才显示「真人验证」开关。 */
   showHumanReview: boolean;
   humanReview: boolean;
+  /** 所选模型声明的自定义参数表单（MediaModelParameterChip）。 */
+  modelParameters: MediaModelParameterDefinition[] | undefined;
+  modelParams: Record<string, unknown> | undefined;
   count: VideoGenCount;
   isTranslatingPrompt: boolean;
   isGenerating: boolean;
@@ -1354,6 +1396,8 @@ export interface VideoGenerationFormProps {
 
   // ── 提交 ──
   totalCreditCostDisplay: string | null;
+  /** 与 `totalCreditCostDisplay` 成对：缺了它促销标签只会兜底成通用的「促销中」。 */
+  creditPromotion: CreditPromotionDisplay | null;
   submitDisabled: boolean;
   submitDisabledReason?: string | null;
   onSubmit: () => void;
@@ -1391,10 +1435,12 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
     onOpenExternalAssets,
     genMode,
     genModeModelId,
+    genModeSupportedModes,
     genModeUpstreamCounts,
     upstreamTextContents,
     onDetachUpstream,
     referenceMediaItems,
+    referenceCaps,
     prompt,
     onPromptChange,
     onCompositionStart,
@@ -1405,6 +1451,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
     onModelChange,
     modelUpstreamCounts,
     aspectRatio,
+    aspectRatioOptions,
     quality,
     qualityOptions,
     durationSec,
@@ -1414,12 +1461,15 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
     generateAudio,
     showHumanReview,
     humanReview,
+    modelParameters,
+    modelParams,
     count,
     isTranslatingPrompt,
     isGenerating,
     translateDisabled,
     onTranslate,
     totalCreditCostDisplay,
+    creditPromotion,
     submitDisabled,
     submitDisabledReason,
     onSubmit,
@@ -1467,8 +1517,20 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
           <GenModeSelect
             value={genMode}
             modelId={genModeModelId}
+            supportedModes={genModeSupportedModes}
             upstreamCounts={genModeUpstreamCounts}
-            onChange={(nextMode) => updateNodeData(nodeId, { genMode: nextMode })}
+            // 换模式要顺手裁掉只属于上一个模式的自定义参数：参数表是按模式声明
+            // 的，留着的键会原样发给后端，轻则被忽略重则报参数不合法。
+            onChange={(nextMode) =>
+              updateNodeData(nodeId, {
+                genMode: nextMode,
+                modelParams: filterMediaModelParamsForMode(
+                  modelParameters,
+                  modelParams,
+                  nextMode,
+                ),
+              })
+            }
           />
           <NodeContextPromptPaletteButton
             nodeId={nodeId}
@@ -1487,7 +1549,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
         {referenceMediaItems.length > 0 && (
           <ReferenceMediaRow
             items={referenceMediaItems}
-            enforceCap={REFERENCE_CAPS_BY_MODE[genMode] != null}
+            caps={referenceCaps}
             genMode={genMode}
             onFocus={(focusNodeId) => setSelectedNode(focusNodeId)}
             onDetach={onDetachUpstream}
@@ -1528,6 +1590,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
           />
           <VideoConfigChip
             aspectRatio={aspectRatio}
+            aspectRatioOptions={aspectRatioOptions}
             quality={quality}
             qualityOptions={qualityOptions}
             durationSec={durationSec}
@@ -1536,6 +1599,12 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
             sceneOptimizeOptions={sceneOptimizeOptions}
             generateAudio={generateAudio}
             onChange={(patch) => updateNodeData(nodeId, patch)}
+          />
+          <MediaModelParameterChip
+            parameters={modelParameters}
+            values={modelParams}
+            mode={genMode}
+            onChange={(next) => updateNodeData(nodeId, { modelParams: next })}
           />
           {showHumanReview && (
             <button
@@ -1597,6 +1666,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
         <div className="flex shrink-0 items-center gap-2">
           <CreditCostPill
             display={totalCreditCostDisplay}
+            promotion={creditPromotion}
             disabled={submitDisabled}
             className={NODE_CREDIT_PILL_FLAT_CLASS}
           />
