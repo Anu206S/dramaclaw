@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 
 import {
+  assistantCompletionPrefix,
   buildCanvasCommandFlowItemsForTest,
   canvasCommandFeedbackVisualToneForTest,
   canvasCommandFeedbackIsValidationOnlyForTest,
@@ -19,6 +20,24 @@ describe("assistant success summary", () => {
     expect(isGenerationSuccessSummaryText("生成成功，无失败。")).toBe(true);
     expect(isGenerationSuccessSummaryText("生成成功, 无失败")).toBe(true);
     expect(isGenerationSuccessSummaryText("图片生成成功，下一步生成视频。")).toBe(false);
+  });
+
+  it("classifies natural DramaClaw completion replies without requiring a checkmark", () => {
+    expect(assistantCompletionPrefix("第3集身份规划已完成。本集身份全部复用。"))
+      .toBe("第3集身份规划已完成。");
+    expect(assistantCompletionPrefix("第 3 集剧本生成完成。下一步生成草图。"))
+      .toBe("第 3 集剧本生成完成。");
+    expect(assistantCompletionPrefix("第1集成片合成完成。展示成片："))
+      .toBe("第1集成片合成完成。");
+    expect(assistantCompletionPrefix("✅ 规划身份 · ep3 已完成。你可以继续下一步。"))
+      .toBe("✅ 规划身份 · ep3 已完成。");
+  });
+
+  it("does not classify negative completion status as completed", () => {
+    expect(assistantCompletionPrefix("第3集身份规划尚未完成。请稍后查看。"))
+      .toBeNull();
+    expect(assistantCompletionPrefix("当前任务没有生成完成。"))
+      .toBeNull();
   });
 });
 

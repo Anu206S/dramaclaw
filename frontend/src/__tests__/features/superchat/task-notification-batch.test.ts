@@ -87,6 +87,20 @@ describe("resolveChatTaskBatchSummary", () => {
     );
   });
 
+  it("labels selected regen batches as first frames", () => {
+    const tasks = [
+      task({ task_type: "selected_regen" }),
+      task({ task_key: "task:2", task_id: "job-2", task_type: "selected_regen" }),
+      task({ task_key: "task:3", task_id: "job-3", task_type: "selected_regen" }),
+    ];
+
+    const summary = resolveChatTaskBatchSummary(tasks, tasks[2]);
+
+    expect(buildChatTaskBatchNotification(summary!)).toBe(
+      "✅ 第 1 集 3 个首帧已全部生成完成。你可以让我查看结果，或继续下一步。",
+    );
+  });
+
   it("does not aggregate ordinary single tasks", () => {
     const single = task({ metadata: null });
 

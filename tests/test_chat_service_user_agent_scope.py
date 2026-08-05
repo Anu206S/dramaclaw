@@ -1072,6 +1072,56 @@ def test_prompt_injects_json_render_contract(monkeypatch, tmp_path):
     assert prompt.rstrip().endswith("查看肖像图片，用 json-render 显示")
 
 
+def test_prompt_injects_one_step_execution_hint_for_explicit_continuation(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "下一步",
+        route_prompt="下一步",
+    )
+
+    assert "[DRAMACLAW_CONTINUATION]" in prompt
+    assert "start exactly one matching write" in prompt
+    assert "dramaclaw_render_first_frames" in prompt
+    assert "Do not reread identical status" in prompt
+    assert prompt.rstrip().endswith("下一步")
+
+
+def test_prompt_does_not_treat_continuation_question_as_write_authorization(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "为什么点击下一步不能继续？",
+        route_prompt="为什么点击下一步不能继续？",
+    )
+
+    assert "[DRAMACLAW_CONTINUATION]" not in prompt
+
+
+def test_prompt_does_not_inject_mainline_continuation_into_freezone(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "下一步",
+        tool_mode="freezone_canvas",
+        route_prompt="下一步",
+    )
+
+    assert "[DRAMACLAW_CONTINUATION]" not in prompt
+
+
 def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainline_generation(
     monkeypatch, tmp_path
 ):

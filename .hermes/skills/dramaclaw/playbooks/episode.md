@@ -75,6 +75,10 @@ CP2 判定：脚本、场景/道具上下文足够推进草图；当前后端没
 - 当前状态尚未配色时，本轮只调用 `assign-colors` 并收口。
 - 配色已完成后，当前轮最多启动一个 grid 的生成；不要循环所有 grid_index。下轮“继续”再处理下一个 grid。
 
+**Step 13 首帧生成**：调用一次 `dramaclaw_render_first_frames`，按 beat 顺序最多提交 3 个
+独立 `selected_regen` 任务；每个任务独立计时并在完成后立即保存。省略 `beat_indices` 时工具只选择
+接下来 3 个缺少首帧的 beat。当前批次结束后，下轮“继续”再提交下一批，直到首帧齐全。
+
 **Step 12.3**：草图完成后的下一轮再做检测。无身份图时检测无效。
 
 **Step 12.5**：`{"language":"en"}` 默认英文 SuperPower 模式，决定 video_mode + motion prompt
