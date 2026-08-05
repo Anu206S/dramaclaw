@@ -6,12 +6,13 @@ import {
   type FreezoneVideoUpscaleDenoise,
   type FreezoneVideoUpscaleResolution,
 } from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
+import { awaitTaskCompletion, isTaskPollTimeoutError } from '@/api/tasks';
 import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 import { generationTaskDescriptor } from './resumeGeneration';
+import { notifyTaskStillRunning } from './errorDialog';
 
 export const VIDEO_UPSCALE_RESOLUTIONS: FreezoneVideoUpscaleResolution[] = [
   '1080p',
@@ -111,7 +112,9 @@ export async function submitVideoUpscale(
       nodeId,
     });
     useCanvasStore.getState().updateNodeData(nodeId, generationTaskDescriptor(ref));
-    const completed = await awaitTaskCompletion(ref.task_key, project);
+    const completed = await awaitTaskCompletion(ref.task_key, project, {
+      taskType: ref.task_type,
+    });
     const directUrl = completed.result?.['output_url'] as string | undefined;
     let url = directUrl;
     if (!url) {
@@ -125,6 +128,10 @@ export async function submitVideoUpscale(
       generationError: null,
     });
   } catch (err) {
+    if (isTaskPollTimeoutError(err)) {
+      notifyTaskStillRunning();
+      return;
+    }
     const message = err instanceof Error ? err.message : String(err);
     console.error('[video-upscale] generation failed', err);
     useCanvasStore.getState().updateNodeData(nodeId, {

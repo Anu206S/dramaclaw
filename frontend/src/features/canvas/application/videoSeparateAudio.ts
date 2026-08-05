@@ -4,10 +4,12 @@ import {
   fetchFreezoneAudioSeparateResult,
   submitFreezoneAudioSeparate,
 } from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
+import { awaitTaskCompletion, isTaskPollTimeoutError } from '@/api/tasks';
 import { CANVAS_NODE_TYPES } from '@/features/canvas/domain/canvasNodes';
 import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
+
+import { notifyTaskStillRunning } from './errorDialog';
 
 /** 音频 / 静音视频结果节点的落位尺寸（与 NodeActionToolbar 原实现一致）。 */
 const AUDIO_LAYOUT_WIDTH = 480;
@@ -178,7 +180,9 @@ export async function separateVideoAudio(
     const ref = await submitFreezoneAudioSeparate(projectId, {
       sourceUrl: opts.sourceUrl,
     });
-    const completed = await awaitTaskCompletion(ref.task_key, projectId);
+    const completed = await awaitTaskCompletion(ref.task_key, projectId, {
+      taskType: ref.task_type,
+    });
     console.info('[audio-separate] task completed', completed.result);
 
     let { audio: audioOutputUrl, video: silentVideoOutputUrl } =
@@ -245,6 +249,14 @@ export async function separateVideoAudio(
 
     return { audioNodeId, videoNodeId, error: null };
   } catch (error) {
+    if (isTaskPollTimeoutError(error)) {
+      console.warn('[audio-separate] detached from a still-running job', {
+        taskKey: error.taskKey,
+        idleMs: error.idleMs,
+      });
+      notifyTaskStillRunning();
+      return empty;
+    }
     console.error('[audio-separate] failed', error);
     return {
       audioNodeId: null,

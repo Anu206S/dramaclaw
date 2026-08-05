@@ -28,8 +28,7 @@ export function NodeGenerationOverlay({
   rounded = 'rounded-[var(--node-radius)]',
   messageKey: _messageKey = 'canvas.generationProgress',
 }: NodeGenerationOverlayProps) {
-  // 估算算法已抽到 useEstimatedProgress（与故事板卡片/详情共用）；这里的调用
-  // 参数与轮询节奏跟抽取前逐行一致，工作流侧可见行为零变化。
+  // 估算算法抽到 useEstimatedProgress，与故事板卡片/详情共用。
   const percent = useEstimatedProgress(startedAt, durationMs);
 
   return (

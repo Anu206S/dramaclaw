@@ -5,7 +5,7 @@ import {
   submitFreezoneMultiView,
   type FreezoneMultiViewPreset,
 } from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
+import { awaitTaskCompletion, isTaskPollTimeoutError } from '@/api/tasks';
 import {
   CANVAS_NODE_TYPES,
   DEFAULT_ASPECT_RATIO,
@@ -21,6 +21,7 @@ import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 import { generationTaskDescriptor } from './resumeGeneration';
+import { notifyTaskStillRunning } from './errorDialog';
 
 /** 面板预设 → 后端 preset 枚举（原 MultiAngleEditorOverlay 私有映射）。 */
 const PRESET_MAP: Record<MultiAnglePresetKey, FreezoneMultiViewPreset> = {
@@ -121,7 +122,9 @@ export function multiAngleImage(
         imageSize: payload.imageSize,
       });
       useCanvasStore.getState().updateNodeData(nextNodeId, generationTaskDescriptor(ref));
-      const completed = await awaitTaskCompletion(ref.task_key, project);
+      const completed = await awaitTaskCompletion(ref.task_key, project, {
+        taskType: ref.task_type,
+      });
       const directUrl = completed.result?.['output_url'] as string | undefined;
       let url = directUrl;
       if (!url) {
@@ -136,6 +139,10 @@ export function multiAngleImage(
         generationError: null,
       });
     } catch (err) {
+      if (isTaskPollTimeoutError(err)) {
+        notifyTaskStillRunning();
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[multi-angle] generation failed', err);
       useCanvasStore.getState().updateNodeData(nextNodeId, {
