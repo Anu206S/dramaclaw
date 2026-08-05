@@ -1820,6 +1820,7 @@ async def _start_or_enqueue_mainline_scene_360_candidate_job(
     quality: str | None,
     canvas_id: str | None,
     node_id: str | None,
+    catalog_id: str | None = None,
     task_display: dict[str, str] | None = None,
 ) -> dict:
     return await _start_or_enqueue_mainline_scene_360_task(
@@ -1834,6 +1835,7 @@ async def _start_or_enqueue_mainline_scene_360_candidate_job(
         quality=quality,
         canvas_id=canvas_id,
         node_id=node_id,
+        catalog_id=catalog_id,
         auto_commit=False,
         task_display=task_display,
     )
@@ -1852,6 +1854,7 @@ async def _start_or_enqueue_mainline_scene_360_task(
     quality: str | None,
     canvas_id: str | None,
     node_id: str | None,
+    catalog_id: str | None = None,
     auto_commit: bool = True,
     task_display: dict[str, str] | None = None,
 ) -> dict:
@@ -1889,6 +1892,10 @@ async def _start_or_enqueue_mainline_scene_360_task(
             ),
             "size": image_size or MAINLINE_SCENE_360_IMAGE_SIZE,
             "quality": quality or "medium",
+            # 画布报价时带了目录身份就必须原样传下来，否则前端按目录规则报价、
+            # 后端按旧的 image_selection 规则扣费，两边价格对不上。
+            **({"catalog_id": catalog_id} if catalog_id else {}),
+            **({"pricing_model": resolved_model} if catalog_id else {}),
         },
     )
     queued = await get_task_backend().enqueue_project_task(
@@ -1956,6 +1963,8 @@ async def _start_or_enqueue_freezone_edit_job(
     model_id: str | None = None,
     catalog_id: str | None = None,
     gen_mode: str | None = None,
+    model_params: dict[str, Any] | None = None,
+    request_schema: dict[str, Any] | None = None,
     task_display: dict[str, str] | None = None,
     billing_feature_key: str = "",
     billing_operation: str = "",
@@ -2027,6 +2036,10 @@ async def _start_or_enqueue_freezone_edit_job(
                 "model_id": model_id or "",
                 "catalog_id": catalog_id or "",
                 "gen_mode": gen_mode or "",
+                # 目录动态参数与它的 schema 一起下发给 runner；schema 是 runner
+                # 把参数写进网关请求体（requestPath）的唯一依据，只带值没有用。
+                **({"model_params": model_params} if model_params else {}),
+                **({"request_schema": request_schema} if request_schema else {}),
                 **({"billing": billing} if billing else {}),
                 **display_payload,
             },
@@ -2361,7 +2374,24 @@ MAINLINE_SKETCH_IMAGE_SIZE = "1K"
 MAINLINE_SKETCH_IMAGE_QUALITY = "low"
 MAINLINE_FRAME_IMAGE_SIZE = "1K"
 MAINLINE_SCENE_360_IMAGE_SIZE = "2K"
+_IMAGE_SIZE_TIERS = ("512", "1K", "2K", "3K", "4K")
+_IMAGE_SIZE_TIER_BY_CASEFOLD = {tier.casefold(): tier for tier in _IMAGE_SIZE_TIERS}
 _SKILL_RUN_ID_RE = re.compile(r"^[a-zA-Z0-9_.:\-]{1,128}$")
+
+
+def _cap_mainline_scene_360_image_size(requested: str | None) -> str:
+    """360 全景取 min(前端档位, 2K)。
+
+    上限保留：主线 360 slot 一直按 2K 产出，4K 只是徒增成本。
+    但低于上限的档位必须原样透传 —— 画布面板按媒体模型目录里那一档报价，
+    目录只给 1K 的模型如果被抬到 2K，报价与执行、乃至与网关能力都对不上。
+    """
+    value = _IMAGE_SIZE_TIER_BY_CASEFOLD.get((requested or "").strip().casefold())
+    if value is None:
+        return MAINLINE_SCENE_360_IMAGE_SIZE
+    if _IMAGE_SIZE_TIERS.index(value) > _IMAGE_SIZE_TIERS.index(MAINLINE_SCENE_360_IMAGE_SIZE):
+        return MAINLINE_SCENE_360_IMAGE_SIZE
+    return value
 
 
 def _canvas_events_dir(project_dir: Path) -> Path:
@@ -4392,6 +4422,23 @@ async def freezone_scene_360(
     scene_id = _infer_scene_id_from_master_path(base_path, project_dir)
     if not scene_id:
         raise HTTPException(400, "could not infer scene_id from reference_url")
+    # 与 /freezone/gen 同一口径：EE 里目录是权威的，模型和目录身份都要在目录里
+    # 对得上才放行。原来这条路由直接采信 body —— 客户端可以随便报一个便宜的
+    # catalog_id 配一个贵的 model，报价按前者、执行按后者。
+    _schema, _params, catalog_entry = await _resolve_catalog_request(
+        "image",
+        body.catalog_id or body.model,
+        None,
+        mode="image_to_image",
+    )
+    # 只取模型：这条老路由的 provider 是 scene_360_builder 那边按环境变量解析的
+    # （`resolve_scene_360_image_provider`），不走网关那套 provider/model 组合，
+    # 所以这里必须发裸 apiModel，不能带 provider 前缀。
+    _catalog_provider, catalog_model = _catalog_image_execution_selection(
+        catalog_entry,
+        requested_provider=None,
+        requested_model=body.model,
+    )
     kwargs = {
         "ctx": ctx,
         "project_dir": project_dir,
@@ -4399,9 +4446,14 @@ async def freezone_scene_360(
         "description": None,
         "master_url": body.reference_url,
         "reverse_url": body.reverse_reference_url,
-        "model": body.model or FREEZONE_DEFAULT_IMAGE_MODEL,
-        "image_size": MAINLINE_SCENE_360_IMAGE_SIZE,
+        "model": catalog_model or body.model or FREEZONE_DEFAULT_IMAGE_MODEL,
+        # 画布面板按所选模型实际支持的档位报价并把它发下来；这里在 2K 上限内
+        # 原样使用，否则「报价 1K、执行 2K」，媒体模型目录配的分辨率在这条路由
+        # 等于没生效。
+        "image_size": _cap_mainline_scene_360_image_size(body.image_size),
         "quality": body.quality,
+        # 计费身份以目录条目为准，不采信 body —— 它直接决定按哪条目录规则扣费。
+        "catalog_id": _catalog_entry_id(catalog_entry) or body.catalog_id or None,
         "canvas_id": body.canvas_id or None,
         "node_id": body.node_id or None,
         "task_display": {
@@ -4945,6 +4997,23 @@ async def freezone_template_edit(
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
         project, user
     )
+    # 与 /freezone/edit 同一口径：EE 里目录是权威的，模型和目录身份都要在目录里
+    # 对得上才放行。原来这条路由直接采信 body —— 客户端可以随便报一个便宜的
+    # catalog_id 配一个贵的 model，报价按前者、执行按后者。
+    _schema, _params, catalog_entry = await _resolve_catalog_request(
+        "image",
+        body.catalog_id or body.model,
+        None,
+        mode="image_to_image",
+    )
+    # provider 也一并取目录条目的：这条路由和 /freezone/edit 共用
+    # `_start_or_enqueue_freezone_edit_job`，它会按 provider/model 走网关，
+    # 目录里配的 openrouter 模型再按默认 provider 路由就送错家了。
+    execution_provider, execution_model = _catalog_image_execution_selection(
+        catalog_entry,
+        requested_provider=None,
+        requested_model=body.model,
+    )
     return await _start_or_enqueue_freezone_edit_job(
         ctx=ctx,
         username=username,
@@ -4958,9 +5027,13 @@ async def freezone_template_edit(
         image_size=body.image_size or "2K",
         camera=body.camera,
         style=body.style,
-        provider=None,
-        model=body.model or FREEZONE_DEFAULT_IMAGE_MODEL,
+        provider=execution_provider,
+        model=execution_model or body.model or FREEZONE_DEFAULT_IMAGE_MODEL,
         quality=body.quality or "medium",
+        # 画布报价时带了目录身份就必须原样传下来，否则前端按目录规则报价、
+        # 后端按旧的 image_selection 规则扣费，两边价格对不上。
+        # 身份以目录条目为准，不采信 body —— 它直接决定按哪条目录规则扣费。
+        catalog_id=_catalog_entry_id(catalog_entry) or body.catalog_id or None,
         billing_feature_key="freezone.image_grid",
         billing_operation=body.mode,
     )
@@ -8517,10 +8590,10 @@ async def freezone_edit(
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
         project, user
     )
-    _, _, catalog_entry = await _resolve_catalog_request(
+    request_schema, model_params, catalog_entry = await _resolve_catalog_request(
         "image",
         body.model_id or body.model,
-        None,
+        body.model_params,
         mode=body.gen_mode,
     )
     execution_provider, execution_model = _catalog_image_execution_selection(
@@ -8549,6 +8622,8 @@ async def freezone_edit(
         model_id=_catalog_entry_id(catalog_entry) or body.model_id or None,
         catalog_id=_catalog_entry_id(catalog_entry) or None,
         gen_mode=body.gen_mode or None,
+        model_params=model_params,
+        request_schema=request_schema,
         billing_feature_key="freezone.image_edit",
         billing_operation=body.gen_mode or "edit",
     )

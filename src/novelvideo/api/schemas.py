@@ -485,6 +485,13 @@ class FreezoneEditRequest(BaseModel):
         default=None, description="可选：注册表模型 id，用于还原节点时回填 model"
     )
     gen_mode: Optional[str] = Field(default=None, description="可选：生成模式，用于还原节点时回填 genMode")
+    model_params: dict[str, Any] = Field(
+        default_factory=dict,
+        description=(
+            "媒体模型目录声明的动态参数取值。与 /freezone/gen 同一口径 —— "
+            "带参考图的图编辑走这条路由，少了这个字段目录参数在图编辑侧等于没生效"
+        ),
+    )
 
 
 class FreezoneSketchFromContextRequest(BaseModel):
@@ -546,6 +553,10 @@ class FreezoneScene360Request(BaseModel):
     model: str = Field(
         default=FREEZONE_DEFAULT_IMAGE_MODEL,
         description=f"图片模型名，默认 {FREEZONE_DEFAULT_IMAGE_MODEL}",
+    )
+    catalog_id: str = Field(
+        default="",
+        description="媒体模型目录条目 id。前端按目录条目报价时必须一并下发，否则计费口径与报价不一致",
     )
     quality: Optional[str] = Field(default="medium", description="图片画质档位，默认 medium")
 
@@ -771,6 +782,10 @@ class FreezoneTemplateEditRequest(BaseModel):
     model: str = Field(
         default=FREEZONE_DEFAULT_IMAGE_MODEL,
         description=f"图片模型名，默认 {FREEZONE_DEFAULT_IMAGE_MODEL}",
+    )
+    catalog_id: str = Field(
+        default="",
+        description="媒体模型目录条目 id。前端按目录条目报价时必须一并下发，否则计费口径与报价不一致",
     )
     quality: Optional[str] = Field(default="medium", description="图片画质档位，默认 medium")
 
