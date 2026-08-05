@@ -702,6 +702,7 @@ async def generate_recipe_text(**compile_args: Any) -> str:
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
         DEFAULT_FREEZONE_RECIPE_COMPILER_MODEL,
+        brainclaw_profile=BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION,
     )
     agent = Agent(
         model,
