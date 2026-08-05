@@ -2599,6 +2599,17 @@ export function useSuperChat({
           }
         }
         finalizeStream();
+        if (frame.message != null) {
+          const messageScope = frameScope(frame) ?? desiredScopeRef.current;
+          setMessages((current) =>
+            upsertServerAssistantMessage(
+              current,
+              frame.message,
+              completedTurnId ?? undefined,
+              messageScope,
+            ),
+          );
+        }
         if (completedTurnId) {
           setMessages((current) => {
             const next = revealIncompleteSkillStudioDraftForTurn(

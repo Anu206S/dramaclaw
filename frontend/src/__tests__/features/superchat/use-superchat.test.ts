@@ -3717,6 +3717,72 @@ describe("useSuperChat websocket lifecycle", () => {
     }));
   });
 
+  it("reconciles a partial stream from the final message carried by chat.done", async () => {
+    class TestWebSocket {
+      static OPEN = 1;
+      readyState = 1;
+      onopen: (() => void) | null = null;
+      onmessage: ((event: MessageEvent) => void) | null = null;
+      onerror: (() => void) | null = null;
+      onclose: ((event: CloseEvent) => void) | null = null;
+
+      constructor() {
+        sockets.push(this);
+      }
+
+      send() {}
+      close() {}
+    }
+    const sockets: TestWebSocket[] = [];
+    Object.defineProperty(globalThis, "WebSocket", {
+      value: TestWebSocket,
+      writable: true,
+      configurable: true,
+    });
+
+    const hook = renderHook(() =>
+      useSuperChat({ project: "project-a", displayName: "Tester" }),
+    );
+    await waitFor(() => expect(sockets).toHaveLength(1));
+    const socket = sockets[0];
+    const scope = { kind: "project", id: "project-a" };
+
+    await act(async () => {
+      socket.onopen?.();
+      socket.onmessage?.({
+        data: JSON.stringify({ type: "scope.changed", scope, history: [] }),
+      } as MessageEvent);
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "assistant.delta",
+          scope,
+          turn_id: "turn-identity",
+          text: "身份规划已完成，可直",
+          accumulated: true,
+        }),
+      } as MessageEvent);
+      socket.onmessage?.({
+        data: JSON.stringify({
+          type: "chat.done",
+          scope,
+          turn_id: "turn-identity",
+          message: {
+            id: 403,
+            role: "assistant",
+            content: "身份规划已完成，可直接进入下一步（剧本生成）。",
+            created_at: "2026-08-04T09:13:46.445748+00:00",
+          },
+        }),
+      } as MessageEvent);
+    });
+
+    await waitFor(() => {
+      const replies = hook.result.current.messages.filter((item) => item.role === "assistant");
+      expect(replies).toHaveLength(1);
+      expect(replies[0]?.text).toBe("身份规划已完成，可直接进入下一步（剧本生成）。");
+    });
+  });
+
   it("persists merged assistant parts after the final assistant message arrives", async () => {
     apiPostMock.mockClear();
     class TestWebSocket {

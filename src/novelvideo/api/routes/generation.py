@@ -3261,6 +3261,8 @@ async def regenerate_beats(
                 "output_dir": output_dir,
                 "config": {**config, "mode_key": mode_key},
                 "billing": billing,
+                **({"batch_id": body.batch_id} if body.batch_id else {}),
+                **({"batch_size": body.batch_size} if body.batch_size else {}),
             },
         )
         return {

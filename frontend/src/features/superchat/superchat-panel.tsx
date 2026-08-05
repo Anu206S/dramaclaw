@@ -738,9 +738,18 @@ function isAssistantErrorReply(message: ChatMessage): boolean {
   return ASSISTANT_ERROR_TEXT_PATTERNS.some((pattern) => pattern.test(text));
 }
 
+export function assistantCompletionPrefix(text: string): string | null {
+  const match = /^\s*(?:✅\s*)?[^。\n！？]{1,100}?(?:已完成|生成完成|合成完成)[。！]/u.exec(text);
+  if (!match) return null;
+  if (/(?:尚未|仍未|并未|未能|没有)[^。\n！？]{0,8}(?:已完成|生成完成|合成完成)/u.test(match[0])) {
+    return null;
+  }
+  return match[0];
+}
+
 function isAssistantCompletionNotice(message: ChatMessage): boolean {
   if (message.role !== "assistant") return false;
-  return /^✅ .+已完成。/u.test(message.text.trim());
+  return assistantCompletionPrefix(message.text) != null;
 }
 
 function errorTextRanges(text: string): Array<[number, number]> {
@@ -785,9 +794,9 @@ function HighlightedErrorText({ text }: { text: string }) {
 }
 
 function HighlightedCompletionText({ text }: { text: string }) {
-  const match = /^✅ .+?已完成。/u.exec(text);
-  if (!match) return <MessageText text={text} markdown />;
-  const end = match[0].length;
+  const prefix = assistantCompletionPrefix(text);
+  if (!prefix) return <MessageText text={text} markdown />;
+  const end = prefix.length;
   return (
     <div className="break-words leading-relaxed whitespace-pre-wrap">
       <span className="text-emerald-300">{text.slice(0, end)}</span>

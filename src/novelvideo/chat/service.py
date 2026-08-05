@@ -95,6 +95,21 @@ _STYLE_SHORT_DRAMA_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _CONTINUE_PIPELINE_RE = re.compile(r"(?:继续|恢复|接着|下一步|当前|已有|已上传|刚才上传)")
+_EXPLICIT_PIPELINE_CONTINUATION_RE = re.compile(
+    r"(?:继续|恢复|接着(?:做|生成|制作)?|下一步|继续跑|继续做)",
+    re.IGNORECASE,
+)
+_PIPELINE_CONTINUATION_QUESTION_RE = re.compile(
+    r"(?:为什么|为何|怎么|如何|能否|是否|可不可以|不能|失败|报错|什么情况|什么意思)"
+)
+_DRAMACLAW_CONTINUATION_INSTRUCTIONS = """[DRAMACLAW_CONTINUATION]
+The user explicitly authorizes continuing the bound mainline project from its current breakpoint.
+Read the episode pipeline status at most once and read active tasks at most once. If an active task
+exists, report it and stop. If no task is active, use next_step to start exactly one matching write
+task in this same turn, then stop. Do not reread identical status, ask the user to repeat "继续",
+or reopen run-mode selection. For next_step=selected_regen, call dramaclaw_render_first_frames once
+without beat_indices so it selects the next missing batch.
+[/DRAMACLAW_CONTINUATION]"""
 _DRAMACLAW_SCRIPT_UPLOAD_MODEL_REPLY_INSTRUCTIONS = """[DRAMACLAW_SCRIPT_UPLOAD_GUIDANCE]
 用户正在请求创建、生成或编写剧本/短剧，但当前消息没有上传剧本文档。
 
@@ -614,6 +629,11 @@ def _prompt_with_user_context(
         if tool_mode == "freezone_canvas"
         else ""
     )
+    continuation_source = route_prompt if route_prompt is not None else prompt
+    continuation_instructions = _pipeline_continuation_instructions(
+        continuation_source,
+        tool_mode=tool_mode,
+    )
     return (
         "[DRAMACLAW_USER_CONTEXT]\n"
         f"username: {username}\n"
@@ -623,10 +643,25 @@ def _prompt_with_user_context(
         "[USER_PREFERENCES]\n"
         f"{preferences}\n\n"
         f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
+        f"{continuation_instructions}"
         f"{surface_instructions}\n\n"
         "[USER_MESSAGE]\n"
         f"{prompt}"
     )
+
+
+def _pipeline_continuation_instructions(prompt: str, *, tool_mode: str) -> str:
+    """Return a narrow execution hint for explicit mainline continuation commands."""
+    if tool_mode != "default":
+        return ""
+    text = str(prompt or "").strip()
+    if not text or len(text) > 80:
+        return ""
+    if not _EXPLICIT_PIPELINE_CONTINUATION_RE.search(text):
+        return ""
+    if _PIPELINE_CONTINUATION_QUESTION_RE.search(text):
+        return ""
+    return f"{_DRAMACLAW_CONTINUATION_INSTRUCTIONS}\n\n"
 
 
 def _chat_backend() -> str:
