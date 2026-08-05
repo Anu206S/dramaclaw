@@ -491,6 +491,7 @@ def test_recipe_pipeline_rejects_explicit_conflicts(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
+    captured: dict[str, object] = {}
     monkeypatch.setattr(
         recipe_runtime,
         "get_recipe_for_runtime",
@@ -513,7 +514,7 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
     monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
     monkeypatch.setattr(
         "novelvideo.config.get_newapi_text_pydantic_model",
-        lambda *_args, **_kwargs: object(),
+        lambda *_args, **kwargs: captured.update(kwargs) or object(),
     )
 
     result = await recipe_runtime.generate_recipe_text(
@@ -524,3 +525,6 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
     )
 
     assert result == "# 详情页方案"
+    assert captured["brainclaw_profile"] is (
+        BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION
+    )
