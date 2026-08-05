@@ -86,10 +86,13 @@ import {
   CURRENT_RUNTIME_SESSION_ID,
   extractRequestId,
 } from '@/features/canvas/application/generationErrorReport';
-import { showErrorDialog } from '@/features/canvas/application/errorDialog';
+import { notifyTaskStillRunning, showErrorDialog } from '@/features/canvas/application/errorDialog';
 import {
+  DETACHED_GENERATION_PATCH,
   nodeNeedsGenerationResume,
+  nodeOwnsLiveGenerationJob,
   resumeNodeGeneration,
+  staleGenerationJobPatch,
 } from '@/features/canvas/application/resumeGeneration';
 import { readUrl } from '@/lib/url-params';
 import { useQueryClient } from '@tanstack/react-query';
@@ -997,15 +1000,23 @@ export function Canvas({
   const pendingJobNodeKey = useCanvasStore(
     useShallow((state) =>
       state.nodes
-        .filter((node) => {
-          if (node.type !== CANVAS_NODE_TYPES.exportImage) return false;
-          const data = node.data as Record<string, unknown>;
-          return (
-            data.isGenerating === true &&
-            typeof data.generationJobId === 'string' &&
-            (data.generationJobId as string).length > 0
-          );
-        })
+        .filter(
+          (node) =>
+            node.type === CANVAS_NODE_TYPES.exportImage && nodeOwnsLiveGenerationJob(node),
+        )
+        .map((node) => node.id),
+    ),
+  );
+  // 上个会话遗留的 generationJobId（刷新前任务还没 detached）。这些节点不能进
+  // 轮询循环——gateway 的内存 Map 早空了，只会拿到 not_found 然后被写成失败，
+  // 抢在 descriptor resume 前面把恢复路径掐断。见 staleGenerationJobPatch。
+  const staleJobNodeKey = useCanvasStore(
+    useShallow((state) =>
+      state.nodes
+        .filter(
+          (node) =>
+            node.type === CANVAS_NODE_TYPES.exportImage && staleGenerationJobPatch(node) !== null,
+        )
         .map((node) => node.id),
     ),
   );
@@ -1309,13 +1320,24 @@ export function Canvas({
         window.setTimeout(resolve, delayMs);
       });
 
-    const pendingExportNodes = useCanvasStore.getState().nodes.filter((node) => {
+    // 先收拾上个会话遗留的 job id，再挑本次会话该轮询的。顺序要紧：清理这一步
+    // 会把带 descriptor 的节点从下面的候选集里摘掉（它的 generationJobId 被清
+    // 空），恢复交给 resumeNodeGeneration 一条路走。
+    for (const node of useCanvasStore.getState().nodes) {
       if (node.type !== CANVAS_NODE_TYPES.exportImage) {
-        return false;
+        continue;
       }
-      const data = node.data as Record<string, unknown>;
-      return data.isGenerating === true && typeof data.generationJobId === 'string' && data.generationJobId.length > 0;
-    });
+      const patch = staleGenerationJobPatch(node);
+      if (patch) {
+        updateNodeData(node.id, patch);
+      }
+    }
+
+    const pendingExportNodes = useCanvasStore
+      .getState()
+      .nodes.filter(
+        (node) => node.type === CANVAS_NODE_TYPES.exportImage && nodeOwnsLiveGenerationJob(node),
+      );
 
     for (const pendingNode of pendingExportNodes) {
       if (activeGenerationPollNodeIdsRef.current.has(pendingNode.id)) {
@@ -1407,6 +1429,24 @@ export function Canvas({
               break;
             }
 
+            if (status.status === 'detached') {
+              // 前端不再跟这个任务了（后端长时间查不到），但它不是失败：不写
+              // generationError，也保留 generationRequestPayload，让「重新生成」
+              // 仍然可用；只给一个中性提示，避免把可能还在跑的任务标成失败。
+              //
+              // 补丁内容见 DETACHED_GENERATION_PATCH：只放掉进程内的 jobId，
+              // isGenerating 与句柄留着，刷新后 resume 扫描才接得回来。与
+              // 擦除/重绘路径（regenerateFreezoneRedrawNode）同口径。
+              const detachedSessionId = typeof currentData.generationClientSessionId === 'string'
+                ? currentData.generationClientSessionId
+                : '';
+              if (detachedSessionId === CURRENT_RUNTIME_SESSION_ID) {
+                notifyTaskStillRunning(t);
+              }
+              updateNodeData(pendingNode.id, DETACHED_GENERATION_PATCH);
+              break;
+            }
+
             const errorMessage = status.error ?? (status.status === 'not_found' ? 'generation job not found' : 'generation failed');
             const generationClientSessionId = typeof currentData.generationClientSessionId === 'string'
               ? currentData.generationClientSessionId
@@ -1442,7 +1482,7 @@ export function Canvas({
         }
       })();
     }
-  }, [pendingJobNodeKey, updateNodeData]);
+  }, [pendingJobNodeKey, staleJobNodeKey, t, updateNodeData]);
 
   // Resume task_key-based generations (image / video / audio / 3D / script / 反推提示词)
   // after a page refresh. The submit flows persist a GenerationTaskDescriptor on the
