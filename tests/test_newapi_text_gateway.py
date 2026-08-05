@@ -107,6 +107,77 @@ def test_opaque_newapi_alias_sends_reasoning_effort_none(monkeypatch):
     assert requests[0]["reasoning_effort"] == "none"
 
 
+def test_plain_text_brainclaw_recipe_request_omits_reasoning(monkeypatch):
+    import asyncio
+    import json
+
+    import httpx
+    from pydantic_ai import Agent
+
+    import novelvideo.config as config
+
+    requests: list[dict] = []
+    headers: list[httpx.Headers] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests.append(json.loads(request.content))
+        headers.append(request.headers)
+        return httpx.Response(
+            200,
+            json={
+                "id": "chatcmpl-recipe-test",
+                "object": "chat.completion",
+                "created": 1,
+                "model": "brainclaw",
+                "choices": [
+                    {
+                        "index": 0,
+                        "finish_reason": "stop",
+                        "message": {
+                            "role": "assistant",
+                            "content": "compiled prompt",
+                        },
+                    }
+                ],
+                "usage": {
+                    "prompt_tokens": 1,
+                    "completion_tokens": 1,
+                    "total_tokens": 2,
+                },
+            },
+        )
+
+    monkeypatch.setattr(
+        config,
+        "_newapi_text_http_client_factory",
+        lambda *, timeout_seconds: lambda: httpx.AsyncClient(
+            transport=httpx.MockTransport(handler),
+            timeout=timeout_seconds,
+        ),
+    )
+    model = config._newapi_text_openai_model(
+        "brainclaw",
+        api_key="key",
+        base_url="https://example.test/v1",
+        timeout_seconds=12.0,
+        profile=None,
+        default_headers={
+            "X-BrainClaw-Profile": "freezone_recipe_compilation",
+            "X-BrainClaw-Profile-Version": "1",
+        },
+    )
+    result = asyncio.run(Agent(model, output_type=str).run("compile this"))
+
+    assert result.output == "compiled prompt"
+    assert len(requests) == 1
+    assert "reasoning_effort" not in requests[0]
+    assert "reasoning" not in requests[0]
+    assert "response_format" not in requests[0]
+    assert "tools" not in requests[0]
+    assert headers[0]["X-BrainClaw-Profile"] == "freezone_recipe_compilation"
+    assert headers[0]["X-BrainClaw-Profile-Version"] == "1"
+
+
 def test_newapi_text_provider_default_trusts_env(monkeypatch):
     import asyncio
 
