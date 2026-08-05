@@ -4,13 +4,11 @@ import { useEffect, useMemo, useState } from 'react';
 
 /**
  * 生成进度的时间估算（不是后端真实进度，后端目前不下发逐步进度事件）：按
- * `startedAt` + 预估 `durationMs` 做线性插值，封顶 96%（真正的「完成」由调用方
- * `isGenerating` 变 false 触发，不依赖这个数字到 100——留 4% 余量避免它在真实
- * 完成前视觉上先到头）。120ms 轮询刷新一次。
+ * `startedAt` + 预估 `durationMs` 做指数饱和估算，渐近 99%（真正的「完成」
+ * 由调用方 `isGenerating` 变 false 触发）。120ms 轮询刷新一次。
  *
  * 从 {@link ./NodeGenerationOverlay.tsx} 的内部算法原样抽出（工作流节点覆盖层
- * 的大数字），故事板卡片/详情占位复用同一套估算，避免两处实现漂移。抽取只是
- * 搬运——算法、轮询节奏、封顶值均未改变，工作流侧的可见行为零变化。
+ * 的大数字），故事板卡片/详情占位复用同一套估算，避免两处实现漂移。
  *
  * @param startedAt 生成开始时间戳（epoch ms）；为空则退化为 hook 挂载时刻——
  *   与原 NodeGenerationOverlay 的 `mountedAt` 兜底同语义。
@@ -41,7 +39,7 @@ export function useEstimatedProgress(
     const begin = typeof startedAt === 'number' ? startedAt : mountedAt;
     const duration = Math.max(1000, durationMs);
     const elapsed = Math.max(0, now - begin);
-    const progress = Math.min(elapsed / duration, 0.96);
-    return Math.round(progress * 100);
+    const progress = 0.995 * (1 - Math.exp((-1.4 * elapsed) / duration));
+    return Math.min(99, Math.floor(progress * 100));
   }, [durationMs, mountedAt, now, startedAt]);
 }

@@ -134,6 +134,9 @@ import { separateVideoAudio } from "@/features/canvas/application/videoSeparateA
 import { readUrl } from "@/lib/url-params";
 import { sanitizeStoryboardText } from "@/features/canvas/application/storyboardText";
 import { buildGenerationErrorReport } from "@/features/canvas/application/generationErrorReport";
+import { BillingRuleNotConfiguredError } from "@/lib/api-errors";
+import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
+import { CreditCostPill } from "@/components/credits/credit-visual";
 import {
   NODE_TOOLBAR_ALIGN,
   NODE_TOOLBAR_CLASS,
@@ -478,6 +481,21 @@ export const NodeActionToolbar = memo(
     onOpenRotate,
   }: NodeActionToolbarProps) => {
     const { t, i18n } = useTranslation();
+    const videoAnalyzeCreditCost = useGenerationCreditCost(
+      "feature",
+      isVideoNode(node) ? "freezone.video_analyze" : null,
+      {
+        surface: "canvas",
+        params: { operation: "video_story" },
+      },
+    );
+    const videoAnalyzeBillingRuleMissing =
+      videoAnalyzeCreditCost.error instanceof BillingRuleNotConfiguredError;
+    const videoAnalyzeCreditCostDisplay =
+      videoAnalyzeCreditCost.data?.data.display ??
+      (videoAnalyzeBillingRuleMissing
+        ? t("common.billingRuleNotConfiguredShort")
+        : null);
     const isImageEdit = isImageEditNode(node);
     // Plain (non-protected) group → eligible for ungroup. Captured up here as a
     // boolean + a plain id while `node` still has its full type: over-broad node
@@ -1933,14 +1951,21 @@ export const NodeActionToolbar = memo(
                     </UiChipButton>
                     <UiChipButton
                       key="video-analyze"
-                      className={`${stubButtonClass} ${!hasVideo ? "opacity-50 cursor-not-allowed" : ""}`}
+                      className={`${stubButtonClass} ${
+                        !hasVideo || videoAnalyzeBillingRuleMissing
+                          ? "opacity-50 cursor-not-allowed"
+                          : ""
+                      }`}
                       title={
                         !hasVideo
                           ? t("nodeToolbar.video.requiresVideo")
+                          : videoAnalyzeBillingRuleMissing
+                            ? t("common.billingRuleNotConfiguredShort")
                           : undefined
                       }
                       onClick={(event) => {
                         event.stopPropagation();
+                        if (videoAnalyzeBillingRuleMissing) return;
                         handleVideoAnalyze();
                       }}
                     >
@@ -1950,6 +1975,11 @@ export const NodeActionToolbar = memo(
                         <Wand2 className="h-3.5 w-3.5" />
                       )}
                       {t("nodeToolbar.video.analyze")}
+                      <CreditCostPill
+                        display={videoAnalyzeCreditCostDisplay}
+                        promotion={videoAnalyzeCreditCost.data?.data.promotion}
+                        disabled={!hasVideo || isAnalyzing || videoAnalyzeBillingRuleMissing}
+                      />
                     </UiChipButton>
                     <DropdownMenu
                       onOpenChange={(open) => {
