@@ -42,7 +42,7 @@ async def test_identity_runner_preserves_task_billing_context(monkeypatch):
     from novelvideo.task_backend.runners import identity
 
     progress_updates: list[dict] = []
-    closed_stores: list[FakeSQLiteStore] = []
+    closed_stores: list[object] = []
 
     class ForbiddenUsageMeter:
         async def set_project_llm_usage_context(self, **kwargs):
