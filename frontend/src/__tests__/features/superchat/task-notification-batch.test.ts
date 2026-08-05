@@ -87,6 +87,26 @@ describe("resolveChatTaskBatchSummary", () => {
     );
   });
 
+  it("builds one success message after a nine-video queued batch completes", () => {
+    const tasks = Array.from({ length: 9 }, (_, index) => task({
+      task_key: `task:${index + 1}`,
+      task_id: `job-${index + 1}`,
+      beat_num: index + 1,
+      metadata: { batch_id: "video-batch-9", batch_size: "9" },
+    }));
+
+    const summary = resolveChatTaskBatchSummary(tasks, tasks[8]);
+
+    expect(summary).toMatchObject({
+      batchId: "video-batch-9",
+      total: 9,
+      completed: 9,
+    });
+    expect(buildChatTaskBatchNotification(summary!)).toBe(
+      "✅ 第 1 集 9 个视频已全部生成完成。你可以让我查看结果，或继续下一步。",
+    );
+  });
+
   it("labels selected regen batches as first frames", () => {
     const tasks = [
       task({ task_type: "selected_regen" }),

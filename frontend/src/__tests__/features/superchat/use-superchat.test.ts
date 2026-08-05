@@ -3718,6 +3718,7 @@ describe("useSuperChat websocket lifecycle", () => {
   });
 
   it("reconciles a partial stream from the final message carried by chat.done", async () => {
+    const sentFrames: string[] = [];
     class TestWebSocket {
       static OPEN = 1;
       readyState = 1;
@@ -3730,7 +3731,9 @@ describe("useSuperChat websocket lifecycle", () => {
         sockets.push(this);
       }
 
-      send() {}
+      send(data: string) {
+        sentFrames.push(data);
+      }
       close() {}
     }
     const sockets: TestWebSocket[] = [];
@@ -3781,6 +3784,11 @@ describe("useSuperChat websocket lifecycle", () => {
       expect(replies).toHaveLength(1);
       expect(replies[0]?.text).toBe("身份规划已完成，可直接进入下一步（剧本生成）。");
     });
+    expect(
+      sentFrames
+        .map((frame) => JSON.parse(frame) as Record<string, unknown>)
+        .filter((frame) => frame.type === "scope.set"),
+    ).toHaveLength(2);
   });
 
   it("persists merged assistant parts after the final assistant message arrives", async () => {

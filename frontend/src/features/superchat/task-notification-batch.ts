@@ -24,7 +24,7 @@ export function taskBatchId(task: TaskState): string {
 
 function taskBatchSize(task: TaskState): number {
   const value = Number(metadataString(task, "batch_size"));
-  return Number.isInteger(value) && value > 1 && value <= 3 ? value : 0;
+  return Number.isInteger(value) && value > 1 && value <= 9 ? value : 0;
 }
 
 export function resolveChatTaskBatchSummary(

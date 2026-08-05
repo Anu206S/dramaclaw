@@ -362,7 +362,7 @@ class SingleVideoRequest(BaseModel):
     prompt_guidance: Optional[str] = None
     text_overlay: Optional[dict[str, Any]] = None
     batch_id: Optional[str] = Field(default=None, max_length=100)
-    batch_size: Optional[int] = Field(default=None, ge=1, le=3)
+    batch_size: Optional[int] = Field(default=None, ge=1, le=9)
 
 
 # ── 风格 ──────────────────────────────────────────────────────────────────────

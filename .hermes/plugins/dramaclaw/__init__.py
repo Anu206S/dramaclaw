@@ -1316,6 +1316,17 @@ def _resolve_missing_first_frame_beats(project: str, episode: int) -> list[int]:
     ]
 
 
+def _resolve_ready_video_beats(project: str, episode: int) -> list[int]:
+    """Return unfinished beats that have a promoted first frame ready for video."""
+    return [
+        int(beat["beat_number"])
+        for beat in _resolve_episode_beat_items(project, episode)
+        if beat.get("beat_number") is not None
+        and str(beat.get("frame_url") or "").strip()
+        and not str(beat.get("video_url") or "").strip()
+    ]
+
+
 def _handle_get_sketches(args: dict[str, Any], **_: Any) -> str:
     """Get display-ready sketch URLs for an episode (to SHOW the user).
 
@@ -1939,26 +1950,94 @@ def _handle_compose_episode(args: dict[str, Any], **_: Any) -> str:
 
 
 def _handle_get_final_video(args: dict[str, Any], **_: Any) -> str:
-    """Get and display the composed final episode video when it exists."""
+    """Get and display one or more composed final episode videos."""
     try:
         project = _project_from_args(args)
-        episode = _require_episode(args)
-        result = _request("GET", f"/api/v1/projects/{project}/episodes/{episode}/final")
-        data = result.get("data") if isinstance(result, dict) else None
-        video_url = ""
-        if isinstance(data, dict) and data.get("exists"):
+        raw_episode_indices = args.get("episode_indices")
+        if args.get("episode") is not None and not raw_episode_indices:
+            episode = _require_episode(args)
+            result = _request("GET", f"/api/v1/projects/{project}/episodes/{episode}/final")
+            data = result.get("data") if isinstance(result, dict) else None
+            video_url = ""
+            if isinstance(data, dict) and data.get("exists"):
+                video_url = str(data.get("video_url") or "").strip()
+            if video_url and isinstance(result, dict):
+                result["ui_spec"] = _video_ui_spec(
+                    [
+                        {
+                            "src": video_url,
+                            "title": f"第 {episode} 集成片",
+                            "description": "最终合成视频",
+                        }
+                    ]
+                )
+            return tool_result(result)
+
+        episode_indices: list[int] = []
+        if isinstance(raw_episode_indices, list):
+            for value in raw_episode_indices:
+                try:
+                    episode = int(value)
+                except (TypeError, ValueError):
+                    continue
+                if episode > 0 and episode not in episode_indices:
+                    episode_indices.append(episode)
+        if not episode_indices:
+            episodes_result = _request("GET", f"/api/v1/projects/{project}/episodes")
+            episodes_data = episodes_result.get("data") if isinstance(episodes_result, dict) else None
+            if isinstance(episodes_data, list):
+                for item in episodes_data:
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        episode = int(item.get("number") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if episode > 0 and episode not in episode_indices:
+                        episode_indices.append(episode)
+
+        try:
+            offset = max(0, int(args.get("offset") or 0))
+        except (TypeError, ValueError):
+            offset = 0
+        try:
+            limit = max(1, min(6, int(args.get("limit") or 6)))
+        except (TypeError, ValueError):
+            limit = 6
+
+        media_items: list[dict[str, Any]] = []
+        found_episodes: list[int] = []
+        for episode in sorted(episode_indices):
+            result = _request("GET", f"/api/v1/projects/{project}/episodes/{episode}/final")
+            data = result.get("data") if isinstance(result, dict) else None
+            if not isinstance(data, dict) or not data.get("exists"):
+                continue
             video_url = str(data.get("video_url") or "").strip()
-        if video_url and isinstance(result, dict):
-            result["ui_spec"] = _video_ui_spec(
-                [
-                    {
-                        "src": video_url,
-                        "title": f"第 {episode} 集成片",
-                        "description": "最终合成视频",
-                    }
-                ]
+            if not video_url:
+                continue
+            found_episodes.append(episode)
+            media_items.append(
+                {
+                    "src": video_url,
+                    "title": f"第 {episode} 集成片",
+                    "description": "最终合成视频",
+                }
             )
-        return tool_result(result)
+
+        page_items = media_items[offset : offset + limit]
+        page_episodes = found_episodes[offset : offset + limit]
+        return tool_result(
+            {
+                "ok": True,
+                "project_id": project,
+                "count": len(found_episodes),
+                "episodes": page_episodes,
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + limit < len(found_episodes),
+                **({"ui_spec": _video_ui_spec(page_items)} if page_items else {}),
+            }
+        )
     except Exception as exc:
         return tool_error(str(exc))
 
@@ -2028,15 +2107,28 @@ def _handle_start_single_video(args: dict[str, Any], **_: Any) -> str:
 
 
 def _handle_start_video_batch(args: dict[str, Any], **_: Any) -> str:
-    """Queue up to three beat video tasks in one agent write operation."""
+    """Queue up to nine independent beat video tasks in one agent write operation."""
     try:
         project = _project_from_args(args)
         episode = int(args.get("episode") or 1)
         beats = sorted(_requested_beats(args) or set())
+        if args.get("auto_fill") is not False and len(beats) < 9:
+            ready = _resolve_ready_video_beats(project, episode)
+            beats.extend(beat for beat in ready if beat not in beats)
+            beats = sorted(beats[:9])
         if not beats:
-            raise ValueError("beats must contain at least one positive beat number")
-        if len(beats) > 3:
-            raise ValueError("at most 3 beats can be started in one batch")
+            return tool_result(
+                {
+                    "ok": True,
+                    "code": "video_batch_empty",
+                    "episode": episode,
+                    "requested": [],
+                    "started": [],
+                    "message": f"第 {episode} 集没有可提交的视频任务",
+                }
+            )
+        if len(beats) > 9:
+            raise ValueError("at most 9 beats can be started in one batch")
 
         batch_id = f"video-{uuid4().hex}"
         body: dict[str, Any] = {
@@ -2895,15 +2987,28 @@ TOOLS = (
         "dramaclaw_get_final_video",
         _schema(
             "dramaclaw_get_final_video",
-            "Get and display the composed final episode video (最终成片展示). Real endpoint GET "
-            "/projects/{project}/episodes/{episode}/final. Use this after compose_episode completes "
-            "or when the user asks for the final video. If no final video exists, report that state; "
-            "do not synthesize file URLs.",
+            "Get and display composed final episode videos (最终成片展示). Pass episode for one "
+            "episode, episode_indices for selected episodes, or omit both to display all existing "
+            "final videos in one tool call with offset/limit pagination. Use this after compose_episode "
+            "completes or when the user asks for final videos. If no final video exists, report that "
+            "state; do not synthesize file URLs.",
             {
                 "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
-                "episode": {"type": "integer", "description": "Episode number (required)."},
+                "episode": {"type": "integer", "description": "One episode number."},
+                "episode_indices": {
+                    "type": "array",
+                    "items": {"type": "integer"},
+                    "maxItems": 12,
+                    "description": "Selected episode numbers. Omit with episode to show all finals.",
+                },
+                "offset": {"type": "integer", "minimum": 0},
+                "limit": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "maximum": 6,
+                    "description": "Maximum final videos to display. Default 6.",
+                },
             },
-            ["episode"],
         ),
         _handle_get_final_video,
     ),
@@ -2932,9 +3037,11 @@ TOOLS = (
         "dramaclaw_start_video_batch",
         _schema(
             "dramaclaw_start_video_batch",
-            "Generate videos for up to three ready beats in one write operation. Each beat uses its "
+            "Generate videos for up to nine ready beats in one write operation. Each beat uses its "
             "stored video_prompt and must already have a first frame. Use this instead of repeated "
-            "dramaclaw_start_single_video calls when two or three beats are ready.",
+            "dramaclaw_start_single_video calls when two to nine beats are ready. Tasks remain "
+            "independent and excess work waits in the shared video queue. By default, a short beats "
+            "list is automatically filled with the next ready unfinished beats up to nine.",
             {
                 "project_id": {"type": "string"},
                 "episode": {"type": "integer"},
@@ -2942,8 +3049,15 @@ TOOLS = (
                     "type": "array",
                     "items": {"type": "integer"},
                     "minItems": 1,
-                    "maxItems": 3,
-                    "description": "One to three ready beat numbers.",
+                    "maxItems": 9,
+                    "description": "One to nine ready beat numbers.",
+                },
+                "auto_fill": {
+                    "type": "boolean",
+                    "description": (
+                        "Default true: fill a short beats list with the next ready unfinished beats "
+                        "up to nine. Set false only when the user explicitly requests an exact subset."
+                    ),
                 },
                 "video_backend": {"type": "string", "description": "Optional backend override."},
                 "duration": {"type": "number", "description": "Optional seconds."},
