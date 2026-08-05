@@ -183,6 +183,13 @@ def test_recipe_compilation_has_a_dedicated_declared_profile():
     )
 
 
+def test_recipe_text_generation_has_a_dedicated_declared_profile():
+    assert (
+        BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION.value
+        == "freezone_recipe_text_generation"
+    )
+
+
 def test_effective_text_defaults_force_brainclaw_for_mixed_mode(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     _configure_custom_media()
