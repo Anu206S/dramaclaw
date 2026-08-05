@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -162,6 +163,17 @@ def test_official_text_defaults_are_brainclaw_and_advanced_tasks_are_distinct():
         ADVANCED_TEXT_MODEL_BY_ENV["FREEZONE_RECIPE_COMPILER_MODEL"]
         != ADVANCED_TEXT_MODEL_BY_ENV["FREEZONE_STORY_SCRIPT_MODEL"]
     )
+
+
+def test_env_example_uses_the_dedicated_advanced_recipe_compiler_alias():
+    env_example = (
+        Path(__file__).resolve().parents[1] / ".env.example"
+    ).read_text(encoding="utf-8")
+
+    assert (
+        "FREEZONE_RECIPE_COMPILER_MODEL="
+        f"{ADVANCED_TEXT_MODEL_BY_ENV['FREEZONE_RECIPE_COMPILER_MODEL']}"
+    ) in env_example.splitlines()
 
 
 def test_recipe_compilation_has_a_dedicated_declared_profile():
