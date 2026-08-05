@@ -1961,7 +1961,7 @@ export const NodeActionToolbar = memo(
                           ? t("nodeToolbar.video.requiresVideo")
                           : videoAnalyzeBillingRuleMissing
                             ? t("common.billingRuleNotConfiguredShort")
-                          : undefined
+                            : undefined
                       }
                       onClick={(event) => {
                         event.stopPropagation();
@@ -1978,7 +1978,9 @@ export const NodeActionToolbar = memo(
                       <CreditCostPill
                         display={videoAnalyzeCreditCostDisplay}
                         promotion={videoAnalyzeCreditCost.data?.data.promotion}
-                        disabled={!hasVideo || isAnalyzing || videoAnalyzeBillingRuleMissing}
+                        disabled={
+                          !hasVideo || isAnalyzing || videoAnalyzeBillingRuleMissing
+                        }
                       />
                     </UiChipButton>
                     <DropdownMenu
