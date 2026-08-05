@@ -272,7 +272,7 @@ POST /projects/$PID/episodes/$EP/beats/$BEAT/audio
 
 当前后端没有 `/projects/$PID/episodes/$EP/videos/generate` 整集批量视频路由。
 
-**单轮限制**：本步骤一次用户消息只调用一次视频启动工具。存在多个 eligible beat 时，优先调用 `dramaclaw_start_video_batch`，按 beat 顺序最多提交 3 个；只有一个时调用 `dramaclaw_start_single_video`。用户首次说“完成第 N 集视频生成 / 生成第 N 集视频 / 整集视频”这类笼统目标时，先按根 Skill 的“大任务先澄清拆解”处理。启动后不要继续 compose。
+**单轮限制**：本步骤一次用户消息只调用一次视频启动工具。存在多个 eligible beat 时，优先调用 `dramaclaw_start_video_batch`；工具默认从缺少视频且已有首帧的 beat 中自动补足并按顺序提交最多 9 个独立任务。共享视频队列最多并发执行 3 个，其余排队。只有用户明确指定单个 beat 时调用 `dramaclaw_start_single_video`；明确指定少量 beat 时才传 `auto_fill=false`。用户首次说“完成第 N 集视频生成 / 生成第 N 集视频 / 整集视频”这类笼统目标时，先按根 Skill 的“大任务先澄清拆解”处理。启动后不要继续 compose。
 
 生成单个 beat 视频：
 
@@ -286,7 +286,7 @@ SSE /projects/$PID/tasks/single_video/$EP/stream?beat_num=$BEAT
 
 启动接口返回 `ok:false` 或 HTTP 错误时，直接向用户反馈接口错误。启动成功后如果任务状态为 `failed` / `cancelled`，直接向用户反馈 `task.error`、`error_code` 或最近日志中的失败原因；不要把失败收口成“已重做完成”。
 
-如果用户要求“整集生成视频片段”，先读取 beats，选择最前面最多 3 个未完成且前置满足的 beat，通过批量业务工具提交；没有满足前置的 beat 时只汇报缺项。不要调用不存在的 `/videos/generate`，也不要通过通用 POST 循环模拟批量。
+如果用户要求“整集生成视频片段”，先读取 beats，选择最前面最多 9 个未完成且前置满足的 beat，通过批量业务工具提交；没有满足前置的 beat 时只汇报缺项。不要调用不存在的 `/videos/generate`，也不要通过通用 POST 循环模拟批量。
 
 ### Step 16: 合成 [ASYNC -> compose_episode]
 

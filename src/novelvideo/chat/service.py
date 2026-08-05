@@ -1331,8 +1331,6 @@ def _merge_stream_text(existing: str, incoming: object) -> str:
         return existing
     if chunk.startswith(existing):
         return chunk
-    if existing.endswith(chunk):
-        return existing
     return existing + chunk
 
 
@@ -1360,6 +1358,18 @@ def _assistant_prefix_candidates(previous_assistant: object) -> list[str]:
     return [prefix] if prefix else []
 
 
+def _is_truncated_assistant_replay(content: str, candidates: list[str]) -> bool:
+    """Detect a sufficiently long strict prefix of previously emitted assistant text."""
+    compact_content = "".join(str(content or "").split())
+    if len(compact_content) < 16:
+        return False
+
+    compact_candidates = {"".join(candidate.split()) for candidate in candidates}
+    if compact_content in compact_candidates:
+        return False
+    return any(candidate.startswith(compact_content) for candidate in compact_candidates)
+
+
 def _strip_replayed_assistant_prefix(
     content: str,
     previous_assistant: object,
@@ -1370,6 +1380,8 @@ def _strip_replayed_assistant_prefix(
     text = str(content or "")
     original_text = text
     candidates = _assistant_prefix_candidates(previous_assistant)
+    if _is_truncated_assistant_replay(text, candidates):
+        return ""
     while text and candidates:
         original = text
         for prefix in candidates:
@@ -2674,26 +2686,61 @@ async def _fallback_display_tool_ui_specs(
         api_project = str(args.get("project_id") or args.get("project") or project).strip()
         project_q = quote(api_project, safe="")
         if tool_name == "dramaclaw_get_final_video":
-            episode = int(args.get("episode") or 1)
-            resp = _backend_api_get(
-                f"/api/v1/projects/{project_q}/episodes/{episode}/final",
-                token,
-            )
-            data = resp.get("data") if isinstance(resp, dict) else None
-            video_url = str(data.get("video_url") or "").strip() if isinstance(data, dict) else ""
-            if not video_url:
-                return []
-            return [
-                _media_ui_spec(
-                    "keyframe_video",
-                    "Video",
-                    [
+            raw_episode_indices = args.get("episode_indices")
+            episode_indices: list[int] = []
+            if args.get("episode") is not None and not raw_episode_indices:
+                episode_indices = [int(args["episode"])]
+            elif isinstance(raw_episode_indices, list):
+                for value in raw_episode_indices:
+                    try:
+                        episode = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if episode > 0 and episode not in episode_indices:
+                        episode_indices.append(episode)
+            if not episode_indices:
+                episodes_resp = _backend_api_get(
+                    f"/api/v1/projects/{project_q}/episodes",
+                    token,
+                )
+                for item in _api_response_items(episodes_resp, "episodes", "items"):
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        episode = int(item.get("number") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if episode > 0 and episode not in episode_indices:
+                        episode_indices.append(episode)
+
+            media_items: list[dict[str, Any]] = []
+            for episode in sorted(episode_indices):
+                resp = _backend_api_get(
+                    f"/api/v1/projects/{project_q}/episodes/{episode}/final",
+                    token,
+                )
+                data = resp.get("data") if isinstance(resp, dict) else None
+                video_url = (
+                    str(data.get("video_url") or "").strip()
+                    if isinstance(data, dict) and data.get("exists")
+                    else ""
+                )
+                if video_url:
+                    media_items.append(
                         {
                             "src": video_url,
                             "title": f"第 {episode} 集成片",
                             "description": "最终合成视频",
                         }
-                    ],
+                    )
+            if not media_items:
+                return []
+            page_items = _limit_display_items(media_items, args, 6)
+            return [
+                _media_ui_spec(
+                    "keyframe_video",
+                    "Video",
+                    page_items,
                 )
             ]
         if tool_name in {"dramaclaw_get_sketches", "dramaclaw_get_first_frames"}:

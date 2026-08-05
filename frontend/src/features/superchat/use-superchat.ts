@@ -2628,6 +2628,10 @@ export function useSuperChat({
             return next;
           });
         }
+        // Reconcile once with server-authoritative history after completion.
+        // This closes the small race where the persisted final reply is complete
+        // but the last accumulated websocket frame was not rendered locally.
+        requestHistory();
         break;
       }
       case "project.created":
@@ -2655,6 +2659,7 @@ export function useSuperChat({
     markTurnActive,
     markTurnInactive,
     persistAssistantMessageParts,
+    requestHistory,
     scopeKey,
     settings.showToolEvents,
     upsertAssistantMessagePart,
