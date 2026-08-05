@@ -6,4 +6,4 @@
 // - 虾集 → 虾导：顶栏 tab 保留，页面里的聊天区换成「升级中」占位。
 // 显式标注 boolean（而不是让 TS 收敛成字面量 false），否则调用点的另一分支会被
 // 判成死代码，import 跟着变成「未使用」。
-export const XIADAO_ENABLED: boolean = false;
+export const XIADAO_ENABLED: boolean = true;

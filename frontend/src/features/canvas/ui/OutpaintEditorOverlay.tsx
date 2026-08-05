@@ -29,8 +29,10 @@ import {
   submitFreezoneOutpaint,
   type FreezoneOutpaintAspectRatio,
 } from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
+import { awaitTaskCompletion, isTaskPollTimeoutError } from '@/api/tasks';
+import { notifyTaskStillRunning } from '@/features/canvas/application/errorDialog';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
+import { GENERATION_ERROR_CLEARED_PATCH } from '@/features/canvas/application/generationTaskArbitration';
 import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
@@ -211,7 +213,7 @@ export const OutpaintEditorOverlay = memo(
             model: apiModel,
           });
           updateNodeData(nodeId, generationTaskDescriptor(ref));
-          const completed = await awaitTaskCompletion(ref.task_key, project);
+          const completed = await awaitTaskCompletion(ref.task_key, project, { taskType: ref.task_type });
           const directUrl = completed.result?.['output_url'] as string | undefined;
           let url = directUrl;
           if (!url) {
@@ -223,9 +225,15 @@ export const OutpaintEditorOverlay = memo(
             previewImageUrl: url,
             isGenerating: false,
             generationStartedAt: null,
-            generationError: null,
+            ...GENERATION_ERROR_CLEARED_PATCH,
           });
         } catch (err) {
+          // 轮询超时 ≠ 生成失败：后端还在跑，节点上的任务句柄仍可续接。
+          // 写错误横幅会把一个还活着的任务标成失败，并清掉句柄。
+          if (isTaskPollTimeoutError(err)) {
+            notifyTaskStillRunning(t);
+            return;
+          }
           const message = err instanceof Error ? err.message : String(err);
           console.error('[outpaint] generation failed', err);
           updateNodeData(nodeId, {
@@ -235,7 +243,7 @@ export const OutpaintEditorOverlay = memo(
           });
         }
       },
-      [aspectRatio, imageSize, imageSource, updateNodeData],
+      [aspectRatio, imageSize, imageSource, t, updateNodeData],
     );
 
     const handleSubmit = useCallback(async () => {

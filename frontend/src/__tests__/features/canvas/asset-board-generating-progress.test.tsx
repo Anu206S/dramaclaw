@@ -90,7 +90,7 @@ describe('故事板生成中态：新节点进左列表 + 进度百分比', () =
     expect(within(detailPanel()).getByText('已有图片')).toBeInTheDocument();
   });
 
-  it('百分比随时间推进：卡片文案从 0% 增长，图片栏预估时长 20s', () => {
+  it('百分比随时间推进：卡片文案按指数估算增长', () => {
     vi.useFakeTimers();
     try {
       const startedAt = Date.now();
@@ -112,11 +112,11 @@ describe('故事板生成中态：新节点进左列表 + 进度百分比', () =
 
       expect(screen.getByText('生成中 0%...')).toBeInTheDocument();
 
-      // 4s / 20s 预估 ≈ 20%（120ms 轮询节拍，最后一拍落在 3960ms → 19.8% 四舍五入 20%）。
+      // 图片栏预估时长 20s；指数饱和算法在 3960ms 的轮询拍得到 24%。
       act(() => {
         vi.advanceTimersByTime(4000);
       });
-      expect(screen.getByText('生成中 20%...')).toBeInTheDocument();
+      expect(screen.getByText('生成中 24%...')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

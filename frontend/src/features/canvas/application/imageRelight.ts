@@ -5,7 +5,7 @@ import {
   submitFreezoneRelight,
   type FreezoneRelightKeyLightDirection,
 } from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
+import { awaitTaskCompletion, isTaskPollTimeoutError } from '@/api/tasks';
 import {
   CANVAS_NODE_TYPES,
   DEFAULT_ASPECT_RATIO,
@@ -22,6 +22,7 @@ import { readUrl } from '@/lib/url-params';
 import { useCanvasStore } from '@/stores/canvasStore';
 
 import { generationTaskDescriptor } from './resumeGeneration';
+import { notifyTaskStillRunning } from './errorDialog';
 
 const KEY_LIGHT_DIRECTIONS: readonly FreezoneRelightKeyLightDirection[] = [
   'left',
@@ -136,7 +137,9 @@ export function relightImage(
         model: payload.apiModel,
       });
       useCanvasStore.getState().updateNodeData(nextNodeId, generationTaskDescriptor(ref));
-      const completed = await awaitTaskCompletion(ref.task_key, project);
+      const completed = await awaitTaskCompletion(ref.task_key, project, {
+        taskType: ref.task_type,
+      });
       const directUrl = completed.result?.['output_url'] as string | undefined;
       let url = directUrl;
       if (!url) {
@@ -151,6 +154,10 @@ export function relightImage(
         generationError: null,
       });
     } catch (err) {
+      if (isTaskPollTimeoutError(err)) {
+        notifyTaskStillRunning();
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[light-editor] generation failed', err);
       useCanvasStore.getState().updateNodeData(nextNodeId, {

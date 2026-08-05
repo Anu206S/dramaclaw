@@ -8,13 +8,16 @@ import type {
   ImageGenCount,
   ImageGenNodeData,
   ImageQuality,
-  ImageSize,
 } from '@/features/canvas/domain/canvasNodes';
 import {
-  IMAGE_GENERATION_ASPECT_RATIOS,
   resolveImageDisplayUrl,
   snapToAllowedAspectRatio,
 } from '@/features/canvas/application/imageData';
+import { buildImageFeatureBillingParams } from '@/features/canvas/domain/imageBilling';
+import {
+  IMAGE_ASPECT_OPTIONS,
+  IMAGE_SIZE_OPTIONS,
+} from '@/features/canvas/nodes/shared/imageGenerationOptions';
 import { isSystemManagedNodeData } from '@/features/canvas/domain/mainlineNodeFlags';
 import { setAlbumPendingTotal } from '@/features/canvas/nodes/shared/albumPendingTotals';
 import { resolveImageGenerationCompletionMode } from '@/features/canvas/nodes/imageGenCompletionMode';
@@ -23,17 +26,18 @@ import { useCanvasStore } from '@/stores/canvasStore';
 import {
   fetchFreezoneJobResult,
   submitFreezoneGen,
+  type FreezoneProvider,
 } from '@/api/ops';
 import { translateNodeText } from '@/features/canvas/application/translateText';
 import { canvasEventBus } from '@/features/canvas/application/canvasServices';
 import { awaitTaskCompletion } from '@/api/tasks';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
-import { backendErrorToastMessage } from '@/lib/api-errors';
-import { readUrl } from '@/lib/url-params';
 import {
-  DEFAULT_SHARED_MODEL_ID,
-  SHARED_MODELS,
-} from '@/features/canvas/ui/ProviderModelPicker';
+  BillingRuleNotConfiguredError,
+  backendErrorToastMessage,
+} from '@/lib/api-errors';
+import { readUrl } from '@/lib/url-params';
+import { SHARED_MODELS } from '@/features/canvas/ui/ProviderModelPicker';
 import { extractRequestId } from '@/features/canvas/application/generationErrorReport';
 import { useFreezoneImageModels } from '@/features/canvas/hooks/useFreezoneImageModels';
 import { describeCameraSelection } from '@/features/canvas/nodes/CameraPickerPopover';
@@ -50,7 +54,6 @@ import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGr
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { type MentionCandidate } from '@/features/canvas/nodes/PromptMentionEditor';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
-import { formatCreditCost } from '@/components/credits/credit-visual';
 import { hasImageGenPromptOverride } from '@/features/canvas/nodes/imageGenPrompt';
 import { orderedReferenceUrlsWithOwnFirst } from '@/features/canvas/nodes/referenceOrdering';
 import { useReferenceMentionSync } from '@/features/canvas/nodes/useReferenceMentionSync';
@@ -58,15 +61,12 @@ import type { ImageGenerationFormProps } from '@/features/canvas/nodes/shared/Im
 
 const DEFAULT_IMAGE_QUALITY: ImageQuality = 'medium';
 
+// 统一计费（#210）：图片生成走 feature 键询价，模型身份塞进 params。
+const IMAGE_GENERATE_FEATURE_KEY = 'freezone.image_generate';
+
 // 节点被删除 / 尚未出现在 store 里时的空数据兜底，保持 hook 的 early-return-free
 // 结构（hooks 数量必须每帧一致）。
 const EMPTY_NODE_DATA = {} as ImageGenNodeData;
-
-// 「画质」选项只对 image2 系模型（LingShan-G2 / gpt-image-2 等）生效，
-// 后端也只在 gpt-image-2 上识别该字段。其余模型隐藏该选择器。
-function isImage2Model(apiModel: string | null | undefined): boolean {
-  return /image[-_]?2/i.test(apiModel ?? '');
-}
 
 function resolveOutputUrl(result: Record<string, unknown> | null | undefined): string | null {
   if (!result) return null;
@@ -118,6 +118,11 @@ export interface UseImageGenerationFormResult {
   ) => Promise<Record<string, unknown> | undefined>;
   canAutoCommitOnGenerate: boolean;
   referenceImageUrl: string | null;
+  /**
+   * 作废在途生成（#224）。宿主每条「用户主动换掉节点上这张图」的路径都要先调它，
+   * 否则上一批还在飞的请求回来会把刚换上的图盖掉，或糊上一条对不上号的失败横幅。
+   */
+  invalidateInFlightGeneration: () => void;
 }
 
 /**
@@ -152,6 +157,10 @@ export function useImageGenerationForm(
   const isComposingRef = useRef(false);
   const hasUserEditedPromptRef = useRef(false);
   const submittingRef = useRef(false);
+  // 用户手动换图（恢复历史记录等）会作废上一批还在飞的请求：异步完成回来时必须
+  // 先对上这个计数器，才允许把结果或错误写回节点，否则新图刚换上就被旧批次覆盖，
+  // 或者盖上一条对不上号的失败横幅。宿主换图路径调 invalidateInFlightGeneration()。
+  const generationAttemptRef = useRef(0);
   // 在途提交的等待队列：配方运行时可能在同一节点上并发触发 submit，后到的调用
   // 不另起一次生成，而是挂在这里等前一次的产物（与工作流侧语义一致）。
   const submitWaitersRef = useRef<Array<(value: Record<string, unknown> | undefined) => void>>([]);
@@ -163,7 +172,8 @@ export function useImageGenerationForm(
   const aspectRatio = typeof data.aspectRatio === 'string' && data.aspectRatio
     ? data.aspectRatio
     : '16:9';
-  const size = (data.size ?? '2K') as ImageSize;
+  // 目录可以给模型声明任意分辨率档位（不限于 1K/2K/4K），所以这里按裸字符串读。
+  const size = typeof data.size === 'string' && data.size.trim() ? data.size : '2K';
   const quality = (data.quality ?? DEFAULT_IMAGE_QUALITY) as ImageQuality;
   const count = (data.count ?? 1) as ImageGenCount;
   const autoCommitOnGenerate = data.autoCommitOnGenerate === true;
@@ -209,20 +219,77 @@ export function useImageGenerationForm(
       ?? availableModels[0]
     );
   }, [data.model, availableModels]);
-  const modelId = selectedModel?.id ?? DEFAULT_SHARED_MODEL_ID;
-  const isImage2 = isImage2Model(selectedModel?.apiModel);
+  const modelId = selectedModel?.id ?? '';
+  // 分辨率/比例/画质三档一律由媒体目录（admin 后台可配）驱动，不再靠模型名正则猜。
+  // 目录没声明时退回内置常量，保证老模型与离线兜底列表照常可用。
+  const modelSizeOptions = useMemo(() => {
+    const configured = selectedModel?.resolutionOptions
+      ?.map((item) => item.trim())
+      .filter(Boolean);
+    return configured?.length ? configured : IMAGE_SIZE_OPTIONS;
+  }, [selectedModel]);
+  const modelAspectOptions = useMemo(() => {
+    const configured = (selectedModel?.ratioOptions ?? [])
+      .map((item) => item.trim())
+      .filter(Boolean)
+      .map((value) => ({
+        value,
+        label: IMAGE_ASPECT_OPTIONS.find((item) => item.value === value)?.label ?? value,
+      }));
+    return configured.length ? configured : IMAGE_ASPECT_OPTIONS;
+  }, [selectedModel]);
+  const effectiveImageSize = modelSizeOptions.includes(size) ? size : modelSizeOptions[0];
+  const effectiveAspectRatio = snapToAllowedAspectRatio(
+    aspectRatio,
+    modelAspectOptions.map((item) => item.value),
+    modelAspectOptions[0]?.value ?? '1:1',
+  );
+  const qualityOptions = useMemo(
+    () => (selectedModel?.qualityOptions ?? []).map((item) => item.trim()).filter(Boolean),
+    [selectedModel],
+  );
+  const supportsImageQuality = qualityOptions.length > 0;
+  const effectiveQuality =
+    qualityOptions.find((option) => option.toLowerCase() === quality.toLowerCase())
+    ?? qualityOptions.find((option) => option.toLowerCase() === DEFAULT_IMAGE_QUALITY)
+    ?? qualityOptions[0]
+    ?? DEFAULT_IMAGE_QUALITY;
   const imageSelectionForCost =
     imageModelsLoading || imageModelsFallback ? null : selectedModel?.apiModel ?? null;
-  const imageCreditCost = useGenerationCreditCost('image_selection', imageSelectionForCost, {
-    surface: 'canvas',
-    params: isImage2 ? { size, quality } : { size },
-    quantity: Math.min(Math.max(effectiveCount, 1), 4),
-  });
+  const imageQuantity = Math.min(Math.max(effectiveCount, 1), 4);
+  // 统一计费（#210）：按 feature 键询价，模型身份走 buildImageFeatureBillingParams
+  // 拼进 params。与 ImageGenNode 从前的写法必须逐字一致，否则同一个节点在工作流
+  // 和故事板两个视图里会报出不同的价格。
+  const imageCreditCost = useGenerationCreditCost(
+    'feature',
+    imageSelectionForCost ? IMAGE_GENERATE_FEATURE_KEY : null,
+    {
+      surface: 'canvas',
+      params: buildImageFeatureBillingParams(selectedModel, {
+        size: effectiveImageSize,
+        ...(supportsImageQuality ? { quality: effectiveQuality } : {}),
+        pricing_quantity: imageQuantity,
+      }),
+      quantity: imageQuantity,
+    },
+  );
+  const imageBillingRuleMissing =
+    imageCreditCost.error instanceof BillingRuleNotConfiguredError;
+  // 用服务端下发的 `display`，别自己 format `cost`：促销时 display 是「原价→现价」，
+  // CreditCostPill 正是靠这个 `→` 才渲染划线原价和促销标签（credit-visual.tsx:117）。
+  // 自拼出来的只有一个数字，促销展示会整块消失。口径与 ImageGenNode 一致。
   const totalCreditCostDisplay = useMemo(() => {
-    const total = imageCreditCost.data?.data.cost;
-    if (typeof total !== 'number') return null;
-    return formatCreditCost(total);
-  }, [imageCreditCost.data?.data.cost]);
+    const display = imageCreditCost.data?.data.display;
+    if (!display) {
+      return imageBillingRuleMissing
+        ? t('common.billingRuleNotConfiguredShort')
+        : null;
+    }
+    return display;
+  }, [imageBillingRuleMissing, imageCreditCost.data?.data.display, t]);
+  // display 与 promotion 必须成对下发：只有前者时标签会兜底成通用的「促销中」，
+  // 拿不到「限时 5 折」这种真实文案。
+  const creditPromotion = imageCreditCost.data?.data.promotion ?? null;
   const { options: cameraOptions } = useFreezoneCameraOptions();
   const cameraSummary = describeCameraSelection(cameraSelection, cameraOptions);
   const { templates: styleTemplates } = useFreezoneStyleTemplates();
@@ -363,8 +430,34 @@ export function useImageGenerationForm(
       upstreamTextJoined.length > 0 &&
       (!shouldInlineUpstreamTextAsPrompt || !hasUserEditedPromptRef.current)
     );
+  // 媒体目录可以给模型声明参考图上限；超了就别让用户点下去白等一次后端 400。
+  const selectedModelReferenceError =
+    selectedModel?.referenceImageMax != null &&
+    orderedReferenceUrls.length > selectedModel.referenceImageMax
+      ? `该模型最多支持 ${selectedModel.referenceImageMax} 张图片素材`
+      : null;
+  // 下拉里逐项标灰：换到上限更小的模型前就能看见「该模型最多支持 N 张」。
+  const getModelOptionDisabledReason = useCallback(
+    (model: { referenceImageMax?: number | null }) =>
+      model.referenceImageMax != null && orderedReferenceUrls.length > model.referenceImageMax
+        ? `该模型最多支持 ${model.referenceImageMax} 张图片素材`
+        : null,
+    [orderedReferenceUrls.length],
+  );
   const submitDisabled =
-    isGenerating || !hasEffectivePrompt;
+    isGenerating ||
+    !selectedModel ||
+    !hasEffectivePrompt ||
+    imageBillingRuleMissing ||
+    selectedModelReferenceError !== null;
+
+  /**
+   * 宿主在「用户主动把节点上的图换成别的」时调用（恢复历史记录、把画册某格设为
+   * 主图……）：作废上一批还在飞的请求，它们回来后不再写节点。
+   */
+  const invalidateInFlightGeneration = useCallback(() => {
+    generationAttemptRef.current += 1;
+  }, []);
 
   const handleSubmit = useCallback(async (
     options: { completionMode?: 'submitted' | 'completed' } = {},
@@ -384,6 +477,10 @@ export function useImageGenerationForm(
       console.error('[image-gen] no project in URL');
       return;
     }
+    const generationAttempt = generationAttemptRef.current + 1;
+    generationAttemptRef.current = generationAttempt;
+    const isCurrentGenerationAttempt = () =>
+      generationAttemptRef.current === generationAttempt;
 
     // apiModel comes from the SAME reconciled model the picker displays, so the
     // backend always receives the model the user actually sees.
@@ -421,9 +518,11 @@ export function useImageGenerationForm(
         kind: 'image',
         label: `reference-${index + 1}`,
       })),
-      onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(id, {
+      onCompileMetadata: ({ mode, prompt: compiledPrompt, recipeIds }) => updateNodeData(id, {
         workflowRecipeCompileMode: mode,
         workflowRecipeCompiledAt: new Date().toISOString(),
+        workflowRecipeCompiledPrompt: compiledPrompt,
+        prompt: compiledPrompt,
         workflowRecipeIds: recipeIds,
       }),
     });
@@ -431,17 +530,15 @@ export function useImageGenerationForm(
       prompt: effectivePrompt,
       // 后端只接受固定的几个比例；节点上的 aspectRatio 可能是图片自然尺寸约分出的
       // 非标准值（如 "43:24"）或 "auto"，提交前吸附到最接近的合法比例（auto→1:1）。
-      aspectRatio: snapToAllowedAspectRatio(
-        aspectRatio,
-        IMAGE_GENERATION_ASPECT_RATIOS,
-        '1:1',
-      ) as typeof aspectRatio,
-      imageSize: size,
-      // 画质仅对 image2 系模型生效，其余模型不下发该字段。
-      quality: isImage2 ? quality : null,
+      aspectRatio: effectiveAspectRatio as typeof aspectRatio,
+      imageSize: effectiveImageSize,
+      // 画质仅在媒体目录声明 qualityOptions 时下发。
+      quality: supportsImageQuality ? effectiveQuality : null,
       referenceUrls,
+      provider: selectedModel?.providerId as FreezoneProvider | undefined,
       model: apiModel,
-      modelId,
+      modelId: selectedModel?.catalogId ?? modelId,
+      modelParams: data.modelParams,
       camera: hasCamera
         ? {
             cameraBodyId: cameraSelection?.cameraBodyId ?? null,
@@ -512,6 +609,7 @@ export function useImageGenerationForm(
             }
           }
           if (url) {
+            if (!isCurrentGenerationAttempt()) return;
             completedUrls.push(url);
             const isFirstCompleted = completedUrls.length === 1;
             updateNodeData(id, {
@@ -526,6 +624,7 @@ export function useImageGenerationForm(
               });
             }
           } else {
+            if (!isCurrentGenerationAttempt()) return;
             console.warn('[image-gen] generation completed without output url', completed);
             // 只有 run 0（任务句柄的归属者）且尚无任何成功时才终结 loading——
             // 非首个任务先「无 URL 完成」不能把还在跑的整体 loading 提前掐掉。
@@ -558,6 +657,7 @@ export function useImageGenerationForm(
         }
         await completeTask();
       } catch (error) {
+        if (!isCurrentGenerationAttempt()) return;
         console.error('[image-gen] generation failed', error);
         // 已有同批其它图完成（主图已落）时不覆盖成功态为错误——部分失败只
         // 影响画册张数。
@@ -656,12 +756,13 @@ export function useImageGenerationForm(
     data,
     effectiveCount,
     id,
-    isImage2,
     modelId,
     orderedReferenceUrls,
     prompt,
-    quality,
-    size,
+    effectiveAspectRatio,
+    effectiveImageSize,
+    effectiveQuality,
+    supportsImageQuality,
     styleTemplateId,
     submitDisabled,
     shouldInlineUpstreamTextAsPrompt,
@@ -715,9 +816,18 @@ export function useImageGenerationForm(
       upstreamTextJoined,
       modelId,
       aspectRatio,
-      size,
-      quality,
-      isImage2,
+      size: effectiveImageSize,
+      sizeOptions: modelSizeOptions,
+      aspectOptions: modelAspectOptions,
+      quality: effectiveQuality,
+      qualityOptions,
+      showQuality: supportsImageQuality,
+      modelParameters: selectedModel?.request?.parameters,
+      modelParams: data.modelParams,
+      modelParamsMode:
+        typeof data.generationMode === 'string' ? data.generationMode : undefined,
+      selectedModelReferenceError,
+      getModelOptionDisabledReason,
       cameraSelection,
       cameraSummary,
       showCountSelect: !canAutoCommitOnGenerate,
@@ -726,6 +836,7 @@ export function useImageGenerationForm(
       isGenerating,
       onTranslate: () => void handleTranslatePrompt(),
       totalCreditCostDisplay,
+      creditPromotion,
       submitDisabled,
       onSubmit: () => void handleSubmit(),
     },
@@ -734,5 +845,6 @@ export function useImageGenerationForm(
     submit: handleSubmit,
     canAutoCommitOnGenerate,
     referenceImageUrl,
+    invalidateInFlightGeneration,
   };
 }

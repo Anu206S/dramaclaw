@@ -1012,6 +1012,14 @@ async def resolve_clarification_tool_result(
     return {"ok": True, "data": resolved}
 
 
+def _is_websocket_disconnected_runtime_error(exc: RuntimeError) -> bool:
+    message = str(exc)
+    return (
+        "WebSocket is not connected" in message
+        or 'Cannot call "receive" once a disconnect message has been received.' in message
+    )
+
+
 async def _receive_bridge_results_during_turn(
     *,
     websocket: WebSocket,
@@ -1024,7 +1032,7 @@ async def _receive_bridge_results_during_turn(
         except asyncio.CancelledError:
             raise
         except RuntimeError as exc:
-            if "WebSocket is not connected" in str(exc):
+            if _is_websocket_disconnected_runtime_error(exc):
                 return
             raise
         except WebSocketDisconnect:
@@ -2201,7 +2209,8 @@ async def _stream_project_turn(
                     send_lock,
                 )
         elif event_type == "done":
-            final_text = _message_content(event.get("message"))
+            final_message = event.get("message")
+            final_text = _message_content(final_message)
             if _should_emit_final_text(final_text, assistant_sent_text):
                 assistant_sent_text = final_text
                 await _send_json_best_effort(
@@ -2217,7 +2226,12 @@ async def _stream_project_turn(
                 )
             done_sent = await _send_json_best_effort(
                 websocket,
-                {"type": "chat.done", "turn_id": turn_id, "scope": scope.to_dict()},
+                {
+                    "type": "chat.done",
+                    "turn_id": turn_id,
+                    "scope": scope.to_dict(),
+                    "message": final_message if isinstance(final_message, dict) else None,
+                },
                 send_lock,
             )
 
@@ -2561,7 +2575,12 @@ async def _stream_home_turn(
 
         done_sent = await _send_json_best_effort(
             websocket,
-            {"type": "chat.done", "turn_id": turn_id, "scope": scope.to_dict()},
+            {
+                "type": "chat.done",
+                "turn_id": turn_id,
+                "scope": scope.to_dict(),
+                "message": message,
+            },
             send_lock,
         )
     finally:
@@ -2606,7 +2625,7 @@ async def chat_ws(websocket: WebSocket) -> None:
             try:
                 raw = await websocket.receive_json()
             except RuntimeError as exc:
-                if "WebSocket is not connected" in str(exc):
+                if _is_websocket_disconnected_runtime_error(exc):
                     return
                 raise
             event_type = str(raw.get("type") or "")

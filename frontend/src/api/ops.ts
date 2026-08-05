@@ -28,6 +28,7 @@ export type FreezoneRecipeCompileMode =
 
 export interface FreezoneRecipeCompileMetadata {
   mode: FreezoneRecipeCompileMode;
+  prompt: string;
   recipeIds: string[];
 }
 
@@ -95,6 +96,7 @@ function resolveRecipeCompile(
 ): void {
   pending.payload.onCompileMetadata?.({
     mode: data.compile_mode ?? "model",
+    prompt: data.prompt,
     recipeIds: Array.isArray(data.recipe_ids)
       ? data.recipe_ids.filter((item): item is string => typeof item === "string" && item.length > 0)
       : [

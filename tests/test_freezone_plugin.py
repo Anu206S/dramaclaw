@@ -935,6 +935,8 @@ def test_freezone_get_workflow_skill_returns_json_when_registry_summarizes(monke
     assert decoded["ok"] is True
     assert decoded["skill_id"] == "ecommerce-product"
     assert isinstance(decoded["available_recipes"], list)
+    assert decoded["recipes"] == []
+    assert decoded["recipe_definitions_omitted"] is True
 
 
 def test_freezone_get_workflow_skill_accepts_native_skill_id(monkeypatch):

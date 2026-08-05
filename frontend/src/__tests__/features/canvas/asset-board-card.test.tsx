@@ -326,12 +326,11 @@ describe('AssetBoardCard', () => {
       );
       expect(screen.getByText('生成中 0%...')).toBeInTheDocument();
 
-      // 图片栏预估时长 20s（见 AssetBoardCard 的 ESTIMATED_GENERATION_DURATION_MS）：
-      // 推进 4s → 33 个 120ms 轮询节拍（最后一拍落在 3960ms）→ 19.8% 四舍五入为 20%。
+      // 图片栏预估时长 20s；指数饱和算法在 3960ms 的轮询拍得到 24%。
       act(() => {
         vi.advanceTimersByTime(4000);
       });
-      expect(screen.getByText('生成中 20%...')).toBeInTheDocument();
+      expect(screen.getByText('生成中 24%...')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

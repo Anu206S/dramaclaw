@@ -252,10 +252,7 @@ def _finalize_compiler_task(
 
 
 async def _run_recipe_compiler(task: str) -> str:
-    from novelvideo.config import (
-        get_newapi_structured_output_model_settings,
-        get_newapi_text_pydantic_model,
-    )
+    from novelvideo.config import get_newapi_text_pydantic_model
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
@@ -268,10 +265,10 @@ async def _run_recipe_compiler(task: str) -> str:
         output_type=str,
         name="Freezone Recipe Compiler",
     )
-    response = await agent.run(
-        task,
-        model_settings=get_newapi_structured_output_model_settings(),
-    )
+    # Recipe compilation returns ordinary text, not a structured Pydantic
+    # payload. Leave reasoning unspecified so the selected BrainClaw logical
+    # model/provider can use its production text-generation policy.
+    response = await agent.run(task)
     compiled = str(response.output or "").strip()
     if not compiled:
         raise RuntimeError("recipe compiler returned an empty prompt")

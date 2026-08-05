@@ -142,9 +142,11 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
             upstreamText: upstreamTextJoined,
             upstreamContents,
             fallbackPrompt,
-            onCompileMetadata: ({ mode, recipeIds }) => updateNodeData(nodeId, {
+            onCompileMetadata: ({ mode, prompt: compiledPrompt, recipeIds }) => updateNodeData(nodeId, {
               workflowRecipeCompileMode: mode,
               workflowRecipeCompiledAt: new Date().toISOString(),
+              workflowRecipeCompiledPrompt: compiledPrompt,
+              text: compiledPrompt,
               workflowRecipeIds: recipeIds,
             }),
           })
@@ -174,7 +176,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
           });
       // Persist the task handle so a page refresh can resume this job.
       updateNodeData(nodeId, generationTaskDescriptor(ref));
-      await awaitTaskCompletion(ref.task_key, project);
+      await awaitTaskCompletion(ref.task_key, project, { taskType: ref.task_type });
       const result = await fetchFreezoneJobResult(
         project,
         isMusic ? 'freezone_audio_eleven_music' : 'freezone_audio_speech',

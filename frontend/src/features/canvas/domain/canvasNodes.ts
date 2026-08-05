@@ -210,6 +210,11 @@ export interface VideoComposeNodeData extends NodeDisplayData {
    * `ComposeTimelineState`，这里存 unknown 以免领域层反向依赖 compose 特性层。
    */
   draftTimeline?: unknown;
+  /**
+   * 动态工作流声明的合成输入顺序。值为 workflowPlanNodeId，而非画布 UUID；
+   * 前端据此恢复镜头语义顺序，避免把布局位置当作播放顺序。
+   */
+  compositionInputOrder?: string[];
   [key: string]: unknown;
 }
 

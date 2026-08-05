@@ -650,6 +650,44 @@ async def test_fallback_display_prefers_api_project_id(monkeypatch):
     assert specs[0]["elements"][first_child]["props"]["src"] == "/static/projects/api-project/sketch.png?v=1"
 
 
+@pytest.mark.anyio
+async def test_fallback_display_groups_all_final_videos_into_one_spec(monkeypatch):
+    seen_paths = []
+
+    def fake_backend_api_get(path, token):
+        seen_paths.append(path)
+        if path.endswith("/episodes"):
+            return {"ok": True, "data": [{"number": 1}, {"number": 2}, {"number": 3}]}
+        episode = int(path.split("/")[-2])
+        return {
+            "ok": True,
+            "data": {
+                "exists": True,
+                "video_url": f"/static/projects/api-project/ep{episode:03d}.mp4",
+            },
+        }
+
+    monkeypatch.setattr(chat_service, "_backend_api_get", fake_backend_api_get)
+
+    specs = await chat_service._fallback_display_tool_ui_specs(
+        "local",
+        "chat-scope",
+        "dramaclaw_get_final_video",
+        {"project_id": "api-project"},
+        token="token",
+    )
+
+    assert len(specs) == 1
+    root = specs[0]["root"]
+    assert len(specs[0]["elements"][root]["children"]) == 3
+    assert seen_paths == [
+        "/api/v1/projects/api-project/episodes",
+        "/api/v1/projects/api-project/episodes/1/final",
+        "/api/v1/projects/api-project/episodes/2/final",
+        "/api/v1/projects/api-project/episodes/3/final",
+    ]
+
+
 def test_claude_and_codex_sessions_are_scope_scoped(monkeypatch, tmp_path):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
@@ -1070,6 +1108,56 @@ def test_prompt_injects_json_render_contract(monkeypatch, tmp_path):
     assert "角色列表、剧集规划、项目进度、任务状态、脚本/beat 摘要、表格、长篇正文、普通结构化说明默认使用 markdown" in prompt
     assert "不要为纯文本、进度、脚本、表格、角色/剧集清单调用媒体展示工具" in prompt
     assert prompt.rstrip().endswith("查看肖像图片，用 json-render 显示")
+
+
+def test_prompt_injects_one_step_execution_hint_for_explicit_continuation(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "下一步",
+        route_prompt="下一步",
+    )
+
+    assert "[DRAMACLAW_CONTINUATION]" in prompt
+    assert "start exactly one matching write" in prompt
+    assert "dramaclaw_render_first_frames" in prompt
+    assert "Do not reread identical status" in prompt
+    assert prompt.rstrip().endswith("下一步")
+
+
+def test_prompt_does_not_treat_continuation_question_as_write_authorization(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "为什么点击下一步不能继续？",
+        route_prompt="为什么点击下一步不能继续？",
+    )
+
+    assert "[DRAMACLAW_CONTINUATION]" not in prompt
+
+
+def test_prompt_does_not_inject_mainline_continuation_into_freezone(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "下一步",
+        tool_mode="freezone_canvas",
+        route_prompt="下一步",
+    )
+
+    assert "[DRAMACLAW_CONTINUATION]" not in prompt
 
 
 def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainline_generation(

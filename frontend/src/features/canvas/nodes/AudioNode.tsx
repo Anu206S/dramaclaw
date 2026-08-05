@@ -33,6 +33,7 @@ import { AddNodeToChatButton } from '@/features/canvas/ui/AddNodeToChatButton';
 import { NodeResizeHandle } from '@/features/canvas/ui/NodeResizeHandle';
 import { NodeGenerationOverlay } from '@/features/canvas/ui/NodeGenerationOverlay';
 import { AudioWaveformPlayer } from '@/features/canvas/ui/AudioWaveformPlayer';
+import { setNodeMediaActive } from '@/features/canvas/application/canvasLod';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import { CANVAS_NODE_PANEL_SURFACE_CLASS, canvasNodeFrameClass } from '@/features/canvas/ui/nodeFrameStyles';
 import { useCanvasStore, useIsBoxSelecting } from '@/stores/canvasStore';
@@ -391,6 +392,7 @@ export const AudioNode = memo(({ id, data, selected, width, height }: AudioNodeP
                 updateNodeData(id, { durationMs: ms });
               }
             }}
+            onPlayingChange={(playing) => setNodeMediaActive(id, playing)}
           />
         ) : hasGenerationError ? (
           // 失败态：与 ImageGenNode/VideoNode 一致（headline + 可滚动错误文本 + 共用重试按钮）。

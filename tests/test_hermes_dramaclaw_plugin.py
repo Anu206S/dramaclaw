@@ -135,7 +135,7 @@ def test_dramaclaw_plugin_registers_freezone_canvas_tools():
     assert "dramaclaw_start_video_batch" in names
 
 
-def test_start_video_batch_starts_up_to_three_beats(monkeypatch):
+def test_start_video_batch_starts_up_to_nine_beats(monkeypatch):
     plugin = _load_plugin_module()
     calls = []
 
@@ -146,29 +146,238 @@ def test_start_video_batch_starts_up_to_three_beats(monkeypatch):
     monkeypatch.setattr(plugin, "_request", fake_request)
 
     result = plugin._handle_start_video_batch(
-        {"project_id": "proj-1", "episode": 2, "beats": [3, 1, 2]}
+        {"project_id": "proj-1", "episode": 2, "beats": [9, 3, 1, 7, 2, 8, 4, 6, 5]}
     )
 
     assert result["ok"] is True
-    assert result["started"] == [1, 2, 3]
+    assert result["started"] == list(range(1, 10))
     batch_ids = {call[2]["batch_id"] for call in calls}
     assert batch_ids == {result["batch_id"]}
-    assert all(call[2]["batch_size"] == 3 for call in calls)
+    assert all(call[2]["batch_size"] == 9 for call in calls)
     assert [call[1] for call in calls] == [
         "/api/v1/projects/proj-1/episodes/2/beats/1/video",
         "/api/v1/projects/proj-1/episodes/2/beats/2/video",
         "/api/v1/projects/proj-1/episodes/2/beats/3/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/4/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/5/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/6/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/7/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/8/video",
+        "/api/v1/projects/proj-1/episodes/2/beats/9/video",
     ]
 
 
-def test_start_video_batch_rejects_more_than_three_beats():
+def test_start_video_batch_rejects_more_than_nine_beats():
     plugin = _load_plugin_module()
 
     result = plugin._handle_start_video_batch(
-        {"project_id": "proj-1", "episode": 1, "beats": [1, 2, 3, 4]}
+        {"project_id": "proj-1", "episode": 1, "beats": list(range(1, 11))}
     )
 
-    assert "at most 3 beats" in result
+    assert "at most 9 beats" in result
+
+
+def test_start_video_batch_auto_fills_short_request_to_nine(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, *, query=None, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return {
+                "ok": True,
+                "data": [
+                    {
+                        "beat_number": beat,
+                        "frame_url": f"/frames/{beat}.png",
+                        "video_url": "/videos/1.mp4" if beat == 1 else "",
+                    }
+                    for beat in range(1, 11)
+                ],
+            }
+        return {"ok": True, "task_id": f"task-{len(calls)}"}
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    result = plugin._handle_start_video_batch(
+        {"project_id": "proj-1", "episode": 2, "beats": [2, 3, 4]}
+    )
+
+    assert result["ok"] is True
+    assert result["started"] == list(range(2, 11))
+    post_calls = [call for call in calls if call[0] == "POST"]
+    assert len(post_calls) == 9
+    assert all(call[2]["batch_size"] == 9 for call in post_calls)
+
+
+def test_start_video_batch_exact_subset_disables_auto_fill(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, *, query=None, body=None):
+        calls.append((method, path, body))
+        return {"ok": True, "task_id": f"task-{len(calls)}"}
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    result = plugin._handle_start_video_batch(
+        {
+            "project_id": "proj-1",
+            "episode": 2,
+            "beats": [2, 3],
+            "auto_fill": False,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["started"] == [2, 3]
+    assert all(call[0] == "POST" for call in calls)
+
+
+def test_get_final_video_displays_all_existing_finals_in_one_tool_call(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, *, query=None, body=None):
+        calls.append((method, path))
+        if path.endswith("/episodes"):
+            return {"ok": True, "data": [{"number": episode} for episode in range(1, 5)]}
+        episode = int(path.split("/")[-2])
+        return {
+            "ok": True,
+            "data": {
+                "exists": episode != 4,
+                "video_url": f"/static/finals/ep{episode:03d}.mp4" if episode != 4 else "",
+            },
+        }
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    result = plugin._handle_get_final_video({"project_id": "proj-1"})
+
+    assert result["ok"] is True
+    assert result["count"] == 3
+    assert result["episodes"] == [1, 2, 3]
+    assert result["has_more"] is False
+    root = result["ui_spec"]["elements"]["root"]
+    assert len(root["children"]) == 3
+    assert calls == [
+        ("GET", "/api/v1/projects/proj-1/episodes"),
+        ("GET", "/api/v1/projects/proj-1/episodes/1/final"),
+        ("GET", "/api/v1/projects/proj-1/episodes/2/final"),
+        ("GET", "/api/v1/projects/proj-1/episodes/3/final"),
+        ("GET", "/api/v1/projects/proj-1/episodes/4/final"),
+    ]
+
+
+def test_render_first_frames_starts_three_independent_tasks(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, *, query=None, body=None):
+        calls.append((method, path, body))
+        return {"ok": True, "task_id": f"task-{len(calls)}"}
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    result = plugin._handle_render_first_frames(
+        {"project_id": "proj-1", "episode": 3, "beat_indices": [3, 1, 2]}
+    )
+
+    assert result["ok"] is True
+    assert result["started"] == [1, 2, 3]
+    assert all(call[0] == "POST" for call in calls)
+    assert all(call[1].endswith("/episodes/3/beats/regenerate") for call in calls)
+    assert [call[2]["beat_indices"] for call in calls] == [[1], [2], [3]]
+    assert {call[2]["batch_id"] for call in calls} == {result["batch_id"]}
+    assert all(call[2]["batch_size"] == 3 for call in calls)
+
+
+def test_render_first_frames_omits_completed_beats_and_limits_batch(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, *, query=None, body=None):
+        calls.append((method, path, body))
+        if method == "GET":
+            return {
+                "ok": True,
+                "data": [
+                    {"beat_number": 1, "frame_url": "/frame-1.png"},
+                    {"beat_number": 2, "frame_url": ""},
+                    {"beat_number": 3, "frame_url": ""},
+                    {"beat_number": 4, "frame_url": ""},
+                    {"beat_number": 5, "frame_url": ""},
+                ],
+            }
+        return {"ok": True, "task_id": f"task-{len(calls)}"}
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    result = plugin._handle_render_first_frames({"project_id": "proj-1", "episode": 3})
+
+    assert result["started"] == [2, 3, 4]
+    assert result["remaining"] == 1
+    assert [call[2]["beat_indices"] for call in calls if call[0] == "POST"] == [
+        [2],
+        [3],
+        [4],
+    ]
+
+
+def test_render_first_frames_rejects_more_than_three_beats():
+    plugin = _load_plugin_module()
+
+    result = plugin._handle_render_first_frames(
+        {"project_id": "proj-1", "episode": 3, "beat_indices": [1, 2, 3, 4]}
+    )
+
+    assert "at most 3 first-frame beats" in result
+
+
+def test_render_first_frames_does_not_restart_completed_episode(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, *, query=None, body=None):
+        calls.append((method, path, body))
+        return {
+            "ok": True,
+            "data": [
+                {"beat_number": 1, "frame_url": "/frame-1.png"},
+                {"beat_number": 2, "frame_url": "/frame-2.png"},
+            ],
+        }
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    result = plugin._handle_render_first_frames({"project_id": "proj-1", "episode": 3})
+
+    assert result["code"] == "first_frames_complete"
+    assert result["started"] == []
+    assert [call[0] for call in calls] == ["GET"]
+
+
+def test_compose_episode_sends_canonical_body(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_episode_post(args, suffix, *, body=None):
+        calls.append((args, suffix, body))
+        return {"ok": True, "task_type": "compose_episode", "status": "queued"}
+
+    monkeypatch.setattr(plugin, "_episode_post", fake_episode_post)
+
+    result = plugin._handle_compose_episode({"project_id": "proj-1", "episode": 2})
+
+    assert result["ok"] is True
+    assert calls == [
+        (
+            {"project_id": "proj-1", "episode": 2},
+            "videos/compose",
+            {"add_subtitles": True, "add_bgm": False},
+        )
+    ]
 
 
 def test_prepare_system_voices_tool_requires_explicit_confirmation():

@@ -12,8 +12,10 @@ import {
   submitFreezoneUpscale,
   type FreezoneUpscaleScaleFactor,
 } from '@/api/ops';
-import { awaitTaskCompletion } from '@/api/tasks';
+import { awaitTaskCompletion, isTaskPollTimeoutError } from '@/api/tasks';
+import { notifyTaskStillRunning } from '@/features/canvas/application/errorDialog';
 import { generationTaskDescriptor } from '@/features/canvas/application/resumeGeneration';
+import { GENERATION_ERROR_CLEARED_PATCH } from '@/features/canvas/application/generationTaskArbitration';
 import { readUrl } from '@/lib/url-params';
 import {
   DEFAULT_SHARED_MODEL_ID,
@@ -154,10 +156,12 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
 
     setIsSubmitting(true);
     const generationStartedAt = Date.now();
+    // 超分是唯一原地改写源节点的编辑器（其余三个都新建结果节点），所以这里必须
+    // 把上一次失败的三个字段一起清掉，否则新一轮开始时旧请求 ID 还挂在节点上。
     updateNodeData(node.id, {
       isGenerating: true,
       generationStartedAt,
-      generationError: null,
+      ...GENERATION_ERROR_CLEARED_PATCH,
     });
 
     try {
@@ -168,7 +172,7 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
         model: apiModel,
       });
       updateNodeData(node.id, generationTaskDescriptor(ref));
-      const completed = await awaitTaskCompletion(ref.task_key, project);
+      const completed = await awaitTaskCompletion(ref.task_key, project, { taskType: ref.task_type });
       const directUrl = completed.result?.['output_url'] as string | undefined;
       let url = directUrl;
       if (!url) {
@@ -180,9 +184,15 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
         previewImageUrl: url,
         isGenerating: false,
         generationStartedAt: null,
-        generationError: null,
+        ...GENERATION_ERROR_CLEARED_PATCH,
       });
     } catch (err) {
+      // 轮询超时 ≠ 生成失败：后端还在跑，节点上的任务句柄仍可续接。
+      // 写错误横幅会把一个还活着的任务标成失败，并清掉句柄。
+      if (isTaskPollTimeoutError(err)) {
+        notifyTaskStillRunning(t);
+        return;
+      }
       const message = err instanceof Error ? err.message : String(err);
       console.error('[upscale] generation failed', err);
       updateNodeData(node.id, {
@@ -201,6 +211,7 @@ export const UpscaleEditorOverlay = memo(({ node }: UpscaleEditorOverlayProps) =
     persistedScaleFactor,
     selectedModel,
     sourceUrl,
+    t,
     updateNodeData,
   ]);
 

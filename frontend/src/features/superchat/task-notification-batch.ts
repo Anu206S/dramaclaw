@@ -24,7 +24,7 @@ export function taskBatchId(task: TaskState): string {
 
 function taskBatchSize(task: TaskState): number {
   const value = Number(metadataString(task, "batch_size"));
-  return Number.isInteger(value) && value > 1 && value <= 3 ? value : 0;
+  return Number.isInteger(value) && value > 1 && value <= 9 ? value : 0;
 }
 
 export function resolveChatTaskBatchSummary(
@@ -57,7 +57,11 @@ export function resolveChatTaskBatchSummary(
 
 export function buildChatTaskBatchNotification(summary: ChatTaskBatchSummary): string {
   const episodeLabel = summary.episode > 0 ? `第 ${summary.episode} 集` : "";
-  const taskLabel = summary.taskType === "single_video" ? "视频" : "任务";
+  const taskLabel = summary.taskType === "single_video"
+    ? "视频"
+    : summary.taskType === "selected_regen"
+      ? "首帧"
+      : "任务";
   if (summary.completed === summary.total) {
     const prefix = episodeLabel ? `${episodeLabel} ` : "";
     return `✅ ${prefix}${summary.total} 个${taskLabel}已全部生成完成。你可以让我查看结果，或继续下一步。`;

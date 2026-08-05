@@ -192,33 +192,6 @@ def _patch_limit_exceeded_enqueue(
     monkeypatch.setattr(freezone_routes, "get_task_backend", lambda: SimpleNamespace(enqueue_project_task=fake_enqueue_project_task))
 
 
-def _override_api_user(app: FastAPI, dependency) -> None:
-    for route in app.routes:
-        dependant = getattr(route, "dependant", None)
-        if dependant is None:
-            continue
-        for dep in dependant.dependencies:
-            if getattr(dep.call, "__name__", "") == "get_api_user":
-                app.dependency_overrides[dep.call] = dependency
-
-
-def _patch_freezone_endpoint_globals(app: FastAPI, monkeypatch: pytest.MonkeyPatch) -> None:
-    for route in app.routes:
-        endpoint = getattr(route, "endpoint", None)
-        if getattr(endpoint, "__name__", "") != "freezone_video_omni_gen":
-            continue
-        monkeypatch.setitem(
-            endpoint.__globals__,
-            "_resolve_freezone_project",
-            freezone_routes._resolve_freezone_project,
-        )
-        monkeypatch.setitem(
-            endpoint.__globals__,
-            "get_task_backend",
-            freezone_routes.get_task_backend,
-        )
-
-
 def _patch_runtime_error_enqueue(
     monkeypatch: pytest.MonkeyPatch,
     message: str = "broker unavailable",
@@ -255,16 +228,19 @@ def test_freezone_omni_video_limit_returns_429_envelope_through_asgi(
 
     _patch_freezone_project(monkeypatch, tmp_path)
     _patch_limit_exceeded_enqueue(monkeypatch, queue_kind="video")
-    app = create_app()
+    production_app = create_app()
+    # Keep this an ASGI-level contract test while isolating it from the shared
+    # router/port state accumulated by the full sequential test suite.
+    app = FastAPI()
+    app.exception_handlers.update(production_app.exception_handlers)
+    app.include_router(freezone_routes.router, prefix="/api/v1")
 
     async def fake_user():
         return {"username": "admin"}
 
-    _patch_freezone_endpoint_globals(app, monkeypatch)
-    _override_api_user(app, fake_user)
-    client = TestClient(app)
+    app.dependency_overrides[freezone_routes.get_api_user] = fake_user
 
-    response = client.post(
+    response = TestClient(app).post(
         "/api/v1/projects/58/freezone/video/omni-gen",
         json={"prompt": "雨夜街头，人物缓慢回头。"},
     )
@@ -444,6 +420,11 @@ async def test_freezone_video_generation_enqueues_feature_billing(
         "pricing_kind": "video",
         "pricing_model": "seedance-1.0-pro-fast",
         "pricing_params": {"resolution": "1080p"},
+        "pricing_metrics": {
+            "call_count": 1,
+            "item_count": 1,
+            "duration_seconds": 8,
+        },
         "pricing_model_selection": "newapi_seedance-1.0-pro-fast",
     }
 
@@ -496,6 +477,11 @@ async def test_freezone_audio_generation_enqueues_two_feature_billings(
         "pricing_kind": "audio",
         "pricing_model": INDEXTTS2_RECORD_MODEL,
         "pricing_params": {},
+        "pricing_metrics": {
+            "call_count": 1,
+            "item_count": 1,
+            "billable_chars": 7,
+        },
         "items": 7,
     }
 
@@ -510,6 +496,11 @@ async def test_freezone_audio_generation_enqueues_two_feature_billings(
         "pricing_model": "LingShan-MU-11",
         "pricing_params": {},
         "pricing_quantity": 31,
+        "pricing_metrics": {
+            "call_count": 1,
+            "item_count": 1,
+            "duration_seconds": 31,
+        },
     }
 
 
@@ -557,6 +548,11 @@ async def test_freezone_image_reverse_prompt_enqueues_feature_billing(
         "pricing_kind": "text",
         "pricing_model": "freezone-vision-model",
         "pricing_params": {},
+        "pricing_metrics": {
+            "call_count": 1,
+            "item_count": 1,
+            "billable_chars": 5,
+        },
     }
     assert captured["payload"]["instruction"] == "电影感光影"
 

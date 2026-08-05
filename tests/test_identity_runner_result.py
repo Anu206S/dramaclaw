@@ -42,6 +42,7 @@ async def test_identity_runner_preserves_task_billing_context(monkeypatch):
     from novelvideo.task_backend.runners import identity
 
     progress_updates: list[dict] = []
+    closed_stores: list[object] = []
 
     class ForbiddenUsageMeter:
         async def set_project_llm_usage_context(self, **kwargs):
@@ -62,6 +63,9 @@ async def test_identity_runner_preserves_task_billing_context(monkeypatch):
 
         async def load_graph_state(self):
             pass
+
+        async def close(self):
+            closed_stores.append(self)
 
     class FakeCogneeStore:
         def __init__(self, *args, **kwargs):
@@ -122,3 +126,4 @@ async def test_identity_runner_preserves_task_billing_context(monkeypatch):
     assert result["new_count"] == 1
     assert result["identities"][0]["identity_id"] == "hero_default"
     assert progress_updates
+    assert len(closed_stores) == 1

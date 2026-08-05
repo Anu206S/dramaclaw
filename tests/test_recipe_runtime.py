@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -37,9 +39,36 @@ def test_recipe_compiler_uses_the_dedicated_brainclaw_profile(monkeypatch):
 
     assert result == "compiled prompt"
     assert captured["brainclaw_profile"] is BrainClawProfile.FREEZONE_RECIPE_COMPILATION
-    assert captured["run_kwargs"] == {
-        "model_settings": {"openai_reasoning_effort": "none"}
-    }
+    assert captured["run_kwargs"] == {}
+
+
+def test_retro_skill_keeps_entry_guard_out_of_recipe_runtime_constraints():
+    skill_path = (
+        Path(__file__).resolve().parents[1]
+        / "src/novelvideo/freezone/agent_catalog/builtins/skills"
+        / "retro-hong-kong-kungfu-comedy-video.json"
+    )
+    skill = json.loads(skill_path.read_text(encoding="utf-8"))
+
+    constraints = recipe_runtime._skill_constraints(skill)
+    compiled_constraints = "\n".join(constraints["hard_constraints"])
+
+    assert "请先上传至少一张角色参考图或一句文字灵感" not in compiled_constraints
+    assert "暂停等待导演确认" not in compiled_constraints
+    assert "阶段标题使用【模块名】格式" not in constraints["prompt_guide"]
+    assert "一次性在草稿中列出完整工作流" in skill["planning"]["planning_notes"]
+
+
+def test_outdoor_stage_duel_character_elements_use_one_turnaround_reference():
+    recipe_path = (
+        Path(__file__).resolve().parents[1]
+        / "src/novelvideo/freezone/agent_catalog/builtins/recipes"
+        / "outdoor-stage-duel-key-elements.json"
+    )
+    recipe = json.loads(recipe_path.read_text(encoding="utf-8"))
+
+    assert "正面、侧面、背面" in recipe["system_prompt"]
+    assert "全身三视图" in "\n".join(recipe["must_have_items"])
 
 
 def test_build_recipe_compiler_task_checks_output_kind():

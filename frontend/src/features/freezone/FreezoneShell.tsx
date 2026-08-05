@@ -40,7 +40,6 @@ import { currentCanvasParam } from "@/lib/app-router";
 import { rememberLastCanvas, writeUrl } from "@/lib/url-params";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
-import { isCeRuntime } from "@/lib/runtime-config";
 import { XIADAO_ENABLED } from "@/lib/xiadao-flag";
 import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
@@ -861,10 +860,10 @@ export function FreezoneShell({
   const [assetLibraryReloadToken, setAssetLibraryReloadToken] = useState(0);
   const [assetPanelCollapsed, setAssetPanelCollapsed] = useState(true);
   const [debugPanelOpen, setDebugPanelOpen] = useState(false);
-  const showChatDock = XIADAO_ENABLED && !isCeRuntime();
-  const [chatOpen, setChatOpen] = useState(() => showChatDock && loadChatOpen());
+  const [chatOpen, setChatOpen] = useState(loadChatOpen);
   const [pendingChatAttachments, setPendingChatAttachments] = useState<ChatAttachment[]>([]);
   const [pendingChatNodeMentions, setPendingChatNodeMentions] = useState<string[]>([]);
+  const showChatDock = XIADAO_ENABLED;
   // Re-entrancy guard for in-flight projection sync/remove lives in the refs;
   // there is no UI bound to a syncing/removing value, so no state is kept.
   const syncingProjectionRef = useRef<string | null>(null);
@@ -1007,6 +1006,12 @@ export function FreezoneShell({
   }, [chatOpen]);
   useEffect(() => {
     if (!showChatDock) setChatOpen(false);
+  }, [showChatDock]);
+
+  useEffect(() => {
+    if (!showChatDock) {
+      setChatOpen(false);
+    }
   }, [showChatDock]);
 
   const handleBlankPaneClick = useCallback(() => {
@@ -2175,30 +2180,32 @@ export function FreezoneShell({
             </div>
           )}
         </main>
-        <FreezoneChatDock
-          projectId={projectId}
-          canvasId={canvasId}
-          currentCanvasMetadata={sync.metadata}
-          currentCanvasSelection={currentCanvasSelection}
-          currentCanvasOntologyContext={currentCanvasOntologyContext}
-          pendingAttachments={pendingChatAttachments}
-          onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
-          pendingNodeMentions={pendingChatNodeMentions}
-          onPendingNodeMentionsConsumed={() => setPendingChatNodeMentions([])}
-          open={chatOpen}
-          onOpenChange={handleChatOpenChange}
-          // 抽屉会往 <html> 上广播 --freezone-dock-width，顶栏 / 任务状态条 / 任务
-          // 面板据此整条往左收。以前离开虾画会整棵卸载、effect 清理顺手把变量删掉；
-          // 保活之后没人卸载，虾集的顶栏就一直挂着虾导抽屉的让位量（顶栏被挤窄、
-          // 虾画·虾集 与右上角那组入口整体左移）。所以非激活时按「抽屉没开」广播。
-          hostActive={active}
-          // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
-          // 画布视口不受影响（否则每次开合聊天都会让 ReactFlow 重排一次视口）。
-          pushesContent={viewMode === "board"}
-          title={t("freezone.chat.title")}
-          description={t("freezone.chat.description")}
-          toggleLabel={t("freezone.chat.toggle")}
-        />
+        {showChatDock && (
+          <FreezoneChatDock
+            projectId={projectId}
+            canvasId={canvasId}
+            currentCanvasMetadata={sync.metadata}
+            currentCanvasSelection={currentCanvasSelection}
+            currentCanvasOntologyContext={currentCanvasOntologyContext}
+            pendingAttachments={pendingChatAttachments}
+            onPendingAttachmentsConsumed={() => setPendingChatAttachments([])}
+            pendingNodeMentions={pendingChatNodeMentions}
+            onPendingNodeMentionsConsumed={() => setPendingChatNodeMentions([])}
+            open={chatOpen}
+            onOpenChange={handleChatOpenChange}
+            // 抽屉会往 <html> 上广播 --freezone-dock-width，顶栏 / 任务状态条 / 任务
+            // 面板据此整条往左收。以前离开虾画会整棵卸载、effect 清理顺手把变量删掉；
+            // 保活之后没人卸载，虾集的顶栏就一直挂着虾导抽屉的让位量（顶栏被挤窄、
+            // 虾画·虾集 与右上角那组入口整体左移）。所以非激活时按「抽屉没开」广播。
+            hostActive={active}
+            // 故事板：抽屉挤占左侧内容宽度（对标 liblib）；工作流：浮在画布上，
+            // 画布视口不受影响（否则每次开合聊天都会让 ReactFlow 重排一次视口）。
+            pushesContent={viewMode === "board"}
+            title={t("freezone.chat.title")}
+            description={t("freezone.chat.description")}
+            toggleLabel={t("freezone.chat.toggle")}
+          />
+        )}
       </div>
       <NodeReplaceDragPreview />
       {pushState && (

@@ -95,6 +95,21 @@ _STYLE_SHORT_DRAMA_REQUEST_RE = re.compile(
     re.IGNORECASE,
 )
 _CONTINUE_PIPELINE_RE = re.compile(r"(?:继续|恢复|接着|下一步|当前|已有|已上传|刚才上传)")
+_EXPLICIT_PIPELINE_CONTINUATION_RE = re.compile(
+    r"(?:继续|恢复|接着(?:做|生成|制作)?|下一步|继续跑|继续做)",
+    re.IGNORECASE,
+)
+_PIPELINE_CONTINUATION_QUESTION_RE = re.compile(
+    r"(?:为什么|为何|怎么|如何|能否|是否|可不可以|不能|失败|报错|什么情况|什么意思)"
+)
+_DRAMACLAW_CONTINUATION_INSTRUCTIONS = """[DRAMACLAW_CONTINUATION]
+The user explicitly authorizes continuing the bound mainline project from its current breakpoint.
+Read the episode pipeline status at most once and read active tasks at most once. If an active task
+exists, report it and stop. If no task is active, use next_step to start exactly one matching write
+task in this same turn, then stop. Do not reread identical status, ask the user to repeat "继续",
+or reopen run-mode selection. For next_step=selected_regen, call dramaclaw_render_first_frames once
+without beat_indices so it selects the next missing batch.
+[/DRAMACLAW_CONTINUATION]"""
 _DRAMACLAW_SCRIPT_UPLOAD_MODEL_REPLY_INSTRUCTIONS = """[DRAMACLAW_SCRIPT_UPLOAD_GUIDANCE]
 用户正在请求创建、生成或编写剧本/短剧，但当前消息没有上传剧本文档。
 
@@ -123,6 +138,9 @@ _JSON_RENDER_CHAT_INSTRUCTIONS = """[RENDERING_CONTRACT]
 触发条件：
 - 只有在回复需要展示图片、肖像、身份图、草图、首帧、视频、音频等可视/可播放媒体时，才需要调用对应的 DramaClaw 展示工具。
 - 角色列表、剧集规划、项目进度、任务状态、脚本/beat 摘要、表格、长篇正文、普通结构化说明默认使用 markdown；如果没有图片/视频/音频媒体，不要使用媒体展示工具。
+- 用户说“继续生成视频”“恢复”“接着做”“下一步”时，只推进未完成任务并汇报本轮状态。
+- 除非用户同时明确要求展示、查看、播放或预览，否则不要读取或展示此前已经生成的 beat 视频。
+  最终成片在本轮完成时仍按成片交付规则主动展示。
 
 禁止事项：
 - 不要向用户解释内部渲染格式、渲染机制、工具调用过程或工具名；只给业务结果和必要的下一步提示。
@@ -611,6 +629,11 @@ def _prompt_with_user_context(
         if tool_mode == "freezone_canvas"
         else ""
     )
+    continuation_source = route_prompt if route_prompt is not None else prompt
+    continuation_instructions = _pipeline_continuation_instructions(
+        continuation_source,
+        tool_mode=tool_mode,
+    )
     return (
         "[DRAMACLAW_USER_CONTEXT]\n"
         f"username: {username}\n"
@@ -620,10 +643,25 @@ def _prompt_with_user_context(
         "[USER_PREFERENCES]\n"
         f"{preferences}\n\n"
         f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
+        f"{continuation_instructions}"
         f"{surface_instructions}\n\n"
         "[USER_MESSAGE]\n"
         f"{prompt}"
     )
+
+
+def _pipeline_continuation_instructions(prompt: str, *, tool_mode: str) -> str:
+    """Return a narrow execution hint for explicit mainline continuation commands."""
+    if tool_mode != "default":
+        return ""
+    text = str(prompt or "").strip()
+    if not text or len(text) > 80:
+        return ""
+    if not _EXPLICIT_PIPELINE_CONTINUATION_RE.search(text):
+        return ""
+    if _PIPELINE_CONTINUATION_QUESTION_RE.search(text):
+        return ""
+    return f"{_DRAMACLAW_CONTINUATION_INSTRUCTIONS}\n\n"
 
 
 def _chat_backend() -> str:
@@ -1293,8 +1331,6 @@ def _merge_stream_text(existing: str, incoming: object) -> str:
         return existing
     if chunk.startswith(existing):
         return chunk
-    if existing.endswith(chunk):
-        return existing
     return existing + chunk
 
 
@@ -1322,6 +1358,18 @@ def _assistant_prefix_candidates(previous_assistant: object) -> list[str]:
     return [prefix] if prefix else []
 
 
+def _is_truncated_assistant_replay(content: str, candidates: list[str]) -> bool:
+    """Detect a sufficiently long strict prefix of previously emitted assistant text."""
+    compact_content = "".join(str(content or "").split())
+    if len(compact_content) < 16:
+        return False
+
+    compact_candidates = {"".join(candidate.split()) for candidate in candidates}
+    if compact_content in compact_candidates:
+        return False
+    return any(candidate.startswith(compact_content) for candidate in compact_candidates)
+
+
 def _strip_replayed_assistant_prefix(
     content: str,
     previous_assistant: object,
@@ -1332,6 +1380,8 @@ def _strip_replayed_assistant_prefix(
     text = str(content or "")
     original_text = text
     candidates = _assistant_prefix_candidates(previous_assistant)
+    if _is_truncated_assistant_replay(text, candidates):
+        return ""
     while text and candidates:
         original = text
         for prefix in candidates:
@@ -2174,6 +2224,12 @@ def _is_frame_image_element(element: Any) -> bool:
 
 
 def _filter_tool_ui_specs_for_prompt(prompt: str, specs: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    if not specs:
+        return specs
+
+    if _prompt_continues_video_generation_without_display(prompt):
+        specs = [spec for spec in specs if not _is_beat_video_ui_spec(spec)]
+
     if not specs or not _prompt_wants_sketch_only(prompt):
         return specs
 
@@ -2223,6 +2279,52 @@ def _filter_tool_ui_specs_for_prompt(prompt: str, specs: list[dict[str, Any]]) -
     return filtered_specs
 
 
+def _prompt_continues_video_generation_without_display(prompt: str) -> bool:
+    text = str(prompt or "").strip()
+    lower = text.casefold()
+    continue_terms = ("继续", "恢复", "接着", "下一步", "继续跑", "继续做")
+    video_terms = ("视频", "beat", "镜头", "成片", "生成")
+    display_terms = (
+        "展示",
+        "显示",
+        "查看",
+        "看看",
+        "看一下",
+        "播放",
+        "预览",
+        "给我看",
+        "show",
+        "display",
+        "view",
+        "preview",
+        "play",
+    )
+    return (
+        any(term in lower for term in continue_terms)
+        and any(term in lower for term in video_terms)
+        and not any(term in lower for term in display_terms)
+    )
+
+
+def _is_beat_video_ui_spec(spec: dict[str, Any]) -> bool:
+    if not isinstance(spec, dict) or spec.get("type") != "keyframe_video":
+        return False
+    elements = spec.get("elements")
+    if not isinstance(elements, dict):
+        return False
+    for element in elements.values():
+        if not isinstance(element, dict) or element.get("type") != "Video":
+            continue
+        props = element.get("props")
+        if not isinstance(props, dict):
+            continue
+        title = str(props.get("title") or "")
+        src = str(props.get("src") or "")
+        if re.search(r"\bbeat\s*\d+\b", title, re.IGNORECASE) or "/beats/" in src:
+            return True
+    return False
+
+
 _DISPLAY_TOOL_NAMES = {
     "dramaclaw_get_sketches",
     "dramaclaw_get_sketch_candidates",
@@ -2230,6 +2332,7 @@ _DISPLAY_TOOL_NAMES = {
     "dramaclaw_get_scene_images",
     "dramaclaw_get_character_media",
     "dramaclaw_get_episode_media",
+    "dramaclaw_get_final_video",
 }
 
 
@@ -2582,6 +2685,64 @@ async def _fallback_display_tool_ui_specs(
     def build() -> list[dict[str, Any]]:
         api_project = str(args.get("project_id") or args.get("project") or project).strip()
         project_q = quote(api_project, safe="")
+        if tool_name == "dramaclaw_get_final_video":
+            raw_episode_indices = args.get("episode_indices")
+            episode_indices: list[int] = []
+            if args.get("episode") is not None and not raw_episode_indices:
+                episode_indices = [int(args["episode"])]
+            elif isinstance(raw_episode_indices, list):
+                for value in raw_episode_indices:
+                    try:
+                        episode = int(value)
+                    except (TypeError, ValueError):
+                        continue
+                    if episode > 0 and episode not in episode_indices:
+                        episode_indices.append(episode)
+            if not episode_indices:
+                episodes_resp = _backend_api_get(
+                    f"/api/v1/projects/{project_q}/episodes",
+                    token,
+                )
+                for item in _api_response_items(episodes_resp, "episodes", "items"):
+                    if not isinstance(item, dict):
+                        continue
+                    try:
+                        episode = int(item.get("number") or 0)
+                    except (TypeError, ValueError):
+                        continue
+                    if episode > 0 and episode not in episode_indices:
+                        episode_indices.append(episode)
+
+            media_items: list[dict[str, Any]] = []
+            for episode in sorted(episode_indices):
+                resp = _backend_api_get(
+                    f"/api/v1/projects/{project_q}/episodes/{episode}/final",
+                    token,
+                )
+                data = resp.get("data") if isinstance(resp, dict) else None
+                video_url = (
+                    str(data.get("video_url") or "").strip()
+                    if isinstance(data, dict) and data.get("exists")
+                    else ""
+                )
+                if video_url:
+                    media_items.append(
+                        {
+                            "src": video_url,
+                            "title": f"第 {episode} 集成片",
+                            "description": "最终合成视频",
+                        }
+                    )
+            if not media_items:
+                return []
+            page_items = _limit_display_items(media_items, args, 6)
+            return [
+                _media_ui_spec(
+                    "keyframe_video",
+                    "Video",
+                    page_items,
+                )
+            ]
         if tool_name in {"dramaclaw_get_sketches", "dramaclaw_get_first_frames"}:
             episode = int(args.get("episode") or 1)
             media_kind = "frame" if tool_name == "dramaclaw_get_first_frames" else "sketch"

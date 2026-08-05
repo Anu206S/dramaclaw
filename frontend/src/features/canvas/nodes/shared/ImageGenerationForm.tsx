@@ -20,11 +20,11 @@ import type {
   ImageQuality,
   ImageSize,
 } from '@/features/canvas/domain/canvasNodes';
+import { resolveImageDisplayUrl } from '@/features/canvas/application/imageData';
 import {
-  parseAspectRatio,
-  pickClosestAspectRatio,
-  resolveImageDisplayUrl,
-} from '@/features/canvas/application/imageData';
+  IMAGE_QUALITY_OPTIONS,
+  resolveNearestAspectOption,
+} from '@/features/canvas/nodes/shared/imageGenerationOptions';
 import type { UpstreamContent } from '@/features/canvas/application/ports';
 import { useCanvasStore } from '@/stores/canvasStore';
 import { ReferenceTextChip } from '@/features/canvas/nodes/shared/ReferenceTextChip';
@@ -43,8 +43,16 @@ import {
   contextPromptPaletteInsertionText,
   type ContextPromptPaletteEntry,
 } from '@/features/canvas/nodes/contextPromptPalette';
-import { ProviderModelPicker } from '@/features/canvas/ui/ProviderModelPicker';
-import { CreditCostPill } from '@/components/credits/credit-visual';
+import {
+  ProviderModelPicker,
+  type ModelOption,
+} from '@/features/canvas/ui/ProviderModelPicker';
+import { MediaModelParameterChip } from '@/features/canvas/ui/MediaModelParameterChip';
+import type { MediaModelParameterDefinition } from '@/api/ops';
+import {
+  CreditCostPill,
+  type CreditPromotionDisplay,
+} from '@/components/credits/credit-visual';
 import {
   CANVAS_NODE_INPUT_PLACEHOLDER_CLASS,
 } from '@/features/canvas/ui/nodeFrameStyles';
@@ -63,28 +71,8 @@ import {
   NODE_TEXT_CONTROL_TRIGGER_CLASS,
 } from '@/features/canvas/ui/nodeControlStyles';
 
-const ASPECT_OPTIONS: ReadonlyArray<{ value: string; label: string }> = [
-  { value: 'auto', label: '自适应' },
-  { value: '1:1', label: '1:1' },
-  { value: '9:16', label: '9:16' },
-  { value: '16:9', label: '16:9' },
-  { value: '3:4', label: '3:4' },
-  { value: '4:3', label: '4:3' },
-  { value: '3:2', label: '3:2' },
-  { value: '2:3', label: '2:3' },
-  { value: '4:5', label: '4:5' },
-  { value: '5:4', label: '5:4' },
-  { value: '21:9', label: '21:9' },
-];
-
-const SIZE_OPTIONS: ReadonlyArray<ImageSize> = ['1K', '2K', '4K'];
 const COUNT_OPTIONS: ReadonlyArray<ImageGenCount> = [1, 2, 4];
 
-const QUALITY_OPTIONS: ReadonlyArray<{ value: ImageQuality; label: string }> = [
-  { value: 'low', label: '低画质' },
-  { value: 'medium', label: '标准画质' },
-  { value: 'high', label: '高画质' },
-];
 const IMAGE_PARAM_POPOVER_CLASS =
   `nodrag nowheel absolute bottom-full left-0 z-50 mb-2 w-[300px] p-4 ${NODE_FLOATING_PANEL_SURFACE_CLASS}`;
 const IMAGE_PARAM_LABEL_CLASS =
@@ -99,33 +87,28 @@ const IMAGE_PARAM_ROW_CLASS = 'mb-4 flex gap-2';
 const NODE_COUNT_OPTION_BASE_CLASS =
   'flex w-full items-center justify-center rounded-[6px] px-3 py-1.5 text-xs transition-colors';
 
-// 图片按自然尺寸算出的比例常是约分形式（如 21:9 会被约成 7:3），不在 ASPECT_OPTIONS 里，
-// 直接显示就会出现「7:3」这种列表外的标签。这里退回到「数值最接近的可选比例」（复用
-// imageData 的 pickClosestAspectRatio）——chip 标签与下拉里的高亮选项都基于它，保证两边一致。
-function resolveNearestAspectOption(aspectRatio: string): { value: string; label: string } {
-  const exact = ASPECT_OPTIONS.find((option) => option.value === aspectRatio);
-  if (exact) return exact;
-  const candidates = ASPECT_OPTIONS.filter((option) => option.value !== 'auto');
-  const nearestValue = pickClosestAspectRatio(
-    parseAspectRatio(aspectRatio),
-    candidates.map((option) => option.value),
-  );
-  return (
-    candidates.find((option) => option.value === nearestValue)
-    ?? { value: aspectRatio, label: aspectRatio }
-  );
-}
-
 interface AspectSizeChipProps {
   aspectRatio: string;
-  size: ImageSize;
+  size: string;
+  sizeOptions: readonly string[];
+  aspectOptions: ReadonlyArray<{ value: string; label: string }>;
   quality: ImageQuality;
-  /** image2 系模型才显示「画质」选择器，并在标签里带上画质。 */
+  qualityOptions: readonly ImageQuality[];
+  /** 媒体目录声明图片质量选项时显示选择器，并在标签里带上画质。 */
   showQuality: boolean;
   onChange: (patch: Partial<ImageGenNodeData>) => void;
 }
 
-function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: AspectSizeChipProps) {
+function AspectSizeChip({
+  aspectRatio,
+  size,
+  sizeOptions,
+  aspectOptions,
+  quality,
+  qualityOptions,
+  showQuality,
+  onChange,
+}: AspectSizeChipProps) {
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
   const [isOpen, setIsOpen] = useState(false);
@@ -145,9 +128,9 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
     return () => document.removeEventListener('mousedown', onPointerDown, true);
   }, [isOpen]);
 
-  const nearestAspect = resolveNearestAspectOption(aspectRatio);
+  const nearestAspect = resolveNearestAspectOption(aspectRatio, aspectOptions);
   const aspectLabel = nearestAspect.label;
-  const qualityLabel = QUALITY_OPTIONS.find((option) => option.value === quality)?.label
+  const qualityLabel = IMAGE_QUALITY_OPTIONS.find((option) => option.value === quality)?.label
     ?? quality;
 
   return (
@@ -183,20 +166,22 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
             <>
               <div className={IMAGE_PARAM_LABEL_CLASS}>画质</div>
               <div className={IMAGE_PARAM_ROW_CLASS}>
-                {QUALITY_OPTIONS.map((option) => {
-                  const isActive = quality === option.value;
+                {qualityOptions.map((value) => {
+                  const label =
+                    IMAGE_QUALITY_OPTIONS.find((option) => option.value === value)?.label ?? value;
+                  const isActive = quality === value;
                   return (
                     <button
-                      key={option.value}
+                      key={value}
                       type="button"
-                      onClick={() => onChange({ quality: option.value })}
+                      onClick={() => onChange({ quality: value })}
                       className={`${IMAGE_PARAM_BUTTON_BASE_CLASS} flex-1 ${
                         isActive
                           ? IMAGE_PARAM_ACTIVE_BUTTON_CLASS
                           : IMAGE_PARAM_IDLE_BUTTON_CLASS
                       }`}
                     >
-                      {option.label}
+                      {label}
                     </button>
                   );
                 })}
@@ -205,13 +190,13 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
           )}
           <div className={IMAGE_PARAM_LABEL_CLASS}>分辨率</div>
           <div className={IMAGE_PARAM_ROW_CLASS}>
-            {SIZE_OPTIONS.map((option) => {
+            {sizeOptions.map((option) => {
               const isActive = size === option;
               return (
                 <button
                   key={option}
                   type="button"
-                  onClick={() => onChange({ size: option })}
+                  onClick={() => onChange({ size: option as ImageSize })}
                   className={`${IMAGE_PARAM_BUTTON_BASE_CLASS} flex-1 ${
                     isActive
                       ? IMAGE_PARAM_ACTIVE_BUTTON_CLASS
@@ -226,7 +211,7 @@ function AspectSizeChip({ aspectRatio, size, quality, showQuality, onChange }: A
 
           <div className={IMAGE_PARAM_LABEL_CLASS}>比例</div>
           <div className="grid grid-cols-4 gap-2">
-            {ASPECT_OPTIONS.map((option) => {
+            {aspectOptions.map((option) => {
               const isActive = nearestAspect.value === option.value;
               return (
                 <button
@@ -520,10 +505,25 @@ export interface ImageGenerationFormProps {
   // ── 参数行 ──
   modelId: string;
   aspectRatio: string;
-  size: ImageSize;
+  /**
+   * 分辨率/比例/画质三档由媒体目录驱动（#210）：宿主 hook 已按所选模型把可选值和
+   * 「吸附后的当前值」算好，本组件只负责渲染，不再自己判断模型支持什么。
+   */
+  size: string;
+  sizeOptions: readonly string[];
+  aspectOptions: ReadonlyArray<{ value: string; label: string }>;
   quality: ImageQuality;
-  /** image2 系模型才显示「画质」选择器。 */
-  isImage2: boolean;
+  qualityOptions: readonly ImageQuality[];
+  /** 媒体目录声明了 qualityOptions 才显示「画质」选择器。 */
+  showQuality: boolean;
+  /** 所选模型声明的自定义参数表单（MediaModelParameterChip）。 */
+  modelParameters: MediaModelParameterDefinition[] | undefined;
+  modelParams: Record<string, unknown> | undefined;
+  modelParamsMode: string | undefined;
+  /** 模型对参考图数量有上限时，超限的提示语；null 表示没问题。 */
+  selectedModelReferenceError: string | null;
+  /** 模型下拉里逐项的禁用理由（同样是参考图上限）。 */
+  getModelOptionDisabledReason: (model: ModelOption) => string | null;
   cameraSelection: ImageGenCameraSelection | null;
   cameraSummary: string | null;
   /** 自动提交到主线的系统节点隐藏「生成数量」——数量固定为 1。 */
@@ -535,6 +535,8 @@ export interface ImageGenerationFormProps {
 
   // ── 提交 ──
   totalCreditCostDisplay: string | null;
+  /** 与 `totalCreditCostDisplay` 成对：缺了它促销标签只会兜底成通用的「促销中」。 */
+  creditPromotion: CreditPromotionDisplay | null;
   submitDisabled: boolean;
   onSubmit: () => void;
 
@@ -591,8 +593,16 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
     modelId,
     aspectRatio,
     size,
+    sizeOptions,
+    aspectOptions,
     quality,
-    isImage2,
+    qualityOptions,
+    showQuality,
+    modelParameters,
+    modelParams,
+    modelParamsMode,
+    selectedModelReferenceError,
+    getModelOptionDisabledReason,
     cameraSelection,
     cameraSummary,
     showCountSelect,
@@ -601,6 +611,7 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
     isGenerating,
     onTranslate,
     totalCreditCostDisplay,
+    creditPromotion,
     submitDisabled,
     onSubmit,
     compact = false,
@@ -743,15 +754,29 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
         <div className="flex min-w-0 items-center gap-2">
           <ProviderModelPicker
             selectedModelId={modelId}
-            onChange={(nextModelId) => updateNodeData(nodeId, { model: nextModelId })}
+            // 换模型必须清空 modelParams：参数表是按模型声明的，留着上一个模型的
+            // 键会原样发给后端，轻则被忽略重则报参数不合法。
+            onChange={(nextModelId) =>
+              updateNodeData(nodeId, { model: nextModelId, modelParams: {} })
+            }
             popoverPlacement="top"
+            getOptionDisabledReason={getModelOptionDisabledReason}
           />
           <AspectSizeChip
             aspectRatio={aspectRatio}
             size={size}
+            sizeOptions={sizeOptions}
+            aspectOptions={aspectOptions}
             quality={quality}
-            showQuality={isImage2}
+            qualityOptions={qualityOptions}
+            showQuality={showQuality}
             onChange={(patch) => updateNodeData(nodeId, patch)}
+          />
+          <MediaModelParameterChip
+            parameters={modelParameters}
+            values={modelParams}
+            mode={modelParamsMode}
+            onChange={(next) => updateNodeData(nodeId, { modelParams: next })}
           />
           <CameraChip
             selection={cameraSelection}
@@ -788,13 +813,14 @@ export const ImageGenerationForm = memo((props: ImageGenerationFormProps) => {
         <div className="flex shrink-0 items-center gap-2">
           <CreditCostPill
             display={totalCreditCostDisplay}
+            promotion={creditPromotion}
             disabled={submitDisabled}
             className={NODE_CREDIT_PILL_FLAT_CLASS}
           />
           <button
             type="button"
             disabled={submitDisabled}
-            title="生成"
+            title={selectedModelReferenceError ?? '生成'}
             onClick={(event) => {
               event.stopPropagation();
               onSubmit();

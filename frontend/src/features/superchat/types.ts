@@ -284,7 +284,7 @@ export type ServerFrame =
       reason?: string;
       turn_id?: string;
     }
-  | { type: "chat.done"; turn_id?: string; scope?: ChatScope }
+  | { type: "chat.done"; turn_id?: string; scope?: ChatScope; message?: unknown }
   | {
       type: "skill_studio.event";
       turn_id?: string;

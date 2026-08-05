@@ -3,8 +3,11 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
+// 询价与提交禁用条件住在共用 hook 里：工作流的 VideoNode 和故事板的
+// AssetBoardVideoGenForm 都挂它，一处口径两个视图同价。扫宿主只会扫到一个
+// spread，扫不到真正的计费逻辑。
 const nodeSource = readFileSync(
-  "src/features/canvas/nodes/VideoNode.tsx",
+  "src/features/canvas/nodes/shared/useVideoGenerationForm.ts",
   "utf8",
 );
 
@@ -21,7 +24,7 @@ describe("canvas video generation credit contract", () => {
     expect(nodeSource).toContain("quantity: videoCount");
     expect(nodeSource).toContain("operation: genMode");
     expect(nodeSource).not.toContain(
-      'useGenerationCreditCost(\n      "video_backend"',
+      'useGenerationCreditCost(\n    "video_backend"',
     );
   });
 
@@ -33,7 +36,7 @@ describe("canvas video generation credit contract", () => {
       't("common.billingRuleNotConfiguredShort")',
     );
     expect(nodeSource).toContain(
-      "isGenerating ||\n      videoBillingRuleMissing ||",
+      "isGenerating ||\n    videoBillingRuleMissing ||",
     );
   });
 });

@@ -14,7 +14,6 @@ import { useCanvasStore } from "@/stores/canvasStore";
 import { useUpstreamNodes } from "@/features/canvas/application/useUpstreamGraph";
 import {
   CANVAS_NODE_TYPES,
-  isAudioNode,
   isVideoNode,
   type CanvasNodeData,
   type VideoComposeNodeData,
@@ -43,6 +42,7 @@ import {
 } from "@/features/canvas/compose/timelineModel";
 import { fetchFreezoneJobResult, submitFreezoneVideoCompose } from "@/api/ops";
 import { awaitTaskCompletion } from "@/api/tasks";
+import { orderedComposeSeedNodeIds } from "@/features/canvas/compose/composeInputOrdering";
 import {
   publishNodeActionAccepted,
   publishNodeActionError,
@@ -71,18 +71,9 @@ export const VideoComposeNode = memo(
     const upstreamNodes = useUpstreamNodes(id);
     const [isEditorOpen, setEditorOpen] = useState(false);
 
-    // 上游可用素材按 y 坐标排序，与时间线初始顺序一致。
     const seedNodeIds = useMemo(
-      () =>
-        [...upstreamNodes]
-          .filter(
-            (node) =>
-              (isVideoNode(node) && node.data.videoUrl) ||
-              (isAudioNode(node) && node.data.audioUrl),
-          )
-          .sort((a, b) => (a.position?.y ?? 0) - (b.position?.y ?? 0))
-          .map((node) => node.id),
-      [upstreamNodes],
+      () => orderedComposeSeedNodeIds(upstreamNodes, data.compositionInputOrder),
+      [data.compositionInputOrder, upstreamNodes],
     );
     const videoCount = useMemo(
       () =>
