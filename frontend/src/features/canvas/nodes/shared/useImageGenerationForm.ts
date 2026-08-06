@@ -347,6 +347,8 @@ export function useImageGenerationForm(
     () => orderedReferenceUrlsWithOwnFirst(referenceImageUrl, upstreamReferenceUrls),
     [referenceImageUrl, upstreamReferenceUrls],
   );
+  const generationMode =
+    orderedReferenceUrls.length > 0 ? 'image_to_image' : 'text_to_image';
 
   // 候选按 orderedReferenceUrls 编号（自身参考图在场时就是图片1），保证 @ 出来的
   // 缩略图与后端解析到的 图片N 是同一张。key 优先用上游 nodeId；自身参考图没有
@@ -538,6 +540,7 @@ export function useImageGenerationForm(
       provider: selectedModel?.providerId as FreezoneProvider | undefined,
       model: apiModel,
       modelId: selectedModel?.catalogId ?? modelId,
+      genMode: generationMode,
       modelParams: data.modelParams,
       camera: hasCamera
         ? {
@@ -762,6 +765,7 @@ export function useImageGenerationForm(
     effectiveAspectRatio,
     effectiveImageSize,
     effectiveQuality,
+    generationMode,
     supportsImageQuality,
     styleTemplateId,
     submitDisabled,
@@ -824,8 +828,7 @@ export function useImageGenerationForm(
       showQuality: supportsImageQuality,
       modelParameters: selectedModel?.request?.parameters,
       modelParams: data.modelParams,
-      modelParamsMode:
-        typeof data.generationMode === 'string' ? data.generationMode : undefined,
+      modelParamsMode: generationMode,
       selectedModelReferenceError,
       getModelOptionDisabledReason,
       cameraSelection,

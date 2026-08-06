@@ -28,7 +28,8 @@ export const ASPECT_RATIOS: ReadonlyArray<FreezoneVideoAspectRatio> = [
 // 这里是**默认**上限；媒体目录（Admin 配置）给模型声明了 referenceImageMax /
 // referenceVideoMax / referenceAudioMax 时，按模型覆盖，见 referenceCapsForMode()。
 // 表里没出现的模式默认不限制（textToVideo 不消费上游），走原有路径。
-//   - imageToVideo / imageReference：走同一个 i2v 端点，image 1-9。
+//   - firstFrame / imageToVideo：都只接 1 张图；前者锁定首帧，后者作为整体画面参考。
+//   - imageReference：图片参考，image 1-9。
 //   - videoEdit            ：video 1 + image ≤5（HappyHorse 视频编辑）。
 //   - allReference (omni)  ：image 1-9 / video 0-3 / audio 0-3。总时长 ≤ 15s
 //                            的部分前端拿不到精确媒体元数据，延后交给服务端。
@@ -38,11 +39,18 @@ export const ASPECT_RATIOS: ReadonlyArray<FreezoneVideoAspectRatio> = [
 export const REFERENCE_CAPS_BY_MODE: Partial<
   Record<VideoGenMode, { image: number; video: number; audio: number }>
 > = {
-  imageToVideo: { image: 9, video: 0, audio: 0 },
+  firstFrame: { image: 1, video: 0, audio: 0 },
+  imageToVideo: { image: 1, video: 0, audio: 0 },
   imageReference: { image: 9, video: 0, audio: 0 },
   videoEdit: { image: 5, video: 1, audio: 0 },
   allReference: { image: 9, video: 3, audio: 3 },
   firstLastFrame: { image: 2, video: 0, audio: 0 },
+};
+
+// 首帧与单图图生视频的 1 张图是结构性限制，不能被目录容量覆盖。
+const FIXED_IMAGE_CAP_BY_MODE: Partial<Record<VideoGenMode, number>> = {
+  firstFrame: 1,
+  imageToVideo: 1,
 };
 
 /** 媒体目录里能声明逐类型素材上限的那部分模型字段（#210）。 */
@@ -63,7 +71,7 @@ export function referenceCapsForMode(
   const defaults = REFERENCE_CAPS_BY_MODE[mode];
   if (!defaults) return null;
   return {
-    image: model?.referenceImageMax ?? defaults.image,
+    image: FIXED_IMAGE_CAP_BY_MODE[mode] ?? model?.referenceImageMax ?? defaults.image,
     video: model?.referenceVideoMax ?? defaults.video,
     audio: model?.referenceAudioMax ?? defaults.audio,
   };
