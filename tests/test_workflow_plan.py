@@ -1422,7 +1422,6 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "storyboard-plan",
         "visual-key-elements",
         "storyboard-shot-video",
-        "video-audio-layer",
     ]
     assert skills["retro-hong-kong-kungfu-comedy-video"]["allowed_recipe_ids"] == [
         "four-act-comedy-story-outline",
@@ -1618,7 +1617,7 @@ def test_lego_skill_keeps_style_while_recipes_are_shared_workflow_stages(monkeyp
     assert "三层分镜" in planning["planning_notes"]
     assert "视觉关键元素" in planning["planning_notes"]
     assert "视频片段" in planning["planning_notes"]
-    assert "音频" in planning["planning_notes"]
+    assert "最终剪辑" in planning["planning_notes"]
     assert "Final_Video_Spec" not in planning_text
     assert "input_parameters" not in planning_text
     assert "planning.prompt_guide" not in planning_text
@@ -1637,7 +1636,6 @@ def test_lego_skill_keeps_style_while_recipes_are_shared_workflow_stages(monkeyp
             "storyboard-plan",
             "visual-key-elements",
             "storyboard-shot-video",
-            "video-audio-layer",
         ]
         for item in [
             recipes[recipe_id]["name"],
