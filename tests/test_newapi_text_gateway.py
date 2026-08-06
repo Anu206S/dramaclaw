@@ -1,3 +1,6 @@
+import pytest
+
+
 def test_identity_planner_uses_split_newapi_model_envs(monkeypatch):
     from novelvideo.agents.identity_planner import IdentityPlanner
     import novelvideo.agents.identity_planner as identity_planner
@@ -398,6 +401,9 @@ def test_global_video_optimizer_uses_newapi_optimizer_model_env(monkeypatch):
     assert settings_calls == [()]
     assert agent_kwargs["model"] == "optimizer-model"
     assert agent_kwargs["model_settings"] == {"openai_reasoning_effort": "none"}
+    assert isinstance(agent_kwargs["output_type"], global_video_optimizer.NativeOutput)
+    assert agent_kwargs["output_type"].outputs is global_video_optimizer.BeatVideoStrategy
+    assert agent_kwargs["output_retries"] == 3
     assert agent_kwargs["name"] == "Global Video Motion Director"
 
 
@@ -454,6 +460,43 @@ def test_global_video_optimizer_forces_structured_reasoning_off(monkeypatch):
     global_video_optimizer.create_global_video_optimizer_agent()
 
     assert agent_kwargs["model_settings"] == {"openai_reasoning_effort": "none"}
+
+
+@pytest.mark.asyncio
+async def test_global_video_optimizer_accepts_single_strategy_output(monkeypatch, tmp_path):
+    from types import SimpleNamespace
+
+    from novelvideo.agents import global_video_optimizer
+
+    sketch = tmp_path / "beat_01.png"
+    sketch.write_bytes(b"fake")
+
+    class FakeAgent:
+        async def run(self, user_prompt):
+            assert len(user_prompt) == 2
+            return SimpleNamespace(
+                output=global_video_optimizer.BeatVideoStrategy(
+                    beat_number=1,
+                    video_mode="first_frame",
+                    prompt="镜头缓缓推近，人物向前迈步。",
+                )
+            )
+
+    optimizer = global_video_optimizer.GlobalVideoPromptOptimizer()
+    monkeypatch.setattr(optimizer, "_get_agent", lambda language: FakeAgent())
+    monkeypatch.setattr(optimizer, "_compress_image", lambda path: b"jpeg")
+
+    result = await optimizer.optimize_single_beat(
+        beat={"beat_number": 1, "visual_description": "人物站在门前"},
+        sketch_image_path=str(sketch),
+        character_color_map={},
+    )
+
+    assert result == {
+        "beat_number": 1,
+        "video_mode": "first_frame",
+        "prompt": "镜头缓缓推近，人物向前迈步。",
+    }
 
 
 def test_seedance2_prompt_composer_uses_newapi_composer_model_env(monkeypatch):

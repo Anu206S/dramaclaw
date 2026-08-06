@@ -1146,7 +1146,7 @@ async def _start_scene_reference_task(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="scene_reference_asset",
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=scope,
             payload={

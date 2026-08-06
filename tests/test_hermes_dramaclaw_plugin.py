@@ -307,7 +307,10 @@ def test_render_first_frames_omits_completed_beats_and_limits_batch(monkeypatch)
                     {"beat_number": 2, "frame_url": ""},
                     {"beat_number": 3, "frame_url": ""},
                     {"beat_number": 4, "frame_url": ""},
-                    {"beat_number": 5, "frame_url": ""},
+                    *[
+                        {"beat_number": beat, "frame_url": ""}
+                        for beat in range(5, 12)
+                    ],
                 ],
             }
         return {"ok": True, "task_id": f"task-{len(calls)}"}
@@ -316,23 +319,21 @@ def test_render_first_frames_omits_completed_beats_and_limits_batch(monkeypatch)
 
     result = plugin._handle_render_first_frames({"project_id": "proj-1", "episode": 3})
 
-    assert result["started"] == [2, 3, 4]
+    assert result["started"] == list(range(2, 11))
     assert result["remaining"] == 1
     assert [call[2]["beat_indices"] for call in calls if call[0] == "POST"] == [
-        [2],
-        [3],
-        [4],
+        [beat] for beat in range(2, 11)
     ]
 
 
-def test_render_first_frames_rejects_more_than_three_beats():
+def test_render_first_frames_rejects_more_than_nine_beats():
     plugin = _load_plugin_module()
 
     result = plugin._handle_render_first_frames(
-        {"project_id": "proj-1", "episode": 3, "beat_indices": [1, 2, 3, 4]}
+        {"project_id": "proj-1", "episode": 3, "beat_indices": list(range(1, 11))}
     )
 
-    assert "at most 3 first-frame beats" in result
+    assert "at most 9 first-frame beats" in result
 
 
 def test_render_first_frames_does_not_restart_completed_episode(monkeypatch):
