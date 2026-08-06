@@ -70,6 +70,15 @@ def test_workflow_run_api_lifecycle(workflow_run_client: TestClient) -> None:
     ]
 
 
+def test_canvas_revision_endpoint_returns_only_revision(workflow_run_client: TestClient) -> None:
+    response = workflow_run_client.get(
+        "/api/v1/projects/proj_demo/freezone/canvases/default/revision"
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"] == {"canvas_id": "default", "revision": 1}
+
+
 def test_workflow_run_api_rejects_invalid_action_phase(
     workflow_run_client: TestClient,
 ) -> None:
