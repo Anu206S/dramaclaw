@@ -11253,6 +11253,37 @@ async def list_canvases(project: str, user: dict = Depends(get_api_user)):
         _raise_canvas_store_http(exc)
 
 
+@router.get(
+    "/projects/{project}/freezone/canvases/{canvas_id}/revision",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def get_canvas_revision(project: str, canvas_id: str, user: dict = Depends(get_api_user)):
+    """Read only the revision used to detect external direct-MCP writes."""
+    if not CANVAS_ID_RE.match(canvas_id):
+        raise HTTPException(400, "invalid canvas_id")
+    ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user, required_role="viewer"
+    )
+    canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
+    try:
+        if canvas_id == "default":
+            canvas_store.ensure_default_canvas(
+                canvas_project_dir,
+                project_id=ctx.project_id,
+                actor_id=_canvas_actor_id(user),
+            )
+        payload = canvas_store.read_canvas(canvas_project_dir, canvas_id)
+    except (canvas_store.CanvasStoreError, CanvasLockBusy) as exc:
+        _raise_canvas_store_http(exc)
+    return {
+        "ok": True,
+        "data": {
+            "canvas_id": canvas_id,
+            "revision": payload.get("revision") if isinstance(payload, dict) else None,
+        },
+    }
+
+
 @router.get("/projects/{project}/freezone/canvases/{canvas_id}", tags=[TAG_FREEZONE_CANVAS])
 async def get_canvas(project: str, canvas_id: str, user: dict = Depends(get_api_user)):
     if not CANVAS_ID_RE.match(canvas_id):
