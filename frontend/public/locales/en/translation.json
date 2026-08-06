@@ -1379,6 +1379,7 @@
     "projectDefaultQueueProjectFull": "The current project's default queue has reached the team limit",
     "projectQueueProjectFull": "The current project's {{queue}} queue has reached the team limit",
     "projectQueueKinds": {
+      "image": "image",
       "video": "video",
       "world": "world",
       "ffmpeg": "composition"

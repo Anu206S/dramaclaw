@@ -106,6 +106,14 @@ describe("canvas chat commands", () => {
         user_active: 0,
         user_remaining: 3,
       },
+      image: {
+        limit: 9,
+        active: 0,
+        remaining: 9,
+        user_limit: 9,
+        user_active: 0,
+        user_remaining: 9,
+      },
       video: {
         limit: 4,
         active: 0,
@@ -6161,6 +6169,14 @@ describe("canvas chat commands", () => {
         user_limit: 3,
         user_active: 0,
         user_remaining: 3,
+      },
+      image: {
+        limit: 9,
+        active: 0,
+        remaining: 9,
+        user_limit: 9,
+        user_active: 0,
+        user_remaining: 9,
       },
       video: {
         limit: 4,

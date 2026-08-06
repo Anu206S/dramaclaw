@@ -1379,6 +1379,7 @@
     "projectDefaultQueueProjectFull": "当前项目默认队列已达团队上限",
     "projectQueueProjectFull": "当前项目{{queue}}队列已达团队上限",
     "projectQueueKinds": {
+      "image": "图片",
       "video": "视频",
       "world": "世界",
       "ffmpeg": "合成"

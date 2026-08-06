@@ -599,7 +599,7 @@ async def _start_or_enqueue_freezone_gen_job(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="freezone_gen",
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=job_id,
             payload={
@@ -1229,7 +1229,7 @@ async def _start_or_enqueue_mainline_sketch_from_context_job(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type=task_type,
-            queue_kind="default",
+            queue_kind="image",
             episode=int(episode),
             beat_num=int(beat),
             scope=job_id,
@@ -1415,7 +1415,7 @@ async def _start_or_enqueue_mainline_frame_from_context_job(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type=task_type,
-            queue_kind="default",
+            queue_kind="image",
             episode=int(episode),
             beat_num=int(beat),
             scope=job_id,
@@ -1653,7 +1653,7 @@ async def _start_or_enqueue_standalone_frame_from_context_job(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type=task_type,
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=job_id,
             payload={
@@ -1700,7 +1700,7 @@ async def _start_or_enqueue_mainline_direct_sketch_task(
     queued = await get_task_backend().enqueue_project_task(
         ctx,
         task_type=task_type,
-        queue_kind="default",
+        queue_kind="image",
         episode=int(episode),
         beat_num=int(beat),
         scope=scope,
@@ -1757,7 +1757,7 @@ async def _start_or_enqueue_mainline_director_control_sketch_job(
     queued = await get_task_backend().enqueue_project_task(
         ctx,
         task_type=task_type,
-        queue_kind="default",
+        queue_kind="image",
         episode=int(episode),
         beat_num=int(beat),
         scope=job_id,
@@ -1822,7 +1822,7 @@ async def _start_or_enqueue_mainline_beat_sketch_task(
     queued = await get_task_backend().enqueue_project_task(
         ctx,
         task_type=task_type,
-        queue_kind="default",
+        queue_kind="image",
         episode=int(episode),
         scope=scope,
         payload={
@@ -2062,7 +2062,7 @@ async def _start_or_enqueue_freezone_edit_job(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="freezone_edit",
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=job_id,
             payload={
@@ -2179,7 +2179,7 @@ async def _start_or_enqueue_freezone_edit_path(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type=task_type,
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=job_id,
             payload={
@@ -2246,7 +2246,7 @@ async def _start_or_enqueue_freezone_mask_edit_path(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type=task_type,
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=job_id,
             payload={

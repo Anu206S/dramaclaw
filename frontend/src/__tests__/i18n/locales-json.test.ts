@@ -71,6 +71,7 @@ describe("locale translation files", () => {
     const translations = JSON.parse(content);
 
     expect(translations.common.projectQueueKinds).toMatchObject({
+      image: "图片",
       video: "视频",
       world: "世界",
       ffmpeg: "合成",

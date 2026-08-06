@@ -1381,7 +1381,7 @@ async def generate_single_portrait_async(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="character_portrait",
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=scope,
             payload={
@@ -1715,7 +1715,7 @@ async def generate_identity_portrait_async(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="character_portrait",
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=scope,
             payload={
@@ -1844,7 +1844,7 @@ async def generate_identity_image_async(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="identity_image",
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=scope,
             payload={

@@ -302,7 +302,7 @@ class BeatsRegenerateRequest(BaseModel):
     image_generation_selection: Optional[str] = None
     sketch_aspect_padding: Optional[bool] = None
     batch_id: Optional[str] = Field(default=None, max_length=100)
-    batch_size: Optional[int] = Field(default=None, ge=1, le=3)
+    batch_size: Optional[int] = Field(default=None, ge=1, le=9)
 
 
 class SketchRegenerateRequest(BaseModel):

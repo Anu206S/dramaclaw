@@ -298,7 +298,7 @@ async def generate_prop_reference(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="prop_reference_asset",
-            queue_kind="default",
+            queue_kind="image",
             episode=0,
             scope=scope,
             payload={
