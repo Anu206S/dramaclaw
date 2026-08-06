@@ -9,6 +9,7 @@ from novelvideo.task_backend.queues import normalize_queue_kind
 
 PROJECT_LANE_LIMIT_DEFAULTS = {
     "default": 12,
+    "image": 12,
     "video": 12,
     "world": 2,
     "ffmpeg": 2,
@@ -16,6 +17,7 @@ PROJECT_LANE_LIMIT_DEFAULTS = {
 
 PROJECT_LANE_MIN_DEFAULTS = {
     "default": 3,
+    "image": 1,
     "video": 1,
     "world": 1,
     "ffmpeg": 1,
@@ -23,6 +25,7 @@ PROJECT_LANE_MIN_DEFAULTS = {
 
 PROJECT_USER_LANE_LIMIT_DEFAULTS = {
     "default": 3,
+    "image": 9,
     "video": 9,
     "world": 1,
     "ffmpeg": 1,
@@ -30,6 +33,7 @@ PROJECT_USER_LANE_LIMIT_DEFAULTS = {
 
 GLOBAL_LANE_CONCURRENCY_DEFAULTS = {
     "default": 8,
+    "image": 3,
     "video": 3,
     "world": 1,
     "ffmpeg": 1,
@@ -37,6 +41,7 @@ GLOBAL_LANE_CONCURRENCY_DEFAULTS = {
 
 GLOBAL_LANE_QUEUE_LIMIT_DEFAULTS = {
     "default": 512,
+    "image": 128,
     "video": 128,
     "world": 64,
     "ffmpeg": 64,

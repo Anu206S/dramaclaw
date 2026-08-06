@@ -478,6 +478,7 @@ const TERMINAL_WORKFLOW_ACTION_STATUSES = new Set<WorkflowRunActionStatus>([
 const WORKFLOW_CAPACITY_POLL_INTERVAL_MS = 2_000;
 const WORKFLOW_ACTION_LANE_LIMITS = {
   default: 3,
+  image: 3,
   video: 3,
   world: 1,
   ffmpeg: 1,
@@ -491,6 +492,7 @@ type WorkflowActionSlotWaiter = {
 const workflowActionSlotWaiters: WorkflowActionSlotWaiter[] = [];
 const activeWorkflowActionsByLane: Record<WorkflowActionLane, number> = {
   default: 0,
+  image: 0,
   video: 0,
   world: 0,
   ffmpeg: 0,
@@ -498,6 +500,7 @@ const activeWorkflowActionsByLane: Record<WorkflowActionLane, number> = {
 let activeWorkflowActions = 0;
 
 function workflowActionLane(action: string): WorkflowActionLane {
+  if (action === "generate_image") return "image";
   if (action === "generate_video" || action === "generate_text_video") return "video";
   if (action === "generate_3gs_world") return "world";
   if (action === "auto_compose_video") return "ffmpeg";
@@ -2624,7 +2627,7 @@ async function executeQueuedNodeActions(
         counts[lane] += 1;
         return counts;
       },
-      { default: 0, video: 0, world: 0, ffmpeg: 0 },
+      { default: 0, image: 0, video: 0, world: 0, ffmpeg: 0 },
     );
     const actionByNodeId = new Map(
       pendingActions.map((action) => [action.nodeId, action]),

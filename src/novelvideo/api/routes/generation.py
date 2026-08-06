@@ -2118,7 +2118,7 @@ async def generate_sketches(
             queued = await get_task_backend().enqueue_project_task(
                 ctx,
                 task_type="sketch_grid_generation",
-                queue_kind="default",
+                queue_kind="image",
                 episode=episode_num,
                 scope=scope,
                 payload={
@@ -2811,7 +2811,7 @@ async def regenerate_grid(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="grid_regenerate",
-            queue_kind="default",
+            queue_kind="image",
             episode=episode_num,
             scope=scope,
             payload={
@@ -3123,7 +3123,7 @@ async def render_execute(
             queued = await get_task_backend().enqueue_project_task(
                 ctx,
                 task_type="selected_regen",
-                queue_kind="default",
+                queue_kind="image",
                 episode=episode_num,
                 scope=entry_scope,
                 payload={
@@ -3252,7 +3252,7 @@ async def regenerate_beats(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="selected_regen",
-            queue_kind="default",
+            queue_kind="image",
             episode=episode_num,
             scope=scope,
             payload={
@@ -3354,7 +3354,7 @@ async def regenerate_sketches(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="sketch_regen",
-            queue_kind="default",
+            queue_kind="image",
             episode=episode_num,
             scope=scope,
             payload={
@@ -4170,7 +4170,7 @@ async def director_control_to_sketch(
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             task_type="director_control_to_sketch",
-            queue_kind="default",
+            queue_kind="image",
             episode=int(episode_num),
             beat_num=int(beat_num),
             scope=payload["scope"],
@@ -4499,7 +4499,7 @@ async def generate_missing_manual_sketches(
             await get_task_backend().enqueue_project_task(
                 ctx,
                 task_type="sketch_regen",
-                queue_kind="default",
+                queue_kind="image",
                 episode=episode_num,
                 scope=scope,
                 payload={
