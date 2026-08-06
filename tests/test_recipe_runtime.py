@@ -9,6 +9,40 @@ import pytest
 
 from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.freezone import recipe_runtime
+from novelvideo.freezone.agent_catalog_schema import validate_agent_recipe_config
+
+
+def test_builtin_text_recipes_produce_final_deliverables():
+    recipe_root = (
+        Path(__file__).resolve().parents[1]
+        / "src/novelvideo/freezone/agent_catalog/builtins/recipes"
+    )
+    text_recipe_ids: list[str] = []
+    for recipe_path in sorted(recipe_root.glob("*.json")):
+        payload = json.loads(recipe_path.read_text(encoding="utf-8"))
+        if payload.get("output_kind") != "text":
+            continue
+        validated = validate_agent_recipe_config(payload)
+        text_recipe_ids.append(str(validated["id"]))
+
+    assert len(text_recipe_ids) == 24
+    assert "general-text" in text_recipe_ids
+    assert "ecommerce-text-plan" in text_recipe_ids
+
+
+def test_text_recipe_rejects_second_stage_model_instruction():
+    with pytest.raises(ValueError, match="must produce the final deliverable"):
+        validate_agent_recipe_config(
+            {
+                "id": "invalid-text-recipe",
+                "name": "Invalid text Recipe",
+                "output_kind": "text",
+                "action_keys": ["invalid-text-recipe"],
+                "system_prompt": "不要自己编写大纲，只输出能指导 LLM 的指令。",
+                "planning_prompt": "生成大纲",
+                "result_summary": "大纲",
+            }
+        )
 
 
 def test_retro_skill_keeps_entry_guard_out_of_recipe_runtime_constraints():

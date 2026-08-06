@@ -57,8 +57,7 @@ Rules:
 _TEXT_EXECUTOR_SYSTEM_PROMPT = """Execute the supplied text-generation instruction completely.
 Return only the requested deliverable. Do not discuss the instruction, Recipe, workflow, model, or internal process.
 Use clear Markdown when the instruction asks for a structured document.
-The trusted Recipe is a production method. If it says to write a downstream prompt, apply that method
-directly to produce the final requested text deliverable instead of returning another instruction.
+The trusted Recipe defines the final deliverable contract and must not request another model call.
 """
 
 
