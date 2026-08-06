@@ -50,10 +50,14 @@ import {
 import { useAuthStore } from "@/stores/auth-store";
 import { useCanvasStore } from "@/stores/canvasStore";
 
+const uploadFreezoneImage = vi.hoisted(() => vi.fn());
+const captureVideoFrameBlob = vi.hoisted(() => vi.fn());
+
 vi.mock("@/api/ops", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/ops")>();
   return {
     ...actual,
+    uploadFreezoneImage,
     fetchFreezoneAudioReferences: vi.fn(async () => ({
       available: [
         {
@@ -67,6 +71,10 @@ vi.mock("@/api/ops", async (importOriginal) => {
     })),
   };
 });
+
+vi.mock("@/features/canvas/application/videoFrameBlob", () => ({
+  captureVideoFrameBlob,
+}));
 
 vi.mock("@/api/canvas", async (importOriginal) => {
   const actual = await importOriginal<typeof import("@/api/canvas")>();
@@ -94,6 +102,10 @@ describe("canvas chat commands", () => {
     useCanvasStore.getState().setCanvasData([], []);
     useAuthStore.setState({ username: null, role: null });
     vi.mocked(openPresetProjectionInMyCanvas).mockClear();
+    uploadFreezoneImage.mockReset();
+    uploadFreezoneImage.mockResolvedValue({ url: "/static/project/tail-frame.png" });
+    captureVideoFrameBlob.mockReset();
+    captureVideoFrameBlob.mockResolvedValue(new Blob(["tail"], { type: "image/png" }));
     vi.mocked(createFreezoneWorkflowRun).mockClear();
     vi.mocked(updateFreezoneWorkflowRun).mockClear();
     vi.mocked(getProjectTaskLimits).mockReset();
@@ -6389,6 +6401,116 @@ describe("canvas chat commands", () => {
       });
       const result = await resultPromise;
       expect(result.errors).toEqual([]);
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("captures the upstream video tail frame before running a dependent video", async () => {
+    const store = useCanvasStore.getState();
+    const firstVideoId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 0, y: 0 },
+      {
+        prompt: "镜头 1",
+        durationMs: 8000,
+      },
+    );
+    const secondVideoId = store.addNode(
+      CANVAS_NODE_TYPES.video,
+      { x: 360, y: 0 },
+      {
+        prompt: "镜头 2",
+      },
+    );
+    store.addEdgeWithData(firstVideoId, secondVideoId, {
+      link_type: "dependency_for",
+    });
+
+    const events: Array<{ nodeId: string; action: string; requestId?: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe(
+      "freezone/run-node-action",
+      (payload) => {
+        events.push({
+          nodeId: payload.nodeId,
+          action: payload.action,
+          requestId: payload.requestId,
+        });
+        if (!payload.requestId) return;
+        if (payload.nodeId === firstVideoId) {
+          useCanvasStore.getState().updateNodeData(firstVideoId, {
+            videoUrl: "/static/project/shot-1.mp4",
+          });
+        }
+        if (payload.nodeId === secondVideoId) {
+          const state = useCanvasStore.getState();
+          const tailFrame = state.nodes.find((node) =>
+            node.type === CANVAS_NODE_TYPES.exportImage &&
+            (node.data as Record<string, unknown>).displayName === "上一镜尾帧"
+          );
+          expect(tailFrame?.data).toMatchObject({
+            imageUrl: "/static/project/tail-frame.png",
+            workflowContinuityFrame: {
+              sourceVideoNodeId: firstVideoId,
+              targetVideoNodeId: secondVideoId,
+            },
+          });
+          expect(state.edges).toEqual(
+            expect.arrayContaining([
+              expect.objectContaining({
+                source: tailFrame?.id,
+                target: secondVideoId,
+                data: expect.objectContaining({ link_type: "media_input_for" }),
+              }),
+            ]),
+          );
+          expect(
+            (state.nodes.find((node) => node.id === secondVideoId)?.data as Record<string, unknown>)
+              .prompt,
+          ).toContain("上一镜尾帧已作为图片参考接入");
+          useCanvasStore.getState().updateNodeData(secondVideoId, {
+            videoUrl: "/static/project/shot-2.mp4",
+          });
+        }
+        canvasEventBus.publish("freezone/node-action-result", {
+          requestId: payload.requestId,
+          nodeId: payload.nodeId,
+          action: payload.action,
+          status: "success",
+        });
+      },
+    );
+
+    try {
+      const result = await applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([
+          {
+            schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+            commands: [
+              {
+                type: "run_node_action",
+                node_id: firstVideoId,
+                action: "generate_video",
+              },
+              {
+                type: "run_node_action",
+                node_id: secondVideoId,
+                action: "generate_video",
+              },
+            ],
+          },
+        ]),
+        { projectId: "project-a", canvasId: "canvas-a", actionTimeoutMs: 500 },
+      );
+
+      expect(result.errors).toEqual([]);
+      expect(events.map((event) => event.nodeId)).toEqual([firstVideoId, secondVideoId]);
+      expect(captureVideoFrameBlob).toHaveBeenCalledWith("/static/project/shot-1.mp4", 7.95);
+      expect(uploadFreezoneImage).toHaveBeenCalledWith(
+        "project-a",
+        expect.any(File),
+        expect.stringMatching(/^frame-/),
+      );
     } finally {
       unsubscribe();
     }

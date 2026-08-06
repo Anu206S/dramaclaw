@@ -71,12 +71,13 @@ export async function captureVideoFrameToNode(
   opts: {
     videoUrl: string;
     seekSec: number;
+    projectId?: string | null;
     /** 结果节点标题（首帧/尾帧/当前帧，文案由调用方按各自 i18n 决定）。 */
     displayName: string;
   },
 ): Promise<VideoCaptureFrameResult> {
   if (!opts.videoUrl) return { nodeId: null, error: null };
-  const projectId = readUrl().project;
+  const projectId = opts.projectId?.trim() || readUrl().project;
   if (!projectId) {
     console.error('[video-capture-frame] no project in URL');
     return { nodeId: null, error: null };
