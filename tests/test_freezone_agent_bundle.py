@@ -52,10 +52,10 @@ def _recipe_payload(item_id: str = "community-brief", **overrides) -> dict:
         "version": "1.0.0",
         "output_kind": "text",
         "action_keys": ["community-brief"],
-        "system_prompt": "你将把用户输入转换成视频简报。只输出提示词。",
+        "system_prompt": "根据用户输入直接生成最终视频简报。",
         "must_have_items": ["主题", "画幅"],
-        "planning_prompt": "根据用户目标生成视频简报提示词。",
-        "result_summary": "视频简报提示词。",
+        "planning_prompt": "根据用户目标生成最终视频简报。",
+        "result_summary": "最终视频简报。",
     }
     payload.update(overrides)
     return payload

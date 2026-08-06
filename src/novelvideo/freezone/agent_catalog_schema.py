@@ -31,6 +31,19 @@ InputParameterType = Literal[
 RecipeOutputKind = Literal["text", "image", "video", "audio"]
 
 SAFE_AGENT_CONFIG_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+TEXT_RECIPE_SECOND_STAGE_MARKERS = (
+    "另一个 LLM",
+    "下游节点提示词",
+    "下游文本节点提示词",
+    "将被送入下游 textGeneration",
+    "让下游节点输出",
+    "不是最终",
+    "非最终",
+    "只输出提示词",
+    "只输出能指导 LLM",
+    "不要自己生成最终",
+    "不要自己编写",
+)
 
 
 class _CatalogBaseModel(BaseModel):
@@ -252,6 +265,23 @@ class AgentCatalogRecipeConfig(_CatalogBaseModel):
             raise ValueError("recipe cannot conflict with itself")
         if len(self.conflicts_with) != len(set(self.conflicts_with)):
             raise ValueError("conflicts_with must not contain duplicates")
+        if self.output_kind == "text":
+            contract_text = "\n".join(
+                (self.system_prompt, self.planning_prompt, self.result_summary)
+            )
+            marker = next(
+                (
+                    item
+                    for item in TEXT_RECIPE_SECOND_STAGE_MARKERS
+                    if item in contract_text
+                ),
+                None,
+            )
+            if marker is not None:
+                raise ValueError(
+                    "text recipe must produce the final deliverable; "
+                    f"found second-stage marker: {marker}"
+                )
         return self
 
 
