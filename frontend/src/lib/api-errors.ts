@@ -78,6 +78,7 @@ export class BillingRuleNotConfiguredError extends BackendStatusError {
 
 function queueLabelForPlainMessage(queueKind: string): string {
   if (queueKind === "default") return "默认";
+  if (queueKind === "image") return "图片";
   if (queueKind === "video") return "视频";
   if (queueKind === "world") return "世界";
   if (queueKind === "ffmpeg") return "合成";

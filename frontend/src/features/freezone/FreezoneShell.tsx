@@ -45,6 +45,7 @@ import {
   SUPERCHAT_CANVAS_COMMAND_EVENT,
   SUPERCHAT_CANVAS_CONTEXT_REQUEST_EVENT,
 } from "@/features/superchat/use-superchat";
+import { mcpDirectCanvasApplyEnabled } from "@/lib/runtime-config";
 import { SuperChatPanel } from "@/features/superchat/superchat-panel";
 import type { ChatAttachment } from "@/features/superchat/types";
 import { CommitDialog } from "./commit/CommitDialog";
@@ -1049,6 +1050,7 @@ export function FreezoneShell({
   }, [canvasId, projectId, sync.hydratedCanvasId, sync.status]);
 
   useEffect(() => {
+    if (!mcpDirectCanvasApplyEnabled()) return;
     // 在虾集时不轮询：保活期间画布没人看，没必要为它占着请求配额。
     // `active` 在依赖里，切回虾画会重跑本 effect —— 末尾那次立即调用就顺带
     // 补上了「离开这段时间里画布有没有被别处改过」的新鲜度检查。以前靠整体
@@ -1069,7 +1071,7 @@ export function FreezoneShell({
       try {
         const response = await api
           .get(
-            `api/v1/projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}`,
+            `api/v1/projects/${encodeURIComponent(projectId)}/freezone/canvases/${encodeURIComponent(canvasId)}/revision`,
           )
           .json<{ data?: { revision?: number } }>();
         const remoteRevision = response.data?.revision;

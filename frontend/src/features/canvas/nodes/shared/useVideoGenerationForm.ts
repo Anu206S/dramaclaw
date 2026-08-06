@@ -54,6 +54,7 @@ import {
   isVideoModeSupportedByModel,
   MAX_AUDIO_REFERENCE_DURATION_MS,
   MIN_AUDIO_REFERENCE_DURATION_MS,
+  resolveVideoKeyframeUrls,
   videoModeRequiresPrompt,
   videoModelReferenceDisabledReason,
   videoReferenceAutoSwitchAction,
@@ -519,6 +520,35 @@ export function useVideoGenerationForm(
   const supportsHumanReview = selectedVideoModel?.humanReview === true;
   const humanReview = Boolean(data.humanReview);
   const count: VideoGenCount = (data.count ?? 1) as VideoGenCount;
+  const upstreamNodes = useUpstreamNodes(id);
+  const videoInputBilling = useMemo(() => {
+    if (genMode !== "allReference" && genMode !== "videoEdit") {
+      return { present: false, ready: true, durationSeconds: 0 };
+    }
+    const ordered = sortUpstreamByReferenceOrder(
+      upstreamNodes,
+      data.referenceOrder,
+    ).filter((node) => Boolean(referenceVideoUrl(node)));
+    const limit =
+      genMode === "videoEdit" ? 1 : (selectedVideoModel?.referenceVideoMax ?? 3);
+    const videos = ordered.slice(0, Math.max(limit, 0));
+    if (videos.length === 0) {
+      return { present: false, ready: true, durationSeconds: 0 };
+    }
+    const durations = videos.map((node) =>
+      typeof node.data.durationMs === "number" && node.data.durationMs > 0
+        ? node.data.durationMs
+        : null,
+    );
+    const ready = durations.every((duration) => duration != null);
+    return {
+      present: true,
+      ready,
+      durationSeconds: ready
+        ? durations.reduce((sum, duration) => sum + (duration ?? 0), 0) / 1000
+        : 0,
+    };
+  }, [data.referenceOrder, genMode, selectedVideoModel, upstreamNodes]);
   useEffect(() => {
     const patch: Partial<VideoNodeData> = {};
     if (data.quality !== quality) {
@@ -555,11 +585,21 @@ export function useVideoGenerationForm(
   const debouncedQuality = useDebouncedValue(quality, 350);
   const debouncedCount = useDebouncedValue(count, 350);
   const debouncedDurationSec = useDebouncedValue(durationSec, 350);
+  const debouncedVideoInputPresent = useDebouncedValue(
+    videoInputBilling.present,
+    350,
+  );
+  const debouncedInputVideoDuration = useDebouncedValue(
+    videoInputBilling.durationSeconds,
+    350,
+  );
   const videoCount = Math.min(Math.max(debouncedCount, 1), 4);
   const videoPricingQuantity = videoCount * debouncedDurationSec;
   const videoCreditCost = useGenerationCreditCost(
     "feature",
-    debouncedBackend ? VIDEO_GENERATE_FEATURE_KEY : null,
+    debouncedBackend && videoInputBilling.ready
+      ? VIDEO_GENERATE_FEATURE_KEY
+      : null,
     {
       surface: "canvas",
       params: {
@@ -569,6 +609,8 @@ export function useVideoGenerationForm(
         pricing_quantity: videoPricingQuantity,
         operation: genMode,
         generate_audio: generateAudio,
+        video_input_present: debouncedVideoInputPresent,
+        input_video_duration_seconds: debouncedInputVideoDuration,
       },
       quantity: videoCount,
     },
@@ -611,7 +653,6 @@ export function useVideoGenerationForm(
   // referenceOrder taking precedence — see sortUpstreamByReferenceOrder.
   // Subscribe to ONLY this node's one-hop upstream (not the whole nodes array)
   // so dragging unrelated nodes doesn't re-render this node. See useUpstreamGraph.
-  const upstreamNodes = useUpstreamNodes(id);
   const videoInputNodes = useMemo(
     () => upstreamNodes.filter((node) => !isCompositionTimelineAudioNode(node)),
     [upstreamNodes],
@@ -1187,6 +1228,31 @@ export function useVideoGenerationForm(
         }
         return urls;
       };
+      const collectUpstreamKeyframeUrls = (): {
+        firstFrameUrl: string | null;
+        lastFrameUrl: string | null;
+      } => {
+        const state = useCanvasStore.getState();
+        const candidates: Array<{
+          url: string;
+          slot?: "first" | "last";
+          legacyDisplayName?: string | null;
+        }> = [];
+        for (const node of collectUpstream()) {
+          const url = submittableImageUrl(node);
+          if (!url) continue;
+          const edge = state.edges.find(
+            (candidate) => candidate.source === node.id && candidate.target === id,
+          );
+          candidates.push({
+            url,
+            slot: edge?.data?.keyframeSlot,
+            legacyDisplayName:
+              typeof node.data.displayName === "string" ? node.data.displayName : null,
+          });
+        }
+        return resolveVideoKeyframeUrls(candidates);
+      };
 
       const durationClamped = clampVideoDuration(durationSec, durationBounds);
       const cameraTemplateId = cameraMovementId;
@@ -1197,13 +1263,10 @@ export function useVideoGenerationForm(
       // 后端不再支持一次出多条，改为按「生成数量」并发调用 N 次接口。先按
       // genMode 组装出一个「调一次接口」的闭包 doSubmit，校验失败则置空提前返回。
       let doSubmit: ((targetId: string) => Promise<FreezoneJobRef>) | null = null;
-      if (genMode === "firstLastFrame") {
-        const imageUrls = collectUpstreamImageUrls().slice(
-          0,
-          referenceCaps?.image ?? 2,
-        );
-        const firstFrameUrl = imageUrls[0] ?? null;
-        const lastFrameUrl = imageUrls[1] ?? null;
+      if (genMode === "firstFrame" || genMode === "firstLastFrame") {
+        const keyframes = collectUpstreamKeyframeUrls();
+        const firstFrameUrl = keyframes.firstFrameUrl;
+        const lastFrameUrl = genMode === "firstLastFrame" ? keyframes.lastFrameUrl : null;
         if (!firstFrameUrl && !lastFrameUrl) {
           console.warn(
             "[video-node] firstLastFrame submit without any frame",
@@ -1225,7 +1288,6 @@ export function useVideoGenerationForm(
             durationSeconds: durationClamped,
             generateAudio,
             model: selectedVideoModel?.catalogId ?? modelId,
-            genMode,
             modelParams: data.modelParams,
             humanReview: supportsHumanReview && humanReview,
             sceneOptimize: sceneOptimize ?? null,

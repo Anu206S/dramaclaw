@@ -12,17 +12,23 @@ const nodeSource = readFileSync(
 );
 
 describe("canvas video generation credit contract", () => {
-  it("quotes the product feature with backend, resolution, count, and duration", () => {
+  it("quotes the product feature with output and input-video duration", () => {
     expect(nodeSource).toContain(
       'const VIDEO_GENERATE_FEATURE_KEY = "freezone.video_generate"',
     );
     expect(nodeSource).toContain(
-      'debouncedBackend ? VIDEO_GENERATE_FEATURE_KEY : null',
+      'debouncedBackend && videoInputBilling.ready\n      ? VIDEO_GENERATE_FEATURE_KEY\n      : null',
     );
     expect(nodeSource).toContain("video_backend: debouncedBackend");
     expect(nodeSource).toContain("pricing_quantity: videoPricingQuantity");
     expect(nodeSource).toContain("quantity: videoCount");
     expect(nodeSource).toContain("operation: genMode");
+    expect(nodeSource).toContain(
+      "video_input_present: debouncedVideoInputPresent",
+    );
+    expect(nodeSource).toContain(
+      "input_video_duration_seconds: debouncedInputVideoDuration",
+    );
     expect(nodeSource).not.toContain(
       'useGenerationCreditCost(\n    "video_backend"',
     );

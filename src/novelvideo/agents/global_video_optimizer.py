@@ -83,8 +83,8 @@ You are a cinematic motion director. Given sketch panels and character color map
 - ⚠️ **Dialogue beats**: if a Beat is marked as dialogue, describe the speaking action (lips moving, gestures while talking). The dialogue text will be appended by the system — only describe the physical action in the prompt.
 
 ## Output Format
-Output a strict JSON array with no explanation or markdown. Prompt values MUST be in Chinese:
-[{"beat_number": 1, "video_mode": "first_frame", "prompt": "镜头缓缓推近..."}, ...]
+Output one strict JSON object with no explanation or markdown. Prompt values MUST be in Chinese:
+{"beat_number": 1, "video_mode": "first_frame", "prompt": "镜头缓缓推近..."}
 """
 
 
@@ -202,7 +202,13 @@ def create_global_video_optimizer_agent(language: str = "en") -> Agent:
         ),
         system_prompt=GLOBAL_VIDEO_OPTIMIZER_INSTRUCTIONS_EN,
         model_settings=get_newapi_structured_output_model_settings(),
-        output_type=NativeOutput(list[BeatVideoStrategy]),
+        # optimize_single_beat issues one request per Beat. A top-level JSON
+        # array made OpenAI-compatible gateways repeatedly fail native-output
+        # validation even though only one item was expected. Keep the wire
+        # schema object-shaped and allow the model enough correction attempts
+        # for occasional enum/type formatting mistakes.
+        output_type=NativeOutput(BeatVideoStrategy),
+        output_retries=3,
         name="Global Video Motion Director",
     )
 
@@ -372,7 +378,7 @@ class GlobalVideoPromptOptimizer:
 6. Use character appearance descriptions, never use character names
 7. Output beat_number as {bn}
 
-Output JSON array with one element directly."""
+Output one JSON object directly."""
 
         # Load and compress the sketch image
         if not os.path.exists(sketch_image_path):
@@ -392,16 +398,11 @@ Output JSON array with one element directly."""
         if not response.output:
             raise RuntimeError(f"Beat {bn}: AI 返回空内容")
 
-        strategies: list[BeatVideoStrategy] = response.output
-        if not strategies:
-            raise RuntimeError(f"Beat {bn}: AI 返回空数组")
-
-        # Take the first (and should be only) result
-        s = strategies[0]
+        strategy: BeatVideoStrategy = response.output
         result = {
             "beat_number": bn,
             "video_mode": "first_frame",
-            "prompt": s.prompt.strip(),
+            "prompt": strategy.prompt.strip(),
         }
 
         # Append dialogue line if applicable

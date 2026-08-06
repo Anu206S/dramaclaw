@@ -242,10 +242,11 @@ SSE /projects/$PID/tasks/global_optimize_video/$EP/stream
 ```
 POST /projects/$PID/episodes/$EP/beats/regenerate
 Body: {"beat_indices": [1], "style": "...", "model": "nanobanana",
-       "batch_id": "first-frame-...", "batch_size": 3}
+       "batch_id": "first-frame-...", "batch_size": 9}
 
-一次 `dramaclaw_render_first_frames` 最多为 3 个 beat 分别提交一个独立任务，共用 batch_id；
-省略 beat_indices 时自动选择接下来 3 个缺少首帧的 beat。每个任务独立计时并独立保存。
+一次 `dramaclaw_render_first_frames` 最多为 9 个 beat 分别提交一个独立任务，共用 batch_id；
+省略 beat_indices 时自动选择接下来 9 个缺少首帧的 beat。图片队列最多并发执行 3 个，
+其余任务排队；每个任务独立计时并独立保存。
 
 GET /projects/$PID/tasks?task_type=selected_regen&episode=$EP
 ```

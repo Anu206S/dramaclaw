@@ -43,7 +43,7 @@ RENDER_PREREQ_CHAT_PREFIX = (
     "Render 任务没有生成可用图片：当前缺少必要草图前置。请先在「虾塘」生成或确认对应 "
     "Beat 的草图后，再重新生成 Render。"
 )
-FIRST_FRAME_BATCH_SIZE = 3
+FIRST_FRAME_BATCH_SIZE = 9
 FREEZONE_MAINLINE_WRITE_DENIED_MESSAGE = (
     "当前虾导运行在虾画画布中，只能查询项目状态或操作画布节点；"
     "不能从这里启动主线视频生成、分集/脚本规划、草图、首帧、配音、成片或单 Beat 视频任务。"
@@ -1851,8 +1851,8 @@ def _handle_render_first_frames(args: dict[str, Any], **_: Any) -> str:
     """Generate first frames for an episode (首帧生成, selected_regen task).
 
     Wraps POST /projects/{project}/episodes/{episode}/beats/regenerate with
-    ``{"beat_indices": [beat]}``. One tool call queues up to three independent
-    selected_regen tasks. If ``beat_indices`` is omitted, the next three beats without
+    ``{"beat_indices": [beat]}``. One tool call queues up to nine independent
+    selected_regen tasks. If ``beat_indices`` is omitted, the next nine beats without
     promoted first frames are resolved automatically. Requires sketches to exist first.
     """
     try:
@@ -2882,8 +2882,8 @@ TOOLS = (
         _schema(
             "dramaclaw_render_first_frames",
             "Generate first frames for an episode (首帧生成, selected_regen task). Real endpoint POST "
-            "/projects/{project}/episodes/{episode}/beats/regenerate. One call starts up to three "
-            "independent beat tasks. Omit beat_indices to render the next three missing first frames. "
+            "/projects/{project}/episodes/{episode}/beats/regenerate. One call starts up to nine "
+            "independent beat tasks. Omit beat_indices to render the next nine missing first frames. "
             "Requires sketches first. Poll dramaclaw_list_tasks(task_type='selected_regen', episode=N).",
             {
                 "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
@@ -2892,8 +2892,8 @@ TOOLS = (
                     "type": "array",
                     "items": {"type": "integer"},
                     "minItems": 1,
-                    "maxItems": 3,
-                    "description": "One to three beat numbers. Omit to render the next three missing first frames.",
+                    "maxItems": 9,
+                    "description": "One to nine beat numbers. Omit to render the next nine missing first frames.",
                 },
                 "style": {"type": "string", "description": "Optional visual style override."},
             },
