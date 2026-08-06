@@ -3437,7 +3437,8 @@
     "thinkingLevelDesc": "Only applies to fal Nano Banana 2. High thinking adds extra cost.",
     "thinkingDisabled": "Off",
     "thinkingMinimal": "Standard",
-    "thinkingHigh": "High"
+    "thinkingHigh": "High",
+    "noModelsAvailable": "No image model has been configured by the administrator"
   },
   "node": {
     "menu": {
@@ -3492,7 +3493,8 @@
       "promptRequired": "Please enter a prompt",
       "apiKeyRequired": "Backend provider is not configured",
       "resultTitle": "Result Image",
-      "promptPlaceholder": "Describe anything you want to generate or edit"
+      "promptPlaceholder": "Describe anything you want to generate or edit",
+      "noModelAvailable": "No image model has been configured by the administrator yet"
     },
     "imageGen": {
       "contextPalette": {

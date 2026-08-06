@@ -161,7 +161,8 @@ const VIDEO_EMPTY_STATE_CTA_META: Record<
 > = {
   allReference: { Icon: Sparkles, label: "全能参考" },
   imageReference: { Icon: Images, label: "图片参考" },
-  imageToVideo: { Icon: VideoIcon, label: "首帧生成视频" },
+  firstFrame: { Icon: VideoIcon, label: "首帧生成视频" },
+  imageToVideo: { Icon: VideoIcon, label: "图生视频" },
   firstLastFrame: { Icon: Layers, label: "首尾帧生成视频" },
 };
 
@@ -199,6 +200,7 @@ export const VideoNode = memo(
     const updateNodeData = useCanvasStore((state) => state.updateNodeData);
     const addNode = useCanvasStore((state) => state.addNode);
     const addEdge = useCanvasStore((state) => state.addEdge);
+    const addEdgeWithData = useCanvasStore((state) => state.addEdgeWithData);
     const setActiveOverlayNodeId = useCanvasStore(
       (state) => state.setActiveOverlayNodeId,
     );
@@ -504,6 +506,7 @@ export const VideoNode = memo(
         const isSingleImage =
           mode === "allReference" ||
           mode === "imageReference" ||
+          mode === "firstFrame" ||
           mode === "imageToVideo";
         // 两种源节点的默认尺寸不同（图片节点 580×360 / 上传节点 320×350），
         // 左列的定位与避让都得按实际尺寸算，否则图片节点会压到视频节点身上。
@@ -583,15 +586,21 @@ export const VideoNode = memo(
             CANVAS_NODE_TYPES.imageGen,
             { x: baseX, y: baseY },
             {
-              displayName: mode === "imageToVideo" ? "首帧" : "参考图",
+              displayName: mode === "firstFrame" ? "首帧" : "参考图",
             },
           );
-          addEdge(newId, id);
+          if (mode === "firstFrame") {
+            addEdgeWithData(newId, id, { keyframeSlot: "first" });
+          } else {
+            addEdge(newId, id);
+          }
           const groupLabel =
             mode === "imageReference"
               ? "图片参考组"
-              : mode === "imageToVideo"
+              : mode === "firstFrame"
                 ? "首帧生成视频组"
+                : mode === "imageToVideo"
+                  ? "图生视频组"
                 : "全能参考组";
           state.autoGroupSpawn(id, [newId], { label: groupLabel });
           updateNodeData(id, { genMode: mode });
@@ -606,17 +615,17 @@ export const VideoNode = memo(
           { x: baseX, y: firstY },
           { displayName: "首帧" },
         );
-        addEdge(firstId, id);
+        addEdgeWithData(firstId, id, { keyframeSlot: "first" });
         const lastId = addNode(
           CANVAS_NODE_TYPES.upload,
           { x: baseX, y: lastY },
           { displayName: "尾帧" },
         );
-        addEdge(lastId, id);
+        addEdgeWithData(lastId, id, { keyframeSlot: "last" });
         state.autoGroupSpawn(id, [firstId, lastId], { label: '首尾帧生成视频组' });
         updateNodeData(id, { genMode: "firstLastFrame" });
       },
-      [addEdge, addNode, id, updateNodeData],
+      [addEdge, addEdgeWithData, addNode, id, updateNodeData],
     );
 
     // Spawn reference nodes from selected asset-library entries — one per

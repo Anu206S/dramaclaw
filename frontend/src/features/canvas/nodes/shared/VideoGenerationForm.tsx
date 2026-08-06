@@ -96,6 +96,7 @@ import {
 const MODE_TABS: ReadonlyArray<{ key: VideoGenMode; labelKey: string }> = [
   { key: "textToVideo", labelKey: "node.videoNode.tabs.textToVideo" },
   { key: "allReference", labelKey: "node.videoNode.tabs.allReference" },
+  { key: "firstFrame", labelKey: "node.videoNode.tabs.firstFrame" },
   { key: "imageToVideo", labelKey: "node.videoNode.tabs.imageToVideo" },
   { key: "firstLastFrame", labelKey: "node.videoNode.tabs.firstLastFrame" },
   { key: "imageReference", labelKey: "node.videoNode.tabs.imageReference" },
@@ -106,6 +107,7 @@ const MODE_TABS: ReadonlyArray<{ key: VideoGenMode; labelKey: string }> = [
 // 与上游文档 4 大功能一一对应，且与产品设计稿一致。
 const HAPPYHORSE_TAB_ORDER: ReadonlyArray<VideoGenMode> = [
   "textToVideo",
+  "firstFrame",
   "imageToVideo",
   "imageReference",
   "videoEdit",
@@ -159,10 +161,15 @@ function videoModeDisabledReason(
         if (videos > 0) return "已连接视频节点，请使用「视频编辑」";
         if (images > 0) return "已连接图片节点，请选择「首帧」或「图片参考」";
         return null;
-      case "imageToVideo": // 首帧 (i2v)
+      case "firstFrame":
         if (videos > 0) return "已连接视频节点，「首帧」不可用";
         if (images === 0) return "需要连接图片节点（1个）";
         if (images > 1) return "「首帧」仅支持单张图片，请用「图片参考」";
+        return null;
+      case "imageToVideo":
+        if (videos > 0) return "已连接视频节点，「图生视频」不可用";
+        if (images === 0) return "需要连接图片节点（1个）";
+        if (images > 1) return "「图生视频」仅支持单张图片，请用「图片参考」";
         return null;
       case "imageReference": // 图片参考 (r2v)
         if (videos > 0) return "已连接视频节点，「图片参考」不可用";
@@ -224,7 +231,8 @@ function GenModeSelect({
     if (supportedModes?.length) {
       const keyMap: Record<VideoGenMode, string> = {
         textToVideo: "text_to_video",
-        imageToVideo: "first_frame",
+        firstFrame: "first_frame",
+        imageToVideo: "image_reference",
         firstLastFrame: "first_last_frame",
         imageReference: "image_reference",
         allReference: "all_reference",
@@ -913,6 +921,7 @@ function ReferenceMediaRow({
         const modeLabel =
           {
             textToVideo: "文生视频",
+            firstFrame: "首帧",
             imageToVideo: "图生视频",
             imageReference: "多图参考",
             firstLastFrame: "首尾帧",
