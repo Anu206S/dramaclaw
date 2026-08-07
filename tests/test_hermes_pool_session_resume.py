@@ -642,6 +642,43 @@ async def test_hermes_pool_reset_for_user_forgets_cached_session_and_starts_fres
 
 
 @pytest.mark.asyncio
+async def test_hermes_pool_restarts_dirty_freezone_profile_on_next_turn(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    pool, calls, fake_auth, _gateway = _patch_fake_hermes_pool(tmp_path, monkeypatch)
+
+    try:
+        first = await pool.get_for_user(
+            "alice",
+            agent_profile="freezone:agent-1",
+            tool_mode="freezone_canvas",
+            scope_kind="project",
+            project_id="project_a",
+            surface="freezone",
+            canvas_id="canvas_a",
+        )
+        pool.mark_user_profile_dirty("alice", "freezone:agent-1")
+        second = await pool.get_for_user(
+            "alice",
+            agent_profile="freezone:agent-1",
+            tool_mode="freezone_canvas",
+            scope_kind="project",
+            project_id="project_a",
+            surface="freezone",
+            canvas_id="canvas_a",
+        )
+    finally:
+        await pool.close_all()
+
+    assert second is not first
+    assert second.id == "session-2"
+    assert calls == [("start", None), ("start", None)]
+    assert fake_auth.created == 2
+    assert fake_auth.revoked == ["token-1", "token-2"]
+
+
+@pytest.mark.asyncio
 async def test_hermes_pool_rotates_closed_thread(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

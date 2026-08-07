@@ -500,6 +500,11 @@ def list_freezone_hermes_workflow_skills(username: str) -> list[dict[str, object
     return summaries
 
 
+def sync_freezone_hermes_workflow_skills(username: str) -> None:
+    """Refresh generated Hermes wrappers for saved Freezone Workflow Skills."""
+    ensure_user_hermes_workspace(username, profile="freezone")
+
+
 def freezone_python_hook_dir(home: Path) -> Path:
     return home / FREEZONE_HERMES_PYTHON_HOOK_DIR
 
@@ -1254,5 +1259,6 @@ __all__ = [
     "effective_gateway_fingerprint",
     "ensure_user_hermes_workspace",
     "list_freezone_hermes_workflow_skills",
+    "sync_freezone_hermes_workflow_skills",
     "freezone_python_hook_dir",
 ]

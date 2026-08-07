@@ -29,7 +29,10 @@ from novelvideo.api.auth import (
 from novelvideo.api.deps import list_user_projects
 from novelvideo.chat import service as chat_service
 from novelvideo.chat.hermes_pool import canvas_bridge_dir_for_profile
-from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
+from novelvideo.chat.hermes_workspace import (
+    ensure_user_hermes_workspace,
+    sync_freezone_hermes_workflow_skills,
+)
 from novelvideo.chat.store import ChatScope, chat_store
 from novelvideo.freezone.canvas_command_bridge import (
     resolve_clarification_result,
@@ -657,6 +660,14 @@ def _resolve_skill_studio_tool_result_payload(
         if catalog_errors:
             errors.extend(catalog_errors)
             ok = False
+        elif saved_skill_ids:
+            sync_freezone_hermes_workflow_skills(username)
+            try:
+                from novelvideo.chat.hermes_pool import pool as hermes_pool
+
+                hermes_pool.mark_user_freezone_profiles_dirty(username)
+            except Exception:
+                logger.exception("failed to mark Freezone Hermes worker dirty after Skill Studio save")
     if ok:
         if saved_to_catalog:
             agent_instruction = (
