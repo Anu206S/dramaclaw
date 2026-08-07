@@ -289,7 +289,7 @@ def test_export_builtin_agent_bundle_uses_dramaclaw_author(isolated_catalog: Pat
     assert bundle["license"] == "Proprietary"
 
 
-def test_install_agent_bundle_rejects_existing_ids(isolated_catalog: Path) -> None:
+def test_install_agent_bundle_rejects_existing_skill_id(isolated_catalog: Path) -> None:
     agent_config_store.save_user_agent_config_item(
         username="alice",
         kind="recipes",
@@ -303,6 +303,103 @@ def test_install_agent_bundle_rejects_existing_ids(isolated_catalog: Path) -> No
 
     with pytest.raises(ValueError, match="already exists"):
         agent_bundle_store.install_agent_bundle(username="alice", payload=_bundle_payload())
+
+
+def test_install_agent_bundle_reuses_identical_existing_recipe(isolated_catalog: Path) -> None:
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief"),
+    )
+    bundle = _bundle_payload(
+        id="second-video",
+        skill=_skill_payload("second-video", allowed_recipe_ids=["community-brief"]),
+    )
+
+    result = agent_bundle_store.install_agent_bundle(username="alice", payload=bundle)
+
+    assert result["installed_skill"] == "second-video"
+    assert result["installed_recipes"] == []
+    assert result["reused_recipes"] == ["community-brief"]
+    saved_skill = agent_config_store.list_user_agent_config_items("alice", "skills")[0]
+    assert saved_skill["allowed_recipe_ids"] == ["community-brief"]
+
+
+def test_install_agent_bundle_renames_conflicting_recipe_and_rewrites_skill_reference(
+    isolated_catalog: Path,
+) -> None:
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief", system_prompt="本地已有不同提示词。"),
+    )
+    bundle = _bundle_payload(
+        id="second-video",
+        skill=_skill_payload("second-video", allowed_recipe_ids=["community-brief"]),
+    )
+
+    result = agent_bundle_store.install_agent_bundle(username="alice", payload=bundle)
+
+    assert result["installed_skill"] == "second-video"
+    assert result["installed_recipes"] == ["community-brief--second-video"]
+    assert result["reused_recipes"] == []
+    saved_skill = agent_config_store.list_user_agent_config_items("alice", "skills")[0]
+    assert saved_skill["allowed_recipe_ids"] == ["community-brief--second-video"]
+    recipe_ids = {
+        item["id"] for item in agent_config_store.list_user_agent_config_items("alice", "recipes")
+    }
+    assert {"community-brief", "community-brief--second-video"} <= recipe_ids
+
+
+def test_install_agent_bundle_reuses_existing_renamed_recipe_when_content_matches(
+    isolated_catalog: Path,
+) -> None:
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief", system_prompt="本地已有不同提示词。"),
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief--second-video"),
+    )
+    bundle = _bundle_payload(
+        id="second-video",
+        skill=_skill_payload("second-video", allowed_recipe_ids=["community-brief"]),
+    )
+
+    result = agent_bundle_store.install_agent_bundle(username="alice", payload=bundle)
+
+    assert result["installed_recipes"] == []
+    assert result["reused_recipes"] == ["community-brief--second-video"]
+    saved_skill = agent_config_store.list_user_agent_config_items("alice", "skills")[0]
+    assert saved_skill["allowed_recipe_ids"] == ["community-brief--second-video"]
+
+
+def test_install_agent_bundle_increments_recipe_suffix_until_available(
+    isolated_catalog: Path,
+) -> None:
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief", system_prompt="本地已有不同提示词。"),
+    )
+    agent_config_store.save_user_agent_config_item(
+        username="alice",
+        kind="recipes",
+        payload=_recipe_payload("community-brief--second-video", system_prompt="另一个不同提示词。"),
+    )
+    bundle = _bundle_payload(
+        id="second-video",
+        skill=_skill_payload("second-video", allowed_recipe_ids=["community-brief"]),
+    )
+
+    result = agent_bundle_store.install_agent_bundle(username="alice", payload=bundle)
+
+    assert result["installed_recipes"] == ["community-brief--second-video-2"]
+    saved_skill = agent_config_store.list_user_agent_config_items("alice", "skills")[0]
+    assert saved_skill["allowed_recipe_ids"] == ["community-brief--second-video-2"]
 
 
 def test_export_agent_bundle_includes_allowed_recipes(isolated_catalog: Path) -> None:
