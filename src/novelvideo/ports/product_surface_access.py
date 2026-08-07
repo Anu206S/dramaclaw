@@ -22,7 +22,7 @@ SURFACE_DEFINITIONS: Final[tuple[dict[str, Any], ...]] = (
     {
         "surface_code": "assistant",
         "label": "虾导",
-        "default_available": False,
+        "default_available": True,
         "default_unavailable_message": "虾导功能暂未开放",
         "sort_order": 30,
     },
@@ -40,7 +40,7 @@ PRODUCT_SURFACE_CODES: Final[frozenset[str]] = frozenset(
 
 
 class LocalProductSurfaceAccess:
-    """CE visibility defaults: core entries show and assistant entries stay hidden."""
+    """CE visibility defaults for the product entries exposed by this branch."""
 
     async def get_effective_access(self, user_id: str) -> list[dict[str, Any]]:
         del user_id
