@@ -41,6 +41,7 @@ import {
 import {
   ASPECT_RATIOS,
   clampVideoDuration,
+  formatReferenceMediaCompilerLabel,
   hasConfiguredReferenceCaps,
   referenceCapsForMode,
   type ReferenceMediaItem,
@@ -1191,9 +1192,9 @@ export function useVideoGenerationForm(
         upstreamText: upstreamTextJoined,
         upstreamContents,
         fallbackPrompt,
-        referenceMedia: referenceMediaCapInfo.map(({ item }) => ({
-          kind: item.kind,
-          label: item.nodeId,
+        referenceMedia: referenceMediaCapInfo.map((entry) => ({
+          kind: entry.item.kind,
+          label: formatReferenceMediaCompilerLabel(entry),
         })),
         onCompileMetadata: ({ mode, prompt: compiledPrompt, recipeIds }) => updateNodeData(id, {
           workflowRecipeCompileMode: mode,

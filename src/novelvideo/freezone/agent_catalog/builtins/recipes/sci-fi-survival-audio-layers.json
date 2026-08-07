@@ -3,26 +3,24 @@
   "id": "sci-fi-survival-audio-layers",
   "version": "1.0.0",
   "enabled": true,
-  "name": "末世科幻音频层",
+  "name": "末世科幻 BGM",
   "output_kind": "audio",
   "action_keys": [
     "sci-fi-survival-audio-layers"
   ],
-  "system_prompt": "你将把已确认的音频规划、Storyboard audio_layer、对白/旁白脚本、镜头音效说明、角色声线分析和 input audio_mode，转换成可直接送入 audioGeneration 节点执行的音频层生成提示词。重要：你的输出是一条下游节点提示词/指令，不是最终音频；只输出提示词，不要解释。\n\n若 input audio_mode 为“仅画面不生成音频”，只输出不生成音频的说明。否则必须区分 Dialogue、Narration、BGM、Ambient、Action SFX。对白角色若已有上传音频，绑定为 key_element_audio；否则先用 text to narration 生成 2-3 条对白样本作为角色声线参考。key_element_audio 只用于对白；旁白使用 narration_speaker_profile。\n\nBGM 可生成压抑、悲壮、紧张或空旷的全局曲或分段曲；提示词不得引用知名艺术家。旁白必须深沉克制、有停顿，密度不超过约每 10 秒 30 个中文字符。旁白和角色对白禁止同一时段重叠，至少错开 0.5-1s；旁白不得重复对白语义。SFX 必须按场景区分：废墟风沙、机械低频、生物湿黏和共振、战斗枪械/能量武器/肉体撕裂、情绪段呼吸和布料摩擦。\n\n输出应包含音频层名称、类型、适用镜头区间、生成提示词、声线/情绪、混音和 ducking 建议。",
+  "system_prompt": "你将把已确认的 BGM 规划、全片情绪曲线、分镜节奏和全局创作规格，转换成可直接送入 audioGeneration 节点执行的背景音乐生成提示词。重要：你的输出是一条下游节点提示词/指令，不是最终音频；只输出提示词，不要解释。\n\n本节点只负责独立 BGM/配乐音频。对白、旁白、镜头内环境声和动作音效属于各自视频节点的提示词内容，不在这里拆成独立音频。若开始前选项为“不生成BGM”，只输出不创建背景音乐节点的说明。\n\nBGM 可以是一条贯穿全片的主配乐，也可以按剧情段落规划少量分段配乐；必须写清适用镜头区间、情绪走向、节奏强弱、核心乐器或声音质感、能量峰值和收束方式。提示词不得引用知名艺术家、影视原声或受版权保护的具体曲名。\n\n输出应包含 BGM 名称、适用镜头区间、生成提示词、音量建议、淡入淡出和与对白/旁白错峰的混音建议。",
   "must_have_items": [
-    "Dialogue",
-    "Narration",
     "BGM",
-    "Ambient",
-    "Action SFX",
-    "key_element_audio",
-    "narration_speaker_profile",
-    "不得重叠",
-    "不得重复对白",
-    "ducking"
+    "适用镜头区间",
+    "情绪走向",
+    "节奏强弱",
+    "核心乐器或声音质感",
+    "音量建议",
+    "淡入淡出",
+    "与对白/旁白错峰"
   ],
-  "planning_prompt": "生成末世科幻对白、旁白、BGM、环境声和动作音效音频层提示词。",
-  "result_summary": "末世科幻音频层生成提示词和混音建议。",
+  "planning_prompt": "根据全片情绪曲线和分镜节奏，生成末世科幻背景音乐提示词。",
+  "result_summary": "末世科幻 BGM 生成提示词和混音建议。",
   "requires_source_media": false,
   "force_enhancement": false,
   "skip_detail_check": false
