@@ -47,12 +47,15 @@ import {
 } from "@/features/canvas/nodes/shared/videoFormOptions";
 import {
   audioReferenceDurationRejection,
+  audioReferenceTotalDurationLimitMs,
   formatAudioDurationClips,
+  formatAudioDurationSeconds,
   isCompositionTimelineAudioData,
   isHappyHorseVideoModel,
   isSeedance2VideoModel,
   isVideoModeSupportedByModel,
   MAX_AUDIO_REFERENCE_DURATION_MS,
+  MAX_AUDIO_REFERENCE_TOTAL_DURATION_MS,
   MIN_AUDIO_REFERENCE_DURATION_MS,
   resolveVideoKeyframeUrls,
   videoModeRequiresPrompt,
@@ -1458,9 +1461,11 @@ export function useVideoGenerationForm(
           });
           return {};
         }
-        // Seedance 2.0 requires every audio reference to stay within the
-        // provider's 1.8s-15.2s range.
-        if (isSeedance20Model && audioRefs.length > 0) {
+        // Seedance 2.0 enforces both per-clip and total limits. Other models
+        // may opt into a catalog-configured total duration limit.
+        const audioTotalConfigured =
+          selectedVideoModel?.referenceAudioTotalMaxSeconds != null;
+        if ((isSeedance20Model || audioTotalConfigured) && audioRefs.length > 0) {
           const resolvedDurations = await Promise.all(
             audioRefs.map((ref) =>
               typeof ref.durationMs === "number" && ref.durationMs > 0
@@ -1473,6 +1478,14 @@ export function useVideoGenerationForm(
               label: ref.label,
               durationMs: resolvedDurations[index] ?? null,
             })),
+            {
+              totalLimitMs: audioReferenceTotalDurationLimitMs(selectedVideoModel, {
+                vendorCapMs: isSeedance20Model
+                  ? MAX_AUDIO_REFERENCE_TOTAL_DURATION_MS
+                  : undefined,
+              }),
+              perClipLimits: isSeedance20Model,
+            },
           );
           if (rejection) {
             const clips = formatAudioDurationClips(rejection.clips, (key, vars) =>
@@ -1484,10 +1497,16 @@ export function useVideoGenerationForm(
                     min: MIN_AUDIO_REFERENCE_DURATION_MS / 1000,
                     clips,
                   })
-                : t("node.videoNode.audio.durationTooLong", {
-                    max: MAX_AUDIO_REFERENCE_DURATION_MS / 1000,
-                    clips,
-                  }),
+                : rejection.kind === "tooLong"
+                  ? t("node.videoNode.audio.durationTooLong", {
+                      max: MAX_AUDIO_REFERENCE_DURATION_MS / 1000,
+                      clips,
+                    })
+                  : t("node.videoNode.audio.durationTotalTooLong", {
+                      max: formatAudioDurationSeconds(rejection.limitMs),
+                      total: formatAudioDurationSeconds(rejection.totalMs),
+                      clips,
+                    }),
               t("common.error"),
             );
             updateNodeData(id, {

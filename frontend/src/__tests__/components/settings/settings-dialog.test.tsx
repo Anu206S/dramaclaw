@@ -66,7 +66,10 @@ vi.mock("@/lib/queries/freezone-agent-config", () => ({
 
 vi.mock("@/lib/queries/model-gateway", () => ({
   useModelGatewayConfig: () => ({ data: undefined, isLoading: false }),
+  useNewApiChannelTypes: () => ({ data: undefined, isLoading: false }),
   useEnableOfficial: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useEnableCustom: () => ({ mutateAsync: vi.fn(), isPending: false }),
+  useEnableHybrid: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSaveOfficialConfig: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useInitCustomNewApi: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useSaveCustomChannel: () => ({ mutateAsync: vi.fn(), isPending: false }),
