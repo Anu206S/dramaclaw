@@ -1448,7 +1448,6 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
         "dialogue-drama-storyboard-plan",
         "visual-key-elements",
         "dialogue-continuity-shot-video",
-        "dialogue-voice-ambience-layer",
     ]
     assert "ad-ip-character-anchor" in recipes
     assert "ad-product-prop-anchor" in recipes
@@ -1471,7 +1470,7 @@ def test_project_catalog_uses_canonical_pixar_skill_and_recipes(monkeypatch):
     assert "dialogue-drama-storyboard-plan" in recipes
     assert "dialogue-drama-key-elements" not in recipes
     assert "dialogue-continuity-shot-video" in recipes
-    assert "dialogue-voice-ambience-layer" in recipes
+    assert "dialogue-voice-ambience-layer" not in recipes
     assert "visual-key-elements" in recipes
     assert "storyboard-shot-video" in recipes
     assert "video-audio-layer" in recipes
@@ -1835,8 +1834,24 @@ def test_ling_cage_skill_keeps_style_while_recipes_are_survival_sci_fi_stages(mo
     assert "故事方向" in planning["planning_notes"]
     assert "分镜" in planning["planning_notes"]
     assert "关键元素图" in planning["planning_notes"]
+    assert "不得只创建一个笼统的“关键元素”总节点" in planning_text
+    assert "每个持续出现的角色或队伍各自独立成节点" in planning_text
+    assert "每个主要复用场景各自独立成节点" in planning_text
+    assert "每个 Shot List 条目必须是独立的视频 intent item" in planning_text
     assert "单镜视频" in planning["planning_notes"]
     assert "音频" in planning["planning_notes"]
+    audio_mode = next(
+        parameter
+        for parameter in skill["input_parameters"]
+        if parameter["id"] == "audio_mode"
+    )
+    assert audio_mode["label"] == "背景音乐"
+    assert audio_mode["default"] == "生成BGM"
+    assert audio_mode["options"] == ["生成BGM", "不生成BGM"]
+    assert "对白旁白音效和BGM" not in planning_text
+    assert "仅音效和BGM" not in planning_text
+    assert "对白和音效写入对应视频提示词" in planning_text
+    assert "只在需要配乐时创建 BGM 音频节点" in planning_text
     assert "Final_Video_Spec" not in planning_text
     assert "ling-cage-video-spec" not in planning_text
     assert "sci-fi-survival-story-script" not in planning_text
@@ -1871,6 +1886,24 @@ def test_ling_cage_skill_keeps_style_while_recipes_are_survival_sci_fi_stages(mo
     assert "噬极兽" not in recipe_text
     assert "覆盖 Skill" not in recipe_text
     assert "Recipe 内" not in recipe_text
+
+    audio_layer = recipes["sci-fi-survival-audio-layers"]
+    audio_layer_text = "\n".join(
+        [
+            audio_layer["name"],
+            audio_layer["system_prompt"],
+            audio_layer["planning_prompt"],
+            audio_layer["result_summary"],
+            "\n".join(audio_layer["must_have_items"]),
+        ]
+    )
+    assert "BGM" in audio_layer_text
+    assert "Dialogue" not in audio_layer_text
+    assert "Narration" not in audio_layer_text
+    assert "Ambient" not in audio_layer_text
+    assert "Action SFX" not in audio_layer_text
+    assert "key_element_audio" not in audio_layer_text
+    assert "narration_speaker_profile" not in audio_layer_text
 
     key_elements = recipes["sci-fi-survival-key-elements"]
     key_text = "\n".join(
@@ -1917,7 +1950,6 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
         "dialogue-drama-storyboard-plan",
         "visual-key-elements",
         "dialogue-continuity-shot-video",
-        "dialogue-voice-ambience-layer",
     ]
     planning_text = "\n".join(
         [
@@ -1942,11 +1974,28 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
     assert "故事脚本" in planning["planning_notes"]
     assert "分镜" in planning["planning_notes"]
     assert "关键元素" in planning["planning_notes"]
+    assert "不得只创建一个笼统的“关键元素”总节点" in planning_text
+    assert "每个持续出现的角色各自独立成节点" in planning_text
+    assert "每个主要复用场景各自独立成节点" in planning_text
+    assert "每个需要跨镜保持外观一致的核心道具" in planning_text
     assert "样片" in planning["planning_notes"]
-    assert "voiceRef" in planning["planning_notes"]
-    assert "audio_infos" in planning["planning_notes"]
-    assert "音频节点连接关系" in planning["planning_notes"]
-    assert "不作为 Recipe" in planning["planning_notes"]
+    assert "声音参考素材" in planning["planning_notes"]
+    assert "口型" in planning["planning_notes"]
+    assert "默认不创建独立音频节点" in planning_text
+    assert "用户指定已上传或画布中的音频/视频作为声音参考" in planning_text
+    assert "用 @音频N 或 @视频N 说明声音、口型、语气或节奏用途" in planning_text
+    assert "voiceRef" not in planning_text
+    assert "speechMode" not in planning_text
+    assert "音频节点连接关系" not in planning_text
+    assert "最终组装、混音、4K 超分和导出交给画布合成节点处理" in planning[
+        "planning_notes"
+    ]
+    assert "<<<image_" not in planning_text
+    assert "<<<video_" not in planning_text
+    assert "<<<audio_" not in planning_text
+    assert "image_infos" not in planning_text
+    assert "audio_infos" not in planning_text
+    assert "当前节点所选模型和生成模式" in planning_text
     for recipe_id in recipe_ids:
         assert recipe_id not in planning_text
 
@@ -1983,29 +2032,19 @@ def test_japanese_anime_drama_skill_locks_language_and_continuity(monkeypatch):
             "\n".join(recipes["dialogue-continuity-shot-video"]["must_have_items"]),
         ]
     )
-    assert "image_infos 总数不超过 9" in shot_text
-    assert "audio_infos 不超过 3" in shot_text
-    assert "reference_video" in shot_text
+    assert "@图片N" in shot_text
+    assert "@视频N" in shot_text
+    assert "@音频N" in shot_text
+    assert "当前节点已连接" in shot_text
+    assert "当前节点所选模型和生成模式" in shot_text
+    assert "<<<image_" not in shot_text
+    assert "<<<video_" not in shot_text
+    assert "<<<audio_" not in shot_text
+    assert "image_infos" not in shot_text
+    assert "audio_infos" not in shot_text
     assert "手持呼吸感" in shot_text
     assert "偏转 15°" in shot_text
-    assert "2300" in shot_text
     assert "全局创作规格" in shot_text
-
-    audio_text = "\n".join(
-        [
-            recipes["dialogue-voice-ambience-layer"]["system_prompt"],
-            "\n".join(recipes["dialogue-voice-ambience-layer"]["must_have_items"]),
-        ]
-    )
-    assert "角色语音提示词" in audio_text
-    assert "朗读文案" in audio_text
-    assert "语气情绪" in audio_text
-    assert "语速节奏" in audio_text
-    assert "音色策略" in audio_text
-    assert "待用户确认参考音色或改用系统音色" in audio_text
-    assert "环境声清单" in audio_text
-    assert "全局创作规格" in audio_text
-    assert "ducking" in audio_text
 
 
 def test_project_catalog_skills_compile_dynamic_multi_item_workflows(monkeypatch):

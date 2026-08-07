@@ -58,6 +58,10 @@ import {
   type WorkflowExecutionActivityDetail,
   type WorkflowRunActionUpdate,
 } from "@/features/canvas/application/workflowExecutionActivity";
+import {
+  captureVideoFrameToNode,
+  resolveCaptureSeekSec,
+} from "@/features/canvas/application/videoCaptureFrame";
 import { dedupeGenerationErrors } from "@/features/canvas/application/generationErrorReport";
 
 export const CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1";
@@ -1117,6 +1121,111 @@ export function partitionCanvasChatCommandEnvelopes(
 
 function nodeById(id: string): CanvasNode | null {
   return useCanvasStore.getState().nodes.find((node) => node.id === id) ?? null;
+}
+
+const VIDEO_CONTINUITY_PROMPT_NOTE =
+  "上一镜尾帧已作为图片参考接入，请以它作为本镜头开场的动作、构图和角色状态连续依据。";
+
+function continuityFrameData(sourceVideoNodeId: string, targetVideoNodeId: string): JsonRecord {
+  return {
+    sourceVideoNodeId,
+    targetVideoNodeId,
+    kind: "video_tail_frame",
+  };
+}
+
+function matchesContinuityFrame(
+  node: CanvasNode,
+  sourceVideoNodeId: string,
+  targetVideoNodeId: string,
+): boolean {
+  const data = node.data as JsonRecord;
+  const continuity = data.workflowContinuityFrame;
+  return (
+    node.type === CANVAS_NODE_TYPES.exportImage &&
+    isRecord(continuity) &&
+    continuity.sourceVideoNodeId === sourceVideoNodeId &&
+    continuity.targetVideoNodeId === targetVideoNodeId &&
+    nonEmptyString(data.imageUrl) !== null
+  );
+}
+
+function linkedContinuityFrameNodeId(
+  sourceVideoNodeId: string,
+  targetVideoNodeId: string,
+): string | null {
+  const state = useCanvasStore.getState();
+  const candidate = state.nodes.find((node) =>
+    matchesContinuityFrame(node, sourceVideoNodeId, targetVideoNodeId)
+  );
+  if (!candidate) return null;
+  const hasMediaInput = state.edges.some((edge) =>
+    edge.source === candidate.id &&
+    edge.target === targetVideoNodeId &&
+    normalizeCanvasEdgeSemanticKind(isRecord(edge.data) ? edge.data.link_type : undefined) ===
+      "media_input_for"
+  );
+  return hasMediaInput ? candidate.id : null;
+}
+
+function appendVideoContinuityPromptNote(targetNodeId: string): void {
+  const target = nodeById(targetNodeId);
+  if (!target) return;
+  const prompt = typeof target.data.prompt === "string" ? target.data.prompt.trim() : "";
+  if (prompt.includes(VIDEO_CONTINUITY_PROMPT_NOTE)) return;
+  const nextPrompt = prompt
+    ? `${prompt}\n\n${VIDEO_CONTINUITY_PROMPT_NOTE}`
+    : VIDEO_CONTINUITY_PROMPT_NOTE;
+  useCanvasStore.getState().updateNodeData(targetNodeId, { prompt: nextPrompt });
+}
+
+async function ensureVideoContinuityTailFrames(
+  action: PendingNodeAction,
+  projectId: string | undefined,
+): Promise<void> {
+  if (action.action !== "generate_video") return;
+  if (!projectId) return;
+  const target = nodeById(action.nodeId);
+  if (!target || target.type !== CANVAS_NODE_TYPES.video) return;
+  const state = useCanvasStore.getState();
+  const sourceVideos = state.edges
+    .filter((edge) =>
+      edge.target === action.nodeId &&
+      normalizeCanvasEdgeSemanticKind(isRecord(edge.data) ? edge.data.link_type : undefined) ===
+        "dependency_for"
+    )
+    .map((edge) => state.nodes.find((node) => node.id === edge.source) ?? null)
+    .filter((node): node is CanvasNode =>
+      Boolean(node && node.type === CANVAS_NODE_TYPES.video && nonEmptyString(node.data.videoUrl))
+    );
+  if (sourceVideos.length === 0) return;
+
+  for (const source of sourceVideos) {
+    if (linkedContinuityFrameNodeId(source.id, action.nodeId)) continue;
+    const sourceData = source.data as JsonRecord;
+    const videoUrl = nonEmptyString(sourceData.videoUrl);
+    if (!videoUrl) continue;
+    const durationMs = isFiniteNumber(sourceData.durationMs) ? sourceData.durationMs : null;
+    const result = await captureVideoFrameToNode(source.id, {
+      videoUrl,
+      seekSec: resolveCaptureSeekSec("last", {
+        fallbackDurationSec: durationMs !== null ? durationMs / 1000 : null,
+      }),
+      projectId,
+      displayName: "上一镜尾帧",
+    });
+    if (!result.nodeId) {
+      throw new Error(result.error ?? "上一镜尾帧抽取失败，已停止启动下一镜视频。");
+    }
+    useCanvasStore.getState().updateNodeData(result.nodeId, {
+      workflowContinuityFrame: continuityFrameData(source.id, action.nodeId),
+    });
+    useCanvasStore.getState().addEdgeWithData(result.nodeId, action.nodeId, {
+      link_type: "media_input_for",
+      edgeKind: "workflow_continuity_tail_frame",
+    });
+    appendVideoContinuityPromptNote(action.nodeId);
+  }
 }
 
 function resolveNodeId(rawId: string, clientIdMap: Map<string, string>): string {
@@ -2767,6 +2876,8 @@ async function executeQueuedNodeActions(
               phase: "preparing",
               retry_count: retryCount,
             }]);
+
+            await ensureVideoContinuityTailFrames(action, projectId);
 
             const requestId = `node-action:${Date.now()}:${Math.random().toString(36).slice(2)}`;
             const uiOpenAction = UI_OPEN_NODE_ACTIONS.has(action.action);
