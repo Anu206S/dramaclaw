@@ -107,7 +107,9 @@ def test_opaque_newapi_alias_sends_reasoning_effort_none(monkeypatch):
     assert requests[0]["reasoning_effort"] == "none"
 
 
-def test_plain_text_brainclaw_recipe_request_omits_reasoning(monkeypatch):
+def test_plain_text_brainclaw_recipe_request_preserves_routing_headers_and_omits_reasoning(
+    monkeypatch,
+):
     import asyncio
     import json
 
@@ -162,8 +164,9 @@ def test_plain_text_brainclaw_recipe_request_omits_reasoning(monkeypatch):
         timeout_seconds=12.0,
         profile=None,
         default_headers={
-            "X-BrainClaw-Profile": "freezone_recipe_compilation",
+            "X-BrainClaw-Profile": "freezone_recipe_text_generation",
             "X-BrainClaw-Profile-Version": "1",
+            "X-BrainClaw-Profile-Variant": "recipe/general-text@1.0.0",
         },
     )
     result = asyncio.run(Agent(model, output_type=str).run("compile this"))
@@ -174,8 +177,12 @@ def test_plain_text_brainclaw_recipe_request_omits_reasoning(monkeypatch):
     assert "reasoning" not in requests[0]
     assert "response_format" not in requests[0]
     assert "tools" not in requests[0]
-    assert headers[0]["X-BrainClaw-Profile"] == "freezone_recipe_compilation"
+    assert headers[0]["X-BrainClaw-Profile"] == "freezone_recipe_text_generation"
     assert headers[0]["X-BrainClaw-Profile-Version"] == "1"
+    assert (
+        headers[0]["X-BrainClaw-Profile-Variant"]
+        == "recipe/general-text@1.0.0"
+    )
 
 
 def test_newapi_text_provider_default_trusts_env(monkeypatch):
