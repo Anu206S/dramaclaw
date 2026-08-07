@@ -87,6 +87,7 @@ def test_dc_banana_2_selection_maps_to_newapi_nanobanana2(monkeypatch, tmp_path)
 def test_fixed_asset_image_providers_default_to_newapi_when_env_is_empty(monkeypatch):
     for key in (
         "PROP_REF_IMAGE_PROVIDER",
+        "PROP_REF_IMAGE_MODEL",
         "SCENE_MASTER_IMAGE_PROVIDER",
         "SCENE_REVERSE_MASTER_IMAGE_PROVIDER",
         "SCENE_360_IMAGE_PROVIDER",
@@ -1289,7 +1290,7 @@ def test_newapi_reverse_master_uses_master_reference_nanobanana2(monkeypatch, tm
     assert "REFERENCE 1 = the scene's FRONT-FACING master" in captured["prompt"]
 
 
-def test_newapi_reverse_master_can_use_gpt_image2_quality_low(monkeypatch, tmp_path):
+def test_newapi_reverse_master_can_use_gpt_image2_quality_medium(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     from novelvideo.generators import scene_reference_images
     from novelvideo.models import NovelScene
@@ -1339,7 +1340,7 @@ def test_newapi_reverse_master_can_use_gpt_image2_quality_low(monkeypatch, tmp_p
         "aspect_ratio": "16:9",
         "image_size": "1K",
         "output_format": "png",
-        "quality": "low",
+        "quality": "medium",
     }
 
 
