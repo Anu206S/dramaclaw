@@ -48,7 +48,6 @@ import {
 } from "@/features/canvas/nodes/shared/videoFormOptions";
 import {
   audioReferenceDurationRejection,
-  audioReferenceTotalDurationLimitMs,
   formatAudioDurationClips,
   formatAudioDurationSeconds,
   isCompositionTimelineAudioData,
@@ -58,6 +57,7 @@ import {
   MAX_AUDIO_REFERENCE_DURATION_MS,
   MAX_AUDIO_REFERENCE_TOTAL_DURATION_MS,
   MIN_AUDIO_REFERENCE_DURATION_MS,
+  referenceDurationLimitsMs,
   resolveVideoKeyframeUrls,
   videoModeRequiresPrompt,
   videoModelReferenceDisabledReason,
@@ -159,8 +159,7 @@ function selectedVideoModelReferenceDisabledReason(
   counts: { images: number; videos: number; audios: number },
   mode: VideoGenMode,
 ): string | null {
-  const modelId = model?.apiModel ?? model?.id;
-  const capabilityReason = videoModelReferenceDisabledReason(modelId, counts);
+  const capabilityReason = videoModelReferenceDisabledReason(model, counts);
   if (capabilityReason) return capabilityReason;
   const caps = referenceCapsForMode(model, mode);
   if (!caps) return null;
@@ -190,36 +189,46 @@ function videoDurationBoundsForModel(
   return { min: resolvedMin, max: resolvedMax };
 }
 
-// 音频节点的 durationMs 是懒加载的（波形播放器挂载读元数据后才写入），刚上传、
-// 从未渲染过的音频节点可能为 null。提交前用一个临时 <audio> 探测真实时长兜底，
+// 媒体节点的 durationMs 可能尚未加载。提交前用临时媒体元素探测真实时长兜底，
 // 探测失败（CORS/网络等）返回 null，不阻断提交，交由后端兜底。
-function probeAudioDurationMs(url: string): Promise<number | null> {
+function probeMediaDurationMs(
+  url: string,
+  media: "audio" | "video",
+): Promise<number | null> {
   return new Promise((resolve) => {
     if (!url) {
       resolve(null);
       return;
     }
-    const audio = document.createElement("audio");
+    const element = document.createElement(media);
     let settled = false;
     const finish = (ms: number | null) => {
       if (settled) return;
       settled = true;
       window.clearTimeout(timer);
-      audio.onloadedmetadata = null;
-      audio.onerror = null;
-      audio.removeAttribute("src");
-      audio.load();
+      element.onloadedmetadata = null;
+      element.onerror = null;
+      element.removeAttribute("src");
+      element.load();
       resolve(ms);
     };
     const timer = window.setTimeout(() => finish(null), 8000);
-    audio.preload = "metadata";
-    audio.onloadedmetadata = () => {
-      const secs = audio.duration;
+    element.preload = "metadata";
+    element.onloadedmetadata = () => {
+      const secs = element.duration;
       finish(Number.isFinite(secs) && secs > 0 ? Math.round(secs * 1000) : null);
     };
-    audio.onerror = () => finish(null);
-    audio.src = url;
+    element.onerror = () => finish(null);
+    element.src = url;
   });
+}
+
+function probeAudioDurationMs(url: string): Promise<number | null> {
+  return probeMediaDurationMs(url, "audio");
+}
+
+function probeVideoDurationMs(url: string): Promise<number | null> {
+  return probeMediaDurationMs(url, "video");
 }
 
 function isCompositionTimelineAudioNode(node: CanvasNode): boolean {
@@ -1399,6 +1408,11 @@ export function useVideoGenerationForm(
           label: string;
           durationMs: number | null;
         }[] = [];
+        const videoRefs: {
+          url: string;
+          label: string;
+          durationMs: number | null;
+        }[] = [];
         let imageCount = 0;
         let videoCount = 0;
         let audioCount = 0;
@@ -1409,6 +1423,16 @@ export function useVideoGenerationForm(
             // 视频节点或携带 videoUrl 的 upload 节点（资产库视频）统一收集。
             if (videoCount < caps.video) {
               references.push({ type: "video", url: videoRefUrl });
+              videoRefs.push({
+                url: videoRefUrl,
+                label: t("node.videoNode.referenceDuration.videoFallbackLabel", {
+                  index: videoCount + 1,
+                }),
+                durationMs:
+                  typeof node.data.durationMs === "number"
+                    ? node.data.durationMs
+                    : null,
+              });
               videoCount += 1;
             }
           } else if (isAudioNode(node)) {
@@ -1462,61 +1486,101 @@ export function useVideoGenerationForm(
           });
           return {};
         }
-        // Seedance 2.0 enforces both per-clip and total limits. Other models
-        // may opt into a catalog-configured total duration limit.
-        const audioTotalConfigured =
-          selectedVideoModel?.referenceAudioTotalMaxSeconds != null;
-        if ((isSeedance20Model || audioTotalConfigured) && audioRefs.length > 0) {
+        const validateReferenceDurations = async (
+          media: "audio" | "video",
+          refs: typeof audioRefs,
+        ): Promise<boolean> => {
+          const configured = referenceDurationLimitsMs(selectedVideoModel, media);
+          const limits = {
+            minMs:
+              configured.minMs ??
+              (media === "audio" && isSeedance20Model
+                ? MIN_AUDIO_REFERENCE_DURATION_MS
+                : undefined),
+            maxMs:
+              configured.maxMs ??
+              (media === "audio" && isSeedance20Model
+                ? MAX_AUDIO_REFERENCE_DURATION_MS
+                : undefined),
+            totalMinMs: configured.totalMinMs,
+            totalMaxMs:
+              configured.totalMaxMs ??
+              (media === "audio" && isSeedance20Model
+                ? MAX_AUDIO_REFERENCE_TOTAL_DURATION_MS
+                : undefined),
+          };
+          if (refs.length === 0 || Object.values(limits).every((value) => value == null)) {
+            return true;
+          }
           const resolvedDurations = await Promise.all(
-            audioRefs.map((ref) =>
+            refs.map((ref) =>
               typeof ref.durationMs === "number" && ref.durationMs > 0
                 ? Promise.resolve(ref.durationMs)
-                : probeAudioDurationMs(ref.url),
+                : media === "audio"
+                  ? probeAudioDurationMs(ref.url)
+                  : probeVideoDurationMs(ref.url),
             ),
           );
           const rejection = audioReferenceDurationRejection(
-            audioRefs.map((ref, index) => ({
+            refs.map((ref, index) => ({
               label: ref.label,
               durationMs: resolvedDurations[index] ?? null,
             })),
             {
-              totalLimitMs: audioReferenceTotalDurationLimitMs(selectedVideoModel, {
-                vendorCapMs: isSeedance20Model
-                  ? MAX_AUDIO_REFERENCE_TOTAL_DURATION_MS
-                  : undefined,
-              }),
-              perClipLimits: isSeedance20Model,
+              minMs: limits.minMs ?? null,
+              maxMs: limits.maxMs ?? null,
+              totalMinMs: limits.totalMinMs,
+              totalLimitMs: limits.totalMaxMs ?? null,
+              perClipLimits: limits.minMs != null || limits.maxMs != null,
             },
           );
           if (rejection) {
             const clips = formatAudioDurationClips(rejection.clips, (key, vars) =>
               t(key, vars),
             );
-            void showErrorDialog(
+            const prefix =
+              media === "audio"
+                ? "node.videoNode.audio"
+                : "node.videoNode.referenceDuration";
+            const message =
               rejection.kind === "tooShort"
-                ? t("node.videoNode.audio.durationTooShort", {
-                    min: MIN_AUDIO_REFERENCE_DURATION_MS / 1000,
+                ? t(`${prefix}.${media === "audio" ? "durationTooShort" : "videoTooShort"}`, {
+                    min: formatAudioDurationSeconds(limits.minMs ?? 0),
                     clips,
                   })
                 : rejection.kind === "tooLong"
-                  ? t("node.videoNode.audio.durationTooLong", {
-                      max: MAX_AUDIO_REFERENCE_DURATION_MS / 1000,
+                  ? t(`${prefix}.${media === "audio" ? "durationTooLong" : "videoTooLong"}`, {
+                      max: formatAudioDurationSeconds(limits.maxMs ?? 0),
                       clips,
                     })
-                  : t("node.videoNode.audio.durationTotalTooLong", {
-                      max: formatAudioDurationSeconds(rejection.limitMs),
-                      total: formatAudioDurationSeconds(rejection.totalMs),
-                      clips,
-                    }),
-              t("common.error"),
-            );
+                  : rejection.kind === "totalTooShort"
+                    ? t(
+                        `${prefix}.${media === "audio" ? "durationTotalTooShort" : "videoTotalTooShort"}`,
+                        {
+                          min: formatAudioDurationSeconds(rejection.limitMs),
+                          total: formatAudioDurationSeconds(rejection.totalMs),
+                          clips,
+                        },
+                      )
+                    : t(
+                        `${prefix}.${media === "audio" ? "durationTotalTooLong" : "videoTotalTooLong"}`,
+                        {
+                          max: formatAudioDurationSeconds(rejection.limitMs),
+                          total: formatAudioDurationSeconds(rejection.totalMs),
+                          clips,
+                        },
+                      );
+            toast.error(message, { duration: 5_000 });
             updateNodeData(id, {
               isGenerating: false,
               generationStartedAt: null,
             });
-            return {};
+            return false;
           }
-        }
+          return true;
+        };
+        if (!(await validateReferenceDurations("audio", audioRefs))) return {};
+        if (!(await validateReferenceDurations("video", videoRefs))) return {};
         doSubmit = (targetId) =>
           submitFreezoneVideoOmniGen(projectId, {
             prompt: composedPrompt,
