@@ -86,7 +86,10 @@ from novelvideo.api.schemas import (
     ProjectionStatusRequest,
     PushRequest,
 )
-from novelvideo.chat.hermes_workspace import list_freezone_hermes_workflow_skills
+from novelvideo.chat.hermes_workspace import (
+    list_freezone_hermes_workflow_skills,
+    sync_freezone_hermes_workflow_skills,
+)
 from novelvideo.config import (
     IMAGE_GENERATION_SELECTIONS,
     image_generation_selection_options,
@@ -4334,6 +4337,14 @@ async def save_freezone_agent_config_item(
         item = save_user_agent_config_item(username=username, kind=kind, payload=payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if kind == "skills":
+        sync_freezone_hermes_workflow_skills(username)
+        try:
+            from novelvideo.chat.hermes_pool import pool as hermes_pool
+
+            hermes_pool.mark_user_freezone_profiles_dirty(username)
+        except Exception:
+            logger.exception("failed to mark Freezone Hermes worker dirty after skill save")
     return {"ok": True, "data": item}
 
 

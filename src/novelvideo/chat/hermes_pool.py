@@ -206,6 +206,7 @@ class HermesPool:
     ) -> None:
         self._slots: dict[str, _WorkerSlot] = {}
         self._session_ids: dict[str, dict[tuple[str, str, str | None, str | None], str]] = {}
+        self._dirty_profiles: set[str] = set()
         self._lock = asyncio.Lock()
         self._idle_kill_secs = idle_kill_secs
         self._max_workers = max_workers
@@ -242,7 +243,21 @@ class HermesPool:
         async with self._lock:
             slot = self._slots.get(slot_key)
             if slot is not None:
-                if bool(getattr(slot.thread, "is_closed", False)):
+                if slot_key in self._dirty_profiles:
+                    self._dirty_profiles.discard(slot_key)
+                    slot = await self._rotate_slot_locked(
+                        slot,
+                        model=model,
+                        agent_profile=agent_profile,
+                        tool_mode=tool_mode,
+                        scope_kind=scope_kind,
+                        project_id=project_id,
+                        surface=normalized_surface,
+                        canvas_id=normalized_canvas_id,
+                        reason="profile-dirty",
+                        resume_existing_session=False,
+                    )
+                elif bool(getattr(slot.thread, "is_closed", False)):
                     slot = await self._rotate_slot_locked(
                         slot,
                         model=model,
@@ -303,6 +318,7 @@ class HermesPool:
                 return slot.thread
 
             await self._evict_lru_if_full()
+            self._dirty_profiles.discard(slot_key)
             slot = await self._spawn_locked(
                 username,
                 model=model,
@@ -366,6 +382,21 @@ class HermesPool:
         if old_slot is not None:
             await asyncio.shield(self._close_slot(old_slot, remember_session=False))
         return new_slot.thread
+
+    def mark_user_profile_dirty(self, username: str, agent_profile: str = "main") -> None:
+        """Restart this user's cached worker profile before the next prompt.
+
+        This lets catalog/Skill changes take effect without interrupting the
+        currently streaming turn that may have produced the change.
+        """
+        self._dirty_profiles.add(self._slot_key(username, agent_profile))
+
+    def mark_user_freezone_profiles_dirty(self, username: str) -> None:
+        """Restart all cached Freezone worker profiles for this user on next use."""
+        prefix = f"{username}:freezone:"
+        for key in self._slots:
+            if key.startswith(prefix):
+                self._dirty_profiles.add(key)
 
     async def _spawn_locked(
         self,
@@ -537,6 +568,7 @@ class HermesPool:
         surface: str | None,
         canvas_id: str | None,
         reason: str,
+        resume_existing_session: bool = True,
     ) -> _WorkerSlot:
         """Replace a running worker with a fresh token/session.
 
@@ -546,14 +578,23 @@ class HermesPool:
         Track the replacement before closing the old slot so a cancelled request
         cannot leave the fresh token unmanaged.
         """
-        self._remember_session(slot)
+        if resume_existing_session:
+            self._remember_session(slot)
+        else:
+            self._forget_session(
+                slot.username,
+                slot.scope_kind,
+                slot.project_id,
+                slot.agent_profile,
+                slot.canvas_id,
+            )
         same_scope = self._scope_key(
             slot.scope_kind,
             slot.project_id,
             slot.agent_profile,
             slot.canvas_id,
         ) == self._scope_key(scope_kind, project_id, agent_profile, canvas_id)
-        resume_session_id = slot.thread.id if same_scope else None
+        resume_session_id = slot.thread.id if same_scope and resume_existing_session else None
         replacement = await self._spawn_locked(
             slot.username,
             model=model if model is not None else slot.model,
