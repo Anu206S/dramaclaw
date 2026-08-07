@@ -11,10 +11,14 @@ from novelvideo import config
 from novelvideo.api.routes import model_gateway
 from novelvideo.brainclaw_contract import (
     PROFILE_HEADER,
+    PROFILE_VARIANT_HEADER,
     PROFILE_VERSION,
     PROFILE_VERSION_HEADER,
+    RECIPE_PROFILE_VARIANT_VERSION,
     BrainClawProfile,
+    BrainClawProfileVariant,
     brainclaw_profile_scope,
+    builtin_text_recipe_profile_variant,
     merge_brainclaw_headers,
 )
 from novelvideo.model_gateway_settings import (
@@ -190,6 +194,74 @@ def test_recipe_text_generation_has_a_dedicated_declared_profile():
     )
 
 
+def test_builtin_text_recipe_builds_a_trusted_profile_variant():
+    variant = builtin_text_recipe_profile_variant(
+        {
+            "id": "general-text",
+            "output_kind": "text",
+            "_catalog_source": "builtin",
+        },
+        has_supplemental_recipes=False,
+    )
+
+    assert variant == BrainClawProfileVariant(
+        f"recipe/general-text@{RECIPE_PROFILE_VARIANT_VERSION}"
+    )
+
+
+@pytest.mark.parametrize(
+    "recipe,has_supplemental_recipes",
+    [
+        (
+            {
+                "id": "general-text",
+                "output_kind": "text",
+                "_catalog_source": "user",
+            },
+            False,
+        ),
+        (
+            {
+                "id": "general-text",
+                "output_kind": "text",
+                "_catalog_source": "builtin",
+            },
+            True,
+        ),
+        (
+            {
+                "id": "general-text",
+                "output_kind": "image",
+                "_catalog_source": "builtin",
+            },
+            False,
+        ),
+    ],
+)
+def test_untrusted_recipe_shapes_do_not_build_a_profile_variant(
+    recipe, has_supplemental_recipes
+):
+    assert (
+        builtin_text_recipe_profile_variant(
+            recipe,
+            has_supplemental_recipes=has_supplemental_recipes,
+        )
+        is None
+    )
+
+
+def test_recipe_variant_header_requires_recipe_text_profile():
+    with pytest.raises(ValueError, match="requires the Recipe text profile"):
+        merge_brainclaw_headers(
+            {},
+            BrainClawProfile.CONTENT_REWRITE,
+            profile_variant=BrainClawProfileVariant(
+                "recipe/general-text@1.0.0"
+            ),
+            brainclaw_active=True,
+        )
+
+
 def test_effective_text_defaults_force_brainclaw_for_mixed_mode(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     _configure_custom_media()
@@ -237,6 +309,35 @@ def test_brainclaw_factory_forces_model_and_central_profile_headers(
     assert captured["default_headers"] == {
         PROFILE_HEADER: "content_rewrite",
         PROFILE_VERSION_HEADER: PROFILE_VERSION,
+    }
+
+
+def test_brainclaw_factory_emits_trusted_recipe_variant_header(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    save_relayclaw_brainclaw_key(api_key="sk-relay-secret", activate=True)
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(
+        config,
+        "_newapi_text_openai_model",
+        lambda model_name, **kwargs: captured.update(model_name=model_name, **kwargs)
+        or "model",
+    )
+    result = config.get_newapi_text_pydantic_model(
+        "FREEZONE_RECIPE_COMPILER_MODEL",
+        "ignored-model",
+        brainclaw_profile=BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION,
+        brainclaw_profile_variant=BrainClawProfileVariant(
+            "recipe/general-text@1.0.0"
+        ),
+    )
+
+    assert result == "model"
+    assert captured["default_headers"] == {
+        PROFILE_HEADER: "freezone_recipe_text_generation",
+        PROFILE_VERSION_HEADER: PROFILE_VERSION,
+        PROFILE_VARIANT_HEADER: "recipe/general-text@1.0.0",
     }
 
 

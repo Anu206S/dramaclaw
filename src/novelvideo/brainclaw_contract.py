@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from contextlib import contextmanager
 from contextvars import ContextVar
+from dataclasses import dataclass
 from enum import StrEnum
+import re
 from typing import Iterator, Mapping
 
 
@@ -40,7 +42,17 @@ class BrainClawProfile(StrEnum):
 
 PROFILE_HEADER = "X-BrainClaw-Profile"
 PROFILE_VERSION_HEADER = "X-BrainClaw-Profile-Version"
+PROFILE_VARIANT_HEADER = "X-BrainClaw-Profile-Variant"
 PROFILE_VERSION = "1"
+RECIPE_PROFILE_VARIANT_VERSION = "1.0.0"
+_SAFE_RECIPE_ID = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+
+
+@dataclass(frozen=True)
+class BrainClawProfileVariant:
+    """A trusted fixed-task sub-key that callers cannot supply as raw text."""
+
+    value: str
 
 _profile_context: ContextVar[BrainClawProfile | None] = ContextVar(
     "brainclaw_profile",
@@ -71,9 +83,30 @@ def is_brainclaw_runtime() -> bool:
     return get_effective_llm_config().is_brainclaw
 
 
+def builtin_text_recipe_profile_variant(
+    recipe: Mapping[str, object],
+    *,
+    has_supplemental_recipes: bool,
+) -> BrainClawProfileVariant | None:
+    """Return the versioned routing key only for an untouched builtin text Recipe."""
+    if has_supplemental_recipes:
+        return None
+    if recipe.get("_catalog_source") != "builtin":
+        return None
+    if recipe.get("output_kind") != "text":
+        return None
+    recipe_id = str(recipe.get("id") or "").strip()
+    if not _SAFE_RECIPE_ID.fullmatch(recipe_id):
+        return None
+    return BrainClawProfileVariant(
+        f"recipe/{recipe_id}@{RECIPE_PROFILE_VARIANT_VERSION}"
+    )
+
+
 def brainclaw_profile_headers(
     profile: BrainClawProfile | None = None,
     *,
+    profile_variant: BrainClawProfileVariant | None = None,
     brainclaw_active: bool | None = None,
 ) -> dict[str, str]:
     selected = profile or current_brainclaw_profile()
@@ -82,16 +115,22 @@ def brainclaw_profile_headers(
     active = is_brainclaw_runtime() if brainclaw_active is None else brainclaw_active
     if not active:
         return {}
-    return {
+    headers = {
         PROFILE_HEADER: selected.value,
         PROFILE_VERSION_HEADER: PROFILE_VERSION,
     }
+    if profile_variant is not None:
+        if selected is not BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION:
+            raise ValueError("BrainClaw Profile Variant requires the Recipe text profile")
+        headers[PROFILE_VARIANT_HEADER] = profile_variant.value
+    return headers
 
 
 def merge_brainclaw_headers(
     headers: Mapping[str, str] | None,
     profile: BrainClawProfile | None = None,
     *,
+    profile_variant: BrainClawProfileVariant | None = None,
     brainclaw_active: bool | None = None,
 ) -> dict[str, str]:
     """Preserve caller headers and add the centrally-defined profile contract."""
@@ -99,6 +138,7 @@ def merge_brainclaw_headers(
     merged.update(
         brainclaw_profile_headers(
             profile,
+            profile_variant=profile_variant,
             brainclaw_active=brainclaw_active,
         )
     )

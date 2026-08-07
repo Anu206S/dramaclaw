@@ -273,6 +273,7 @@ def get_newapi_text_pydantic_model(
     model_name_override: str | None = None,
     timeout_seconds_override: float | None = None,
     brainclaw_profile=None,
+    brainclaw_profile_variant=None,
 ):
     """Create a PydanticAI OpenAI-compatible model that routes through newAPI."""
     from novelvideo.brainclaw_contract import brainclaw_profile_headers
@@ -303,6 +304,7 @@ def get_newapi_text_pydantic_model(
         profile=_get_newapi_text_model_profile(model_name),
         default_headers=brainclaw_profile_headers(
             brainclaw_profile,
+            profile_variant=brainclaw_profile_variant,
             brainclaw_active=llm_config.is_brainclaw,
         ),
     )
