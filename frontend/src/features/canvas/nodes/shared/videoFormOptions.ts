@@ -130,3 +130,18 @@ export interface ReferenceMediaCapEntry {
   /** 是否在当前模式的引用上限内；表里没有的模式默认 true。 */
   withinCap: boolean;
 }
+
+const REFERENCE_MEDIA_KIND_LABEL: Record<ReferenceMediaItem["kind"], string> = {
+  image: "图片",
+  video: "视频",
+  audio: "音频",
+};
+
+export function formatReferenceMediaCompilerLabel(entry: ReferenceMediaCapEntry): string {
+  const { item, typeIndex } = entry;
+  const title =
+    typeof item.displayName === "string" && item.displayName.trim().length > 0
+      ? item.displayName.trim()
+      : item.nodeId;
+  return `${REFERENCE_MEDIA_KIND_LABEL[item.kind]}${typeIndex}：${title}`;
+}
