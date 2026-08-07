@@ -9,6 +9,7 @@ from typing import Any
 
 import httpx
 
+from novelvideo.ffmpeg_runtime import ffprobe_executable
 from novelvideo.ports import get_usage_meter
 from novelvideo.shared.billing_errors import is_insufficient_credits_error
 from novelvideo.generators.tts_generator import TTSResult
@@ -75,7 +76,7 @@ async def _audio_duration_seconds(audio_path: Path) -> float:
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe_executable(),
                 "-v",
                 "error",
                 "-show_entries",

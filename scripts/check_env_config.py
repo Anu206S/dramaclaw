@@ -84,7 +84,7 @@ COMMON_REVERSE_ENV_ALLOWLIST: tuple[tuple[re.Pattern[str], str], ...] = (
     ),
     (
         re.compile(
-            r"^(?:FAL_KEY|REDIS_URL|FFMPEG_PATH|LOGFIRE_TOKEN|"
+            r"^(?:FAL_KEY|REDIS_URL|LOGFIRE_TOKEN|"
             r"OTEL_EXPORTER_OTLP_TRACES_ENDPOINT|ENABLE_BACKEND_ACCESS_CONTROL)$"
         ),
         "Third-party/runtime integration env, not part of the curated operator template.",

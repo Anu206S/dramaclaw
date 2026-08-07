@@ -7,6 +7,8 @@ import math
 import subprocess
 from collections.abc import Iterable
 
+from novelvideo.ffmpeg_runtime import ffprobe_executable
+
 
 async def probe_video_duration_seconds(path: str) -> float:
     """Read one input video's real duration with ffprobe.
@@ -18,7 +20,7 @@ async def probe_video_duration_seconds(path: str) -> float:
     def _probe() -> float:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe_executable(),
                 "-v",
                 "error",
                 "-show_entries",

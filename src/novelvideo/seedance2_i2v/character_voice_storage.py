@@ -12,11 +12,17 @@ import binascii
 import hashlib
 import json
 import re
-import shutil
 import subprocess
 import tempfile
 from datetime import datetime, timezone
 from pathlib import Path
+
+from novelvideo.ffmpeg_runtime import (
+    ffmpeg_available,
+    ffmpeg_executable,
+    ffprobe_available,
+    ffprobe_executable,
+)
 
 VOICE_SAMPLE_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
 DEFAULT_SLOT = "default"
@@ -62,12 +68,12 @@ def decode_recorded_audio_data_url(data_url: str) -> tuple[bytes, str]:
 
 def _transcode_to_mp3(content: bytes) -> bytes:
     """Pipe *content* through ffmpeg and return mp3 bytes."""
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         raise ValueError("系统未安装 ffmpeg，无法转码录音为 mp3")
     try:
         result = subprocess.run(
             [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-hide_banner",
                 "-loglevel",
                 "error",
@@ -107,12 +113,12 @@ PROBE_DURATION_TIMEOUT_SECONDS = 20.0
 def probe_voice_sample_duration_seconds(path: str | Path) -> float:
     """Return audio duration in seconds using ffprobe."""
 
-    if not shutil.which("ffprobe"):
+    if not ffprobe_available():
         raise ValueError("系统未安装 ffprobe，无法读取音频时长")
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe_executable(),
                 "-v",
                 "error",
                 "-show_entries",
@@ -156,7 +162,7 @@ def trim_voice_sample_content(
         raise ValueError("音频内容为空")
     if not is_supported_voice_sample(filename):
         raise ValueError("仅支持 mp3 / wav / m4a / aac / ogg")
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         raise ValueError("系统未安装 ffmpeg，无法裁剪声线")
     try:
         start = max(0.0, float(start_seconds))
@@ -176,7 +182,7 @@ def trim_voice_sample_content(
         try:
             subprocess.run(
                 [
-                    "ffmpeg",
+                    ffmpeg_executable(),
                     "-y",
                     "-hide_banner",
                     "-loglevel",

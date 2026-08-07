@@ -87,6 +87,7 @@ from novelvideo.config import (
     infer_image_generation_selection,
 )
 from novelvideo.director_world import DirectorWorldService
+from novelvideo.ffmpeg_runtime import ffmpeg_executable
 from novelvideo.director_world.staging_prop_ai import generate_ai_staging_prop
 from novelvideo.freezone import canvas_store
 from novelvideo.media_model_request_schema import (
@@ -2343,7 +2344,7 @@ async def _enqueue_or_start_freezone_media_job(
     ],
     job_id: str,
     payload: dict,
-    queue_kind: str = "ffmpeg",
+    queue_kind: str = ffmpeg_executable(),
 ) -> dict:
     if ctx is not None:
         queued = await get_task_backend().enqueue_project_task(

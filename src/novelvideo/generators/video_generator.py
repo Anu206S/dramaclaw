@@ -22,6 +22,7 @@ import aiohttp
 import websockets
 from dotenv import load_dotenv
 
+from novelvideo.ffmpeg_runtime import ffmpeg_executable
 from novelvideo.ports import get_usage_meter
 from novelvideo.video_request_usage import (
     record_video_request,
@@ -254,7 +255,7 @@ class MockVideoGenerator(VideoGeneratorBase):
             )
 
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-loop",
                 "1",

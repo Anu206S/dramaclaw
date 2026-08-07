@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Any
 
 from novelvideo.config import INDEXTTS2_RECORD_MODEL, OUTPUT_DIR
+from novelvideo.ffmpeg_runtime import ffprobe_executable
 from novelvideo.generators.indextts2_fal import IndexTTS2FalClient
 from novelvideo.project_config import (
     load_effective_narration_style_for_voice,
@@ -262,7 +263,7 @@ def _duration_ms(audio_path: Path) -> int:
     try:
         result = subprocess.run(
             [
-                "ffprobe",
+                ffprobe_executable(),
                 "-v",
                 "error",
                 "-show_entries",

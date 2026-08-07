@@ -6,6 +6,11 @@ import asyncio
 from pathlib import Path
 from typing import Any
 
+from novelvideo.ffmpeg_runtime import (
+    ensure_ffmpeg_ready,
+    ffmpeg_executable,
+    ffprobe_executable,
+)
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import (
     TaskTimedOut,
@@ -263,7 +268,7 @@ def _audio_duration(audio_path: Path, *, timeout_seconds: int | None = 30) -> fl
     try:
         result = run_project_subprocess(
             [
-                "ffprobe",
+                ffprobe_executable(),
                 "-v",
                 "error",
                 "-show_entries",
@@ -292,7 +297,7 @@ def _video_has_audio_stream(video_path: Path, *, timeout_seconds: int | None = 3
     try:
         result = run_project_subprocess(
             [
-                "ffprobe",
+                ffprobe_executable(),
                 "-v",
                 "error",
                 "-select_streams",
@@ -431,6 +436,11 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
 
     from novelvideo.utils.path_resolver import PathResolver
 
+    # 先于任何 ffmpeg 调用做预检：缺二进制时 Popen 只会抛出裸的
+    # `[WinError 2] 系统找不到指定的文件。`，既不说缺什么也不说该怎么办，
+    # 而这条路径恰好是本地部署用户最先撞上的地方（合成剧集）。
+    ensure_ffmpeg_ready()
+
     payload = envelope.get("payload") or {}
     episode = int(envelope.get("episode") or payload.get("episode") or 0)
     output_dir = str(payload.get("output_dir") or ctx.output_dir)
@@ -490,7 +500,7 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
                 progress=index / max(1, len(beats)),
                 current_task=f"合成 Beat {beat_num}...",
             )
-            cmd = ["ffmpeg", "-y", "-i", str(video_path)]
+            cmd = [ffmpeg_executable(), "-y", "-i", str(video_path)]
             has_embedded_audio = False
             if audio_path.exists():
                 cmd.extend(["-i", str(audio_path)])
@@ -598,7 +608,7 @@ def run_compose_episode(envelope: dict[str, Any], ctx: ProjectContext) -> dict[s
             raise RuntimeError("没有可用的视频片段")
 
         check_cancel()
-        cmd = ["ffmpeg", "-y"]
+        cmd = [ffmpeg_executable(), "-y"]
         for clip in video_clips:
             cmd.extend(["-i", clip])
         filter_parts = []

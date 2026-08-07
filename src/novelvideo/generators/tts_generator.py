@@ -12,6 +12,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from novelvideo.config import get_tts_config
+from novelvideo.ffmpeg_runtime import ffmpeg_executable, ffprobe_executable
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut
 from novelvideo.task_backend.subprocesses import run_project_subprocess
 
@@ -186,7 +187,7 @@ class EdgeTTSGenerator:
         try:
             result = run_project_subprocess(
                 [
-                    "ffprobe",
+                    ffprobe_executable(),
                     "-v",
                     "error",
                     "-show_entries",
@@ -439,7 +440,7 @@ class CosyVoiceTTSGenerator:
         try:
             result = run_project_subprocess(
                 [
-                    "ffprobe",
+                    ffprobe_executable(),
                     "-v",
                     "error",
                     "-show_entries",
@@ -513,7 +514,7 @@ class MockTTSGenerator:
 
                 run_project_subprocess(
                     [
-                        "ffmpeg",
+                        ffmpeg_executable(),
                         "-y",
                         "-f",
                         "lavfi",

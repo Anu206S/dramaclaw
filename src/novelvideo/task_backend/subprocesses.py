@@ -13,6 +13,7 @@ import time
 from collections.abc import Iterator, Sequence
 from typing import Any
 
+from novelvideo.ffmpeg_runtime import missing_executable_error
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut, is_cancel_requested
 
 _TASK_PROCESS_SCOPE: contextvars.ContextVar[dict[str, Any] | None] = contextvars.ContextVar(
@@ -229,15 +230,24 @@ def run_project_subprocess(
 
     stdout = subprocess.PIPE if capture_output else None
     stderr = subprocess.PIPE if capture_output else None
-    proc = subprocess.Popen(
-        list(args),
-        cwd=cwd,
-        env=env,
-        stdout=stdout,
-        stderr=stderr,
-        text=text,
-        start_new_session=True,
-    )
+    argv = list(args)
+    try:
+        proc = subprocess.Popen(
+            argv,
+            cwd=cwd,
+            env=env,
+            stdout=stdout,
+            stderr=stderr,
+            text=text,
+            start_new_session=True,
+        )
+    except FileNotFoundError as exc:
+        # Popen 找不到可执行文件时抛的是裸错误：Windows 上是
+        # `[WinError 2] 系统找不到指定的文件。`，POSIX 上是
+        # `[Errno 2] No such file or directory`。两者都不说缺的是什么、
+        # 更不说该怎么办，直接冒到任务详情页就是一句天书。
+        # 这里是所有项目子进程的必经之路，翻译一次即可覆盖全部调用点。
+        raise missing_executable_error(argv[0] if argv else "") from exc
     _register_process(task_id, proc)
     try:
         while True:

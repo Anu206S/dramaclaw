@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
+from novelvideo.ffmpeg_runtime import ffprobe_executable
 from novelvideo.utils.async_ops import call_blocking
 
 
@@ -12,7 +13,7 @@ def get_audio_duration(audio_path: str) -> float:
     import subprocess
 
     cmd = [
-        "ffprobe",
+        ffprobe_executable(),
         "-v",
         "error",
         "-show_entries",

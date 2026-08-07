@@ -689,6 +689,12 @@ def get_fish_voice_id(age_group: str, gender: str) -> str:
 # =============================================================================
 
 FFMPEG_PATH = os.environ.get("FFMPEG_PATH", "ffmpeg")
+"""历史常量，保留供既有引用使用。
+
+新代码请改用 :func:`novelvideo.ffmpeg_runtime.ffmpeg_executable`：这里是
+import 时定格的快照，运行期再改环境变量不会反映到这个值上。
+"""
+
 VIDEO_FPS = int(os.environ.get("VIDEO_FPS", "30"))
 VIDEO_WIDTH = int(os.environ.get("VIDEO_WIDTH", "1080"))
 VIDEO_HEIGHT = int(os.environ.get("VIDEO_HEIGHT", "1920"))
@@ -790,8 +796,12 @@ def get_video_generation_config() -> dict:
 
 def get_video_config() -> dict:
     """获取视频配置。"""
+    from novelvideo.ffmpeg_runtime import ffmpeg_executable
+
     return {
-        "ffmpeg_path": FFMPEG_PATH,
+        # 走 resolver 而不是上面的模块常量：配置面板展示的必须是**真正会被执行**的
+        # 那个路径，否则用户照着排查会被误导。
+        "ffmpeg_path": ffmpeg_executable(),
         "fps": VIDEO_FPS,
         "width": VIDEO_WIDTH,
         "height": VIDEO_HEIGHT,

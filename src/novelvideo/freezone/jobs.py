@@ -27,6 +27,12 @@ from typing import Any, Optional
 import numpy as np
 from PIL import Image
 
+from novelvideo.ffmpeg_runtime import (
+    ffmpeg_available,
+    ffmpeg_executable,
+    ffprobe_available,
+    ffprobe_executable,
+)
 from novelvideo.freezone.paths import output_path_for_job, outputs_dir
 
 logger = logging.getLogger(__name__)
@@ -355,7 +361,7 @@ async def run_freezone_video_upscale(
     """Basic ffmpeg video enhancement: scale, denoise, sharpen, preserve audio."""
     if frame_interpolation != "none":
         raise ValueError("basic video upscale only supports frame_interpolation='none'")
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         raise RuntimeError("ffmpeg not found on PATH; install via brew/apt")
 
     src = Path(source_path)
@@ -366,7 +372,7 @@ async def run_freezone_video_upscale(
     out.parent.mkdir(parents=True, exist_ok=True)
     vf = _video_upscale_filter(resolution, denoise_strength)
     cmd = [
-        "ffmpeg",
+        ffmpeg_executable(),
         "-y",
         "-i",
         str(src),
@@ -394,7 +400,7 @@ async def run_freezone_video_upscale(
     if proc.returncode != 0:
         raise RuntimeError(f"ffmpeg video upscale failed: {proc.stderr[-1000:]}")
     meta = {
-        "backend": "ffmpeg",
+        "backend": ffmpeg_executable(),
         "resolution": resolution,
         "frame_interpolation": frame_interpolation,
         "denoise_strength": denoise_strength,
@@ -420,7 +426,7 @@ async def _probe_has_audio(source_path: str) -> bool:
     proc = await asyncio.to_thread(
         subprocess.run,
         [
-            "ffprobe",
+            ffprobe_executable(),
             "-v",
             "error",
             "-select_streams",
@@ -449,7 +455,7 @@ async def _render_gap_clip(
 ) -> None:
     await _run_cmd(
         [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-f",
             "lavfi",
@@ -501,7 +507,7 @@ async def _render_video_clip(
 
     if has_audio:
         cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-ss",
             f"{source_start:.3f}",
@@ -531,7 +537,7 @@ async def _render_video_clip(
         ]
     else:
         cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-ss",
             f"{source_start:.3f}",
@@ -581,7 +587,7 @@ async def _render_audio_clip(
 ) -> None:
     await _run_cmd(
         [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-ss",
             f"{source_start:.3f}",
@@ -612,7 +618,7 @@ async def _concat_media_segments(segment_paths: list[Path], output_path: Path) -
     try:
         await _run_cmd(
             [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-f",
                 "concat",
@@ -674,7 +680,7 @@ async def _mix_audio_tracks(
         shutil.move(str(base_video_path), str(final_output_path))
         return
 
-    cmd = ["ffmpeg", "-y", "-i", str(base_video_path)]
+    cmd = [ffmpeg_executable(), "-y", "-i", str(base_video_path)]
     filter_parts: list[str] = []
     labels = ["[0:a]"]
     for idx, (audio_path, timeline_start) in enumerate(audio_inputs, start=1):
@@ -724,9 +730,9 @@ async def run_freezone_video_compose(
     """Compose a minimal timeline JSON into a final mp4."""
     del title, canvas_id
 
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         raise RuntimeError("ffmpeg not found on PATH; install via brew/apt")
-    if not shutil.which("ffprobe"):
+    if not ffprobe_available():
         raise RuntimeError("ffprobe not found on PATH; install via brew/apt")
 
     width, height = FREEZONE_VIDEO_RESOLUTION_MAP.get(
@@ -822,7 +828,7 @@ async def _probe_video_size(source_path: str) -> tuple[int, int]:
     proc = await asyncio.to_thread(
         subprocess.run,
         [
-            "ffprobe",
+            ffprobe_executable(),
             "-v",
             "error",
             "-select_streams",
@@ -851,7 +857,7 @@ async def _probe_video_duration(source_path: str) -> float:
     proc = await asyncio.to_thread(
         subprocess.run,
         [
-            "ffprobe",
+            ffprobe_executable(),
             "-v",
             "error",
             "-show_entries",
@@ -944,7 +950,7 @@ async def _extract_sample_frames(video_path: str, temp_dir: Path, count: int = 6
         output_path = temp_dir / f"sample_{index:02d}.png"
         await _run_cmd(
             [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-ss",
                 f"{ts:.3f}",
@@ -1005,7 +1011,7 @@ async def _render_delogo_video(
 ) -> None:
     await _run_cmd(
         [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-i",
             source_path,
@@ -1039,9 +1045,9 @@ async def run_freezone_video_erase(
 
     Current MVP uses ffmpeg `delogo`, which is stable and fast for fixed overlay regions.
     """
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         raise RuntimeError("ffmpeg not found on PATH; install via brew/apt")
-    if not shutil.which("ffprobe"):
+    if not ffprobe_available():
         raise RuntimeError("ffprobe not found on PATH; install via brew/apt")
 
     output_dir = outputs_dir(project_dir, "freezone_video_erase")
@@ -1086,9 +1092,9 @@ async def run_freezone_audio_separate(
     source_path: str,
 ) -> dict[str, Path | None]:
     """Split a video into extracted audio and muted video using ffmpeg only."""
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         raise RuntimeError("ffmpeg not found on PATH; install via brew/apt")
-    if not shutil.which("ffprobe"):
+    if not ffprobe_available():
         raise RuntimeError("ffprobe not found on PATH; install via brew/apt")
 
     output_dir = outputs_dir(project_dir, "freezone_audio_separate")
@@ -1100,7 +1106,7 @@ async def run_freezone_audio_separate(
     if has_audio:
         await _run_cmd(
             [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i",
                 source_path,
@@ -1115,7 +1121,7 @@ async def run_freezone_audio_separate(
 
     await _run_cmd(
         [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-i",
             source_path,
@@ -1288,13 +1294,12 @@ async def run_freezone_extract_frames(
     Returns absolute paths to the saved frame PNGs.
     """
     import asyncio
-    import shutil
     import subprocess
 
     out_dir = outputs_dir(project_dir, "freezone_extract") / job_id
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    if not shutil.which("ffmpeg"):
+    if not ffmpeg_available():
         raise RuntimeError("ffmpeg not found on PATH; install via brew/apt")
     if not video_path.exists():
         raise FileNotFoundError(f"video not found: {video_path}")
@@ -1302,7 +1307,7 @@ async def run_freezone_extract_frames(
     # Pass 1: scene detection extraction.
     pattern = str(out_dir / "scene_%03d.png")
     cmd = [
-        "ffmpeg",
+        ffmpeg_executable(),
         "-y",
         "-i",
         str(video_path),
@@ -1521,7 +1526,7 @@ async def _sample_evenly(video_path: Path, out_dir: Path, max_frames: int) -> li
     probe = await asyncio.to_thread(
         subprocess.run,
         [
-            "ffprobe",
+            ffprobe_executable(),
             "-v",
             "error",
             "-select_streams",
@@ -1547,7 +1552,7 @@ async def _sample_evenly(video_path: Path, out_dir: Path, max_frames: int) -> li
     n = min(max(3, max_frames // 2), max_frames)
     fps_expr = f"1/{max(1.0, duration / n)}"
     cmd = [
-        "ffmpeg",
+        ffmpeg_executable(),
         "-y",
         "-i",
         str(video_path),

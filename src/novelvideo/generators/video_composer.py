@@ -14,6 +14,7 @@ from typing import Optional
 from pydantic import BaseModel, Field
 
 from novelvideo.config import get_video_config
+from novelvideo.ffmpeg_runtime import ffmpeg_executable, ffprobe_executable
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut
 from novelvideo.task_backend.subprocesses import run_project_subprocess
 
@@ -279,7 +280,7 @@ class VideoComposer:
                 )
 
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-loop",
                 "1",
@@ -327,7 +328,7 @@ class VideoComposer:
             Path(text_file).write_text(normalize_video_title(title), encoding="utf-8")
 
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-f",
                 "lavfi",
@@ -379,7 +380,7 @@ class VideoComposer:
             Path(text_file).write_text("敬请期待下集", encoding="utf-8")
 
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-f",
                 "lavfi",
@@ -418,7 +419,7 @@ class VideoComposer:
 
     def _create_blank_card(self, duration: float, output_path: str) -> bool:
         cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-f",
             "lavfi",
@@ -460,7 +461,7 @@ class VideoComposer:
 
             try:
                 cmd = [
-                    "ffmpeg",
+                    ffmpeg_executable(),
                     "-y",
                     "-f",
                     "concat",
@@ -511,7 +512,7 @@ class VideoComposer:
                 subtitle_path = ass_path
 
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i",
                 video_path,
@@ -547,7 +548,7 @@ class VideoComposer:
         """将 VTT 转换为 ASS 格式。"""
         try:
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i",
                 vtt_path,
@@ -735,7 +736,7 @@ async def adjust_video_duration(
 
     # 获取源视频时长
     probe_cmd = [
-        "ffprobe",
+        ffprobe_executable(),
         "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
@@ -760,7 +761,7 @@ async def adjust_video_duration(
         # 目标较短：裁剪末尾
         print(f"[adjust_video_duration] 裁剪视频: {source_duration:.2f}s -> {target_duration:.2f}s")
         cmd = [
-            "ffmpeg",
+            ffmpeg_executable(),
             "-y",
             "-i", video_path,
             "-t", str(target_duration),
@@ -779,7 +780,7 @@ async def adjust_video_duration(
             speed_factor = 1 / stretch_ratio  # 0.5 = 慢 2 倍
             print(f"[adjust_video_duration] 变速拉伸: {speed_factor:.2f}x 速度")
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i", video_path,
                 "-filter_complex",
@@ -799,7 +800,7 @@ async def adjust_video_duration(
             # 使用 tpad 滤镜冻结最后一帧
             freeze_frames = int(freeze_duration * 30)  # 假设 30fps
             cmd = [
-                "ffmpeg",
+                ffmpeg_executable(),
                 "-y",
                 "-i", video_path,
                 "-vf", f"tpad=stop_mode=clone:stop_duration={freeze_duration}",
@@ -835,7 +836,7 @@ def get_video_duration(video_path: str) -> float:
         时长（秒）
     """
     cmd = [
-        "ffprobe",
+        ffprobe_executable(),
         "-v", "error",
         "-show_entries", "format=duration",
         "-of", "default=noprint_wrappers=1:nokey=1",
