@@ -2861,7 +2861,7 @@ function defaultComfyMediaModelConfig(model: string): MediaModelEntry {
     referenceCapabilities.referenceVideoMax = 3;
     referenceCapabilities.referenceAudioMax = 3;
   } else if (/(^|[_-])i2v($|[_-])/.test(normalized)) {
-    supportedModes = ["image_reference"];
+    supportedModes = ["image_to_video", "image_reference"];
     ratioOptions = ["16:9", "1:1"];
     referenceCapabilities.referenceImageMax = 1;
     referenceCapabilities.humanReview = true;
@@ -3718,6 +3718,25 @@ function LocalMediaModelEditor({
                 min={0}
                 onChange={(value) => setCapability("referenceAudioMax", value)}
               />
+              {[
+                "referenceAudioMinSeconds",
+                "referenceAudioMaxSeconds",
+                "referenceAudioTotalMinSeconds",
+                "referenceAudioTotalMaxSeconds",
+                "referenceVideoMinSeconds",
+                "referenceVideoMaxSeconds",
+                "referenceVideoTotalMinSeconds",
+                "referenceVideoTotalMaxSeconds",
+              ].map((field) => (
+                <CatalogNumberField
+                  key={field}
+                  label={t(`settings.modelConfig.mediaModels.${field}`)}
+                  value={parsedConfig?.[field]}
+                  min={0.1}
+                  step={0.1}
+                  onChange={(value) => setCapability(field, value)}
+                />
+              ))}
               <label className="flex items-center gap-2 text-xs text-foreground">
                 <input
                   type="checkbox"
@@ -3737,6 +3756,7 @@ function LocalMediaModelEditor({
                     ["text_to_video", "文生视频"],
                     ["first_frame", "首帧"],
                     ["first_last_frame", "首尾帧"],
+                    ["image_to_video", "图生视频"],
                     ["image_reference", "图片参考"],
                     ["all_reference", "全能参考"],
                     ["video_edit", "视频编辑"],
@@ -3921,11 +3941,13 @@ function CatalogNumberField({
   label,
   value,
   min = 1,
+  step = 1,
   onChange,
 }: {
   label: string;
   value: unknown;
   min?: number;
+  step?: number;
   onChange: (value: number | undefined) => void;
 }) {
   return (
@@ -3936,6 +3958,7 @@ function CatalogNumberField({
       <Input
         type="number"
         min={min}
+        step={step}
         value={typeof value === "number" ? value : ""}
         onChange={(event) =>
           onChange(event.target.value ? Number(event.target.value) : undefined)
