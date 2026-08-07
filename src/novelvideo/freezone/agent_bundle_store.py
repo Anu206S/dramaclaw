@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
 from importlib.metadata import PackageNotFoundError, version
 from typing import Any
 
@@ -44,10 +45,12 @@ def install_agent_bundle(*, username: str, payload: dict[str, Any]) -> dict[str,
         **_bundle_metadata_for_storage(validated),
     }
     recipes = list(validated["recipes"])
-    _ensure_no_existing_ids(username, skill, recipes)
+    _ensure_no_existing_skill_id(username, skill)
+    resolved_recipes = _resolve_bundle_recipes(username=username, skill=skill, recipes=recipes)
+    skill = resolved_recipes["skill"]
 
     saved_recipes: list[str] = []
-    for recipe in recipes:
+    for recipe in resolved_recipes["recipes_to_install"]:
         saved = save_user_agent_config_item(username=username, kind="recipes", payload=recipe)
         saved_recipes.append(str(saved["id"]))
     saved_skill = save_user_agent_config_item(username=username, kind="skills", payload=skill)
@@ -55,6 +58,7 @@ def install_agent_bundle(*, username: str, payload: dict[str, Any]) -> dict[str,
         "bundle_id": validated["id"],
         "installed_skill": str(saved_skill["id"]),
         "installed_recipes": saved_recipes,
+        "reused_recipes": resolved_recipes["reused_recipes"],
     }
 
 
@@ -98,19 +102,88 @@ def _ensure_minimum_dramaclaw_version(bundle: dict[str, Any]) -> None:
         raise ValueError(f"Bundle requires DramaClaw >= {minimum}; current version is {current}")
 
 
-def _ensure_no_existing_ids(username: str, skill: dict[str, Any], recipes: list[dict[str, Any]]) -> None:
+def _ensure_no_existing_skill_id(username: str, skill: dict[str, Any]) -> None:
     existing_skills = {str(item["id"]) for item in list_user_agent_config_items(username, "skills")}
-    existing_recipes = {str(item["id"]) for item in list_user_agent_config_items(username, "recipes")}
-    conflicts: list[str] = []
     skill_id = str(skill["id"])
     if skill_id in existing_skills:
-        conflicts.append(f"skills/{skill_id}")
+        raise ValueError(f"Bundle item already exists: skills/{skill_id}")
+
+
+def _resolve_bundle_recipes(
+    *,
+    username: str,
+    skill: dict[str, Any],
+    recipes: list[dict[str, Any]],
+) -> dict[str, Any]:
+    skill_id = str(skill["id"])
+    existing_recipes = {
+        str(item["id"]): item for item in list_user_agent_config_items(username, "recipes")
+    }
+    reserved_recipes = dict(existing_recipes)
+    recipes_to_install: list[dict[str, Any]] = []
+    reused_recipes: list[str] = []
+    recipe_id_map: dict[str, str] = {}
+
     for recipe in recipes:
-        recipe_id = str(recipe["id"])
-        if recipe_id in existing_recipes:
-            conflicts.append(f"recipes/{recipe_id}")
-    if conflicts:
-        raise ValueError(f"Bundle item already exists: {', '.join(conflicts)}")
+        original_id = str(recipe["id"])
+        resolved_id = _resolve_recipe_install_id(
+            skill_id=skill_id,
+            recipe=recipe,
+            existing_recipes=reserved_recipes,
+        )
+        recipe_id_map[original_id] = resolved_id
+        if resolved_id in existing_recipes:
+            reused_recipes.append(resolved_id)
+            continue
+        install_recipe = deepcopy(recipe)
+        install_recipe["id"] = resolved_id
+        recipes_to_install.append(install_recipe)
+        reserved_recipes[resolved_id] = install_recipe
+
+    resolved_skill = deepcopy(skill)
+    resolved_skill["allowed_recipe_ids"] = [
+        recipe_id_map.get(str(recipe_id), str(recipe_id))
+        for recipe_id in resolved_skill.get("allowed_recipe_ids") or []
+    ]
+    return {
+        "skill": resolved_skill,
+        "recipes_to_install": recipes_to_install,
+        "reused_recipes": reused_recipes,
+    }
+
+
+def _resolve_recipe_install_id(
+    *,
+    skill_id: str,
+    recipe: dict[str, Any],
+    existing_recipes: dict[str, dict[str, Any]],
+) -> str:
+    original_id = str(recipe["id"])
+    original_recipe = existing_recipes.get(original_id)
+    if original_recipe is None or _same_recipe_content(original_recipe, recipe):
+        return original_id
+
+    renamed_base = f"{original_id}--{skill_id}"
+    candidate = renamed_base
+    suffix = 2
+    while True:
+        existing_recipe = existing_recipes.get(candidate)
+        if existing_recipe is None or _same_recipe_content(existing_recipe, recipe):
+            return candidate
+        candidate = f"{renamed_base}-{suffix}"
+        suffix += 1
+
+
+def _same_recipe_content(left: dict[str, Any], right: dict[str, Any]) -> bool:
+    left_content = _recipe_content_for_compare(left)
+    right_content = _recipe_content_for_compare(right)
+    return left_content == right_content
+
+
+def _recipe_content_for_compare(payload: dict[str, Any]) -> dict[str, Any]:
+    content = _strip_catalog_metadata(payload)
+    content.pop("id", None)
+    return content
 
 
 def _find_existing_item(username: str, kind: str, item_id: str) -> dict[str, Any]:
