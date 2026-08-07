@@ -127,6 +127,7 @@ export async function submitTextToVideo(
     try {
       const ref = await submitFreezoneVideoGen(projectId, {
         prompt: promptText,
+        genMode: "textToVideo",
         aspectRatio,
         resolution: qualityToResolution(quality),
         durationSeconds: durationSec,
