@@ -66,6 +66,12 @@ vi.mock("@/lib/queries/freezone-agent-config", () => ({
 
 vi.mock("@/lib/queries/model-gateway", () => ({
   useModelGatewayConfig: () => ({ data: undefined, isLoading: false }),
+  useOfficialMediaCatalogStatus: () => ({ data: undefined, isLoading: false }),
+  useSaveOfficialMediaCatalogPreferences: () => ({
+    mutateAsync: vi.fn(),
+    isPending: false,
+  }),
+  useCheckOfficialMediaCatalog: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useNewApiChannelTypes: () => ({ data: undefined, isLoading: false }),
   useEnableOfficial: () => ({ mutateAsync: vi.fn(), isPending: false }),
   useEnableCustom: () => ({ mutateAsync: vi.fn(), isPending: false }),
