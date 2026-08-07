@@ -108,7 +108,9 @@ describe('videoUpscale application（高清结果节点 + 提交编排）', () =
       canvasId: 'canvas-1',
       nodeId: upscaleId,
     });
-    expect(awaitTaskCompletion).toHaveBeenCalledWith('tk-up', 'proj-1');
+    expect(awaitTaskCompletion).toHaveBeenCalledWith('tk-up', 'proj-1', {
+      taskType: 'freezone_video_upscale',
+    });
     expect(fetchFreezoneJobResult).toHaveBeenCalledWith(
       'proj-1',
       'freezone_video_upscale',
