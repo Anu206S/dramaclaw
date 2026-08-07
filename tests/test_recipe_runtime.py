@@ -7,7 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from novelvideo.brainclaw_contract import BrainClawProfile
+from novelvideo.brainclaw_contract import (
+    BrainClawProfile,
+    BrainClawProfileVariant,
+)
 from novelvideo.freezone import recipe_runtime
 from novelvideo.freezone.agent_catalog_schema import validate_agent_recipe_config
 
@@ -531,8 +534,10 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
         "get_recipe_for_runtime",
         lambda **_kwargs: {
             "id": "ecommerce-text-plan",
+            "version": "1.0.0",
             "output_kind": "text",
             "system_prompt": "生成三屏详情页方案",
+            "_catalog_source": "builtin",
         },
     )
 
@@ -562,3 +567,46 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
     assert captured["brainclaw_profile"] is (
         BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION
     )
+    assert captured["brainclaw_profile_variant"] == BrainClawProfileVariant(
+        "recipe/ecommerce-text-plan@1.0.0"
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_recipe_text_omits_variant_for_user_recipe(monkeypatch):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        recipe_runtime,
+        "get_recipe_for_runtime",
+        lambda **_kwargs: {
+            "id": "private-recipe",
+            "version": "1.0.0",
+            "output_kind": "text",
+            "system_prompt": "生成正文",
+            "_catalog_source": "user",
+        },
+    )
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, _task):
+            return SimpleNamespace(output="正文")
+
+    monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        "novelvideo.config.get_newapi_text_pydantic_model",
+        lambda *_args, **kwargs: captured.update(kwargs) or object(),
+    )
+
+    assert (
+        await recipe_runtime.generate_recipe_text(
+            username="local",
+            recipe_id="private-recipe",
+            node_kind="text",
+            node_prompt="写作",
+        )
+        == "正文"
+    )
+    assert captured["brainclaw_profile_variant"] is None
