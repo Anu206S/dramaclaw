@@ -44,5 +44,11 @@ describe("canvas video generation credit contract", () => {
     expect(nodeSource).toContain(
       "isGenerating ||\n    videoBillingRuleMissing ||",
     );
+    expect(nodeSource).toContain(
+      "视频生成未启动",
+    );
+    expect(nodeSource).toContain(
+      "generationError: billingRuleMissingSubmitMessage",
+    );
   });
 });
