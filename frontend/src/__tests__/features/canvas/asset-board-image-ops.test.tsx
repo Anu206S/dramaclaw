@@ -34,6 +34,7 @@ vi.mock('@/lib/queries/generation-credit-cost', () => ({
 }));
 // 模型清单同样走网络，给一个确定的首选模型。
 vi.mock('@/features/canvas/hooks/useFreezoneImageModels', () => ({
+  isAuthoritativeEmptyCatalog: () => false,
   useFreezoneImageModels: () => ({
     models: [{ id: 'huimeng/gpt-image-2', apiModel: 'gpt-image-2', label: 'GPT Image 2' }],
   }),

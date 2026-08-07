@@ -18,26 +18,26 @@ describe('useEstimatedProgress', () => {
     expect(result.current).toBe(0);
   });
 
-  it('按 elapsed/duration 线性推进，120ms 轮询刷新', () => {
+  it('按 elapsed/duration 指数饱和推进，120ms 轮询刷新', () => {
     const startedAt = Date.now();
     const { result } = renderHook(() => useEstimatedProgress(startedAt, 10_000));
     expect(result.current).toBe(0);
 
-    // 10s 预估时长，推进 2s → 20%。2000ms 是 120 的非整数倍，最后一拍落在
-    // 1920ms（16 拍），19.2% 四舍五入仍是 19%——用这个来同时验证轮询节奏与算法。
+    // 10s 预估时长，推进 2s。2000ms 是 120 的非整数倍，最后一拍落在
+    // 1920ms（16 拍），指数饱和估算为 23%——用这个同时验证轮询节奏与算法。
     act(() => {
       vi.advanceTimersByTime(2000);
     });
-    expect(result.current).toBe(19);
+    expect(result.current).toBe(23);
   });
 
-  it('封顶 96%：即使远超预估时长也不会到 100%（真正完成由调用方 isGenerating 触发）', () => {
+  it('封顶 99%：即使远超预估时长也不会到 100%（真正完成由调用方 isGenerating 触发）', () => {
     const startedAt = Date.now();
     const { result } = renderHook(() => useEstimatedProgress(startedAt, 1_000));
     act(() => {
       vi.advanceTimersByTime(60_000);
     });
-    expect(result.current).toBe(96);
+    expect(result.current).toBe(99);
   });
 
   it('durationMs 钳到最短 1000ms（避免传入极小值时进度瞬间冲到封顶）', () => {
@@ -46,8 +46,8 @@ describe('useEstimatedProgress', () => {
     act(() => {
       vi.advanceTimersByTime(120);
     });
-    // duration 钳到 1000ms：120ms/1000ms=12%，而不是被 durationMs=10 撑到瞬间封顶。
-    expect(result.current).toBe(12);
+    // duration 钳到 1000ms：120ms 按指数饱和估算为 15%，而不是被 durationMs=10 撑到瞬间封顶。
+    expect(result.current).toBe(15);
   });
 
   it('卸载后清掉轮询定时器（不残留 setInterval）', () => {

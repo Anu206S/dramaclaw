@@ -112,11 +112,11 @@ describe('故事板生成中态：新节点进左列表 + 进度百分比', () =
 
       expect(screen.getByText('生成中 0%...')).toBeInTheDocument();
 
-      // 4s / 20s 预估 ≈ 20%（120ms 轮询节拍，最后一拍落在 3960ms → 19.8% 四舍五入 20%）。
+      // 4s / 20s 预估经指数饱和算法约为 24%（120ms 轮询节拍，最后一拍落在 3960ms）。
       act(() => {
         vi.advanceTimersByTime(4000);
       });
-      expect(screen.getByText('生成中 20%...')).toBeInTheDocument();
+      expect(screen.getByText('生成中 24%...')).toBeInTheDocument();
     } finally {
       vi.useRealTimers();
     }

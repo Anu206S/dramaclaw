@@ -1053,6 +1053,7 @@ frontend/src/features/canvas/nodes/shared/subtitleEraseBox.tsx,Elastic-2.0,2026 
 frontend/src/features/canvas/nodes/shared/useImageGenerationForm.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/nodes/shared/useImageOpFormProps.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/nodes/shared/useVideoGenerationForm.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+frontend/src/features/canvas/nodes/shared/videoFormOptions.test.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/nodes/shared/videoFormOptions.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/nodes/shared/videoModelCapabilities.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/features/canvas/nodes/skillNodeParameters.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
