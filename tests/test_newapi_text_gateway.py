@@ -1,6 +1,3 @@
-import pytest
-
-
 def test_identity_planner_uses_split_newapi_model_envs(monkeypatch):
     from novelvideo.agents.identity_planner import IdentityPlanner
     import novelvideo.agents.identity_planner as identity_planner
