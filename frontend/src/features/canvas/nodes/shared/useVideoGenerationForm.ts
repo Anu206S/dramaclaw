@@ -1294,6 +1294,7 @@ export function useVideoGenerationForm(
           submitFreezoneVideoKeyframes(projectId, {
             firstFrameUrl,
             lastFrameUrl,
+            genMode,
             prompt: composedPrompt,
             cameraTemplateId,
             aspectRatio: submitAspectRatio,
