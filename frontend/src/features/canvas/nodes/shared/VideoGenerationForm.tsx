@@ -1592,7 +1592,7 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
             popoverPlacement="top"
             getOptionDisabledReason={(model) =>
               videoModelReferenceDisabledReason(
-                model.apiModel ?? model.id,
+                model,
                 modelUpstreamCounts,
               )
             }
