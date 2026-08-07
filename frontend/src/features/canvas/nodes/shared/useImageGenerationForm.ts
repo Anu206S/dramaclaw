@@ -275,6 +275,12 @@ export function useImageGenerationForm(
   );
   const imageBillingRuleMissing =
     imageCreditCost.error instanceof BillingRuleNotConfiguredError;
+  const billingRuleMissingSubmitMessage = imageBillingRuleMissing
+    ? t('node.imageGenNode.billingRuleMissingSubmit', {
+        defaultValue:
+          '图片生成未启动：计费规则未配置，请联系管理员设置积分规则后重试。',
+      })
+    : null;
   // 用服务端下发的 `display`，别自己 format `cost`：促销时 display 是「原价→现价」，
   // CreditCostPill 正是靠这个 `→` 才渲染划线原价和促销标签（credit-visual.tsx:117）。
   // 自拼出来的只有一个数字，促销展示会整块消失。口径与 ImageGenNode 一致。
@@ -469,6 +475,16 @@ export function useImageGenerationForm(
       return await new Promise<Record<string, unknown> | undefined>((resolve) => {
         submitWaitersRef.current.push(resolve);
       });
+    }
+    if (billingRuleMissingSubmitMessage) {
+      updateNodeData(id, {
+        isGenerating: false,
+        generationStartedAt: null,
+        generationError: billingRuleMissingSubmitMessage,
+        generationErrorDetails: billingRuleMissingSubmitMessage,
+        generationErrorRequestId: null,
+      });
+      return undefined;
     }
     if (submitDisabled) return undefined;
     submittingRef.current = true;
@@ -768,6 +784,7 @@ export function useImageGenerationForm(
     generationMode,
     supportsImageQuality,
     styleTemplateId,
+    billingRuleMissingSubmitMessage,
     submitDisabled,
     shouldInlineUpstreamTextAsPrompt,
     updateNodeData,
@@ -829,7 +846,8 @@ export function useImageGenerationForm(
       modelParameters: selectedModel?.request?.parameters,
       modelParams: data.modelParams,
       modelParamsMode: generationMode,
-      selectedModelReferenceError,
+      selectedModelReferenceError:
+        selectedModelReferenceError ?? billingRuleMissingSubmitMessage,
       getModelOptionDisabledReason,
       cameraSelection,
       cameraSummary,
