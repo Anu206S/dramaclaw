@@ -630,6 +630,12 @@ export function useVideoGenerationForm(
   );
   const videoBillingRuleMissing =
     videoCreditCost.error instanceof BillingRuleNotConfiguredError;
+  const billingRuleMissingSubmitMessage = videoBillingRuleMissing
+    ? t("node.videoNode.billingRuleMissingSubmit", {
+        defaultValue:
+          "视频生成未启动：计费规则未配置，请联系管理员设置积分规则后重试。",
+      })
+    : null;
   // 用服务端下发的 `display`，别自己 format `cost`：促销时 display 是「原价→现价」，
   // CreditCostPill 正是靠这个 `→` 才渲染划线原价和促销标签（credit-visual.tsx:117）。
   // 自拼出来的只有一个数字，促销展示会整块消失。口径与 VideoNode 一致。
@@ -1157,6 +1163,16 @@ export function useVideoGenerationForm(
       : !hasRequiredMediaForMode);
 
   const handleSubmit = useCallback(async (): Promise<{ videoUrl?: string }> => {
+    if (billingRuleMissingSubmitMessage) {
+      updateNodeData(id, {
+        isGenerating: false,
+        generationStartedAt: null,
+        generationError: billingRuleMissingSubmitMessage,
+        generationErrorDetails: billingRuleMissingSubmitMessage,
+        generationErrorRequestId: null,
+      });
+      return {};
+    }
     if (submitDisabled) return {};
     // 在途守卫（与 ImageGenNode 一致）：第 1 条完成就会清 isGenerating，
     // submitDisabled 拦不住「旧批次 N-1 个任务还在跑时重新提交」——旧闭包
@@ -1802,6 +1818,7 @@ export function useVideoGenerationForm(
     quality,
     onGenerationSettled,
     sceneOptimize,
+    billingRuleMissingSubmitMessage,
     submitDisabled,
     updateNodeData,
     upstreamTextJoined,
@@ -1896,7 +1913,10 @@ export function useVideoGenerationForm(
       creditPromotion,
       submitDisabled,
       // 素材超限的提示优先于「素材类型不支持」：前者是用户刚拖多了、改得动的。
-      submitDisabledReason: selectedModelReferenceError ?? mediaRejectionReason,
+      submitDisabledReason:
+        billingRuleMissingSubmitMessage ??
+        selectedModelReferenceError ??
+        mediaRejectionReason,
       onSubmit: handleGenerateClick,
     },
     isGenerating,
