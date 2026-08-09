@@ -17,7 +17,6 @@ from novelvideo.brainclaw_contract import (
     RECIPE_PROFILE_VARIANT_VERSION,
     BrainClawProfile,
     BrainClawProfileVariant,
-    brainclaw_profile_scope,
     builtin_text_recipe_profile_variant,
     merge_brainclaw_headers,
 )
@@ -34,6 +33,7 @@ from novelvideo.model_gateway_settings import (
 )
 from novelvideo.official_defaults import (
     ADVANCED_TEXT_MODEL_BY_ENV,
+    DEFAULT_COGNEE_LLM_MODEL,
     DEFAULT_TEXT_MODEL_BY_ENV,
     OFFICIAL_NEWAPI_BASE_URL,
 )
@@ -72,7 +72,7 @@ def test_mixed_mode_routes_llm_to_relayclaw_without_changing_media(
     assert media.api_key == "sk-custom-media-secret"
 
 
-def test_cognee_brainclaw_llm_and_custom_embedding_use_separate_gateways(
+def test_cognee_fixed_llm_and_custom_embedding_use_separate_gateways(
     monkeypatch, tmp_path
 ):
     _isolate_settings_db(monkeypatch, tmp_path)
@@ -93,7 +93,7 @@ def test_cognee_brainclaw_llm_and_custom_embedding_use_separate_gateways(
         )
         == "http://local-newapi:3000/v1"
     )
-    assert cognee_config._resolve_llm_model("newapi") == "openai/brainclaw"
+    assert cognee_config._resolve_llm_model("newapi") == "openai/DC-cognee-LLM"
 
 
 def test_advanced_mode_preserves_custom_llm_model_and_has_no_profile_headers(
@@ -158,7 +158,13 @@ def test_effective_text_defaults_cover_freezone_advanced_paths(monkeypatch, tmp_
 
 
 def test_official_text_defaults_are_brainclaw_and_advanced_tasks_are_distinct():
-    assert set(DEFAULT_TEXT_MODEL_BY_ENV.values()) == {"brainclaw"}
+    assert DEFAULT_COGNEE_LLM_MODEL == "DC-cognee-LLM"
+    assert DEFAULT_TEXT_MODEL_BY_ENV["COGNEE_LLM_MODEL"] == "DC-cognee-LLM"
+    assert {
+        value
+        for key, value in DEFAULT_TEXT_MODEL_BY_ENV.items()
+        if key != "COGNEE_LLM_MODEL"
+    } == {"brainclaw"}
     assert (
         ADVANCED_TEXT_MODEL_BY_ENV["FREEZONE_RECIPE_COMPILER_MODEL"]
         == "DC-freezone-recipe-compiler-LLM"
@@ -192,6 +198,13 @@ def test_recipe_text_generation_has_a_dedicated_declared_profile():
         BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION.value
         == "freezone_recipe_text_generation"
     )
+
+
+def test_graph_ingest_is_external_but_event_extraction_remains_declared():
+    declared = {profile.value for profile in BrainClawProfile}
+
+    assert "cognee_graph_ingest" not in declared
+    assert "cognee_event_extraction" in declared
 
 
 def test_builtin_text_recipe_builds_a_trusted_profile_variant():
@@ -358,19 +371,8 @@ def test_hermes_brainclaw_has_no_fixed_profile(monkeypatch, tmp_path):
     }
 
 
-def test_scoped_litellm_profile_preserves_existing_headers():
-    with brainclaw_profile_scope(BrainClawProfile.COGNEE_GRAPH_INGEST):
-        headers = merge_brainclaw_headers({"X-Caller": "kept"}, brainclaw_active=True)
-
-    assert headers == {
-        "X-Caller": "kept",
-        PROFILE_HEADER: "cognee_graph_ingest",
-        PROFILE_VERSION_HEADER: PROFILE_VERSION,
-    }
-
-
 @pytest.mark.asyncio
-async def test_litellm_scope_adds_profile_without_changing_request_fields(monkeypatch):
+async def test_cognee_litellm_request_has_no_brainclaw_profile(monkeypatch):
     from novelvideo import brainclaw_contract, llm_instrumentation
 
     captured: dict[str, object] = {}
@@ -384,25 +386,20 @@ async def test_litellm_scope_adds_profile_without_changing_request_fields(monkey
     monkeypatch.setattr(brainclaw_contract, "is_brainclaw_runtime", lambda: True)
     llm_instrumentation._patch_litellm_acompletion(fake_litellm)
 
-    with brainclaw_profile_scope(BrainClawProfile.COGNEE_GRAPH_INGEST):
-        result = await fake_litellm.acompletion(
-            model="openai/brainclaw",
-            messages=[{"role": "user", "content": "hello"}],
-            tools=[{"type": "function", "function": {"name": "lookup"}}],
-            response_format={"type": "json_object"},
-            stream=True,
-            extra_headers={"X-Caller": "kept"},
-        )
+    result = await fake_litellm.acompletion(
+        model="openai/DC-cognee-LLM",
+        messages=[{"role": "user", "content": "hello"}],
+        tools=[{"type": "function", "function": {"name": "lookup"}}],
+        response_format={"type": "json_object"},
+        stream=True,
+        extra_headers={"X-Caller": "kept"},
+    )
 
     assert result == "response"
     assert captured["tools"] == [{"type": "function", "function": {"name": "lookup"}}]
     assert captured["response_format"] == {"type": "json_object"}
     assert captured["stream"] is True
-    assert captured["extra_headers"] == {
-        "X-Caller": "kept",
-        PROFILE_HEADER: "cognee_graph_ingest",
-        PROFILE_VERSION_HEADER: PROFILE_VERSION,
-    }
+    assert captured["extra_headers"] == {"X-Caller": "kept"}
 
 
 def test_brainclaw_api_accepts_custom_newapi_endpoint_and_masks_key(

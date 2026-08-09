@@ -11,7 +11,6 @@ from typing import Iterator, Mapping
 
 
 class BrainClawProfile(StrEnum):
-    COGNEE_GRAPH_INGEST = "cognee_graph_ingest"
     EPISODE_SCENE_PLANNING = "episode_scene_planning"
     EPISODE_PROP_PLANNING = "episode_prop_planning"
     GLOBAL_VIDEO_MOTION_PLANNING = "global_video_motion_planning"
