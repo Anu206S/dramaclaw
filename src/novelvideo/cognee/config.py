@@ -37,7 +37,6 @@ from novelvideo.llm_instrumentation import (
 )
 from novelvideo.cognee.ladybug_access import install_cognee_ladybug_access_patch
 from novelvideo.official_defaults import (
-    ADVANCED_TEXT_MODEL_BY_ENV,
     DEFAULT_COGNEE_LLM_MODEL,
     DEFAULT_COGNEE_LLM_PROVIDER,
     OFFICIAL_NEWAPI_BASE_URL,
@@ -405,12 +404,12 @@ def _resolve_llm_api_key(llm_provider: str, llm_model: str) -> str:
 
 
 def _resolve_llm_model(llm_provider: str) -> str:
-    _api_key, _base_url, is_brainclaw = _effective_llm_gateway()
+    # Cognee graph construction is a stateful, one-time workflow.  Every
+    # internal chunk extraction and summarization request must use the same
+    # versioned logical model instead of being routed independently by
+    # BrainClaw.  The active LLM gateway still supplies the endpoint and key.
     configured = (
-        "brainclaw"
-        if is_brainclaw
-        else os.getenv("COGNEE_LLM_MODEL", "").strip()
-        or ADVANCED_TEXT_MODEL_BY_ENV["COGNEE_LLM_MODEL"]
+        os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL
     )
     return _normalize_llm_model(llm_provider, configured)
 

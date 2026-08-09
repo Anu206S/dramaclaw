@@ -527,20 +527,14 @@ class CogneeStore:
         on_log: Optional[Callable[[str], None]] = None,
     ) -> dict:
         """快速导入，并独占当前项目的 Cognee/Ladybug 图谱。"""
-        from novelvideo.brainclaw_contract import (
-            BrainClawProfile,
-            brainclaw_profile_scope,
-        )
-
-        with brainclaw_profile_scope(BrainClawProfile.COGNEE_GRAPH_INGEST):
-            async with ladybug_graph_access(self.state_dir, read_only=False):
-                return await self._ingest_novel_fast_locked(
-                    novel_path,
-                    rebuild=rebuild,
-                    spine_template=spine_template,
-                    on_progress=on_progress,
-                    on_log=on_log,
-                )
+        async with ladybug_graph_access(self.state_dir, read_only=False):
+            return await self._ingest_novel_fast_locked(
+                novel_path,
+                rebuild=rebuild,
+                spine_template=spine_template,
+                on_progress=on_progress,
+                on_log=on_log,
+            )
 
     async def _ingest_novel_fast_locked(
         self,
