@@ -716,6 +716,8 @@ interface PendingNodePlacement {
 }
 
 interface CanvasProps {
+  projectId?: string;
+  canvasId?: string;
   onBlankPaneClick?: () => void;
   controlsPlacement?: 'bottom-right' | 'top-right';
   /**
@@ -730,6 +732,8 @@ interface CanvasProps {
 }
 
 export function Canvas({
+  projectId,
+  canvasId,
   onBlankPaneClick,
   controlsPlacement = 'bottom-right',
   suspended = false,
@@ -4904,7 +4908,7 @@ export function Canvas({
 
         <SelectedNodeOverlay />
         <LightEditorCanvasOverlay />
-        <MultiSelectionToolbar />
+        <MultiSelectionToolbar projectId={projectId} canvasId={canvasId} />
         <MultiSelectionConnectButton
           onBatchOpenMenu={handleBatchConnectOpenMenu}
           onBatchDragStart={handleBatchConnectDragStart}

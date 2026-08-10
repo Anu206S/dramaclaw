@@ -2044,6 +2044,8 @@ export function FreezoneShell({
             <CanvasLoadingScreen />
           ) : (
             <Canvas
+              projectId={projectId}
+              canvasId={canvasId}
               onBlankPaneClick={handleBlankPaneClick}
               controlsPlacement="bottom-right"
               // 保活到虾集时也算 suspended：Canvas 的 6 处 window/document 键盘
