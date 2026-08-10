@@ -351,6 +351,20 @@ export interface UseVideoGenerationFormOptions {
    * 记录条；不关心历史的宿主可以不传。
    */
   onGenerationSettled?: () => void;
+  /**
+   * 是否发起算力预估询价。默认 true —— 故事板那种「表单常驻、一屏一个」的宿主
+   * 直接用默认值。
+   *
+   * 工作流节点必须传 `selected`：hook 挂在 VideoNode 顶层，画布上每个配好模型的
+   * 视频节点都会各发一次 /generation-credit-cost（query key 含各自的 params，
+   * react-query 去重不了）。口径与同文件上方 `useNodeGenerationHistory` 的
+   * `enabled: Boolean(selected)` 一致。
+   *
+   * 失败态由 hook 内部兜底常开，不受本开关约束：失败横幅上的重试按钮是节点未选中
+   * 时唯一还能提交的入口，它的 disabled 接的就是 submitDisabled，必须拿得到
+   * billing 规则缺失的闸门。
+   */
+  costProbeEnabled?: boolean;
 }
 
 export interface UseVideoGenerationFormResult {
@@ -397,6 +411,7 @@ export function useVideoGenerationForm(
 ): UseVideoGenerationFormResult {
   const { t } = useTranslation();
   const onGenerationSettled = options?.onGenerationSettled;
+  const costProbeEnabled = options?.costProbeEnabled ?? true;
   const id = nodeId;
 
   const data = (useCanvasStore(
@@ -608,9 +623,19 @@ export function useVideoGenerationForm(
   );
   const videoCount = Math.min(Math.max(debouncedCount, 1), 4);
   const videoPricingQuantity = videoCount * debouncedDurationSec;
+  // 失败态永远询价（见 costProbeEnabled 的注释）：重试按钮在节点未选中时也能提交。
+  // 这行原本在下方 cameraMovementPreset 之后，为了给询价当输入提到这里；调用位置
+  // 变了但仍然无条件执行，hook 顺序照旧稳定。
+  const { isGenerating } = useNodeGenerationTaskState(data);
+  const hasGenerationError =
+    !isGenerating &&
+    !data.videoUrl &&
+    typeof data.generationError === "string" &&
+    data.generationError.trim().length > 0;
+  const costProbeActive = costProbeEnabled || hasGenerationError;
   const videoCreditCost = useGenerationCreditCost(
     "feature",
-    debouncedBackend && videoInputBilling.ready
+    costProbeActive && debouncedBackend && videoInputBilling.ready
       ? VIDEO_GENERATE_FEATURE_KEY
       : null,
     {
@@ -663,8 +688,6 @@ export function useVideoGenerationForm(
     () => findCameraMovementPreset(cameraTemplates, cameraMovementId),
     [cameraTemplates, cameraMovementId],
   );
-  const { isGenerating } = useNodeGenerationTaskState(data);
-
   // ------ upstream reference images ----------------------------------------
   // Anything connected via target → this video node that has an image url
   // shows up as a thumbnail chip next to the camera/role/marker chips. Ordered

@@ -1000,12 +1000,32 @@ export interface FreezoneStyleTemplate {
   category?: string;
 }
 
+function coerceStyleTemplateList(payload: unknown): FreezoneStyleTemplate[] {
+  // Older backends return a bare list; newer ones wrap it next to `asset_base`.
+  // Accept both, and never hand a non-array to callers that call `.find()`.
+  let candidate: unknown = payload;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    const wrapper = candidate as Record<string, unknown>;
+    if (Array.isArray(wrapper.templates)) candidate = wrapper.templates;
+    else if (Array.isArray(wrapper.data)) candidate = wrapper.data;
+    else if (Array.isArray(wrapper.items)) candidate = wrapper.items;
+  }
+  if (!Array.isArray(candidate)) return [];
+  return candidate.filter(
+    (item): item is FreezoneStyleTemplate =>
+      Boolean(item) &&
+      typeof item === "object" &&
+      typeof (item as FreezoneStyleTemplate).id === "string",
+  );
+}
+
 export async function listFreezoneStyleTemplates(
   project: string,
 ): Promise<FreezoneStyleTemplate[]> {
-  return await apiCall<FreezoneStyleTemplate[]>(
+  const payload = await apiCall<unknown>(
     `projects/${encodeURIComponent(project)}/freezone/image/style-templates`,
   );
+  return coerceStyleTemplateList(payload);
 }
 
 // /freezone/image/camera-options ----------------------------------------- //
