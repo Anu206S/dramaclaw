@@ -246,7 +246,13 @@ export const VideoNode = memo(
       submit: handleSubmit,
       quality,
       selectedVideoModelId,
-    } = useVideoGenerationForm(id, { onGenerationSettled: refreshHistory });
+    } = useVideoGenerationForm(id, {
+      onGenerationSettled: refreshHistory,
+      // 与上面 useNodeGenerationHistory 同样的口径：未选中的节点不询价，避免
+      // 画布上每个视频节点挂载即发一次 /generation-credit-cost。失败态节点
+      // 由 hook 内部兜底常开（重试按钮要靠 submitDisabled 拦 billing 缺失）。
+      costProbeEnabled: Boolean(selected),
+    });
 
     const openCharacterLibrary = useCallback(() => {
       setIsCharacterLibraryOpen(true);

@@ -6,12 +6,59 @@ import { apiCall } from "@/api/client";
 import {
   compileFreezoneRecipePrompt,
   generateFreezoneRecipeText,
+  listFreezoneStyleTemplates,
 } from "@/api/ops";
 
 vi.mock("@/api/client", () => ({
   apiCall: vi.fn(),
   apiClient: vi.fn(),
 }));
+
+describe("freezone style template API", () => {
+  beforeEach(() => {
+    vi.mocked(apiCall).mockReset();
+  });
+
+  it("returns a bare template list unchanged", async () => {
+    vi.mocked(apiCall).mockResolvedValueOnce([
+      { id: "anime", label: "动漫", style_prompt: "anime style" },
+    ]);
+
+    await expect(listFreezoneStyleTemplates("proj")).resolves.toEqual([
+      { id: "anime", label: "动漫", style_prompt: "anime style" },
+    ]);
+  });
+
+  it("unwraps the nested envelope that ships asset_base alongside templates", async () => {
+    vi.mocked(apiCall).mockResolvedValueOnce({
+      asset_base: "/static/style-gallery",
+      version: "3",
+      templates: [{ id: "ink", label: "水墨", style_prompt: "ink wash" }],
+    });
+
+    await expect(listFreezoneStyleTemplates("proj")).resolves.toEqual([
+      { id: "ink", label: "水墨", style_prompt: "ink wash" },
+    ]);
+  });
+
+  it("returns an empty list instead of a non-array when the shape is unrecognised", async () => {
+    vi.mocked(apiCall).mockResolvedValueOnce({ asset_base: "/static" });
+
+    await expect(listFreezoneStyleTemplates("proj")).resolves.toEqual([]);
+  });
+
+  it("drops entries without a usable id", async () => {
+    vi.mocked(apiCall).mockResolvedValueOnce([
+      { id: "ok", label: "可用", style_prompt: "fine" },
+      { label: "缺少 id", style_prompt: "broken" },
+      null,
+    ]);
+
+    await expect(listFreezoneStyleTemplates("proj")).resolves.toEqual([
+      { id: "ok", label: "可用", style_prompt: "fine" },
+    ]);
+  });
+});
 
 describe("freezone recipe API", () => {
   beforeEach(() => {
