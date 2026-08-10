@@ -64,6 +64,8 @@ def _host_without_port(value: str | None) -> str:
 def _is_local_trusted_agent_request(request: Request) -> bool:
     if not _local_agent_trust_enabled():
         return False
+    if "x-forwarded-for" in request.headers or "x-forwarded-proto" in request.headers:
+        return False
     client_host = _host_without_port(getattr(request.client, "host", None))
     host_header = _host_without_port(request.headers.get("host"))
     forwarded_host = _host_without_port(request.headers.get("x-forwarded-host"))
