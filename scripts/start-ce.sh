@@ -82,9 +82,6 @@ if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "Warning: ffmpeg is not on PATH. Video/audio processing may fail." >&2
 fi
 
-echo "Checking Hermes CLI version ..."
-scripts/setup-hermes.sh
-
 if [ ! -d ".venv" ]; then
   echo "Installing dependencies with uv sync --group dev ..."
   uv sync --group dev

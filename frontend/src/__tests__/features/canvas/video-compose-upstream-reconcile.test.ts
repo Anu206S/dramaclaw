@@ -151,7 +151,7 @@ describe('reconcileDraftWithUpstream', () => {
     expect(bgmTrack?.clips[0].trimEndMs).toBe(5_000);
   });
 
-  it('infers BGM from audioKind and starts global voiceover at 500ms', () => {
+  it('infers BGM from audioKind and keeps ordinary voiceover at 0ms', () => {
     const nodes = [
       workflowNode('video-1', CANVAS_NODE_TYPES.video, 1),
       workflowNode('voice', CANVAS_NODE_TYPES.audio, 1, undefined, 'speech'),
@@ -164,13 +164,41 @@ describe('reconcileDraftWithUpstream', () => {
     const voiceTrack = result.tracks.find((track) => track.id === AUDIO_TRACK_ID);
     const bgmTrack = result.tracks.find((track) => track.id.endsWith('background_music'));
 
-    expect(voiceTrack?.clips[0].timelineStartMs).toBe(500);
+    expect(voiceTrack?.clips[0].timelineStartMs).toBe(0);
     expect(bgmTrack?.clips[0].timelineStartMs).toBe(0);
     expect(bgmTrack?.clips[0].volume).toBe(0.25);
     expect(bgmTrack?.clips[0].trimEndMs).toBe(5_000);
   });
 
-  it('migrates a legacy mixed audio track into parallel voice and BGM tracks', () => {
+  it('keeps ordinary mainline music on the standard audio track', () => {
+    const video = {
+      id: 'video-mainline',
+      type: CANVAS_NODE_TYPES.video,
+      position: { x: 0, y: 0 },
+      data: { videoUrl: '/mainline.mp4', durationMs: 5_000 },
+    } as CanvasNode;
+    const music = {
+      ...audioNode('/music.mp3'),
+      data: {
+        ...audioNode('/music.mp3').data,
+        audioKind: 'music',
+        displayName: '广告配乐',
+        durationMs: 30_000,
+      },
+    } as CanvasNode;
+    useCanvasStore.getState().setCanvasData([video, music], []);
+
+    const result = buildInitialTimeline([video.id, music.id]);
+    const standardAudio = result.tracks.find((track) => track.id === AUDIO_TRACK_ID);
+    const bgmTrack = result.tracks.find((track) => track.id.endsWith('background_music'));
+
+    expect(bgmTrack).toBeUndefined();
+    expect(standardAudio?.clips[0].timelineStartMs).toBe(0);
+    expect(standardAudio?.clips[0].volume).toBe(1);
+    expect(standardAudio?.clips[0].trimEndMs).toBe(30_000);
+  });
+
+  it('preserves a legacy mixed audio track without implicit migration', () => {
     const voice = workflowNode(
       'voice',
       CANVAS_NODE_TYPES.audio,
@@ -207,13 +235,13 @@ describe('reconcileDraftWithUpstream', () => {
     };
 
     const result = reconcileDraftWithUpstream(legacyDraft, ['voice', 'bgm']);
-    const migratedVoice = result.tracks.find((track) => track.id === AUDIO_TRACK_ID);
+    const preservedAudio = result.tracks.find((track) => track.id === AUDIO_TRACK_ID);
     const migratedBgm = result.tracks.find((track) =>
       track.id.endsWith('background_music'));
 
-    expect(migratedVoice?.clips[0].timelineStartMs).toBe(500);
-    expect(migratedBgm?.clips[0].timelineStartMs).toBe(0);
-    expect(migratedBgm?.clips[0].volume).toBe(0.25);
+    expect(preservedAudio?.clips.map((clip) => clip.timelineStartMs)).toEqual([0, 2_000]);
+    expect(preservedAudio?.clips.map((clip) => clip.volume)).toEqual([1, 1]);
+    expect(migratedBgm).toBeUndefined();
   });
 });
 
