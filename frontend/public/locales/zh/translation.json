@@ -1663,6 +1663,7 @@
       "grid_regenerate": "九宫格重生成",
       "audio_generation": "音频生成",
       "audio_generation_indextts2": "IndexTTS2 音频生成",
+      "system_voice_setup": "系统声线准备",
       "video_generation": "视频生成",
       "single_video": "单镜视频",
       "global_optimize_video": "全局优化",

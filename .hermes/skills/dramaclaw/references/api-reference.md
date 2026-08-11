@@ -94,6 +94,7 @@
 | 方法 | 路径 | 用途 |
 |------|------|------|
 | `POST` | `/projects/{project}/episodes/{ep}/audio/generate` | 批量语音生成 [ASYNC: audio_generation_indextts2]；当前主线用这个 |
+| `POST` | `/projects/{project}/episodes/{ep}/audio/system-voices/prepare` | 经用户确认后准备系统声线 [ASYNC: system_voice_setup]；仅虾导使用，不启动 TTS |
 | `POST` | `/projects/{project}/episodes/{ep}/beats/{beat}/audio` | 重做单beat音频 (SYNC) |
 
 旧 `/tts/generate`、`/tts/preview`、`/tts/voices` 已移除，不要调用。

@@ -74,7 +74,7 @@ metadata:
 
 ## 特殊前置
 
-- 音频前置未满足或 `next_step=voice_setup` 时，明确说明配音尚未启动，并给用户两个选择：到“虾塘”上传/录制声线，或由虾导匹配系统声线。只有用户明确选择系统声线，才调用一次 `dramaclaw_prepare_system_voices(confirmed=true)`；该调用不启动 TTS。
+- 音频前置未满足或 `next_step=voice_setup` 时，明确说明配音尚未启动，并给用户两个选择：到“虾塘”上传/录制声线，或由虾导匹配系统声线。只有用户明确选择系统声线，才调用一次 `dramaclaw_prepare_system_voices(confirmed=true)`；该调用只启动异步 `system_voice_setup` 任务，不启动 TTS。后续轮次确认该任务完成后，才能调用音频生成。
 - 修改 beat 的对白、`audio_type`、`speaker` 或音频相关字段时，顺序固定为：更新 beat -> 重做该 beat 音频 -> 重新合成。跨多轮执行，不得抢跑合成。细节见 `references/update-behavior.md`。
 - 文档中的 `$DRAMACLAW_PROJECT_ID`、`$PID`、`$EP`、`{project}`、`{ep}` 都是说明占位符。调用工具前必须解析为当前真实值，禁止把字面占位符发给后端。
 

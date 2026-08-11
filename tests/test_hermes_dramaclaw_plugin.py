@@ -456,6 +456,30 @@ def test_prepare_system_voices_tool_requires_explicit_confirmation():
     assert result["code"] == "system_voice_confirmation_required"
 
 
+def test_prepare_system_voices_tool_starts_background_task(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_episode_post(args, suffix, *, body=None):
+        calls.append((args, suffix, body))
+        return {"ok": True, "task_type": "system_voice_setup", "status": "queued"}
+
+    monkeypatch.setattr(plugin, "_episode_post", fake_episode_post)
+
+    result = plugin._handle_prepare_system_voices(
+        {"project_id": "proj-1", "episode": 2, "confirmed": True}
+    )
+
+    assert result["task_type"] == "system_voice_setup"
+    assert calls == [
+        (
+            {"project_id": "proj-1", "episode": 2, "confirmed": True},
+            "audio/system-voices/prepare",
+            {"confirmed": True},
+        )
+    ]
+
+
 def test_dramaclaw_run_freezone_skill_uses_typed_endpoint(monkeypatch):
     plugin = _load_plugin_module()
     calls = []

@@ -3070,8 +3070,9 @@ TOOLS = (
         _schema(
             "dramaclaw_prepare_system_voices",
             "Prepare missing narrator and character reference voices from system presets. "
-            "This is an outer-assistant convenience and does not start episode TTS. Call only "
-            "after the user explicitly agrees to use system voices.",
+            "This starts the agent-only system_voice_setup background task and does not start "
+            "episode TTS. Call only after the user explicitly agrees to use system voices. Poll "
+            "dramaclaw_get_task(task_type='system_voice_setup', episode=N) before starting TTS.",
             {
                 "project_id": {
                     "type": "string",
