@@ -456,3 +456,34 @@ def test_custom_brainclaw_endpoint_does_not_replace_official_gateway(
     assert official_llm.base_url == OFFICIAL_NEWAPI_BASE_URL
     assert official_llm.api_key == "sk-official-secret"
     assert official_llm.model == "brainclaw"
+
+
+def test_custom_llm_mode_accepts_dedicated_brainclaw_without_official_key(
+    monkeypatch, tmp_path
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("NEWAPI_PROVISIONER_ENABLED", "true")
+    _configure_custom_media()
+    save_relayclaw_brainclaw_key(
+        api_key="sk-local-secret",
+        base_url="http://127.0.0.1:8317",
+        activate=False,
+    )
+    monkeypatch.setattr(
+        model_gateway,
+        "refresh_model_gateway_runtime",
+        lambda: {"refreshed": True},
+    )
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+    client = TestClient(app)
+
+    response = client.post(
+        "/model-gateway/custom/llm-mode",
+        json={"mode": CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["llmEffective"]["baseUrl"] == (
+        "http://127.0.0.1:8317/v1"
+    )

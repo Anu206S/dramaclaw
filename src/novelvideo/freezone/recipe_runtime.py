@@ -254,10 +254,7 @@ def _finalize_compiler_task(
 
 
 async def _run_recipe_compiler(task: str) -> str:
-    from novelvideo.config import (
-        get_newapi_text_pydantic_model,
-        get_newapi_text_pydantic_model_settings,
-    )
+    from novelvideo.config import get_newapi_text_pydantic_model
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
@@ -272,10 +269,9 @@ async def _run_recipe_compiler(task: str) -> str:
     )
     response = await agent.run(
         task,
-        model_settings=get_newapi_text_pydantic_model_settings(
-            "FREEZONE_RECIPE_COMPILER_THINKING_LEVEL",
-            "none",
-        ),
+        # Recipe compilation is a bounded text transformation. Keep reasoning
+        # disabled without depending on the removed legacy text-settings helper.
+        model_settings={"openai_reasoning_effort": "none"},
     )
     compiled = str(response.output or "").strip()
     if not compiled:

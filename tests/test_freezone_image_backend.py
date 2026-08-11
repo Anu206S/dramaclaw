@@ -1021,7 +1021,7 @@ async def test_freezone_image_reverse_prompt_enqueues_feature_billing(
         "billable_chars": 5,
         "pricing_quantity": 5,
         "pricing_kind": "text",
-        "pricing_model": "freezone-vision-model",
+            "pricing_model": "brainclaw",
         "pricing_params": {},
         "pricing_metrics": {
             "call_count": 1,
