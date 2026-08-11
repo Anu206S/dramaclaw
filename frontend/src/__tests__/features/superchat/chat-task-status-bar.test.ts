@@ -6,6 +6,7 @@ import {
   applyOptimisticWorkflowRunUpdate,
   aggregateChatTaskBatchItems,
   chatTaskBatchStatusSummary,
+  chatTaskBatchWaitingItems,
   isStatusBarWorkflowContinuable,
   mergeWorkflowRunUpdate,
   resolveWorkflowRunDisplayCompletion,
@@ -172,6 +173,26 @@ describe("selectChatTaskItems", () => {
     expect(result.every((item) => item.nodeId === null && item.nodeLabel === null)).toBe(true);
   });
 
+  it("keeps every batch member available for the expanded task details", () => {
+    const tasks = [1, 2, 3].map((beat) => task({
+      task_key: `frame-${beat}`,
+      beat_num: beat,
+      metadata: {
+        batch_id: "first-frame-batch",
+        batch_size: "9",
+        canvas_id: "canvas-1",
+      },
+    }));
+
+    const result = selectChatTaskItems(tasks, [], "canvas-1", NOW);
+
+    expect(result.map(({ task: item }) => item.task_key)).toEqual([
+      "frame-1",
+      "frame-2",
+      "frame-3",
+    ]);
+  });
+
   it("collapses queued tasks with the same batch id into one status item", () => {
     const first = task({
       task_key: "grid-1",
@@ -217,6 +238,25 @@ describe("selectChatTaskItems", () => {
     expect(chatTaskBatchStatusSummary(result)).toBe(
       "批次进度 0/9 · 运行 3 · 等待 6",
     );
+    expect(chatTaskBatchWaitingItems(items)).toMatchObject([{
+      batchId: "first-frame-batch",
+      expected: 9,
+      waiting: 6,
+    }]);
+  });
+
+  it("does not add a waiting summary after every batch item has entered the task list", () => {
+    const items = [1, 2, 3].map((beat) => ({
+      task: task({
+        task_key: `video-${beat}`,
+        status: beat === 3 ? "queued" : "running",
+        metadata: { batch_id: "video-batch", batch_size: "3" },
+      }),
+      nodeId: null,
+      nodeLabel: null,
+    }));
+
+    expect(chatTaskBatchWaitingItems(items)).toEqual([]);
   });
 });
 

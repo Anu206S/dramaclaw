@@ -59,6 +59,13 @@ export interface ChatTaskItem {
   nodeLabel: string | null;
 }
 
+export interface ChatTaskBatchWaitingItem {
+  batchId: string;
+  expected: number;
+  waiting: number;
+  representative: ChatTaskItem;
+}
+
 function aggregateChatTaskBatch(items: ChatTaskItem[]): ChatTaskItem {
   const expected = Math.max(...items.map(({ task }) => taskBatchSize(task)));
   const representative = items[0];
@@ -127,6 +134,31 @@ export function chatTaskBatchStatusSummary(items: ChatTaskItem[]): string | null
   );
   const summary = activeBatch?.task.current_task?.trim();
   return summary || null;
+}
+
+export function chatTaskBatchWaitingItems(
+  items: ChatTaskItem[],
+): ChatTaskBatchWaitingItem[] {
+  const batches = new Map<string, ChatTaskItem[]>();
+  for (const item of items) {
+    const batchId = taskBatchId(item.task);
+    if (!batchId || taskBatchSize(item.task) <= 1) continue;
+    const batch = batches.get(batchId) ?? [];
+    batch.push(item);
+    batches.set(batchId, batch);
+  }
+
+  return [...batches.entries()].flatMap(([batchId, batch]) => {
+    const expected = Math.max(...batch.map(({ task }) => taskBatchSize(task)));
+    const waiting = Math.max(expected - batch.length, 0);
+    if (waiting === 0 || !isActive(aggregateChatTaskBatch(batch).task)) return [];
+    return [{
+      batchId,
+      expected,
+      waiting,
+      representative: batch[0],
+    }];
+  });
 }
 
 export type ChatTaskStatusScope = "canvas" | "project";
@@ -438,7 +470,7 @@ export function selectChatTaskItems(
     if (activeDelta) return activeDelta;
     return Date.parse(right.task.updated_at) - Date.parse(left.task.updated_at);
   });
-  return aggregateChatTaskBatchItems(sorted);
+  return sorted;
 }
 
 function taskProgress(task: TaskState): number {
@@ -466,7 +498,7 @@ export function ChatTaskStatusBar({
   const [workflowRuns, setWorkflowRuns] = useState<FreezoneWorkflowRun[]>([]);
   const [resuming, setResuming] = useState(false);
 
-  const items = useMemo(
+  const taskItems = useMemo(
     () => {
       const projectScopeUnavailable =
         scope === "project" &&
@@ -480,6 +512,10 @@ export function ChatTaskStatusBar({
       );
     },
     [tasks, taskProjectId, nodes, canvasId, now, projectId, scope],
+  );
+  const items = useMemo(
+    () => aggregateChatTaskBatchItems(taskItems),
+    [taskItems],
   );
   const selectedWorkflowRun = useMemo(
     () => selectChatWorkflowRun(workflowRuns, now),
@@ -533,7 +569,7 @@ export function ChatTaskStatusBar({
   const workflowActivityLabelsKey = workflowActivityLabels.join("\u0000");
   const [workflowActivityIndex, setWorkflowActivityIndex] = useState(0);
   const hasTerminalItems =
-    items.some(({ task }) => isTerminal(task)) ||
+    taskItems.some(({ task }) => isTerminal(task)) ||
     Boolean(workflowRun && workflowRun.status !== "running");
 
   const refreshWorkflowRuns = useCallback(async () => {
@@ -764,9 +800,10 @@ export function ChatTaskStatusBar({
   const linkedWorkflowTaskKeys = new Set(
     workflowActions.map((action) => action.task_key).filter(Boolean),
   );
-  const standaloneItems = workflowRun
-    ? items.filter(({ task }) => !linkedWorkflowTaskKeys.has(task.task_key))
-    : items;
+  const detailItems = workflowRun
+    ? taskItems.filter(({ task }) => !linkedWorkflowTaskKeys.has(task.task_key))
+    : taskItems;
+  const waitingBatchItems = chatTaskBatchWaitingItems(detailItems);
   const hasActiveStatus = activeItems.length > 0 || workflowRun?.status === "running";
   const hasFailedStatus =
     failedCount > 0 ||
@@ -907,7 +944,7 @@ export function ChatTaskStatusBar({
               </div>
             );
           }) : null}
-          {standaloneItems.map(({ task, nodeId, nodeLabel }) => {
+          {detailItems.map(({ task, nodeId, nodeLabel }) => {
             const progress = taskProgress(task);
             return (
               <div
@@ -958,6 +995,26 @@ export function ChatTaskStatusBar({
               </div>
             );
           })}
+          {waitingBatchItems.map(({ batchId, waiting, representative }) => (
+            <div
+              key={`${batchId}:waiting`}
+              className="flex min-h-11 items-center gap-2 border-b border-white/6 px-1.5 py-1.5 last:border-b-0"
+            >
+              <div className="min-w-0 flex-1">
+                <span className="flex items-center justify-between gap-2 text-xs">
+                  <span className="truncate text-foreground">
+                    {representative.nodeLabel ?? displayLabel(representative.task, t)}
+                  </span>
+                  <span className="shrink-0 text-muted-foreground">
+                    {t("taskCenter.chatStatus.waiting", { count: waiting })}
+                  </span>
+                </span>
+                <span className="mt-1 block h-1 overflow-hidden rounded-full bg-white/8">
+                  <span className="block h-full w-0 rounded-full bg-muted-foreground/35" />
+                </span>
+              </div>
+            </div>
+          ))}
         </div>
       ) : null}
     </section>
