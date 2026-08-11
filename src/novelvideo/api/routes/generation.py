@@ -2340,30 +2340,37 @@ async def prepare_system_voices_for_agent(
             "error": "使用系统声线前需要用户明确确认",
         }
 
-    from novelvideo.audio.system_voice_setup import prepare_missing_system_voices
-
     resolved = await _resolve_generation_project(project, user, required_role="editor")
-    store = (
-        await make_sqlite_store_for_context(resolved.ctx)
-        if resolved.ctx
-        else await make_sqlite_store(resolved.username, resolved.project_name)
-    )
-    result = await prepare_missing_system_voices(
-        store=store,
-        username=resolved.username,
-        project=resolved.project_name,
-        project_dir=resolved.output_dir,
+    ctx = resolved.ctx
+    if ctx is None:
+        return {
+            "ok": False,
+            "code": "project_context_required",
+            "error": "系统声线准备需要 project context",
+        }
+
+    queued = await get_task_backend().enqueue_project_task(
+        ctx,
+        product_surface="mainline",
+        task_type="system_voice_setup",
+        queue_kind="default",
         episode=episode_num,
+        payload={
+            "episode": episode_num,
+            "output_dir": resolved.output_dir,
+            "state_dir": resolved.state_dir,
+        },
     )
     return {
-        "ok": result["ready"],
-        "code": "system_voices_ready" if result["ready"] else "voice_prereq_required",
-        "data": result,
-        **(
-            {"error": "；".join(result["remaining_errors"][:5])}
-            if result["remaining_errors"]
-            else {}
+        "ok": True,
+        "task_type": "system_voice_setup",
+        "task_id": queued.task_state.task_id,
+        "task_key": project_task_state_key(
+            "system_voice_setup", ctx.project_id, episode_num
         ),
+        "backend": queued.backend,
+        "queue": queued.queue,
+        "message": f"第 {episode_num} 集系统声线准备已进入队列",
     }
 
 

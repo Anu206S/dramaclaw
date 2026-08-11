@@ -1663,6 +1663,7 @@
       "grid_regenerate": "Grid regenerate",
       "audio_generation": "Audio generation",
       "audio_generation_indextts2": "IndexTTS2 audio generation",
+      "system_voice_setup": "System voice setup",
       "video_generation": "Video generation",
       "single_video": "Single video",
       "global_optimize_video": "Global optimize video",
