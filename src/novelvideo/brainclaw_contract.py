@@ -36,7 +36,7 @@ class BrainClawProfile(StrEnum):
     NARRATED_SCENE_ASSET_PLANNING = "narrated_scene_asset_planning"
     STAGING_PROP_PLANNING = "staging_prop_planning"
     EPISODE_STORY_PLANNING = "episode_story_planning"
-    COGNEE_EVENT_EXTRACTION = "cognee_event_extraction"
+    EPISODE_EVENT_SEGMENTATION = "episode_event_segmentation"
 
 
 PROFILE_HEADER = "X-BrainClaw-Profile"

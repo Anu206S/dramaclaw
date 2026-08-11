@@ -200,11 +200,12 @@ def test_recipe_text_generation_has_a_dedicated_declared_profile():
     )
 
 
-def test_graph_ingest_is_external_but_event_extraction_remains_declared():
+def test_graph_ingest_is_external_and_event_segmentation_uses_its_real_name():
     declared = {profile.value for profile in BrainClawProfile}
 
     assert "cognee_graph_ingest" not in declared
-    assert "cognee_event_extraction" in declared
+    assert "episode_event_segmentation" in declared
+    assert "cognee_event_extraction" not in declared
 
 
 def test_builtin_text_recipe_builds_a_trusted_profile_variant():
