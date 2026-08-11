@@ -36,6 +36,7 @@ import {
   cancelCanvasWorkflowExecution,
 } from '@/features/freezone/canvasChatCommands';
 import { toast } from 'sonner';
+import { collectDuplicableIds } from '@/features/canvas/domain/groupSelectionDuplicate';
 
 // 合并分镜组只接受图片类节点。
 const STORYBOARD_IMAGE_NODE_TYPES = new Set<string>([
@@ -263,12 +264,14 @@ export const MultiSelectionToolbar = memo(({
 
   useEffect(() => cancelArrangeMenuClose, [cancelArrangeMenuClose]);
 
+  // 框选整组时组本身不在 selected 里（marquee 剔除祖先，见 collectDuplicableIds），
+  // 直接把 selectedIds 递进去会让成员各自散开、各自加后缀、再塞回原组。
   const handleDuplicate = useCallback(() => {
     if (selectedIds.length === 0) {
       return;
     }
-    duplicateNodesAsSiblings(selectedIds);
-  }, [duplicateNodesAsSiblings, selectedIds]);
+    duplicateNodesAsSiblings(collectDuplicableIds(nodes, selectedIds));
+  }, [duplicateNodesAsSiblings, nodes, selectedIds]);
 
   const handleRunWorkflow = useCallback(async (regenerate: boolean) => {
     if (isRunningWorkflow || selectedIds.length === 0) {
