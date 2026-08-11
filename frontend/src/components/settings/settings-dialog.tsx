@@ -584,7 +584,23 @@ function ModelConfigSection({ open }: { open: boolean }) {
                 </Tabs>
               </div>
               {customLlmMode === "relayclaw_brainclaw" ? (
-                <BrainClawGatewayPanel config={config} loading={loading} />
+                <>
+                  <BrainClawGatewayPanel config={config} loading={loading} />
+                  <FeatureModelsBlock
+                    showAdvancedLlm={false}
+                    newApiBaseUrl={customBaseUrl}
+                    database={customDatabase}
+                    channelTypesEnabled={Boolean(
+                      config?.custom?.configured &&
+                      config?.provisioner?.database?.available,
+                    )}
+                    savedProviderChannels={
+                      config?.provisioner?.providerChannels ?? []
+                    }
+                    savedEmbeddingModel={config?.provisioner?.embeddingModel}
+                    savedMediaModels={config?.provisioner?.mediaModels ?? {}}
+                  />
+                </>
               ) : null}
             </>
           ) : null}
@@ -2560,6 +2576,7 @@ function featureProviderLabel(
 }
 
 function FeatureModelsBlock({
+  showAdvancedLlm = true,
   newApiBaseUrl,
   database,
   savedProviderChannels,
@@ -2571,6 +2588,7 @@ function FeatureModelsBlock({
   defaultComfyWorkflows,
   channelTypesEnabled = true,
 }: {
+  showAdvancedLlm?: boolean;
   newApiBaseUrl: string;
   database: NewApiDatabaseConfigInput | undefined;
   savedProviderChannels: SavedProviderChannelConfig[];
@@ -2863,19 +2881,28 @@ function FeatureModelsBlock({
         excludedProviders={excludeComfyUI ? ["comfyui"] : undefined}
       />
 
-      {!mediaOnly ? (
+      {!mediaOnly && showAdvancedLlm ? (
         <CogneeModelsBlock
           configuredProviders={configuredProviders}
           newApiBaseUrl={newApiBaseUrl}
           database={database}
           providerChannels={providerChannels}
           savedChannelByProvider={savedChannelByProvider}
+        />
+      ) : null}
+
+      {!mediaOnly ? (
+        <EmbeddingModelBlock
+          configuredProviders={configuredProviders}
+          newApiBaseUrl={newApiBaseUrl}
+          database={database}
+          savedChannelByProvider={savedChannelByProvider}
           savedEmbeddingModel={savedEmbeddingModel}
         />
       ) : null}
 
       {/* 功能模型映射 */}
-      {!mediaOnly ? (
+      {!mediaOnly && showAdvancedLlm ? (
         <>
           <h4 className="mt-5 text-xs font-medium text-foreground">
             {t("settings.modelConfig.featureModels.title")}
@@ -2945,14 +2972,12 @@ function CogneeModelsBlock({
   database,
   providerChannels,
   savedChannelByProvider,
-  savedEmbeddingModel,
 }: {
   configuredProviders: readonly FeatureModelProvider[];
   newApiBaseUrl: string;
   database: NewApiDatabaseConfigInput | undefined;
   providerChannels: Record<string, { upstreamKey: string; baseUrl: string }>;
   savedChannelByProvider: Map<string, SavedProviderChannelConfig>;
-  savedEmbeddingModel: SavedEmbeddingModelConfig | undefined;
 }) {
   const { t } = useTranslation();
 
@@ -2988,13 +3013,6 @@ function CogneeModelsBlock({
         />
       </div>
 
-      <EmbeddingModelBlock
-        configuredProviders={configuredProviders}
-        newApiBaseUrl={newApiBaseUrl}
-        database={database}
-        savedChannelByProvider={savedChannelByProvider}
-        savedEmbeddingModel={savedEmbeddingModel}
-      />
     </div>
   );
 }

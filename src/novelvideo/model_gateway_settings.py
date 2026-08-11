@@ -1062,10 +1062,10 @@ def get_effective_llm_config() -> EffectiveLlmConfig:
     settings = get_model_gateway_settings()
     gateway_mode = normalize_gateway_mode(settings.get("model_gateway_mode"))
     custom_llm_mode = normalize_custom_llm_mode(settings.get("custom_llm_mode"))
-    if gateway_mode == MODE_OFFICIAL:
+    if gateway_mode in {MODE_OFFICIAL, MODE_HYBRID}:
         return EffectiveLlmConfig(
-            mode=MODE_OFFICIAL,
-            source="official",
+            mode=gateway_mode,
+            source="hybrid" if gateway_mode == MODE_HYBRID else "official",
             base_url=normalize_relay_base_url(OFFICIAL_NEWAPI_BASE_URL),
             api_key=normalize_api_key(settings.get("official_newapi_api_key", "")),
             model="brainclaw",

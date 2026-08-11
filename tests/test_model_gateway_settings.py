@@ -331,10 +331,16 @@ def test_hybrid_mode_uses_official_gateway_by_default(monkeypatch, tmp_path):
     set_model_gateway_mode(MODE_HYBRID)
 
     effective = get_effective_newapi_config()
+    effective_llm = gateway_settings.get_effective_llm_config()
 
     assert effective.mode == MODE_HYBRID
     assert effective.source == "hybrid"
     assert effective.api_key == "sk-official-secret"
+    assert effective_llm.mode == MODE_HYBRID
+    assert effective_llm.source == "hybrid"
+    assert effective_llm.api_key == "sk-official-secret"
+    assert effective_llm.model == "brainclaw"
+    assert effective_llm.is_brainclaw is True
 
 
 def test_hybrid_video_routes_only_comfyui_models_to_local_gateway(

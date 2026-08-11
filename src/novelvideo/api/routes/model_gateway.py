@@ -707,7 +707,7 @@ async def save_custom_llm_routing_mode(body: CustomLlmModeBody) -> dict[str, Any
             official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
             official_api_key=app_config.NEWAPI_API_KEY,
         )
-        if not status["official"]["configured"]:
+        if not status["brainclaw"]["configured"]:
             raise HTTPException(
                 status_code=400, detail="RelayClaw API key is not configured"
             )

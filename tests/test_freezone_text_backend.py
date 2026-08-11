@@ -146,7 +146,7 @@ def test_text_writer_uses_plain_text_agent_without_structured_output_settings(
 
     assert agent_kwargs["model"] == (
         "FREEZONE_TEXT_WRITER_MODEL",
-        "DC-freezone-text-writer-LLM",
+        "brainclaw",
     )
     assert "model_settings" not in agent_kwargs
 
@@ -168,7 +168,7 @@ async def test_generate_freezone_text_returns_configured_model_and_text(
 
     model, text = await generate_freezone_text(prompt="  写一段雨夜重逢的短故事  ")
 
-    assert model == FREEZONE_TEXT_WRITER_MODEL == "DC-freezone-text-writer-LLM"
+    assert model == FREEZONE_TEXT_WRITER_MODEL == "brainclaw"
     assert text.startswith("雨落在旧车站")
 
 
