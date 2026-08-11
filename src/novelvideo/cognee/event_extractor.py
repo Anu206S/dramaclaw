@@ -104,7 +104,7 @@ class EventExtractor:
 
             agent = Agent(
                 get_pydantic_model(
-                    brainclaw_profile=BrainClawProfile.COGNEE_EVENT_EXTRACTION
+                    brainclaw_profile=BrainClawProfile.EPISODE_EVENT_SEGMENTATION
                 ),
                 model_settings=get_newapi_structured_output_model_settings(),
                 output_type=ExtractedEventList,
