@@ -732,12 +732,12 @@ export function AssetLibraryPanel({
           </span>
         </div>
 
-        {/* 悬浮圆角卡片 */}
+        {/* 贴左边直出的抽屉：满高、不留外边距，收起时整块滑到屏幕外 */}
         <div
-          className={`flex flex-col min-h-0 overflow-hidden rounded-2xl border border-white/10 bg-[rgba(var(--surface-rgb)/0.86)] backdrop-blur-2xl transition-[opacity,transform] duration-[360ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform ${
+          className={`flex h-full flex-col min-h-0 overflow-hidden rounded-r-2xl border-r border-[rgb(var(--border-rgb))] bg-[rgb(var(--surface-rgb))] transition-transform duration-[360ms] ease-[cubic-bezier(0.22,1,0.36,1)] will-change-transform ${
             collapsed
-              ? "pointer-events-none -translate-x-3 opacity-0"
-              : "pointer-events-auto translate-x-0 opacity-100"
+              ? "pointer-events-none -translate-x-full"
+              : "pointer-events-auto translate-x-0"
           }`}
           // marginTop 56：同上，给左上角那颗视图切换开关让出顶部窄带（把手在 52，卡片
           // 比它再低 4px，沿用原来「把手比卡片高 4px」的相对关系）。
@@ -842,6 +842,7 @@ export function AssetLibraryPanel({
               onRestoreMainlineDefault={onRestoreMainlineDefault}
               hasPresetLabel={hasPresetLabel}
               reloadToken={reloadToken}
+              collapsed={collapsed}
             />
           )}
         </div>
