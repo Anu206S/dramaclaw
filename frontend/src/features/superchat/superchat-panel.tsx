@@ -10903,6 +10903,20 @@ interface SuperChatPanelProps {
   onFreezoneUserMessage?: (message: string, timestamp: number) => void;
 }
 
+interface AgentCapabilityPriceReferenceItem {
+  key: string;
+  label: string;
+  examples: string;
+  billing: "free" | "configured_feature_price";
+  reference_display: string;
+  unit?: string;
+}
+
+interface AgentCapabilityPriceReference {
+  items: AgentCapabilityPriceReferenceItem[];
+  note: string;
+}
+
 export function SuperChatPanel({
   variant = "default",
   freezoneCanvasId = null,
@@ -10929,6 +10943,9 @@ export function SuperChatPanel({
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [agentBillingOpen, setAgentBillingOpen] = useState(false);
+  const [agentBillingReference, setAgentBillingReference] =
+    useState<AgentCapabilityPriceReference | null>(null);
   const [detailMessage, setDetailMessage] = useState<ChatMessage | null>(null);
   const [mediaDetail, setMediaDetail] = useState<SpecMediaDetail | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -10978,6 +10995,15 @@ export function SuperChatPanel({
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isFreezoneLayout || !agentBillingOpen || agentBillingReference) return;
+    void apiCall<AgentCapabilityPriceReference>("chat/agent-capability-price-reference")
+      .then(setAgentBillingReference)
+      .catch(() => {
+        toast.error("暂时无法加载虾导计费说明");
+      });
+  }, [agentBillingOpen, agentBillingReference, isFreezoneLayout]);
   const shouldStickToBottomRef = useRef(true);
   const suppressAutoScrollUntilRef = useRef(0);
   const historyScrollKeyRef = useRef<string | null>(null);
@@ -13680,6 +13706,17 @@ export function SuperChatPanel({
                 </span>
               </div>
             </div>
+            <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setAgentBillingOpen(true)}
+              aria-label="虾导计费说明"
+              title="虾导计费说明"
+              className="text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+            >
+              <Gauge className="size-4" />
+            </Button>
             <ControlBar
               chat={chat}
               compact
@@ -14591,6 +14628,59 @@ export function SuperChatPanel({
           onInstall={(item) => void installFreezoneCommunitySkill(item)}
           onSelectLocalSkill={selectFreezoneSkillFromDialog}
         />
+      )}
+      {isFreezoneLayout && (
+        <Dialog open={agentBillingOpen} onOpenChange={setAgentBillingOpen}>
+          <DialogContent className="w-[calc(100vw-2rem)] border-white/10 bg-background/95 p-0 backdrop-blur-xl sm:max-w-[min(46.08rem,calc(100vw-3rem))]">
+            <div className="border-b border-white/10 px-5 py-4">
+              <DialogTitle>虾导 Agent 积分参考</DialogTitle>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {agentBillingReference?.note
+                  ?? "普通聊天和画布操作免费；仅高级 Agent 能力交付计费。"}
+              </p>
+            </div>
+            <div className="max-h-[65vh] overflow-auto px-5 py-4">
+              <div className="overflow-hidden rounded-lg border border-white/10">
+                <table className="w-full min-w-[640px] table-fixed text-left text-xs">
+                  <thead className="bg-white/[0.05] text-muted-foreground">
+                    <tr>
+                      <th className="w-[24%] px-3 py-2.5 font-medium">任务</th>
+                      <th className="w-[54%] px-3 py-2.5 font-medium">包含内容</th>
+                      <th className="w-[22%] px-3 py-2.5 font-medium">Agent 计费</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.07]">
+                    {(agentBillingReference?.items ?? []).map((item) => (
+                      <tr key={item.key}>
+                        <td className="whitespace-nowrap px-3 py-3 font-medium text-foreground">
+                          {item.label}
+                        </td>
+                        <td className="px-3 py-3 leading-5 text-muted-foreground">
+                          {item.examples}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-foreground/85">
+                          {item.reference_display}
+                        </td>
+                      </tr>
+                    ))}
+                    {!agentBillingReference && (
+                      <tr>
+                        <td colSpan={3} className="px-3 py-8 text-center text-muted-foreground">
+                          正在加载计费参考…
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
+                表中区间用于提前了解消耗量级，最终以系统配置的功能价格和实际成功交付数量为准。
+                图片、音频和视频等模型生成费用不包含在本表中，仍由 NewAPI 按原有规则独立结算。
+                工具重试和内部多步调用不会重复收取 Agent 交付费用。
+              </p>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
       <FormatCheckDetailsDialog
         formatCheck={formatCheckDetails?.formatCheck ?? null}

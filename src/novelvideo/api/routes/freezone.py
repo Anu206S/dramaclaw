@@ -113,6 +113,16 @@ from novelvideo.freezone.agent_config_store import (
     list_user_agent_config_items,
     save_user_agent_config_item,
 )
+from novelvideo.freezone.agent_capability_billing import (
+    CE_CREATIVE_PLANNING_TEST_CREDITS,
+    CREATIVE_PLANNING_FEATURE_KEY,
+    creative_planning_charge,
+    creative_planning_credit_estimate,
+    reserve_agent_capability_charge,
+    settle_agent_capability_charge,
+    workflow_design_charge,
+    workflow_design_credit_estimate,
+)
 from novelvideo.media_model_request_schema import (
     MediaModelSchemaError,
     media_request_schema_for_mode,
@@ -150,6 +160,7 @@ from novelvideo.freezone.workflow_drafts import (
     patch_workflow_draft,
     prune_expired_workflow_drafts,
     read_workflow_draft,
+    set_workflow_draft_billing,
 )
 from novelvideo.freezone.workflow_runs import (
     WorkflowRunLeaseConflict,
@@ -195,6 +206,7 @@ from novelvideo.freezone.recipe_runtime import (
     generate_recipe_text,
 )
 from novelvideo.ports import get_usage_meter
+from novelvideo.ports.local.usage import NoOpUsageMeter
 from novelvideo.freezone.route_helpers import (
     accepted_job_response as _accepted_job_response,
 )
@@ -4362,6 +4374,104 @@ async def delete_freezone_agent_config_item(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": {"deleted": deleted}}
+
+
+def _workflow_draft_api_data(draft: dict[str, Any]) -> dict[str, Any]:
+    """Hide reservations while exposing a safe estimate for confirmation copy."""
+    public = {key: value for key, value in draft.items() if key != "billing"}
+    public["agent_credit_estimate"] = workflow_design_credit_estimate(
+        draft.get("preview") if isinstance(draft.get("preview"), dict) else None
+    )
+    planning_billing = (
+        draft.get("billing", {}).get("planning")
+        if isinstance(draft.get("billing"), dict)
+        else None
+    )
+    charged_credits = (
+        planning_billing.get("cost")
+        if isinstance(planning_billing, dict)
+        else None
+    )
+    public["agent_planning_charge"] = {
+        **creative_planning_credit_estimate(),
+        "status": (
+            str(planning_billing.get("status") or "unpriced")
+            if isinstance(planning_billing, dict)
+            else "unpriced"
+        ),
+        "display": (
+            f"{charged_credits:g} 积分"
+            if isinstance(charged_credits, (int, float))
+            else creative_planning_credit_estimate()["display"]
+        ),
+        "charged_credits": charged_credits,
+        "simulated": (
+            bool(planning_billing.get("simulated"))
+            if isinstance(planning_billing, dict)
+            else False
+        ),
+    }
+    return public
+
+
+async def _charge_workflow_draft_planning(
+    *,
+    draft: dict[str, Any],
+    ctx: Any,
+    user: dict[str, Any],
+    project: str,
+    canvas_id: str,
+    state_dir: Path,
+) -> dict[str, Any]:
+    """Charge only after a substantive planning draft has been produced."""
+    preview = draft.get("preview") if isinstance(draft.get("preview"), dict) else {}
+    charge = creative_planning_charge(preview)
+    metadata = {
+        "deliverable": "workflow_planning",
+        "draft_id": str(draft.get("draft_id") or ""),
+        "canvas_id": canvas_id,
+        "revision": int(draft.get("revision") or 1),
+        **(charge.params or {}),
+    }
+    reservation = await reserve_agent_capability_charge(
+        user_id=str(
+            getattr(ctx, "requester_user_id", "")
+            or user.get("id")
+            or user.get("username")
+            or ""
+        ),
+        project_id=str(getattr(ctx, "project_id", "") or project),
+        charge=charge,
+        idempotency_key=(
+            f"freezone-agent-planning:{getattr(ctx, 'project_id', '') or project}:"
+            f"{canvas_id}:{draft.get('draft_id')}:{draft.get('revision')}"
+        ),
+        metadata=metadata,
+    )
+    reservation_id = str(reservation.get("id") or "")
+    await settle_agent_capability_charge(
+        reservation_id,
+        confirmed=True,
+        metadata={**metadata, "outcome": "planning_delivered"},
+    )
+    billing = draft.get("billing") if isinstance(draft.get("billing"), dict) else {}
+    persisted = set_workflow_draft_billing(
+        project_dir=state_dir,
+        canvas_id=canvas_id,
+        draft_id=str(draft.get("draft_id") or ""),
+        billing={
+            **billing,
+            "planning": {
+                "feature_key": charge.feature_key,
+                "reservation_id": reservation_id,
+                "status": "confirmed" if reservation_id else "unpriced",
+                "cost": reservation.get("cost"),
+                "simulated": bool(reservation.get("simulated")),
+                "metadata": metadata,
+            },
+        },
+    )
+    return persisted or draft
 
 
 @router.post(
@@ -11742,6 +11852,81 @@ async def list_canvas_history(
 
 
 @router.post(
+    "/projects/{project}/freezone/agent-capability-quote",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def quote_freezone_agent_capability(
+    project: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    """Return a non-reserving quote before a billable Agent planning turn."""
+    feature_key = str(body.get("feature_key") or "").strip()
+    if feature_key != CREATIVE_PLANNING_FEATURE_KEY:
+        raise HTTPException(400, "unsupported agent capability quote")
+    ctx, _username, _project_name, _project_dir, _output_dir = (
+        await _resolve_freezone_project(project, user)
+    )
+    user_id = str(
+        getattr(ctx, "requester_user_id", "")
+        or user.get("id")
+        or user.get("username")
+        or ""
+    )
+    usage_meter = get_usage_meter()
+    metering_enabled = not isinstance(usage_meter, NoOpUsageMeter)
+    try:
+        access = await usage_meter.require_feature_credit_balance(
+            user_id=user_id,
+            feature_key=feature_key,
+            project_id=str(getattr(ctx, "project_id", "") or project),
+            resource_kind="agent_capability",
+            metadata={"billing_scope": "agent_planning_quote"},
+        )
+    except Exception as exc:
+        if find_billing_rule_not_configured_error(exc) is None:
+            raise
+        access = {"required_balance": None, "allowed": True}
+    required = access.get("required_balance")
+    explicitly_configured = access.get("price_rule_configured") is True
+    exact = isinstance(required, (int, float)) and (
+        explicitly_configured or float(required) > 0
+    )
+    estimate = creative_planning_credit_estimate()
+    simulated = not metering_enabled
+    if simulated:
+        required = CE_CREATIVE_PLANNING_TEST_CREDITS
+        exact = True
+    return {
+        "ok": True,
+        "data": {
+            "feature_key": feature_key,
+            "metering_enabled": metering_enabled,
+            "simulated": simulated,
+            "configured": exact,
+            "exact": exact,
+            "required_credits": required if exact else None,
+            "display": (
+                f"{required:g} 积分"
+                if exact
+                else estimate["display"]
+            ),
+            "reference_display": estimate["display"],
+            "allowed": bool(access.get("allowed", True)),
+            "message": (
+                "当前为开源版模拟计费环境；仅记录测试扣费，不修改真实余额。"
+                if simulated
+                else "已读取本次规划的确切积分价格。"
+                if exact
+                else (
+                    "Agent 创意规划价格尚未配置，当前仅能显示参考区间。"
+                )
+            ),
+        },
+    }
+
+
+@router.post(
     "/projects/{project}/freezone/canvases/{canvas_id}/workflow-drafts",
     tags=[TAG_FREEZONE_CANVAS],
 )
@@ -11753,6 +11938,8 @@ async def create_canvas_workflow_draft(
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
+    if body.get("planning_confirmed") is not True:
+        raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user
     )
@@ -11767,9 +11954,17 @@ async def create_canvas_workflow_draft(
             compiled=body.get("compiled"),
             run_after_create=bool(body.get("run_after_create")),
         )
+        draft = await _charge_workflow_draft_planning(
+            draft=draft,
+            ctx=ctx,
+            user=user,
+            project=project,
+            canvas_id=canvas_id,
+            state_dir=state_dir,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"ok": True, "data": draft}
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.get(
@@ -11801,7 +11996,7 @@ async def get_canvas_workflow_draft(
             "status": "workflow_draft_unavailable",
             "error": error or "workflow draft not found",
         }
-    return {"ok": True, "data": draft}
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.patch(
@@ -11817,6 +12012,8 @@ async def patch_canvas_workflow_draft(
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
+    if body.get("planning_confirmed") is not True:
+        raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user
     )
@@ -11845,7 +12042,15 @@ async def patch_canvas_workflow_draft(
         raise HTTPException(400, str(exc)) from exc
     if draft is None:
         return error
-    return {"ok": True, "data": draft}
+    draft = await _charge_workflow_draft_planning(
+        draft=draft,
+        ctx=ctx,
+        user=user,
+        project=project,
+        canvas_id=canvas_id,
+        state_dir=_canvas_state_project_dir(ctx, project_dir),
+    )
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.post(
@@ -11879,7 +12084,82 @@ async def claim_canvas_workflow_draft(
         raise HTTPException(400, str(exc)) from exc
     if draft is None:
         return error
-    return {"ok": True, "data": draft}
+    charge = workflow_design_charge(draft.get("preview"))
+    billing_metadata = {
+        "deliverable": "workflow",
+        "draft_id": draft_id,
+        "canvas_id": canvas_id,
+        "revision": revision,
+        **(charge.params or {}),
+    }
+    confirmation_attempt = int(float(draft.get("confirmation_started_at") or 0) * 1_000_000)
+    try:
+        reservation = await reserve_agent_capability_charge(
+            user_id=str(
+                getattr(ctx, "requester_user_id", "")
+                or user.get("id")
+                or user.get("username")
+                or ""
+            ),
+            project_id=str(ctx.project_id or project),
+            charge=charge,
+            idempotency_key=(
+                f"freezone-agent-workflow:{ctx.project_id}:{canvas_id}:"
+                f"{draft_id}:{revision}:{confirmation_attempt}"
+            ),
+            metadata=billing_metadata,
+        )
+    except Exception:
+        finish_workflow_draft_confirmation(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            outcome="ready",
+        )
+        raise
+    reservation_id = str(reservation.get("id") or "")
+    try:
+        existing_billing = (
+            draft.get("billing") if isinstance(draft.get("billing"), dict) else {}
+        )
+        persisted = set_workflow_draft_billing(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            billing={
+                **existing_billing,
+                "feature_key": charge.feature_key,
+                "reservation_id": reservation_id,
+                "status": "reserved" if reservation_id else "unpriced",
+                "metadata": billing_metadata,
+            },
+        )
+    except Exception:
+        await settle_agent_capability_charge(
+            reservation_id,
+            confirmed=False,
+            metadata={**billing_metadata, "reason": "draft_billing_persist_failed"},
+        )
+        finish_workflow_draft_confirmation(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            outcome="ready",
+        )
+        raise
+    if persisted is None:
+        await settle_agent_capability_charge(
+            reservation_id,
+            confirmed=False,
+            metadata={**billing_metadata, "reason": "workflow_draft_missing"},
+        )
+        return {
+            "ok": False,
+            "status": "workflow_draft_unavailable",
+            "error": "workflow draft not found",
+        }
+    draft = persisted
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.post(
@@ -11913,7 +12193,40 @@ async def finish_canvas_workflow_draft(
             "status": "workflow_draft_unavailable",
             "error": "workflow draft not found",
         }
-    return {"ok": True, "data": draft}
+    billing = draft.get("billing") if isinstance(draft.get("billing"), dict) else {}
+    reservation_id = str(billing.get("reservation_id") or "")
+    billing_status = str(billing.get("status") or "")
+    if reservation_id and billing_status == "reserved":
+        confirmed = str(body.get("outcome") or "") in {"submitted", "confirmed"}
+        settlement_metadata = {
+            **(
+                billing.get("metadata")
+                if isinstance(billing.get("metadata"), dict)
+                else {}
+            ),
+            "outcome": str(body.get("outcome") or ""),
+        }
+        try:
+            await settle_agent_capability_charge(
+                reservation_id,
+                confirmed=confirmed,
+                metadata=settlement_metadata,
+            )
+        except Exception:
+            logger.exception(
+                "Workflow Agent capability completed but credit settlement remains pending"
+            )
+        else:
+            billing["status"] = "confirmed" if confirmed else "refunded"
+            persisted = set_workflow_draft_billing(
+                project_dir=_canvas_state_project_dir(ctx, project_dir),
+                canvas_id=canvas_id,
+                draft_id=draft_id,
+                billing=billing,
+            )
+            if persisted is not None:
+                draft = persisted
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.post(
