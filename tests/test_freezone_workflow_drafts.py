@@ -9,6 +9,7 @@ from novelvideo.freezone.workflow_drafts import (
     finish_workflow_draft_confirmation,
     patch_workflow_draft,
     read_workflow_draft,
+    set_workflow_draft_billing,
     workflow_drafts_db_path,
 )
 
@@ -86,6 +87,36 @@ def test_workflow_draft_lifecycle_uses_project_database(tmp_path: Path) -> None:
     assert finished["status"] == "confirmed"
     assert workflow_drafts_db_path(tmp_path).is_file()
     assert not (tmp_path / "workflow_drafts").exists()
+
+
+def test_workflow_draft_persists_agent_billing_reservation(tmp_path: Path) -> None:
+    draft = create_workflow_draft(
+        project_dir=tmp_path,
+        project_id="project-a",
+        canvas_id="default",
+        intent={"skill_id": "video-ad", "user_goal": "广告"},
+        compiled=_compiled(),
+    )
+
+    updated = set_workflow_draft_billing(
+        project_dir=tmp_path,
+        canvas_id="default",
+        draft_id=draft["draft_id"],
+        billing={"reservation_id": "reservation-1", "status": "reserved"},
+    )
+    stored, error = read_workflow_draft(
+        project_dir=tmp_path,
+        canvas_id="default",
+        draft_id=draft["draft_id"],
+    )
+
+    assert updated is not None
+    assert error is None
+    assert stored is not None
+    assert stored["billing"] == {
+        "reservation_id": "reservation-1",
+        "status": "reserved",
+    }
 
 
 def test_workflow_draft_rejects_stale_patch(tmp_path: Path) -> None:

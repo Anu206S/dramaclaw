@@ -79,6 +79,62 @@ def test_canvas_revision_endpoint_returns_only_revision(workflow_run_client: Tes
     assert response.json()["data"] == {"canvas_id": "default", "revision": 1}
 
 
+def test_agent_planning_quote_is_non_reserving_and_exact(
+    workflow_run_client: TestClient,
+    monkeypatch,
+) -> None:
+    from novelvideo.api.routes import freezone
+
+    seen = {}
+
+    class Meter:
+        async def require_feature_credit_balance(self, **kwargs):
+            seen.update(kwargs)
+            return {"required_balance": 15, "balance": 100, "allowed": True}
+
+    monkeypatch.setattr(freezone, "get_usage_meter", lambda: Meter())
+    response = workflow_run_client.post(
+        "/api/v1/projects/proj_demo/freezone/agent-capability-quote",
+        json={"feature_key": "freezone.agent.creative_planning"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["display"] == "15 积分"
+    assert response.json()["data"]["required_credits"] == 15
+    assert response.json()["data"]["configured"] is True
+    assert response.json()["data"]["metering_enabled"] is True
+    assert seen["feature_key"] == "freezone.agent.creative_planning"
+
+
+def test_agent_planning_quote_uses_ce_simulated_charge_for_testing(
+    workflow_run_client: TestClient,
+) -> None:
+    response = workflow_run_client.post(
+        "/api/v1/projects/proj_demo/freezone/agent-capability-quote",
+        json={"feature_key": "freezone.agent.creative_planning"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["configured"] is True
+    assert response.json()["data"]["exact"] is True
+    assert response.json()["data"]["simulated"] is True
+    assert response.json()["data"]["required_credits"] == 15
+    assert response.json()["data"]["display"] == "15 积分"
+    assert response.json()["data"]["metering_enabled"] is False
+
+
+def test_workflow_draft_requires_planning_credit_confirmation(
+    workflow_run_client: TestClient,
+) -> None:
+    response = workflow_run_client.post(
+        "/api/v1/projects/proj_demo/freezone/canvases/default/workflow-drafts",
+        json={"intent": {}, "compiled": {}},
+    )
+
+    assert response.status_code == 409
+    assert "confirmation" in response.json()["detail"]
+
+
 def test_workflow_run_api_rejects_invalid_action_phase(
     workflow_run_client: TestClient,
 ) -> None:
@@ -181,10 +237,18 @@ def test_workflow_draft_api_lifecycle(workflow_run_client: TestClient) -> None:
         json={
             "intent": {"skill_id": "video-ad", "user_goal": "广告"},
             "compiled": compiled,
+            "planning_confirmed": True,
         },
     )
     assert created_response.status_code == 200
     created = created_response.json()["data"]
+    assert created["agent_credit_estimate"]["display"] == "10–20 积分"
+    assert created["agent_planning_charge"]["display"] == "15 积分"
+    assert created["agent_planning_charge"]["status"] == "confirmed"
+    assert created["agent_planning_charge"]["charged_credits"] == 15
+    assert created["agent_planning_charge"]["simulated"] is True
+    assert created["agent_credit_estimate"]["media_generation_separate"] is True
+    assert "billing" not in created
 
     patched_response = workflow_run_client.patch(
         f"{base}/{created['draft_id']}",
@@ -197,6 +261,7 @@ def test_workflow_draft_api_lifecycle(workflow_run_client: TestClient) -> None:
             },
             "compiled": compiled,
             "last_changes": {"items": ["开场"]},
+            "planning_confirmed": True,
         },
     )
     assert patched_response.status_code == 200
@@ -217,6 +282,76 @@ def test_workflow_draft_api_lifecycle(workflow_run_client: TestClient) -> None:
     assert workflow_run_client.get(f"{base}/{created['draft_id']}").json()["data"][
         "status"
     ] == "confirmed"
+
+
+def test_workflow_draft_api_reserves_and_confirms_agent_charge(
+    workflow_run_client: TestClient,
+    monkeypatch,
+) -> None:
+    from novelvideo.api.routes import freezone
+
+    reserved: list[dict] = []
+    settled: list[tuple[str, bool]] = []
+
+    async def fake_reserve(**kwargs):
+        reserved.append(kwargs)
+        if kwargs["charge"].feature_key.endswith("creative_planning"):
+            return {"id": "planning-reservation-1", "cost": 8}
+        return {"id": "workflow-reservation-1", "cost": 20}
+
+    async def fake_settle(reservation_id, *, confirmed, metadata=None):
+        del metadata
+        settled.append((reservation_id, confirmed))
+
+    monkeypatch.setattr(freezone, "reserve_agent_capability_charge", fake_reserve)
+    monkeypatch.setattr(freezone, "settle_agent_capability_charge", fake_settle)
+    base = "/api/v1/projects/proj_demo/freezone/canvases/default/workflow-drafts"
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "edge_count": 0,
+        "plan": {
+            "summary": "广告",
+            "inputs": {},
+            "phases": ["视频"],
+            "nodes": [
+                {
+                    "id": f"shot-{index}",
+                    "name": f"镜头 {index}",
+                    "node_type": "videoNode",
+                    "stage": "video",
+                }
+                for index in range(6)
+            ],
+            "edges": [],
+        },
+    }
+    draft = workflow_run_client.post(
+        base,
+        json={
+            "intent": {"skill_id": "video-ad", "user_goal": "广告"},
+            "compiled": compiled,
+            "planning_confirmed": True,
+        },
+    ).json()["data"]
+
+    claimed = workflow_run_client.post(
+        f"{base}/{draft['draft_id']}/claim",
+        json={"revision": 1},
+    )
+    finished = workflow_run_client.post(
+        f"{base}/{draft['draft_id']}/finish",
+        json={"outcome": "confirmed"},
+    )
+
+    assert claimed.status_code == 200
+    assert finished.status_code == 200
+    assert reserved[0]["charge"].feature_key.endswith("creative_planning")
+    assert reserved[1]["charge"].feature_key.endswith("workflow_design.complex")
+    assert settled == [
+        ("planning-reservation-1", True),
+        ("workflow-reservation-1", True),
+    ]
 
 
 def test_workflow_run_list_reconciles_completed_project_task(

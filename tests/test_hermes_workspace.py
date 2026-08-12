@@ -177,20 +177,17 @@ def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skill
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
     soul = (home / "SOUL.md").read_text(encoding="utf-8")
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
-    assert "创意咨询、找思路、风格建议" in soul
-    assert "搭建可继续工作的画布框架" in soul
+    assert "创意咨询" in soul
+    assert "画布节点、连线、资源和工作流操作" in soul
     assert "不要在普通回复开头自报身份" in soul
-    assert "command catalog" in soul
-    assert "node create schema" in soul
-    assert "link type catalog" in soul
-    assert "生成完整短片" in soul
-    assert "创意咨询、找思路、风格建议" in memory
-    assert "搭建可继续工作的画布框架" in memory
-    assert "不要在普通回复开头自报身份" in memory
-    assert "command catalog" in memory
-    assert "node create schema" in memory
-    assert "link type catalog" in memory
-    assert "生成完整短片" in memory
+    assert "FREEZONE_CANVAS_ASSISTANT" in soul
+    assert "command catalog" not in soul
+    assert "只使用 Freezone 画布能力" in memory
+    assert "不得用 DramaClaw 主线工具" in memory
+    assert "创意咨询" not in memory
+    assert "command catalog" not in memory
+    assert len(soul) < 250
+    assert len(memory) < 100
     assert (hw.freezone_python_hook_dir(home) / "sitecustomize.py").is_file()
 
 
@@ -703,6 +700,15 @@ def test_hermes_tool_call_guard_still_stops_repeated_skill_loading():
 
     assert stop_message is not None
     assert guard.total == 0
+
+
+def test_hermes_tool_call_guard_reason_is_machine_readable():
+    assert hermes_sdk._tool_call_guard_reason("本轮操作已停止：重复读取同一项状态") == (
+        "repeated_read"
+    )
+    assert hermes_sdk._tool_call_guard_reason("本轮操作已停止：连续调用工具过多") == (
+        "tool_call_limit"
+    )
 
 
 def test_hermes_tool_call_guard_stops_repeated_identical_node_reads():

@@ -261,66 +261,37 @@ def load_user_preferences(username: str) -> str:
 _FREEZONE_CANVAS_ASSISTANT_INSTRUCTIONS = """[FREEZONE_CANVAS_ASSISTANT]
 This chat turn is running inside the Xi画/Freezone canvas.
 
-Allowed:
-- inspect project state, assets, tasks, skill runs, and canvas data;
-- run Freezone canvas skills and save/delete/create canvas nodes/canvases.
-- for creative ideation, brainstorming, story direction, concept options, or style advice that
-  should become working Freezone canvas material, use Freezone canvas tools to draft a
-  canvas framework such as theme notes, storyboard beats, style directions, resource
-  placeholders, and workflow scaffolding. You may also answer naturally when the user is
-  only asking for explanation.
-- 选择式澄清/互动类：当用户希望助手通过提问推进对话，或当前任务需要用户补充/选择几个关键信息后才能继续时，优先调用
-  freezone_request_user_clarification 展示问题卡片。适用场景包括：帮用户理清想法、做偏好选择、做小测验/问答互动、
-  确认方向、收集必要条件。问题应贴近用户表达方式，让用户能凭直觉选择或补充；不要询问内部实现细节、工具参数、
-  节点类型、link_type、schema、模型参数等。若只是普通闲聊、简单知识问答、单个自然追问，或用户已经给出明确指令，
-  则直接自然语言回复，不要强行发卡片。
-- before canvas writes, ground the operation in the current canvas summary/context. For
-  node creation or graph edits, use command catalog, node create schema, and link type catalog
-  as needed. Validate multi-step or edge-creating commands before writing.
-- when the user asks to create, add, delete, update, connect, move, layout, select,
-  open, run, apply, or execute anything on the canvas, you MUST call a Freezone
-  canvas write tool before claiming the canvas changed. For exactly one canvas
-  operation, use the matching single-operation write tool or a Freezone canvas
-  command batch. For multiple canvas changes, use one Freezone canvas command batch.
-- for a canvas edit turn, your first assistant output MUST be the Freezone write
-  tool call. Do not emit assistant prose, acknowledgements, summaries, or status
-  text before that write tool call.
-- for canvas frameworks, workflows, storyboards, short-video plans, or any request that
-  creates several nodes/edges/groups/layout changes, gather needed catalogs/schemas first,
-  then submit one validated Freezone canvas command batch; do not write nodes step by step.
-- Freezone canvas can generate complete short videos through canvas operations: create and run
-  video, audio, and composition nodes, then use the frontend write result as the source of truth.
-- videoComposeNode is the final timeline/composition node for combining multiple video clips
-  and audio tracks into the final video. Connect video/audio outputs to it as composition
-  inputs; do not connect planning text, briefs, or prompts directly into videoComposeNode.
-- when the user asks to create/add/write a text node on the canvas, call
-  freezone_create_node for exactly one textAnnotationNode, or freezone_emit_canvas_command
-  for multi-step canvas changes, with the current canvas_id from FREEZONE_CANVAS_CONTEXT.
-  Do not check pipeline/task failure status first unless the user asks about pipeline status.
-- never claim a node, edge, layout, selection, action, or any canvas change was
-  created, updated, deleted, connected, moved, selected, opened, run, applied,
-  submitted, or completed unless this same turn has a successful Freezone write
-  tool/frontend result. If no write tool succeeds, say you could not confirm or
-  apply the canvas change instead of describing it as done.
+Scope:
+- Inspect project assets, tasks, skill runs, and canvas data; answer explanations naturally.
+- Turn creative ideas into working canvas material only when the user asks to create or land it.
+- Keep image, audio, video, and composition work inside Freezone. Do not start, mutate, or use
+  DramaClaw mainline production tools unless the user explicitly asks for the main project pipeline.
 
-Forbidden:
-- Do not start or mutate the main video-production pipeline from here;
-- Do not call DramaClaw mainline production tools from Freezone; keep short-video generation,
-  audio, image, and composition work inside Freezone canvas nodes and actions.
-- Do not use mainline production tools for Freezone ideation or canvas framework work.
+Clarification:
+- Use freezone_request_user_clarification when several user-facing choices are required. Ask about
+  creative intent, not tool fields, node types, link_type, schema, or model parameters. For ordinary
+  chat, one natural follow-up, or an explicit request, reply normally without a card.
 
-If the user asks to generate a short video in Freezone, guide or perform the needed canvas-node
-operations. Only redirect when the user explicitly asks to use the DramaClaw main project pipeline.
+Canvas write contract:
+- Before writing, ground the operation in the current canvas summary/context. Read command catalog,
+  node create schema, link type catalog, node detail, or action catalog only when needed. Validate
+  multi-step or edge-creating commands before writing.
+- For create/add/delete/update/connect/move/layout/select/open/run/apply/execute requests, you MUST
+  call a Freezone write tool. The first assistant output MUST be that write tool call; do not emit
+  prose first. Use the matching single-operation write tool for exactly one operation and one
+  command batch for multiple changes, frameworks, workflows, storyboards, or short-video plans.
+- Use freezone_create_node only for exactly one standalone textAnnotationNode when the user asks for
+  one text node; otherwise use one freezone_emit_canvas_command batch. Use FREEZONE_CANVAS_CONTEXT's
+  canvas_id. Do not precheck pipeline failure unless the user asks about status.
+- Never claim any canvas change succeeded without a successful same-turn frontend write result. If
+  it fails or is absent, say the change could not be confirmed.
+- Complete short videos with canvas video/audio/composition nodes. videoComposeNode is terminal:
+  connect video/audio outputs as composition inputs; never connect planning text or prompts to it.
 
-Skill Studio history:
-- If recent conversation history contains a Skill Studio save result and the user naturally asks to
-  revise, change, tighten, or undo that saved Skill/Recipe/draft/config, treat the turn as a Skill
-  Studio edit continuation instead of normal canvas creation.
-- In that case, use the saved draft from history as context when available; if only saved ids are
-  available, read the saved Skill/Recipe configuration with freezone_get_saved_skill and/or
-  freezone_get_saved_recipe before editing. Start with focused clarification questions when the
-  requested change is underspecified, then present a complete edit draft. Do not emit canvas
-  commands for this edit flow.
+Skill Studio continuation:
+- If recent history contains a Skill Studio save result and the user asks to revise it, continue that
+  edit instead of writing canvas commands. Use the saved draft when available; otherwise read the
+  saved Skill/Recipe. Clarify underspecified changes, then present a complete edit draft.
 [/FREEZONE_CANVAS_ASSISTANT]"""
 
 _FREEZONE_SKILL_STUDIO_TRIGGER_RE = re.compile(
@@ -634,6 +605,9 @@ def _prompt_with_user_context(
         continuation_source,
         tool_mode=tool_mode,
     )
+    rendering_instructions = (
+        "" if tool_mode == "freezone_canvas" else f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
+    )
     return (
         "[DRAMACLAW_USER_CONTEXT]\n"
         f"username: {username}\n"
@@ -642,7 +616,7 @@ def _prompt_with_user_context(
         "Only stable user preferences should be reused across projects.\n\n"
         "[USER_PREFERENCES]\n"
         f"{preferences}\n\n"
-        f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
+        f"{rendering_instructions}"
         f"{continuation_instructions}"
         f"{surface_instructions}\n\n"
         "[USER_MESSAGE]\n"
@@ -4156,20 +4130,69 @@ async def _stream_assistant_reply_hermes(
     seen_tool_chat_errors: set[str] = set()
 
     async def hermes_events_with_session_retry():
-        nonlocal thread
+        nonlocal thread, assistant_text, tool_text, current_tool_name, current_tool_hidden
         from novelvideo.chat.hermes_sdk import (
             HermesSessionUnavailableError,
             _is_session_unavailable_error,
         )
 
         retried = False
+        guard_retried = False
+        stream_prompt = agent_prompt
         while True:
             saw_complete = False
             restart_stream = False
             try:
-                async for stream_event in thread.stream(agent_prompt, current_project=project or None):
+                async for stream_event in thread.stream(
+                    stream_prompt,
+                    current_project=project or None,
+                ):
                     if stream_event.type == "complete":
                         saw_complete = True
+                    guard_details = (
+                        stream_event.raw
+                        if stream_event.type == "complete" and isinstance(stream_event.raw, dict)
+                        else {}
+                    )
+                    if (
+                        tool_mode == "freezone_canvas"
+                        and not guard_retried
+                        and guard_details.get("reason") == "tool_call_guard"
+                        and guard_details.get("guard_reason") == "repeated_read"
+                        and guard_details.get("tool_name") in {"skill", "skill_view"}
+                        and not guard_details.get("had_write")
+                    ):
+                        logger.warning(
+                            "hermes repeated skill loading; resetting and recovering once "
+                            "user=%s project=%s agent_profile=%s canvas=%s",
+                            username,
+                            project or None,
+                            agent_profile,
+                            canvas_id,
+                        )
+                        thread = await _hermes_pool.reset_for_user(
+                            username,
+                            agent_profile=agent_profile,
+                            tool_mode=tool_mode,
+                            scope_kind="project" if project else "home",
+                            project_id=project or None,
+                            surface=surface,
+                            canvas_id=canvas_id,
+                        )
+                        assistant_text = ""
+                        tool_text = ""
+                        current_tool_name = None
+                        current_tool_hidden = False
+                        stream_prompt = agent_prompt + """
+
+[FREEZONE_AUTOMATIC_RECOVERY]
+上一次执行因重复加载同一份 Skill 指令而被内部守卫中止。不要要求用户改写或重发请求。
+如确有必要，相关 Skill 只读取一次；随后直接根据用户原始请求创建或更新对应的 Workflow、Skill 或 Recipe 草稿。
+不要重复读取同一项状态；完成实际操作后再回复结果。
+[/FREEZONE_AUTOMATIC_RECOVERY]"""
+                        guard_retried = True
+                        restart_stream = True
+                        break
                     if (
                         not retried
                         and stream_event.type == "complete"
