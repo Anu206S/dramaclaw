@@ -42,6 +42,9 @@ load_dotenv()
 
 NEWAPI_VIDEO_HTTP_TIMEOUT_SECONDS = 1800.0
 NEWAPI_MEDIA_INPUT_MIN_TTL_SECONDS = 2 * 60 * 60
+# 「出片时长跟随输入视频」的厂商哨兵值（Seedance 视频编辑要求 duration 必须是 -1，
+# 配套 ratio=adaptive）。不是我们发明的魔法数，见 `_follows_source_video_output`。
+SOURCE_FOLLOWING_DURATION = -1
 
 
 def _run_video_subprocess(cmd: list[str], *, timeout: int = 30 * 60) -> subprocess.CompletedProcess:
@@ -2133,6 +2136,26 @@ class NewApiVideoGenerator(VideoGeneratorBase):
     def _is_grok_video_channel_model(self) -> bool:
         return self.model.strip().lower() == "grok-video-channel"
 
+    def _follows_source_video_output(self, mode: object) -> bool:
+        """Seedance 视频编辑：出片的比例和时长由输入视频决定，不能自己指定。
+
+        厂商对这类任务硬校验，指定了就整单打回::
+
+            [InvalidParameter.TaskTypeConstraint] ... Seedance identified your task
+            as video editing based on your prompt. For this task type, the output
+            ratio and duration follow the input video ...
+            Issues: [0] `ratio` must be `adaptive`. [1] `duration` must be -1.
+
+        `adaptive` / `-1` 就是厂商用来表达「这两项不传、跟随原片」的写法，所以这里
+        不是塞两个魔法值上去，而是把用户在界面上选的比例 / 时长挡在外面。
+
+        只认 Seedance 系：HappyHorse 的视频编辑走它自己那套参数，照常带比例和时长。
+        """
+
+        if str(mode or "").strip() not in {"videoEdit", "video_edit"}:
+            return False
+        return self.model.strip().lower().startswith("seedance-")
+
     @staticmethod
     def _happyhorse_ratio(value: str | None) -> str:
         text = str(value or "").strip()
@@ -2247,6 +2270,10 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 payload["duration"] = (
                     int(duration_number) if duration_number.is_integer() else duration_number
                 )
+            elif int(duration_number) == SOURCE_FOLLOWING_DURATION:
+                # 视频编辑的哨兵：必须**显式**发 -1。整个字段删掉的话网关会补一个默认
+                # 时长上去，厂商照样以 `duration` must be -1 打回。
+                payload["duration"] = SOURCE_FOLLOWING_DURATION
 
         first_frame = ""
         for key in ("first_frame_image", "image_url"):
@@ -2631,6 +2658,12 @@ class NewApiVideoGenerator(VideoGeneratorBase):
             metadata["return_last_frame"] = bool(
                 seedance2_config.get("return_last_frame", False)
             )
+            if self._follows_source_video_output(requested_mode):
+                metadata["ratio"] = "adaptive"
+                # 走 payload["seconds"]，与上面的常规路径同一个入口；
+                # `_canonicalize_video_payload` 认得这个 -1 并原样发出去。
+                payload["seconds"] = str(SOURCE_FOLLOWING_DURATION)
+                log("视频编辑：比例与时长跟随原片（不下发用户所选值）")
         elif self._is_happyhorse_model():
             if len(prompt) > 2500:
                 prompt = prompt[:2500]

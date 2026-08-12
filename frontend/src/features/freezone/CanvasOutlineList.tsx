@@ -24,6 +24,7 @@ import {
   Navigation,
   Pencil,
   Play,
+  ScanSearch,
   ScrollText,
   Search,
   Sparkles,
@@ -84,6 +85,7 @@ const NODE_TYPE_ICON: Record<CanvasNodeType, LucideIcon> = {
   [CANVAS_NODE_TYPES.audio]: AudioLines,
   [CANVAS_NODE_TYPES.videoStory]: Film,
   [CANVAS_NODE_TYPES.videoCompose]: Film,
+  [CANVAS_NODE_TYPES.videoBreakdown]: ScanSearch,
   [CANVAS_NODE_TYPES.script]: ScrollText,
   [CANVAS_NODE_TYPES.pano360Viewer]: Globe,
   [CANVAS_NODE_TYPES.threeDWorld]: Box,
@@ -220,6 +222,7 @@ export const CANVAS_OUTLINE_FILTERS: ReadonlyArray<{
       CANVAS_NODE_TYPES.video,
       CANVAS_NODE_TYPES.videoStory,
       CANVAS_NODE_TYPES.videoCompose,
+      CANVAS_NODE_TYPES.videoBreakdown,
     ],
   },
   {
