@@ -4975,53 +4975,197 @@ _MAINLINE_PROJECTION_ASSET_KIND_VALUES = [
     "prop_ref",
 ]
 
-_CANVAS_COMMAND_ITEM_SCHEMA = {
+def _command_variant(
+    command_type: str,
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": [command_type]},
+            **properties,
+        },
+        "required": ["type", *(required or [])],
+        "additionalProperties": False,
+    }
+
+
+_NON_EMPTY_STRING = {"type": "string", "minLength": 1}
+_NODE_IDS_SCHEMA = {
+    "type": "array",
+    "items": _NON_EMPTY_STRING,
+    "minItems": 1,
+}
+_POSITION_SCHEMA = {
+    "type": "object",
+    "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+    "required": ["x", "y"],
+    "additionalProperties": False,
+}
+_POSITIONS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": _POSITION_SCHEMA,
+    "minProperties": 1,
+}
+_TEXT_ANNOTATION_DATA_SCHEMA = {
     "type": "object",
     "properties": {
-        "type": {
-            "type": "string",
-            "enum": sorted(_COMMAND_TYPES),
-            "description": "Required command discriminator. Use 'type', never legacy 'command'.",
-        },
-        "node_type": {
-            "type": "string",
-            "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
-            "description": "Required for create_node. Batch commands use snake_case node_type, never nodeType.",
-        },
-        "data": {
-            "type": "object",
-            "description": (
-                "Node data. For textAnnotationNode, include non-empty title and content. "
-                "Other node types follow the runtime node-create schema. Do not put "
-                "nodeType or imageGenerationParams here."
-            ),
-        },
-        "client_id": {"type": "string", "description": "Same-batch alias for newly created nodes."},
-        "node_id": {"type": "string", "description": "Existing node id for update_node_data or run_node_action."},
-        "node_ids": {"type": "array", "items": {"type": "string"}, "description": "Existing node ids for group/delete/run_workflow."},
-        "action": {"type": "string", "description": "Action id for run_node_action."},
-        "parameters": {
-            "type": "object",
-            "description": "Optional run_node_action parameters. For generation actions, omit regenerate unless the user explicitly asks to regenerate/overwrite existing output.",
-        },
-        "regenerate": {
-            "type": "boolean",
-            "description": "Only for run_workflow: true means regenerate completed workflow nodes. Omit for normal continue/complete requests so completed nodes are skipped.",
-        },
-        "scope": {"type": "string", "enum": ["selection", "canvas"], "description": "Optional run_workflow scope."},
-        "source": {"type": "string"},
-        "target": {"type": "string"},
-        "link_type": {
-            "type": "string",
-            "enum": _LINK_TYPE_VALUES,
-            "description": "Required for create_edge.",
-        },
-        "request": {
-            "type": "object",
-            "description": "Required for open_mainline_projection. Mainline projection request with scope, episode/beat, primary_slot, or asset fields.",
-        },
+        "title": _NON_EMPTY_STRING,
+        "content": _NON_EMPTY_STRING,
     },
-    "required": ["type"],
+    "required": ["title", "content"],
+}
+_OTHER_AGENT_CREATABLE_NODE_TYPE_VALUES = [
+    value for value in _AGENT_CREATABLE_NODE_TYPE_VALUES if value != "textAnnotationNode"
+]
+
+# Keep this JSON Schema mechanically aligned with the frontend's
+# CanvasChatCommand discriminated union. A single object containing every
+# optional field makes some providers fill the union with zero values and omit
+# the payload that actually matters. Each branch therefore exposes only the
+# fields valid for that command type.
+_CANVAS_COMMAND_ITEM_SCHEMA = {
+    "oneOf": [
+        _command_variant(
+            "create_node",
+            {
+                "client_id": _NON_EMPTY_STRING,
+                "node_type": {
+                    "type": "string",
+                    "enum": ["textAnnotationNode"],
+                },
+                "position": _POSITION_SCHEMA,
+                "data": _TEXT_ANNOTATION_DATA_SCHEMA,
+            },
+            ["node_type", "data"],
+        ),
+        _command_variant(
+            "create_node",
+            {
+                "client_id": _NON_EMPTY_STRING,
+                "node_type": {
+                    "type": "string",
+                    "enum": _OTHER_AGENT_CREATABLE_NODE_TYPE_VALUES,
+                },
+                "position": _POSITION_SCHEMA,
+                "data": {"type": "object"},
+            },
+            ["node_type"],
+        ),
+        _command_variant(
+            "add_next_node",
+            {
+                "client_id": _NON_EMPTY_STRING,
+                "source_node_id": _NON_EMPTY_STRING,
+                "node_type": {
+                    "type": "string",
+                    "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
+                },
+                "data": {"type": "object"},
+                "connect": {"type": "boolean"},
+            },
+            ["source_node_id"],
+        ),
+        _command_variant(
+            "update_node_data",
+            {"node_id": _NON_EMPTY_STRING, "data": {"type": "object"}},
+            ["node_id", "data"],
+        ),
+        _command_variant("delete_nodes", {"node_ids": _NODE_IDS_SCHEMA}, ["node_ids"]),
+        _command_variant(
+            "delete_edges",
+            {"edge_ids": _NODE_IDS_SCHEMA},
+            ["edge_ids"],
+        ),
+        _command_variant(
+            "delete_edges",
+            {
+                "pairs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": _NON_EMPTY_STRING,
+                            "target": _NON_EMPTY_STRING,
+                        },
+                        "required": ["source", "target"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": 1,
+                }
+            },
+            ["pairs"],
+        ),
+        _command_variant(
+            "create_edge",
+            {
+                "source": _NON_EMPTY_STRING,
+                "target": _NON_EMPTY_STRING,
+                "link_type": {"type": "string", "enum": _LINK_TYPE_VALUES},
+            },
+            ["source", "target", "link_type"],
+        ),
+        _command_variant(
+            "layout_nodes",
+            {
+                "node_ids": _NODE_IDS_SCHEMA,
+                "mode": {"type": "string", "enum": ["horizontal", "vertical", "grid"]},
+            },
+            ["mode"],
+        ),
+        _command_variant(
+            "group_nodes",
+            {"node_ids": _NODE_IDS_SCHEMA, "label": {"type": "string"}},
+            ["node_ids"],
+        ),
+        _command_variant(
+            "move_nodes",
+            {"positions": _POSITIONS_SCHEMA},
+            ["positions"],
+        ),
+        _command_variant(
+            "move_nodes",
+            {"deltas": _POSITIONS_SCHEMA},
+            ["deltas"],
+        ),
+        _command_variant(
+            "select_nodes",
+            {"node_ids": _NODE_IDS_SCHEMA, "focus": {"type": "boolean"}},
+            ["node_ids"],
+        ),
+        _command_variant(
+            "run_node_action",
+            {
+                "node_id": _NON_EMPTY_STRING,
+                "action": _NON_EMPTY_STRING,
+                "parameters": {"type": "object"},
+            },
+            ["node_id", "action"],
+        ),
+        _command_variant(
+            "open_mainline_projection",
+            {"project_id": _NON_EMPTY_STRING, "request": {"type": "object"}},
+            ["request"],
+        ),
+        _command_variant(
+            "run_workflow",
+            {
+                "node_ids": _NODE_IDS_SCHEMA,
+                "scope": {"type": "string", "enum": ["selection", "canvas"]},
+                "direction": {
+                    "type": "string",
+                    "enum": ["connected", "node", "downstream"],
+                },
+                "regenerate": {"type": "boolean"},
+            },
+        ),
+    ]
+}
+
+_CANVAS_COMMAND_TOOL_SCOPE_PROPS = {
+    "project_id": _SCOPE_PROPS["project_id"],
+    "canvas_id": _SCOPE_PROPS["canvas_id"],
 }
 
 
@@ -5708,21 +5852,14 @@ TOOLS = (
             "freezone_validate_canvas_commands",
             "Preflight validate canvas_chat_commands.v1 against the current frontend canvas before emitting commands.",
             {
-                **_SCOPE_PROPS,
+                **_CANVAS_COMMAND_TOOL_SCOPE_PROPS,
                 "commands": {
                     "type": "array",
                     "description": "Commands array from a canvas_chat_commands.v1 envelope. Batch commands require snake_case fields such as type and node_type; do not use legacy command/nodeType/imageGenerationParams.",
                     "items": _CANVAS_COMMAND_ITEM_SCHEMA,
                 },
-                "envelope": {
-                    "type": "object",
-                    "description": "Full canvas_chat_commands.v1 envelope to validate.",
-                },
-                "body": {
-                    "type": "object",
-                    "description": "Raw canvas_chat_commands.v1 envelope or object containing commands.",
-                },
             },
+            ["commands"],
         ),
         _handle_validate_commands,
     ),
@@ -5733,15 +5870,11 @@ TOOLS = (
             "freezone_emit_canvas_command",
             "Default Freezone write tool for ordinary non-workflow canvas edits. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. Do not use this tool for registered or dynamic WorkflowPlans; use freezone_create_workflow_graph instead. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
             {
-                **_SCOPE_PROPS,
+                **_CANVAS_COMMAND_TOOL_SCOPE_PROPS,
                 "commands": {
                     "type": "array",
                     "description": "Complete canvas_chat_commands.v1 commands array for ordinary non-workflow edits. For workflows, do not build this array manually; call freezone_create_workflow_graph with a complete dynamic plan. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc.",
                     "items": _CANVAS_COMMAND_ITEM_SCHEMA,
-                },
-                "body": {
-                    "type": "object",
-                    "description": "Optional raw body containing a commands array.",
                 },
             },
             ["commands"],
