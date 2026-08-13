@@ -238,12 +238,12 @@ def test_freezone_plugin_registers_canvas_command_tools():
     ]
 
 
-def test_validation_payload_ignores_empty_wrappers_and_uses_commands():
+def test_validation_payload_uses_only_the_declared_commands_contract():
     plugin = _load_plugin_module()
     commands = [{"type": "create_node", "client_id": "node-a"}]
 
     payload = plugin._validation_payload(
-        {"body": {}, "envelope": {}, "commands": commands}
+        {"body": {"commands": [{"type": "ignored"}]}, "commands": commands}
     )
 
     assert payload == {
@@ -252,22 +252,14 @@ def test_validation_payload_ignores_empty_wrappers_and_uses_commands():
     }
 
 
-def test_validation_payload_keeps_non_empty_explicit_body_precedence():
+def test_validation_payload_rejects_removed_wrapper_only_contracts():
     plugin = _load_plugin_module()
-    body = {
-        "schema_version": "canvas_chat_commands.v1",
-        "commands": [{"type": "create_node", "client_id": "body-node"}],
-    }
-
-    payload = plugin._validation_payload(
-        {
-            "body": body,
-            "envelope": {"commands": [{"type": "create_node"}]},
-            "commands": [{"type": "create_edge"}],
-        }
-    )
-
-    assert payload == body
+    assert plugin._validation_payload(
+        {"body": {"commands": [{"type": "create_node"}]}}
+    ) == {}
+    assert plugin._validation_payload(
+        {"envelope": {"commands": [{"type": "create_node"}]}}
+    ) == {}
 
 
 def test_validate_canvas_commands_rejects_empty_required_data():
@@ -3007,7 +2999,7 @@ def test_canvas_command_tools_expose_discriminated_minimal_schema():
     assert "direction" in by_type["run_workflow"][0]["properties"]
 
 
-def test_canvas_command_handlers_keep_legacy_wrapper_compatibility_hidden_from_schema():
+def test_canvas_command_tools_and_handlers_share_one_contract():
     plugin = _load_plugin_module()
     schemas = {name: schema for name, schema, _handler in plugin.TOOLS}
 
@@ -3023,8 +3015,9 @@ def test_canvas_command_handlers_keep_legacy_wrapper_compatibility_hidden_from_s
     assert "body" not in emit_properties
     assert "envelope" not in validate_properties
 
-    legacy = {"schema_version": "canvas_chat_commands.v1", "commands": [{"type": "x"}]}
-    assert plugin._validation_payload({"canvasId": "old", "body": legacy}) == legacy
+    assert plugin._validation_payload(
+        {"canvasId": "old", "body": {"commands": [{"type": "x"}]}}
+    ) == {}
 
 
 def test_canvas_command_schema_accepts_minimal_variants_and_rejects_union_shell():

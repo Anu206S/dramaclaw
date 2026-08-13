@@ -2016,10 +2016,6 @@ def _handle_mainline_projection_assets(args: dict[str, Any], **_: Any) -> str:
 
 
 def _validation_payload(args: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(args.get("body"), dict) and args["body"]:
-        return dict(args["body"])
-    if isinstance(args.get("envelope"), dict) and args["envelope"]:
-        return dict(args["envelope"])
     if isinstance(args.get("commands"), list) and args["commands"]:
         return {
             "schema_version": "canvas_chat_commands.v1",
@@ -2031,11 +2027,11 @@ def _validation_payload(args: dict[str, Any]) -> dict[str, Any]:
 def _handle_validate_commands(args: dict[str, Any], **_: Any) -> str:
     try:
         project = (
-            str(args.get("project_id") or args.get("project") or _default_project_id()).strip()
+            str(args.get("project_id") or _default_project_id()).strip()
             or None
         )
         canvas = (
-            str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip()
+            str(args.get("canvas_id") or _default_canvas_id()).strip()
             or None
         )
         payload = _validation_payload(args)
@@ -2044,7 +2040,7 @@ def _handle_validate_commands(args: dict[str, Any], **_: Any) -> str:
                 {
                     "ok": False,
                     "status": "empty_validation_payload",
-                    "error": "commands, envelope, or body is required",
+                    "error": "commands is required",
                     **(_scope_meta(project, canvas) if project and canvas else {}),
                 }
             )
@@ -3270,14 +3266,12 @@ def _summarize_canvas_command_result(
 
 def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
     project = (
-        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+        str(args.get("project_id") or _default_project_id()).strip() or None
     )
     canvas = (
-        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+        str(args.get("canvas_id") or _default_canvas_id()).strip() or None
     )
     commands = args.get("commands")
-    if commands is None and isinstance(args.get("body"), dict):
-        commands = args["body"].get("commands")
     return _emit_canvas_commands(project, canvas, commands, slim_result=True)
 
 
