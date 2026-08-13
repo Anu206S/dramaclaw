@@ -10913,6 +10913,7 @@ interface AgentCapabilityPriceReferenceItem {
 }
 
 interface AgentCapabilityPriceReference {
+  enabled: boolean;
   items: AgentCapabilityPriceReferenceItem[];
   note: string;
 }
@@ -10997,13 +10998,13 @@ export function SuperChatPanel({
   const messageListRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
-    if (!isFreezoneLayout || !agentBillingOpen || agentBillingReference) return;
+    if (!isFreezoneLayout || agentBillingReference) return;
     void apiCall<AgentCapabilityPriceReference>("chat/agent-capability-price-reference")
       .then(setAgentBillingReference)
       .catch(() => {
         toast.error("暂时无法加载虾导计费说明");
       });
-  }, [agentBillingOpen, agentBillingReference, isFreezoneLayout]);
+  }, [agentBillingReference, isFreezoneLayout]);
   const shouldStickToBottomRef = useRef(true);
   const suppressAutoScrollUntilRef = useRef(0);
   const historyScrollKeyRef = useRef<string | null>(null);
@@ -12078,12 +12079,9 @@ export function SuperChatPanel({
           anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
           surfaceOrder: receivedAt,
         };
-        chat.removeAssistantMessagePart(
+        chat.replaceAssistantMessagePart(
           { messageId: approval.messageId, turnId: approval.turnId },
           canvasApprovalPartId(approval),
-        );
-        chat.upsertAssistantMessagePart(
-          { messageId: approval.messageId, turnId: approval.turnId },
           {
             id: canvasFeedbackPartId(feedback),
             type: "canvas_feedback",
@@ -12201,12 +12199,9 @@ export function SuperChatPanel({
       anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
       surfaceOrder: receivedAt,
     };
-    chat.removeAssistantMessagePart(
+    chat.replaceAssistantMessagePart(
       { messageId: approval.messageId, turnId: approval.turnId },
       canvasApprovalPartId(approval),
-    );
-    chat.upsertAssistantMessagePart(
-      { messageId: approval.messageId, turnId: approval.turnId },
       {
         id: canvasFeedbackPartId(feedback),
         type: "canvas_feedback",
@@ -12508,6 +12503,42 @@ export function SuperChatPanel({
     shouldStickToBottomRef.current = true;
     setShowScrollToBottom(false);
   }, []);
+  const pendingCanvasApprovalScrollKey = pendingCanvasCommandApprovals
+    .map((approval) => approval.key)
+    .join("\n");
+  const previousCanvasApprovalScrollKeysRef = useRef<Set<string>>(new Set());
+
+  useLayoutEffect(() => {
+    const nextKeys = new Set(pendingCanvasCommandApprovals.map((approval) => approval.key));
+    const hasNewApproval = pendingCanvasCommandApprovals.some(
+      (approval) => !previousCanvasApprovalScrollKeysRef.current.has(approval.key),
+    );
+    previousCanvasApprovalScrollKeysRef.current = nextKeys;
+    if (!hasNewApproval || variant !== "freezone") return;
+
+    // An approval is an actionable continuation of the current turn. Its card can be
+    // taller than the viewport, so always reveal the bottom action row instead of
+    // leaving the user at the first few plan entries.
+    suppressAutoScrollUntilRef.current = 0;
+    shouldStickToBottomRef.current = true;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      scrollToChatBottom("auto", { force: true });
+      secondFrame = window.requestAnimationFrame(() => {
+        scrollToChatBottom("auto", { force: true });
+      });
+    });
+    const reflowTimeout = window.setTimeout(
+      () => scrollToChatBottom("auto", { force: true }),
+      160,
+    );
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(reflowTimeout);
+    };
+  }, [pendingCanvasApprovalScrollKey, pendingCanvasCommandApprovals, scrollToChatBottom, variant]);
+
   const preserveScrollAnchor = useCallback((anchor: HTMLElement | null) => {
     const el = scrollRef.current;
     if (!el || !anchor) return;
@@ -13706,7 +13737,7 @@ export function SuperChatPanel({
                 </span>
               </div>
             </div>
-            <Button
+            {agentBillingReference?.enabled && <Button
               type="button"
               variant="ghost"
               size="icon-sm"
@@ -13716,7 +13747,7 @@ export function SuperChatPanel({
               className="text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
             >
               <Gauge className="size-4" />
-            </Button>
+            </Button>}
             <ControlBar
               chat={chat}
               compact
@@ -14605,7 +14636,7 @@ export function SuperChatPanel({
         </div>,
         document.body,
       )}
-      {isFreezoneLayout && (
+      {isFreezoneLayout && agentBillingReference?.enabled && (
         <CommunitySkillDialog
           mode={freezoneSkillDialogMode}
           open={freezoneCommunitySkillDialogOpen}

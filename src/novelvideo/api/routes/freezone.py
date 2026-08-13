@@ -116,7 +116,6 @@ from novelvideo.freezone.agent_config_store import (
     save_user_agent_config_item,
 )
 from novelvideo.freezone.agent_capability_billing import (
-    CE_CREATIVE_PLANNING_TEST_CREDITS,
     CREATIVE_PLANNING_FEATURE_KEY,
     creative_planning_charge,
     creative_planning_credit_estimate,
@@ -4387,6 +4386,8 @@ async def delete_freezone_agent_config_item(
 def _workflow_draft_api_data(draft: dict[str, Any]) -> dict[str, Any]:
     """Hide reservations while exposing a safe estimate for confirmation copy."""
     public = {key: value for key, value in draft.items() if key != "billing"}
+    if isinstance(get_usage_meter(), NoOpUsageMeter):
+        return public
     public["agent_credit_estimate"] = workflow_design_credit_estimate(
         draft.get("preview") if isinstance(draft.get("preview"), dict) else None
     )
@@ -4413,11 +4414,6 @@ def _workflow_draft_api_data(draft: dict[str, Any]) -> dict[str, Any]:
             else creative_planning_credit_estimate()["display"]
         ),
         "charged_credits": charged_credits,
-        "simulated": (
-            bool(planning_billing.get("simulated"))
-            if isinstance(planning_billing, dict)
-            else False
-        ),
     }
     return public
 
@@ -4432,6 +4428,8 @@ async def _charge_workflow_draft_planning(
     state_dir: Path,
 ) -> dict[str, Any]:
     """Charge only after a substantive planning draft has been produced."""
+    if isinstance(get_usage_meter(), NoOpUsageMeter):
+        return draft
     preview = draft.get("preview") if isinstance(draft.get("preview"), dict) else {}
     charge = creative_planning_charge(preview)
     metadata = {
@@ -4474,7 +4472,6 @@ async def _charge_workflow_draft_planning(
                 "reservation_id": reservation_id,
                 "status": "confirmed" if reservation_id else "unpriced",
                 "cost": reservation.get("cost"),
-                "simulated": bool(reservation.get("simulated")),
                 "metadata": metadata,
             },
         },
@@ -12004,16 +12001,22 @@ async def quote_freezone_agent_capability(
         explicitly_configured or float(required) > 0
     )
     estimate = creative_planning_credit_estimate()
-    simulated = not metering_enabled
-    if simulated:
-        required = CE_CREATIVE_PLANNING_TEST_CREDITS
-        exact = True
+    if not metering_enabled:
+        return {
+            "ok": True,
+            "data": {
+                "feature_key": feature_key,
+                "billing_required": False,
+                "metering_enabled": False,
+                "allowed": True,
+            },
+        }
     return {
         "ok": True,
         "data": {
             "feature_key": feature_key,
+            "billing_required": True,
             "metering_enabled": metering_enabled,
-            "simulated": simulated,
             "configured": exact,
             "exact": exact,
             "required_credits": required if exact else None,
@@ -12025,9 +12028,7 @@ async def quote_freezone_agent_capability(
             "reference_display": estimate["display"],
             "allowed": bool(access.get("allowed", True)),
             "message": (
-                "当前为开源版模拟计费环境；仅记录测试扣费，不修改真实余额。"
-                if simulated
-                else "已读取本次规划的确切积分价格。"
+                "已读取本次规划的确切积分价格。"
                 if exact
                 else (
                     "Agent 创意规划价格尚未配置，当前仅能显示参考区间。"
@@ -12049,7 +12050,10 @@ async def create_canvas_workflow_draft(
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
-    if body.get("planning_confirmed") is not True:
+    if (
+        not isinstance(get_usage_meter(), NoOpUsageMeter)
+        and body.get("planning_confirmed") is not True
+    ):
         raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user
@@ -12123,7 +12127,10 @@ async def patch_canvas_workflow_draft(
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
-    if body.get("planning_confirmed") is not True:
+    if (
+        not isinstance(get_usage_meter(), NoOpUsageMeter)
+        and body.get("planning_confirmed") is not True
+    ):
         raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user
@@ -12195,6 +12202,8 @@ async def claim_canvas_workflow_draft(
         raise HTTPException(400, str(exc)) from exc
     if draft is None:
         return error
+    if isinstance(get_usage_meter(), NoOpUsageMeter):
+        return {"ok": True, "data": _workflow_draft_api_data(draft)}
     charge = workflow_design_charge(draft.get("preview"))
     billing_metadata = {
         "deliverable": "workflow",

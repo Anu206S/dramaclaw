@@ -51,6 +51,7 @@ from novelvideo.freezone.agent_capability_billing import (
     workflow_design_charge,
 )
 from novelvideo.ports import get_product_surface_access, get_usage_meter
+from novelvideo.ports.local.usage import NoOpUsageMeter
 from novelvideo.project_context import ProjectContext, resolve_project_context
 from novelvideo.shared.billing_errors import (
     BILLING_RULE_NOT_CONFIGURED_MESSAGE,
@@ -1192,9 +1193,12 @@ async def agent_capability_price_reference(
     _user: dict = Depends(get_api_user),
 ) -> dict[str, Any]:
     """Return the user-facing scope of Agent-only billing, excluding NewAPI media costs."""
+    if isinstance(get_usage_meter(), NoOpUsageMeter):
+        return {"ok": True, "data": {"enabled": False, "items": [], "note": ""}}
     return {
         "ok": True,
         "data": {
+            "enabled": True,
             "items": list(AGENT_CAPABILITY_PRICE_REFERENCE),
             "note": (
                 "仅计算虾导创建或重构高级 Agent 能力的费用；"

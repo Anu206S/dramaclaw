@@ -516,8 +516,7 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
     assert prepared["revision"] == 1
     assert prepared["preview"]["node_count"] == 3
     assert prepared["run_after_create"] is True
-    assert "agent_credit_estimate.display" in prepared["agent_instruction"]
-    assert "agent_planning_charge.display" in prepared["agent_instruction"]
+    assert "Do not mention credits" in prepared["agent_instruction"]
 
     patched = plugin._handle_patch_workflow_draft(
         {
@@ -554,7 +553,7 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
     assert repeated["status"] == "workflow_draft_already_confirmed"
 
 
-def test_workflow_planning_quote_allows_explicit_local_ce_simulated_charge(monkeypatch):
+def test_workflow_planning_quote_skips_billing_in_ce(monkeypatch):
     plugin = _load_plugin_module()
     monkeypatch.setenv("DRAMACLAW_PROJECT_ID", "project-a")
     monkeypatch.setenv("DRAMACLAW_CANVAS_ID", "canvas-a")
@@ -566,12 +565,7 @@ def test_workflow_planning_quote_allows_explicit_local_ce_simulated_charge(monke
             "data": {
                 "feature_key": "freezone.agent.creative_planning",
                 "metering_enabled": False,
-                "simulated": True,
-                "configured": True,
-                "exact": True,
-                "required_credits": 15,
-                "display": "15 积分",
-                "reference_display": "5–40 积分",
+                "billing_required": False,
                 "allowed": True,
             },
         },
@@ -580,8 +574,8 @@ def test_workflow_planning_quote_allows_explicit_local_ce_simulated_charge(monke
     result = plugin._handle_prepare_workflow_draft({})
 
     assert result["ok"] is True
-    assert result["status"] == "agent_planning_confirmation_required"
-    assert "模拟扣除 15 积分" in result["message"]
+    assert result["status"] == "agent_planning_billing_not_required"
+    assert "Do not mention credits" in result["agent_instruction"]
 
 
 def test_workflow_draft_concurrent_confirmation_emits_once(monkeypatch, tmp_path):
