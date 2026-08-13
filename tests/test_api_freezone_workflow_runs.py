@@ -102,11 +102,12 @@ def test_agent_planning_quote_is_non_reserving_and_exact(
     assert response.json()["data"]["display"] == "15 积分"
     assert response.json()["data"]["required_credits"] == 15
     assert response.json()["data"]["configured"] is True
+    assert response.json()["data"]["billing_required"] is True
     assert response.json()["data"]["metering_enabled"] is True
     assert seen["feature_key"] == "freezone.agent.creative_planning"
 
 
-def test_agent_planning_quote_uses_ce_simulated_charge_for_testing(
+def test_agent_planning_quote_is_disabled_in_ce(
     workflow_run_client: TestClient,
 ) -> None:
     response = workflow_run_client.post(
@@ -115,24 +116,28 @@ def test_agent_planning_quote_uses_ce_simulated_charge_for_testing(
     )
 
     assert response.status_code == 200
-    assert response.json()["data"]["configured"] is True
-    assert response.json()["data"]["exact"] is True
-    assert response.json()["data"]["simulated"] is True
-    assert response.json()["data"]["required_credits"] == 15
-    assert response.json()["data"]["display"] == "15 积分"
+    assert response.json()["data"]["billing_required"] is False
     assert response.json()["data"]["metering_enabled"] is False
 
 
-def test_workflow_draft_requires_planning_credit_confirmation(
+def test_workflow_draft_does_not_require_planning_credit_confirmation_in_ce(
     workflow_run_client: TestClient,
 ) -> None:
     response = workflow_run_client.post(
         "/api/v1/projects/proj_demo/freezone/canvases/default/workflow-drafts",
-        json={"intent": {}, "compiled": {}},
+        json={
+            "intent": {"skill_id": "video-ad", "user_goal": "广告"},
+            "compiled": {
+                "ok": True,
+                "skill_id": "video-ad",
+                "plan": {"nodes": [], "edges": [], "phases": []},
+            },
+        },
     )
 
-    assert response.status_code == 409
-    assert "confirmation" in response.json()["detail"]
+    assert response.status_code == 200
+    assert "agent_credit_estimate" not in response.json()["data"]
+    assert "agent_planning_charge" not in response.json()["data"]
 
 
 def test_workflow_run_api_rejects_invalid_action_phase(
@@ -242,12 +247,8 @@ def test_workflow_draft_api_lifecycle(workflow_run_client: TestClient) -> None:
     )
     assert created_response.status_code == 200
     created = created_response.json()["data"]
-    assert created["agent_credit_estimate"]["display"] == "10–20 积分"
-    assert created["agent_planning_charge"]["display"] == "15 积分"
-    assert created["agent_planning_charge"]["status"] == "confirmed"
-    assert created["agent_planning_charge"]["charged_credits"] == 15
-    assert created["agent_planning_charge"]["simulated"] is True
-    assert created["agent_credit_estimate"]["media_generation_separate"] is True
+    assert "agent_credit_estimate" not in created
+    assert "agent_planning_charge" not in created
     assert "billing" not in created
 
     patched_response = workflow_run_client.patch(
@@ -305,6 +306,7 @@ def test_workflow_draft_api_reserves_and_confirms_agent_charge(
 
     monkeypatch.setattr(freezone, "reserve_agent_capability_charge", fake_reserve)
     monkeypatch.setattr(freezone, "settle_agent_capability_charge", fake_settle)
+    monkeypatch.setattr(freezone, "get_usage_meter", lambda: object())
     base = "/api/v1/projects/proj_demo/freezone/canvases/default/workflow-drafts"
     compiled = {
         "ok": True,

@@ -52,22 +52,6 @@ def test_creative_planning_is_billed_only_for_substantive_draft_delivery() -> No
 
 
 @pytest.mark.anyio
-async def test_ce_creative_planning_returns_a_simulated_charge(monkeypatch) -> None:
-    monkeypatch.setattr(billing, "get_usage_meter", lambda: billing.NoOpUsageMeter())
-
-    result = await billing.reserve_agent_capability_charge(
-        user_id="local-user",
-        project_id="local-project",
-        charge=billing.creative_planning_charge({"node_count": 3}),
-        idempotency_key="planning:test",
-    )
-
-    assert result["cost"] == 15
-    assert result["reserved"] is True
-    assert result["simulated"] is True
-
-
-@pytest.mark.anyio
 async def test_reserve_agent_capability_is_optional_until_price_is_configured(
     monkeypatch,
 ) -> None:

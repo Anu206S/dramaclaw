@@ -2063,6 +2063,61 @@ export function useSuperChat({
     });
   }, [persistAssistantMessageParts, scopeKey]);
 
+  const replaceAssistantMessagePart = useCallback((
+    target: { messageId?: string | null; turnId?: string | null },
+    partId: string,
+    replacement: ChatMessagePart,
+  ) => {
+    setMessages((current) => {
+      const existingIndex = current.findIndex((message) =>
+        message.role === "assistant"
+        && (
+          (target.messageId && message.id === target.messageId)
+          || (target.turnId && message.turnId === target.turnId)
+        ),
+      );
+      if (existingIndex < 0) {
+        if (!target.turnId) return current;
+        const parts = assistantPartsWithPart(undefined, replacement);
+        persistAssistantMessageParts(target.turnId, parts);
+        const next = sortMessages([
+          ...current,
+          {
+            id: target.messageId || `assistant-${target.turnId}`,
+            role: "assistant" as const,
+            text: "",
+            parts,
+            turnId: target.turnId,
+            timestamp: Date.now(),
+          },
+        ]);
+        saveCachedMessages(scopeKey, next);
+        return next;
+      }
+
+      let persistedTurnId: string | undefined;
+      const next = sortMessages(current.map((message, index) => {
+        if (index !== existingIndex) return message;
+        const withoutPrevious = assistantPartsWithoutPart(message.parts, partId);
+        const parts = assistantPartsWithPart(withoutPrevious, replacement);
+        persistedTurnId = message.turnId;
+        return { ...message, parts, text: message.text || "", timestamp: Date.now() };
+      }));
+      if (persistedTurnId) {
+        const persistedMessage = next.find(
+          (message) => message.role === "assistant" && message.turnId === persistedTurnId,
+        );
+        persistAssistantMessageParts(
+          persistedTurnId,
+          persistedMessage?.parts,
+          persistedMessage?.text,
+        );
+      }
+      saveCachedMessages(scopeKey, next);
+      return next;
+    });
+  }, [persistAssistantMessageParts, scopeKey]);
+
   const finalizeStream = useCallback(() => {
     const turnId = activeTurnIdRef.current ?? `turn-${Date.now()}`;
     if (cancelledTurnIdsRef.current.has(turnId)) {
@@ -3068,6 +3123,7 @@ export function useSuperChat({
     submitSkillStudioResult,
     upsertAssistantMessagePart,
     removeAssistantMessagePart,
+    replaceAssistantMessagePart,
     pinnedIds,
     streamText,
     switchModel,

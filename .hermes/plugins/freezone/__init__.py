@@ -3413,22 +3413,17 @@ def _agent_planning_confirmation_result(project_id: str) -> str:
                 "error": "Agent planning quote API returned an invalid payload",
             }
         )
-    if quote_payload.get("simulated") is True:
+    if quote_payload.get("billing_required") is False:
         return tool_result(
             {
                 "ok": True,
-                "status": "agent_planning_confirmation_required",
-                "quote": quote_payload,
-                "message": (
-                    f"当前为开源版模拟计费环境，本次规划将模拟扣除 "
-                    f"{quote_payload.get('display') or '15 积分'}；开始前需用户确认。"
-                ),
+                "status": "agent_planning_billing_not_required",
                 "agent_instruction": (
-                    "Show quote.display and tell the user that this open-source edition will "
-                    "simulate the deduction for testing without changing a real balance. Ask "
-                    "whether to continue planning and stop this turn. Only after explicit "
-                    "confirmation, call the same requested workflow draft tool once with "
-                    "planning_confirmed=true. Do not describe the planning turn as free."
+                    "Agent capability billing is not enabled on this edition. Do not mention "
+                    "credits, billing, pricing, editions, or confirmation to the user. Continue "
+                    "the original workflow planning request in this same turn: load the selected "
+                    "Workflow Skill, compile the intent, and call freezone_prepare_workflow_draft "
+                    "with planning_confirmed=true."
                 ),
             }
         )
@@ -3681,13 +3676,18 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if payload is None:
         return tool_result(error)
     result = public_workflow_draft(payload)
-    result["agent_instruction"] = (
-        "Present the exact preview in product language, including each node's "
-        "preview.recipe_pipelines order as 主 Recipe → 补充 Recipe. Before asking for confirmation, "
-        "always state that this delivered planning turn is billed under "
+    billing_instruction = (
+        "Before asking for confirmation, state that this delivered planning turn is billed under "
         "agent_planning_charge.display, then present agent_credit_estimate.display as the "
         "additional estimated Agent credits charged only after workflow creation is confirmed. "
         "State that image, audio, and video generation credits are charged separately. "
+        if result.get("agent_planning_charge") and result.get("agent_credit_estimate")
+        else "Do not mention credits, billing, pricing, or editions. "
+    )
+    result["agent_instruction"] = (
+        "Present the exact preview in product language, including each node's "
+        "preview.recipe_pipelines order as 主 Recipe → 补充 Recipe. Before asking for confirmation, "
+        f"{billing_instruction}"
         "Wait for user confirmation. "
         "For adjustments, patch this draft instead of rebuilding the intent. "
         "After confirmation, call freezone_confirm_workflow_draft with draft_id and revision."
@@ -3785,13 +3785,18 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
         return tool_result(error)
     result = public_workflow_draft(payload)
     result["status"] = "workflow_draft_updated"
-    result["agent_instruction"] = (
-        "Present only the resulting product-level changes and updated preview, including any "
-        "changed 主 Recipe → 补充 Recipe order from preview.recipe_pipelines. "
+    billing_instruction = (
         "State that this updated planning turn is billed under agent_planning_charge.display. "
         "Present agent_credit_estimate.display as the additional workflow creation estimate before "
         "asking for confirmation, and state that image, audio, and video generation credits are "
         "charged separately. "
+        if result.get("agent_planning_charge") and result.get("agent_credit_estimate")
+        else "Do not mention credits, billing, pricing, or editions. "
+    )
+    result["agent_instruction"] = (
+        "Present only the resulting product-level changes and updated preview, including any "
+        "changed 主 Recipe → 补充 Recipe order from preview.recipe_pipelines. "
+        f"{billing_instruction}"
         "Keep using this draft_id and revision for further adjustments or confirmation."
     )
     return tool_result(result)

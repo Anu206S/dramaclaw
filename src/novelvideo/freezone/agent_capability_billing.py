@@ -11,7 +11,6 @@ from dataclasses import dataclass
 from typing import Any
 
 from novelvideo.ports import get_usage_meter
-from novelvideo.ports.local.usage import NoOpUsageMeter
 
 PRODUCT_SURFACE = "freezone_assistant"
 RESOURCE_KIND = "agent_capability"
@@ -23,7 +22,6 @@ SKILL_DESIGN_FEATURE_KEY = "freezone.agent.skill_design"
 RECIPE_DESIGN_FEATURE_KEY = "freezone.agent.recipe_design"
 
 CREATIVE_PLANNING_REFERENCE_CREDITS = (5, 40)
-CE_CREATIVE_PLANNING_TEST_CREDITS = 15
 WORKFLOW_SIMPLE_REFERENCE_CREDITS = (10, 20)
 WORKFLOW_COMPLEX_REFERENCE_CREDITS = (20, 50)
 
@@ -172,23 +170,7 @@ async def reserve_agent_capability_charge(
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Reserve a configured Agent capability price without breaking CE/unpriced installs."""
-    meter = get_usage_meter()
-    if (
-        isinstance(meter, NoOpUsageMeter)
-        and charge.feature_key == CREATIVE_PLANNING_FEATURE_KEY
-    ):
-        return {
-            "id": f"ce-simulated:{idempotency_key}",
-            "user_id": user_id,
-            "feature_key": charge.feature_key,
-            "product_surface": PRODUCT_SURFACE,
-            "cost": CE_CREATIVE_PLANNING_TEST_CREDITS,
-            "reserved": True,
-            "balance_after": None,
-            "reason": "ce_simulated_feature_reserved",
-            "simulated": True,
-        }
-    return await meter.reserve_feature_start_credits(
+    return await get_usage_meter().reserve_feature_start_credits(
         user_id=user_id,
         feature_key=charge.feature_key,
         product_surface=PRODUCT_SURFACE,
