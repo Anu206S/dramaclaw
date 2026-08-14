@@ -64,6 +64,8 @@ def test_dramaclaw_plugin_adds_voice_prereq_chat_error():
     assert "虾塘" in result["chat_error"]
     assert raw_error in result["chat_error"]
     assert "Do not start another tool" in result["agent_instruction"]
+    assert "由虾导匹配系统声线" in result["agent_instruction"]
+    assert "换别的方向" in result["agent_instruction"]
 
 
 def test_dramaclaw_plugin_stops_before_tts_when_pipeline_requires_voice_setup():
@@ -86,6 +88,8 @@ def test_dramaclaw_plugin_stops_before_tts_when_pipeline_requires_voice_setup():
 
     data = result["data"]
     assert "下一步需要先准备配音声线" in result["chat_notice"]
+    assert "1）到「虾塘」上传或录制声线" in result["chat_notice"]
+    assert "2）确认由虾导匹配系统声线" in result["chat_notice"]
     assert "虾塘" in result["agent_instruction"]
     assert "Do not claim TTS started" in result["agent_instruction"]
     assert "chat_error" not in data["audio_prerequisites"]
@@ -122,6 +126,7 @@ def test_dramaclaw_plugin_registers_freezone_canvas_tools():
     plugin = _load_plugin_module()
 
     names = {name for name, _schema, _handler in plugin.TOOLS}
+    assert "dramaclaw_control_episode_auto" in names
 
     assert "dramaclaw_list_freezone_skills" in names
     assert "dramaclaw_run_freezone_skill" in names
@@ -639,3 +644,30 @@ def test_dramaclaw_freezone_mode_allows_canvas_writes(monkeypatch):
     assert result["ok"] is True
     assert calls[0]["method"] == "PUT"
     assert calls[0]["path"] == "/api/v1/projects/demo/freezone/canvases/canvas_a"
+
+
+def test_dramaclaw_plugin_controls_episode_auto_without_cancelling_tasks(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("body")))
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    plugin._handle_control_episode_auto({
+        "project_id": "proj-1",
+        "action": "suspend",
+        "reason": "可能修改镜头",
+    })
+    plugin._handle_control_episode_auto({"project_id": "proj-1", "action": "resume"})
+
+    assert calls == [
+        (
+            "POST",
+            "/api/v1/projects/proj-1/chat/director-auto/suspend",
+            {"reason": "可能修改镜头"},
+        ),
+        ("POST", "/api/v1/projects/proj-1/chat/director-auto/resume", None),
+    ]

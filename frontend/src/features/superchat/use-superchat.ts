@@ -2365,6 +2365,20 @@ export function useSuperChat({
         });
         break;
       }
+      case "director.auto.status": {
+        if (!frameMatchesCurrentScope(frame, desiredScopeRef.current)) break;
+        window.dispatchEvent(new CustomEvent("director-auto-status", {
+          detail: {
+            status: frame.status,
+            episode: frame.episode,
+            runId: frame.run_id,
+            message: frame.message,
+            terminalTaskId: frame.terminal_task_id,
+            voicePolicy: frame.voice_policy,
+          },
+        }));
+        break;
+      }
       case "agent.thought.delta": {
         const turnId = typeof frame.turn_id === "string" && frame.turn_id.trim()
           ? frame.turn_id
