@@ -291,6 +291,10 @@ def create_app() -> FastAPI:
                         name="official-media-catalog-updater",
                     )
                 )
+
+            from novelvideo.chat.director_auto import coordinator as director_auto_coordinator
+
+            await director_auto_coordinator.resume()
         except Exception:
             logger.exception("API startup failed while connecting to control-plane")
             raise
@@ -304,6 +308,10 @@ def create_app() -> FastAPI:
             updater.cancel()
             with suppress(asyncio.CancelledError):
                 await updater
+
+        from novelvideo.chat.director_auto import coordinator as director_auto_coordinator
+
+        await director_auto_coordinator.shutdown()
 
         try:
             lifecycle = get_port("lifecycle")

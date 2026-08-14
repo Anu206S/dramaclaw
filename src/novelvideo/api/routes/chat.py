@@ -29,6 +29,11 @@ from novelvideo.api.auth import (
 from novelvideo.api.deps import list_user_projects
 from novelvideo.chat import service as chat_service
 from novelvideo.chat.hermes_pool import canvas_bridge_dir_for_profile
+from novelvideo.chat.director_auto import coordinator as director_auto_coordinator
+from novelvideo.chat.live_events import (
+    register_chat_websocket,
+    unregister_chat_websocket,
+)
 from novelvideo.chat.hermes_workspace import (
     ensure_user_hermes_workspace,
     sync_freezone_hermes_workflow_skills,
@@ -233,6 +238,106 @@ class ClarificationToolResultIn(BaseModel):
 class ChatNotificationIn(BaseModel):
     scope: ChatScopePayload | None = None
     text: str
+
+
+class DirectorAutoStartIn(BaseModel):
+    episode: int = Field(default=1, ge=1)
+    voice_policy: str | None = Field(default=None, pattern="^(system|custom)$")
+
+
+class DirectorAutoSuspendIn(BaseModel):
+    reason: str = Field(default="等待用户确认是否修改", max_length=500)
+
+
+def _director_auto_payload(run: Any | None) -> dict[str, Any]:
+    if run is None:
+        return {"status": "manual", "episode": None, "run_id": None}
+    return {
+        "status": run.status,
+        "episode": run.episode,
+        "run_id": run.run_id,
+        "activated_at": run.activated_at,
+        "updated_at": run.updated_at,
+        "last_error": run.last_error or None,
+        "voice_policy": run.voice_policy or None,
+    }
+
+
+@router.get("/projects/{project}/chat/director-auto")
+async def get_director_auto_run(
+    project: str,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    ctx = await resolve_project_context(user=user, project_id=project, required_role="viewer")
+    run = await director_auto_coordinator.get(
+        username=str(user["username"]),
+        project_id=ctx.project_id,
+    )
+    return {"ok": True, "data": _director_auto_payload(run)}
+
+
+@router.post("/projects/{project}/chat/director-auto/start")
+async def start_director_auto_run(
+    project: str,
+    payload: DirectorAutoStartIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
+    run = await director_auto_coordinator.start(
+        username=str(user["username"]),
+        ctx=ctx,
+        episode=payload.episode,
+        voice_policy=payload.voice_policy or "",
+    )
+    return {"ok": True, "data": _director_auto_payload(run)}
+
+
+@router.post("/projects/{project}/chat/director-auto/pause")
+async def pause_director_auto_run(
+    project: str,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
+    run = await director_auto_coordinator.pause(
+        username=str(user["username"]),
+        project_id=ctx.project_id,
+        reason="用户切换为手动模式",
+    )
+    return {"ok": True, "data": _director_auto_payload(run)}
+
+
+@router.post("/projects/{project}/chat/director-auto/suspend")
+async def suspend_director_auto_run(
+    project: str,
+    payload: DirectorAutoSuspendIn,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
+    try:
+        run = await director_auto_coordinator.suspend_for_confirmation(
+            username=str(user["username"]),
+            project_id=ctx.project_id,
+            reason=payload.reason.strip() or "等待用户确认是否修改",
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "data": _director_auto_payload(run)}
+
+
+@router.post("/projects/{project}/chat/director-auto/resume")
+async def resume_director_auto_run(
+    project: str,
+    user: dict = Depends(get_api_user),
+) -> dict[str, Any]:
+    ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
+    try:
+        run = await director_auto_coordinator.resume_suspended(
+            username=str(user["username"]),
+            project_id=ctx.project_id,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    return {"ok": True, "data": _director_auto_payload(run)}
 
 
 @router.post("/chat/notifications")
@@ -2859,6 +2964,7 @@ async def chat_ws(websocket: WebSocket) -> None:
     current_scope = await _send_scope_changed(websocket, user, username, current_scope)
     if current_scope is None:
         return
+    await register_chat_websocket(websocket, username=username, scope=current_scope)
     # Do not pre-warm the default home scope on connect. The React client often
     # immediately sends scope.set for the active project; warming home first
     # creates a worker that is then rotated and logs a noisy initialize timeout.
@@ -2886,6 +2992,11 @@ async def chat_ws(websocket: WebSocket) -> None:
                 current_scope = await _send_scope_changed(websocket, user, username, requested_scope)
                 if current_scope is None:
                     return
+                await register_chat_websocket(
+                    websocket,
+                    username=username,
+                    scope=current_scope,
+                )
                 await _sync_running_agent_scope(username, current_scope)
                 # Switching project rotates the worker; warm the new scope now so
                 # the first message in the project doesn't cold-start.
@@ -3045,4 +3156,6 @@ async def chat_ws(websocket: WebSocket) -> None:
                     websocket, {"type": "error", "turn_id": turn_id, "message": message}
                 )
     except WebSocketDisconnect:
-        return
+        pass
+    finally:
+        await unregister_chat_websocket(websocket)

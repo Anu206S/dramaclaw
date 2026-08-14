@@ -40,6 +40,11 @@ async def _run_system_voice_setup(
         state_dir=str(ctx.state_dir),
     )
     await store.initialize()
+    # ``prepare_missing_system_voices`` reads characters from SQLite and then
+    # persists the selected voice through ``update_character``.  The latter
+    # resolves characters from the store's in-memory index, so a fresh task
+    # worker must hydrate that index before attempting the update.
+    await store.load_graph_state()
     manager.update_progress_for_project(
         ctx,
         SYSTEM_VOICE_SETUP_TASK_TYPE,
