@@ -73,6 +73,7 @@ import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import { downloadUrlAsFile } from "@/lib/browserDownload";
 import { useAlbumPendingTotal } from "@/features/canvas/nodes/shared/albumPendingTotals";
 import { canvasEventBus } from "@/features/canvas/application/canvasServices";
+import { useExternalFileHandoff } from "@/features/canvas/hooks/useExternalFileHandoff";
 import { VideoGenerationForm } from "@/features/canvas/nodes/shared/VideoGenerationForm";
 import { useVideoGenerationForm } from "@/features/canvas/nodes/shared/useVideoGenerationForm";
 import { spawnVideoAssetLibraryReferences } from "@/features/canvas/nodes/shared/assetLibraryReferenceSpawn";
@@ -679,15 +680,16 @@ export const VideoNode = memo(
       });
     }, [id]);
 
-    useEffect(() => {
-      return canvasEventBus.subscribe(
-        "video-node/external-file",
-        ({ nodeId, file }) => {
-          if (nodeId !== id || !isVideoFile(file)) return;
-          void processFile(file);
-        },
-      );
-    }, [id, processFile]);
+    const consumeExternalFile = useCallback(
+      (file: File) => {
+        if (!isVideoFile(file)) return;
+        void processFile(file);
+      },
+      [processFile],
+    );
+    // File 本体由 pendingExternalFiles 暂存；即使低缩放 LOD shell 晚于事件挂载，
+    // 完整节点挂载时也会补取一次，不会留下空视频节点。
+    useExternalFileHandoff("video-node/external-file", id, consumeExternalFile);
 
     useEffect(
       () => () => {
