@@ -16,6 +16,8 @@ export const queryKeys = {
     featureKey?: string;
     model?: string;
   }) => ["credits", "transactions", filters] as const,
+  org: () => ["org"] as const,
+  orgMe: () => ["org", "me"] as const,
   projects: () => ["projects"] as const,
   projectSummaries: () => ["projects", "summaries"] as const,
   project: (p: string) => ["projects", p] as const,

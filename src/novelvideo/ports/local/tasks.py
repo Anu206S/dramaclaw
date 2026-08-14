@@ -13,8 +13,10 @@ import time
 from typing import Any
 
 from novelvideo.ports import get_cancellation_store
+from novelvideo.ports.authz import AuthzError
 from novelvideo.ports.tasks import QueuedTask, cancel_key, display_metadata_for_task
 from novelvideo.project_context import require_project_home_node
+from novelvideo.task_backend.envelope import InvalidTaskEnvelope
 from novelvideo.task_backend.limits import (
     GlobalLaneQueueLimitExceeded,
     global_lane_concurrency,
@@ -22,7 +24,11 @@ from novelvideo.task_backend.limits import (
     project_lane_effective_active_limit,
 )
 from novelvideo.task_backend.queues import QUEUE_KINDS, normalize_queue_kind
-from novelvideo.task_backend.run_core import run_project_task_core_sync
+from novelvideo.task_backend.run_core import (
+    feature_credit_reservation_id,
+    refund_undelivered_feature_credit_reservation,
+    run_project_task_core_sync,
+)
 from novelvideo.task_backend.subprocesses import kill_task_processes
 from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
@@ -54,7 +60,9 @@ class _InlineLane:
 
 
 class InlineTaskBackend:
-    def __init__(self) -> None:
+    def __init__(self, *, producer=None, consumer=None) -> None:
+        self._producer = producer
+        self._consumer = consumer
         self._background_tasks: set[asyncio.Task] = set()
         self._lanes: dict[str, _InlineLane] = {
             lane: _InlineLane(
@@ -102,7 +110,7 @@ class InlineTaskBackend:
             episode,
             beat_num=beat_num,
             scope=scope,
-            metadata=metadata,
+            metadata={},
             queue_kind=lane_name,
             project_lane_limit=project_lane_limit,
         )
@@ -115,6 +123,67 @@ class InlineTaskBackend:
                 celery_id=None,
             )
 
+        envelope = {
+            "project_id": ctx.project_id,
+            "requester_user_id": ctx.requester_user_id,
+            "task_type": task_type,
+            "episode": episode,
+            "beat_num": beat_num,
+            "scope": scope,
+            "queue_kind": lane_name,
+            "payload": payload,
+        }
+        if self._producer is not None:
+            failure_code: str | None = None
+            try:
+                signed = await self._producer.sign_top_level(
+                    user_id=ctx.requester_user_id,
+                    root_task_id=state.task_id,
+                    task_type=task_type,
+                    project_id=ctx.project_id,
+                    payload={
+                        "episode": episode,
+                        "beat_num": beat_num,
+                        "scope": scope,
+                        "queue_kind": lane_name,
+                        "payload": payload,
+                    },
+                )
+            except AuthzError as exc:
+                failure_code = exc.code
+                signed = None
+            except Exception:
+                failure_code = "TASK_ENVELOPE_INVALID"
+                signed = None
+            if failure_code is not None or signed is None:
+                safe_code = failure_code or "TASK_ENVELOPE_INVALID"
+                manager.fail_task_for_project(
+                    ctx,
+                    task_type,
+                    episode,
+                    beat_num=beat_num,
+                    scope=scope,
+                    error=(
+                        str(AuthzError(safe_code))
+                        if safe_code != "TASK_ENVELOPE_INVALID"
+                        else "invalid task envelope"
+                    ),
+                    metadata={"error_code": safe_code},
+                    expected_task_id=state.task_id,
+                )
+                if safe_code != "TASK_ENVELOPE_INVALID":
+                    raise AuthzError(safe_code) from None
+                raise InvalidTaskEnvelope from None
+            envelope["task_envelope_v2"] = signed.to_dict()
+        self._submit_lane_job(
+            _InlineLaneJob(
+                envelope=envelope,
+                ctx=ctx,
+                manager=manager,
+                run_task_id=state.task_id,
+                metadata=metadata,
+            )
+        )
         manager.update_progress_for_project(
             ctx,
             task_type,
@@ -126,25 +195,6 @@ class InlineTaskBackend:
             metadata=metadata,
             status="queued",
             expected_task_id=state.task_id,
-        )
-        envelope = {
-            "project_id": ctx.project_id,
-            "requester_user_id": ctx.requester_user_id,
-            "task_type": task_type,
-            "episode": episode,
-            "beat_num": beat_num,
-            "scope": scope,
-            "queue_kind": lane_name,
-            "payload": payload,
-        }
-        self._submit_lane_job(
-            _InlineLaneJob(
-                envelope=envelope,
-                ctx=ctx,
-                manager=manager,
-                run_task_id=state.task_id,
-                metadata=metadata,
-            )
         )
         return QueuedTask(task_state=state, backend="inline")
 
@@ -188,7 +238,9 @@ class InlineTaskBackend:
         task = asyncio.create_task(self._run_inline(lane, job))
         self._background_tasks.add(task)
         task.add_done_callback(
-            lambda done, lane_name=lane.name: self._on_background_task_done(done, lane_name)
+            lambda done, lane_name=lane.name: self._on_background_task_done(
+                done, lane_name
+            )
         )
 
     def _pop_next_lane_job(self, lane: _InlineLane) -> _InlineLaneJob | None:
@@ -223,12 +275,48 @@ class InlineTaskBackend:
         lane: _InlineLane,
         job: _InlineLaneJob,
     ) -> None:
+        consumer_failure: InvalidTaskEnvelope | None = None
+        verified = None
+        if self._consumer is None:
+            consumer_failure = InvalidTaskEnvelope()
+        else:
+            try:
+                verified = await self._consumer.consume(
+                    job.envelope,
+                    expected_root_task_id=job.run_task_id,
+                )
+            except InvalidTaskEnvelope as exc:
+                consumer_failure = exc
+        if consumer_failure is not None:
+            settlement = consumer_failure.settlement
+            if settlement is not None:
+                # 预留发生在入队侧、退款发生在 run_core 里,而这里是两者之间。
+                # 只有签名已验证的拒绝才带 settlement——未验证的信封不驱动资金。
+                await refund_undelivered_feature_credit_reservation(
+                    feature_credit_reservation_id(settlement.billing_metadata),
+                    metadata={
+                        "source": "task_rejected_before_worker",
+                        "error_code": consumer_failure.code,
+                    },
+                )
+            job.manager.fail_task_for_project(
+                job.ctx,
+                str(job.envelope.get("task_type") or ""),
+                int(job.envelope.get("episode") or 0),
+                beat_num=job.envelope.get("beat_num"),
+                scope=job.envelope.get("scope"),
+                error=str(consumer_failure),
+                metadata={"error_code": consumer_failure.code},
+                expected_task_id=job.run_task_id,
+            )
+            return
+
         loop = asyncio.get_running_loop()
         await loop.run_in_executor(
             lane.executor,
             partial(
                 run_project_task_core_sync,
-                job.envelope,
+                verified,
                 job.ctx,
                 job.manager,
                 run_task_id=job.run_task_id,
