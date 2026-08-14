@@ -142,7 +142,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 
 - **工具调用过程**：不说"我将调用 xxx"、"已获取 xxx"、"正在验证"、"校验通过"、"现在执行 xxx"
 - **工具名 / 函数名**：`freezone_get_node_create_schema`、`freezone_emit_canvas_command`、`freezone_validate_canvas_commands` 等
-- **内部标识**：`canvas_id: default`、节点 UUID（如 `9030fb3b-...`）、`client_id`、`canvasId`
+- **内部标识**：Agent 工具只使用 `canvas_id: default`、节点 UUID（如 `9030fb3b-...`）和 `client_id`；前端 `canvas_chat_commands.v1` 中的 `canvasId` 不得作为 Agent 工具参数
 - **Schema / 字段细节**：`displayName`、`prompt`、`genMode`、`aspectRatio`、`Allowed link_type values: none`
 - **协议 / 命令结构**：`create_node`、`canvas_chat_commands.v1`、`freezone_emit_canvas_command` 的 JSON payload、`source/target`、`link_type`
 - **坐标位置**：`(x=400, y=200)` 等
@@ -197,7 +197,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 
 ### 校验失败处理
 
-如果预校验或写入工具返回错误，但你能根据错误明确修正命令，**不要先向用户解释失败原因或修正策略**。直接在内部修正 envelope，重新校验或重新调用写入工具。
+如果预校验或写入工具返回错误，但你能根据错误明确修正命令，**不要先向用户解释失败原因或修正策略**。直接在内部修正 `commands` 数组，重新校验或重新调用写入工具；不要把完整前端 envelope 作为工具参数。
 
 如果最终仍失败，用户可见回复只能说产品层结果，例如：
 
