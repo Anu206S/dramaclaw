@@ -135,6 +135,86 @@ def test_dramaclaw_plugin_registers_freezone_canvas_tools():
     assert "dramaclaw_start_video_batch" in names
 
 
+def test_dramaclaw_complex_write_tools_publish_one_canonical_schema():
+    from jsonschema import Draft202012Validator
+
+    plugin = _load_plugin_module()
+    schemas = {name: schema["parameters"] for name, schema, _handler in plugin.TOOLS}
+
+    skill = schemas["dramaclaw_run_freezone_skill"]
+    assert skill["additionalProperties"] is False
+    assert "request" not in skill["properties"]
+    assert "schema_version" not in skill["properties"]
+    assert skill["properties"]["resolved_inputs"]["items"]["required"] == ["role"]
+
+    preset = schemas["dramaclaw_create_freezone_canvas_from_preset"]
+    assert preset["additionalProperties"] is False
+    assert set(preset["properties"]) == {"project_id", "preset"}
+    assert preset["required"] == ["preset"]
+    variants = preset["properties"]["preset"]["oneOf"]
+    assert [variant["properties"]["scope"]["const"] for variant in variants] == [
+        "blank",
+        "episode",
+        "beat",
+        "asset",
+    ]
+    assert all(variant["additionalProperties"] is False for variant in variants)
+
+    save = schemas["dramaclaw_save_freezone_canvas"]
+    payload = save["properties"]["payload"]
+    assert save["additionalProperties"] is False
+    assert payload["additionalProperties"] is False
+    assert set(payload["required"]) == {
+        "nodes",
+        "edges",
+        "viewport",
+        "metadata",
+        "base_revision",
+        "client_save_id",
+    }
+
+    sketches = schemas["dramaclaw_generate_sketches"]
+    assert sketches["additionalProperties"] is False
+    assert "body" not in sketches["properties"]
+
+    for schema in (skill, preset, save, sketches):
+        Draft202012Validator.check_schema(schema)
+
+    assert not list(
+        Draft202012Validator(skill).iter_errors(
+            {"skill_id": "freezone.test", "parameters": {}, "resolved_inputs": []}
+        )
+    )
+    assert not list(
+        Draft202012Validator(preset).iter_errors(
+            {"preset": {"scope": "beat", "episode": 1, "beat": 2}}
+        )
+    )
+    assert list(
+        Draft202012Validator(preset).iter_errors(
+            {"scope": "beat", "episode": 1, "beat": 2}
+        )
+    )
+    assert not list(
+        Draft202012Validator(save).iter_errors(
+            {
+                "canvas_id": "canvas-a",
+                "payload": {
+                    "nodes": [],
+                    "edges": [],
+                    "viewport": None,
+                    "metadata": {},
+                    "base_revision": 1,
+                    "client_save_id": "save-1",
+                },
+            }
+        )
+    )
+    assert not list(
+        Draft202012Validator(sketches).iter_errors({"episode": 1})
+    )
+
+
 def test_start_video_batch_starts_up_to_nine_beats(monkeypatch):
     plugin = _load_plugin_module()
     calls = []
@@ -536,6 +616,8 @@ def test_dramaclaw_save_freezone_canvas_puts_complete_payload(monkeypatch):
             "payload": {
                 "nodes": [],
                 "edges": [],
+                "viewport": None,
+                "metadata": {},
                 "base_revision": 3,
                 "client_save_id": "save-1",
             },
@@ -551,8 +633,11 @@ def test_dramaclaw_save_freezone_canvas_puts_complete_payload(monkeypatch):
             "body": {
                 "nodes": [],
                 "edges": [],
+                "viewport": None,
+                "metadata": {},
                 "base_revision": 3,
                 "client_save_id": "save-1",
+                "save_source": "manual_save",
                 "canvas_id": "canvas_a",
                 "project_id": "demo",
             },
@@ -573,10 +658,12 @@ def test_dramaclaw_create_freezone_canvas_from_preset_uses_preset_endpoint(monke
     result = plugin._handle_create_freezone_canvas_from_preset(
         {
             "project_id": "demo",
-            "scope": "beat",
-            "episode": 1,
-            "beat": 2,
-            "primary_slot": "sketch",
+            "preset": {
+                "scope": "beat",
+                "episode": 1,
+                "beat": 2,
+                "primary_slot": "sketch",
+            },
         }
     )
 
@@ -594,6 +681,35 @@ def test_dramaclaw_create_freezone_canvas_from_preset_uses_preset_endpoint(monke
             },
         }
     ]
+
+
+def test_dramaclaw_complex_write_handlers_reject_legacy_or_open_wrappers():
+    plugin = _load_plugin_module()
+
+    assert "request/schema_version wrappers are not supported" in plugin._handle_run_freezone_skill(
+        {"project_id": "demo", "skill_id": "freezone.test", "request": {}}
+    )
+    assert "preset is required" in plugin._handle_create_freezone_canvas_from_preset(
+        {"project_id": "demo", "scope": "beat", "episode": 1, "beat": 2}
+    )
+    assert "body overrides are not supported" in plugin._handle_generate_sketches(
+        {"project_id": "demo", "episode": 1, "body": {}}
+    )
+    assert "unsupported fields" in plugin._handle_save_freezone_canvas(
+        {
+            "project_id": "demo",
+            "canvas_id": "canvas_a",
+            "payload": {
+                "nodes": [],
+                "edges": [],
+                "viewport": None,
+                "metadata": {},
+                "base_revision": 1,
+                "client_save_id": "save-1",
+                "owner_principal_id": "hidden-contract-field",
+            },
+        }
+    )
 
 
 def test_dramaclaw_freezone_mode_denies_mainline_writes(monkeypatch):
@@ -632,7 +748,14 @@ def test_dramaclaw_freezone_mode_allows_canvas_writes(monkeypatch):
         {
             "project_id": "demo",
             "canvas_id": "canvas_a",
-            "payload": {"nodes": [], "edges": []},
+            "payload": {
+                "nodes": [],
+                "edges": [],
+                "viewport": None,
+                "metadata": {},
+                "base_revision": 1,
+                "client_save_id": "save-1",
+            },
         }
     )
 

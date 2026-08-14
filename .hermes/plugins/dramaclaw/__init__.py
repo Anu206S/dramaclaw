@@ -836,18 +836,24 @@ def _handle_run_freezone_skill(args: dict[str, Any], **_: Any) -> str:
     try:
         project = _project_from_args(args)
         skill_id = _require_text_arg(args, "skill_id")
-        body = args.get("request")
-        if body is None:
-            body = {
-                "schema_version": args.get("schema_version") or "skill.v1",
-                "skill_node_id": args.get("skill_node_id") or "",
-                "canvas_id": args.get("canvas_id") or "",
-                "idempotency_key": args.get("idempotency_key"),
-                "parameters": args.get("parameters") or {},
-                "resolved_inputs": args.get("resolved_inputs") or [],
-            }
-        if not isinstance(body, dict):
-            raise ValueError("request must be an object")
+        if "request" in args or "schema_version" in args:
+            raise ValueError(
+                "request/schema_version wrappers are not supported; pass the canonical skill fields"
+            )
+        parameters = args.get("parameters") or {}
+        resolved_inputs = args.get("resolved_inputs") or []
+        if not isinstance(parameters, dict):
+            raise ValueError("parameters must be an object")
+        if not isinstance(resolved_inputs, list):
+            raise ValueError("resolved_inputs must be an array")
+        body = {
+            "schema_version": "skill.v1",
+            "skill_node_id": args.get("skill_node_id") or "",
+            "canvas_id": args.get("canvas_id") or "",
+            "idempotency_key": args.get("idempotency_key"),
+            "parameters": parameters,
+            "resolved_inputs": resolved_inputs,
+        }
         return tool_result(
             _request(
                 "POST",
@@ -909,8 +915,39 @@ def _handle_save_freezone_canvas(args: dict[str, Any], **_: Any) -> str:
         if not isinstance(payload, dict):
             raise ValueError("payload must be a complete canvas object")
         payload = dict(payload)
+        allowed_payload_keys = {
+            "nodes",
+            "edges",
+            "viewport",
+            "metadata",
+            "base_revision",
+            "client_save_id",
+            "save_source",
+            "allow_empty_overwrite",
+        }
+        unknown_payload_keys = sorted(set(payload) - allowed_payload_keys)
+        if unknown_payload_keys:
+            raise ValueError(
+                "payload contains unsupported fields: "
+                + ", ".join(unknown_payload_keys)
+            )
+        if not isinstance(payload.get("nodes"), list) or not isinstance(
+            payload.get("edges"), list
+        ):
+            raise ValueError("payload.nodes and payload.edges are required arrays")
+        if "viewport" not in payload or "metadata" not in payload:
+            raise ValueError("payload.viewport and payload.metadata are required")
+        if payload["viewport"] is not None and not isinstance(payload["viewport"], dict):
+            raise ValueError("payload.viewport must be an object or null")
+        if payload["metadata"] is not None and not isinstance(payload["metadata"], dict):
+            raise ValueError("payload.metadata must be an object or null")
+        if not isinstance(payload.get("base_revision"), int):
+            raise ValueError("payload.base_revision is required and must be an integer")
+        if not str(payload.get("client_save_id") or "").strip():
+            raise ValueError("payload.client_save_id is required")
         payload.setdefault("canvas_id", canvas_id)
         payload.setdefault("project_id", project)
+        payload.setdefault("save_source", "manual_save")
         return tool_result(
             _request(
                 "PUT",
@@ -942,28 +979,33 @@ def _handle_create_freezone_canvas_from_preset(args: dict[str, Any], **_: Any) -
     try:
         project = _project_from_args(args)
         body = args.get("preset")
-        if body is None:
-            body = {
-                key: args.get(key)
-                for key in (
-                    "scope",
-                    "episode",
-                    "beat",
-                    "primary_slot",
-                    "asset_kind",
-                    "character",
-                    "identity_id",
-                    "asset_id",
-                    "canvas_id",
-                    "overwrite_existing",
-                    "base_revision",
-                )
-                if args.get(key) is not None
-            }
         if not isinstance(body, dict):
-            raise ValueError("preset must be an object")
-        if not body.get("scope"):
-            raise ValueError("preset scope is required")
+            raise ValueError("preset is required and must match one canonical scope variant")
+        body = dict(body)
+        scope = str(body.get("scope") or "").strip()
+        common = {"scope", "canvas_id", "overwrite_existing", "base_revision"}
+        allowed_by_scope = {
+            "blank": common,
+            "episode": common | {"episode"},
+            "beat": common | {"episode", "beat", "primary_slot"},
+            "asset": common
+            | {"asset_kind", "character", "identity_id", "asset_id"},
+        }
+        if scope not in allowed_by_scope:
+            raise ValueError("preset scope must be blank, episode, beat, or asset")
+        unknown = sorted(set(body) - allowed_by_scope[scope])
+        if unknown:
+            raise ValueError(
+                f"preset scope {scope} does not accept fields: " + ", ".join(unknown)
+            )
+        if scope == "episode" and not isinstance(body.get("episode"), int):
+            raise ValueError("episode preset requires episode")
+        if scope == "beat" and not all(
+            isinstance(body.get(key), int) for key in ("episode", "beat")
+        ):
+            raise ValueError("beat preset requires episode and beat")
+        if scope == "asset" and not str(body.get("asset_kind") or "").strip():
+            raise ValueError("asset preset requires asset_kind")
         return tool_result(
             _request(
                 "POST",
@@ -1279,8 +1321,10 @@ def _handle_generate_sketches(args: dict[str, Any], **_: Any) -> str:
             "sketch_scene_grouping": True,
             "aspect_ratio": "2:3",
         }
-        if isinstance(args.get("body"), dict):
-            body.update({key: value for key, value in args["body"].items() if value is not None})
+        if "body" in args:
+            raise ValueError(
+                "body overrides are not supported; pass the canonical sketch fields"
+            )
         for key in (
             "style",
             "model",
@@ -2321,16 +2365,149 @@ _PATH_PROPS = {
 }
 
 
-def _schema(name: str, description: str, properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
+def _schema(
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+    *,
+    additional_properties: bool = True,
+) -> dict[str, Any]:
+    parameters = {
+        "type": "object",
+        "properties": properties,
+        "required": required or [],
+    }
+    if not additional_properties:
+        parameters["additionalProperties"] = False
     return {
         "name": name,
         "description": description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required or [],
-        },
+        "parameters": parameters,
     }
+
+
+_RESOLVED_SKILL_INPUT_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "role": {"type": "string"},
+        "node_id": {"type": "string"},
+        "node_type": {"type": "string"},
+        "beat_context": {"type": "object"},
+        "image_url": {"type": "string"},
+        "text": {"type": "string"},
+        "slot_target": {"type": "object"},
+        "reference_target": {"type": "object"},
+        "candidate_origin": {"type": "object"},
+        "media_kind": {"type": "string"},
+    },
+    "required": ["role"],
+}
+
+_CANVAS_NODE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "type": {"type": "string"},
+        "position": {"type": "object"},
+        "data": {"type": "object"},
+    },
+    "required": ["id", "type", "data"],
+}
+
+_CANVAS_EDGE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "id": {"type": "string"},
+        "source": {"type": "string"},
+        "target": {"type": "string"},
+        "type": {"type": "string"},
+        "data": {"type": "object"},
+    },
+    "required": ["id", "source", "target"],
+}
+
+_CANVAS_SAVE_PAYLOAD_SCHEMA = {
+    "type": "object",
+    "additionalProperties": False,
+    "properties": {
+        "nodes": {"type": "array", "items": _CANVAS_NODE_SCHEMA},
+        "edges": {"type": "array", "items": _CANVAS_EDGE_SCHEMA},
+        "viewport": {"type": ["object", "null"]},
+        "metadata": {"type": ["object", "null"]},
+        "base_revision": {"type": "integer", "minimum": 0},
+        "client_save_id": {"type": "string", "minLength": 1},
+        "save_source": {
+            "type": "string",
+            "enum": ["manual_save", "manual_clear", "restore", "import"],
+        },
+        "allow_empty_overwrite": {"type": "boolean"},
+    },
+    "required": [
+        "nodes",
+        "edges",
+        "viewport",
+        "metadata",
+        "base_revision",
+        "client_save_id",
+    ],
+}
+
+_PRESET_REFRESH_PROPERTIES = {
+    "canvas_id": {"type": "string"},
+    "overwrite_existing": {"type": "boolean"},
+    "base_revision": {"type": "integer", "minimum": 0},
+}
+
+_PRESET_CANVAS_SCHEMA = {
+    "oneOf": [
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"const": "blank"},
+                **_PRESET_REFRESH_PROPERTIES,
+            },
+            "required": ["scope"],
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"const": "episode"},
+                "episode": {"type": "integer", "minimum": 1},
+                **_PRESET_REFRESH_PROPERTIES,
+            },
+            "required": ["scope", "episode"],
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"const": "beat"},
+                "episode": {"type": "integer", "minimum": 1},
+                "beat": {"type": "integer", "minimum": 1},
+                "primary_slot": {"type": "string"},
+                **_PRESET_REFRESH_PROPERTIES,
+            },
+            "required": ["scope", "episode", "beat"],
+        },
+        {
+            "type": "object",
+            "additionalProperties": False,
+            "properties": {
+                "scope": {"const": "asset"},
+                "asset_kind": {"type": "string", "minLength": 1},
+                "character": {"type": "string"},
+                "identity_id": {"type": "string"},
+                "asset_id": {"type": "string"},
+                **_PRESET_REFRESH_PROPERTIES,
+            },
+            "required": ["scope", "asset_kind"],
+        },
+    ]
+}
 
 
 TOOLS = (
@@ -2372,23 +2549,25 @@ TOOLS = (
         "dramaclaw_run_freezone_skill",
         _schema(
             "dramaclaw_run_freezone_skill",
-            "Run a Freezone canvas SkillNode through /freezone/skills/{skill_id}/run. Use this for canvas graph skills such as sketch_from_context, sketch_from_director_combined, frame_from_context, set_selected_background, and scene_360.",
+            "Run a Freezone canvas SkillNode through /freezone/skills/{skill_id}/run. Pass only the canonical fields below; do not wrap them in request. Use this for canvas graph skills such as sketch_from_context, sketch_from_director_combined, frame_from_context, set_selected_background, and scene_360.",
             {
                 "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
                 "skill_id": {"type": "string", "description": "Skill id from dramaclaw_list_freezone_skills, e.g. freezone.sketch_from_context."},
-                "request": {"type": "object", "description": "Complete SkillRunRequest. Prefer this when available."},
-                "schema_version": {"type": "string", "description": "Default: skill.v1."},
                 "skill_node_id": {"type": "string", "description": "Canvas skill node id."},
                 "canvas_id": {"type": "string", "description": "Canvas id, usually default or a preset canvas id."},
                 "idempotency_key": {"type": "string", "description": "Optional idempotency key for retries."},
-                "parameters": {"type": "object", "description": "Skill parameter values."},
+                "parameters": {
+                    "type": "object",
+                    "description": "Skill-specific values from dramaclaw_list_freezone_skills.",
+                },
                 "resolved_inputs": {
                     "type": "array",
-                    "items": {"type": "object"},
+                    "items": _RESOLVED_SKILL_INPUT_SCHEMA,
                     "description": "Resolved skill input bindings from the canvas.",
                 },
             },
             ["skill_id"],
+            additional_properties=False,
         ),
         _handle_run_freezone_skill,
     ),
@@ -2433,16 +2612,14 @@ TOOLS = (
         "dramaclaw_save_freezone_canvas",
         _schema(
             "dramaclaw_save_freezone_canvas",
-            "Save a complete Freezone canvas payload. Read the canvas first, modify nodes/edges locally, then save with the current base_revision and a client_save_id.",
+            "Save a complete Freezone canvas payload. Read the canvas first, preserve viewport/metadata, modify nodes/edges locally, then save with the current base_revision and a unique client_save_id.",
             {
                 "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
                 "canvas_id": {"type": "string", "description": "Canvas id."},
-                "payload": {
-                    "type": "object",
-                    "description": "Complete canvas payload with nodes, edges, viewport, base_revision, client_save_id, and save_source.",
-                },
+                "payload": _CANVAS_SAVE_PAYLOAD_SCHEMA,
             },
             ["canvas_id", "payload"],
+            additional_properties=False,
         ),
         _handle_save_freezone_canvas,
     ),
@@ -2463,22 +2640,13 @@ TOOLS = (
         "dramaclaw_create_freezone_canvas_from_preset",
         _schema(
             "dramaclaw_create_freezone_canvas_from_preset",
-            "Create or open a Freezone canvas from a preset scope such as episode, beat, asset, or blank. Use this before operating on a beat or asset canvas when no canvas id is known.",
+            "Create or open a Freezone canvas from exactly one typed preset variant. Put scope-specific fields inside preset; top-level scope/episode/beat fields are rejected.",
             {
                 "project_id": {"type": "string", "description": "Defaults to DRAMACLAW_PROJECT_ID."},
-                "preset": {"type": "object", "description": "Complete preset request. Prefer this when available."},
-                "scope": {"type": "string", "enum": ["episode", "beat", "asset", "blank"]},
-                "episode": {"type": "integer"},
-                "beat": {"type": "integer"},
-                "primary_slot": {"type": "string", "description": "For beat canvases, e.g. sketch or frame."},
-                "asset_kind": {"type": "string", "description": "For asset canvases, e.g. character, identity, prop, scene."},
-                "character": {"type": "string"},
-                "identity_id": {"type": "string"},
-                "asset_id": {"type": "string"},
-                "canvas_id": {"type": "string"},
-                "overwrite_existing": {"type": "boolean"},
-                "base_revision": {"type": "integer"},
+                "preset": _PRESET_CANVAS_SCHEMA,
             },
+            ["preset"],
+            additional_properties=False,
         ),
         _handle_create_freezone_canvas_from_preset,
     ),
@@ -2774,12 +2942,9 @@ TOOLS = (
                     "type": "boolean",
                     "description": "Run /sketches/assign-colors before generation. Default: true.",
                 },
-                "body": {
-                    "type": "object",
-                    "description": "Advanced override merged into the canonical generate body.",
-                },
             },
             ["episode"],
+            additional_properties=False,
         ),
         _handle_generate_sketches,
     ),
