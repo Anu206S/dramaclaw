@@ -721,6 +721,48 @@ def test_hermes_tool_call_guard_still_stops_repeated_skill_loading():
     assert guard.total == 0
 
 
+def test_hermes_tool_call_guard_distinguishes_skill_resources_without_raw_input():
+    guard = hermes_sdk._TurnToolCallGuard()
+
+    for index, title in enumerate(
+        (
+            "skill view (dramaclaw)",
+            "skill view (dramaclaw/playbooks/episode.md)",
+            "skill view (dramaclaw/references/script.md)",
+        )
+    ):
+        assert guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="skill",
+                call_id=f"skill-{index}",
+                input=None,
+                raw={"title": title},
+            )
+        ) is None
+
+    assert guard.total == 0
+
+
+def test_hermes_tool_call_guard_stops_repeated_titled_skill_resource():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+
+    for index in range(hermes_sdk.REPEATED_READ_TOOL_CALL_LIMIT + 1):
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="skill",
+                call_id=f"skill-{index}",
+                input=None,
+                raw={"title": "skill view (dramaclaw)"},
+            )
+        )
+
+    assert stop_message is not None
+    assert guard.total == 0
+
+
 def test_hermes_tool_call_guard_stops_repeated_identical_node_reads():
     guard = hermes_sdk._TurnToolCallGuard()
     stop_message = None

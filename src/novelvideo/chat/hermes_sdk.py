@@ -319,6 +319,16 @@ def _tool_call_limit_stop_message(name: object) -> str:
     )
 
 
+def _read_signature_input(event: ChatBackendEvent) -> object:
+    if event.input is not None or not _is_skill_loading_tool(event.name):
+        return event.input
+    if isinstance(event.raw, dict):
+        title = str(event.raw.get("title") or "").strip()
+        if title:
+            return {"resource_title": title}
+    return event.input
+
+
 class _TurnToolCallGuard:
     def __init__(self) -> None:
         self.total = 0
@@ -378,7 +388,12 @@ class _TurnToolCallGuard:
             tool_name
         ) and not _is_freezone_canvas_write_tool(tool_name):
             try:
-                encoded_input = json.dumps(event.input, ensure_ascii=False, sort_keys=True, default=str)
+                encoded_input = json.dumps(
+                    _read_signature_input(event),
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                )
             except (TypeError, ValueError):
                 encoded_input = repr(event.input)
             signature = f"{tool_name}:{encoded_input}"
