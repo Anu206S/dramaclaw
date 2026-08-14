@@ -81,6 +81,7 @@ metadata:
 ## 工具选择
 
 - 优先使用 `dramaclaw_*` 业务工具；专用工具覆盖不到时才使用受限通用 GET/POST/PATCH/DELETE 工具。
+- 专用工具只接受自身 schema 声明的唯一参数形状。不要额外套 `request`、`body`、`envelope`，也不要把同一字段同时放在顶层和嵌套对象；复杂对象必须按工具声明的必填字段完整提交。
 - 通用工具路径只能来自 `references/api-reference.md` 或 `references/step-api-reference.md`，不得臆造。
 - 读取、更新、异步任务和媒体交付的具体行为分别以对应 reference 为准。
 - API 返回正式成片路径时，主动使用成片展示工具；没有正式路径时只报告状态，不猜下载地址、不拼 host、不探测文件路由。
