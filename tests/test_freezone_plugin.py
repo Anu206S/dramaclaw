@@ -2960,6 +2960,8 @@ def test_canvas_command_tools_expose_discriminated_minimal_schema():
 
     assert validate["required"] == ["commands"]
     assert emit["required"] == ["commands"]
+    assert validate["additionalProperties"] is False
+    assert emit["additionalProperties"] is False
     assert set(validate["properties"]) == {"project_id", "canvas_id", "commands"}
     assert set(emit["properties"]) == {"project_id", "canvas_id", "commands"}
 
@@ -3018,6 +3020,60 @@ def test_canvas_command_tools_and_handlers_share_one_contract():
     assert plugin._validation_payload(
         {"canvasId": "old", "body": {"commands": [{"type": "x"}]}}
     ) == {}
+
+
+def test_canvas_command_handlers_reject_legacy_scope_instead_of_using_defaults():
+    plugin = _load_plugin_module()
+
+    for handler in (
+        plugin._handle_validate_commands,
+        plugin._handle_emit_canvas_command,
+    ):
+        result = handler(
+            {
+                "project": "legacy-project",
+                "canvasId": "second-canvas",
+                "commands": [{"type": "run_workflow"}],
+            }
+        )
+
+        assert result["ok"] is False
+        assert result["status"] == "legacy_tool_argument_rejected"
+        assert "canvasId" in result["error"]
+        assert "project" in result["error"]
+
+
+def test_agent_tool_scope_exposes_only_canonical_canvas_id():
+    plugin = _load_plugin_module()
+
+    for _name, schema, _handler in plugin.TOOLS:
+        properties = schema["parameters"]["properties"]
+        assert "canvasId" not in properties
+
+
+def test_update_node_data_rejects_aliases_and_empty_payloads():
+    plugin = _load_plugin_module()
+    schema = next(
+        schema
+        for name, schema, _handler in plugin.TOOLS
+        if name == "freezone_update_node_data"
+    )["parameters"]
+
+    assert schema["additionalProperties"] is False
+    assert "nodeId" not in schema["properties"]
+    assert schema["properties"]["data"]["minProperties"] == 1
+
+    alias_result = plugin._handle_update_node_data(
+        {"nodeId": "node-a", "data": {"content": "fixed"}}
+    )
+    assert alias_result["ok"] is False
+    assert alias_result["status"] == "legacy_tool_argument_rejected"
+
+    empty_result = plugin._handle_update_node_data(
+        {"node_id": "node-a", "data": {}}
+    )
+    assert empty_result["ok"] is False
+    assert empty_result["status"] == "data_required"
 
 
 def test_canvas_command_schema_accepts_minimal_variants_and_rejects_union_shell():

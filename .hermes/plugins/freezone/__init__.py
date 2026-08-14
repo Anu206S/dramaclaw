@@ -2024,8 +2024,29 @@ def _validation_payload(args: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _legacy_tool_argument_error(
+    args: dict[str, Any], legacy_names: tuple[str, ...]
+) -> dict[str, Any] | None:
+    legacy_fields = sorted(field for field in legacy_names if field in args)
+    if not legacy_fields:
+        return None
+    return {
+        "ok": False,
+        "status": "legacy_tool_argument_rejected",
+        "error": (
+            "unsupported legacy field(s): "
+            + ", ".join(legacy_fields)
+            + "; use project_id and canvas_id"
+        ),
+    }
+
+
 def _handle_validate_commands(args: dict[str, Any], **_: Any) -> str:
     try:
+        if legacy_error := _legacy_tool_argument_error(
+            args, ("project", "canvasId", "body", "envelope")
+        ):
+            return tool_result(legacy_error)
         project = (
             str(args.get("project_id") or _default_project_id()).strip()
             or None
@@ -3265,6 +3286,10 @@ def _summarize_canvas_command_result(
 
 
 def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
+    if legacy_error := _legacy_tool_argument_error(
+        args, ("project", "canvasId", "body", "envelope")
+    ):
+        return tool_result(legacy_error)
     project = (
         str(args.get("project_id") or _default_project_id()).strip() or None
     )
@@ -3946,15 +3971,23 @@ def _handle_add_next_node(args: dict[str, Any], **_: Any) -> str:
 
 
 def _handle_update_node_data(args: dict[str, Any], **_: Any) -> str:
-    node_id = str(args.get("node_id") or args.get("nodeId") or "").strip()
+    if legacy_error := _legacy_tool_argument_error(
+        args, ("project", "canvasId", "nodeId")
+    ):
+        return tool_result(legacy_error)
+    node_id = str(args.get("node_id") or "").strip()
     if not node_id:
         return tool_result(
             {"ok": False, "status": "node_id_required", "error": "node_id is required"}
         )
     data = args.get("data")
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or not data:
         return tool_result(
-            {"ok": False, "status": "data_required", "error": "data must be an object"}
+            {
+                "ok": False,
+                "status": "data_required",
+                "error": "data must be a non-empty object",
+            }
         )
     return _single_write_command(
         args, {"type": "update_node_data", "node_id": node_id, "data": data}
@@ -4329,23 +4362,30 @@ def _handle_link_type_catalog(args: dict[str, Any], **_: Any) -> str:
 
 
 def _schema(
-    name: str, description: str, properties: dict[str, Any], required: list[str] | None = None
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+    *,
+    reject_unknown: bool = False,
 ) -> dict[str, Any]:
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "required": required or [],
+    }
+    if reject_unknown:
+        parameters["additionalProperties"] = False
     return {
         "name": name,
         "description": description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required or [],
-        },
+        "parameters": parameters,
     }
 
 
 _SCOPE_PROPS = {
     "project_id": {"type": "string", "description": "Defaults to the current project context."},
     "canvas_id": {"type": "string", "description": "Defaults to the current canvas context."},
-    "canvasId": {"type": "string", "description": "Alias of canvas_id."},
 }
 
 _WORKFLOW_INTENT_OBJECT_SCHEMA = {
@@ -5854,6 +5894,7 @@ TOOLS = (
                 },
             },
             ["commands"],
+            reject_unknown=True,
         ),
         _handle_validate_commands,
     ),
@@ -5872,6 +5913,7 @@ TOOLS = (
                 },
             },
             ["commands"],
+            reject_unknown=True,
         ),
         _handle_emit_canvas_command,
     ),
@@ -5970,13 +6012,14 @@ TOOLS = (
             {
                 **_SCOPE_PROPS,
                 "node_id": {"type": "string", "description": "Existing canvas node id."},
-                "nodeId": {"type": "string", "description": "Alias of node_id."},
                 "data": {
                     "type": "object",
+                    "minProperties": 1,
                     "description": "Only fields to change. Do not include reserved or non-editable fields.",
                 },
             },
             ["node_id", "data"],
+            reject_unknown=True,
         ),
         _handle_update_node_data,
     ),
