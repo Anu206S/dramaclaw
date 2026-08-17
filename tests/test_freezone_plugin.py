@@ -553,6 +553,62 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
     assert repeated["status"] == "workflow_draft_already_confirmed"
 
 
+def test_workflow_draft_normalizes_json_intent_string(monkeypatch, tmp_path):
+    plugin = _load_plugin_module()
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "edge_count": 0,
+        "plan": {"summary": "广告", "inputs": {}, "phases": [], "nodes": [], "edges": []},
+    }
+    monkeypatch.setattr(plugin, "compile_workflow_intent", lambda intent: compiled)
+    serialized = json.dumps(
+        {
+            "schema_version": "freezone_workflow_intent.v1",
+            "skill_id": "video-ad",
+            "user_goal": "制作广告",
+        },
+        ensure_ascii=False,
+    )
+
+    result = plugin._handle_prepare_workflow_draft(
+        {"intent": serialized, "planning_confirmed": True}
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "workflow_draft_ready"
+
+
+def test_workflow_draft_returns_actionable_errors_for_wrong_phase_arguments():
+    plugin = _load_plugin_module()
+
+    wrong_tool = plugin._handle_prepare_workflow_draft(
+        {"project_id": "project-a", "canvas_id": "canvas-a", "draft_id": "draft-1"}
+    )
+    assert wrong_tool["status"] == "wrong_workflow_draft_tool"
+    assert "freezone_patch_workflow_draft" in wrong_tool["agent_instruction"]
+
+    missing_intent = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "planning_confirmed": True,
+        }
+    )
+    assert missing_intent["status"] == "workflow_intent_required_after_confirmation"
+
+    invalid_intent = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "intent": "not-json",
+        }
+    )
+    assert invalid_intent["status"] == "workflow_intent_object_required"
+    assert "execute_code" in invalid_intent["agent_instruction"]
+
+
 def test_workflow_planning_quote_skips_billing_in_ce(monkeypatch):
     plugin = _load_plugin_module()
     monkeypatch.setenv("DRAMACLAW_PROJECT_ID", "project-a")
