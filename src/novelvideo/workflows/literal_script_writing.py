@@ -13,6 +13,7 @@ from novelvideo.config import (
     get_newapi_structured_output_model_settings,
     get_newapi_text_pydantic_model,
 )
+from novelvideo.model_gateway_runtime import model_gateway_output_retries
 from novelvideo.models import (
     NarrationScript,
     SceneRef,
@@ -411,11 +412,12 @@ class LiteralScriptWritingWorkflow:
                     "LITERAL_BEAT_META_MODEL",
                     "gemini-3.5-flash",
                     brainclaw_profile=BrainClawProfile.LITERAL_BEAT_METADATA,
+                    capability="text.generate.workflow",
                 ),
                 system_prompt=LITERAL_SCRIPT_PROMPT,
                 model_settings=get_newapi_structured_output_model_settings(),
                 output_type=LiteralBeatMetaOutput,
-                output_retries=2,
+                output_retries=model_gateway_output_retries(2),
                 validation_context={
                     "valid_identity_ids": self._valid_identity_ids,
                     "valid_scene_ids": self._valid_scene_ids,
@@ -864,14 +866,18 @@ class LiteralScriptWritingWorkflow:
             fallback_speaker = ""
             visual_description = speech or line
         else:
-            audio_type = "narration" if self.audio_type_mode == "narrated" else "silence"
+            audio_type = (
+                "narration" if self.audio_type_mode == "narrated" else "silence"
+            )
             fallback_speaker = ""
             visual_description = line
 
         # 不让未经校验的资产标记进入后续生成，但保留原文语义。
         visual_description = (
-            visual_description.replace("{{", "").replace("}}", "")
-            .replace("[[", "").replace("]]", "")
+            visual_description.replace("{{", "")
+            .replace("}}", "")
+            .replace("[[", "")
+            .replace("]]", "")
             .strip()
         )
         if len(visual_description) < 5:

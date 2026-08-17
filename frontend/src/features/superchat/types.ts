@@ -314,6 +314,16 @@ export type ServerFrame =
       status?: string;
       message?: string;
     }
+  | {
+      type: "director.auto.status";
+      scope?: ChatScope;
+      status: "running" | "awaiting_confirmation" | "paused" | "completed";
+      episode?: number;
+      run_id?: string;
+      message?: string | null;
+      terminal_task_id?: string | null;
+      voice_policy?: "system" | "custom" | null;
+    }
   | { type: "project.created"; project: string }
   | { type: "error"; message: string; turn_id?: string }
   | { type: string; [key: string]: unknown };

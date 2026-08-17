@@ -3721,16 +3721,12 @@ describe("canvas chat commands", () => {
     expect(routingOnly).not.toContain("canvas_ontology_context.v1");
     expect(routingOnly).not.toContain("canvas_ontology_summary.v1");
     expect(routingOnly).toContain("[SUPERTALE_CANVAS_CHAT_COMMANDS]");
-    expect(routingOnly).toContain("freezone_get_link_type_catalog");
-    expect(routingOnly).toContain("freezone_validate_canvas_commands");
-    expect(routingOnly).toContain("freezone_get_node_create_schema");
-    expect(routingOnly).toContain("create_edge needs link_type");
-    expect(routingOnly).toContain("Open-ended ideation/no-idea requests");
-    expect(routingOnly).toContain("emit commands only after the user explicitly asks");
-    expect(routingOnly).toContain("explicit canvas framework/workflow/storyboard/short-video plan");
-    expect(routingOnly).toContain("videoComposeNode");
-    expect(routingOnly).toContain("video/audio inputs");
-    expect(routingOnly.length).toBeLessThan(2500);
+    expect(routingOnly).toContain("FREEZONE_CANVAS_ASSISTANT contract");
+    expect(routingOnly).toContain("read-only grounding");
+    expect(routingOnly).toContain("Request only the missing catalog");
+    expect(routingOnly).not.toContain("freezone_validate_canvas_commands");
+    expect(routingOnly).not.toContain("videoComposeNode");
+    expect(routingOnly.length).toBeLessThan(700);
     expect(routingOnly).not.toContain("link_type catalog:");
     expect(routingOnly).not.toContain(
       "If more detail is needed, emit canvas_context_request.v1",
@@ -9006,30 +9002,18 @@ describe("canvas chat commands", () => {
     const context = buildCanvasChatCommandContext();
 
     expect(context).toContain("[SUPERTALE_CANVAS_CHAT_COMMANDS]");
-    expect(context).toContain(
-      "Use freezone_emit_canvas_command once for batch edits",
-    );
-    expect(context).toContain(
-      "Use typed write tools only for explicit one-operation requests",
-    );
-    expect(context).toContain(
-      "the first assistant output must be a Freezone write tool call",
-    );
-    expect(context).toContain("Do not emit assistant prose");
-    expect(context).toContain("Do not expose tool names");
+    expect(context).toContain("FREEZONE_CANVAS_ASSISTANT contract");
+    expect(context).toContain("read-only grounding");
+    expect(context).toContain("Request only the missing catalog");
     expect(context).not.toContain("return ONLY a fenced JSON block");
     expect(context).not.toContain("Otherwise write the JSON envelope directly");
     expect(context).not.toContain(
       'return a JSON block with schema_version="canvas_chat_commands.v1"',
     );
-    expect(context).toContain("create_edge needs link_type");
-    expect(context).toContain("freezone_get_link_type_catalog");
-    expect(context).toContain("freezone_get_node_action_catalog");
-    expect(context).toContain("freezone_get_canvas_command_catalog");
-    expect(context).toContain("freezone_validate_canvas_commands");
-    expect(context).toContain("Open-ended ideation/no-idea requests");
-    expect(context).toContain("explicit canvas framework/workflow/storyboard/short-video plan");
-    expect(context).toContain("video/audio inputs");
+    expect(context).not.toContain("freezone_get_link_type_catalog");
+    expect(context).not.toContain("freezone_validate_canvas_commands");
+    expect(context.length).toBeLessThan(700);
+    expect(context).not.toContain("videoComposeNode");
   });
 
   it("parses audio download as a runnable node action", () => {

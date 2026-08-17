@@ -5,8 +5,14 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from novelvideo.egress_context import (
+    TRUSTED_EGRESS_CONTEXT_KEY,
+    TrustedEgressContext,
+    TrustedRunnerEnvelope,
+)
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
+from novelvideo.task_backend.envelope import InvalidTaskEnvelope
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
 
@@ -40,6 +46,11 @@ async def _run_system_voice_setup(
         state_dir=str(ctx.state_dir),
     )
     await store.initialize()
+    # ``prepare_missing_system_voices`` reads characters from SQLite and then
+    # persists the selected voice through ``update_character``.  The latter
+    # resolves characters from the store's in-memory index, so a fresh task
+    # worker must hydrate that index before attempting the update.
+    await store.load_graph_state()
     manager.update_progress_for_project(
         ctx,
         SYSTEM_VOICE_SETUP_TASK_TYPE,
@@ -73,7 +84,22 @@ async def _run_system_voice_setup(
         await store.close()
 
 
-def run_indextts2_audio(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
+def _extract_trusted_egress_context(
+    envelope: dict[str, Any],
+) -> TrustedEgressContext | None:
+    if type(envelope) is TrustedRunnerEnvelope:
+        context = envelope.get(TRUSTED_EGRESS_CONTEXT_KEY)
+        if type(context) is not TrustedEgressContext:
+            raise InvalidTaskEnvelope() from None
+        return context
+    if type(envelope) is not dict or TRUSTED_EGRESS_CONTEXT_KEY in envelope:
+        raise InvalidTaskEnvelope() from None
+    return None
+
+
+def run_indextts2_audio(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any] | None:
     return asyncio.run(
         await_envelope_with_cancel_watch(
             _run_indextts2_audio(envelope, ctx),
@@ -126,15 +152,21 @@ async def _run_indextts2_audio(
         )
 
     try:
+        generation_kwargs: dict[str, Any] = {
+            "store": store,
+            "username": ctx.owner_username,
+            "project": ctx.project_name,
+            "episode": episode,
+            "beat_numbers": beat_numbers,
+            "mode": mode,
+            "progress_callback": on_progress,
+            "log_callback": on_log,
+        }
+        egress_context = _extract_trusted_egress_context(envelope)
+        if egress_context is not None:
+            generation_kwargs["egress_context"] = egress_context
         result = await run_indextts2_beat_audio_generation(
-            store=store,
-            username=ctx.owner_username,
-            project=ctx.project_name,
-            episode=episode,
-            beat_numbers=beat_numbers,
-            mode=mode,
-            progress_callback=on_progress,
-            log_callback=on_log,
+            **generation_kwargs,
         )
         if result.generated == 0 and result.failed:
             raise RuntimeError(

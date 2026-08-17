@@ -181,6 +181,7 @@ def _create_screenplay_normalizer_agent(
             "SCREENPLAY_NORMALIZER_MODEL",
             "gemini-3.5-flash",
             brainclaw_profile=brainclaw_profile,
+            capability="cognee.llm",
         ),
         system_prompt=SCREENPLAY_NORMALIZER_SYSTEM_PROMPT,
         model_settings=get_newapi_structured_output_model_settings(),

@@ -27,9 +27,15 @@ import time
 import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any, Awaitable, Callable
 
 from novelvideo import config
 from novelvideo.chat.hermes_sdk import HermesSdkClient, HermesSdkThread
+from novelvideo.chat.hermes_egress import (
+    EgressBoundaryError,
+    HermesLaunchAuthorization,
+    build_hermes_child_env,
+)
 from novelvideo.chat.hermes_workspace import (
     effective_gateway_credentials,
     effective_gateway_fingerprint,
@@ -48,6 +54,13 @@ DEFAULT_TOKEN_RENEW_SKEW_SECS = 15 * 60  # rotate 15 min before expiry
 DEFAULT_API_URL = "http://127.0.0.1:8780"
 DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
 _checked_hermes_versions: dict[Path, str] = {}
+
+
+class HermesDrainingError(RuntimeError):
+    """A revoked worker cannot accept another turn."""
+
+    def __init__(self) -> None:
+        super().__init__("hermes worker is draining")
 
 
 def _load_api_url() -> str:
@@ -71,6 +84,7 @@ def _load_api_url() -> str:
         return legacy.rstrip("/")
 
     return DEFAULT_API_URL
+
 
 # Scopes hermes worker tokens get by default. require_scope() factory
 # enforces these on write endpoints.
@@ -187,6 +201,39 @@ class _WorkerSlot:
     canvas_id: str | None = None
     gateway_fingerprint: str = ""
     last_used: float = field(default_factory=time.time)
+    state: str = "active"
+    active_turns: int = 0
+    authz_generation: int = 0
+    one_shot: bool = False
+    # 出网身份，与上面的会话身份 (`scope_kind`/`project_id`) 是两套东西。
+    # 记在 slot 上只为一件事：`_rotate_slot_locked` 重建 worker 时必须带着它们，
+    # 否则替换出来的 worker 走 `authorization is None` 分支，静默退回部署级
+    # `NEWAPI_API_KEY`——组织身份被洗掉，不报错也不留痕（OI-54 同一种病）。
+    egress_project_id: str | None = None
+    requester_user_id: str | None = None
+    authorization: HermesLaunchAuthorization | None = None
+
+
+class _ManagedHermesThread:
+    """Thread facade that lets the pool observe complete turn boundaries."""
+
+    def __init__(self, owner: "HermesPool", slot: _WorkerSlot) -> None:
+        self._owner = owner
+        self._slot = slot
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._slot.thread, name)
+
+    async def stream(self, prompt: str, *, current_project: str | None = None):
+        await self._owner._begin_turn(self._slot)
+        try:
+            async for event in self._slot.thread.stream(
+                prompt,
+                current_project=current_project,
+            ):
+                yield event
+        finally:
+            await asyncio.shield(self._owner._finish_turn(self._slot))
 
 
 class HermesPool:
@@ -215,6 +262,29 @@ class HermesPool:
         self._token_renew_skew_secs = token_renew_skew_secs
         self._cleanup_task: asyncio.Task | None = None
         self._warm_tasks: set[asyncio.Task] = set()
+        self._authz_generation_reader: Callable[[str], Awaitable[int]] | None = None
+
+    def set_authz_generation_reader(
+        self,
+        reader: Callable[[str], Awaitable[int]] | None,
+    ) -> None:
+        """Install the EE generation preflight; CE leaves this unset."""
+        self._authz_generation_reader = reader
+
+    async def _authz_generation(self, username: str) -> int:
+        if self._authz_generation_reader is None:
+            return 0
+        try:
+            generation = await self._authz_generation_reader(username)
+        except asyncio.CancelledError:
+            raise
+        except GeneratorExit:
+            raise
+        except Exception:
+            raise HermesDrainingError() from None
+        if type(generation) is not int or generation < 0:
+            raise HermesDrainingError()
+        return generation
 
     async def get_for_user(
         self,
@@ -227,11 +297,20 @@ class HermesPool:
         project_id: str | None = None,
         surface: str | None = None,
         canvas_id: str | None = None,
+        egress_project_id: str | None = None,
+        requester_user_id: str | None = None,
+        authorization: HermesLaunchAuthorization | None = None,
     ) -> HermesSdkThread:
         """Lazily create / return the per-user hermes thread.
 
         Bumps last_used so idle reaper resets the clock. Caller should
         ``await thread.stream(prompt)`` to send messages.
+
+        ``egress_project_id`` and ``requester_user_id`` carry the *egress*
+        identity of this turn and are only consumed when ``authorization`` is
+        present. They come from the caller — never from the authorization's own
+        context — so the admission re-check in ``build_hermes_child_env`` keeps
+        an independent source to compare against.
         """
         slot_key = self._slot_key(username, agent_profile)
         normalized_surface = (
@@ -240,9 +319,27 @@ class HermesPool:
             or None
         )
         normalized_canvas_id = str(canvas_id or "").strip() or None
+        authz_generation = await self._authz_generation(username)
         async with self._lock:
             slot = self._slots.get(slot_key)
+            if slot is not None and authorization is not None:
+                slot.state = "draining"
+                if slot.active_turns or not await self._close_slot(slot, strict=True):
+                    raise HermesDrainingError()
+                slot.state = "closed"
+                self._slots.pop(slot_key, None)
+                slot = None
             if slot is not None:
+                if authz_generation > slot.authz_generation:
+                    slot.state = "draining"
+                    if slot.active_turns == 0 and await self._close_slot(
+                        slot, strict=True
+                    ):
+                        slot.state = "closed"
+                        self._slots.pop(slot_key, None)
+                if slot.state != "active":
+                    raise HermesDrainingError()
+                slot.authz_generation = authz_generation
                 if slot_key in self._dirty_profiles:
                     self._dirty_profiles.discard(slot_key)
                     slot = await self._rotate_slot_locked(
@@ -315,7 +412,7 @@ class HermesPool:
                 else:
                     await self._update_scope_locked(slot, scope_kind, project_id)
                 slot.last_used = time.time()
-                return slot.thread
+                return _ManagedHermesThread(self, slot)  # type: ignore[return-value]
 
             await self._evict_lru_if_full()
             self._dirty_profiles.discard(slot_key)
@@ -325,15 +422,47 @@ class HermesPool:
                 agent_profile=agent_profile,
                 tool_mode=tool_mode,
                 scope_kind=scope_kind,
-                project_id=project_id,
+                session_project_id=project_id,
                 surface=normalized_surface,
                 canvas_id=normalized_canvas_id,
+                egress_project_id=egress_project_id,
+                requester_user_id=requester_user_id,
+                authorization=authorization,
             )
+            slot.authz_generation = authz_generation
             self._slots[slot_key] = slot
             # Ensure background reaper is running
             if self._cleanup_task is None or self._cleanup_task.done():
                 self._cleanup_task = asyncio.create_task(self._reaper_loop())
-            return slot.thread
+            return _ManagedHermesThread(self, slot)  # type: ignore[return-value]
+
+    async def _begin_turn(self, slot: _WorkerSlot) -> None:
+        authz_generation = await self._authz_generation(slot.username)
+        slot_key = self._slot_key(slot.username, slot.agent_profile)
+        async with self._lock:
+            if authz_generation > slot.authz_generation:
+                slot.state = "draining"
+                if slot.active_turns == 0 and await self._close_slot(slot, strict=True):
+                    slot.state = "closed"
+                    self._slots.pop(slot_key, None)
+            if self._slots.get(slot_key) is not slot or slot.state != "active":
+                raise HermesDrainingError()
+            slot.authz_generation = authz_generation
+            slot.active_turns += 1
+            slot.last_used = time.time()
+
+    async def _finish_turn(self, slot: _WorkerSlot) -> None:
+        async with self._lock:
+            if slot.active_turns > 0:
+                slot.active_turns -= 1
+            if slot.one_shot:
+                slot.state = "draining"
+            if slot.state == "draining" and slot.active_turns == 0:
+                if await self._close_slot(slot, strict=True):
+                    slot.state = "closed"
+                    slot_key = self._slot_key(slot.username, slot.agent_profile)
+                    if self._slots.get(slot_key) is slot:
+                        self._slots.pop(slot_key, None)
 
     async def reset_for_user(
         self,
@@ -371,7 +500,7 @@ class HermesPool:
                 agent_profile=agent_profile,
                 tool_mode=tool_mode,
                 scope_kind=scope_kind,
-                project_id=project_id,
+                session_project_id=project_id,
                 surface=normalized_surface,
                 canvas_id=normalized_canvas_id,
                 resume_session_id="",
@@ -406,15 +535,28 @@ class HermesPool:
         agent_profile: str,
         tool_mode: str,
         scope_kind: str,
-        project_id: str | None,
+        session_project_id: str | None,
         surface: str | None,
         canvas_id: str | None,
+        egress_project_id: str | None = None,
+        requester_user_id: str | None = None,
         resume_session_id: str | None = None,
+        authorization: HermesLaunchAuthorization | None = None,
     ) -> _WorkerSlot:
+        """Spawn a worker slot.
+
+        ``session_project_id`` carries the session/workspace project identity
+        (NULL in home scope). ``egress_project_id`` carries only the identity
+        compared against a trusted egress context; the two cannot be the same
+        parameter because home scope requires NULL for the former and a
+        non-empty value for the latter. ``requester_user_id`` is the caller's
+        own copy of the egress user identity, kept separate for the same reason.
+        """
         cli_path = _hermes_cli_path()
         if not cli_path.exists():
             raise RuntimeError(
-                f"hermes CLI not found at {cli_path}. " "Run `uv tool install 'hermes-agent[acp]'`."
+                f"hermes CLI not found at {cli_path}. "
+                "Run `uv tool install 'hermes-agent[acp]'`."
             )
         _ensure_supported_hermes_version(cli_path)
         home = ensure_user_hermes_workspace(
@@ -429,19 +571,22 @@ class HermesPool:
             agent_kind="hermes" if agent_profile == "main" else f"hermes-{agent_profile}",
             worker_id=worker_id,
             current_scope_kind=scope_kind,
-            current_project_id=project_id,
+            current_project_id=session_project_id,
         )
-        project_env = await self._project_env(username, project_id)
+        project_env = await self._project_env(username, session_project_id)
         env = self._build_env(
             home,
             username,
             token,
             agent_profile=agent_profile,
-            project_id=project_id,
+            project_id=session_project_id,
+            egress_project_id=egress_project_id,
+            requester_user_id=requester_user_id,
             project_env=project_env,
             tool_mode=tool_mode,
             surface=surface,
             canvas_id=canvas_id,
+            authorization=authorization,
         )
         client = HermesSdkClient(
             cli_path=cli_path,
@@ -452,7 +597,9 @@ class HermesPool:
         )
         session_id = (
             resume_session_id
-            or self._session_id_for(username, scope_kind, project_id, agent_profile, canvas_id)
+            or self._session_id_for(
+                username, scope_kind, session_project_id, agent_profile, canvas_id
+            )
             or ""
         ).strip()
         resumed_session = bool(session_id)
@@ -467,11 +614,13 @@ class HermesPool:
                     username,
                     agent_profile,
                     scope_kind,
-                    project_id,
+                    session_project_id,
                     canvas_id,
                     exc,
                 )
-                self._forget_session(username, scope_kind, project_id, agent_profile, canvas_id)
+                self._forget_session(
+                    username, scope_kind, session_project_id, agent_profile, canvas_id
+                )
                 thread = client.thread_start()
                 resumed_session = False
         else:
@@ -492,10 +641,16 @@ class HermesPool:
             agent_profile=agent_profile,
             tool_mode=tool_mode,
             scope_kind=scope_kind,
-            project_id=project_id,
+            project_id=session_project_id,
             surface=surface,
             canvas_id=canvas_id,
-            gateway_fingerprint=effective_gateway_fingerprint(),
+            gateway_fingerprint=(
+                "" if authorization is not None else effective_gateway_fingerprint()
+            ),
+            one_shot=authorization is not None,
+            egress_project_id=egress_project_id,
+            requester_user_id=requester_user_id,
+            authorization=authorization,
         )
 
     def _token_needs_renewal(self, slot: _WorkerSlot) -> bool:
@@ -577,6 +732,16 @@ class HermesPool:
         Spawn first; if control-plane issuance fails, keep the old worker alive.
         Track the replacement before closing the old slot so a cancelled request
         cannot leave the fresh token unmanaged.
+
+        The replacement inherits the *egress* identity of the slot it replaces.
+        Rotation is triggered by callers that carry no authorization of their own
+        (``prewarm``, a home-scope turn, a second browser tab), and an org slot
+        always rotates on the first such touch because ``gateway_fingerprint`` is
+        left empty for it. Dropping the identity here would hand that user's
+        resumed session to a worker credentialed with the deployment-level
+        ``NEWAPI_API_KEY`` — the platform paying for the org's compute, silently.
+        The session identity still follows the caller's scope; only the egress
+        identity is inherited, which is exactly why S3 split the two parameters.
         """
         if resume_existing_session:
             self._remember_session(slot)
@@ -601,10 +766,13 @@ class HermesPool:
             agent_profile=agent_profile,
             tool_mode=tool_mode,
             scope_kind=scope_kind,
-            project_id=project_id,
+            session_project_id=project_id,
             surface=surface,
             canvas_id=canvas_id,
+            egress_project_id=slot.egress_project_id,
+            requester_user_id=slot.requester_user_id,
             resume_session_id=resume_session_id,
+            authorization=slot.authorization,
         )
         _log.info(
             "rotating hermes worker for user=%s old_agent_session=%s new_agent_session=%s reason=%s",
@@ -629,11 +797,16 @@ class HermesPool:
             project_id=project_id,
         )
 
-    async def _project_env(self, username: str, project_id: str | None) -> dict[str, str]:
+    async def _project_env(
+        self, username: str, project_id: str | None
+    ) -> dict[str, str]:
         if not project_id:
             return {}
         try:
-            from novelvideo.project_context import require_project_home_node, resolve_project_context
+            from novelvideo.project_context import (
+                require_project_home_node,
+                resolve_project_context,
+            )
 
             ctx = await resolve_project_context(
                 user={"username": username},
@@ -654,7 +827,12 @@ class HermesPool:
                 "SUPERTALE_PROJECT_RUNTIME_DIR": str(ctx.runtime_dir),
             }
         except Exception as exc:
-            _log.warning("failed to resolve hermes project env for project=%s user=%s: %s", project_id, username, exc)
+            _log.warning(
+                "failed to resolve hermes project env for project=%s user=%s: %s",
+                project_id,
+                username,
+                exc,
+            )
             return {}
 
     def _build_env(
@@ -668,9 +846,47 @@ class HermesPool:
         tool_mode: str = "default",
         surface: str | None = None,
         canvas_id: str | None = None,
+        egress_project_id: str | None = None,
+        requester_user_id: str | None = None,
         project_env: dict[str, str] | None = None,
+        authorization: HermesLaunchAuthorization | None = None,
     ) -> dict[str, str]:
-        """Build the strict environment passed only to this Hermes worker."""
+        """Build the strict environment passed only to this Hermes worker.
+
+        ``project_id`` feeds the child process environment; ``egress_project_id``
+        and ``requester_user_id`` feed only the trusted-context admission check
+        and must both be supplied whenever an authorization is present.
+        """
+        if authorization is not None:
+            if not egress_project_id:
+                raise EgressBoundaryError("TASK_ENVELOPE_INVALID")
+            # 身份复核要有独立来源才叫复核。取 `authorization.context` 自己的值，
+            # `build_hermes_child_env` 里那次 `_strict_admission` 就退化成 `x != x`
+            # 恒真通过。缺了就拒，**不得回落成 `authorization.context.requester_user_id`**
+            # ——那等于把刚修好的洞原样填回去。
+            if not requester_user_id:
+                raise EgressBoundaryError("TASK_ENVELOPE_INVALID")
+            agent_token_env = {
+                "DRAMACLAW_AGENT_TOKEN": token.value,
+                "DRAMACLAW_AGENT_TOKEN_TYPE": "Bearer",
+                "DRAMACLAW_AGENT_TOKEN_SESSION_ID": token.session_id,
+                "DRAMACLAW_AGENT_TOKEN_EXPIRES_AT": str(token.exp),
+                "SUPERTALE_AGENT_TOKEN": token.value,
+                "SUPERTALE_AGENT_TOKEN_TYPE": "Bearer",
+                "SUPERTALE_AGENT_TOKEN_SESSION_ID": token.session_id,
+                "SUPERTALE_AGENT_TOKEN_EXPIRES_AT": str(token.exp),
+            }
+            return build_hermes_child_env(
+                home=home,
+                username=username,
+                requester_user_id=requester_user_id,
+                api_url=self._api_url,
+                agent_token_env=agent_token_env,
+                project_id=project_id,
+                egress_project_id=egress_project_id,
+                project_env=project_env,
+                authorization=authorization,
+            )
         env = {
             "PATH": "/usr/local/bin:/usr/bin:/bin",
             "LANG": os.environ.get("LANG", "C.UTF-8"),
@@ -734,25 +950,40 @@ class HermesPool:
             return
         # Evict least-recently-used
         victim = min(self._slots.values(), key=lambda s: s.last_used)
-        _log.info("hermes pool full (%d); evicting LRU user=%s", self._max_workers, victim.username)
+        _log.info(
+            "hermes pool full (%d); evicting LRU user=%s",
+            self._max_workers,
+            victim.username,
+        )
         await self._close_slot(victim)
         self._slots.pop(self._slot_key(victim.username, victim.agent_profile), None)
 
-    async def _close_slot(self, slot: _WorkerSlot, *, remember_session: bool = True) -> None:
+    async def _revoke_agent_session(self, token: str) -> None:
+        await get_auth_session_port().revoke_agent_session(token)
+
+    async def _close_slot(
+        self,
+        slot: _WorkerSlot,
+        *,
+        remember_session: bool = True,
+        strict: bool = False,
+    ) -> bool:
         if remember_session:
             self._remember_session(slot)
+        failed = False
         try:
             await slot.thread.close()
-        except Exception as e:
-            _log.warning("error closing hermes thread for %s: %s", slot.username, e)
+        except Exception:
+            failed = True
+            _log.warning("error closing hermes thread")
         try:
-            await get_auth_session_port().revoke_agent_session(slot.token.value)
-        except Exception as e:
-            _log.warning(
-                "error revoking hermes agent session %s: %s",
-                slot.token.session_id,
-                e,
-            )
+            await self._revoke_agent_session(slot.token.value)
+        except Exception:
+            failed = True
+            _log.warning("error revoking hermes agent session")
+        if failed and strict:
+            return False
+        return not failed
 
     async def _reaper_loop(self) -> None:
         """Background task: kill idle workers."""
@@ -761,7 +992,12 @@ class HermesPool:
                 await asyncio.sleep(60)
                 cutoff = time.time() - self._idle_kill_secs
                 async with self._lock:
-                    victims = [s for s in self._slots.values() if s.last_used < cutoff]
+                    victims = [
+                        slot
+                        for slot in self._slots.values()
+                        if (slot.state == "draining" and slot.active_turns == 0)
+                        or slot.last_used < cutoff
+                    ]
                     for v in victims:
                         _log.info("hermes worker idle-killed: user=%s", v.username)
                         await self._close_slot(v)
@@ -809,6 +1045,27 @@ class HermesPool:
             if slot is None:
                 return False
             return await slot.thread.resolve_permission(request_id, option_id)
+
+    async def drain_user(self, username: str) -> bool:
+        """Reject new turns and close after the current turn boundary."""
+        async with self._lock:
+            drained = False
+            keys = [key for key, slot in self._slots.items() if slot.username == username]
+            for key in keys:
+                slot = self._slots.get(key)
+                if slot is None or slot.state == "closed":
+                    continue
+                if slot.state == "draining":
+                    if slot.active_turns == 0 and await self._close_slot(slot, strict=True):
+                        slot.state = "closed"
+                        self._slots.pop(key, None)
+                    continue
+                slot.state = "draining"
+                if slot.active_turns == 0 and await self._close_slot(slot, strict=True):
+                    slot.state = "closed"
+                    self._slots.pop(key, None)
+                drained = True
+            return drained
 
     async def prewarm(
         self,
@@ -880,6 +1137,7 @@ class HermesPool:
             "max_workers": self._max_workers,
             "idle_kill_secs": self._idle_kill_secs,
             "token_renew_skew_secs": self._token_renew_skew_secs,
+            "states": {username: slot.state for username, slot in self._slots.items()},
         }
 
 
@@ -887,4 +1145,10 @@ class HermesPool:
 pool = HermesPool()
 
 
-__all__ = ["HermesPool", "pool", "is_hermes_backend_available", "_hermes_cli_path"]
+__all__ = [
+    "HermesDrainingError",
+    "HermesPool",
+    "pool",
+    "is_hermes_backend_available",
+    "_hermes_cli_path",
+]

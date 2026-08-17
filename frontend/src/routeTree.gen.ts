@@ -16,6 +16,7 @@ import { Route as AppRouteImport } from './routes/_app'
 import { Route as AppIndexRouteImport } from './routes/_app/index'
 import { Route as WatchWorkRouteImport } from './routes/watch.$work'
 import { Route as AppCreditsRouteImport } from './routes/_app/credits'
+import { Route as AppAccessUnavailableRouteImport } from './routes/_app/access-unavailable'
 import { Route as AppProjectsProjectTasksRouteImport } from './routes/_app/projects.$project/tasks'
 import { Route as AppProjectsProjectStylesRouteImport } from './routes/_app/projects.$project/styles'
 import { Route as AppProjectsProjectIngestRouteImport } from './routes/_app/projects.$project/ingest'
@@ -73,6 +74,11 @@ const WatchWorkRoute = WatchWorkRouteImport.update({
 const AppCreditsRoute = AppCreditsRouteImport.update({
   id: '/credits',
   path: '/credits',
+  getParentRoute: () => AppRoute,
+} as any)
+const AppAccessUnavailableRoute = AppAccessUnavailableRouteImport.update({
+  id: '/access-unavailable',
+  path: '/access-unavailable',
   getParentRoute: () => AppRoute,
 } as any)
 const AppProjectsProjectFreezoneLazyRoute =
@@ -208,6 +214,7 @@ const AppProjectsProjectEpisodesEpisodeAudioLazyRoute =
 export interface FileRoutesByFullPath {
   '/': typeof AppIndexRoute
   '/login': typeof LoginRoute
+  '/access-unavailable': typeof AppAccessUnavailableRoute
   '/credits': typeof AppCreditsRoute
   '/watch/$work': typeof WatchWorkRoute
   '/projects/$project/assistant': typeof AppProjectsProjectAssistantRoute
@@ -228,6 +235,7 @@ export interface FileRoutesByFullPath {
 }
 export interface FileRoutesByTo {
   '/login': typeof LoginRoute
+  '/access-unavailable': typeof AppAccessUnavailableRoute
   '/credits': typeof AppCreditsRoute
   '/watch/$work': typeof WatchWorkRoute
   '/': typeof AppIndexRoute
@@ -251,6 +259,7 @@ export interface FileRoutesById {
   __root__: typeof rootRouteImport
   '/_app': typeof AppRouteWithChildren
   '/login': typeof LoginRoute
+  '/_app/access-unavailable': typeof AppAccessUnavailableRoute
   '/_app/credits': typeof AppCreditsRoute
   '/watch/$work': typeof WatchWorkRoute
   '/_app/': typeof AppIndexRoute
@@ -275,6 +284,7 @@ export interface FileRouteTypes {
   fullPaths:
     | '/'
     | '/login'
+    | '/access-unavailable'
     | '/credits'
     | '/watch/$work'
     | '/projects/$project/assistant'
@@ -295,6 +305,7 @@ export interface FileRouteTypes {
   fileRoutesByTo: FileRoutesByTo
   to:
     | '/login'
+    | '/access-unavailable'
     | '/credits'
     | '/watch/$work'
     | '/'
@@ -317,6 +328,7 @@ export interface FileRouteTypes {
     | '__root__'
     | '/_app'
     | '/login'
+    | '/_app/access-unavailable'
     | '/_app/credits'
     | '/watch/$work'
     | '/_app/'
@@ -378,6 +390,13 @@ declare module '@tanstack/react-router' {
       path: '/credits'
       fullPath: '/credits'
       preLoaderRoute: typeof AppCreditsRouteImport
+      parentRoute: typeof AppRoute
+    }
+    '/_app/access-unavailable': {
+      id: '/_app/access-unavailable'
+      path: '/access-unavailable'
+      fullPath: '/access-unavailable'
+      preLoaderRoute: typeof AppAccessUnavailableRouteImport
       parentRoute: typeof AppRoute
     }
     '/_app/projects/$project/freezone': {
@@ -525,6 +544,7 @@ const AppProjectsProjectEpisodesRouteWithChildren =
   )
 
 interface AppRouteChildren {
+  AppAccessUnavailableRoute: typeof AppAccessUnavailableRoute
   AppCreditsRoute: typeof AppCreditsRoute
   AppIndexRoute: typeof AppIndexRoute
   AppProjectsProjectAssistantRoute: typeof AppProjectsProjectAssistantRoute
@@ -537,6 +557,7 @@ interface AppRouteChildren {
 }
 
 const AppRouteChildren: AppRouteChildren = {
+  AppAccessUnavailableRoute: AppAccessUnavailableRoute,
   AppCreditsRoute: AppCreditsRoute,
   AppIndexRoute: AppIndexRoute,
   AppProjectsProjectAssistantRoute: AppProjectsProjectAssistantRoute,

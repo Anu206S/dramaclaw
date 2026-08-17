@@ -54,6 +54,7 @@ FREEZONE_MAINLINE_WRITE_DENIED_MESSAGE = (
     "不能从这里启动主线视频生成、分集/脚本规划、草图、首帧、配音、成片或单 Beat 视频任务。"
 )
 FREEZONE_DENIED_MAINLINE_WRITE_TOOLS = {
+    "dramaclaw_control_episode_auto",
     "dramaclaw_post",
     "dramaclaw_patch",
     "dramaclaw_delete",
@@ -175,8 +176,8 @@ def _with_chat_error_hints(value: Any) -> Any:
         result.setdefault(
             "chat_notice",
             (
-                f"下一步需要先准备配音声线。缺失项：{detail}。"
-                "可以去虾塘上传或录制，也可以确认使用系统声线。"
+                f"下一步需要先准备配音声线。缺失项：{detail}。请选择："
+                "1）到「虾塘」上传或录制声线；2）确认由虾导匹配系统声线。"
             ),
         )
         result.setdefault(
@@ -186,7 +187,9 @@ def _with_chat_error_hints(value: Any) -> Any:
                 "audio generation cannot start yet. Offer two choices: upload or record the listed "
                 "voices in 虾塘, or explicitly approve system voices. Do not prepare system voices "
                 "without explicit approval. Do not claim TTS started and do not call "
-                "dramaclaw_generate_audio in this turn."
+                "dramaclaw_generate_audio in this turn. The final question MUST explicitly contain "
+                "both Chinese choices: ‘到虾塘上传或录制声线’ and ‘由虾导匹配系统声线’. Never "
+                "describe system voices as unavailable, an external alternative, or ‘换别的方向’."
             ),
         )
     voice_error = "" if audio_prerequisites is not None else _voice_prereq_error_text(value)
@@ -202,6 +205,9 @@ def _with_chat_error_hints(value: Any) -> Any:
                 "was not started. Offer two choices: go to 虾塘 to upload or record the missing "
                 "voice lines, or explicitly approve system voices. Do not prepare system voices "
                 "until the user explicitly chooses that option. Do not start another tool in this turn."
+                " The final question MUST explicitly contain both Chinese choices: ‘到虾塘上传或录制声线’ "
+                "and ‘由虾导匹配系统声线’. Never describe system voices as unavailable, an external "
+                "alternative, or ‘换别的方向’."
             ),
         )
     render_error = _render_prereq_error_text(value)
@@ -1175,6 +1181,40 @@ def _handle_plan_episodes(args: dict[str, Any], **_: Any) -> str:
         return tool_result(
             _request("POST", f"/api/v1/projects/{project}/episodes/plan", body=body)
         )
+    except Exception as exc:
+        return tool_error(str(exc))
+
+
+def _handle_control_episode_auto(args: dict[str, Any], **_: Any) -> str:
+    """Suspend, resume, or stop the durable outer-director episode auto run."""
+
+    try:
+        project = _project_from_args(args)
+        action = str(args.get("action") or "").strip().lower()
+        if action == "suspend":
+            reason = str(args.get("reason") or "等待用户确认是否修改").strip()
+            return tool_result(
+                _request(
+                    "POST",
+                    f"/api/v1/projects/{project}/chat/director-auto/suspend",
+                    body={"reason": reason[:500]},
+                )
+            )
+        if action == "resume":
+            return tool_result(
+                _request(
+                    "POST",
+                    f"/api/v1/projects/{project}/chat/director-auto/resume",
+                )
+            )
+        if action == "pause":
+            return tool_result(
+                _request(
+                    "POST",
+                    f"/api/v1/projects/{project}/chat/director-auto/pause",
+                )
+            )
+        raise ValueError("action must be one of: suspend, resume, pause")
     except Exception as exc:
         return tool_error(str(exc))
 
@@ -2511,6 +2551,33 @@ _PRESET_CANVAS_SCHEMA = {
 
 
 TOOLS = (
+    (
+        "dramaclaw_control_episode_auto",
+        _schema(
+            "dramaclaw_control_episode_auto",
+            "Control the durable 本集自动 session in the outer 虾导. Use action='suspend' before "
+            "asking the user to confirm a possible modification; this pauses only future automatic "
+            "steps and never cancels queued/running media tasks. Use action='resume' when the user "
+            "declines the modification and wants automatic production to continue. Use action='pause' "
+            "only when the user explicitly asks to stop or switch to manual mode.",
+            {
+                "project_id": {
+                    "type": "string",
+                    "description": "Defaults to DRAMACLAW_PROJECT_ID.",
+                },
+                "action": {
+                    "type": "string",
+                    "enum": ["suspend", "resume", "pause"],
+                },
+                "reason": {
+                    "type": "string",
+                    "description": "Short reason shown while awaiting modification confirmation.",
+                },
+            },
+            ["action"],
+        ),
+        _handle_control_episode_auto,
+    ),
     (
         "dramaclaw_get",
         _schema("dramaclaw_get", "Call a DramaClaw GET API path without using curl.", _PATH_PROPS, ["path"]),

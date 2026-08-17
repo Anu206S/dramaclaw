@@ -16,6 +16,8 @@ export const queryKeys = {
     featureKey?: string;
     model?: string;
   }) => ["credits", "transactions", filters] as const,
+  org: () => ["org"] as const,
+  orgMe: () => ["org", "me"] as const,
   projects: () => ["projects"] as const,
   projectSummaries: () => ["projects", "summaries"] as const,
   project: (p: string) => ["projects", p] as const,
@@ -102,6 +104,10 @@ export const queryKeys = {
     ["projects", p, "freezone", "canvases"] as const,
   freezoneProjectAssets: (p: string) =>
     ["projects", p, "freezone", "assets"] as const,
+  freezoneAssetLibrary: (p: string) =>
+    ["projects", p, "freezone", "asset-library"] as const,
+  freezoneAssetLibraryFolders: (p: string) =>
+    ["projects", p, "freezone", "asset-library", "folders"] as const,
   freezoneBeatContext: (p: string, episode?: number | null, beat?: number | null) =>
     ["projects", p, "freezone", "beat-context", episode ?? null, beat ?? null] as const,
   styles: (p?: string) =>

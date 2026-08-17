@@ -414,6 +414,7 @@ class IdentityPlanner:
             model_env,
             default_model,
             brainclaw_profile=brainclaw_profile or profile_by_env.get(model_env),
+            capability="text.generate.agent",
         )
 
     @staticmethod
@@ -470,12 +471,10 @@ class IdentityPlanner:
                     for d in default_requirements.defaults
                 ]
             )
-            (
-                default_new,
-                resolved_ids,
-                resolved_identity_map,
-            ) = await self._resolve_requirements(
-                episode.number, default_as_requirements, on_log
+            default_new, resolved_ids, resolved_identity_map = (
+                await self._resolve_requirements(
+                    episode.number, default_as_requirements, on_log
+                )
             )
             new_count += default_new
             for d in default_requirements.defaults:

@@ -5,9 +5,14 @@ from types import SimpleNamespace
 
 import pytest
 
-from novelvideo.shared.billing_errors import InsufficientCreditsError
+from novelvideo.shared.billing_errors import BillingError, InsufficientCreditsError
 
 pytestmark = pytest.mark.m04
+
+
+class _ForeignBillingError(BillingError):
+    def __init__(self, **_kwargs) -> None:
+        super().__init__("foreign billing error")
 
 
 def _isolate_settings_db(monkeypatch, tmp_path):
@@ -182,7 +187,8 @@ def test_newapi_sketch_config_defaults_to_dc_image2_low_quality(monkeypatch):
     assert posted["timeout"] == nanobanana_grid.NEWAPI_IMAGE_HTTP_TIMEOUT_SECONDS == 1800.0
     assert posted["json"]["model"] == "LingShan-G2"
     assert posted["json"]["quality"] == "low"
-    assert posted["json"]["size"] == "688x1024"
+    assert (posted["json"]["width"], posted["json"]["height"]) == (688, 1024)
+    assert posted["json"]["metadata"] == {"ratio": "2:3", "resolution": "1k"}
     assert "extra_fields" not in posted["json"]
     assert trace == {"request_id": "req-sketch", "response_id": "resp-sketch"}
 
@@ -246,7 +252,8 @@ def test_newapi_sketch_config_can_use_dc_banana2_without_quality(monkeypatch):
     assert error == ""
     assert posted["json"]["model"] == "LingShan-NB-2"
     assert "quality" not in posted["json"]
-    assert posted["json"]["size"] == "688x1024"
+    assert (posted["json"]["width"], posted["json"]["height"]) == (688, 1024)
+    assert posted["json"]["metadata"] == {"ratio": "2:3", "resolution": "1k"}
     assert "extra_fields" not in posted["json"]
 
 
@@ -310,7 +317,9 @@ def test_catalog_can_enable_arbitrary_newapi_image_quality(monkeypatch):
     assert error == ""
     assert posted["json"]["model"] == "Seedream-Custom"
     assert posted["json"]["quality"] == "ultra"
-    assert posted["json"]["size"] == "2880x2880"
+    assert "width" not in posted["json"]
+    assert "height" not in posted["json"]
+    assert posted["json"]["metadata"] == {"ratio": "auto", "resolution": "3k"}
     assert posted["json"]["watermark"] is True
     assert "extra_fields" not in posted["json"]
 
@@ -438,8 +447,12 @@ def test_newapi_image_call_applies_admin_min_pixels(monkeypatch):
 
     assert image_bytes == b"image"
     assert error == ""
-    width, height = (int(value) for value in posted["json"]["size"].split("x"))
+    width, height = posted["json"]["width"], posted["json"]["height"]
     assert width * height >= 3_686_400
+    assert posted["json"]["metadata"] == {
+        "ratio": "3:2",
+        "resolution": "2048x1376",
+    }
     assert posted["json"]["watermark"] is False
     assert "extra_fields" not in posted["json"]
 
@@ -496,8 +509,56 @@ def test_newapi_image_call_sends_gpt_image2_params(monkeypatch):
     assert posted["json"]["model"] == "LingShan-G2"
     assert posted["json"]["prompt"] == "portrait prompt"
     assert posted["json"]["quality"] == "medium"
-    assert posted["json"]["size"] == "768x1024"
+    assert (posted["json"]["width"], posted["json"]["height"]) == (768, 1024)
+    assert posted["json"]["metadata"] == {"ratio": "3:4", "resolution": "1k"}
     assert "extra_fields" not in posted["json"]
+
+
+def test_newapi_image_auto_ratio_keeps_resolution_without_dimensions(monkeypatch):
+    import httpx
+    from novelvideo.generators import nanobanana_grid
+
+    posted = {}
+
+    class FakeResponse:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return {"data": [{"b64_json": base64.b64encode(b"image-bytes").decode()}]}
+
+    class FakeAsyncClient:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return None
+
+        async def post(self, url, *, headers, json):
+            posted["json"] = json
+            return FakeResponse()
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+
+    image_bytes, _text, error = run_async(
+        nanobanana_grid._call_newapi_image_api(
+            api_key="newapi-token",
+            model="LingShan-G2",
+            prompt="follow the reference geometry",
+            image_config={"aspect_ratio": "auto", "image_size": "2K"},
+            base_url="http://newapi.test/v1",
+        )
+    )
+
+    assert image_bytes == b"image-bytes"
+    assert error == ""
+    assert "width" not in posted["json"]
+    assert "height" not in posted["json"]
+    assert "size" not in posted["json"]
+    assert posted["json"]["metadata"] == {"ratio": "auto", "resolution": "2k"}
 
 
 def test_newapi_image_call_reports_transport_exception_type(monkeypatch):
@@ -535,7 +596,17 @@ def test_newapi_image_call_reports_transport_exception_type(monkeypatch):
     assert "model=LingShan-G2" in error
 
 
-def test_newapi_image_call_reraises_insufficient_credit(monkeypatch):
+@pytest.mark.parametrize(
+    "InsufficientCreditsError",
+    [
+        InsufficientCreditsError,
+        _ForeignBillingError,
+    ],
+    ids=["personal", "foreign"],
+)
+def test_newapi_image_call_reraises_insufficient_credit(
+    monkeypatch, InsufficientCreditsError
+):
     from novelvideo.generators import nanobanana_grid
 
     class FakeUsageMeter:
@@ -555,7 +626,17 @@ def test_newapi_image_call_reraises_insufficient_credit(monkeypatch):
         )
 
 
-def test_newapi_sketch_grid_reraises_insufficient_credit(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "InsufficientCreditsError",
+    [
+        InsufficientCreditsError,
+        _ForeignBillingError,
+    ],
+    ids=["personal", "foreign"],
+)
+def test_newapi_sketch_grid_reraises_insufficient_credit(
+    monkeypatch, tmp_path, InsufficientCreditsError
+):
     from novelvideo.generators import nanobanana_grid
 
     async def fake_call_newapi_image_api(**_kwargs):
@@ -653,7 +734,8 @@ def test_newapi_image_call_omits_quality_for_nanobanana2(monkeypatch):
     assert error == ""
     assert posted["json"]["model"] == "LingShan-NB-2"
     assert "quality" not in posted["json"]
-    assert posted["json"]["size"] == "768x1024"
+    assert (posted["json"]["width"], posted["json"]["height"]) == (768, 1024)
+    assert posted["json"]["metadata"] == {"ratio": "3:4", "resolution": "1k"}
     assert "extra_fields" not in posted["json"]
 
 
@@ -874,7 +956,9 @@ def test_newapi_image_http_error_logs_redacted_request_context(monkeypatch, capl
     assert "request_id=req-123" in error
     assert "cf-ray-456" in error
     assert "model=LingShan-G2" in error
-    assert "size=2048x1024" in error
+    assert "width=2048" in error
+    assert "height=1024" in error
+    assert "geometry_metadata={'ratio': '2:1', 'resolution': '2k'}" in error
     assert "reference_image_count=1" in error
     assert "request_id=req-123" in log_text
     assert "http://newapi.test/v1/images/edits" in log_text
@@ -1012,7 +1096,17 @@ def test_newapi_identity_image_sends_portrait_then_costume_references(
     ]
 
 
-def test_newapi_character_portrait_reraises_insufficient_credit(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "InsufficientCreditsError",
+    [
+        InsufficientCreditsError,
+        _ForeignBillingError,
+    ],
+    ids=["personal", "foreign"],
+)
+def test_newapi_character_portrait_reraises_insufficient_credit(
+    monkeypatch, tmp_path, InsufficientCreditsError
+):
     from novelvideo.generators import nanobanana_character
 
     async def fake_call_newapi_image_api(**_kwargs):
@@ -1402,7 +1496,8 @@ def test_newapi_prop_reference_gpt_image2_sends_quality_medium(monkeypatch, tmp_
     assert posted["headers"]["Authorization"] == "Bearer newapi-token"
     assert posted["json"]["model"] == "LingShan-G2"
     assert posted["json"]["quality"] == "medium"
-    assert posted["json"]["size"] == "1088x608"
+    assert (posted["json"]["width"], posted["json"]["height"]) == (1088, 608)
+    assert posted["json"]["metadata"] == {"ratio": "16:9", "resolution": "1k"}
     assert "extra_fields" not in posted["json"]
 
 
@@ -1460,11 +1555,22 @@ def test_newapi_prop_reference_nanobanana2_omits_quality(monkeypatch, tmp_path):
     assert output_path.read_bytes() == b"prop-ref"
     assert posted["json"]["model"] == "LingShan-NB-2"
     assert "quality" not in posted["json"]
-    assert posted["json"]["size"] == "1088x608"
+    assert (posted["json"]["width"], posted["json"]["height"]) == (1088, 608)
+    assert posted["json"]["metadata"] == {"ratio": "16:9", "resolution": "1k"}
     assert "extra_fields" not in posted["json"]
 
 
-def test_newapi_prop_reference_reraises_insufficient_credit(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "InsufficientCreditsError",
+    [
+        InsufficientCreditsError,
+        _ForeignBillingError,
+    ],
+    ids=["personal", "foreign"],
+)
+def test_newapi_prop_reference_reraises_insufficient_credit(
+    monkeypatch, tmp_path, InsufficientCreditsError
+):
     _isolate_settings_db(monkeypatch, tmp_path)
     import novelvideo.config as config
     from novelvideo.generators import nanobanana_prop

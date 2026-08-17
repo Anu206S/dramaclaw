@@ -3424,6 +3424,115 @@ def _workflow_draft_api_path(
     return path
 
 
+def _agent_planning_quote_path(project_id: str) -> str:
+    return f"/projects/{quote(project_id, safe='')}/freezone/agent-capability-quote"
+
+
+def _planning_confirmed_arg(args: dict[str, Any]) -> bool:
+    return args.get("planning_confirmed") is True or args.get("planningConfirmed") is True
+
+
+def _normalize_workflow_intent_arg(args: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Normalize structured intent input and return an actionable validation error."""
+
+    raw_intent = args.get("intent")
+    if raw_intent is None:
+        return None, None
+    if isinstance(raw_intent, dict):
+        return raw_intent, None
+    if isinstance(raw_intent, str):
+        try:
+            decoded = json.loads(raw_intent)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            return decoded, None
+    return None, {
+        "ok": False,
+        "status": "workflow_intent_object_required",
+        "code": "workflow_intent_object_required",
+        "error": "intent 必须是结构化对象，不能是字符串或代码片段。",
+        "expected": {
+            "schema_version": "freezone_workflow_intent.v1",
+            "skill_id": "已选 Workflow Skill 的 id",
+            "user_goal": "用户的原始工作流目标",
+        },
+        "agent_instruction": (
+            "Do not call execute_code and do not serialize intent as a string. "
+            "Call freezone_prepare_workflow_draft with intent as a JSON object, "
+            "including skill_id and user_goal."
+        ),
+    }
+
+
+def _agent_planning_confirmation_result(project_id: str) -> str:
+    response = _request(
+        "POST",
+        _agent_planning_quote_path(project_id),
+        body={"feature_key": "freezone.agent.creative_planning"},
+    )
+    if not response.get("ok"):
+        return tool_result(response)
+    quote_payload = response.get("data")
+    if not isinstance(quote_payload, dict):
+        return tool_result(
+            {
+                "ok": False,
+                "status": "agent_planning_quote_unavailable",
+                "error": "Agent planning quote API returned an invalid payload",
+            }
+        )
+    if quote_payload.get("billing_required") is False:
+        return tool_result(
+            {
+                "ok": True,
+                "status": "agent_planning_billing_not_required",
+                "agent_instruction": (
+                    "Agent capability billing is not enabled on this edition. Do not mention "
+                    "credits, billing, pricing, editions, or confirmation to the user. Continue "
+                    "the original workflow planning request in this same turn: load the selected "
+                    "Workflow Skill, compile the intent, and call freezone_prepare_workflow_draft "
+                    "with planning_confirmed=true."
+                ),
+            }
+        )
+    if quote_payload.get("configured") is not True or quote_payload.get("exact") is not True:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "agent_planning_price_not_configured",
+                "quote": quote_payload,
+                "error": "Agent 创意规划价格尚未配置。",
+                "message": (
+                    f"Agent 创意规划当前参考价格为 "
+                    f"{quote_payload.get('reference_display') or '5–40 积分'}，"
+                    "但尚未配置可实际扣除的价格。"
+                ),
+                "agent_instruction": (
+                    "Tell the user that Agent creative planning cannot start because its exact "
+                    "credit price is not configured. Show quote.reference_display only as a "
+                    "reference range. Do not describe the charge as zero or free, do not compile "
+                    "a plan, and do not retry with planning_confirmed=true."
+                ),
+            }
+        )
+    return tool_result(
+        {
+            "ok": True,
+            "status": "agent_planning_confirmation_required",
+            "quote": quote_payload,
+            "message": "本次请求将生成一份新的创意规划方案，需要先确认 Agent 积分。",
+            "agent_instruction": (
+                "Show quote.display as the exact planning charge and ask the user to confirm. "
+                "Stop this turn without compiling, preparing, patching, or creating a workflow. "
+                "Only after an explicit user confirmation, call the same requested workflow draft "
+                "tool once with planning_confirmed=true. Do not treat the original request itself "
+                "as billing confirmation."
+            ),
+        }
+    )
+
+
 def _workflow_draft_response(
     response: dict[str, Any],
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
@@ -3603,7 +3712,39 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if scope_error:
         return tool_result(scope_error)
     assert project_id is not None and canvas_id is not None
-    intent = args.get("intent")
+    if any(str(args.get(key) or "").strip() for key in ("draft_id", "draftId")):
+        return tool_result(
+            {
+                "ok": False,
+                "status": "wrong_workflow_draft_tool",
+                "code": "wrong_workflow_draft_tool",
+                "error": "准备草稿不接受 draft_id；请使用 freezone_patch_workflow_draft 或 freezone_confirm_workflow_draft。",
+                "agent_instruction": (
+                    "Do not retry freezone_prepare_workflow_draft with draft_id. "
+                    "Use freezone_patch_workflow_draft for changes or "
+                    "freezone_confirm_workflow_draft for the confirmed draft."
+                ),
+            }
+        )
+    intent, intent_error = _normalize_workflow_intent_arg(args)
+    if intent_error is not None:
+        return tool_result(intent_error)
+    if not _planning_confirmed_arg(args):
+        return _agent_planning_confirmation_result(project_id)
+    if intent is None:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_intent_required_after_confirmation",
+                "code": "workflow_intent_required_after_confirmation",
+                "error": "确认规划报价后，必须提供完整的 intent 对象才能生成草稿。",
+                "agent_instruction": (
+                    "Call freezone_prepare_workflow_draft exactly once with "
+                    "planning_confirmed=true and a structured intent object containing "
+                    "skill_id and user_goal."
+                ),
+            }
+        )
     compiled = compile_workflow_intent(intent)
     if not compiled.get("ok"):
         return tool_result(compiled)
@@ -3627,15 +3768,26 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
                 "intent": intent,
                 "compiled": compiled,
                 "run_after_create": bool(run_after_create),
+                "planning_confirmed": True,
             },
         )
     )
     if payload is None:
         return tool_result(error)
     result = public_workflow_draft(payload)
+    billing_instruction = (
+        "Before asking for confirmation, state that this delivered planning turn is billed under "
+        "agent_planning_charge.display, then present agent_credit_estimate.display as the "
+        "additional estimated Agent credits charged only after workflow creation is confirmed. "
+        "State that image, audio, and video generation credits are charged separately. "
+        if result.get("agent_planning_charge") and result.get("agent_credit_estimate")
+        else "Do not mention credits, billing, pricing, or editions. "
+    )
     result["agent_instruction"] = (
         "Present the exact preview in product language, including each node's "
-        "preview.recipe_pipelines order as 主 Recipe → 补充 Recipe, and wait for user confirmation. "
+        "preview.recipe_pipelines order as 主 Recipe → 补充 Recipe. Before asking for confirmation, "
+        f"{billing_instruction}"
+        "Wait for user confirmation. "
         "For adjustments, patch this draft instead of rebuilding the intent. "
         "After confirmation, call freezone_confirm_workflow_draft with draft_id and revision."
     )
@@ -3658,6 +3810,8 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
                 "error": "draft_id is required",
             }
         )
+    if not _planning_confirmed_arg(args):
+        return _agent_planning_confirmation_result(project_id)
     changes = args.get("changes")
     if not isinstance(changes, dict):
         return tool_result(
@@ -3721,6 +3875,7 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
             _workflow_draft_api_path(project_id, canvas_id, draft_id),
             body={
                 "expected_revision": expected_revision,
+                "planning_confirmed": True,
                 **patch_body,
             },
         )
@@ -3729,9 +3884,18 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
         return tool_result(error)
     result = public_workflow_draft(payload)
     result["status"] = "workflow_draft_updated"
+    billing_instruction = (
+        "State that this updated planning turn is billed under agent_planning_charge.display. "
+        "Present agent_credit_estimate.display as the additional workflow creation estimate before "
+        "asking for confirmation, and state that image, audio, and video generation credits are "
+        "charged separately. "
+        if result.get("agent_planning_charge") and result.get("agent_credit_estimate")
+        else "Do not mention credits, billing, pricing, or editions. "
+    )
     result["agent_instruction"] = (
         "Present only the resulting product-level changes and updated preview, including any "
         "changed 主 Recipe → 补充 Recipe order from preview.recipe_pipelines. "
+        f"{billing_instruction}"
         "Keep using this draft_id and revision for further adjustments or confirmation."
     )
     return tool_result(result)
@@ -5754,16 +5918,25 @@ TOOLS = (
         _schema(
             "freezone_prepare_workflow_draft",
             (
-                "Compile and persist one compact workflow intent before user confirmation. "
-                "Returns the exact deterministic preview, draft_id, and revision without writing "
-                "the canvas. Use this instead of manually describing an uncompiled plan."
+                "This tool has two explicit phases. First call without intent exactly once to return "
+                "the Agent planning quote; if billing is not required, continue in the same turn. "
+                "Only after quote confirmation (or a no-billing result), call exactly once with "
+                "intent as a JSON object and planning_confirmed=true to compile and persist the "
+                "deterministic preview. Do not pass draft_id, do not pass intent as a string, and "
+                "do not use execute_code. Use freezone_patch_workflow_draft for an existing draft."
             ),
             {
                 **_SCOPE_PROPS,
                 "intent": _WORKFLOW_INTENT_OBJECT_SCHEMA,
+                "planning_confirmed": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true only after the user explicitly confirms the quoted Agent planning credits."
+                    ),
+                },
                 **_WORKFLOW_RUN_AFTER_CREATE_PROPS,
             },
-            ["intent"],
+            [],
         ),
         _handle_prepare_workflow_draft,
     ),
@@ -5795,6 +5968,12 @@ TOOLS = (
                         "summary, inputs, planner, items, include_audio, include_compose, "
                         "assumptions. "
                         "Null removes an optional field; inputs are merged."
+                    ),
+                },
+                "planning_confirmed": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true only after the user explicitly confirms the quoted Agent planning credits."
                     ),
                 },
                 **_WORKFLOW_RUN_AFTER_CREATE_PROPS,

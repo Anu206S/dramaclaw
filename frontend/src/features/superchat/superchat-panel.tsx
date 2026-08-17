@@ -106,6 +106,26 @@ import {
   resolveChatTaskBatchSummary,
   taskBatchId,
 } from "@/features/superchat/task-notification-batch";
+import {
+  activateDirectorEpisodeAuto,
+  awaitDirectorEpisodeAutoConfirmation,
+  confirmDirectorEpisodeAuto,
+  defaultDirectorRunState,
+  directorAutoConfirmationTransportText,
+  directorAutoInterventionTransportText,
+  directorAutoRunTransportText,
+  directorAutoUserMessageTransportText,
+  directorAutoVoiceChoiceTransportText,
+  emphasizeDirectorVoiceChoiceLabels,
+  isDirectorEpisodeAutoSession,
+  isDirectorEpisodeAutoStartIntent,
+  loadDirectorRunState,
+  resolveDirectorVoicePolicy,
+  saveDirectorRunState,
+  type DirectorAutoRunState,
+  type DirectorRunMode,
+  type DirectorVoicePolicy,
+} from "@/features/superchat/director-run-mode";
 import { ComposerWaitingStatus } from "@/features/superchat/composer-waiting-status";
 import { ChatTaskStatusBar } from "@/features/superchat/chat-task-status-bar";
 import { CommunitySkillDialog } from "@/components/settings/freezone-skill-recipe-settings";
@@ -587,7 +607,20 @@ const MARKDOWN_COMPONENTS: MarkdownComponents = {
   ul: ({ children }) => <ul className="my-1.5 list-disc space-y-1 pl-5">{children}</ul>,
   ol: ({ children }) => <ol className="my-1.5 list-decimal space-y-1 pl-5">{children}</ol>,
   li: ({ children }) => <li className="pl-0.5">{children}</li>,
-  strong: ({ children }) => <strong className="font-semibold text-foreground">{children}</strong>,
+  strong: ({ children }) => {
+    const label = markdownChildrenText(children).trim();
+    return (
+      <strong
+        className={cn(
+          "font-semibold text-foreground",
+          label === "系统声线" && "text-cyan-300",
+          label === "自定义声线" && "text-violet-300",
+        )}
+      >
+        {children}
+      </strong>
+    );
+  },
   em: ({ children }) => <em className="italic">{children}</em>,
   a: ({ children, href }) => (
     <a
@@ -633,7 +666,7 @@ const PlainMessageText = memo(function PlainMessageText({ text }: { text: string
 });
 
 const MarkdownMessageText = memo(function MarkdownMessageText({ text }: { text: string }) {
-  const normalized = normalizeMessageText(text);
+  const normalized = emphasizeDirectorVoiceChoiceLabels(normalizeMessageText(text));
   if (!normalized) return null;
 
   return (
@@ -9754,6 +9787,103 @@ type CanvasCommandSurfaceEvent =
 const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
 const CANVAS_COMMAND_APPROVAL_TIMEOUT_MS = 60_000;
 
+const DIRECTOR_RUN_MODE_OPTIONS: ReadonlyArray<{
+  value: DirectorRunMode;
+  icon: LucideIcon;
+  label: string;
+  description: string;
+}> = [
+  {
+    value: "manual_confirm",
+    icon: ShieldAlert,
+    label: "手动模式",
+    description: "每个生成步骤执行前由你确认",
+  },
+  {
+    value: "episode_auto",
+    icon: Gauge,
+    label: "本集自动",
+    description: "二次确认后自动推进本集，失败或成片完成时停止",
+  },
+];
+
+type DirectorAutoServerResponse = {
+  ok: boolean;
+  data: {
+    status: "manual" | "running" | "awaiting_confirmation" | "paused" | "completed";
+    episode: number | null;
+    run_id: string | null;
+    activated_at?: string | null;
+    voice_policy?: DirectorVoicePolicy | null;
+  };
+};
+
+type DirectorVoicePreflight = {
+  episode: number;
+  choiceRequired: boolean;
+  errors: string[];
+};
+
+async function getDirectorVoicePreflight(
+  project: string,
+  episode?: number | null,
+): Promise<DirectorVoicePreflight> {
+  const searchParams = episode && episode > 0
+    ? { episode: String(episode) }
+    : undefined;
+  const response = await api.get(p`api/v1/projects/${project}/pipeline/status`, {
+    searchParams,
+  }).json<{
+    data?: {
+      current_episode?: number | null;
+      episode_status?: { tts?: boolean } | null;
+      audio_prerequisites?: {
+        checked?: boolean;
+        ready?: boolean | null;
+        errors?: unknown[];
+      };
+    };
+  }>();
+  const data = response.data;
+  const targetEpisode = data?.current_episode ?? episode ?? 1;
+  if (data?.episode_status?.tts === true) {
+    return { episode: targetEpisode, choiceRequired: false, errors: [] };
+  }
+  const prerequisites = data?.audio_prerequisites;
+  if (prerequisites?.checked && prerequisites.ready === true) {
+    return { episode: targetEpisode, choiceRequired: false, errors: [] };
+  }
+  return {
+    episode: targetEpisode,
+    choiceRequired: true,
+    errors: (prerequisites?.errors ?? [])
+      .map((item) => String(item || "").trim())
+      .filter(Boolean)
+      .slice(0, 8),
+  };
+}
+
+async function startDirectorAutoServer(
+  project: string,
+  episode: number,
+  voicePolicy: DirectorVoicePolicy | null,
+): Promise<void> {
+  await api.post(p`api/v1/projects/${project}/chat/director-auto/start`, {
+    json: { episode, voice_policy: voicePolicy },
+  }).json<DirectorAutoServerResponse>();
+}
+
+async function pauseDirectorAutoServer(project: string): Promise<void> {
+  await api.post(p`api/v1/projects/${project}/chat/director-auto/pause`)
+    .json<DirectorAutoServerResponse>();
+}
+
+async function getDirectorAutoServer(project: string): Promise<DirectorAutoServerResponse["data"]> {
+  const response = await api.get(p`api/v1/projects/${project}/chat/director-auto`)
+    .json<DirectorAutoServerResponse>();
+  return response.data;
+}
+
 /** 输入框左下角那颗「手动确认 / 自动生成」下拉里的两档。 */
 const CANVAS_COMMAND_EXECUTION_MODE_OPTIONS: ReadonlyArray<{
   value: CanvasCommandExecutionMode;
@@ -10903,6 +11033,21 @@ interface SuperChatPanelProps {
   onFreezoneUserMessage?: (message: string, timestamp: number) => void;
 }
 
+interface AgentCapabilityPriceReferenceItem {
+  key: string;
+  label: string;
+  examples: string;
+  billing: "free" | "configured_feature_price";
+  reference_display: string;
+  unit?: string;
+}
+
+interface AgentCapabilityPriceReference {
+  enabled: boolean;
+  items: AgentCapabilityPriceReferenceItem[];
+  note: string;
+}
+
 export function SuperChatPanel({
   variant = "default",
   freezoneCanvasId = null,
@@ -10929,6 +11074,9 @@ export function SuperChatPanel({
   const [draft, setDraft] = useState("");
   const [search, setSearch] = useState("");
   const [searchOpen, setSearchOpen] = useState(false);
+  const [agentBillingOpen, setAgentBillingOpen] = useState(false);
+  const [agentBillingReference, setAgentBillingReference] =
+    useState<AgentCapabilityPriceReference | null>(null);
   const [detailMessage, setDetailMessage] = useState<ChatMessage | null>(null);
   const [mediaDetail, setMediaDetail] = useState<SpecMediaDetail | null>(null);
   const [attachments, setAttachments] = useState<ChatAttachment[]>([]);
@@ -10978,6 +11126,15 @@ export function SuperChatPanel({
   const speechRef = useRef<SpeechRecognitionLike | null>(null);
   const scrollRef = useRef<HTMLDivElement | null>(null);
   const messageListRef = useRef<HTMLDivElement | null>(null);
+
+  useEffect(() => {
+    if (!isFreezoneLayout || agentBillingReference) return;
+    void apiCall<AgentCapabilityPriceReference>("chat/agent-capability-price-reference")
+      .then(setAgentBillingReference)
+      .catch(() => {
+        toast.error("暂时无法加载虾导计费说明");
+      });
+  }, [agentBillingReference, isFreezoneLayout]);
   const shouldStickToBottomRef = useRef(true);
   const suppressAutoScrollUntilRef = useRef(0);
   const historyScrollKeyRef = useRef<string | null>(null);
@@ -10986,6 +11143,7 @@ export function SuperChatPanel({
   const skillStudioDraftPersistTimerRef = useRef<number | null>(null);
   const onFreezoneUserMessageRef = useRef(onFreezoneUserMessage);
   const notifiedTaskKeysRef = useRef<Set<string>>(new Set());
+  const directorAutoTerminalTaskIdsRef = useRef<Set<string>>(new Set());
   const taskEventBus = useEventBus();
   const canvasNodes = useCanvasStore((state) => state.nodes);
   const canvasEdges = useCanvasStore((state) => state.edges);
@@ -11008,6 +11166,12 @@ export function SuperChatPanel({
   const resolvedCanvasCommandApprovalKeysRef = useRef<Set<string>>(new Set());
   const [canvasCommandExecutionMode, setCanvasCommandExecutionMode] = useState<CanvasCommandExecutionMode>(() => loadCanvasCommandExecutionMode());
   const [canvasCommandModeMenuOpen, setCanvasCommandModeMenuOpen] = useState(false);
+  const directorRunProject = params.project?.trim() || "home";
+  const [directorRunState, setDirectorRunState] = useState<DirectorAutoRunState>(() =>
+    loadDirectorRunState(directorRunProject),
+  );
+  const directorRunStateRef = useRef(directorRunState);
+  const [directorRunModeMenuOpen, setDirectorRunModeMenuOpen] = useState(false);
   const isChatInitializing = !chat.historyReady && chat.messages.length === 0 && (chat.connecting || chat.connected);
 
   useEffect(() => {
@@ -11404,6 +11568,128 @@ export function SuperChatPanel({
   }, [canvasCommandExecutionMode]);
 
   useEffect(() => {
+    const loaded = loadDirectorRunState(directorRunProject);
+    directorRunStateRef.current = loaded;
+    setDirectorRunState(loaded);
+    const project = params.project?.trim();
+    if (variant === "freezone" || !project) return;
+    let cancelled = false;
+    void getDirectorAutoServer(project).then((server) => {
+      if (cancelled) return;
+      if (server.status === "running") {
+        const confirmed = {
+          ...confirmDirectorEpisodeAuto(loaded),
+          episode: server.episode ?? loaded.episode ?? 1,
+          activatedAt: server.activated_at ? Date.parse(server.activated_at) : Date.now(),
+          voicePolicy: server.voice_policy ?? loaded.voicePolicy,
+        };
+        directorRunStateRef.current = confirmed;
+        setDirectorRunState(confirmed);
+        saveDirectorRunState(directorRunProject, confirmed);
+      } else if (server.status === "awaiting_confirmation") {
+        const suspended = {
+          ...confirmDirectorEpisodeAuto(loaded),
+          confirmationStage: "awaiting_intervention" as const,
+          episode: server.episode ?? loaded.episode ?? 1,
+          activatedAt: server.activated_at ? Date.parse(server.activated_at) : Date.now(),
+          voicePolicy: server.voice_policy ?? loaded.voicePolicy,
+        };
+        directorRunStateRef.current = suspended;
+        setDirectorRunState(suspended);
+        saveDirectorRunState(directorRunProject, suspended);
+      } else if (server.status === "paused" || server.status === "completed") {
+        // A persisted terminal server run is authoritative. In particular,
+        // do not leave an old pre-start confirmation in localStorage after a
+        // background task has already failed and paused the durable run.
+        const manual = defaultDirectorRunState();
+        directorRunStateRef.current = manual;
+        setDirectorRunState(manual);
+        saveDirectorRunState(directorRunProject, manual);
+      } else if (isDirectorEpisodeAutoSession(loaded)) {
+        const manual = defaultDirectorRunState();
+        directorRunStateRef.current = manual;
+        setDirectorRunState(manual);
+        saveDirectorRunState(directorRunProject, manual);
+      }
+    }).catch(() => {
+      // Keep the local pending state while the backend reconnects.
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [directorRunProject, params.project, variant]);
+
+  const updateDirectorRunState = useCallback((next: DirectorAutoRunState) => {
+    directorRunStateRef.current = next;
+    setDirectorRunState(next);
+    saveDirectorRunState(directorRunProject, next);
+  }, [directorRunProject]);
+
+  useEffect(() => {
+    if (variant === "freezone") return;
+    const onStatus = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        status?: string;
+        episode?: number;
+        message?: string | null;
+        terminalTaskId?: string | null;
+        voicePolicy?: DirectorVoicePolicy | null;
+      }>).detail;
+      if (detail?.terminalTaskId) {
+        directorAutoTerminalTaskIdsRef.current.add(detail.terminalTaskId);
+      }
+      if (detail?.status === "running") {
+        const current = directorRunStateRef.current;
+        updateDirectorRunState({
+          ...confirmDirectorEpisodeAuto(current),
+          episode: detail.episode ?? current.episode ?? 1,
+          voicePolicy: detail.voicePolicy ?? current.voicePolicy,
+        });
+        return;
+      }
+      if (detail?.status === "awaiting_confirmation") {
+        const current = directorRunStateRef.current;
+        updateDirectorRunState({
+          ...confirmDirectorEpisodeAuto(current),
+          confirmationStage: "awaiting_intervention",
+          episode: detail.episode ?? current.episode ?? 1,
+          voicePolicy: detail.voicePolicy ?? current.voicePolicy,
+        });
+        toast.info("本集自动已暂停后续推进，等待你确认是否修改", { duration: 10000 });
+        return;
+      }
+      if (detail?.status === "paused" || detail?.status === "completed") {
+        updateDirectorRunState(defaultDirectorRunState());
+        if (detail.status === "completed") {
+          toast.success(`第 ${detail.episode ?? "当前"} 集自动制作已完成`);
+        } else if (detail.message && detail.message !== "用户切换为手动模式") {
+          toast.error("本集自动已暂停");
+        }
+      }
+    };
+    window.addEventListener("director-auto-status", onStatus);
+    return () => window.removeEventListener("director-auto-status", onStatus);
+  }, [updateDirectorRunState, variant]);
+
+  const setDirectorExecutionMode = useCallback((mode: DirectorRunMode) => {
+    if (mode === "episode_auto") {
+      updateDirectorRunState(activateDirectorEpisodeAuto());
+      toast.success("已选择本集自动；发送开始指令后，还需再次确认才会执行", {
+        duration: 10000,
+      });
+    } else {
+      updateDirectorRunState(defaultDirectorRunState());
+      const project = params.project?.trim();
+      if (project) {
+        void pauseDirectorAutoServer(project).catch(() => {
+          toast.error("已切换为手动模式，但后端自动任务暂停请求未送达");
+        });
+      }
+    }
+    setDirectorRunModeMenuOpen(false);
+  }, [params.project, updateDirectorRunState]);
+
+  useEffect(() => {
     if (variant !== "freezone") return;
     setPendingCanvasCommandApprovals((current) =>
       removeCompletedPendingCanvasCommandApprovals(
@@ -11444,11 +11730,16 @@ export function SuperChatPanel({
       ) return;
       const taskProject = (event.task.project_id ?? event.task.project).trim();
       if (taskProject !== project) return;
+      if (directorAutoTerminalTaskIdsRef.current.has(event.task.task_id)) return;
+      // In durable auto mode, the backend owns task notifications and the
+      // next-step trigger. Manual mode retains this existing client behavior.
+      if (isDirectorEpisodeAutoSession(directorRunStateRef.current)) return;
+      const taskSnapshot = [...useTaskCenterStore.getState().tasks.values()];
 
       const batchId = taskBatchId(event.task);
       if (batchId) {
         const summary = resolveChatTaskBatchSummary(
-          useTaskCenterStore.getState().tasks.values(),
+          taskSnapshot,
           event.task,
         );
         if (!summary) return;
@@ -11459,6 +11750,7 @@ export function SuperChatPanel({
         return;
       }
 
+      if (event.type === "task_updated") return;
       if (event.type !== "task_complete" && event.type !== "task_failed") return;
 
       const dedupeKey = `${event.type}:${event.task.task_key || event.task.task_id}`;
@@ -12052,12 +12344,9 @@ export function SuperChatPanel({
           anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
           surfaceOrder: receivedAt,
         };
-        chat.removeAssistantMessagePart(
+        chat.replaceAssistantMessagePart(
           { messageId: approval.messageId, turnId: approval.turnId },
           canvasApprovalPartId(approval),
-        );
-        chat.upsertAssistantMessagePart(
-          { messageId: approval.messageId, turnId: approval.turnId },
           {
             id: canvasFeedbackPartId(feedback),
             type: "canvas_feedback",
@@ -12175,12 +12464,9 @@ export function SuperChatPanel({
       anchorTextPrefix: approval.anchorTextPrefix ?? undefined,
       surfaceOrder: receivedAt,
     };
-    chat.removeAssistantMessagePart(
+    chat.replaceAssistantMessagePart(
       { messageId: approval.messageId, turnId: approval.turnId },
       canvasApprovalPartId(approval),
-    );
-    chat.upsertAssistantMessagePart(
-      { messageId: approval.messageId, turnId: approval.turnId },
       {
         id: canvasFeedbackPartId(feedback),
         type: "canvas_feedback",
@@ -12482,6 +12768,42 @@ export function SuperChatPanel({
     shouldStickToBottomRef.current = true;
     setShowScrollToBottom(false);
   }, []);
+  const pendingCanvasApprovalScrollKey = pendingCanvasCommandApprovals
+    .map((approval) => approval.key)
+    .join("\n");
+  const previousCanvasApprovalScrollKeysRef = useRef<Set<string>>(new Set());
+
+  useLayoutEffect(() => {
+    const nextKeys = new Set(pendingCanvasCommandApprovals.map((approval) => approval.key));
+    const hasNewApproval = pendingCanvasCommandApprovals.some(
+      (approval) => !previousCanvasApprovalScrollKeysRef.current.has(approval.key),
+    );
+    previousCanvasApprovalScrollKeysRef.current = nextKeys;
+    if (!hasNewApproval || variant !== "freezone") return;
+
+    // An approval is an actionable continuation of the current turn. Its card can be
+    // taller than the viewport, so always reveal the bottom action row instead of
+    // leaving the user at the first few plan entries.
+    suppressAutoScrollUntilRef.current = 0;
+    shouldStickToBottomRef.current = true;
+    let secondFrame = 0;
+    const firstFrame = window.requestAnimationFrame(() => {
+      scrollToChatBottom("auto", { force: true });
+      secondFrame = window.requestAnimationFrame(() => {
+        scrollToChatBottom("auto", { force: true });
+      });
+    });
+    const reflowTimeout = window.setTimeout(
+      () => scrollToChatBottom("auto", { force: true }),
+      160,
+    );
+    return () => {
+      window.cancelAnimationFrame(firstFrame);
+      if (secondFrame) window.cancelAnimationFrame(secondFrame);
+      window.clearTimeout(reflowTimeout);
+    };
+  }, [pendingCanvasApprovalScrollKey, pendingCanvasCommandApprovals, scrollToChatBottom, variant]);
+
   const preserveScrollAnchor = useCallback((anchor: HTMLElement | null) => {
     const el = scrollRef.current;
     if (!el || !anchor) return;
@@ -12860,6 +13182,66 @@ export function SuperChatPanel({
       if (canvasReferenceContext) {
         nextText = appendAttachmentAnalysisContext(nextText, canvasReferenceContext);
       }
+      if (variant !== "freezone" && directorRunStateRef.current.mode === "episode_auto") {
+        const state = directorRunStateRef.current;
+        const selectedVoicePolicy = resolveDirectorVoicePolicy(text);
+        if (
+          state.confirmationStage === "awaiting_start"
+          && isDirectorEpisodeAutoStartIntent(text)
+        ) {
+          if (!project) return false;
+          let voicePreflight: DirectorVoicePreflight;
+          try {
+            // With no episode bound yet, let pipeline status choose the first
+            // unfinished episode instead of silently defaulting every auto run
+            // to episode 1.
+            voicePreflight = await getDirectorVoicePreflight(project, state.episode);
+          } catch {
+            voicePreflight = {
+              episode: state.episode ?? 1,
+              choiceRequired: true,
+              errors: [],
+            };
+          }
+          const awaiting = {
+            ...awaitDirectorEpisodeAutoConfirmation(state),
+            episode: voicePreflight.episode,
+            voiceChoiceRequired: voicePreflight.choiceRequired,
+            voicePrerequisiteErrors: voicePreflight.errors,
+          };
+          updateDirectorRunState(awaiting);
+          nextText = directorAutoConfirmationTransportText(nextText, {
+            voiceChoiceRequired: voicePreflight.choiceRequired,
+            voiceErrors: voicePreflight.errors,
+          });
+        } else if (
+          state.confirmationStage === "awaiting_confirmation"
+          && (isDirectorEpisodeAutoStartIntent(text) || selectedVoicePolicy !== null)
+        ) {
+          const voicePolicy = selectedVoicePolicy ?? state.voicePolicy;
+          if (state.voiceChoiceRequired && !voicePolicy) {
+            nextText = directorAutoVoiceChoiceTransportText(nextText);
+            return chat.send(text, transportAttachments, nextText);
+          }
+          if (!project) return false;
+          try {
+            await startDirectorAutoServer(project, state.episode ?? 1, voicePolicy);
+          } catch (error) {
+            toast.error(
+              `无法启动本集自动：${error instanceof Error ? error.message : "后端请求失败"}`,
+            );
+            return false;
+          }
+          const confirmed = confirmDirectorEpisodeAuto({ ...state, voicePolicy });
+          updateDirectorRunState(confirmed);
+          toast.success("本集自动已启动，正在检查当前进度", { duration: 10000 });
+          nextText = directorAutoRunTransportText(nextText);
+        } else if (state.confirmationStage === "awaiting_intervention") {
+          nextText = directorAutoInterventionTransportText(nextText);
+        } else if (state.confirmationStage === "confirmed") {
+          nextText = directorAutoUserMessageTransportText(nextText);
+        }
+      }
 
       return chat.send(text, transportAttachments, nextText);
     },
@@ -12871,6 +13253,7 @@ export function SuperChatPanel({
       recordUploadedFiles,
       reingestConfirmation,
       t,
+      updateDirectorRunState,
       uploadedIngestFiles,
       variant,
     ],
@@ -13680,6 +14063,17 @@ export function SuperChatPanel({
                 </span>
               </div>
             </div>
+            {agentBillingReference?.enabled && <Button
+              type="button"
+              variant="ghost"
+              size="icon-sm"
+              onClick={() => setAgentBillingOpen(true)}
+              aria-label="虾导计费说明"
+              title="虾导计费说明"
+              className="text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+            >
+              <Gauge className="size-4" />
+            </Button>}
             <ControlBar
               chat={chat}
               compact
@@ -13941,12 +14335,25 @@ export function SuperChatPanel({
 
         <div className={cn("sticky bottom-0 z-40 shrink-0 bg-transparent p-3", isFreezoneLayout && "px-4 pb-4 pt-1")}>
           <div className={cn("relative mx-auto mb-2.5 h-7 w-full max-w-[760px]", isFreezoneLayout && "max-w-none")}>
-            <ComposerWaitingStatus
-              label={isFreezoneLayout ? t("aiAssistant.freezoneWaitingResponse") : t("aiAssistant.waitingResponse")}
-              activityLabel={composerAgentActivityLabel}
-              visible={showWaitingIndicator}
-              variant={isFreezoneLayout ? "freezone" : "default"}
-            />
+            {!isFreezoneLayout
+              && directorRunState.confirmationStage === "confirmed"
+              && !showWaitingIndicator ? (
+                <div
+                  className="flex h-7 items-center gap-2 px-1 text-xs text-success"
+                  role="status"
+                  aria-live="polite"
+                >
+                  <span className="size-1.5 shrink-0 animate-pulse rounded-full bg-success" />
+                  <span>本集自动正在运行，将按任务状态继续推进</span>
+                </div>
+              ) : (
+                <ComposerWaitingStatus
+                  label={isFreezoneLayout ? t("aiAssistant.freezoneWaitingResponse") : t("aiAssistant.waitingResponse")}
+                  activityLabel={composerAgentActivityLabel}
+                  visible={showWaitingIndicator}
+                  variant={isFreezoneLayout ? "freezone" : "default"}
+                />
+              )}
           </div>
           {!isFreezoneLayout || workflowStatusEnabled ? (
             <ChatTaskStatusBar
@@ -14214,6 +14621,73 @@ export function SuperChatPanel({
                 )}
                 <div className="flex items-center justify-between px-3 py-2">
                   <div className="flex items-center gap-1">
+                    {!isFreezoneLayout && params.project?.trim() && (
+                      <DropdownMenu
+                        open={directorRunModeMenuOpen}
+                        onOpenChange={setDirectorRunModeMenuOpen}
+                      >
+                        <DropdownMenuTrigger
+                          render={
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              size="sm"
+                              className={cn(
+                                "h-8 gap-1.5 rounded-full px-2.5 text-xs text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+                                directorRunModeMenuOpen && "bg-white/[0.08] text-foreground",
+                                directorRunState.mode === "episode_auto" && "text-emerald-300 hover:text-emerald-200",
+                              )}
+                            />
+                          }
+                        >
+                          {directorRunState.mode === "episode_auto" ? (
+                            <>
+                              <Gauge className="size-3.5" />
+                              {directorRunState.confirmationStage === "confirmed"
+                                ? "本集自动 · 运行中"
+                                : directorRunState.confirmationStage === "awaiting_intervention"
+                                  ? "本集自动 · 待修改确认"
+                                : "本集自动 · 待确认"}
+                            </>
+                          ) : (
+                            <>
+                              <ShieldAlert className="size-3.5" />
+                              手动模式
+                            </>
+                          )}
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent
+                          side="top"
+                          align="start"
+                          sideOffset={8}
+                          className="w-[300px] rounded-md bg-[#2a2a2c] p-2 shadow-lg ring-white/12"
+                        >
+                          <DropdownMenuRadioGroup
+                            className="space-y-1"
+                            value={directorRunState.mode}
+                            onValueChange={(value) =>
+                              setDirectorExecutionMode(value as DirectorRunMode)
+                            }
+                          >
+                            {DIRECTOR_RUN_MODE_OPTIONS.map((option) => (
+                              <DropdownMenuRadioItem
+                                key={option.value}
+                                value={option.value}
+                                className="items-start gap-2.5 rounded-md py-2 pl-2 pr-8 focus:bg-white/[0.075] data-checked:bg-white/[0.05] data-checked:focus:bg-white/[0.075]"
+                              >
+                                <option.icon className="mt-0.5 shrink-0 text-muted-foreground" />
+                                <span className="min-w-0 flex-1">
+                                  <span className="block text-sm font-medium">{option.label}</span>
+                                  <span className="mt-0.5 block text-xs leading-4 text-muted-foreground">
+                                    {option.description}
+                                  </span>
+                                </span>
+                              </DropdownMenuRadioItem>
+                            ))}
+                          </DropdownMenuRadioGroup>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    )}
                     {isFreezoneLayout && (
                       <>
                         <DropdownMenu
@@ -14568,7 +15042,7 @@ export function SuperChatPanel({
         </div>,
         document.body,
       )}
-      {isFreezoneLayout && (
+      {isFreezoneLayout && agentBillingReference?.enabled && (
         <CommunitySkillDialog
           mode={freezoneSkillDialogMode}
           open={freezoneCommunitySkillDialogOpen}
@@ -14591,6 +15065,59 @@ export function SuperChatPanel({
           onInstall={(item) => void installFreezoneCommunitySkill(item)}
           onSelectLocalSkill={selectFreezoneSkillFromDialog}
         />
+      )}
+      {isFreezoneLayout && (
+        <Dialog open={agentBillingOpen} onOpenChange={setAgentBillingOpen}>
+          <DialogContent className="w-[calc(100vw-2rem)] border-white/10 bg-background/95 p-0 backdrop-blur-xl sm:max-w-[min(46.08rem,calc(100vw-3rem))]">
+            <div className="border-b border-white/10 px-5 py-4">
+              <DialogTitle>虾导 Agent 积分参考</DialogTitle>
+              <p className="mt-1 text-xs leading-5 text-muted-foreground">
+                {agentBillingReference?.note
+                  ?? "普通聊天和画布操作免费；仅高级 Agent 能力交付计费。"}
+              </p>
+            </div>
+            <div className="max-h-[65vh] overflow-auto px-5 py-4">
+              <div className="overflow-hidden rounded-lg border border-white/10">
+                <table className="w-full min-w-[640px] table-fixed text-left text-xs">
+                  <thead className="bg-white/[0.05] text-muted-foreground">
+                    <tr>
+                      <th className="w-[24%] px-3 py-2.5 font-medium">任务</th>
+                      <th className="w-[54%] px-3 py-2.5 font-medium">包含内容</th>
+                      <th className="w-[22%] px-3 py-2.5 font-medium">Agent 计费</th>
+                    </tr>
+                  </thead>
+                  <tbody className="divide-y divide-white/[0.07]">
+                    {(agentBillingReference?.items ?? []).map((item) => (
+                      <tr key={item.key}>
+                        <td className="whitespace-nowrap px-3 py-3 font-medium text-foreground">
+                          {item.label}
+                        </td>
+                        <td className="px-3 py-3 leading-5 text-muted-foreground">
+                          {item.examples}
+                        </td>
+                        <td className="whitespace-nowrap px-3 py-3 text-foreground/85">
+                          {item.reference_display}
+                        </td>
+                      </tr>
+                    ))}
+                    {!agentBillingReference && (
+                      <tr>
+                        <td colSpan={3} className="px-3 py-8 text-center text-muted-foreground">
+                          正在加载计费参考…
+                        </td>
+                      </tr>
+                    )}
+                  </tbody>
+                </table>
+              </div>
+              <p className="mt-3 text-[11px] leading-5 text-muted-foreground">
+                表中区间用于提前了解消耗量级，最终以系统配置的功能价格和实际成功交付数量为准。
+                图片、音频和视频等模型生成费用不包含在本表中，仍由 NewAPI 按原有规则独立结算。
+                工具重试和内部多步调用不会重复收取 Agent 交付费用。
+              </p>
+            </div>
+          </DialogContent>
+        </Dialog>
       )}
       <FormatCheckDetailsDialog
         formatCheck={formatCheckDetails?.formatCheck ?? null}

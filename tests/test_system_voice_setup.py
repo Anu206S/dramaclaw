@@ -113,9 +113,13 @@ async def test_system_voice_setup_runner_reports_progress(monkeypatch, tmp_path)
     class FakeRunnerStore:
         def __init__(self, *args, **kwargs):  # noqa: ARG002
             self.closed = False
+            self.graph_state_loaded = False
 
         async def initialize(self):
             return None
+
+        async def load_graph_state(self):
+            self.graph_state_loaded = True
 
         async def close(self):
             self.closed = True
@@ -126,6 +130,7 @@ async def test_system_voice_setup_runner_reports_progress(monkeypatch, tmp_path)
 
     async def fake_prepare(**kwargs):
         assert kwargs["episode"] == 2
+        assert kwargs["store"].graph_state_loaded is True
         return {
             "ready": True,
             "prepared": [{"target": "项目解说人"}],

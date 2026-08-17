@@ -50,7 +50,6 @@ from novelvideo.models import (
     NovelProp,
 )
 
-
 # ============================================================
 # LLM 输出容器
 # ============================================================
@@ -584,6 +583,7 @@ def _create_scene_build_agent(system_prompt: str, output_type: Any, name: str):
             "SCENE_BUILD_MODEL",
             "gemini-3-flash-preview",
             brainclaw_profile=BrainClawProfile.SCENE_ENVIRONMENT_ENRICHMENT,
+            capability="cognee.llm",
         ),
         system_prompt=system_prompt,
         model_settings=get_newapi_structured_output_model_settings(),
@@ -1061,12 +1061,12 @@ async def extract_scenes_from_script(
                             "scene_type": normalized.scene_type
                             or ("interior" if cand.interior else "exterior"),
                             "time_of_day": normalized_time,
-                            "time_counts": {normalized_time: 1}
-                            if normalized_time
-                            else {},
-                            "interior": normalized.interior
-                            if primary_name
-                            else cand.interior,
+                            "time_counts": (
+                                {normalized_time: 1} if normalized_time else {}
+                            ),
+                            "interior": (
+                                normalized.interior if primary_name else cand.interior
+                            ),
                             "episodes": cand.episodes,
                             "characters": normalized.characters or cand.characters,
                             "context_lines": cand.context_lines,
@@ -1081,9 +1081,9 @@ async def extract_scenes_from_script(
                             "aliases": [],
                             "scene_type": "interior" if cand.interior else "exterior",
                             "time_of_day": normalized_time,
-                            "time_counts": {normalized_time: 1}
-                            if normalized_time
-                            else {},
+                            "time_counts": (
+                                {normalized_time: 1} if normalized_time else {}
+                            ),
                             "interior": cand.interior,
                             "episodes": cand.episodes,
                             "characters": cand.characters,

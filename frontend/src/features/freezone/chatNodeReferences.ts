@@ -865,25 +865,14 @@ export function buildCanvasChatCommandContext(
 ): string {
   return [
     "[SUPERTALE_CANVAS_ROUTING]",
-    "Current surface is Freezone canvas. For canvas edits, use Freezone tools instead of writing protocol JSON in the chat message.",
+    "Current surface is Freezone canvas. Follow the backend FREEZONE_CANVAS_ASSISTANT contract.",
     "[/SUPERTALE_CANVAS_ROUTING]",
     ...(options.includeCanvasSummary
       ? buildCanvasOntologySummaryBlock(ontologyContext)
       : []),
     "[SUPERTALE_CANVAS_CHAT_COMMANDS]",
-    "Use freezone_emit_canvas_command once for batch edits. Use typed write tools only for explicit one-operation requests.",
-    "For canvas edit requests, the first assistant output must be a Freezone write tool call. Do not emit assistant prose, acknowledgement, summary, or status text before the write tool call.",
-    "Open-ended ideation/no-idea requests are planning conversation, not canvas edits. Ask or suggest first; emit commands only after the user explicitly asks to create, build, connect, run, or land it on canvas.",
-    "For explicit canvas framework/workflow/storyboard/short-video plan edits, do not step-write; gather catalogs/schemas, validate once, then emit one freezone_emit_canvas_command batch.",
-    "Do not expose tool names, command JSON, node_id, field ids, schema names, or action ids in user-visible prose unless the user asks for implementation details.",
-    "Do not claim a canvas change succeeded until a frontend write result returns success. Do not say a node was created, updated, deleted, connected, moved, or executed unless the write tool/frontend result confirms it.",
-    "For uncertain command shapes, call freezone_get_canvas_command_catalog. Validate non-trivial or multi-command edits with freezone_validate_canvas_commands before emitting the final write tool.",
-    "create_edge needs link_type. If link types are not present in current context, call freezone_get_link_type_catalog.",
-    "For dynamic fields such as model, size, aspectRatio, genMode, voice, templates, or create_node data, call the specific get_* schema/options tool such as freezone_get_node_detail or freezone_get_node_create_schema instead of guessing.",
-    "Referenced nodes are attention anchors. Use node_detail for node.parameters. For toolbar/action/panel parameters, call freezone_get_node_action_catalog with action.",
-    "For workflow/group execution requests, prefer run_workflow over separate run_node_action calls.",
-    "videoComposeNode is a final timeline/composition node: connect video/audio inputs to it with composition_input_for; do not connect planning text or prompts directly to videoComposeNode.",
-    "If creating nodes that later commands reference in the same batch, use client_id and reuse that same client_id only inside the same envelope.",
+    "Ontology summaries and node references are read-only grounding, not proof that a canvas write succeeded.",
+    "Request only the missing catalog, schema, node, or action detail needed for the current operation.",
     "[/SUPERTALE_CANVAS_CHAT_COMMANDS]",
   ].join("\n");
 }

@@ -67,7 +67,7 @@ except ValueError:
     TURN_TOOL_CALL_LIMIT = 0
 FREEZONE_TURN_TOOL_CALL_LIMIT = max(
     1,
-    _env_int("HERMES_FREEZONE_TURN_TOOL_CALL_LIMIT", 12),
+    _env_int("HERMES_FREEZONE_TURN_TOOL_CALL_LIMIT", 20),
 )
 REPEATED_READ_TOOL_CALL_LIMIT = max(
     1,
@@ -327,6 +327,13 @@ def _read_signature_input(event: ChatBackendEvent) -> object:
         if title:
             return {"resource_title": title}
     return event.input
+
+
+def _tool_call_guard_reason(stop_text: object) -> str:
+    """Return a machine-readable reason without coupling callers to UI copy."""
+    if "重复读取" in str(stop_text or ""):
+        return "repeated_read"
+    return "tool_call_limit"
 
 
 class _TurnToolCallGuard:
@@ -1128,6 +1135,12 @@ class HermesSdkThread:
                             thread_id=self.id,
                             turn_id=turn_id,
                             text=stop_text,
+                            raw={
+                                "reason": "tool_call_guard",
+                                "guard_reason": _tool_call_guard_reason(stop_text),
+                                "tool_name": str(ev.name or "").strip() or None,
+                                "had_write": first_write_tool is not None,
+                            },
                         )
                         return
                     if ev.type == "tool_started":

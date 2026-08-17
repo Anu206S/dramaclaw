@@ -587,6 +587,7 @@ def save_newapi_media_model_mappings(
     mappings: dict[str, dict[str, Any]],
 ) -> dict[str, dict[str, Any]]:
     from novelvideo.media_model_request_schema import (
+        normalize_media_model_catalog_config,
         validate_media_model_catalog_config,
     )
 
@@ -601,6 +602,7 @@ def save_newapi_media_model_mappings(
         media_type = str(item.get("mediaType") or "").strip().lower()
         config = item.get("config") if isinstance(item.get("config"), dict) else {}
         if media_type in {"image", "video"}:
+            config = normalize_media_model_catalog_config(config)
             validate_media_model_catalog_config(config, media_type)
         normalized_item: dict[str, Any] = {
             "provider": provider,
@@ -816,6 +818,8 @@ def _media_model_catalog(
     provider: str | None = None,
     include_disabled: bool = False,
 ) -> list[dict[str, Any]]:
+    from novelvideo.media_model_request_schema import normalize_media_model_catalog_config
+
     wanted = str(media_type or "").strip().lower()
     if wanted not in {"image", "video"}:
         return []
@@ -827,7 +831,7 @@ def _media_model_catalog(
         if item.get("mediaType") != wanted or (disabled and not include_disabled):
             continue
         config = item.get("config") if isinstance(item.get("config"), dict) else {}
-        config = dict(config)
+        config = normalize_media_model_catalog_config(config)
         config.setdefault(
             "request",
             {
@@ -988,9 +992,14 @@ def get_model_gateway_settings() -> dict[str, str]:
 
 def get_effective_newapi_config(
     *,
+    explicit_config: EffectiveNewApiConfig | None = None,
     official_base_url: str | None = None,
     official_api_key: str | None = None,
 ) -> EffectiveNewApiConfig:
+    if explicit_config is not None:
+        if type(explicit_config) is not EffectiveNewApiConfig:
+            raise TypeError("explicit_config must be an EffectiveNewApiConfig")
+        return explicit_config
     if not _uses_ce_gateway_settings():
         return EffectiveNewApiConfig(
             mode=MODE_OFFICIAL,
@@ -1121,6 +1130,7 @@ def _bool_setting(value: Any, default: bool) -> bool:
 
 def get_effective_media_relay_config(
     *,
+    explicit_config: EffectiveMediaRelayConfig | None = None,
     env_provider: str | None = None,
     env_ttl_seconds: int | str | None = None,
     env_endpoint: str | None = None,
@@ -1132,6 +1142,10 @@ def get_effective_media_relay_config(
     env_cloudinary_api_secret: str | None = None,
     env_cloudinary_folder: str | None = None,
 ) -> EffectiveMediaRelayConfig:
+    if explicit_config is not None:
+        if type(explicit_config) is not EffectiveMediaRelayConfig:
+            raise TypeError("explicit_config must be an EffectiveMediaRelayConfig")
+        return explicit_config
     settings = get_model_gateway_settings() if _uses_ce_gateway_settings() else {}
     db_provider = str(settings.get("media_relay_provider", "")).strip().lower()
     db_endpoint = str(settings.get("oss_relay_endpoint", "")).strip()

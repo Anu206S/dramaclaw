@@ -344,6 +344,31 @@ def test_standard_skill_planner_uses_defaults_for_minimal_intent(monkeypatch):
     assert result["planner"]["include_audio"] is False
 
 
+def test_standard_audio_planner_rejects_missing_or_placeholder_narration(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    for narration in (None, "这是短剧的第一段旁白。"):
+        unit = {"title": "开场", "prompt": "建立故事场景"}
+        if narration is not None:
+            unit["narration"] = narration
+        result = catalog.compile_workflow_intent(
+                {
+                    "skill_id": "short-drama-quick",
+                    "user_goal": "制作短剧",
+                    "include_audio": True,
+                    "planner": {
+                        "mode": "standard",
+                        "item_count": 1,
+                        "include_audio": True,
+                        "units": [unit],
+                    },
+                }
+        )
+        assert result["ok"] is False
+        assert result["errors"][0]["path"] == "planner.units.0.narration"
+
+
 def test_custom_items_take_precedence_over_standard_planner(monkeypatch):
     catalog = _load_catalog_module()
     _install_real_builtin_catalog(monkeypatch, catalog)

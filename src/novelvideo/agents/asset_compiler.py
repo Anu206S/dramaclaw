@@ -14,6 +14,7 @@ from novelvideo.config import (
     get_newapi_structured_output_model_settings,
     get_newapi_text_pydantic_model,
 )
+from novelvideo.model_gateway_runtime import model_gateway_output_retries
 from novelvideo.models import (
     NovelProp,
     NovelScene,
@@ -519,7 +520,9 @@ class AssetCompiler:
                 )
             else:
                 report(0.1, "AI 逐场校对场景元数据...")
-                scene_blocks = await self._normalize_scene_block_headers(scene_blocks, log)
+                scene_blocks = await self._normalize_scene_block_headers(
+                    scene_blocks, log
+                )
                 log(f"[AssetCompiler] 共识别 {len(scene_blocks)} 个场景块")
 
                 report(0.18, "AI校对基础场景...")
@@ -650,11 +653,12 @@ class AssetCompiler:
                 "EPISODE_SCENE_RECONCILE_MODEL",
                 "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.EPISODE_SCENE_RECONCILIATION,
+                capability="text.generate.agent",
             ),
             system_prompt=BASE_SCENE_RECONCILE_PROMPT,
             model_settings=get_newapi_structured_output_model_settings(),
             output_type=EpisodeBaseSceneReconcileOutput,
-            output_retries=2,
+            output_retries=model_gateway_output_retries(2),
             name="基础场景资产校对员",
         )
         result = await agent.run(f"""## 已有基础场景
@@ -961,11 +965,12 @@ class AssetCompiler:
                 "NARRATED_SCENE_ASSET_MODEL",
                 "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.NARRATED_SCENE_ASSET_PLANNING,
+                capability="text.generate.agent",
             ),
             system_prompt=NARRATED_SCENE_PROMPT,
             model_settings=get_newapi_structured_output_model_settings(),
             output_type=NarratedScenePlanOutput,
-            output_retries=2,
+            output_retries=model_gateway_output_retries(2),
             validation_context={
                 "source_text": source_text,
                 "existing_scene_names": existing_scene_names,
@@ -1044,11 +1049,12 @@ class AssetCompiler:
                 "EPISODE_SCENE_PLANNER_MODEL",
                 "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.EPISODE_SCENE_PLANNING,
+                capability="text.generate.agent",
             ),
             system_prompt=DERIVED_SCENE_PROMPT,
             model_settings=get_newapi_structured_output_model_settings(),
             output_type=BlockDerivedSceneOutput,
-            output_retries=2,
+            output_retries=model_gateway_output_retries(2),
             name="派生场景分析师",
         )
         result = await agent.run(task)
@@ -1231,11 +1237,12 @@ class AssetCompiler:
                 "EPISODE_PROP_PLANNER_MODEL",
                 "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.EPISODE_PROP_PLANNING,
+                capability="text.generate.agent",
             ),
             system_prompt=BLOCK_PROP_PROMPT,
             model_settings=get_newapi_structured_output_model_settings(),
             output_type=BlockPropRequirements,
-            output_retries=2,
+            output_retries=model_gateway_output_retries(2),
             validation_context={
                 "block_text": block_text,
                 "allowed_existing_names": allowed_existing_names,
@@ -1433,16 +1440,16 @@ class AssetCompiler:
             prop_menu.append(
                 PropMenuItem(
                     prop_id=prop_id,
-                    prop_type=getattr(existing, "prop_type", "")
-                    if existing
-                    else prop_type,
+                    prop_type=(
+                        getattr(existing, "prop_type", "") if existing else prop_type
+                    ),
                     visual_prompt=existing_visual
                     or existing_description
                     or fallback_visual,
                     description=description or existing_description or existing_visual,
-                    owner_identity_id=getattr(existing, "owner", "")
-                    if existing
-                    else "",
+                    owner_identity_id=(
+                        getattr(existing, "owner", "") if existing else ""
+                    ),
                 )
             )
             seen_prop_ids.add(prop_id)

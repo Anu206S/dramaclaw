@@ -223,7 +223,14 @@ SHAPE_HINT_DEFAULT_AFFORDANCES = {
 }
 
 
-def resolve_model_config(request: dict[str, Any]) -> tuple[str, str, str | None]:
+def resolve_model_config(
+    request: dict[str, Any],
+    *,
+    egress_context=None,
+) -> tuple[str, str, str | None]:
+    from novelvideo.task_backend.subprocesses import require_direct_model_egress_allowed
+
+    require_direct_model_egress_allowed(egress_context)
     from novelvideo.config import get_newapi_runtime_credentials
     from novelvideo.model_gateway_settings import get_effective_llm_config
 
@@ -616,9 +623,16 @@ def normalize_prop(
     }
 
 
-def generate_ai_staging_prop(request: dict[str, Any]) -> dict[str, Any]:
+def generate_ai_staging_prop(
+    request: dict[str, Any],
+    *,
+    egress_context=None,
+) -> dict[str, Any]:
     load_dotenv_files()
-    model, api_key, base_url = resolve_model_config(request)
+    model, api_key, base_url = resolve_model_config(
+        request,
+        egress_context=egress_context,
+    )
     if not api_key:
         raise RuntimeError("missing AI api key: set NEWAPI_API_KEY")
 

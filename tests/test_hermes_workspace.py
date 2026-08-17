@@ -177,20 +177,17 @@ def test_freezone_profile_uses_isolated_workspace(
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
     soul = (home / "SOUL.md").read_text(encoding="utf-8")
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
-    assert "创意咨询、找思路、风格建议" in soul
-    assert "搭建可继续工作的画布框架" in soul
+    assert "创意咨询" in soul
+    assert "画布节点、连线、资源和工作流操作" in soul
     assert "不要在普通回复开头自报身份" in soul
-    assert "command catalog" in soul
-    assert "node create schema" in soul
-    assert "link type catalog" in soul
-    assert "生成完整短片" in soul
-    assert "创意咨询、找思路、风格建议" in memory
-    assert "搭建可继续工作的画布框架" in memory
-    assert "不要在普通回复开头自报身份" in memory
-    assert "command catalog" in memory
-    assert "node create schema" in memory
-    assert "link type catalog" in memory
-    assert "生成完整短片" in memory
+    assert "FREEZONE_CANVAS_ASSISTANT" in soul
+    assert "command catalog" not in soul
+    assert "只使用 Freezone 画布能力" in memory
+    assert "不得用 DramaClaw 主线工具" in memory
+    assert "创意咨询" not in memory
+    assert "command catalog" not in memory
+    assert len(soul) < 250
+    assert len(memory) < 100
     assert (hw.freezone_python_hook_dir(home) / "sitecustomize.py").is_file()
 
 
@@ -653,12 +650,19 @@ def test_hermes_stops_mainline_writes_but_not_freezone_canvas_writes():
 
 
 def test_hermes_keeps_mainline_tool_call_limit_narrow():
-    assert hermes_sdk._turn_tool_call_limit_for_tool("dramaclaw_generate_script") is None
+    assert (
+        hermes_sdk._turn_tool_call_limit_for_tool("dramaclaw_generate_script") is None
+    )
 
 
 def test_hermes_allows_more_freezone_tool_calls():
-    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_emit_canvas_command") == 12
-    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe") == 12
+    assert (
+        hermes_sdk._turn_tool_call_limit_for_tool("freezone_emit_canvas_command") == 20
+    )
+    assert (
+        hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe")
+        == 20
+    )
 
 
 def test_hermes_tool_call_guard_counts_update_only_calls():
@@ -679,27 +683,35 @@ def test_hermes_tool_call_guard_counts_update_only_calls():
     assert guard.total == 3
 
 
-def test_hermes_tool_call_guard_does_not_charge_skill_loading_to_action_limit(monkeypatch):
+def test_hermes_tool_call_guard_does_not_charge_skill_loading_to_action_limit(
+    monkeypatch,
+):
     monkeypatch.setattr(hermes_sdk, "TURN_TOOL_CALL_LIMIT", 1)
     guard = hermes_sdk._TurnToolCallGuard()
 
-    assert guard.observe(
-        hermes_sdk.ChatBackendEvent(
-            type="tool_started",
-            name="skill",
-            call_id="skill-a",
-            input={"name": "dramaclaw"},
+    assert (
+        guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="skill",
+                call_id="skill-a",
+                input={"name": "dramaclaw"},
+            )
         )
-    ) is None
+        is None
+    )
     assert guard.total == 0
-    assert guard.observe(
-        hermes_sdk.ChatBackendEvent(
-            type="tool_started",
-            name="dramaclaw_pipeline_status",
-            call_id="status-a",
-            input={"episode": 2},
+    assert (
+        guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="dramaclaw_pipeline_status",
+                call_id="status-a",
+                input={"episode": 2},
+            )
         )
-    ) is None
+        is None
+    )
     assert guard.total == 1
 
 
@@ -731,15 +743,18 @@ def test_hermes_tool_call_guard_distinguishes_skill_resources_without_raw_input(
             "skill view (dramaclaw/references/script.md)",
         )
     ):
-        assert guard.observe(
-            hermes_sdk.ChatBackendEvent(
-                type="tool_started",
-                name="skill",
-                call_id=f"skill-{index}",
-                input=None,
-                raw={"title": title},
+        assert (
+            guard.observe(
+                hermes_sdk.ChatBackendEvent(
+                    type="tool_started",
+                    name="skill",
+                    call_id=f"skill-{index}",
+                    input=None,
+                    raw={"title": title},
+                )
             )
-        ) is None
+            is None
+        )
 
     assert guard.total == 0
 
@@ -761,6 +776,15 @@ def test_hermes_tool_call_guard_stops_repeated_titled_skill_resource():
 
     assert stop_message is not None
     assert guard.total == 0
+
+
+def test_hermes_tool_call_guard_reason_is_machine_readable():
+    assert hermes_sdk._tool_call_guard_reason("本轮操作已停止：重复读取同一项状态") == (
+        "repeated_read"
+    )
+    assert hermes_sdk._tool_call_guard_reason("本轮操作已停止：连续调用工具过多") == (
+        "tool_call_limit"
+    )
 
 
 def test_hermes_tool_call_guard_stops_repeated_identical_node_reads():
@@ -805,15 +829,18 @@ def test_hermes_tool_call_guard_allows_distinct_mainline_reads():
     guard = hermes_sdk._TurnToolCallGuard()
 
     for index in range(10):
-        assert guard.observe(
-            hermes_sdk.ChatBackendEvent(
-                type="tool_updated",
-                name="dramaclaw_get_episode_media",
-                call_id=f"call-{index}",
-                input={"episode": 1, "beat": index + 1},
-                status="completed",
+        assert (
+            guard.observe(
+                hermes_sdk.ChatBackendEvent(
+                    type="tool_updated",
+                    name="dramaclaw_get_episode_media",
+                    call_id=f"call-{index}",
+                    input={"episode": 1, "beat": index + 1},
+                    status="completed",
+                )
             )
-        ) is None
+            is None
+        )
 
 
 def test_hermes_tool_call_guard_does_not_double_count_start_and_update():
