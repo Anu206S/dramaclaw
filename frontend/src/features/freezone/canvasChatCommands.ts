@@ -43,6 +43,7 @@ import { openPresetProjectionInMyCanvas } from "@/features/freezone/openPresetPr
 import {
   isBeatContextAgentEditablePatch,
   normalizeBeatContextAgentPatch,
+  normalizeCanvasCommandCreateNodeData,
   normalizeCanvasCommandNodeData,
 } from "@/features/freezone/canvasCommandNodeData";
 import { validateCanvasChatCommandEnvelopes } from "@/features/freezone/context/canvasCommandValidator";
@@ -473,6 +474,7 @@ const canvasNodeActionQueues = new Map<string, Promise<void>>();
 let nodeActionMountQueue: Promise<void> = Promise.resolve();
 const WORKFLOW_ACTION_CONCURRENCY = 3;
 const WORKFLOW_ACTION_MAX_RETRIES = 2;
+const WORKFLOW_STOPPED_MESSAGE = "工作流已停止，未启动后续节点。";
 const TERMINAL_WORKFLOW_ACTION_STATUSES = new Set<WorkflowRunActionStatus>([
   "completed",
   "failed",
@@ -482,7 +484,6 @@ const TERMINAL_WORKFLOW_ACTION_STATUSES = new Set<WorkflowRunActionStatus>([
 const WORKFLOW_CAPACITY_POLL_INTERVAL_MS = 2_000;
 const WORKFLOW_ACTION_LANE_LIMITS = {
   default: 3,
-  image: 3,
   video: 3,
   world: 1,
   ffmpeg: 1,
@@ -496,15 +497,27 @@ type WorkflowActionSlotWaiter = {
 const workflowActionSlotWaiters: WorkflowActionSlotWaiter[] = [];
 const activeWorkflowActionsByLane: Record<WorkflowActionLane, number> = {
   default: 0,
-  image: 0,
   video: 0,
   world: 0,
   ffmpeg: 0,
 };
 let activeWorkflowActions = 0;
+const workflowCancelTokensByCanvas = new Map<string, number>();
+
+function workflowCancelKey(canvasId: string | null | undefined): string {
+  return canvasId?.trim() || "default";
+}
+
+export function cancelCanvasWorkflowExecution(canvasId?: string | null): void {
+  const key = workflowCancelKey(canvasId);
+  workflowCancelTokensByCanvas.set(key, (workflowCancelTokensByCanvas.get(key) ?? 0) + 1);
+}
 
 function workflowActionLane(action: string): WorkflowActionLane {
-  if (action === "generate_image") return "image";
+  // Stable workers consume image generation from the default lane. Keeping
+  // workflow capacity checks on the same lane prevents admission against an
+  // image queue that deployed workers do not consume.
+  if (action === "generate_image") return "default";
   if (action === "generate_video" || action === "generate_text_video") return "video";
   if (action === "generate_3gs_world") return "world";
   if (action === "auto_compose_video") return "ffmpeg";
@@ -2498,6 +2511,10 @@ async function executeQueuedNodeActions(
     const projectId = options.projectId?.trim();
     const canvasId = options.canvasId?.trim();
     let workflowRunId: string | null = null;
+    const workflowCancelKeyForRun = workflowCancelKey(canvasId);
+    const workflowCancelToken = workflowCancelTokensByCanvas.get(workflowCancelKeyForRun) ?? 0;
+    const workflowCancelled = () =>
+      (workflowCancelTokensByCanvas.get(workflowCancelKeyForRun) ?? 0) !== workflowCancelToken;
     const workflowRunnerId =
       typeof crypto !== "undefined" && typeof crypto.randomUUID === "function"
         ? `canvas-runner:${crypto.randomUUID()}`
@@ -2507,7 +2524,7 @@ async function executeQueuedNodeActions(
     let workflowHeartbeatQueue: Promise<void> = Promise.resolve();
     let workflowPersistenceDrain: Promise<void> | null = null;
     const pendingWorkflowUpdates = new Map<string, WorkflowRunActionUpdate>();
-    let pendingWorkflowStatus: "completed" | "failed" | undefined;
+    let pendingWorkflowStatus: "completed" | "failed" | "cancelled" | undefined;
     const workflowActionStatuses = new Map(
       pendingActions.map((action) => [
         `${action.nodeId}:${action.action}`,
@@ -2621,7 +2638,7 @@ async function executeQueuedNodeActions(
     };
     const persistRunUpdate = async (
       updates: WorkflowRunActionUpdate[],
-      status?: "completed" | "failed",
+      status?: "completed" | "failed" | "cancelled",
     ): Promise<void> => {
       if (!projectId || !canvasId || !workflowRunId) return;
       const acceptedUpdates = updates.filter((update) => {
@@ -2736,7 +2753,7 @@ async function executeQueuedNodeActions(
         counts[lane] += 1;
         return counts;
       },
-      { default: 0, image: 0, video: 0, world: 0, ffmpeg: 0 },
+      { default: 0, video: 0, world: 0, ffmpeg: 0 },
     );
     const actionByNodeId = new Map(
       pendingActions.map((action) => [action.nodeId, action]),
@@ -2756,8 +2773,22 @@ async function executeQueuedNodeActions(
       window.addEventListener(WORKFLOW_EXECUTION_ACTIVITY_EVENT, handleWorkflowActivity);
     }
     let runFailed = false;
+    let runCancelled = false;
     try {
       for (const level of levels) {
+      if (workflowCancelled()) {
+        runCancelled = true;
+        const unsettledActions = pendingActions.filter(
+          (action) => !settledActionKeys.has(`${action.nodeId}:${action.action}`),
+        );
+        await persistRunUpdate(unsettledActions.map((action) => ({
+          node_id: action.nodeId,
+          action: action.action,
+          status: "skipped",
+          error: WORKFLOW_STOPPED_MESSAGE,
+        })), "cancelled");
+        break;
+      }
       if (workflowLeaseLost) {
         runFailed = true;
         result.errors.push("工作流执行租约已失效，已停止启动后续节点。");
@@ -2826,17 +2857,24 @@ async function executeQueuedNodeActions(
           };
         }
 
-        const lane = workflowActionLane(action.action);
-        const releaseActionSlot = await acquireWorkflowActionSlot(
-          action.action,
-          workflowLaneLimits[lane],
-        );
-        try {
-          for (
-            let retryCount = 0;
-            retryCount <= WORKFLOW_ACTION_MAX_RETRIES;
-            retryCount += 1
-          ) {
+            const lane = workflowActionLane(action.action);
+            const releaseActionSlot = await acquireWorkflowActionSlot(
+              action.action,
+              workflowLaneLimits[lane],
+            );
+            try {
+              for (
+                let retryCount = 0;
+                retryCount <= WORKFLOW_ACTION_MAX_RETRIES;
+                retryCount += 1
+              ) {
+            if (workflowCancelled()) {
+              return {
+                action,
+                failed: "工作流已停止，未启动后续节点。",
+                retryCount,
+              };
+            }
             const mustHoldCapacityUntilCompleted = GENERATION_NODE_ACTIONS.has(action.action) && (
               generationActions.length > WORKFLOW_ACTION_CONCURRENCY ||
               generationCountByLane[lane] > workflowLaneLimits[lane]
@@ -2849,7 +2887,7 @@ async function executeQueuedNodeActions(
                 projectId,
                 lane,
                 options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
-                () => workflowLeaseLost,
+                () => workflowLeaseLost || workflowCancelled(),
                 () => {
                   void persistRunUpdate([{
                     node_id: action.nodeId,
@@ -2862,12 +2900,21 @@ async function executeQueuedNodeActions(
               if (!capacityReady) {
                 return {
                   action,
-                  failed: workflowLeaseLost
-                    ? "工作流执行租约已失效，已停止等待任务队列。"
-                    : `${lane} 任务队列长时间没有可用容量，请稍后继续工作流。`,
+                  failed: workflowCancelled()
+                    ? WORKFLOW_STOPPED_MESSAGE
+                    : workflowLeaseLost
+                      ? "工作流执行租约已失效，已停止等待任务队列。"
+                      : `${lane} 任务队列长时间没有可用容量，请稍后继续工作流。`,
                   retryCount,
                 };
               }
+            }
+            if (workflowCancelled()) {
+              return {
+                action,
+                failed: WORKFLOW_STOPPED_MESSAGE,
+                retryCount,
+              };
             }
             await persistRunUpdate([{
               node_id: action.nodeId,
@@ -3005,7 +3052,7 @@ async function executeQueuedNodeActions(
                   action.action,
                   initialGeneratedResultToken,
                   options.actionTimeoutMs ?? DEFAULT_NODE_ACTION_TIMEOUT_MS,
-                  () => actionSettled || workflowLeaseLost,
+                  () => actionSettled || workflowLeaseLost || workflowCancelled(),
                 ).then((output): NodeActionResult | Promise<NodeActionResult> => {
                   if (output) {
                     return {
@@ -3100,7 +3147,9 @@ async function executeQueuedNodeActions(
           node_id: settled.action.nodeId,
           action: settled.action.action,
           status: settled.failed
-            ? settled.failed.startsWith("跳过 ") ? "blocked" : "failed"
+            ? settled.failed === WORKFLOW_STOPPED_MESSAGE
+              ? "skipped"
+              : settled.failed.startsWith("跳过 ") ? "blocked" : "failed"
             : "completed",
           ...(settled.failed ? { error: settled.failed } : {}),
           retry_count: settled.retryCount ?? 0,
@@ -3110,6 +3159,10 @@ async function executeQueuedNodeActions(
       }));
 
       for (const { action, failed, output } of levelResults) {
+        if (failed === WORKFLOW_STOPPED_MESSAGE) {
+          runCancelled = true;
+          continue;
+        }
         if (failed) {
           blockedNodeIds.add(action.nodeId);
           recoverableFailures.set(action.nodeId, { action, error: failed });
@@ -3149,7 +3202,7 @@ async function executeQueuedNodeActions(
       await workflowHeartbeatQueue;
       await persistRunUpdate(
         [],
-        runFailed || blockedNodeIds.size > 0 ? "failed" : "completed",
+        runCancelled ? "cancelled" : runFailed || blockedNodeIds.size > 0 ? "failed" : "completed",
       );
     } finally {
       if (typeof window !== "undefined") {
@@ -3526,7 +3579,7 @@ function applyCanvasChatCommandsInternal(
               });
               break;
             }
-            const data = normalizeCanvasCommandNodeData(command.node_type, command.data);
+            const data = normalizeCanvasCommandCreateNodeData(command.node_type, command.data);
             const nodeId = useCanvasStore.getState().addNode(
               command.node_type,
               command.position ?? fallbackCreatePosition(),
@@ -3555,7 +3608,7 @@ function applyCanvasChatCommandsInternal(
             const position = useCanvasStore.getState().findNodePosition(sourceId, DEFAULT_NODE_WIDTH, 320);
             const data = inheritMainlineFields(
               sourceNode as { data: MainlineFieldsSource },
-              normalizeCanvasCommandNodeData(nodeType, command.data),
+              normalizeCanvasCommandCreateNodeData(nodeType, command.data),
             );
             const nodeId = useCanvasStore.getState().addNode(nodeType, position, data);
             if (command.client_id) clientIdMap.set(command.client_id, nodeId);

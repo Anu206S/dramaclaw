@@ -38,6 +38,8 @@ from novelvideo.api.schemas import (
     CreateIdentityAssetRequest,
     FreezoneAnalyzeShotsRequest,
     FreezoneAnalyzeVideoStoryRequest,
+    FreezoneAssetLibraryFolderPatchRequest,
+    FreezoneAssetLibraryFolderRequest,
     FreezoneAudioMusicRequest,
     FreezoneAudioSeparateRequest,
     FreezoneAudioSpeechRequest,
@@ -69,6 +71,7 @@ from novelvideo.api.schemas import (
     FreezoneStoryScriptCharacterRef,
     FreezoneStoryScriptGenerateRequest,
     FreezoneTemplateEditRequest,
+    FreezoneTextGenerateRequest,
     FreezoneTextTranslateRequest,
     FreezoneThreeDViewerScreenshotRequest,
     FreezoneUpscaleRequest,
@@ -86,7 +89,10 @@ from novelvideo.api.schemas import (
     ProjectionStatusRequest,
     PushRequest,
 )
-from novelvideo.chat.hermes_workspace import list_freezone_hermes_workflow_skills
+from novelvideo.chat.hermes_workspace import (
+    list_freezone_hermes_workflow_skills,
+    sync_freezone_hermes_workflow_skills,
+)
 from novelvideo.config import (
     IMAGE_GENERATION_SELECTIONS,
     image_generation_selection_options,
@@ -108,6 +114,15 @@ from novelvideo.freezone.agent_config_store import (
     delete_user_agent_config_item,
     list_user_agent_config_items,
     save_user_agent_config_item,
+)
+from novelvideo.freezone.agent_capability_billing import (
+    CREATIVE_PLANNING_FEATURE_KEY,
+    creative_planning_charge,
+    creative_planning_credit_estimate,
+    reserve_agent_capability_charge,
+    settle_agent_capability_charge,
+    workflow_design_charge,
+    workflow_design_credit_estimate,
 )
 from novelvideo.media_model_request_schema import (
     MediaModelSchemaError,
@@ -146,6 +161,7 @@ from novelvideo.freezone.workflow_drafts import (
     patch_workflow_draft,
     prune_expired_workflow_drafts,
     read_workflow_draft,
+    set_workflow_draft_billing,
 )
 from novelvideo.freezone.workflow_runs import (
     WorkflowRunLeaseConflict,
@@ -191,6 +207,7 @@ from novelvideo.freezone.recipe_runtime import (
     generate_recipe_text,
 )
 from novelvideo.ports import get_usage_meter
+from novelvideo.ports.local.usage import NoOpUsageMeter
 from novelvideo.freezone.route_helpers import (
     accepted_job_response as _accepted_job_response,
 )
@@ -279,22 +296,28 @@ from novelvideo.freezone.slots import (
 )
 from novelvideo.freezone.text_node import (
     bind_story_script_assets,
+    generate_freezone_text,
     generate_freezone_story_script,
     generate_freezone_story_script_with_vision,
     translate_freezone_text,
 )
 from novelvideo.freezone.video_node import (
+    MAINLINE_FOLDER_KEY,
+    add_video_character_folder,
     add_video_character_library_item,
     build_freezone_image_to_video_prompt,
     build_freezone_keyframe_video_prompt,
     build_freezone_omni_video_prompt,
     build_freezone_video_prompt,
+    delete_video_character_folder,
     delete_video_character_library_item,
     get_freezone_video_model_options,
     get_video_camera_template,
     get_video_camera_templates,
     is_freezone_happyhorse_backend,
     is_freezone_seedance2_backend,
+    library_folder_keys,
+    load_video_character_folders,
     load_video_character_library,
     sync_mainline_assets_into_library,
     normalize_freezone_seedance2_scene_optimize,
@@ -303,6 +326,7 @@ from novelvideo.freezone.video_node import (
     normalize_video_resolution_for_backend,
     resolve_freezone_video_backend,
     summarize_omni_reference_counts,
+    update_video_character_folder,
     validate_omni_reference_audio_durations,
     validate_omni_reference_limits,
     MAX_OMNI_REFERENCE_AUDIO_SECONDS,
@@ -403,7 +427,7 @@ async def _start_or_enqueue_freezone_video_gen(
     reference_items: list[dict],
     aspect_ratio: str,
     resolution: str,
-    duration_seconds: int,
+    duration_seconds: int | None,
     generate_audio: bool,
     human_review: bool,
     scene_optimize: str | None,
@@ -423,6 +447,13 @@ async def _start_or_enqueue_freezone_video_gen(
     from novelvideo.api.routes.model_credits import (
         freezone_video_generate_task_billing,
     )
+
+    # Catalog fields are optional for backward compatibility. Missing means
+    # the legacy behavior (native audio supported); an explicit false is an
+    # authoritative capability boundary and cannot be bypassed by old clients.
+    effective_generate_audio = bool(generate_audio)
+    if (capabilities or {}).get("supportsGenerateAudio") is False:
+        effective_generate_audio = False
 
     video_input_paths = [
         str(item.get("path") or "").strip()
@@ -464,13 +495,29 @@ async def _start_or_enqueue_freezone_video_gen(
             )
         except ValueError as exc:
             raise HTTPException(400, str(exc)) from exc
+    normalized_mode = str(gen_mode or "").strip()
+    if normalized_mode == "video_edit":
+        if not video_input_paths or input_video_duration_seconds <= 0:
+            raise HTTPException(400, "video editing requires a readable source video")
+        # 视频编辑的输出时长跟随主输入视频。输入和输出沿用同一套整秒
+        # 计费口径，不为视频编辑额外引入向上取整规则；发给 NewAPI 的
+        # 最终协议仍会强制使用 duration=auto。
+        effective_duration_seconds = max(
+            int(math.floor(input_video_duration_seconds)),
+            1,
+        )
+    elif duration_seconds is not None:
+        effective_duration_seconds = max(int(duration_seconds), 1)
+    else:
+        raise HTTPException(400, "duration_seconds is required for this video mode")
+
     billing = freezone_video_generate_task_billing(
         {
             "video_backend": backend,
             "resolution": resolution,
-            "pricing_quantity": duration_seconds,
+            "pricing_quantity": effective_duration_seconds,
             "operation": requested_gen_mode or gen_mode or "textToVideo",
-            "generate_audio": generate_audio,
+            "generate_audio": effective_generate_audio,
             "video_input_present": bool(video_input_paths),
             "input_video_duration_seconds": input_video_duration_seconds,
             **({"catalog_id": catalog_id} if catalog_id else {}),
@@ -488,8 +535,8 @@ async def _start_or_enqueue_freezone_video_gen(
         "reference_items": reference_items,
         "aspect_ratio": aspect_ratio,
         "resolution": resolution,
-        "duration_seconds": duration_seconds,
-        "generate_audio": generate_audio,
+        "duration_seconds": effective_duration_seconds,
+        "generate_audio": effective_generate_audio,
         "human_review": human_review,
         "scene_optimize": normalize_freezone_seedance2_scene_optimize(
             backend, scene_optimize
@@ -640,7 +687,7 @@ async def _start_or_enqueue_freezone_gen_job(
             ctx,
             product_surface="freezone",
             task_type="freezone_gen",
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=job_id,
             payload={
@@ -1271,7 +1318,7 @@ async def _start_or_enqueue_mainline_sketch_from_context_job(
             ctx,
             product_surface="freezone",
             task_type=task_type,
-            queue_kind="image",
+            queue_kind="default",
             episode=int(episode),
             beat_num=int(beat),
             scope=job_id,
@@ -1458,7 +1505,7 @@ async def _start_or_enqueue_mainline_frame_from_context_job(
             ctx,
             product_surface="freezone",
             task_type=task_type,
-            queue_kind="image",
+            queue_kind="default",
             episode=int(episode),
             beat_num=int(beat),
             scope=job_id,
@@ -1697,7 +1744,7 @@ async def _start_or_enqueue_standalone_frame_from_context_job(
             ctx,
             product_surface="freezone",
             task_type=task_type,
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=job_id,
             payload={
@@ -1745,7 +1792,7 @@ async def _start_or_enqueue_mainline_direct_sketch_task(
         ctx,
         product_surface="freezone",
         task_type=task_type,
-        queue_kind="image",
+        queue_kind="default",
         episode=int(episode),
         beat_num=int(beat),
         scope=scope,
@@ -1803,7 +1850,7 @@ async def _start_or_enqueue_mainline_director_control_sketch_job(
         ctx,
         product_surface="freezone",
         task_type=task_type,
-        queue_kind="image",
+        queue_kind="default",
         episode=int(episode),
         beat_num=int(beat),
         scope=job_id,
@@ -1869,7 +1916,7 @@ async def _start_or_enqueue_mainline_beat_sketch_task(
         ctx,
         product_surface="freezone",
         task_type=task_type,
-        queue_kind="image",
+        queue_kind="default",
         episode=int(episode),
         scope=scope,
         payload={
@@ -2111,7 +2158,7 @@ async def _start_or_enqueue_freezone_edit_job(
             ctx,
             product_surface="freezone",
             task_type="freezone_edit",
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=job_id,
             payload={
@@ -2229,7 +2276,7 @@ async def _start_or_enqueue_freezone_edit_path(
             ctx,
             product_surface="freezone",
             task_type=task_type,
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=job_id,
             payload={
@@ -2297,7 +2344,7 @@ async def _start_or_enqueue_freezone_mask_edit_path(
             ctx,
             product_surface="freezone",
             task_type=task_type,
-            queue_kind="image",
+            queue_kind="default",
             episode=0,
             scope=job_id,
             payload={
@@ -4334,6 +4381,14 @@ async def save_freezone_agent_config_item(
         item = save_user_agent_config_item(username=username, kind=kind, payload=payload)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    if kind == "skills":
+        sync_freezone_hermes_workflow_skills(username)
+        try:
+            from novelvideo.chat.hermes_pool import pool as hermes_pool
+
+            hermes_pool.mark_user_freezone_profiles_dirty(username)
+        except Exception:
+            logger.exception("failed to mark Freezone Hermes worker dirty after skill save")
     return {"ok": True, "data": item}
 
 
@@ -4349,6 +4404,102 @@ async def delete_freezone_agent_config_item(
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     return {"ok": True, "data": {"deleted": deleted}}
+
+
+def _workflow_draft_api_data(draft: dict[str, Any]) -> dict[str, Any]:
+    """Hide reservations while exposing a safe estimate for confirmation copy."""
+    public = {key: value for key, value in draft.items() if key != "billing"}
+    if isinstance(get_usage_meter(), NoOpUsageMeter):
+        return public
+    public["agent_credit_estimate"] = workflow_design_credit_estimate(
+        draft.get("preview") if isinstance(draft.get("preview"), dict) else None
+    )
+    planning_billing = (
+        draft.get("billing", {}).get("planning")
+        if isinstance(draft.get("billing"), dict)
+        else None
+    )
+    charged_credits = (
+        planning_billing.get("cost")
+        if isinstance(planning_billing, dict)
+        else None
+    )
+    public["agent_planning_charge"] = {
+        **creative_planning_credit_estimate(),
+        "status": (
+            str(planning_billing.get("status") or "unpriced")
+            if isinstance(planning_billing, dict)
+            else "unpriced"
+        ),
+        "display": (
+            f"{charged_credits:g} 积分"
+            if isinstance(charged_credits, (int, float))
+            else creative_planning_credit_estimate()["display"]
+        ),
+        "charged_credits": charged_credits,
+    }
+    return public
+
+
+async def _charge_workflow_draft_planning(
+    *,
+    draft: dict[str, Any],
+    ctx: Any,
+    user: dict[str, Any],
+    project: str,
+    canvas_id: str,
+    state_dir: Path,
+) -> dict[str, Any]:
+    """Charge only after a substantive planning draft has been produced."""
+    if isinstance(get_usage_meter(), NoOpUsageMeter):
+        return draft
+    preview = draft.get("preview") if isinstance(draft.get("preview"), dict) else {}
+    charge = creative_planning_charge(preview)
+    metadata = {
+        "deliverable": "workflow_planning",
+        "draft_id": str(draft.get("draft_id") or ""),
+        "canvas_id": canvas_id,
+        "revision": int(draft.get("revision") or 1),
+        **(charge.params or {}),
+    }
+    reservation = await reserve_agent_capability_charge(
+        user_id=str(
+            getattr(ctx, "requester_user_id", "")
+            or user.get("id")
+            or user.get("username")
+            or ""
+        ),
+        project_id=str(getattr(ctx, "project_id", "") or project),
+        charge=charge,
+        idempotency_key=(
+            f"freezone-agent-planning:{getattr(ctx, 'project_id', '') or project}:"
+            f"{canvas_id}:{draft.get('draft_id')}:{draft.get('revision')}"
+        ),
+        metadata=metadata,
+    )
+    reservation_id = str(reservation.get("id") or "")
+    await settle_agent_capability_charge(
+        reservation_id,
+        confirmed=True,
+        metadata={**metadata, "outcome": "planning_delivered"},
+    )
+    billing = draft.get("billing") if isinstance(draft.get("billing"), dict) else {}
+    persisted = set_workflow_draft_billing(
+        project_dir=state_dir,
+        canvas_id=canvas_id,
+        draft_id=str(draft.get("draft_id") or ""),
+        billing={
+            **billing,
+            "planning": {
+                "feature_key": charge.feature_key,
+                "reservation_id": reservation_id,
+                "status": "confirmed" if reservation_id else "unpriced",
+                "cost": reservation.get("cost"),
+                "metadata": metadata,
+            },
+        },
+    )
+    return persisted or draft
 
 
 @router.post(
@@ -5850,6 +6001,10 @@ def _text_translate_output_path(project_dir: Path, job_id: str) -> Path:
     return outputs_dir(project_dir, "freezone_text_translate") / f"{job_id}.json"
 
 
+def _text_generate_output_path(project_dir: Path, job_id: str) -> Path:
+    return outputs_dir(project_dir, "freezone_text_generate") / f"{job_id}.json"
+
+
 def _freezone_history_preview(text: str, limit: int = 240) -> str:
     compact = " ".join(str(text or "").split())
     if len(compact) <= limit:
@@ -6016,6 +6171,166 @@ def _start_freezone_text_translate_task(
             )
 
     asyncio.create_task(_runner())
+
+
+def _start_freezone_text_generate_task(
+    *,
+    username: str,
+    project: str,
+    project_dir: Path,
+    job_id: str,
+    prompt: str,
+    canvas_id: str | None = None,
+    node_id: str | None = None,
+) -> None:
+    task_type = "freezone_text_generate"
+    task_manager = get_task_manager()
+    metadata = {
+        "job_id": job_id,
+        "canvas_id": canvas_id or "",
+        "node_id": node_id or "",
+    }
+    task_manager.create_task(
+        task_type,
+        username,
+        project,
+        episode=0,
+        scope=job_id,
+        status="starting",
+        metadata=metadata,
+    )
+
+    async def _runner() -> None:
+        try:
+            task_manager.update_progress(
+                task_type,
+                username,
+                project,
+                episode=0,
+                scope=job_id,
+                progress=0.1,
+                current_task="generating_text",
+                logs=["开始生成文本"],
+            )
+            model, generated_text = await generate_freezone_text(prompt=prompt)
+            payload = {"generated_text": generated_text, "model": model}
+            out = _text_generate_output_path(project_dir, job_id)
+            out.parent.mkdir(parents=True, exist_ok=True)
+            out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+            history_record = _record_freezone_node_history(
+                project_dir=project_dir,
+                canvas_id=canvas_id,
+                node_id=node_id,
+                task_type=task_type,
+                username=username,
+                project=project,
+                job_id=job_id,
+                status="completed",
+                media_type="text",
+                input_preview=_freezone_history_preview(prompt),
+                prompt=prompt,
+                model=model,
+                result={"output_format": "json", **payload},
+            )
+            result = {"output_format": "json", **payload}
+            if history_record:
+                result["generation_history_record"] = history_record
+            task_manager.complete_task(
+                task_type,
+                username,
+                project,
+                episode=0,
+                scope=job_id,
+                result=result,
+                current_task="completed",
+                logs=["文本生成完成"],
+                metadata=metadata,
+            )
+        except Exception as exc:
+            _record_freezone_node_history(
+                project_dir=project_dir,
+                canvas_id=canvas_id,
+                node_id=node_id,
+                task_type=task_type,
+                username=username,
+                project=project,
+                job_id=job_id,
+                status="failed",
+                media_type="text",
+                input_preview=_freezone_history_preview(prompt),
+                prompt=prompt,
+                error=str(exc),
+            )
+            task_manager.fail_task(
+                task_type,
+                username,
+                project,
+                episode=0,
+                scope=job_id,
+                error=str(exc),
+                current_task="failed",
+                logs=[f"错误: {exc}"],
+                metadata=metadata,
+            )
+
+    asyncio.create_task(_runner())
+
+
+@router.post(
+    "/projects/{project}/freezone/text/generate",
+    response_model=FreezoneJobAcceptedResponse,
+    tags=[TAG_FREEZONE_TEXT],
+)
+async def freezone_text_generate(
+    project: str,
+    body: FreezoneTextGenerateRequest,
+    user: dict = Depends(get_api_user),
+):
+    """文本节点：根据用户要求生成可继续编辑的自由文本。"""
+    ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    prompt = body.prompt.strip()
+    if not prompt:
+        raise HTTPException(400, "prompt is required")
+
+    try:
+        job_id = _new_job_id()
+        if ctx is not None:
+            return await _enqueue_freezone_background_job(
+                ctx=ctx,
+                project_dir=project_dir,
+                task_type="freezone_text_generate",
+                job_id=job_id,
+                payload={
+                    "prompt": prompt,
+                    "canvas_id": body.canvas_id or "",
+                    "node_id": body.node_id or "",
+                    "billing": {
+                        "billable_chars": count_billable_text_chars(prompt),
+                        "operation": "text_generate",
+                    },
+                },
+            )
+        _start_freezone_text_generate_task(
+            username=username,
+            project=project_name,
+            project_dir=project_dir,
+            job_id=job_id,
+            prompt=prompt,
+            canvas_id=body.canvas_id or None,
+            node_id=body.node_id or None,
+        )
+    except RuntimeError as exc:
+        _handle_task_start_runtime_error("failed to start text generation task", exc)
+        raise HTTPException(503, f"failed to start text generation task: {exc}") from exc
+
+    return _accepted_job_response(
+        task_type="freezone_text_generate",
+        username=username,
+        project=project_name,
+        job_id=job_id,
+    )
 
 
 @router.post(
@@ -7569,6 +7884,46 @@ async def _probe_reference_audio_seconds(path: str) -> float | None:
         return None
 
 
+async def _validate_catalog_reference_audio_items(
+    reference_items: list[dict[str, str]],
+    *,
+    capabilities: dict[str, Any] | None,
+    backend: str,
+) -> None:
+    """按媒体目录校验参考音频时长；旧 Seedance 2.0 目录保留历史兜底。"""
+    audio_items = [item for item in reference_items if item["type"] == "audio"]
+    if not audio_items:
+        return
+
+    audio_bounds = list(_catalog_reference_duration_bounds(capabilities, "audio"))
+    if is_freezone_seedance2_backend(backend):
+        if audio_bounds[0] is None:
+            audio_bounds[0] = MIN_OMNI_REFERENCE_AUDIO_SECONDS
+        if audio_bounds[1] is None:
+            audio_bounds[1] = MAX_OMNI_REFERENCE_AUDIO_SECONDS
+        if audio_bounds[3] is None:
+            audio_bounds[3] = MAX_OMNI_REFERENCE_AUDIO_TOTAL_SECONDS
+    if not any(value is not None for value in audio_bounds):
+        return
+
+    probed_seconds = await asyncio.gather(
+        *(_probe_reference_audio_seconds(item["path"]) for item in audio_items)
+    )
+    probed = [
+        (Path(item["path"]).name or f"audio{index}", seconds)
+        for index, (item, seconds) in enumerate(
+            zip(audio_items, probed_seconds), start=1
+        )
+    ]
+    validate_omni_reference_audio_durations(
+        probed,
+        min_seconds=audio_bounds[0],
+        max_seconds=audio_bounds[1],
+        total_min_seconds=audio_bounds[2],
+        total_max_seconds=audio_bounds[3],
+    )
+
+
 def _catalog_duration_bounds(
     capabilities: dict[str, Any] | None,
 ) -> tuple[int | None, int | None]:
@@ -7890,6 +8245,13 @@ async def freezone_add_video_character_library_item(
         for url in body.image_urls:
             _require_local(url, "image")
 
+    # 保存位置必须是已存在的文件夹；主线是同步产物，不接受上传。
+    if body.folder:
+        if body.folder == MAINLINE_FOLDER_KEY:
+            raise HTTPException(400, "cannot upload into the mainline folder")
+        if body.folder not in library_folder_keys(project_dir):
+            raise HTTPException(404, f"folder not found: {body.folder}")
+
     item = add_video_character_library_item(
         project_dir,
         name=body.name,
@@ -7897,8 +8259,104 @@ async def freezone_add_video_character_library_item(
         image_urls=body.image_urls,
         video_url=body.video_url,
         audio_url=body.audio_url,
+        category=body.category,
+        folder=body.folder,
     )
     return {"ok": True, "data": item}
+
+
+@router.get(
+    "/projects/{project}/freezone/video/asset-library/folders",
+    tags=[TAG_FREEZONE_VIDEO],
+)
+async def freezone_asset_library_folders(
+    project: str,
+    user: dict = Depends(get_api_user),
+):
+    """视频处理：列出用户自建的资产库文件夹（系统文件夹由前端按保留 key 生成）。"""
+    _ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user, required_role="viewer"
+    )
+    return {"ok": True, "data": load_video_character_folders(project_dir)}
+
+
+@router.post(
+    "/projects/{project}/freezone/video/asset-library/folders",
+    tags=[TAG_FREEZONE_VIDEO],
+)
+async def freezone_add_asset_library_folder(
+    project: str,
+    body: FreezoneAssetLibraryFolderRequest,
+    user: dict = Depends(get_api_user),
+):
+    """视频处理：新建一个资产库文件夹。"""
+    _ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    try:
+        folder = add_video_character_folder(project_dir, name=body.name)
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    return {"ok": True, "data": folder}
+
+
+@router.patch(
+    "/projects/{project}/freezone/video/asset-library/folders/{folder_id}",
+    tags=[TAG_FREEZONE_VIDEO],
+)
+async def freezone_update_asset_library_folder(
+    project: str,
+    folder_id: str,
+    body: FreezoneAssetLibraryFolderPatchRequest,
+    user: dict = Depends(get_api_user),
+):
+    """视频处理：给资产库文件夹改名或换封面。系统文件夹没有实体记录，一律 404。"""
+    _ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    if body.cover:
+        # 封面只能是本项目 static 下的素材。这个字段会被所有打开资产库的协作者当
+        # <img src> 渲染，放行外链等于让别人的浏览器替你去访问第三方地址（referrer
+        # 和 IP 都带过去）。和录入素材那条路由的 _require_local 同一套要求。
+        try:
+            cover_path = resolve_static_url_to_path(body.cover, project_dir)
+        except ValueError as exc:
+            raise HTTPException(400, str(exc)) from exc
+        if not cover_path.exists():
+            # 只回传进来的 URL：cover_path 是绝对路径，带用户名和落盘目录。
+            raise HTTPException(404, f"cover not found: {body.cover}")
+    try:
+        folder = update_video_character_folder(
+            project_dir, folder_id, name=body.name, cover=body.cover
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if folder is None:
+        raise HTTPException(404, f"folder not found: {folder_id}")
+    return {"ok": True, "data": folder}
+
+
+@router.delete(
+    "/projects/{project}/freezone/video/asset-library/folders/{folder_id}",
+    tags=[TAG_FREEZONE_VIDEO],
+)
+async def freezone_delete_asset_library_folder(
+    project: str,
+    folder_id: str,
+    user: dict = Depends(get_api_user),
+):
+    """视频处理：删掉一个自建文件夹，柜内素材条目一并从资产库移除。
+
+    只删索引，磁盘上的素材文件保留——画布节点可能还引用着同一个 URL，真删文件会
+    造成裂图。孤儿文件归项目级清理负责，不在这条路由的职责里。
+    """
+    _ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
+        project, user
+    )
+    removed = delete_video_character_folder(project_dir, folder_id)
+    if removed is None:
+        raise HTTPException(404, f"folder not found: {folder_id}")
+    return {"ok": True, "data": {"deleted_items": removed}}
 
 
 @router.post(
@@ -8330,7 +8788,8 @@ async def freezone_video_keyframes(
             job_id=job_id,
             prompt=final_prompt,
             reference_items=reference_items,
-            aspect_ratio=normalize_video_aspect_ratio(body.aspect_ratio),
+            # 关键帧画幅跟随首帧；仅尾帧时跟随尾帧，不接受固定比例。
+            aspect_ratio="auto",
             resolution=normalize_video_resolution_for_backend(
                 backend,
                 body.resolution,
@@ -8447,45 +8906,22 @@ async def freezone_video_omni_gen(
             }
         )
 
-    # 音频时长必须在预扣积分和投递任务之前校验。目录配置是服务端权威值；Seedance 2.0
-    # 的历史边界仅在旧目录尚未补齐新字段时兜底，显式配置不再被隐藏常量覆盖。
-    audio_items = [item for item in reference_items if item["type"] == "audio"]
-    audio_bounds = list(_catalog_reference_duration_bounds(capabilities, "audio"))
-    if is_freezone_seedance2_backend(backend):
-        if audio_bounds[0] is None:
-            audio_bounds[0] = MIN_OMNI_REFERENCE_AUDIO_SECONDS
-        if audio_bounds[1] is None:
-            audio_bounds[1] = MAX_OMNI_REFERENCE_AUDIO_SECONDS
-        if audio_bounds[3] is None:
-            audio_bounds[3] = MAX_OMNI_REFERENCE_AUDIO_TOTAL_SECONDS
-    if audio_items and any(value is not None for value in audio_bounds):
-        # 并发探测：ffprobe 单条有 20s 超时，串行 await 会把 3 条参考音频叠成最长 60s 的
-        # 请求耗时。gather 之后最坏就是一个超时的墙钟，也就顺带成了整体上限。
-        probed_seconds = await asyncio.gather(
-            *(_probe_reference_audio_seconds(item["path"]) for item in audio_items)
+    # 音频时长必须在预扣积分和投递任务之前校验。
+    try:
+        await _validate_catalog_reference_audio_items(
+            reference_items,
+            capabilities=capabilities,
+            backend=backend,
         )
-        probed = [
-            (Path(item["path"]).name or f"audio{index}", seconds)
-            for index, (item, seconds) in enumerate(
-                zip(audio_items, probed_seconds), start=1
-            )
-        ]
-        try:
-            validate_omni_reference_audio_durations(
-                probed,
-                min_seconds=audio_bounds[0],
-                max_seconds=audio_bounds[1],
-                total_min_seconds=audio_bounds[2],
-                total_max_seconds=audio_bounds[3],
-            )
-        except ValueError as exc:
-            raise HTTPException(400, str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     final_prompt = build_freezone_omni_video_prompt(
         user_prompt=body.prompt,
         theme=body.theme,
         camera_template_id=body.camera_template_id,
         marks=[item.model_dump() for item in body.marks],
+        reference_items=reference_items,
     )
     job_id = _new_job_id()
 
@@ -8545,9 +8981,9 @@ async def freezone_video_edit(
     body: FreezoneVideoEditRequest,
     user: dict = Depends(get_api_user),
 ):
-    """视频处理：视频编辑（HappyHorse 视频编辑功能）。
+    """视频处理：视频编辑。
 
-    输入 1 个源视频 + 0-5 张参考图，走上游 video_url + reference_images。
+    输入 1 个源视频，并按目录能力发送参考图片和独立参考音频。
     """
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
         project, user
@@ -8569,7 +9005,7 @@ async def freezone_video_edit(
     if mode_enabled is False or (
         mode_enabled is None and not is_freezone_happyhorse_backend(backend)
     ):
-        raise HTTPException(400, "video edit currently only supports HappyHorse models")
+        raise HTTPException(400, "this model does not support video_edit mode")
 
     if not body.video_url.strip():
         raise HTTPException(400, "video_url is required")
@@ -8580,6 +9016,9 @@ async def freezone_video_edit(
     image_paths = _resolve_url_list(project_dir, list(body.image_urls))
     if len(image_paths) != len(body.image_urls):
         raise HTTPException(400, "some image_urls could not be resolved")
+    audio_paths = _resolve_url_list(project_dir, list(body.audio_urls))
+    if len(audio_paths) != len(body.audio_urls):
+        raise HTTPException(400, "some audio_urls could not be resolved")
     reference_limits = _catalog_reference_limits(
         capabilities,
         image_default=5,
@@ -8593,12 +9032,28 @@ async def freezone_video_edit(
             400,
             f"this model supports at most {reference_limits['image']} image references",
         )
+    if len(audio_paths) > reference_limits["audio"]:
+        raise HTTPException(
+            400,
+            f"this model supports at most {reference_limits['audio']} audio references",
+        )
 
     reference_items: list[dict[str, str]] = [
         {"type": "video", "path": video_paths[0], "role": "视频编辑源"}
     ]
     for path in image_paths:
         reference_items.append({"type": "image", "path": path, "role": "图片参考"})
+    for path in audio_paths:
+        reference_items.append({"type": "audio", "path": path, "role": "配乐参考"})
+
+    try:
+        await _validate_catalog_reference_audio_items(
+            reference_items,
+            capabilities=capabilities,
+            backend=backend,
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
 
     final_prompt = build_freezone_image_to_video_prompt(
         user_prompt=body.prompt,
@@ -8618,17 +9073,14 @@ async def freezone_video_edit(
             job_id=job_id,
             prompt=final_prompt,
             reference_items=reference_items,
-            aspect_ratio=normalize_video_aspect_ratio(body.aspect_ratio),
+            # 视频编辑的画幅与输出时长均跟随源视频；用户只选择分辨率。
+            aspect_ratio="auto",
             resolution=normalize_video_resolution_for_backend(
                 backend,
                 body.resolution,
                 _catalog_resolution_options(capabilities),
             ),
-            duration_seconds=normalize_video_duration_for_backend(
-                backend,
-                body.duration_seconds,
-                *_catalog_duration_bounds(capabilities),
-            ),
+            duration_seconds=None,
             generate_audio=body.generate_audio,
             human_review=body.human_review,
             scene_optimize=None,
@@ -9178,6 +9630,7 @@ async def freezone_job_result(
         "freezone_video_compose",
         "freezone_image_reverse_prompt",
         "freezone_image_to_3gs",
+        "freezone_text_generate",
         "freezone_text_translate",
         "freezone_story_script",
     ],
@@ -9323,6 +9776,8 @@ async def freezone_job_result(
         out = _video_compose_output_path(project_dir, job_id)
     if task_type == "freezone_text_translate":
         out = _text_translate_output_path(project_dir, job_id)
+    if task_type == "freezone_text_generate":
+        out = _text_generate_output_path(project_dir, job_id)
     if task_type == "freezone_story_script":
         out = _story_script_output_path(project_dir, job_id)
     if task_type in {"freezone_analyze", "freezone_video_story"}:
@@ -9377,6 +9832,7 @@ async def freezone_job_result(
         return {"ok": False, "info": "job result not yet on disk", "status": "unknown"}
     if task_type in {
         "freezone_image_reverse_prompt",
+        "freezone_text_generate",
         "freezone_text_translate",
         "freezone_story_script",
     }:
@@ -11561,6 +12017,85 @@ async def list_canvas_history(
 
 
 @router.post(
+    "/projects/{project}/freezone/agent-capability-quote",
+    tags=[TAG_FREEZONE_CANVAS],
+)
+async def quote_freezone_agent_capability(
+    project: str,
+    body: dict = Body(...),
+    user: dict = Depends(get_api_user),
+):
+    """Return a non-reserving quote before a billable Agent planning turn."""
+    feature_key = str(body.get("feature_key") or "").strip()
+    if feature_key != CREATIVE_PLANNING_FEATURE_KEY:
+        raise HTTPException(400, "unsupported agent capability quote")
+    ctx, _username, _project_name, _project_dir, _output_dir = (
+        await _resolve_freezone_project(project, user)
+    )
+    user_id = str(
+        getattr(ctx, "requester_user_id", "")
+        or user.get("id")
+        or user.get("username")
+        or ""
+    )
+    usage_meter = get_usage_meter()
+    metering_enabled = not isinstance(usage_meter, NoOpUsageMeter)
+    try:
+        access = await usage_meter.require_feature_credit_balance(
+            user_id=user_id,
+            feature_key=feature_key,
+            project_id=str(getattr(ctx, "project_id", "") or project),
+            resource_kind="agent_capability",
+            metadata={"billing_scope": "agent_planning_quote"},
+        )
+    except Exception as exc:
+        if find_billing_rule_not_configured_error(exc) is None:
+            raise
+        access = {"required_balance": None, "allowed": True}
+    required = access.get("required_balance")
+    explicitly_configured = access.get("price_rule_configured") is True
+    exact = isinstance(required, (int, float)) and (
+        explicitly_configured or float(required) > 0
+    )
+    estimate = creative_planning_credit_estimate()
+    if not metering_enabled:
+        return {
+            "ok": True,
+            "data": {
+                "feature_key": feature_key,
+                "billing_required": False,
+                "metering_enabled": False,
+                "allowed": True,
+            },
+        }
+    return {
+        "ok": True,
+        "data": {
+            "feature_key": feature_key,
+            "billing_required": True,
+            "metering_enabled": metering_enabled,
+            "configured": exact,
+            "exact": exact,
+            "required_credits": required if exact else None,
+            "display": (
+                f"{required:g} 积分"
+                if exact
+                else estimate["display"]
+            ),
+            "reference_display": estimate["display"],
+            "allowed": bool(access.get("allowed", True)),
+            "message": (
+                "已读取本次规划的确切积分价格。"
+                if exact
+                else (
+                    "Agent 创意规划价格尚未配置，当前仅能显示参考区间。"
+                )
+            ),
+        },
+    }
+
+
+@router.post(
     "/projects/{project}/freezone/canvases/{canvas_id}/workflow-drafts",
     tags=[TAG_FREEZONE_CANVAS],
 )
@@ -11572,6 +12107,11 @@ async def create_canvas_workflow_draft(
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
+    if (
+        not isinstance(get_usage_meter(), NoOpUsageMeter)
+        and body.get("planning_confirmed") is not True
+    ):
+        raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user
     )
@@ -11586,9 +12126,17 @@ async def create_canvas_workflow_draft(
             compiled=body.get("compiled"),
             run_after_create=bool(body.get("run_after_create")),
         )
+        draft = await _charge_workflow_draft_planning(
+            draft=draft,
+            ctx=ctx,
+            user=user,
+            project=project,
+            canvas_id=canvas_id,
+            state_dir=state_dir,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
-    return {"ok": True, "data": draft}
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.get(
@@ -11620,7 +12168,7 @@ async def get_canvas_workflow_draft(
             "status": "workflow_draft_unavailable",
             "error": error or "workflow draft not found",
         }
-    return {"ok": True, "data": draft}
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.patch(
@@ -11636,6 +12184,11 @@ async def patch_canvas_workflow_draft(
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
+    if (
+        not isinstance(get_usage_meter(), NoOpUsageMeter)
+        and body.get("planning_confirmed") is not True
+    ):
+        raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user
     )
@@ -11664,7 +12217,15 @@ async def patch_canvas_workflow_draft(
         raise HTTPException(400, str(exc)) from exc
     if draft is None:
         return error
-    return {"ok": True, "data": draft}
+    draft = await _charge_workflow_draft_planning(
+        draft=draft,
+        ctx=ctx,
+        user=user,
+        project=project,
+        canvas_id=canvas_id,
+        state_dir=_canvas_state_project_dir(ctx, project_dir),
+    )
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.post(
@@ -11698,7 +12259,84 @@ async def claim_canvas_workflow_draft(
         raise HTTPException(400, str(exc)) from exc
     if draft is None:
         return error
-    return {"ok": True, "data": draft}
+    if isinstance(get_usage_meter(), NoOpUsageMeter):
+        return {"ok": True, "data": _workflow_draft_api_data(draft)}
+    charge = workflow_design_charge(draft.get("preview"))
+    billing_metadata = {
+        "deliverable": "workflow",
+        "draft_id": draft_id,
+        "canvas_id": canvas_id,
+        "revision": revision,
+        **(charge.params or {}),
+    }
+    confirmation_attempt = int(float(draft.get("confirmation_started_at") or 0) * 1_000_000)
+    try:
+        reservation = await reserve_agent_capability_charge(
+            user_id=str(
+                getattr(ctx, "requester_user_id", "")
+                or user.get("id")
+                or user.get("username")
+                or ""
+            ),
+            project_id=str(ctx.project_id or project),
+            charge=charge,
+            idempotency_key=(
+                f"freezone-agent-workflow:{ctx.project_id}:{canvas_id}:"
+                f"{draft_id}:{revision}:{confirmation_attempt}"
+            ),
+            metadata=billing_metadata,
+        )
+    except Exception:
+        finish_workflow_draft_confirmation(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            outcome="ready",
+        )
+        raise
+    reservation_id = str(reservation.get("id") or "")
+    try:
+        existing_billing = (
+            draft.get("billing") if isinstance(draft.get("billing"), dict) else {}
+        )
+        persisted = set_workflow_draft_billing(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            billing={
+                **existing_billing,
+                "feature_key": charge.feature_key,
+                "reservation_id": reservation_id,
+                "status": "reserved" if reservation_id else "unpriced",
+                "metadata": billing_metadata,
+            },
+        )
+    except Exception:
+        await settle_agent_capability_charge(
+            reservation_id,
+            confirmed=False,
+            metadata={**billing_metadata, "reason": "draft_billing_persist_failed"},
+        )
+        finish_workflow_draft_confirmation(
+            project_dir=_canvas_state_project_dir(ctx, project_dir),
+            canvas_id=canvas_id,
+            draft_id=draft_id,
+            outcome="ready",
+        )
+        raise
+    if persisted is None:
+        await settle_agent_capability_charge(
+            reservation_id,
+            confirmed=False,
+            metadata={**billing_metadata, "reason": "workflow_draft_missing"},
+        )
+        return {
+            "ok": False,
+            "status": "workflow_draft_unavailable",
+            "error": "workflow draft not found",
+        }
+    draft = persisted
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.post(
@@ -11732,7 +12370,40 @@ async def finish_canvas_workflow_draft(
             "status": "workflow_draft_unavailable",
             "error": "workflow draft not found",
         }
-    return {"ok": True, "data": draft}
+    billing = draft.get("billing") if isinstance(draft.get("billing"), dict) else {}
+    reservation_id = str(billing.get("reservation_id") or "")
+    billing_status = str(billing.get("status") or "")
+    if reservation_id and billing_status == "reserved":
+        confirmed = str(body.get("outcome") or "") in {"submitted", "confirmed"}
+        settlement_metadata = {
+            **(
+                billing.get("metadata")
+                if isinstance(billing.get("metadata"), dict)
+                else {}
+            ),
+            "outcome": str(body.get("outcome") or ""),
+        }
+        try:
+            await settle_agent_capability_charge(
+                reservation_id,
+                confirmed=confirmed,
+                metadata=settlement_metadata,
+            )
+        except Exception:
+            logger.exception(
+                "Workflow Agent capability completed but credit settlement remains pending"
+            )
+        else:
+            billing["status"] = "confirmed" if confirmed else "refunded"
+            persisted = set_workflow_draft_billing(
+                project_dir=_canvas_state_project_dir(ctx, project_dir),
+                canvas_id=canvas_id,
+                draft_id=draft_id,
+                billing=billing,
+            )
+            if persisted is not None:
+                draft = persisted
+    return {"ok": True, "data": _workflow_draft_api_data(draft)}
 
 
 @router.post(

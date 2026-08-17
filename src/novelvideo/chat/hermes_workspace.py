@@ -351,18 +351,13 @@ DramaClaw 管理的虾导会话中 `terminal` 被禁用（在 config.yaml disabl
 """
 
 _FREEZONE_SOUL_MD = (
-    "你是虾画助手。处理 Freezone/虾画画布上下文中的节点、连线、资源查看和工作流操作；"
-    "用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，"
-    "例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形；"
-    "画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog；"
-    "虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成；"
+    "你是虾画助手，负责 Freezone/虾画中的创意咨询、画布节点、连线、资源和工作流操作。"
+    "具体操作规则以每轮 FREEZONE_CANVAS_ASSISTANT 合同为准。"
     "不要在普通回复开头自报身份；用户问身份时，回答“我是虾画助手”。不要自称 Hermes Agent，不要提 Nous Research，"
     "也不要主动解释底层代理框架。\n"
 )
 
-_FREEZONE_MEMORY_MD = """虾画助手处理虾画画布上下文中的节点、连接、资源查看和工作流操作。用户做创意咨询、找思路、风格建议时，可以使用 Freezone 画布工具搭建可继续工作的画布框架，例如主题笔记、分镜段落、风格方向、资源占位和工作流雏形。画布写入前先基于当前画布上下文，并按需查询 command catalog、node create schema 和 link type catalog。虾画画布可以通过视频、音频和合成节点生成完整短片，相关操作应留在 Freezone 画布内完成。不要在普通回复开头自报身份；用户问身份时，回答“我是虾画助手”。
-§
-虾画会话应优先使用 `freezone-acp` 工具集中的 Freezone 画布工具。不要使用 DramaClaw 主线写入工具改动画布。
+_FREEZONE_MEMORY_MD = """虾画会话只使用 Freezone 画布能力；不得用 DramaClaw 主线工具改动画布或推进主线流水线。
 """
 
 _OLD_SOUL_PREFIX = (
@@ -498,6 +493,11 @@ def list_freezone_hermes_workflow_skills(username: str) -> list[dict[str, object
         if isinstance(payload, dict) and payload.get("id"):
             summaries.append(payload)
     return summaries
+
+
+def sync_freezone_hermes_workflow_skills(username: str) -> None:
+    """Refresh generated Hermes wrappers for saved Freezone Workflow Skills."""
+    ensure_user_hermes_workspace(username, profile="freezone")
 
 
 def freezone_python_hook_dir(home: Path) -> Path:
@@ -705,10 +705,10 @@ def _render_workflow_skill(item: dict) -> tuple[str, dict[str, object]]:
 
 ## 执行规则
 
-1. 本 Skill 已由用户明确选择。直接调用 `freezone_get_workflow_skill`，固定传入 `skill_id=\"{skill_id}\"` 和 `compact=true`；不要再次选择或替换 Skill。
-2. 只补充 `input_contract.missing_required`，不要重复询问已经推断或有默认值的参数。
-3. 生成精简 `freezone_workflow_intent.v1`，调用 `freezone_prepare_workflow_draft`，严格按返回的预览向用户确认。
-4. 用户调整方案时调用 `freezone_patch_workflow_draft`，只提交发生变化的字段；不要重新规划整份方案。
+1. 本 Skill 已由用户明确选择。开始规划前先调用 `freezone_prepare_workflow_draft`，不要传 `intent`，也不要传 `planning_confirmed=true`。如果工具返回需要计费确认，则向用户展示确切报价并停止本轮；如果返回无需计费，则不要向用户提及积分、版本或确认，直接在本轮继续规划。
+2. 只有用户明确确认报价后，才调用 `freezone_get_workflow_skill`，固定传入 `skill_id=\"{skill_id}\"` 和 `compact=true`；不要再次选择或替换 Skill。只补充 `input_contract.missing_required`，不要重复询问已经推断或有默认值的参数。
+3. 生成精简 `freezone_workflow_intent.v1`，以 `planning_confirmed=true` 调用 `freezone_prepare_workflow_draft` 并生成草稿。严格按返回的预览向用户确认，同时展示创建工作流所需的 `agent_credit_estimate.display`，并说明图片、音频、视频等节点生成积分另计。
+4. 用户调整方案时调用 `freezone_patch_workflow_draft`，只提交发生变化的字段；修改规划也必须先按工具返回的报价征得确认，再以 `planning_confirmed=true` 提交，不能把用户的修改请求本身视为扣费确认。
 5. 用户确认后调用 `freezone_confirm_workflow_draft`，使用已确认的 draft_id 和 revision。
 6. Recipe 选择、节点展开、稳定 ID、连线、布局和合成全部交给工具；不要手写 WorkflowPlan 或逐节点创建。
 
@@ -1254,5 +1254,6 @@ __all__ = [
     "effective_gateway_fingerprint",
     "ensure_user_hermes_workspace",
     "list_freezone_hermes_workflow_skills",
+    "sync_freezone_hermes_workflow_skills",
     "freezone_python_hook_dir",
 ]

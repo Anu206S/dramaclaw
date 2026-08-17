@@ -48,6 +48,7 @@ import {
   Scissors,
   Send,
   Sparkles,
+  CirclePause,
   StretchHorizontal,
   StretchVertical,
   Trash2,
@@ -134,9 +135,15 @@ import { separateVideoAudio } from "@/features/canvas/application/videoSeparateA
 import { readUrl } from "@/lib/url-params";
 import { sanitizeStoryboardText } from "@/features/canvas/application/storyboardText";
 import { buildGenerationErrorReport } from "@/features/canvas/application/generationErrorReport";
+import { workflowGroupState } from "@/features/canvas/domain/workflowGroupState";
 import { BillingRuleNotConfiguredError } from "@/lib/api-errors";
 import { useGenerationCreditCost } from "@/lib/queries/generation-credit-cost";
 import { CreditCostPill } from "@/components/credits/credit-visual";
+import {
+  applyCanvasChatCommandsAsync,
+  CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+  cancelCanvasWorkflowExecution,
+} from "@/features/freezone/canvasChatCommands";
 import {
   NODE_TOOLBAR_ALIGN,
   NODE_TOOLBAR_CLASS,
@@ -512,6 +519,18 @@ export const NodeActionToolbar = memo(
     const isStoryboardSplit = isStoryboardSplitNode(node);
     const canCopyStoryboardText = isStoryboardGen || isStoryboardSplit;
     const tools = useMemo(() => getNodeToolPlugins(node), [node]);
+    const nodes = useCanvasStore((state) => state.nodes);
+    const groupWorkflowNodes = useMemo(
+      () =>
+        isUngroupableGroup
+          ? nodes.filter((candidate) => candidate.parentId === nodeId)
+          : [],
+      [isUngroupableGroup, nodeId, nodes],
+    );
+    const groupWorkflowState = useMemo(
+      () => workflowGroupState(groupWorkflowNodes),
+      [groupWorkflowNodes],
+    );
     const deleteNode = useCanvasStore((state) => state.deleteNode);
     const addNode = useCanvasStore((state) => state.addNode);
     const addEdge = useCanvasStore((state) => state.addEdge);
@@ -533,6 +552,8 @@ export const NodeActionToolbar = memo(
     const [isCopySuccess, setIsCopySuccess] = useState(false);
     const [isCopyTextSuccess, setIsCopyTextSuccess] = useState(false);
     const [isCopyErrorSuccess, setIsCopyErrorSuccess] = useState(false);
+    const [isRunningGroupWorkflow, setIsRunningGroupWorkflow] = useState(false);
+    const [groupWorkflowStopRequested, setGroupWorkflowStopRequested] = useState(false);
     const copyFeedbackTimerRef = useRef<ReturnType<typeof setTimeout> | null>(
       null,
     );
@@ -626,6 +647,64 @@ export const NodeActionToolbar = memo(
     );
 
     const closeDownloadMenu = useCallback(() => {}, []);
+
+    const handleRunGroupWorkflow = useCallback(async (regenerate: boolean) => {
+      if (isRunningGroupWorkflow) {
+        return;
+      }
+      setGroupWorkflowStopRequested(false);
+      setIsRunningGroupWorkflow(true);
+      try {
+        const { project: projectId, canvas: canvasId } = readUrl();
+        const result = await applyCanvasChatCommandsAsync(
+          [
+            {
+              schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+              ...(projectId ? { project_id: projectId } : {}),
+              ...(canvasId ? { canvas_id: canvasId } : {}),
+              commands: [
+                {
+                  type: "run_workflow",
+                  node_ids: [nodeId],
+                  direction: "connected",
+                  regenerate,
+                },
+              ],
+            },
+          ],
+          {
+            projectId: projectId ?? undefined,
+            canvasId: canvasId ?? undefined,
+          },
+        );
+        if (result.errors.length > 0) {
+          toast.error(result.errors[0] ?? "工作流执行失败");
+          return;
+        }
+        if (result.openedUiActions > 0 || result.applied > 0) {
+          toast.success("已开始运行工作流");
+        } else {
+          toast.info("这个工作流没有需要继续执行的节点");
+        }
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : String(error));
+      } finally {
+        setIsRunningGroupWorkflow(false);
+      }
+    }, [isRunningGroupWorkflow, nodeId]);
+
+    const handleStopGroupWorkflow = useCallback(() => {
+      const { canvas: canvasId } = readUrl();
+      cancelCanvasWorkflowExecution(canvasId ?? undefined);
+      setGroupWorkflowStopRequested(true);
+      toast.info("已停止启动后续节点");
+    }, []);
+
+    useEffect(() => {
+      if (groupWorkflowState.status !== "running") {
+        setGroupWorkflowStopRequested(false);
+      }
+    }, [groupWorkflowState.status]);
 
     const resolveToolLabel = useCallback(
       (toolType: NodeToolType) => {
@@ -2234,6 +2313,85 @@ export const NodeActionToolbar = memo(
               const groupColor = groupBackgroundColor;
               return (
                 <>
+                  {groupWorkflowState.status !== "none" && (
+                    groupWorkflowState.status === "running" ? (
+                      <>
+                        <UiChipButton
+                          key="group-workflow-running"
+                          className={TOOLBAR_TEXT_BUTTON_CLASS}
+                          title="工作流正在运行"
+                          disabled
+                          onClick={(event) => event.stopPropagation()}
+                        >
+                          {groupWorkflowStopRequested ? (
+                            <CirclePause className="h-3.5 w-3.5" />
+                          ) : (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          )}
+                          {groupWorkflowStopRequested ? "已停止后续" : "运行中"}
+                        </UiChipButton>
+                        <UiChipButton
+                          key="group-stop-workflow"
+                          className={TOOLBAR_TEXT_BUTTON_CLASS}
+                          title="停止启动后续工作流节点"
+                          disabled={groupWorkflowStopRequested}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeDownloadMenu();
+                            handleStopGroupWorkflow();
+                          }}
+                        >
+                          {groupWorkflowStopRequested ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <CirclePause className="h-3.5 w-3.5" />
+                          )}
+                          {groupWorkflowStopRequested ? "等待当前节点" : "停止后续"}
+                        </UiChipButton>
+                      </>
+                    ) : (
+                      <>
+                        <UiChipButton
+                          key="group-run-workflow"
+                          className={TOOLBAR_TEXT_BUTTON_CLASS}
+                          title={
+                            groupWorkflowState.status === "completed"
+                              ? "工作流已完成"
+                              : "运行工作流"
+                          }
+                          disabled={isRunningGroupWorkflow || !groupWorkflowState.canContinue}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            closeDownloadMenu();
+                            void handleRunGroupWorkflow(false);
+                          }}
+                        >
+                          {isRunningGroupWorkflow ? (
+                            <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                          ) : (
+                            <Workflow className="h-3.5 w-3.5" />
+                          )}
+                          {isRunningGroupWorkflow ? "运行中" : groupWorkflowState.primaryLabel}
+                        </UiChipButton>
+                        {groupWorkflowState.canRegenerate && (
+                          <UiChipButton
+                            key="group-rerun-workflow"
+                            className={TOOLBAR_TEXT_BUTTON_CLASS}
+                            title="重新运行全部工作流节点"
+                            disabled={isRunningGroupWorkflow}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              closeDownloadMenu();
+                              void handleRunGroupWorkflow(true);
+                            }}
+                          >
+                            <RefreshCw className="h-3.5 w-3.5" />
+                            重新运行全部
+                          </UiChipButton>
+                        )}
+                      </>
+                    )
+                  )}
                   <DropdownMenu>
                     <DropdownMenuTrigger asChild>
                       <UiChipButton

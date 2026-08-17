@@ -64,6 +64,8 @@ def test_dramaclaw_plugin_adds_voice_prereq_chat_error():
     assert "虾塘" in result["chat_error"]
     assert raw_error in result["chat_error"]
     assert "Do not start another tool" in result["agent_instruction"]
+    assert "由虾导匹配系统声线" in result["agent_instruction"]
+    assert "换别的方向" in result["agent_instruction"]
 
 
 def test_dramaclaw_plugin_stops_before_tts_when_pipeline_requires_voice_setup():
@@ -86,6 +88,8 @@ def test_dramaclaw_plugin_stops_before_tts_when_pipeline_requires_voice_setup():
 
     data = result["data"]
     assert "下一步需要先准备配音声线" in result["chat_notice"]
+    assert "1）到「虾塘」上传或录制声线" in result["chat_notice"]
+    assert "2）确认由虾导匹配系统声线" in result["chat_notice"]
     assert "虾塘" in result["agent_instruction"]
     assert "Do not claim TTS started" in result["agent_instruction"]
     assert "chat_error" not in data["audio_prerequisites"]
@@ -122,6 +126,7 @@ def test_dramaclaw_plugin_registers_freezone_canvas_tools():
     plugin = _load_plugin_module()
 
     names = {name for name, _schema, _handler in plugin.TOOLS}
+    assert "dramaclaw_control_episode_auto" in names
 
     assert "dramaclaw_list_freezone_skills" in names
     assert "dramaclaw_run_freezone_skill" in names
@@ -138,32 +143,38 @@ def test_dramaclaw_plugin_registers_freezone_canvas_tools():
 def test_start_video_batch_starts_up_to_nine_beats(monkeypatch):
     plugin = _load_plugin_module()
     calls = []
+    dispatched = []
 
     def fake_request(method, path, *, query=None, body=None):
         calls.append((method, path, body))
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {"video": {"remaining": 2, "user_remaining": 1}},
+            }
         return {"ok": True, "task_id": f"task-{len(calls)}"}
 
     monkeypatch.setattr(plugin, "_request", fake_request)
+    monkeypatch.setattr(
+        plugin,
+        "_launch_capacity_aware_batch_dispatcher",
+        lambda **kwargs: dispatched.append(list(kwargs["pending"])),
+    )
 
     result = plugin._handle_start_video_batch(
         {"project_id": "proj-1", "episode": 2, "beats": [9, 3, 1, 7, 2, 8, 4, 6, 5]}
     )
 
     assert result["ok"] is True
-    assert result["started"] == list(range(1, 10))
-    batch_ids = {call[2]["batch_id"] for call in calls}
+    assert result["started"] == [1]
+    assert result["waiting"] == list(range(2, 10))
+    assert dispatched == [list(range(2, 10))]
+    post_calls = [call for call in calls if call[0] == "POST"]
+    batch_ids = {call[2]["batch_id"] for call in post_calls}
     assert batch_ids == {result["batch_id"]}
-    assert all(call[2]["batch_size"] == 9 for call in calls)
-    assert [call[1] for call in calls] == [
+    assert all(call[2]["batch_size"] == 9 for call in post_calls)
+    assert [call[1] for call in post_calls] == [
         "/api/v1/projects/proj-1/episodes/2/beats/1/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/2/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/3/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/4/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/5/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/6/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/7/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/8/video",
-        "/api/v1/projects/proj-1/episodes/2/beats/9/video",
     ]
 
 
@@ -177,12 +188,49 @@ def test_start_video_batch_rejects_more_than_nine_beats():
     assert "at most 9 beats" in result
 
 
+def test_capacity_aware_dispatcher_refills_waiting_items(monkeypatch):
+    plugin = _load_plugin_module()
+    pending = [4, 5]
+    submitted = []
+    available = iter([0, 1, 1])
+
+    class ImmediateThread:
+        def __init__(self, *, target, name, daemon):
+            self.target = target
+            self.name = name
+            self.daemon = daemon
+
+        def start(self):
+            self.target()
+
+    monkeypatch.setattr(plugin.threading, "Thread", ImmediateThread)
+    monkeypatch.setattr(plugin.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(plugin, "_batch_available_slots", lambda *_args: next(available))
+
+    plugin._launch_capacity_aware_batch_dispatcher(
+        batch_id="first-frame-test",
+        project="proj-1",
+        queue_kind="default",
+        pending=pending,
+        submit_item=lambda beat: submitted.append(beat) or {"ok": True},
+    )
+
+    assert pending == []
+    assert submitted == [4, 5]
+    assert "first-frame-test" not in plugin._AGENT_BATCH_DISPATCHERS
+
+
 def test_start_video_batch_auto_fills_short_request_to_nine(monkeypatch):
     plugin = _load_plugin_module()
     calls = []
 
     def fake_request(method, path, *, query=None, body=None):
         calls.append((method, path, body))
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {"video": {"remaining": 2, "user_remaining": 1}},
+            }
         if method == "GET":
             return {
                 "ok": True,
@@ -198,15 +246,17 @@ def test_start_video_batch_auto_fills_short_request_to_nine(monkeypatch):
         return {"ok": True, "task_id": f"task-{len(calls)}"}
 
     monkeypatch.setattr(plugin, "_request", fake_request)
+    monkeypatch.setattr(plugin, "_launch_capacity_aware_batch_dispatcher", lambda **_kwargs: None)
 
     result = plugin._handle_start_video_batch(
         {"project_id": "proj-1", "episode": 2, "beats": [2, 3, 4]}
     )
 
     assert result["ok"] is True
-    assert result["started"] == list(range(2, 11))
+    assert result["started"] == [2]
+    assert result["waiting"] == list(range(3, 11))
     post_calls = [call for call in calls if call[0] == "POST"]
-    assert len(post_calls) == 9
+    assert len(post_calls) == 1
     assert all(call[2]["batch_size"] == 9 for call in post_calls)
 
 
@@ -216,9 +266,15 @@ def test_start_video_batch_exact_subset_disables_auto_fill(monkeypatch):
 
     def fake_request(method, path, *, query=None, body=None):
         calls.append((method, path, body))
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {"video": {"remaining": 2, "user_remaining": 1}},
+            }
         return {"ok": True, "task_id": f"task-{len(calls)}"}
 
     monkeypatch.setattr(plugin, "_request", fake_request)
+    monkeypatch.setattr(plugin, "_launch_capacity_aware_batch_dispatcher", lambda **_kwargs: None)
 
     result = plugin._handle_start_video_batch(
         {
@@ -230,8 +286,9 @@ def test_start_video_batch_exact_subset_disables_auto_fill(monkeypatch):
     )
 
     assert result["ok"] is True
-    assert result["started"] == [2, 3]
-    assert all(call[0] == "POST" for call in calls)
+    assert result["started"] == [2]
+    assert result["waiting"] == [3]
+    assert [call[0] for call in calls] == ["GET", "POST"]
 
 
 def test_get_final_video_displays_all_existing_finals_in_one_tool_call(monkeypatch):
@@ -276,9 +333,15 @@ def test_render_first_frames_starts_three_independent_tasks(monkeypatch):
 
     def fake_request(method, path, *, query=None, body=None):
         calls.append((method, path, body))
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {"default": {"remaining": 3, "user_remaining": 3}},
+            }
         return {"ok": True, "task_id": f"task-{len(calls)}"}
 
     monkeypatch.setattr(plugin, "_request", fake_request)
+    monkeypatch.setattr(plugin, "_launch_capacity_aware_batch_dispatcher", lambda **_kwargs: None)
 
     result = plugin._handle_render_first_frames(
         {"project_id": "proj-1", "episode": 3, "beat_indices": [3, 1, 2]}
@@ -286,11 +349,11 @@ def test_render_first_frames_starts_three_independent_tasks(monkeypatch):
 
     assert result["ok"] is True
     assert result["started"] == [1, 2, 3]
-    assert all(call[0] == "POST" for call in calls)
-    assert all(call[1].endswith("/episodes/3/beats/regenerate") for call in calls)
-    assert [call[2]["beat_indices"] for call in calls] == [[1], [2], [3]]
-    assert {call[2]["batch_id"] for call in calls} == {result["batch_id"]}
-    assert all(call[2]["batch_size"] == 3 for call in calls)
+    post_calls = [call for call in calls if call[0] == "POST"]
+    assert all(call[1].endswith("/episodes/3/beats/regenerate") for call in post_calls)
+    assert [call[2]["beat_indices"] for call in post_calls] == [[1], [2], [3]]
+    assert {call[2]["batch_id"] for call in post_calls} == {result["batch_id"]}
+    assert all(call[2]["batch_size"] == 3 for call in post_calls)
 
 
 def test_render_first_frames_omits_completed_beats_and_limits_batch(monkeypatch):
@@ -299,6 +362,11 @@ def test_render_first_frames_omits_completed_beats_and_limits_batch(monkeypatch)
 
     def fake_request(method, path, *, query=None, body=None):
         calls.append((method, path, body))
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {"default": {"remaining": 3, "user_remaining": 3}},
+            }
         if method == "GET":
             return {
                 "ok": True,
@@ -316,13 +384,15 @@ def test_render_first_frames_omits_completed_beats_and_limits_batch(monkeypatch)
         return {"ok": True, "task_id": f"task-{len(calls)}"}
 
     monkeypatch.setattr(plugin, "_request", fake_request)
+    monkeypatch.setattr(plugin, "_launch_capacity_aware_batch_dispatcher", lambda **_kwargs: None)
 
     result = plugin._handle_render_first_frames({"project_id": "proj-1", "episode": 3})
 
-    assert result["started"] == list(range(2, 11))
+    assert result["started"] == [2, 3, 4]
+    assert result["waiting"] == list(range(5, 11))
     assert result["remaining"] == 1
     assert [call[2]["beat_indices"] for call in calls if call[0] == "POST"] == [
-        [beat] for beat in range(2, 11)
+        [2], [3], [4]
     ]
 
 
@@ -389,6 +459,30 @@ def test_prepare_system_voices_tool_requires_explicit_confirmation():
     )
 
     assert result["code"] == "system_voice_confirmation_required"
+
+
+def test_prepare_system_voices_tool_starts_background_task(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_episode_post(args, suffix, *, body=None):
+        calls.append((args, suffix, body))
+        return {"ok": True, "task_type": "system_voice_setup", "status": "queued"}
+
+    monkeypatch.setattr(plugin, "_episode_post", fake_episode_post)
+
+    result = plugin._handle_prepare_system_voices(
+        {"project_id": "proj-1", "episode": 2, "confirmed": True}
+    )
+
+    assert result["task_type"] == "system_voice_setup"
+    assert calls == [
+        (
+            {"project_id": "proj-1", "episode": 2, "confirmed": True},
+            "audio/system-voices/prepare",
+            {"confirmed": True},
+        )
+    ]
 
 
 def test_dramaclaw_run_freezone_skill_uses_typed_endpoint(monkeypatch):
@@ -550,3 +644,30 @@ def test_dramaclaw_freezone_mode_allows_canvas_writes(monkeypatch):
     assert result["ok"] is True
     assert calls[0]["method"] == "PUT"
     assert calls[0]["path"] == "/api/v1/projects/demo/freezone/canvases/canvas_a"
+
+
+def test_dramaclaw_plugin_controls_episode_auto_without_cancelling_tasks(monkeypatch):
+    plugin = _load_plugin_module()
+    calls = []
+
+    def fake_request(method, path, **kwargs):
+        calls.append((method, path, kwargs.get("body")))
+        return {"ok": True}
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+
+    plugin._handle_control_episode_auto({
+        "project_id": "proj-1",
+        "action": "suspend",
+        "reason": "可能修改镜头",
+    })
+    plugin._handle_control_episode_auto({"project_id": "proj-1", "action": "resume"})
+
+    assert calls == [
+        (
+            "POST",
+            "/api/v1/projects/proj-1/chat/director-auto/suspend",
+            {"reason": "可能修改镜头"},
+        ),
+        ("POST", "/api/v1/projects/proj-1/chat/director-auto/resume", None),
+    ]

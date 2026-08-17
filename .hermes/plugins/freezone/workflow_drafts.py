@@ -87,6 +87,8 @@ def public_workflow_draft(payload: dict[str, Any]) -> dict[str, Any]:
         "plan_digest": payload.get("plan_digest"),
         "run_after_create": bool(payload.get("run_after_create")),
         "preview": deepcopy(payload.get("preview") or {}),
+        "agent_credit_estimate": deepcopy(payload.get("agent_credit_estimate") or {}),
+        "agent_planning_charge": deepcopy(payload.get("agent_planning_charge") or {}),
         "last_changes": deepcopy(payload.get("last_changes") or {}),
         "expires_at": payload.get("expires_at"),
         "message": "工作流方案草稿已准备完成，可继续调整或确认创建。",

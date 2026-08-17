@@ -5,6 +5,7 @@ import io
 import logging
 import os
 import re
+import uuid
 from pathlib import Path
 from typing import Any
 
@@ -2121,6 +2122,12 @@ async def generate_sketches(
 
     dispatch_grid_indices = list(range(len(grid_plan))) if generate_all_grids else [body.grid_index]
     if ctx is not None:
+        batch_size = len(dispatch_grid_indices)
+        batch_id = (
+            f"sketch-grid-{episode_num}-{uuid.uuid4().hex}"
+            if generate_all_grids and batch_size > 1
+            else ""
+        )
         queued_tasks = []
         for grid_index in dispatch_grid_indices:
             scope = f"grid_{grid_index}"
@@ -2132,7 +2139,7 @@ async def generate_sketches(
                 ctx,
                 product_surface="mainline",
                 task_type="sketch_grid_generation",
-                queue_kind="image",
+                queue_kind="default",
                 episode=episode_num,
                 scope=scope,
                 payload={
@@ -2140,6 +2147,15 @@ async def generate_sketches(
                     "output_dir": output_dir,
                     "config": {**base_config, "grid_index": grid_index},
                     "billing": billing,
+                    **(
+                        {
+                            "batch_id": batch_id,
+                            "batch_size": batch_size,
+                            "display_name": f"第 {episode_num} 集草图批次",
+                        }
+                        if batch_id
+                        else {}
+                    ),
                 },
             )
             queued_tasks.append(
@@ -2164,6 +2180,7 @@ async def generate_sketches(
                 "task_type": "sketch_grid_generation",
                 "backend": queued_tasks[0]["backend"] if queued_tasks else "inline",
                 "data": {
+                    "batch_id": batch_id or None,
                     "dispatched": len(dispatch_grid_indices),
                     "tasks": queued_tasks,
                     "scopes": [item["scope"] for item in queued_tasks],
@@ -2323,30 +2340,37 @@ async def prepare_system_voices_for_agent(
             "error": "使用系统声线前需要用户明确确认",
         }
 
-    from novelvideo.audio.system_voice_setup import prepare_missing_system_voices
-
     resolved = await _resolve_generation_project(project, user, required_role="editor")
-    store = (
-        await make_sqlite_store_for_context(resolved.ctx)
-        if resolved.ctx
-        else await make_sqlite_store(resolved.username, resolved.project_name)
-    )
-    result = await prepare_missing_system_voices(
-        store=store,
-        username=resolved.username,
-        project=resolved.project_name,
-        project_dir=resolved.output_dir,
+    ctx = resolved.ctx
+    if ctx is None:
+        return {
+            "ok": False,
+            "code": "project_context_required",
+            "error": "系统声线准备需要 project context",
+        }
+
+    queued = await get_task_backend().enqueue_project_task(
+        ctx,
+        product_surface="mainline",
+        task_type="system_voice_setup",
+        queue_kind="default",
         episode=episode_num,
+        payload={
+            "episode": episode_num,
+            "output_dir": resolved.output_dir,
+            "state_dir": resolved.state_dir,
+        },
     )
     return {
-        "ok": result["ready"],
-        "code": "system_voices_ready" if result["ready"] else "voice_prereq_required",
-        "data": result,
-        **(
-            {"error": "；".join(result["remaining_errors"][:5])}
-            if result["remaining_errors"]
-            else {}
+        "ok": True,
+        "task_type": "system_voice_setup",
+        "task_id": queued.task_state.task_id,
+        "task_key": project_task_state_key(
+            "system_voice_setup", ctx.project_id, episode_num
         ),
+        "backend": queued.backend,
+        "queue": queued.queue,
+        "message": f"第 {episode_num} 集系统声线准备已进入队列",
     }
 
 
@@ -2820,7 +2844,7 @@ async def regenerate_grid(
             ctx,
             product_surface="mainline",
             task_type="grid_regenerate",
-            queue_kind="image",
+            queue_kind="default",
             episode=episode_num,
             scope=scope,
             payload={
@@ -3133,7 +3157,7 @@ async def render_execute(
                 ctx,
                 product_surface="mainline",
                 task_type="selected_regen",
-                queue_kind="image",
+                queue_kind="default",
                 episode=episode_num,
                 scope=entry_scope,
                 payload={
@@ -3263,7 +3287,7 @@ async def regenerate_beats(
             ctx,
             product_surface="mainline",
             task_type="selected_regen",
-            queue_kind="image",
+            queue_kind="default",
             episode=episode_num,
             scope=scope,
             payload={
@@ -3366,7 +3390,7 @@ async def regenerate_sketches(
             ctx,
             product_surface="mainline",
             task_type="sketch_regen",
-            queue_kind="image",
+            queue_kind="default",
             episode=episode_num,
             scope=scope,
             payload={
@@ -4183,7 +4207,7 @@ async def director_control_to_sketch(
             ctx,
             product_surface="mainline",
             task_type="director_control_to_sketch",
-            queue_kind="image",
+            queue_kind="default",
             episode=int(episode_num),
             beat_num=int(beat_num),
             scope=payload["scope"],
@@ -4513,7 +4537,7 @@ async def generate_missing_manual_sketches(
                 ctx,
                 product_surface="mainline",
                 task_type="sketch_regen",
-                queue_kind="image",
+                queue_kind="default",
                 episode=episode_num,
                 scope=scope,
                 payload={

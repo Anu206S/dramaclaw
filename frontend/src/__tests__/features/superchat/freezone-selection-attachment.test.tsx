@@ -19,6 +19,7 @@ const superChatMocks = vi.hoisted(() => ({
   busy: false,
   activeTurnId: null as string | null,
   showToolEvents: false,
+  replaceAssistantMessagePart: vi.fn(),
 }));
 
 const eventBusMocks = vi.hoisted(() => ({
@@ -156,6 +157,7 @@ vi.mock("@/features/superchat/use-superchat", () => ({
     togglePin: vi.fn(),
     upsertAssistantMessagePart: vi.fn(),
     removeAssistantMessagePart: vi.fn(),
+    replaceAssistantMessagePart: superChatMocks.replaceAssistantMessagePart,
   }),
 }));
 
@@ -962,6 +964,9 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
       />,
     );
 
+    const scrollToMock = vi.mocked(HTMLElement.prototype.scrollTo);
+    scrollToMock.mockClear();
+
     act(() => {
       window.dispatchEvent(new CustomEvent("freezone/canvas-context-activity", {
         detail: {
@@ -999,6 +1004,7 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
     });
 
     expect(screen.getByText("待确认的画布操作")).toBeInTheDocument();
+    await waitFor(() => expect(scrollToMock).toHaveBeenCalled());
     fireEvent.click(screen.getByRole("button", { name: "确认执行" }));
 
     await waitFor(() =>
@@ -1020,6 +1026,11 @@ describe("SuperChatPanel Freezone selection attachment state", () => {
         }),
       }),
     }));
+    expect(superChatMocks.replaceAssistantMessagePart).toHaveBeenCalledWith(
+      { messageId: "assistant-a", turnId: "turn-a" },
+      expect.stringContaining("canvas_approval:"),
+      expect.objectContaining({ type: "canvas_feedback" }),
+    );
   });
 
   it("lets image generation approvals edit node image parameters before applying", async () => {

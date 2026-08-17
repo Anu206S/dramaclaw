@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -99,3 +100,56 @@ async def test_prepare_missing_system_voices_fills_narrator_and_character(
     assert narrator_updates[0]["relative_path"] == "assets/narrator/voice.mp3"
     assert store.characters[0].reference_audio_path
     assert (tmp_path / store.characters[0].reference_audio_path).exists()
+
+
+@pytest.mark.asyncio
+async def test_system_voice_setup_runner_reports_progress(monkeypatch, tmp_path):
+    from novelvideo.audio import system_voice_setup
+    from novelvideo.task_backend.runners import audio
+    from novelvideo import sqlite_store
+
+    progress_updates = []
+
+    class FakeRunnerStore:
+        def __init__(self, *args, **kwargs):  # noqa: ARG002
+            self.closed = False
+            self.graph_state_loaded = False
+
+        async def initialize(self):
+            return None
+
+        async def load_graph_state(self):
+            self.graph_state_loaded = True
+
+        async def close(self):
+            self.closed = True
+
+    class FakeManager:
+        def update_progress_for_project(self, *args, **kwargs):
+            progress_updates.append(kwargs)
+
+    async def fake_prepare(**kwargs):
+        assert kwargs["episode"] == 2
+        assert kwargs["store"].graph_state_loaded is True
+        return {
+            "ready": True,
+            "prepared": [{"target": "项目解说人"}],
+            "prepared_count": 1,
+            "remaining_errors": [],
+        }
+
+    monkeypatch.setattr(sqlite_store, "SQLiteStore", FakeRunnerStore)
+    monkeypatch.setattr(system_voice_setup, "prepare_missing_system_voices", fake_prepare)
+    monkeypatch.setattr(audio, "get_task_manager", lambda: FakeManager())
+    ctx = SimpleNamespace(
+        owner_project_label="alice/demo",
+        owner_username="alice",
+        project_name="demo",
+        output_dir=tmp_path,
+        state_dir=tmp_path / "state",
+    )
+
+    result = await audio._run_system_voice_setup({"episode": 2}, ctx)
+
+    assert result["ready"] is True
+    assert [update["progress"] for update in progress_updates] == [0.05, 1.0]

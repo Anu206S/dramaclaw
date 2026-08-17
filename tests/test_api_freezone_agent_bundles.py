@@ -142,6 +142,7 @@ def test_install_bundle_api_saves_skill_and_recipes(bundle_client: TestClient) -
         "bundle_id": "community-video",
         "installed_skill": "community-video",
         "installed_recipes": ["community-brief"],
+        "reused_recipes": [],
     }
     skills = bundle_client.get("/api/v1/freezone/agent-config/skills").json()["data"]
     recipes = bundle_client.get("/api/v1/freezone/agent-config/recipes").json()["data"]

@@ -261,7 +261,7 @@ async def test_freezone_image_edit_limit_exception_bubbles_to_global_handler(
     project_dir, _output_dir = _patch_freezone_project(monkeypatch, tmp_path)
     source = project_dir / "freezone" / "_uploads" / "source.png"
     _write_image(source)
-    _patch_limit_exceeded_enqueue(monkeypatch, queue_kind="image")
+    _patch_limit_exceeded_enqueue(monkeypatch, queue_kind="default")
 
     with pytest.raises(ProjectUserTaskLimitExceeded) as exc:
         await freezone_routes.freezone_outpaint(
@@ -272,7 +272,7 @@ async def test_freezone_image_edit_limit_exception_bubbles_to_global_handler(
             user={"username": "admin"},
         )
 
-    assert exc.value.queue_kind == "image"
+    assert exc.value.queue_kind == "default"
 
 
 @pytest.mark.asyncio
@@ -795,6 +795,53 @@ async def test_freezone_video_generation_enqueues_feature_billing(
     }
     assert captured["payload"]["gen_mode"] == "image_reference"
     assert captured["payload"]["requested_gen_mode"] == "imageToVideo"
+    assert captured["payload"]["generate_audio"] is True
+
+
+@pytest.mark.asyncio
+async def test_freezone_video_generation_forces_audio_off_when_model_disallows_it(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_enqueue_project_task(_ctx: ProjectContext, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            task_state=SimpleNamespace(task_id="task_video_no_audio"),
+            backend="celery",
+            queue="node.node_a.video",
+        )
+
+    monkeypatch.setattr(
+        freezone_routes,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=fake_enqueue_project_task),
+    )
+
+    await freezone_routes._start_or_enqueue_freezone_video_gen(
+        ctx=_project_ctx(tmp_path),
+        username="admin",
+        project="demo",
+        project_dir=tmp_path / "project",
+        output_dir=str(tmp_path / "output"),
+        job_id="job_video_no_audio",
+        prompt="静音视频",
+        reference_items=[],
+        aspect_ratio="16:9",
+        resolution="720p",
+        duration_seconds=5,
+        generate_audio=True,
+        human_review=False,
+        scene_optimize=None,
+        backend="newapi_seedance-2.0",
+        gen_mode="text_to_video",
+        capabilities={"supportsGenerateAudio": False},
+    )
+
+    payload = captured["payload"]
+    assert payload["generate_audio"] is False
+    assert payload["billing"]["generate_audio"] is False
 
 
 @pytest.mark.asyncio
@@ -856,6 +903,69 @@ async def test_freezone_video_generation_probes_reference_duration_before_billin
     }
     assert billing["pricing_quantity"] == 23
     assert billing["pricing_metrics"]["input_video_billed_seconds"] == 11
+
+
+@pytest.mark.asyncio
+async def test_video_edit_uses_source_duration_for_output_reservation(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    async def fake_enqueue_project_task(_ctx: ProjectContext, **kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace(
+            task_state=SimpleNamespace(task_id="task_video_edit"),
+            backend="celery",
+            queue="node.node_a.video",
+        )
+
+    async def fake_probe(paths):
+        assert list(paths) == ["/project/source.mp4"]
+        return 7.1
+
+    monkeypatch.setattr(
+        freezone_routes,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=fake_enqueue_project_task),
+    )
+    monkeypatch.setattr(
+        freezone_routes,
+        "probe_total_video_duration_seconds",
+        fake_probe,
+    )
+
+    await freezone_routes._start_or_enqueue_freezone_video_gen(
+        ctx=_project_ctx(tmp_path),
+        username="admin",
+        project="demo",
+        project_dir=tmp_path / "project",
+        output_dir=str(tmp_path / "output"),
+        job_id="job_video_edit",
+        prompt="编辑源视频",
+        reference_items=[{"type": "video", "path": "/project/source.mp4"}],
+        aspect_ratio="auto",
+        resolution="720p",
+        duration_seconds=None,
+        generate_audio=False,
+        human_review=False,
+        scene_optimize=None,
+        backend="newapi_happyhorse-1.0",
+        gen_mode="video_edit",
+        requested_gen_mode="videoEdit",
+    )
+
+    payload = captured["payload"]
+    assert payload["aspect_ratio"] == "auto"
+    assert payload["duration_seconds"] == 7
+    assert payload["billing"]["pricing_metrics"] == {
+        "call_count": 1,
+        "item_count": 1,
+        "duration_seconds": 14,
+        "output_duration_seconds": 7,
+        "input_video_duration_ms": 7100,
+        "input_video_billed_seconds": 7,
+    }
 
 
 @pytest.mark.asyncio
@@ -3294,6 +3404,54 @@ async def test_freezone_celery_text_runner_records_project_node_history(
 
 
 @pytest.mark.asyncio
+async def test_freezone_celery_text_generate_runner_records_project_node_history(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.freezone.history import read_generation_history
+    from novelvideo.task_backend.runners import freezone as freezone_runner
+
+    ctx = _project_ctx(tmp_path)
+    project_dir = ctx.output_dir
+
+    async def fake_generate_freezone_text(*, prompt: str):
+        assert prompt == "写一段雨夜重逢"
+        return "DC-freezone-text-writer-LLM", "雨夜里，他们在旧站台重逢。"
+
+    class FakeTaskManager:
+        def update_progress_for_project(self, *_args, **_kwargs):
+            return None
+
+    monkeypatch.setattr(
+        "novelvideo.freezone.text_node.generate_freezone_text",
+        fake_generate_freezone_text,
+    )
+    monkeypatch.setattr(freezone_runner, "get_task_manager", lambda: FakeTaskManager())
+
+    result = await freezone_runner._run_freezone_text_generate_async(
+        {
+            "payload": {
+                "job_id": "job_text_generate",
+                "project_dir": str(project_dir),
+                "prompt": "写一段雨夜重逢",
+                "canvas_id": "canvas_a",
+                "node_id": "node_text",
+            }
+        },
+        ctx,
+    )
+
+    history = read_generation_history(
+        project_dir=project_dir,
+        canvas_id="canvas_a",
+        node_id="node_text",
+    )
+    assert result["generated_text"] == "雨夜里，他们在旧站台重逢。"
+    assert history[-1]["task_type"] == "freezone_text_generate"
+    assert history[-1]["model"] == "DC-freezone-text-writer-LLM"
+
+
+@pytest.mark.asyncio
 async def test_freezone_image_to_3gs_task_includes_fixed_feature_billing(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3520,6 +3678,48 @@ async def test_freezone_text_job_preserves_canvas_node_context_in_celery_payload
     assert captured["payload"]["canvas_id"] == "canvas_a"
     assert captured["payload"]["node_id"] == "node_text"
     assert captured["payload"]["billing"] == {"billable_chars": 2}
+
+
+@pytest.mark.asyncio
+async def test_freezone_text_generate_job_uses_visible_chars_for_billing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    ctx = _project_ctx(tmp_path)
+    captured: dict = {}
+
+    async def fake_resolve_freezone_project(*_args, **_kwargs):
+        return ctx, "admin", "demo", ctx.output_dir, str(ctx.output_dir)
+
+    async def fake_enqueue_freezone_background_job(**kwargs):
+        captured.update(kwargs)
+        return {"ok": True, "data": {"task_key": "task_key"}}
+
+    monkeypatch.setattr(freezone_routes, "_resolve_freezone_project", fake_resolve_freezone_project)
+    monkeypatch.setattr(
+        freezone_routes,
+        "_enqueue_freezone_background_job",
+        fake_enqueue_freezone_background_job,
+    )
+    monkeypatch.setattr(freezone_routes, "_new_job_id", lambda: "job_text_generate")
+
+    await freezone_routes.freezone_text_generate(
+        project="proj_freezone",
+        body=freezone_routes.FreezoneTextGenerateRequest(
+            prompt=" 写一段\n雨夜故事 ",
+            canvas_id="canvas_a",
+            node_id="node_text",
+        ),
+        user={"username": "admin"},
+    )
+
+    assert captured["task_type"] == "freezone_text_generate"
+    assert captured["payload"]["canvas_id"] == "canvas_a"
+    assert captured["payload"]["node_id"] == "node_text"
+    assert captured["payload"]["billing"] == {
+        "billable_chars": 7,
+        "operation": "text_generate",
+    }
 
 
 @pytest.mark.asyncio

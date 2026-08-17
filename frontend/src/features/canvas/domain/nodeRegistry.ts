@@ -398,7 +398,6 @@ const videoNodeDefinition: CanvasNodeDefinition<VideoNodeData> = {
     model: readLastVideoModel() ?? DEFAULT_VIDEO_MODEL_ID,
     quality: '720P',
     durationSec: 5,
-    generateAudio: true,
     count: 1,
     isGenerating: false,
     generationStartedAt: null,
@@ -431,9 +430,6 @@ const audioNodeDefinition: CanvasNodeDefinition<AudioNodeData> = {
     isUploading: false,
     text: '',
     emotionPrompt: '',
-    speechMode: 'preset',
-    presetVoice: 'Serena',
-    presetModel: 'edge-tts',
     // 默认音色：留空。AudioOperationsPanel 挂载时会拉一次音色库
     // references 并落到第一个；这里硬编码 project_narrator 会让初始化
     // effect 提前 bail，导致用户始终看到"项目解说人"无法替换。
