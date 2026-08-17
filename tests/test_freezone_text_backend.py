@@ -127,19 +127,21 @@ def test_text_writer_uses_plain_text_agent_without_structured_output_settings(
 ) -> None:
     import novelvideo.config as config
     import novelvideo.freezone.text_node as text_node
+    from novelvideo.brainclaw_contract import BrainClawProfile
 
     agent_kwargs: dict[str, object] = {}
+    model_kwargs: dict[str, object] = {}
 
     class FakeAgent:
         def __init__(self, model, **kwargs):
             agent_kwargs["model"] = model
             agent_kwargs.update(kwargs)
 
-    monkeypatch.setattr(
-        config,
-        "get_newapi_text_pydantic_model",
-        lambda model_env, default_model: (model_env, default_model),
-    )
+    def fake_model(model_env: str, default_model: str, **kwargs):
+        model_kwargs.update(kwargs)
+        return model_env, default_model
+
+    monkeypatch.setattr(config, "get_newapi_text_pydantic_model", fake_model)
     monkeypatch.setattr(text_node, "Agent", FakeAgent)
 
     create_freezone_text_writer_agent()
@@ -148,6 +150,9 @@ def test_text_writer_uses_plain_text_agent_without_structured_output_settings(
         "FREEZONE_TEXT_WRITER_MODEL",
         "brainclaw",
     )
+    assert model_kwargs == {
+        "brainclaw_profile": BrainClawProfile.FREEZONE_TEXT_GENERATION,
+    }
     assert "model_settings" not in agent_kwargs
 
 

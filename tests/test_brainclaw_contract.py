@@ -200,6 +200,13 @@ def test_recipe_text_generation_has_a_dedicated_declared_profile():
     )
 
 
+def test_freezone_text_generation_has_a_dedicated_declared_profile():
+    assert (
+        BrainClawProfile.FREEZONE_TEXT_GENERATION.value
+        == "freezone_text_generation"
+    )
+
+
 def test_graph_ingest_is_external_and_event_segmentation_uses_its_real_name():
     declared = {profile.value for profile in BrainClawProfile}
 
