@@ -21,7 +21,6 @@ from novelvideo.video_duration import (
     video_duration_bounds_for_backend,
 )
 
-
 VIDEO_CAMERA_TEMPLATES: list[dict[str, str]] = [
     {
         "id": "locked_off",
@@ -135,7 +134,9 @@ def get_video_camera_template(template_id: str | None) -> dict[str, str] | None:
 
 def normalize_video_aspect_ratio(value: str | None) -> str:
     text = str(value or "").strip().lower()
-    if not text or text == "auto":
+    if text in {"auto", "adaptive"}:
+        return "auto"
+    if not text:
         return "16:9"
     return text
 
@@ -204,7 +205,8 @@ def normalize_freezone_seedance2_scene_optimize(
 
 
 def normalize_video_resolution_for_backend(
-    backend: str | None, value: str | None,
+    backend: str | None,
+    value: str | None,
     configured_options: list[str] | tuple[str, ...] | None = None,
 ) -> str:
     resolution = normalize_video_resolution(value)
@@ -219,12 +221,12 @@ def normalize_video_resolution_for_backend(
             None,
         )
         if matched is not None:
-            return matched
+            return normalize_video_resolution(matched)
         preferred = next(
             (option for option in configured if option.lower() == "720p"),
             None,
         )
-        return preferred or configured[0]
+        return normalize_video_resolution(preferred or configured[0])
     options = freezone_video_resolution_options(backend)
     if resolution in options:
         return resolution
@@ -233,7 +235,9 @@ def normalize_video_resolution_for_backend(
     return options[0]
 
 
-def freezone_video_duration_bounds(backend: str | None) -> tuple[int | None, int | None]:
+def freezone_video_duration_bounds(
+    backend: str | None,
+) -> tuple[int | None, int | None]:
     return video_duration_bounds_for_backend(backend)
 
 
@@ -250,7 +254,9 @@ def _freezone_newapi_video_options() -> dict[str, str]:
         return options
     ordered = {FREEZONE_DEFAULT_VIDEO_BACKEND: options[FREEZONE_DEFAULT_VIDEO_BACKEND]}
     ordered.update(
-        (key, value) for key, value in options.items() if key != FREEZONE_DEFAULT_VIDEO_BACKEND
+        (key, value)
+        for key, value in options.items()
+        if key != FREEZONE_DEFAULT_VIDEO_BACKEND
     )
     return ordered
 
@@ -279,8 +285,12 @@ def get_freezone_video_model_options() -> list[dict[str, Any]]:
                 {
                     "sceneOptimizeOptions": ["anime", "realistic"],
                     "scene_optimize_options": ["anime", "realistic"],
-                    "defaultSceneOptimize": default_freezone_seedance2_scene_optimize(backend),
-                    "default_scene_optimize": default_freezone_seedance2_scene_optimize(backend),
+                    "defaultSceneOptimize": default_freezone_seedance2_scene_optimize(
+                        backend
+                    ),
+                    "default_scene_optimize": default_freezone_seedance2_scene_optimize(
+                        backend
+                    ),
                 }
             )
         data.append(item)
@@ -319,7 +329,10 @@ def resolve_freezone_video_backend(model: str | None) -> str:
 
     from novelvideo.generators.video_generator import parse_newapi_video_backend
 
-    if parse_newapi_video_backend(text) and text not in FREEZONE_DISABLED_VIDEO_BACKENDS:
+    if (
+        parse_newapi_video_backend(text)
+        and text not in FREEZONE_DISABLED_VIDEO_BACKENDS
+    ):
         return text
     raise ValueError(f"unknown video model: {text}")
 
@@ -339,7 +352,9 @@ def is_freezone_seedance2_backend(backend: str | None) -> bool:
 def is_freezone_happyhorse_backend(backend: str | None) -> bool:
     from novelvideo.generators.video_generator import parse_newapi_video_backend
 
-    model = parse_newapi_video_backend(backend) or _freezone_video_model_from_backend(backend)
+    model = parse_newapi_video_backend(backend) or _freezone_video_model_from_backend(
+        backend
+    )
     return model == "happyhorse-1.0"
 
 
@@ -351,7 +366,10 @@ def _coarse_mark_region(mark: dict[str, Any]) -> str:
         box_y = mark.get("box_y")
         box_width = mark.get("box_width")
         box_height = mark.get("box_height")
-        if all(isinstance(value, (int, float)) for value in [box_x, box_y, box_width, box_height]):
+        if all(
+            isinstance(value, (int, float))
+            for value in [box_x, box_y, box_width, box_height]
+        ):
             px = float(box_x) + float(box_width) / 2.0
             py = float(box_y) + float(box_height) / 2.0
     if isinstance(px, (int, float)) and isinstance(py, (int, float)):
@@ -362,7 +380,9 @@ def _coarse_mark_region(mark: dict[str, Any]) -> str:
 
 
 def format_video_marks(marks: list[dict[str, Any]] | None) -> str:
-    clean_marks = [mark for mark in (marks or []) if str(mark.get("label") or "").strip()]
+    clean_marks = [
+        mark for mark in (marks or []) if str(mark.get("label") or "").strip()
+    ]
     if not clean_marks:
         return ""
 
@@ -393,7 +413,9 @@ def build_freezone_video_prompt(
     if character_names:
         joined = "、".join(name for name in character_names if name)
         if joined:
-            parts.append(f"角色一致性要求：保持 {joined} 的外观、服装和身份特征稳定一致。")
+            parts.append(
+                f"角色一致性要求：保持 {joined} 的外观、服装和身份特征稳定一致。"
+            )
 
     marks_block = format_video_marks(marks)
     if marks_block:
@@ -471,7 +493,9 @@ def build_freezone_keyframe_video_prompt(
             "首帧约束：严格继承输入图片中的主体、构图、服装、光线和场景信息，把输入图作为视频首帧参考。"
         )
     elif has_last_frame:
-        parts.append("尾帧约束：以输入图片作为目标收束画面，确保镜头最终自然落到该主体状态和构图。")
+        parts.append(
+            "尾帧约束：以输入图片作为目标收束画面，确保镜头最终自然落到该主体状态和构图。"
+        )
 
     parts.append(
         "输出要求：生成单条连贯视频镜头，动作自然，运动平滑，避免闪烁、变形、跳帧、主体身份漂移和首尾帧跳变。"
@@ -485,6 +509,7 @@ def build_freezone_omni_video_prompt(
     theme: str = "",
     camera_template_id: str | None = None,
     marks: list[dict[str, Any]] | None = None,
+    reference_items: list[dict[str, Any]] | None = None,
 ) -> str:
     parts = [str(user_prompt or "").strip()]
 
@@ -502,6 +527,15 @@ def build_freezone_omni_video_prompt(
     parts.append(
         "全能参考模式要求：综合文本、图像、视频和音频参考进行统一建模，优先保持主体身份、场景连续性、风格一致性和动作自然性。"
     )
+    counts = summarize_omni_reference_counts(reference_items or [])
+    single_video_reference_instruction = "这是视频参考生成新的视频，不是视频编辑。"
+    if (
+        counts["video_count"] == 1
+        and counts["image_count"] == 0
+        and counts["audio_count"] == 0
+        and single_video_reference_instruction not in "\n".join(parts)
+    ):
+        parts.append(single_video_reference_instruction)
     parts.append(
         "输出要求：生成单条连贯视频镜头，动作自然，运动平滑，避免闪烁、变形、跳帧和主体身份漂移。"
     )
@@ -538,6 +572,88 @@ def validate_omni_reference_limits(
     if counts["audio_count"] > audio_max:
         raise ValueError(f"audio references count must be <= {audio_max}")
 
+
+async def run_trusted_freezone_video_gen(
+    *,
+    project_dir: Path,
+    job_id: str,
+    prompt: str,
+    egress_context: object,
+    task_type: str,
+    episode: int,
+    beat_num: int,
+    scope: str,
+    reference_items: list[dict[str, str]] | None = None,
+    aspect_ratio: str = "16:9",
+    resolution: str = "720p",
+    duration_seconds: int = 5,
+    generate_audio: bool = False,
+    human_review: bool = False,
+    scene_optimize: str | None = None,
+    backend: str = "newapi_seedance-2.0-fast",
+    last_frame_path: str | None = None,
+    audio_setting: str | None = None,
+    gen_mode: str | None = None,
+    model_params: dict[str, Any] | None = None,
+    request_schema: dict[str, Any] | None = None,
+) -> Path:
+    """Run the Freezone video leaf without losing its verified egress context."""
+
+    from novelvideo.freezone.jobs import outputs_dir
+    from novelvideo.generators.video_generator import (
+        ShotReference,
+        VideoGenStatus,
+        create_video_generator,
+    )
+
+    output_path = outputs_dir(project_dir, "freezone_video_gen") / f"{job_id}.mp4"
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    references = [
+        ShotReference(
+            str(item.get("type") or "image"),
+            str(item.get("path") or ""),
+            str(item.get("role") or ""),
+        )
+        for item in (reference_items or [])
+        if str(item.get("path") or "").strip()
+    ]
+    generator = create_video_generator(
+        backend=backend,
+        resolution=resolution,
+        generate_audio=generate_audio,
+        model_params=model_params,
+        request_schema=request_schema,
+        egress_context=egress_context,
+    )
+    first_image = next((ref for ref in references if ref.type == "image"), None)
+    generate_kwargs: dict[str, Any] = {
+        "image_path": first_image.path if first_image is not None else None,
+        "prompt": prompt,
+        "output_path": str(output_path),
+        "aspect_ratio": aspect_ratio,
+        "duration": float(duration_seconds),
+        "last_frame_path": last_frame_path,
+        "references": references,
+        "human_review": bool(human_review),
+        "seedance2_config": (
+            {"scene_optimize": scene_optimize} if scene_optimize else None
+        ),
+        "gen_mode": gen_mode,
+        "egress_context": egress_context,
+        "task_type": task_type,
+        "episode": episode,
+        "beat_num": beat_num,
+        "scope": scope,
+    }
+    if audio_setting:
+        generate_kwargs["audio_setting"] = audio_setting
+    result = await generator.generate(**generate_kwargs)
+    if not result or result.status is not VideoGenStatus.DONE:
+        error = result.error if result else "video generation failed"
+        raise RuntimeError(f"freezone video generation failed: {error}")
+    if not output_path.exists():
+        raise RuntimeError("video generation returned success without output")
+    return output_path
 
 # 全能参考音频时长：厂商（doubao-seedance-2-0 / r2v）有**两条互相独立**的规则，
 # 两条都以 400 打回，只卡其中一条就等于没卡：
@@ -663,10 +779,180 @@ def load_video_character_library(project_dir: Path) -> list[dict[str, Any]]:
     return [item for item in data if isinstance(item, dict)]
 
 
-def save_video_character_library(project_dir: Path, items: list[dict[str, Any]]) -> None:
+def save_video_character_library(
+    project_dir: Path, items: list[dict[str, Any]]
+) -> None:
     path = video_character_library_path(project_dir)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(items, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+LIBRARY_CATEGORIES = ("other", "character", "scene", "prop", "style", "audio")
+
+# 资产库目录树。文件夹（保存位置）和类目（标签）是两个独立维度：类目只管
+# 「这素材是干嘛的」，文件夹管「它放在哪」。系统文件夹两个——主线同步来的一律
+# 收进 mainline；本地上传缺省落在 other（前端显示为「待分类资产」）。类目 key
+# 同时充当同名系统文件夹的 key，这样老条目（没有 folder 字段）按类目归位即可，
+# 不需要数据迁移。用户新建的文件夹用随机 id，不会和这些保留 key 撞上。
+MAINLINE_FOLDER_KEY = "mainline"
+RESERVED_FOLDER_KEYS = (MAINLINE_FOLDER_KEY, *LIBRARY_CATEGORIES)
+# 与前端 assetLibraryItems.ts 的系统文件夹名保持一致，防止用户建出同名文件夹。
+RESERVED_FOLDER_NAMES = ("主线", "待分类资产", "其它", "人物", "场景", "物品", "风格", "音效")
+FOLDER_NAME_MAX_LEN = 20
+
+
+def video_character_folders_path(project_dir: Path) -> Path:
+    return freezone_root(project_dir) / "video_character_folders.json"
+
+
+def load_video_character_folders(project_dir: Path) -> list[dict[str, Any]]:
+    """读用户自建的资产库文件夹（系统文件夹不落盘，由前端按保留 key 生成）。"""
+    path = video_character_folders_path(project_dir)
+    if not path.exists():
+        return []
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []
+    if not isinstance(data, list):
+        return []
+    return [item for item in data if isinstance(item, dict) and item.get("id")]
+
+
+def save_video_character_folders(project_dir: Path, folders: list[dict[str, Any]]) -> None:
+    path = video_character_folders_path(project_dir)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(folders, ensure_ascii=False, indent=2), encoding="utf-8")
+
+
+def add_video_character_folder(project_dir: Path, *, name: str) -> dict[str, Any]:
+    """新建一个资产库文件夹。重名（含系统文件夹名）直接拒绝，避免目录里两个同名项。"""
+    clean = name.strip()
+    folders = load_video_character_folders(project_dir)
+    _validate_folder_name(clean, folders)
+    folder = {
+        "id": uuid.uuid4().hex[:12],
+        "name": clean,
+        "created_at": datetime.now().isoformat(),
+    }
+    folders.append(folder)
+    save_video_character_folders(project_dir, folders)
+    return folder
+
+
+def _validate_folder_name(clean: str, folders: list[dict[str, Any]], *, skip_id: str = "") -> None:
+    """新建/重命名共用的一套校验：非空、不超长、不撞系统名、不与其它文件夹重名。"""
+    if not clean:
+        raise ValueError("folder name is required")
+    if len(clean) > FOLDER_NAME_MAX_LEN:
+        raise ValueError(f"folder name must be <= {FOLDER_NAME_MAX_LEN} characters")
+    if clean in RESERVED_FOLDER_NAMES:
+        raise ValueError(f"folder name is reserved: {clean}")
+    for folder in folders:
+        if skip_id and str(folder.get("id")) == skip_id:
+            continue
+        if str(folder.get("name") or "").strip() == clean:
+            raise ValueError(f"folder already exists: {clean}")
+
+
+def update_video_character_folder(
+    project_dir: Path,
+    folder_id: str,
+    *,
+    name: str | None = None,
+    cover: str | None = None,
+) -> dict[str, Any] | None:
+    """改名 / 换封面。只动传进来的字段，两者都不传视作空操作。
+
+    封面存的是素材本身的 URL（前端从文件夹里挑一张），所以不需要额外的文件管理；
+    素材被删掉后封面会指向失效 URL，前端按缺省封面渲染即可。
+    """
+    folders = load_video_character_folders(project_dir)
+    target = next((f for f in folders if str(f.get("id")) == folder_id), None)
+    if target is None:
+        return None
+    if name is not None:
+        clean = name.strip()
+        _validate_folder_name(clean, folders, skip_id=folder_id)
+        target["name"] = clean
+    if cover is not None:
+        target["cover"] = cover.strip() or None
+    save_video_character_folders(project_dir, folders)
+    return target
+
+
+def delete_video_character_folder(project_dir: Path, folder_id: str) -> int | None:
+    """整柜清空：删掉文件夹本身，连同落在里面的素材条目。
+
+    返回被删掉的素材条数；文件夹不存在时返回 ``None``。系统文件夹（主线/类目同名
+    目录）不落盘，也就永远走不到这里——路由层按 id 找不到直接 404。
+    """
+    folders = load_video_character_folders(project_dir)
+    kept_folders = [f for f in folders if str(f.get("id")) != folder_id]
+    if len(kept_folders) == len(folders):
+        return None
+    items = load_video_character_library(project_dir)
+    kept_items = [item for item in items if str(item.get("folder") or "") != folder_id]
+    removed = len(items) - len(kept_items)
+    if removed:
+        save_video_character_library(project_dir, kept_items)
+    save_video_character_folders(project_dir, kept_folders)
+    return removed
+
+
+def library_folder_keys(project_dir: Path) -> set[str]:
+    """当前可用作「保存位置」的文件夹 key：系统保留 key + 用户自建文件夹 id。"""
+    keys = set(RESERVED_FOLDER_KEYS)
+    for folder in load_video_character_folders(project_dir):
+        keys.add(str(folder.get("id")))
+    return keys
+
+
+def _resolve_library_folder(
+    folder: str | None,
+    *,
+    existing: dict[str, Any] | None,
+    source: str,
+    category: str,
+) -> str:
+    """定出条目落在哪个文件夹，与前端 assetLibraryItems.ts 的归位逻辑保持一致。
+
+    显式指定优先；其次沿用条目已有的位置（重复同步/重复登记不能把用户挪好的
+    位置冲掉）；最后兜底——主线同步来的进 mainline，本地上传按类目进同名系统
+    文件夹（没归类的就是 other，即「待分类资产」）。
+    """
+    if folder:
+        return str(folder)
+    if existing is not None:
+        kept = existing.get("folder")
+        if kept:
+            return str(kept)
+    if source != "upload":
+        return MAINLINE_FOLDER_KEY
+    return category
+
+
+def _resolve_library_category(
+    category: str | None,
+    *,
+    existing: dict[str, Any] | None,
+    source: str,
+    media: str,
+) -> str:
+    """定出条目的用途类目，与前端 assetLibraryItems.ts 的 deriveCategory 保持一致。
+
+    优先用显式传入的类目；其次沿用条目已有的类目（主线重复同步不能把用户归好的
+    类冲掉）；最后按来源/媒介兜底——人物/场景/道具对号入座，音频归音效，其余归其它。
+    """
+    if category in LIBRARY_CATEGORIES:
+        return str(category)
+    if existing is not None:
+        kept = existing.get("category")
+        if kept in LIBRARY_CATEGORIES:
+            return str(kept)
+    if source in ("character", "scene", "prop"):
+        return source
+    return "audio" if media == "audio" else "other"
 
 
 def _upsert_library_item(
@@ -679,6 +965,8 @@ def _upsert_library_item(
     video_url: str | None,
     audio_url: str | None,
     item_id: str | None,
+    category: str | None = None,
+    folder: str | None = None,
 ) -> dict[str, Any]:
     """纯内存 upsert：按 id 就地更新或追加 ``items``，返回写入的条目。
 
@@ -697,11 +985,18 @@ def _upsert_library_item(
         (i for i, it in enumerate(items) if it.get("id") == resolved_id), None
     )
     existing = items[existing_idx] if existing_idx is not None else None
+    resolved_category = _resolve_library_category(
+        category, existing=existing, source=source, media=media
+    )
     item = {
         "id": resolved_id,
         "name": name.strip(),
         "media": media,
         "source": source,
+        "category": resolved_category,
+        "folder": _resolve_library_folder(
+            folder, existing=existing, source=source, category=resolved_category
+        ),
         "image_urls": urls,
         "video_url": video_url,
         "audio_url": audio_url,
@@ -726,11 +1021,15 @@ def add_video_character_library_item(
     video_url: str | None = None,
     audio_url: str | None = None,
     item_id: str | None = None,
+    category: str | None = None,
+    folder: str | None = None,
 ) -> dict[str, Any]:
     """把一条素材登记到资产库。
 
     图片走 ``image_urls``，视频/音频走 ``video_url`` / ``audio_url``。``item_id``
     非空时按 id upsert（主线同步用稳定合成 id，重复同步是更新而非新增）。
+    ``category`` 是用途类目（标签），``folder`` 是保存位置，两者互不影响，缺省时
+    分别按来源/媒介、按类目兜底推导。
     """
     items = load_video_character_library(project_dir)
     item = _upsert_library_item(
@@ -742,6 +1041,8 @@ def add_video_character_library_item(
         video_url=video_url,
         audio_url=audio_url,
         item_id=item_id,
+        category=category,
+        folder=folder,
     )
     save_video_character_library(project_dir, items)
     return item
@@ -782,6 +1083,7 @@ def sync_mainline_assets_into_library(
             media=media,
             source=str(asset.get("source") or "upload"),
             item_id=str(asset.get("id") or "") or None,
+            category=str(asset.get("category") or "") or None,
             image_urls=[url] if media == "image" else None,
             video_url=url if media == "video" else None,
             audio_url=url if media == "audio" else None,

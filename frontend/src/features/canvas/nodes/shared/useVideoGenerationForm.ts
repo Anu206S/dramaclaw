@@ -1405,15 +1405,19 @@ export function useVideoGenerationForm(
           );
         }
         const imageUrls = allImageUrls.slice(0, imageLimit);
+        const audioLimit = referenceCaps?.audio ?? 0;
+        const audioUrls = referenceMedia
+          .filter((item) => item.kind === "audio")
+          .map((item) => item.audioUrl)
+          .slice(0, audioLimit);
         doSubmit = (targetId) =>
           submitFreezoneVideoEdit(projectId, {
             videoUrl,
             imageUrls,
+            audioUrls,
             prompt: composedPrompt,
             cameraTemplateId,
-            aspectRatio: submitAspectRatio,
             resolution: qualityToResolution(quality),
-            durationSeconds: durationClamped,
             audioSetting: "auto",
             generateAudio,
             model: selectedVideoModel?.catalogId ?? modelId,

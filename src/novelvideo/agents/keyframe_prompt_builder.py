@@ -14,7 +14,6 @@ from PIL import Image as PILImage
 from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.utils.logging import log_agent_start, log_agent_end
 
-
 # 首尾帧过渡提示词生成器指令（英文版 SuperPower）
 KEYFRAME_PROMPT_BUILDER_INSTRUCTIONS_EN = """# Cinematic Transition Director (SuperPower)
 
@@ -74,6 +73,7 @@ def create_keyframe_prompt_builder_agent(language: str = "en") -> Agent:
         "KEYFRAME_PROMPT_MODEL",
         DEFAULT_VIDEO_PROMPT_OPTIMIZER_MODEL,
         brainclaw_profile=BrainClawProfile.KEYFRAME_TRANSITION_PROMPT_GENERATION,
+        capability="text.generate.agent",
     )
     return Agent(
         model,

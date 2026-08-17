@@ -12,6 +12,7 @@ from novelvideo.official_defaults import (
     DEFAULT_TEXT_MODEL_BY_ENV,
     OFFICIAL_NEWAPI_BASE_URL,
 )
+from novelvideo.shared.runtime_env import is_ce_effective
 
 # 加载环境变量（必须在任何其他导入之前）
 load_dotenv()
@@ -127,6 +128,7 @@ def get_pydantic_model(
         preset["default_model"],
         model_name_override=model_name,
         brainclaw_profile=brainclaw_profile,
+        capability="text.generate.agent",
         timeout_seconds_override=_env_float(
             "MODEL_TIMEOUT",
             float(preset.get("timeout", 120)),
@@ -219,7 +221,7 @@ def _newapi_text_openai_provider(
                     api_key=api_key,
                     base_url=base_url,
                     timeout=timeout_seconds,
-                    max_retries=1,
+                    max_retries=0,
                     http_client=http_client,
                     default_headers=default_headers,
                 ),
@@ -274,6 +276,7 @@ def get_newapi_text_pydantic_model(
     timeout_seconds_override: float | None = None,
     brainclaw_profile=None,
     brainclaw_profile_variant=None,
+    capability: str = "text.generate",
 ):
     """Create a PydanticAI OpenAI-compatible model that routes through newAPI."""
     from novelvideo.brainclaw_contract import brainclaw_profile_headers
@@ -285,9 +288,12 @@ def get_newapi_text_pydantic_model(
         default_model,
         model_name_override=model_name_override,
     )
-    api_key, base_url = llm_config.api_key, llm_config.base_url
-    if not api_key:
-        raise ValueError("API key not set. Configure DramaClawAPI credentials.")
+    api_key, base_url = get_newapi_runtime_credentials(
+        api_key_override=llm_config.api_key,
+        base_url_override=llm_config.base_url,
+        env_api_key="MODEL_API_KEY",
+        env_base_url="MODEL_BASE_URL",
+    )
     timeout_seconds = (
         float(timeout_seconds_override)
         if timeout_seconds_override is not None
@@ -296,17 +302,41 @@ def get_newapi_text_pydantic_model(
             _env_float("NEWAPI_TEXT_TIMEOUT_SECONDS", 300.0),
         )
     )
+    profile = _get_newapi_text_model_profile(model_name)
+    default_headers = brainclaw_profile_headers(
+        brainclaw_profile,
+        profile_variant=brainclaw_profile_variant,
+        brainclaw_active=llm_config.is_brainclaw,
+    )
+    if not is_ce_effective():
+        from novelvideo.model_gateway_runtime import (
+            create_request_scoped_gateway_model,
+        )
+
+        return create_request_scoped_gateway_model(
+            model_name=model_name,
+            capability=capability,
+            timeout_seconds=timeout_seconds,
+            profile=profile,
+            default_headers=default_headers,
+            delegate_factory=_newapi_text_openai_model,
+            platform_credential_factory=lambda: get_newapi_runtime_credentials(
+                api_key_override=llm_config.api_key,
+                base_url_override=llm_config.base_url,
+                env_api_key="MODEL_API_KEY",
+                env_base_url="MODEL_BASE_URL",
+            ),
+        )
+
+    if not api_key:
+        raise ValueError("API key not set. Configure DramaClawAPI credentials.")
     return _newapi_text_openai_model(
         model_name,
         api_key=api_key,
         base_url=base_url,
         timeout_seconds=timeout_seconds,
-        profile=_get_newapi_text_model_profile(model_name),
-        default_headers=brainclaw_profile_headers(
-            brainclaw_profile,
-            profile_variant=brainclaw_profile_variant,
-            brainclaw_active=llm_config.is_brainclaw,
-        ),
+        profile=profile,
+        default_headers=default_headers,
     )
 
 

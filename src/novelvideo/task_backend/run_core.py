@@ -6,20 +6,35 @@ import asyncio
 import logging
 import os
 import time
-from typing import Any
+from typing import Any, Mapping
 
+from novelvideo.egress_context import (
+    TRUSTED_EGRESS_CONTEXT_KEY,
+    TrustedEgressContext,
+    TrustedRunnerEnvelope,
+)
+from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
 from novelvideo.ports import get_usage_meter
+from novelvideo.ports.authz import AdmissionContext
+from novelvideo.project_context import require_project_home_node
 from novelvideo.shared.billing_errors import (
     INSUFFICIENT_CREDITS_MESSAGE,
+    billing_error_payload,
+    find_billing_error,
     insufficient_credits_payload,
     is_insufficient_credits_error,
 )
+from novelvideo.task_backend.consumer import VerifiedTaskDelivery
+from novelvideo.task_backend.envelope import InvalidTaskEnvelope
 from novelvideo.task_backend.cancel import (
     TaskCancelled,
     TaskTimedOut,
     is_cancel_requested,
 )
-from novelvideo.task_backend.registry import get_project_task_runner
+from novelvideo.task_backend.registry import (
+    get_project_task_runner,
+    project_task_requires_home_node,
+)
 from novelvideo.task_backend.subprocesses import project_task_subprocess_context
 from novelvideo.task_state import project_task_run_context
 
@@ -188,6 +203,42 @@ def _clean_billing_metadata(value: Any) -> dict[str, Any]:
     return cleaned
 
 
+def _build_trusted_egress_context(
+    delivery: VerifiedTaskDelivery,
+    ctx: Any,
+    *,
+    run_task_id: str,
+) -> TrustedEgressContext:
+    admission = delivery.admission
+    if type(admission) is not AdmissionContext:
+        raise InvalidTaskEnvelope() from None
+    if (
+        type(run_task_id) is not str
+        or not run_task_id
+        or admission.requester_user_id != delivery.requester_user_id
+        or admission.root_task_id != run_task_id
+        or getattr(ctx, "project_id", None) != delivery.project_id
+        or getattr(ctx, "requester_user_id", None) != delivery.requester_user_id
+    ):
+        raise InvalidTaskEnvelope() from None
+    try:
+        return TrustedEgressContext(
+            envelope_id=delivery.envelope_id,
+            project_id=delivery.project_id,
+            task_type=delivery.task_type,
+            requester_user_id=delivery.requester_user_id,
+            root_task_id=admission.root_task_id,
+            admission_id=admission.admission_id,
+            admitted_at=admission.admitted_at,
+            membership_id=admission.membership_id,
+            authz_version=admission.authz_version,
+            billing_principal=admission.billing_principal,
+            credential=admission.credential,
+        )
+    except (TypeError, ValueError):
+        raise InvalidTaskEnvelope() from None
+
+
 def _set_project_task_metrics_context(
     ctx: Any,
     task_type: str,
@@ -215,12 +266,16 @@ def _clear_project_task_metrics_context() -> None:
     get_usage_meter().clear_llm_usage_context()
 
 
-def _feature_credit_reservation_id(metadata: dict[str, Any]) -> str:
+def feature_credit_reservation_id(metadata: Mapping[str, Any]) -> str:
+    """Read the enqueue-side reservation id a delivery carries, if any."""
     return str(
         metadata.get("feature_credit_reservation_id")
         or metadata.get("feature_credit_charge_id")
         or ""
     ).strip()
+
+
+_feature_credit_reservation_id = feature_credit_reservation_id
 
 
 async def _confirm_feature_credit_reservation(
@@ -263,7 +318,7 @@ async def _refund_feature_credit_reservation(
         )
 
 
-async def _refund_undelivered_feature_credit_reservation(
+async def refund_undelivered_feature_credit_reservation(
     reservation_id: str,
     *,
     metadata: dict[str, Any] | None = None,
@@ -272,6 +327,11 @@ async def _refund_undelivered_feature_credit_reservation(
 
     Paid provider attempts are recorded independently for platform cost
     accounting and do not turn an undelivered user task into a billable result.
+
+    Public because the reservation is taken on the enqueue side while this
+    refund lives in the worker: callers that refuse a delivery *between* those
+    two points (the inline backend below, the EE celery entrypoint) must settle
+    through this one path rather than growing a second refund.
     """
     if not reservation_id:
         return
@@ -285,6 +345,11 @@ async def _refund_undelivered_feature_credit_reservation(
             "undelivered feature credit refund remains awaiting retry: %s",
             exc,
         )
+
+
+_refund_undelivered_feature_credit_reservation = (
+    refund_undelivered_feature_credit_reservation
+)
 
 
 async def _emit_project_task_metrics(
@@ -413,6 +478,15 @@ def _project_task_failure_for_exception(
     if is_insufficient_credits_error(exc):
         return INSUFFICIENT_CREDITS_MESSAGE, insufficient_credits_payload(exc), True
 
+    billing_error = find_billing_error(exc)
+    if billing_error is not None:
+        logger.warning("typed billing failure in project task: %s", billing_error, exc_info=exc)
+        return (
+            billing_error.user_message,
+            billing_error_payload(billing_error),
+            True,
+        )
+
     try:
         from novelvideo.director_world.pano_sharp import Sharp3DUnavailable
 
@@ -485,18 +559,50 @@ def _ensure_builtin_runners_registered() -> None:
 
 
 def run_project_task_core_sync(
-    envelope: dict[str, Any],
+    delivery: VerifiedTaskDelivery,
     ctx: Any,
     manager: Any,
     *,
     run_task_id: str,
     metadata: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    task_type = str(envelope["task_type"])
-    episode = int(envelope.get("episode") or 0)
-    beat_num = envelope.get("beat_num")
-    scope = envelope.get("scope")
-    billing_metadata = _clean_billing_metadata(envelope.get("billing_metadata"))
+    if type(delivery) is not VerifiedTaskDelivery:
+        raise InvalidTaskEnvelope() from None
+
+    trusted_egress_context = _build_trusted_egress_context(
+        delivery,
+        ctx,
+        run_task_id=run_task_id,
+    )
+
+    task_type = str(delivery.task_type)
+    # Placement is checked once, here, before anything is started. Until now a
+    # misrouted task only tripped over the guard inside the first progress
+    # write, i.e. after it had already taken the dedup slot and begun working.
+    # The registry is populated lazily, so make sure it is loaded before asking
+    # it — an empty registry would read as "unregistered", not as "free".
+    _ensure_builtin_runners_registered()
+    if project_task_requires_home_node(task_type):
+        require_project_home_node(ctx, operation="run project task")
+    episode = int(delivery.episode or 0)
+    beat_num = delivery.beat_num
+    scope = delivery.scope
+    billing_metadata = _clean_billing_metadata(delivery.billing_metadata)
+    envelope = TrustedRunnerEnvelope(
+        {
+            "project_id": delivery.project_id,
+            "requester_user_id": delivery.requester_user_id,
+            "task_type": task_type,
+            "episode": episode,
+            "beat_num": beat_num,
+            "scope": scope,
+            "queue_kind": delivery.queue_kind,
+            "payload": delivery.payload,
+            TRUSTED_EGRESS_CONTEXT_KEY: trusted_egress_context,
+        }
+    )
+    if billing_metadata:
+        envelope["billing_metadata"] = billing_metadata
     run_metadata = {**dict(metadata or {}), **billing_metadata}
     feature_reservation_id = _feature_credit_reservation_id(run_metadata)
     timeout_seconds = _project_task_timeout_seconds()
@@ -537,15 +643,18 @@ def run_project_task_core_sync(
         return {"cancelled": True}
 
     try:
-        with project_task_run_context(run_task_id), project_task_subprocess_context(
-            project_id=str(envelope["project_id"]),
-            task_type=task_type,
-            episode=episode,
-            task_id=run_task_id,
-            beat_num=beat_num,
-            scope=scope,
-            deadline_monotonic=deadline_monotonic,
-            timeout_seconds=timeout_seconds,
+        with (
+            project_task_run_context(run_task_id),
+            project_task_subprocess_context(
+                project_id=str(envelope["project_id"]),
+                task_type=task_type,
+                episode=episode,
+                task_id=run_task_id,
+                beat_num=beat_num,
+                scope=scope,
+                deadline_monotonic=deadline_monotonic,
+                timeout_seconds=timeout_seconds,
+            ),
         ):
             _set_project_task_metrics_context(
                 ctx,
@@ -604,11 +713,15 @@ def run_project_task_core_sync(
                 raise RuntimeError(error)
 
             try:
-                envelope = {**envelope, "__run_task_id": run_task_id}
+                envelope["__run_task_id"] = run_task_id
                 if deadline_monotonic is not None:
                     envelope["__deadline_monotonic"] = deadline_monotonic
                     envelope["__timeout_seconds"] = timeout_seconds
-                result = runner(envelope, ctx)
+                # 唯一派发点，绑定本次投递的身份，使闸门总有一个请求作用域的
+                # 身份可读——否则「平台任务，允许」与「调用点漏传参数」都是 None。
+                # 5 个 runner 在自己函数体内另有绑定，嵌套安全（set/reset 成对）。
+                with model_gateway_scope_for_runner(envelope):
+                    result = runner(envelope, ctx)
             except BaseException as exc:
                 if isinstance(exc, TaskCancelled):
                     asyncio.run(

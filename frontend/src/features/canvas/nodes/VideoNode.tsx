@@ -54,6 +54,7 @@ import {
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import { isVideoFile, VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
 import { spawnExternalAssetNodes } from "@/features/canvas/application/spawnExternalAssets";
+import { useModelTaskAccess } from "@/lib/model-task-access";
 import {
   captureVideoFrameToNode,
   resolveCaptureSeekSec,
@@ -73,6 +74,7 @@ import { resolveNodeDisplayName } from "@/features/canvas/domain/nodeDisplay";
 import { downloadUrlAsFile } from "@/lib/browserDownload";
 import { useAlbumPendingTotal } from "@/features/canvas/nodes/shared/albumPendingTotals";
 import { canvasEventBus } from "@/features/canvas/application/canvasServices";
+import { useExternalFileHandoff } from "@/features/canvas/hooks/useExternalFileHandoff";
 import { VideoGenerationForm } from "@/features/canvas/nodes/shared/VideoGenerationForm";
 import { useVideoGenerationForm } from "@/features/canvas/nodes/shared/useVideoGenerationForm";
 import { spawnVideoAssetLibraryReferences } from "@/features/canvas/nodes/shared/assetLibraryReferenceSpawn";
@@ -242,7 +244,7 @@ export const VideoNode = memo(
     const {
       formProps: videoFormProps,
       isGenerating,
-      submitDisabled,
+      submitDisabled: formSubmitDisabled,
       submit: handleSubmit,
       quality,
       selectedVideoModelId,
@@ -253,6 +255,9 @@ export const VideoNode = memo(
       // 由 hook 内部兜底常开（重试按钮要靠 submitDisabled 拦 billing 缺失）。
       costProbeEnabled: Boolean(selected),
     });
+    // 组织成员没有发起模型任务的资格时不放行提交（含失败态重试按钮）。
+    const modelTaskAccess = useModelTaskAccess();
+    const submitDisabled = formSubmitDisabled || modelTaskAccess.blocked;
 
     const openCharacterLibrary = useCallback(() => {
       setIsCharacterLibraryOpen(true);
@@ -679,15 +684,16 @@ export const VideoNode = memo(
       });
     }, [id]);
 
-    useEffect(() => {
-      return canvasEventBus.subscribe(
-        "video-node/external-file",
-        ({ nodeId, file }) => {
-          if (nodeId !== id || !isVideoFile(file)) return;
-          void processFile(file);
-        },
-      );
-    }, [id, processFile]);
+    const consumeExternalFile = useCallback(
+      (file: File) => {
+        if (!isVideoFile(file)) return;
+        void processFile(file);
+      },
+      [processFile],
+    );
+    // File 本体由 pendingExternalFiles 暂存；即使低缩放 LOD shell 晚于事件挂载，
+    // 完整节点挂载时也会补取一次，不会留下空视频节点。
+    useExternalFileHandoff("video-node/external-file", id, consumeExternalFile);
 
     useEffect(
       () => () => {
@@ -831,7 +837,6 @@ export const VideoNode = memo(
       subtitleEraseMode,
       updateNodeData,
     ]);
-
 
     useEffect(() => {
       return subscribeNodeAction(({ nodeId, action, executionMode, requestId }) => {

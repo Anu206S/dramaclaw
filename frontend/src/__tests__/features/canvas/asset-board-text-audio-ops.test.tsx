@@ -24,6 +24,10 @@ HTMLCanvasElement.prototype.getContext = vi.fn(
 // 环境拆除时会报 onUserConsoleLog pending（scrubber 不依赖解码结果，照常渲染）。
 vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
 
+vi.mock('@/lib/model-task-access', () => ({
+  useModelTaskAccess: () => ({ blocked: false, denialReason: null, message: null }),
+}));
+
 vi.mock('react-i18next', () => ({
   // 第二参数可能是插值对象；只有字符串才当默认文案（见 asset-board-video-ops 的说明）。
   useTranslation: () => ({

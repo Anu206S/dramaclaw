@@ -731,13 +731,10 @@ def _standard_planner_units(
             )
             or f"{user_goal}，第 {number} 段：{title}"
         )
-        narration = (
-            _text(
-                raw_unit.get("narration")
-                or raw_unit.get("voiceover")
-                or raw_unit.get("dialogue")
-            )
-            or title
+        narration = _text(
+            raw_unit.get("narration")
+            or raw_unit.get("voiceover")
+            or raw_unit.get("dialogue")
         )
         duration_seconds = _positive_duration_seconds(
             raw_unit.get("duration_seconds")
@@ -910,6 +907,23 @@ def _expand_standard_skill_intent(
         user_goal=user_goal,
         resolved_inputs=resolved_inputs,
     )
+    if include_audio:
+        for index, unit in enumerate(units):
+            narration = _text(unit.get("narration"))
+            title = _text(unit.get("title"))
+            if not narration or narration == title or re.fullmatch(
+                r"(?:这是)?(?:短剧|视频)?的?第?[一二三四五六七八九十\d]+段(?:旁白|解说)[。.!！]?",
+                narration,
+            ):
+                return (
+                    intent,
+                    None,
+                    _intent_error(
+                        "speech audio requires the literal narration text; "
+                        "do not use a placeholder or a request to generate narration",
+                        path=f"planner.units.{index}.narration",
+                    ),
+                )
     items = _standard_skill_items(
         skill_id=skill_id,
         deliverable=deliverable,

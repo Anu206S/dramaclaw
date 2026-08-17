@@ -17,19 +17,24 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from novelvideo.api import OPENAPI_TAGS, api_router, register_verification_routes
 from novelvideo.api.auth import get_api_user
 from novelvideo.api.routes.files import preview_project_media_file
+from novelvideo.ports.authz import AuthzError, authz_error_payload
 from novelvideo.shared.billing_errors import (
     BILLING_RULE_NOT_CONFIGURED_MESSAGE,
     INSUFFICIENT_CREDITS_MESSAGE,
+    BillingError,
     BillingRuleNotConfiguredError,
     InsufficientCreditsError,
+    billing_error_payload,
     billing_rule_not_configured_payload,
     insufficient_credits_payload,
 )
 from novelvideo.shared.api_coverage import mount_api_coverage_middleware
 from novelvideo.task_backend.limits import (
+    ChannelTaskLimitExceeded,
     GlobalLaneQueueLimitExceeded,
     ProjectTaskLimitExceeded,
     ProjectUserTaskLimitExceeded,
+    UserTaskLimitExceeded,
 )
 
 logger = logging.getLogger("novelvideo.api.app")
@@ -158,6 +163,54 @@ def create_app() -> FastAPI:
             },
         )
 
+    @application.exception_handler(ChannelTaskLimitExceeded)
+    async def _channel_task_limit_exceeded(
+        request: Request,
+        exc: ChannelTaskLimitExceeded,
+    ) -> JSONResponse:
+        _ = request
+        return JSONResponse(
+            status_code=429,
+            content={
+                "ok": False,
+                "error": f"当前渠道 {exc.queue_kind} 队列任务已满，请等待已有任务完成后再提交",
+                "data": {
+                    "scope_kind": exc.scope_kind,
+                    "org_id": exc.org_id,
+                    "queue_kind": exc.queue_kind,
+                    "limit": exc.limit,
+                    "active": exc.active,
+                    "limit_scope": (
+                        "platform" if exc.scope_kind == "platform" else "channel"
+                    ),
+                },
+            },
+        )
+
+    @application.exception_handler(UserTaskLimitExceeded)
+    async def _user_task_limit_exceeded(
+        request: Request,
+        exc: UserTaskLimitExceeded,
+    ) -> JSONResponse:
+        _ = request
+        return JSONResponse(
+            status_code=429,
+            content={
+                "ok": False,
+                "error": (
+                    f"你在 {exc.queue_kind} 队列的在途任务已满，"
+                    "请等待自己的任务完成后再提交"
+                ),
+                "data": {
+                    "requester_user_id": exc.requester_user_id,
+                    "queue_kind": exc.queue_kind,
+                    "limit": exc.limit,
+                    "active": exc.active,
+                    "limit_scope": "user",
+                },
+            },
+        )
+
     @application.exception_handler(InsufficientCreditsError)
     async def _insufficient_credits(
         request: Request,
@@ -186,6 +239,46 @@ def create_app() -> FastAPI:
                 "ok": False,
                 "error": BILLING_RULE_NOT_CONFIGURED_MESSAGE,
                 "data": billing_rule_not_configured_payload(exc),
+            },
+        )
+
+    @application.exception_handler(BillingError)
+    async def _billing_error(
+        request: Request,
+        exc: BillingError,
+    ) -> JSONResponse:
+        _ = request
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={
+                "ok": False,
+                "error": exc.user_message,
+                "data": billing_error_payload(exc),
+            },
+        )
+
+    @application.exception_handler(AuthzError)
+    async def _authz_error(
+        request: Request,
+        exc: AuthzError,
+    ) -> JSONResponse:
+        # Without this handler the denial escaped to Starlette's
+        # ServerErrorMiddleware, which answers text/plain 500 — no machine code
+        # for the frontend and, because nothing on this path logged, no trace
+        # for whoever triages it.
+        logger.warning(
+            "organization authorization denied: code=%s status=%s method=%s path=%s",
+            exc.code,
+            exc.http_status,
+            request.method,
+            request.url.path,
+        )
+        return JSONResponse(
+            status_code=exc.http_status,
+            content={
+                "ok": False,
+                "error": exc.user_message,
+                "data": authz_error_payload(exc),
             },
         )
 
@@ -291,6 +384,10 @@ def create_app() -> FastAPI:
                         name="official-media-catalog-updater",
                     )
                 )
+
+            from novelvideo.chat.director_auto import coordinator as director_auto_coordinator
+
+            await director_auto_coordinator.resume()
         except Exception:
             logger.exception("API startup failed while connecting to control-plane")
             raise
@@ -304,6 +401,10 @@ def create_app() -> FastAPI:
             updater.cancel()
             with suppress(asyncio.CancelledError):
                 await updater
+
+        from novelvideo.chat.director_auto import coordinator as director_auto_coordinator
+
+        await director_auto_coordinator.shutdown()
 
         try:
             lifecycle = get_port("lifecycle")

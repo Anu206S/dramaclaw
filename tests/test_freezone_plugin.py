@@ -117,6 +117,19 @@ def _install_workflow_draft_api(monkeypatch, plugin, project_dir: Path) -> None:
     monkeypatch.setenv("DRAMACLAW_CANVAS_ID", "canvas-a")
 
     def fake_request(method, path, *, body=None, **_kwargs):
+        if path.endswith("/freezone/agent-capability-quote"):
+            return {
+                "ok": True,
+                "data": {
+                    "feature_key": "freezone.agent.creative_planning",
+                    "metering_enabled": True,
+                    "configured": True,
+                    "exact": True,
+                    "required_credits": 12,
+                    "display": "12 积分",
+                    "allowed": True,
+                },
+            }
         if "/workflow-drafts" not in path:
             raise AssertionError(path)
         parts = path.strip("/").split("/")
@@ -230,6 +243,8 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert planner_schema["properties"]["item_count"]["maximum"] == 12
     draft_schema = schemas["freezone_confirm_workflow_draft"]["parameters"]
     assert draft_schema["required"] == ["draft_id", "revision"]
+    prepare_draft_schema = schemas["freezone_prepare_workflow_draft"]["parameters"]
+    assert prepare_draft_schema["required"] == []
     patch_draft_schema = schemas["freezone_patch_workflow_draft"]["parameters"]
     assert patch_draft_schema["required"] == [
         "draft_id",
@@ -523,6 +538,15 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
         }
 
     monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
+    planning_quote = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+        }
+    )
+    assert planning_quote["status"] == "agent_planning_confirmation_required"
+    assert planning_quote["quote"]["display"] == "12 积分"
+
     prepared = plugin._handle_prepare_workflow_draft(
         {
             "project_id": "project-a",
@@ -533,6 +557,7 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
                 "items": ["开场", "卖点"],
             },
             "run_after_create": True,
+            "planning_confirmed": True,
         }
     )
 
@@ -540,12 +565,14 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
     assert prepared["revision"] == 1
     assert prepared["preview"]["node_count"] == 3
     assert prepared["run_after_create"] is True
+    assert "Do not mention credits" in prepared["agent_instruction"]
 
     patched = plugin._handle_patch_workflow_draft(
         {
             "draft_id": prepared["draft_id"],
             "expected_revision": 1,
             "changes": {"items": ["开场", "卖点", "收尾"]},
+            "planning_confirmed": True,
         }
     )
 
@@ -558,6 +585,7 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
             "draft_id": prepared["draft_id"],
             "expected_revision": 1,
             "changes": {"include_audio": False},
+            "planning_confirmed": True,
         }
     )
     confirmed = plugin._handle_confirm_workflow_draft(
@@ -572,6 +600,87 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(monkeypatch, 
     assert len(emitted) == 1
     assert emitted[0][0:2] == ("project-a", "canvas-a")
     assert repeated["status"] == "workflow_draft_already_confirmed"
+
+
+def test_workflow_draft_normalizes_json_intent_string(monkeypatch, tmp_path):
+    plugin = _load_plugin_module()
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "edge_count": 0,
+        "plan": {"summary": "广告", "inputs": {}, "phases": [], "nodes": [], "edges": []},
+    }
+    monkeypatch.setattr(plugin, "compile_workflow_intent", lambda intent: compiled)
+    serialized = json.dumps(
+        {
+            "schema_version": "freezone_workflow_intent.v1",
+            "skill_id": "video-ad",
+            "user_goal": "制作广告",
+        },
+        ensure_ascii=False,
+    )
+
+    result = plugin._handle_prepare_workflow_draft(
+        {"intent": serialized, "planning_confirmed": True}
+    )
+
+    assert result["ok"] is True
+    assert result["status"] == "workflow_draft_ready"
+
+
+def test_workflow_draft_returns_actionable_errors_for_wrong_phase_arguments():
+    plugin = _load_plugin_module()
+
+    wrong_tool = plugin._handle_prepare_workflow_draft(
+        {"project_id": "project-a", "canvas_id": "canvas-a", "draft_id": "draft-1"}
+    )
+    assert wrong_tool["status"] == "wrong_workflow_draft_tool"
+    assert "freezone_patch_workflow_draft" in wrong_tool["agent_instruction"]
+
+    missing_intent = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "planning_confirmed": True,
+        }
+    )
+    assert missing_intent["status"] == "workflow_intent_required_after_confirmation"
+
+    invalid_intent = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "intent": "not-json",
+        }
+    )
+    assert invalid_intent["status"] == "workflow_intent_object_required"
+    assert "execute_code" in invalid_intent["agent_instruction"]
+
+
+def test_workflow_planning_quote_skips_billing_in_ce(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_PROJECT_ID", "project-a")
+    monkeypatch.setenv("DRAMACLAW_CANVAS_ID", "canvas-a")
+    monkeypatch.setattr(
+        plugin,
+        "_request",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "data": {
+                "feature_key": "freezone.agent.creative_planning",
+                "metering_enabled": False,
+                "billing_required": False,
+                "allowed": True,
+            },
+        },
+    )
+
+    result = plugin._handle_prepare_workflow_draft({})
+
+    assert result["ok"] is True
+    assert result["status"] == "agent_planning_billing_not_required"
+    assert "Do not mention credits" in result["agent_instruction"]
 
 
 def test_workflow_draft_concurrent_confirmation_emits_once(monkeypatch, tmp_path):
@@ -618,7 +727,10 @@ def test_workflow_draft_concurrent_confirmation_emits_once(monkeypatch, tmp_path
 
     monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
     prepared = plugin._handle_prepare_workflow_draft(
-        {"intent": {"skill_id": "video-ad", "user_goal": "广告"}}
+        {
+            "intent": {"skill_id": "video-ad", "user_goal": "广告"},
+            "planning_confirmed": True,
+        }
     )
     confirm_args = {"draft_id": prepared["draft_id"], "revision": 1}
 
@@ -678,7 +790,10 @@ def test_workflow_draft_timeout_is_persisted_without_duplicate_submission(
 
     monkeypatch.setattr(plugin, "_emit_canvas_commands", fake_emit)
     prepared = plugin._handle_prepare_workflow_draft(
-        {"intent": {"skill_id": "video-ad", "user_goal": "广告"}}
+        {
+            "intent": {"skill_id": "video-ad", "user_goal": "广告"},
+            "planning_confirmed": True,
+        }
     )
     confirm_args = {"draft_id": prepared["draft_id"], "revision": 1}
 
@@ -715,7 +830,10 @@ def test_workflow_draft_patch_rejects_skill_replacement(monkeypatch, tmp_path):
     }
     monkeypatch.setattr(plugin, "compile_workflow_intent", lambda _intent: compiled)
     prepared = plugin._handle_prepare_workflow_draft(
-        {"intent": {"skill_id": "video-ad", "user_goal": "广告"}}
+        {
+            "intent": {"skill_id": "video-ad", "user_goal": "广告"},
+            "planning_confirmed": True,
+        }
     )
 
     result = plugin._handle_patch_workflow_draft(
@@ -723,6 +841,7 @@ def test_workflow_draft_patch_rejects_skill_replacement(monkeypatch, tmp_path):
             "draft_id": prepared["draft_id"],
             "expected_revision": 1,
             "changes": {"skill_id": "short-drama"},
+            "planning_confirmed": True,
         }
     )
 

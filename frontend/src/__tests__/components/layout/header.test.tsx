@@ -29,7 +29,13 @@ vi.mock("@/components/settings/settings-dialog", () => ({
 }));
 
 vi.mock("@tanstack/react-router", () => ({
-  Link: ({ children, ...props }: React.ComponentProps<"a">) => <a {...props}>{children}</a>,
+  Link: ({
+    children,
+    to,
+    ...props
+  }: React.ComponentProps<"a"> & { to?: string }) => (
+    <a href={to} {...props}>{children}</a>
+  ),
   useNavigate: () => vi.fn(),
   useParams: () => ({}),
   useRouterState: ({ select }: { select: (state: { location: { pathname: string } }) => string }) =>
@@ -163,4 +169,5 @@ describe("Header runtime gating", () => {
     });
     expect(authState.logout).toHaveBeenCalled();
   });
+
 });

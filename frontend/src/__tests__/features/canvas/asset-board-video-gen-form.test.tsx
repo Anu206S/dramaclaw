@@ -23,6 +23,10 @@ const ZH = vi.hoisted(() => ({
   'node.videoNode.placeholder': '根据文字描述生成视频。',
 }) as Record<string, string>);
 
+vi.mock('@/lib/model-task-access', () => ({
+  useModelTaskAccess: () => ({ blocked: false, denialReason: null, message: null }),
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     // 第二参数可能是插值对象（如 t(key, { count })），只有字符串才当默认文案用，

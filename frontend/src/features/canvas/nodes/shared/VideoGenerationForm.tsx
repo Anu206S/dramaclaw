@@ -39,6 +39,7 @@ import type {
   FreezoneVideoAspectRatio,
   MediaModelParameterDefinition,
 } from "@/api/ops";
+import { useModelTaskAccess } from "@/lib/model-task-access";
 import { useCanvasStore } from "@/stores/canvasStore";
 import { ReferenceTextChip } from "@/features/canvas/nodes/shared/ReferenceTextChip";
 import { ReferenceDetachButton } from "@/features/canvas/nodes/shared/ReferenceDetachButton";
@@ -1511,6 +1512,9 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
   } = props;
 
   const { t } = useTranslation();
+  // `submitDisabled` already carries the org admission block from the owning
+  // node; this is only for the button's title, so a blocked member is told why.
+  const modelTaskAccess = useModelTaskAccess();
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
   const promptEditorRef = useRef<PromptMentionEditorHandle | null>(null);
@@ -1710,7 +1714,8 @@ export const VideoGenerationForm = memo((props: VideoGenerationFormProps) => {
             title={
               isGenerating
                 ? t("node.videoNode.submitBusy")
-                : (submitDisabledReason ?? t("node.videoNode.submit"))
+                : (modelTaskAccess.message ?? submitDisabledReason ??
+                  t("node.videoNode.submit"))
             }
             onClick={(event) => {
               event.stopPropagation();
