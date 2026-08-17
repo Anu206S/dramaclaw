@@ -247,10 +247,12 @@ def get_freezone_translation_agent() -> Agent:
 def create_freezone_text_writer_agent() -> Agent:
     """创建 Freezone 自由文本生成 Agent。"""
     from novelvideo.config import get_newapi_text_pydantic_model
+    from novelvideo.brainclaw_contract import BrainClawProfile
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_TEXT_WRITER_MODEL",
         FREEZONE_TEXT_WRITER_MODEL,
+        brainclaw_profile=BrainClawProfile.FREEZONE_TEXT_GENERATION,
     )
     return Agent(
         model,
