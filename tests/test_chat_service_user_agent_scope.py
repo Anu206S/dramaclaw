@@ -2051,9 +2051,11 @@ async def test_freezone_hermes_retries_once_when_stream_ends_before_completion(
 
 
 @pytest.mark.anyio
-async def test_freezone_hermes_recovers_once_from_repeated_skill_loading(
+@pytest.mark.parametrize("guard_tool_name", ["skill", "freezone_get_canvas_context"])
+async def test_freezone_hermes_recovers_once_from_repeated_read(
     monkeypatch,
     tmp_path,
+    guard_tool_name,
 ):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
@@ -2077,7 +2079,7 @@ async def test_freezone_hermes_recovers_once_from_repeated_skill_loading(
                 raw={
                     "reason": "tool_call_guard",
                     "guard_reason": "repeated_read",
-                    "tool_name": "skill",
+                    "tool_name": guard_tool_name,
                     "had_write": False,
                 },
             )
@@ -2123,8 +2125,70 @@ async def test_freezone_hermes_recovers_once_from_repeated_skill_loading(
     assert len(prompts) == 2
     assert "创建一个图片生成工作流" in prompts[1]
     assert "FREEZONE_AUTOMATIC_RECOVERY" in prompts[1]
+    assert "Workflow Skill 的草稿流程" in prompts[1]
+    assert "不得使用 freezone_emit_canvas_command" in prompts[1]
     assert result["content"] == "工作流草稿已创建"
     assert all("重复读取同一项状态" not in str(event) for event in events)
+
+
+@pytest.mark.anyio
+async def test_freezone_hermes_does_not_replay_failed_workflow_draft_operation(
+    monkeypatch,
+    tmp_path,
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_OUTPUT_DIR", str(tmp_path / "output"))
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="agent-2",
+    )
+
+    class GuardedThread:
+        async def stream(self, prompt, *, current_project=None):
+            yield backend_sdk.ChatBackendEvent(
+                type="complete",
+                text="本轮操作已停止：工作流草稿操作重复失败。",
+                raw={
+                    "reason": "tool_call_guard",
+                    "guard_reason": "repeated_read",
+                    "tool_name": "freezone_prepare_workflow_draft",
+                    "had_write": False,
+                },
+            )
+
+    class FakePool:
+        def __init__(self) -> None:
+            self.reset_calls = 0
+
+        async def get_for_user(self, *_args, **_kwargs):
+            return GuardedThread()
+
+        async def reset_for_user(self, *_args, **_kwargs):
+            self.reset_calls += 1
+            return GuardedThread()
+
+    fake_pool = FakePool()
+    monkeypatch.setattr(chat_service, "is_hermes_backend_available", lambda: True)
+    monkeypatch.setattr(chat_service, "_write_hermes_tool_mode", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("novelvideo.chat.hermes_pool.pool", fake_pool)
+
+    result = await chat_service.stream_assistant_reply(
+        "admin",
+        "project-a",
+        "创建一个图片生成工作流",
+        lambda _event: None,
+        surface="freezone",
+        surface_context={"canvasId": "canvas-a"},
+        store_scope=scope,
+        turn_id="turn-a",
+    )
+
+    assert fake_pool.reset_calls == 0
+    assert "工作流草稿操作重复失败" in result["content"]
 
 
 @pytest.mark.anyio

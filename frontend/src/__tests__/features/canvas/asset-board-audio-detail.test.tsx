@@ -29,6 +29,10 @@ HTMLCanvasElement.prototype.getContext = vi.fn(
 // pending。scrubber（role=slider）不依赖解码结果，照常渲染。
 vi.stubGlobal('fetch', vi.fn(() => new Promise(() => {})));
 
+vi.mock('@/lib/model-task-access', () => ({
+  useModelTaskAccess: () => ({ blocked: false, denialReason: null, message: null }),
+}));
+
 vi.mock('react-i18next', () => ({
   useTranslation: () => ({
     t: (key: string, fallback?: unknown) => (typeof fallback === 'string' ? fallback : key),

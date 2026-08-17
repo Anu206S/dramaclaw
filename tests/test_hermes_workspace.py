@@ -638,8 +638,8 @@ def test_hermes_keeps_mainline_tool_call_limit_narrow():
 
 
 def test_hermes_allows_more_freezone_tool_calls():
-    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_emit_canvas_command") == 12
-    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe") == 12
+    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_emit_canvas_command") == 20
+    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe") == 20
 
 
 def test_hermes_tool_call_guard_counts_update_only_calls():

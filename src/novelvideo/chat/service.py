@@ -4444,16 +4444,24 @@ async def _stream_assistant_reply_hermes(
                         and not guard_retried
                         and guard_details.get("reason") == "tool_call_guard"
                         and guard_details.get("guard_reason") == "repeated_read"
-                        and guard_details.get("tool_name") in {"skill", "skill_view"}
+                        and guard_details.get("tool_name")
+                        not in {
+                            "freezone_prepare_workflow_draft",
+                            "freezone_patch_workflow_draft",
+                            "freezone_confirm_workflow_draft",
+                            "freezone_create_workflow_from_intent",
+                        }
                         and not guard_details.get("had_write")
                     ):
+                        guard_tool_name = str(guard_details.get("tool_name") or "").strip()
                         logger.warning(
-                            "hermes repeated skill loading; resetting and recovering once "
-                            "user=%s project=%s agent_profile=%s canvas=%s",
+                            "hermes repeated freezone read; resetting and recovering once "
+                            "user=%s project=%s agent_profile=%s canvas=%s tool=%s",
                             username,
                             project or None,
                             agent_profile,
                             canvas_id,
+                            guard_tool_name or None,
                         )
                         thread = await _hermes_pool.reset_for_user(
                             username,
@@ -4471,9 +4479,12 @@ async def _stream_assistant_reply_hermes(
                         stream_prompt = agent_prompt + """
 
 [FREEZONE_AUTOMATIC_RECOVERY]
-上一次执行因重复加载同一份 Skill 指令而被内部守卫中止。不要要求用户改写或重发请求。
-如确有必要，相关 Skill 只读取一次；随后直接根据用户原始请求创建或更新对应的 Workflow、Skill 或 Recipe 草稿。
-不要重复读取同一项状态；完成实际操作后再回复结果。
+上一次执行因重复读取同一份 Skill、画布上下文或节点状态而被内部守卫中止。不要要求用户改写或重发请求。
+复用上一次已经获得的信息，不要再次重复读取同一项；确有必要时，同一项最多读取一次。
+如果用户原始请求是创建或更新动态工作流，必须继续遵守已选 Workflow Skill 的草稿流程：
+报价查询、Skill 规划包读取和工作流草稿准备各最多调用一次；不得使用 freezone_emit_canvas_command
+或逐节点创建来绕过工作流草稿、用户确认与确定性校验。若仍缺少决定性信息，只询问一个有针对性的问题。
+完成用户原始请求后再回复结果。
 [/FREEZONE_AUTOMATIC_RECOVERY]"""
                         guard_retried = True
                         restart_stream = True

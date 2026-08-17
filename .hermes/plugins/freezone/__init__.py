@@ -3396,6 +3396,39 @@ def _planning_confirmed_arg(args: dict[str, Any]) -> bool:
     return args.get("planning_confirmed") is True or args.get("planningConfirmed") is True
 
 
+def _normalize_workflow_intent_arg(args: dict[str, Any]) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    """Normalize structured intent input and return an actionable validation error."""
+
+    raw_intent = args.get("intent")
+    if raw_intent is None:
+        return None, None
+    if isinstance(raw_intent, dict):
+        return raw_intent, None
+    if isinstance(raw_intent, str):
+        try:
+            decoded = json.loads(raw_intent)
+        except json.JSONDecodeError:
+            decoded = None
+        if isinstance(decoded, dict):
+            return decoded, None
+    return None, {
+        "ok": False,
+        "status": "workflow_intent_object_required",
+        "code": "workflow_intent_object_required",
+        "error": "intent 必须是结构化对象，不能是字符串或代码片段。",
+        "expected": {
+            "schema_version": "freezone_workflow_intent.v1",
+            "skill_id": "已选 Workflow Skill 的 id",
+            "user_goal": "用户的原始工作流目标",
+        },
+        "agent_instruction": (
+            "Do not call execute_code and do not serialize intent as a string. "
+            "Call freezone_prepare_workflow_draft with intent as a JSON object, "
+            "including skill_id and user_goal."
+        ),
+    }
+
+
 def _agent_planning_confirmation_result(project_id: str) -> str:
     response = _request(
         "POST",
@@ -3643,9 +3676,39 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if scope_error:
         return tool_result(scope_error)
     assert project_id is not None and canvas_id is not None
+    if any(str(args.get(key) or "").strip() for key in ("draft_id", "draftId")):
+        return tool_result(
+            {
+                "ok": False,
+                "status": "wrong_workflow_draft_tool",
+                "code": "wrong_workflow_draft_tool",
+                "error": "准备草稿不接受 draft_id；请使用 freezone_patch_workflow_draft 或 freezone_confirm_workflow_draft。",
+                "agent_instruction": (
+                    "Do not retry freezone_prepare_workflow_draft with draft_id. "
+                    "Use freezone_patch_workflow_draft for changes or "
+                    "freezone_confirm_workflow_draft for the confirmed draft."
+                ),
+            }
+        )
+    intent, intent_error = _normalize_workflow_intent_arg(args)
+    if intent_error is not None:
+        return tool_result(intent_error)
     if not _planning_confirmed_arg(args):
         return _agent_planning_confirmation_result(project_id)
-    intent = args.get("intent")
+    if intent is None:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_intent_required_after_confirmation",
+                "code": "workflow_intent_required_after_confirmation",
+                "error": "确认规划报价后，必须提供完整的 intent 对象才能生成草稿。",
+                "agent_instruction": (
+                    "Call freezone_prepare_workflow_draft exactly once with "
+                    "planning_confirmed=true and a structured intent object containing "
+                    "skill_id and user_goal."
+                ),
+            }
+        )
     compiled = compile_workflow_intent(intent)
     if not compiled.get("ok"):
         return tool_result(compiled)
@@ -5656,9 +5719,12 @@ TOOLS = (
         _schema(
             "freezone_prepare_workflow_draft",
             (
-                "Before planning confirmation, call without intent to return the exact Agent credit "
-                "quote without compiling. After the user explicitly confirms, call with intent and "
-                "planning_confirmed=true to compile and persist the deterministic preview."
+                "This tool has two explicit phases. First call without intent exactly once to return "
+                "the Agent planning quote; if billing is not required, continue in the same turn. "
+                "Only after quote confirmation (or a no-billing result), call exactly once with "
+                "intent as a JSON object and planning_confirmed=true to compile and persist the "
+                "deterministic preview. Do not pass draft_id, do not pass intent as a string, and "
+                "do not use execute_code. Use freezone_patch_workflow_draft for an existing draft."
             ),
             {
                 **_SCOPE_PROPS,

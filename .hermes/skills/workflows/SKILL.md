@@ -14,7 +14,7 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 
 读取 Skill 规划包后，Agent 只决定用户目标、结构化输入、作品/镜头 PlanItems、每项使用的允许 Recipe、真实输入依赖、是否生成素材锚点和是否自动执行。调用 `freezone_prepare_workflow_draft` 后，节点数据、稳定 ID、连线类型、分组、布局和成片合成由工具确定性完成。用户调整方案时调用 `freezone_patch_workflow_draft`，确认后调用 `freezone_confirm_workflow_draft`。不得调用 `freezone_build_workflow_plan`，也不得用通用画布命令手写工作流。
 
-如果用户只是咨询或分析，只展示一般性说明，不创建草稿或写画布。用户提出具体创建需求后，先调用一次 `freezone_prepare_workflow_draft(intent=...)`，使用工具返回的精确预览向用户确认；不要根据 Intent 自己推算节点清单。只有用户明确要求 Skill 蓝图无法表达的自定义拓扑时，才使用完整 `freezone_create_workflow_graph(plan=...)` 兼容入口。
+如果用户只是咨询或分析，只展示一般性说明，不创建草稿或写画布。用户提出具体创建需求后，必须先使用当前已选的唯一 Skill 调用一次 `freezone_prepare_workflow_draft` 获取规划报价（不传 `intent`）；如果需要用户确认报价，立即停止本轮。报价无需确认时，才读取这一个 Skill 的紧凑规划包并生成结构化 `intent`，随后以 `planning_confirmed=true` 调用一次 `freezone_prepare_workflow_draft`。不要在报价前生成 intent、不要加载其它候选 Skill、不要根据 Intent 自己推算节点清单。只有用户明确要求 Skill 蓝图无法表达的自定义拓扑时，才使用完整 `freezone_create_workflow_graph(plan=...)` 兼容入口。
 
 “再创建一个 / 再来一个 / 再添加一个 / 重新建一个 / 复制一个同类型工作流”都属于创建请求。当前画布已经存在相同工作流时，不要改为查询列表、解释已有工作流、复用旧节点或等待用户重新选择，仍然创建一个新的工作流实例。
 
@@ -28,8 +28,8 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 
 动态工作流必须按以下顺序执行：
 
-1. 使用 Hermes 本轮已经加载的原生 Workflow Skill；没有唯一 Skill 时让用户通过输入框 `/` 选择。
-2. 调用 `freezone_get_workflow_skill(compact=true)` 读取 Skill、Recipe 规划摘要、能力约束和 `input_contract`。
+1. 使用 Hermes 本轮已经加载的原生 Workflow Skill；没有唯一 Skill 时先用 `skills_list` 展示候选，让用户通过输入框 `/` 选择。已选 Skill 不得再做语义路由或加载其它候选。
+2. 只有报价确认完成（或 CE 返回无需计费）后，才调用一次 `freezone_get_workflow_skill(compact=true)` 读取该 Skill 的 Recipe 规划摘要、能力约束和 `input_contract`。
 3. 使用 `input_contract.resolved` 展示用户值、工具从原话确定性提取的值和默认值；`fields[].source=inferred` 表示工具已从时长、画幅、执行模式等明确措辞中提取，不要再次分析或追问。只追问 `missing_required` 或修正 `errors`，已有素材和明确参数不要重复询问。`requires_confirmation=true` 时，在方案确认中一并确认这些值，不创建 Skill Session。
 4. 生成精简 `freezone_workflow_intent.v1`：只写 `skill_id`、`user_goal`、当前 `inputs`、PlanItems 和必要选项。每个 item 使用语义化 `id`、`title`、`prompt`、一个来自 `available_recipes` 的 `recipe_id`，并用 `depends_on` 声明真实输入依赖；需要配音时再提供只含实际朗读正文的 `narration`。当图片或视频节点需要根据上游剧本、分镜或 Shot List 生成时，必须把对应文本 PlanItem 写入 `depends_on`；当它还需要角色、场景、道具等生成素材作为实际参考时，再把这些素材写入 `reference_inputs`。每个视频 item 的 `prompt` 必须说明所对应 Shot 或 Shot Group 的具体叙事、动作和目标，不能只写“开场日常”“镜头一”等泛化标题。不要把时间码、时长、语气、环境音、音效或配乐说明写入 `narration`。调用 `freezone_prepare_workflow_draft` 编译并保存，记录返回的 `draft_id` 和 `revision`。不要生成画布 nodes/edges、UUID、连线类型、布局或分组。
 5. 缺少素材但允许从文字创建时，把素材锚点作为第一个 PlanItem，选择同一 Skill 允许的、`requires_source_media=false` 且输出类型匹配的 Recipe；后续依赖项通过 `depends_on` 引用该语义 item id。
