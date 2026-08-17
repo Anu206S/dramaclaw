@@ -54,6 +54,7 @@ import {
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import { isVideoFile, VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
 import { spawnExternalAssetNodes } from "@/features/canvas/application/spawnExternalAssets";
+import { useModelTaskAccess } from "@/lib/model-task-access";
 import {
   captureVideoFrameToNode,
   resolveCaptureSeekSec,
@@ -243,7 +244,7 @@ export const VideoNode = memo(
     const {
       formProps: videoFormProps,
       isGenerating,
-      submitDisabled,
+      submitDisabled: formSubmitDisabled,
       submit: handleSubmit,
       quality,
       selectedVideoModelId,
@@ -254,6 +255,9 @@ export const VideoNode = memo(
       // 由 hook 内部兜底常开（重试按钮要靠 submitDisabled 拦 billing 缺失）。
       costProbeEnabled: Boolean(selected),
     });
+    // 组织成员没有发起模型任务的资格时不放行提交（含失败态重试按钮）。
+    const modelTaskAccess = useModelTaskAccess();
+    const submitDisabled = formSubmitDisabled || modelTaskAccess.blocked;
 
     const openCharacterLibrary = useCallback(() => {
       setIsCharacterLibraryOpen(true);
@@ -833,7 +837,6 @@ export const VideoNode = memo(
       subtitleEraseMode,
       updateNodeData,
     ]);
-
 
     useEffect(() => {
       return subscribeNodeAction(({ nodeId, action, executionMode, requestId }) => {

@@ -52,6 +52,7 @@ import { NodeGenerationOverlay } from '@/features/canvas/ui/NodeGenerationOverla
 import { CanvasNodeImage } from '@/features/canvas/ui/CanvasNodeImage';
 import { useAlbumPendingTotal } from '@/features/canvas/nodes/shared/albumPendingTotals';
 import { downloadUrlAsFile } from '@/lib/browserDownload';
+import { useModelTaskAccess } from '@/lib/model-task-access';
 import {
   CANVAS_NODE_INPUT_BODY_FRAME_CLASS,
   CANVAS_NODE_INPUT_SURFACE_CLASS,
@@ -159,7 +160,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   const {
     formProps: imageGenerationFormProps,
     isGenerating,
-    submitDisabled,
+    submitDisabled: formSubmitDisabled,
     submit: handleSubmit,
     canAutoCommitOnGenerate,
     referenceImageUrl,
@@ -485,6 +486,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     updateNodeInternals(id);
   }, [id, resolvedHeight, resolvedWidth, updateNodeInternals]);
 
+  // 组织成员没有发起模型任务的资格时不放行提交（节点动作、失败重试与面板按钮
+  // 都从这里拿 submitDisabled）。其余提交可用性判断已下沉到 useImageGenerationForm。
+  const modelTaskAccess = useModelTaskAccess();
+  const submitDisabled = formSubmitDisabled || modelTaskAccess.blocked;
 
   useEffect(() => {
     return subscribeNodeAction(({ nodeId, action, executionMode, requestId }) => {

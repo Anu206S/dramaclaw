@@ -53,6 +53,27 @@
       }
     }
   },
+  "organization": {
+    "unavailable": "Organization access checks are unavailable in this edition.",
+    "access": {
+      "title": "Model access",
+      "loading": "Loading model access",
+      "retry": "Retry access",
+      "back": "Back to projects",
+      "available": "Model tasks available",
+      "unavailable": "Model tasks unavailable",
+      "reasons": {
+        "MODEL_ACCESS_DENIED": "Model access is disabled for this account.",
+        "ORG_MEMBERSHIP_INACTIVE": "Your organization membership is inactive.",
+        "ORG_SUSPENDED": "This organization is suspended.",
+        "ORG_CREDENTIAL_MISSING": "The organization has no available gateway key.",
+        "ORG_CREDENTIAL_DISABLED": "The organization gateway key is unavailable.",
+        "ORG_CREDENTIAL_GATEWAY_MISMATCH": "The organization gateway key was bound to a different gateway. Ask an administrator to rebind it.",
+        "ORG_AUTHZ_STALE": "Your access changed. Refresh before trying again.",
+        "generic": "Model access is currently unavailable."
+      }
+    }
+  },
   "notifications": {
     "title": "Notification Center",
     "close": "Close notification center",
@@ -545,6 +566,7 @@
     "short": "Credits",
     "openPanel": "Open credit panel",
     "personalAccount": "Personal credit account",
+    "orgAccount": "Credits allocated to you",
     "details": "View details",
     "earned": "Earned",
     "spent": "Spent",
@@ -555,8 +577,16 @@
     "back": "Back",
     "centerTitle": "Credit center",
     "centerDescription": "Review your unified balance, settlements, refunds, and available promotions.",
+    "orgScopeBadge": "Allocated credits",
+    "orgCenterDescription": "Review the credit allocation your organization gave you, plus settlements and refunds.",
+    "orgScopeNotice": "The balance and activity below come from the organization credits allocated to you by {{name}}. Your task usage is charged to that allocation.",
+    "orgBalance": "Available balance",
+    "dormantPersonalBalance": "Personal credits (not usable here)",
+    "dormantPersonalHint": "These credits stay in your personal account. This account settles against organization credits and will not draw on them.",
+    "lowBalanceNotice": "Your available balance of {{balance}} has reached the reminder threshold of {{threshold}} set by your organization. Contact an organization admin to top up your allocation.",
     "pendingAmount": "{{amount}} credits are pending settlement",
     "availablePromotions": "Available promotions",
+    "orgPromotionBadge": "Organization promotion",
     "promotionDisclaimer": "Final discounts depend on the live quote for the feature, model, and domain.",
     "endsAt": "Ends {{time}}",
     "longTerm": "No end date",
@@ -4848,5 +4878,17 @@
     "zoom": "Zoom",
     "zoomIn": "Zoom in",
     "zoomOut": "Zoom out"
+  },
+  "modelTaskAccess": {
+    "blocked": {
+      "MODEL_ACCESS_DENIED": "Model access is disabled for this account. Contact your organization administrator.",
+      "ORG_MEMBERSHIP_INACTIVE": "Your organization membership is inactive. Contact your organization administrator.",
+      "ORG_SUSPENDED": "This organization is suspended, so generation is unavailable.",
+      "ORG_CREDENTIAL_MISSING": "The organization has no gateway key bound. Ask your organization administrator to bind one.",
+      "ORG_CREDENTIAL_DISABLED": "The organization gateway key is unavailable. Contact your organization administrator.",
+      "ORG_CREDENTIAL_GATEWAY_MISMATCH": "The organization gateway key is bound to a different gateway. Ask your organization administrator to rebind it.",
+      "ORG_AUTHZ_STALE": "Your access changed. Refresh before trying again.",
+      "generic": "Generation is unavailable right now. Refresh or contact your organization administrator."
+    }
   }
 }
