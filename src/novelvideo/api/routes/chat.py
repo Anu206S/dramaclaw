@@ -21,13 +21,17 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import AliasChoices, BaseModel, Field
 
 from novelvideo.api.auth import (
+    AGENT_WRITE_SCOPES,
     AUTH_COOKIE_NAME,
-    get_api_user,
+    UNSUPPORTED_QUERY_CREDENTIALS,
     _verify_agent_bearer,
     _verify_browser_session,
+    get_api_user,
 )
 from novelvideo.api.deps import list_user_projects
+from novelvideo.api.egress_binding import request_egress_scope
 from novelvideo.chat import service as chat_service
+from novelvideo.chat.hermes_egress import EgressBoundaryError
 from novelvideo.chat.hermes_pool import canvas_bridge_dir_for_profile
 from novelvideo.chat.director_auto import coordinator as director_auto_coordinator
 from novelvideo.chat.live_events import (
@@ -57,11 +61,17 @@ from novelvideo.freezone.agent_capability_billing import (
 )
 from novelvideo.ports import get_product_surface_access, get_usage_meter
 from novelvideo.ports.local.usage import NoOpUsageMeter
-from novelvideo.project_context import ProjectContext, resolve_project_context
+from novelvideo.project_context import (
+    ProjectContext,
+    resolve_project_context,
+    user_id_from_api_user,
+)
 from novelvideo.shared.billing_errors import (
     BILLING_RULE_NOT_CONFIGURED_MESSAGE,
     INSUFFICIENT_CREDITS_MESSAGE,
+    billing_error_payload,
     billing_rule_not_configured_payload,
+    find_billing_error,
     find_billing_rule_not_configured_error,
     find_insufficient_credits_error,
     insufficient_credits_payload,
@@ -72,6 +82,11 @@ logger = logging.getLogger(__name__)
 
 AI_ASSISTANT_CHAT_FEATURE_KEY = "assistant.chat"
 EMPTY_AGENT_REPLY_MESSAGE = "这轮操作没有收到虾导的有效回复，请稍后重试。"
+
+# 出网台账里这条链路的 capability 口径。取自
+# `chat/hermes_egress.py:131` 的 `capability="agent.hermes.text"`，与 EG-07 对齐；
+# 绑定侧与账本侧必须是同一个字符串，不另取。
+HERMES_TEXT_EGRESS_TASK_TYPE = "agent.hermes.text"
 
 
 @router.post("/chat/cancel")
@@ -370,7 +385,9 @@ async def append_chat_notification(
             str(scope.id),
             text,
             project_dir=project_ctx.output_dir if project_ctx is not None else None,
-            project_state_dir=project_ctx.state_dir if project_ctx is not None else None,
+            project_state_dir=(
+                project_ctx.state_dir if project_ctx is not None else None
+            ),
         )
     else:
         message = chat_store.append_message(username, scope, "assistant", text)
@@ -1393,14 +1410,76 @@ async def _receive_bridge_results_during_turn(
 
 
 async def _authenticate_ws(websocket: WebSocket) -> dict[str, Any]:
+    if websocket.headers.get("X-API-Key"):
+        raise HTTPException(status_code=401, detail="unsupported credential")
+    if any(name in websocket.query_params for name in UNSUPPORTED_QUERY_CREDENTIALS):
+        raise HTTPException(status_code=401, detail="unsupported credential")
+
     bearer = websocket.headers.get("Authorization", "").strip()
     if bearer:
-        token = bearer.partition(" ")[2].strip() if bearer.lower().startswith("bearer ") else ""
-        if token:
-            return await _verify_agent_bearer(token)
+        token = (
+            bearer.partition(" ")[2].strip()
+            if bearer.lower().startswith("bearer ")
+            else ""
+        )
+        if not token:
+            raise HTTPException(status_code=401, detail="invalid authorization")
+        return await _verify_agent_bearer(token)
 
     cookie_value = websocket.cookies.get(AUTH_COOKIE_NAME)
     return await _verify_browser_session(cookie_value)
+
+
+def _scope_for_authenticated_user(user: dict[str, Any]) -> ChatScope:
+    if user.get("credential_kind") != "agent_session":
+        return ChatScope(kind="home")
+    kind = str(user.get("current_scope_kind") or "home")
+    project_id = user.get("current_project_id")
+    if kind == "project" and project_id:
+        return ChatScope(kind="project", id=str(project_id))
+    if kind == "home":
+        return ChatScope(kind="home")
+    raise HTTPException(status_code=403, detail="agent scope unavailable")
+
+
+def _enforce_agent_chat_scope(
+    user: dict[str, Any],
+    scope: ChatScope,
+    *,
+    require_write: bool,
+) -> None:
+    if user.get("credential_kind") != "agent_session":
+        return
+    current = _scope_for_authenticated_user(user)
+    if current.kind != scope.kind or current.id != scope.id:
+        raise HTTPException(status_code=403, detail="agent scope mismatch")
+    if require_write and set(user.get("scopes") or []).isdisjoint(AGENT_WRITE_SCOPES):
+        raise HTTPException(status_code=403, detail="agent write scope missing")
+
+
+async def _reauthenticate_ws_event(
+    websocket: WebSocket,
+    *,
+    original_user: dict[str, Any],
+    scope: ChatScope,
+    require_write: bool,
+) -> dict[str, Any]:
+    fresh = await _authenticate_ws(websocket)
+    original_id = str(original_user.get("id") or original_user.get("user_id") or "")
+    fresh_id = str(fresh.get("id") or fresh.get("user_id") or "")
+    original_kind = original_user.get("credential_kind") or "browser_session"
+    fresh_kind = fresh.get("credential_kind") or "browser_session"
+    if not original_id or fresh_id != original_id or fresh_kind != original_kind:
+        raise HTTPException(status_code=403, detail="principal changed")
+    _enforce_agent_chat_scope(fresh, scope, require_write=require_write)
+    return fresh
+
+
+async def _close_ws_unauthorized(websocket: WebSocket) -> None:
+    await _send_json_best_effort(
+        websocket, {"type": "error", "message": "unauthorized"}
+    )
+    await websocket.close(code=1008)
 
 
 def _scope_from_model(model: ChatScopePayload | None) -> ChatScope:
@@ -1467,7 +1546,9 @@ def _attachment_context_block(attachments: list[ChatAttachmentIn]) -> str:
     return "\n".join(lines)
 
 
-def _text_with_attachment_context(text: str, attachments: list[ChatAttachmentIn]) -> str:
+def _text_with_attachment_context(
+    text: str, attachments: list[ChatAttachmentIn]
+) -> str:
     block = _attachment_context_block(attachments)
     return f"{text}\n\n{block}" if block else text
 
@@ -1536,10 +1617,7 @@ async def _requester_user_id_for_chat(user: dict[str, Any], scope: ChatScope) ->
         project_ctx = await _project_context_for_scope(user, scope)
         if project_ctx is not None and project_ctx.requester_user_id:
             return project_ctx.requester_user_id
-    user_id = str(user.get("id") or user.get("user_id") or "").strip()
-    if user_id:
-        return user_id
-    return str(user.get("username") or "").strip()
+    return await user_id_from_api_user(user)
 
 
 def _assistant_surface_code(scope: ChatScope) -> str:
@@ -1606,7 +1684,9 @@ async def _history(
             username,
             str(scope.id),
             project_dir=project_ctx.output_dir if project_ctx is not None else None,
-            project_state_dir=project_ctx.state_dir if project_ctx is not None else None,
+            project_state_dir=(
+                project_ctx.state_dir if project_ctx is not None else None
+            ),
         )
     if _is_freezone_scope(scope):
         return chat_store.list_messages(
@@ -1631,7 +1711,7 @@ async def _send_scope_changed(
         project_ctx = None
         if not await _send_json_best_effort(
             websocket,
-            {"type": "error", "message": "项目不存在或已删除，已切回首页聊天。"}
+            {"type": "error", "message": "项目不存在或已删除，已切回首页聊天。"},
         ):
             return None
     if not await _send_json_best_effort(
@@ -1640,8 +1720,10 @@ async def _send_scope_changed(
             "type": "scope.changed",
             "scope": scope.to_dict(),
             "history": await _history(username, scope, project_ctx=project_ctx),
-            "busy": chat_service.chat_run_lock_is_active(username, _chat_run_lock_project_for_scope(scope)),
-        }
+            "busy": chat_service.chat_run_lock_is_active(
+                username, _chat_run_lock_project_for_scope(scope)
+            ),
+        },
     ):
         return None
     return scope
@@ -2334,8 +2416,14 @@ async def _stream_project_turn(
 ) -> None:
     project = str(scope.id)
     project_ctx = await _project_context_for_scope(user, scope)
-    project_dir = project_ctx.output_dir if project_ctx is not None else None
-    project_state_dir = project_ctx.state_dir if project_ctx is not None else None
+    if project_ctx is None:
+        # `ChatScope.from_payload`（`chat/store.py:82-83`）保证 project 态的 id 非空，
+        # 所以这里在本分支里够不着。够不着也必须 fail-closed：没有 registry 校验过的
+        # 身份就没法判定出网身份，绕过绑定直接开聊正是 OI-61 那条漏。
+        # 不新造错误码，复用既有词汇。
+        raise EgressBoundaryError("ORG_CONTEXT_REQUIRED")
+    project_dir = project_ctx.output_dir
+    project_state_dir = project_ctx.state_dir
     storage_scope = (
         _chat_store_scope_for_project_context(store_scope, project_ctx)
         if store_scope is not None
@@ -2589,19 +2677,34 @@ async def _stream_project_turn(
             )
 
     try:
-        await chat_service.stream_assistant_reply(
-            username,
-            project,
-            agent_text,
-            on_event,
-            project_dir=project_dir,
-            project_state_dir=project_state_dir,
-            surface=surface,
-            surface_context=surface_context,
-            store_scope=storage_scope,
-            turn_id=turn_id,
-            route_prompt=display_text,
-        )
+        # 请求路径上唯一的出网身份绑定点。放在这里而不是分发块，是为了复用
+        # `_project_context_for_scope` 已经解出的 `ProjectContext`——身份取值只走
+        # registry 校验过的 `project_ctx`，不用客户端输入的 `scope.id`，也不新增
+        # 第二次身份解析（第二条信任链就是第二个漏洞面）。
+        # 非组织身份（平台／个人／CE local／灰度未开）下 `request_egress_scope`
+        # 什么都不绑并 yield `None`；`egress_context=None` 照传，
+        # `service.py` 的 `if egress_context is not None` 会把它当平台路径跳过，
+        # 平台行为逐字节不变。刻意不写成 if/else 两条调用路径。
+        async with request_egress_scope(
+            requester_user_id=project_ctx.requester_user_id,
+            project_id=project_ctx.project_id,
+            task_type=HERMES_TEXT_EGRESS_TASK_TYPE,
+        ) as egress_context:
+            await chat_service.stream_assistant_reply(
+                username,
+                project,
+                agent_text,
+                on_event,
+                project_dir=project_dir,
+                project_state_dir=project_state_dir,
+                egress_context=egress_context,
+                requester_user_id=project_ctx.requester_user_id,
+                surface=surface,
+                surface_context=surface_context,
+                store_scope=storage_scope,
+                turn_id=turn_id,
+                route_prompt=display_text,
+            )
     finally:
         heartbeat_task.cancel()
         bridge_result_receive_task.cancel()
@@ -2632,12 +2735,14 @@ async def _stream_project_turn(
 async def _stream_home_turn(
     *,
     websocket: WebSocket,
+    user: dict[str, Any],
     username: str,
     scope: ChatScope,
     text: str,
     attachments: list[ChatAttachmentIn],
     turn_id: str,
 ) -> None:
+    from novelvideo.chat.hermes_egress import HOME_SCOPE_EGRESS_PROJECT_ID
     from novelvideo.chat.hermes_pool import pool as hermes_pool
 
     before_projects = set(list_user_projects(username))
@@ -2658,11 +2763,47 @@ async def _stream_home_turn(
         media=_attachment_payloads(attachments),
         turn_id=turn_id,
     )
-    thread = await hermes_pool.get_for_user(
-        username,
-        scope_kind="home",
-        project_id=None,
-    )
+    # home 态请求路径上唯一的出网身份绑定点。`_stream_home_turn` 是一段绕开
+    # `chat/service.py` 的独立流式循环，所以绑定必须在这里就地做——OI-61 只补了
+    # project 态，home 态因此漏到了 OI-63。
+    #
+    # 身份解析复用既有 helper，不另发明第二条信任链；home 分支会落到
+    # `user_id_from_api_user(user)`。
+    #
+    # 出网 project 身份用哨兵 `HOME_SCOPE_EGRESS_PROJECT_ID`：`TrustedEgressContext`
+    # 的 `project_id` 有非空不变量，而 home 态的**会话**身份必须是 None。两者是
+    # 两个口径，所以下面 `get_for_user` 里 `project_id` 与 `egress_project_id`
+    # 各传各的——哨兵只喂出网比对，不得漏进子进程的 DRAMACLAW_PROJECT_ID。
+    #
+    # 哨兵必须两跳一致：绑定、换 authorization、取号三处同值，否则
+    # `_strict_admission` 在 `authorize_credentialed_hermes` 与
+    # `build_hermes_child_env` 两处各比一次，任一处不一致即 TASK_ENVELOPE_INVALID。
+    #
+    # 非组织身份下 `request_egress_scope` 什么都不绑并 yield `None`，
+    # `authorize_hermes_launch` 随之返回 `None`，平台路径逐字节不变。
+    # 刻意不写成 if/else 两条调用路径。
+    requester_user_id = await _requester_user_id_for_chat(user, scope)
+    async with request_egress_scope(
+        requester_user_id=requester_user_id,
+        project_id=HOME_SCOPE_EGRESS_PROJECT_ID,
+        task_type=HERMES_TEXT_EGRESS_TASK_TYPE,
+    ) as egress_context:
+        authorization = await chat_service.authorize_hermes_launch(
+            egress_context=egress_context,
+            username=username,
+            requester_user_id=requester_user_id,
+            egress_project_id=HOME_SCOPE_EGRESS_PROJECT_ID,
+            prompt=agent_text,
+        )
+        thread = await hermes_pool.get_for_user(
+            username,
+            scope_kind="home",
+            # 会话身份：home 态恒为 None。出网身份走 egress_project_id。
+            project_id=None,
+            egress_project_id=HOME_SCOPE_EGRESS_PROJECT_ID,
+            requester_user_id=requester_user_id,
+            authorization=authorization,
+        )
 
     assistant_text = ""
     assistant_sent_text = ""
@@ -2773,7 +2914,9 @@ async def _stream_home_turn(
                     send_lock,
                 )
             elif event.type == "assistant_delta":
-                assistant_text = chat_service._merge_stream_text(assistant_text, event.text)
+                assistant_text = chat_service._merge_stream_text(
+                    assistant_text, event.text
+                )
                 display_text = chat_service._strip_replayed_chat_response(
                     assistant_text,
                     previous_assistant,
@@ -2872,7 +3015,9 @@ async def _stream_home_turn(
                     send_lock,
                 )
             elif event.type == "complete":
-                assistant_text = _completion_text_or_existing(event.text, assistant_text)
+                assistant_text = _completion_text_or_existing(
+                    event.text, assistant_text
+                )
 
         assistant_text = chat_service._strip_replayed_chat_response(
             assistant_text,
@@ -2955,13 +3100,19 @@ async def chat_ws(websocket: WebSocket) -> None:
     try:
         user = await _authenticate_ws(websocket)
     except Exception:
-        await websocket.send_json({"type": "error", "message": "unauthorized"})
-        await websocket.close(code=1008)
+        await _close_ws_unauthorized(websocket)
         return
 
     username = str(user["username"])
-    current_scope = ChatScope(kind="home")
-    current_scope = await _send_scope_changed(websocket, user, username, current_scope)
+    try:
+        current_scope = _scope_for_authenticated_user(user)
+        _enforce_agent_chat_scope(user, current_scope, require_write=False)
+        current_scope = await _send_scope_changed(
+            websocket, user, username, current_scope
+        )
+    except Exception:
+        await _close_ws_unauthorized(websocket)
+        return
     if current_scope is None:
         return
     await register_chat_websocket(websocket, username=username, scope=current_scope)
@@ -2989,7 +3140,19 @@ async def chat_ws(websocket: WebSocket) -> None:
             if event_type == "scope.set":
                 msg = ScopeSetIn.model_validate(raw)
                 requested_scope = _scope_from_model(msg.scope)
-                current_scope = await _send_scope_changed(websocket, user, username, requested_scope)
+                try:
+                    user = await _reauthenticate_ws_event(
+                        websocket,
+                        original_user=user,
+                        scope=requested_scope,
+                        require_write=False,
+                    )
+                except Exception:
+                    await _close_ws_unauthorized(websocket)
+                    return
+                current_scope = await _send_scope_changed(
+                    websocket, user, username, requested_scope
+                )
                 if current_scope is None:
                     return
                 await register_chat_websocket(
@@ -3066,7 +3229,8 @@ async def chat_ws(websocket: WebSocket) -> None:
 
             if event_type != "chat.message":
                 await _send_json_best_effort(
-                    websocket, {"type": "error", "message": f"unsupported event: {event_type}"}
+                    websocket,
+                    {"type": "error", "message": f"unsupported event: {event_type}"},
                 )
                 continue
 
@@ -3077,9 +3241,21 @@ async def chat_ws(websocket: WebSocket) -> None:
             user_text = (msg.user_text or "").strip() or text
             if not text:
                 await _send_json_best_effort(
-                    websocket, {"type": "error", "turn_id": turn_id, "message": "empty message"}
+                    websocket,
+                    {"type": "error", "turn_id": turn_id, "message": "empty message"},
                 )
                 continue
+
+            try:
+                user = await _reauthenticate_ws_event(
+                    websocket,
+                    original_user=user,
+                    scope=scope,
+                    require_write=True,
+                )
+            except Exception:
+                await _close_ws_unauthorized(websocket)
+                return
 
             try:
                 await _require_ai_assistant_access(user=user, scope=scope)
@@ -3100,6 +3276,7 @@ async def chat_ws(websocket: WebSocket) -> None:
                 elif scope.kind == "home":
                     await _stream_home_turn(
                         websocket=websocket,
+                        user=user,
                         username=username,
                         scope=scope,
                         text=text,
@@ -3136,7 +3313,9 @@ async def chat_ws(websocket: WebSocket) -> None:
                             "type": "error",
                             "turn_id": turn_id,
                             "message": BILLING_RULE_NOT_CONFIGURED_MESSAGE,
-                            "data": billing_rule_not_configured_payload(billing_rule_error),
+                            "data": billing_rule_not_configured_payload(
+                                billing_rule_error
+                            ),
                         },
                     )
                     continue
@@ -3149,6 +3328,18 @@ async def chat_ws(websocket: WebSocket) -> None:
                             "turn_id": turn_id,
                             "message": INSUFFICIENT_CREDITS_MESSAGE,
                             "data": insufficient_credits_payload(insufficient_error),
+                        },
+                    )
+                    continue
+                billing_error = find_billing_error(exc)
+                if billing_error is not None:
+                    await _send_json_best_effort(
+                        websocket,
+                        {
+                            "type": "error",
+                            "turn_id": turn_id,
+                            "message": billing_error.user_message,
+                            "data": billing_error_payload(billing_error),
                         },
                     )
                     continue

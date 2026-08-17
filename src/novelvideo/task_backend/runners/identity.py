@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 from typing import Any
 
+from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -28,22 +29,29 @@ def _build_identity_planner_result(
     }
 
 
-def run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
-    return asyncio.run(
-        await_envelope_with_cancel_watch(
-            _run_identity_planner(envelope, ctx),
-            envelope,
-            task_type="identity_planner",
+def run_identity_planner(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any] | None:
+    with model_gateway_scope_for_runner(envelope):
+        return asyncio.run(
+            await_envelope_with_cancel_watch(
+                _run_identity_planner(envelope, ctx),
+                envelope,
+                task_type="identity_planner",
+            )
         )
-    )
 
 
-async def _run_identity_planner(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+async def _run_identity_planner(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any]:
     from novelvideo.agents.identity_planner import IdentityPlanner
     from novelvideo.cognee import CogneeStore
     from novelvideo.sqlite_store import SQLiteStore
 
-    episode = int(envelope.get("episode") or (envelope.get("payload") or {}).get("episode") or 0)
+    episode = int(
+        envelope.get("episode") or (envelope.get("payload") or {}).get("episode") or 0
+    )
     manager = get_task_manager()
 
     def update(
