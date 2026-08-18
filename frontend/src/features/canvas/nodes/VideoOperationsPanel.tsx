@@ -37,12 +37,14 @@ import {
 import { formatResolutionLabel } from "@/features/canvas/domain/mediaModelOptions";
 import {
   isHappyHorseVideoModel,
+  isSeedance25VideoModel,
   isVideoModeSupportedByModel,
   videoModeForcesAutomaticAspectRatio,
   videoModelDefaultGenerateAudio,
   videoModelReferenceDisabledReason,
   videoOutputFollowsSourceVideo,
 } from "@/features/canvas/nodes/shared/videoModelCapabilities";
+import { extendPromptPrefix } from "@/features/canvas/application/videoExtendClip";
 import { resolveImageDisplayUrl } from "@/features/canvas/application/imageData";
 import { VIDEO_FILE_ACCEPT } from "@/features/canvas/application/videoFileTypes";
 import { spawnExternalAssetNodes } from "@/features/canvas/application/spawnExternalAssets";
@@ -187,6 +189,9 @@ function audioReferenceFileName(item: {
     return null;
   }
 }
+
+/** 智能续写把模型 / 模式钉死时给出的统一理由，模型选择器和模式选择器共用一句。 */
+const EXTEND_LOCK_REASON = "智能续写仅支持 Seedance 2.5 的全能参考模式";
 
 interface VideoOperationsPanelProps {
   id: string;
@@ -385,6 +390,41 @@ export function VideoOperationsPanel({
       (videoBillingRuleMissing
         ? t("common.billingRuleNotConfiguredShort")
         : null);
+    // 「智能续写」的两条锁：模型只能是 Seedance 2.5、模式只能是全能参考。
+    //
+    // 跟片段重拍不一样，这里不把选择器藏起来 —— 续写节点是要接着往下编辑的
+    // （改提示词、再生成一版），把模型/模式整块藏了，用户会以为这节点是个死物。
+    // 所以照常露出来，只是把别的选项置灰 + 给出理由。
+    const isExtendMode = Boolean(data.isExtendMode);
+    const extendPrefixText =
+      isExtendMode &&
+      typeof data.extendStartMs === "number" &&
+      typeof data.extendEndMs === "number"
+        ? extendPromptPrefix(
+            typeof data.extendSourceName === "string" ? data.extendSourceName : "",
+            { startMs: data.extendStartMs, endMs: data.extendEndMs },
+          )
+        : null;
+    const extendPrefix = useMemo(() => {
+      if (!extendPrefixText) return null;
+      const sourceVideo = referenceMedia.find((item) => item.kind === "video");
+      return {
+        text: extendPrefixText,
+        // 两个地址都是后端原始地址，直接塞进 <img>/<video> 会打不开（OSS 默认域名
+        // 强制下载），跟旁边的引用素材缩略图走同一条 resolve。thumbUrl 是懒生成的，
+        // 常常为空 —— 那就退回视频本身画首帧，跟 ReferenceVideoChip 一个路子。
+        thumbnailUrl:
+          sourceVideo && sourceVideo.kind === "video" && sourceVideo.thumbUrl
+            ? resolveImageDisplayUrl(sourceVideo.thumbUrl)
+            : null,
+        videoUrl:
+          sourceVideo && sourceVideo.kind === "video"
+            ? resolveImageDisplayUrl(sourceVideo.videoUrl)
+            : null,
+        title: extendPrefixText,
+      };
+    }, [extendPrefixText, referenceMedia]);
+
     // 给每个 referenceMedia 条目补上「同类型序号 + 是否在当前模式上限内」。
     // 当前 genMode 在 REFERENCE_CAPS_BY_MODE 里没有条目（如 textToVideo /
     // imageToVideo / imageReference），统一按 within=true 处理；下游 chip /
@@ -657,6 +697,8 @@ export function VideoOperationsPanel({
                       upstreamCounts={
                         isHappyHorseModel ? upstreamTypeCounts : upstreamCounts
                       }
+                      restrictToMode={isExtendMode ? "allReference" : undefined}
+                      restrictReason={EXTEND_LOCK_REASON}
                       onChange={(nextMode) =>
                         updateNodeData(id, {
                           genMode: nextMode,
@@ -683,7 +725,7 @@ export function VideoOperationsPanel({
                     />
                   ))}
                 </div>
-                {referenceMedia.length > 0 && (
+                {!data.isReshootMode && !isExtendMode && referenceMedia.length > 0 && (
                   <ReferenceMediaRow
                     items={referenceMediaCapInfo}
                     caps={referenceCaps}
@@ -696,6 +738,24 @@ export function VideoOperationsPanel({
                   />
                 )}
               </div>
+
+              {/* 片段重拍 / 智能续写的引用只有原片一个，挤在工具条尾巴上会被右边的
+                  展开按钮推得老远；单独起一行贴左放，跟下面的提示词对齐成一列。 */}
+              {(data.isReshootMode || isExtendMode) && referenceMedia.length > 0 && (
+                <div className="flex shrink-0 items-center overflow-x-auto px-3 pb-2">
+                  <ReferenceMediaRow
+                    items={referenceMediaCapInfo}
+                    caps={referenceCaps}
+                    genMode={genMode}
+                    onFocus={(nodeId) => setSelectedNode(nodeId)}
+                    onDetach={handleDetachUpstream}
+                    onReorder={(ids) =>
+                      updateNodeData(id, { referenceOrder: ids })
+                    }
+                    containerClassName=""
+                  />
+                </div>
+              )}
 
               <PromptMentionEditor
                 ref={promptEditorRef}
@@ -716,10 +776,27 @@ export function VideoOperationsPanel({
                 }}
                 onKeyDown={(event) => event.stopPropagation()}
                 candidates={mentionCandidates}
+                prefix={extendPrefix}
+                onPrefixRemove={
+                  extendPrefix
+                    ? () =>
+                        // 前缀就是这个节点的续写身份：删掉它，节点退回一个普通视频
+                        // 节点（模型 / 功能一并解锁），而不是留下一个锁死 2.5 + 全能
+                        // 参考、却没有任何续写指令的空壳。
+                        updateNodeData(id, {
+                          isExtendMode: false,
+                          extendSourceName: undefined,
+                          extendStartMs: undefined,
+                          extendEndMs: undefined,
+                        })
+                    : undefined
+                }
                 placeholder={
-                  upstreamTextJoined.length > 0
-                    ? "上游内容已自动接入，可继续补充提示词…"
-                    : t("node.videoNode.placeholder")
+                  extendPrefix
+                    ? "请输入需要续写的内容"
+                    : upstreamTextJoined.length > 0
+                      ? "上游内容已自动接入，可继续补充提示词…"
+                      : t("node.videoNode.placeholder")
                 }
                 className={`nodrag nowheel min-h-0 w-full flex-1 overflow-y-auto whitespace-pre-wrap break-words border-none bg-transparent px-3 py-2 text-sm leading-6 text-text-dark outline-none ${CANVAS_NODE_INPUT_PLACEHOLDER_CLASS}`}
               />
@@ -760,6 +837,12 @@ export function VideoOperationsPanel({
                     domain="video"
                     popoverPlacement="top"
                     getOptionDisabledReason={(model) =>
+                      // 智能续写先过一道：时间码前缀是写给 2.5 的全能参考的，换任何
+                      // 一个模型这个节点都白做，所以其余项直接给出理由置灰。
+                      (isExtendMode &&
+                      !isSeedance25VideoModel(model.apiModel ?? model.id)
+                        ? EXTEND_LOCK_REASON
+                        : null) ??
                       // 传整个 ModelOption,不要塌成 id —— 能力口径以后台「媒体模型」
                       // 声明的 supportedModes 为准,只传 id 会退到启发式,把目录里的
                       // 改动整个丢掉(例如后台下掉 HappyHorse 的视频编辑后,它在这里
@@ -919,6 +1002,13 @@ interface GenModeSelectProps {
   modelId: string | null | undefined;
   supportedModes?: string[];
   upstreamCounts: { videos: number; images: number; audios: number };
+  /**
+   * 只允许这一个模式（智能续写用）。其余项一律置灰并给出 `restrictReason`，
+   * 而不是按上游素材现算——现算出来的理由说的是「素材不够」，跟真正的原因
+   * （这个节点本来就只走这一种模式）对不上。
+   */
+  restrictToMode?: VideoGenMode;
+  restrictReason?: string;
   onChange: (next: VideoGenMode) => void;
 }
 
@@ -1005,7 +1095,15 @@ export function videoModeDisabledReason(
   return null;
 }
 
-function GenModeSelect({ value, modelId, supportedModes, upstreamCounts, onChange }: GenModeSelectProps) {
+function GenModeSelect({
+  value,
+  modelId,
+  supportedModes,
+  upstreamCounts,
+  restrictToMode,
+  restrictReason,
+  onChange,
+}: GenModeSelectProps) {
   const { t } = useTranslation();
   const triggerRef = useRef<HTMLButtonElement>(null);
   const popoverRef = useRef<HTMLDivElement>(null);
@@ -1104,12 +1202,15 @@ function GenModeSelect({ value, modelId, supportedModes, upstreamCounts, onChang
         >
           {visibleTabs.map((tab) => {
             const isActive = tab.key === value;
-            const disabledReason = videoModeDisabledReason(
-              tab.key,
-              modelId,
-              upstreamCounts,
-              supportedModes,
-            );
+            const disabledReason =
+              restrictToMode && tab.key !== restrictToMode
+                ? (restrictReason ?? "该节点不支持切换生成模式")
+                : videoModeDisabledReason(
+                    tab.key,
+                    modelId,
+                    upstreamCounts,
+                    supportedModes,
+                  );
             const isDisabled = disabledReason != null && !isActive;
             // 禁用按钮在多数浏览器里不触发 mouse 事件，hover 提示挂在外层 div 上；
             // 提示气泡定位到菜单右侧，与设计稿一致。
@@ -1724,6 +1825,8 @@ interface ReferenceMediaRowProps {
   onDetach: (nodeId: string) => void;
   // 拖动 chip 换位后，回传新的「按可视顺序排列的上游节点 id 列表」。
   onReorder: (orderedNodeIds: string[]) => void;
+  /** 挂在工具条尾巴上时要留 ml-4 拉开距离；单独占一行时要贴左，所以留个口子。 */
+  containerClassName?: string;
 }
 
 function ReferenceMediaRow({
@@ -1733,6 +1836,7 @@ function ReferenceMediaRow({
   onFocus,
   onDetach,
   onReorder,
+  containerClassName = 'ml-4',
 }: ReferenceMediaRowProps) {
   // 同时管理整行音频的「当前播放节点」—— 同一时间只允许一个 audio chip 在
   // 播放。点击另一个会切换；再点同一个会暂停。
@@ -1765,7 +1869,7 @@ function ReferenceMediaRow({
   );
 
   return (
-    <div className="ml-4 flex shrink-0 items-center gap-1.5">
+    <div className={`flex shrink-0 items-center gap-1.5 ${containerClassName}`}>
       {items.map((entry) => {
         const { item, typeIndex, withinCap } = entry;
         // 「超出当前模式上限」只在 REFERENCE_CAPS_BY_MODE 里登记过的模式生效。
