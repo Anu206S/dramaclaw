@@ -8,6 +8,10 @@ import { AssetBoardView } from '@/features/canvas/ui/asset-board/AssetBoardView'
 import { useCanvasStore } from '@/stores/canvasStore';
 
 // ImageViewerModal（AssetBoardView 内常驻挂载）用到 useTranslation。
+vi.mock('@/lib/model-task-access', () => ({
+  useModelTaskAccess: () => ({ blocked: false, denialReason: null, message: null }),
+}));
+
 vi.mock('react-i18next', () => ({
   // 第二参数可能是插值对象（如 t(key, { count })，视频生成表单的「生成数量」用到），
   // 只有字符串才当默认文案；否则会把对象当 React 子节点渲染而炸掉整棵树。

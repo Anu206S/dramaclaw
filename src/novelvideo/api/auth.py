@@ -30,6 +30,8 @@ UNSAFE_METHODS = {"POST", "PUT", "PATCH", "DELETE"}
 AGENT_WRITE_SCOPES = {"projects:write", "tasks:submit"}
 PROJECT_PATH_RE = re.compile(r"/projects/([^/]+)")
 LOCAL_TRUST_HOSTS = {"127.0.0.1", "::1", "localhost"}
+UNSUPPORTED_QUERY_CREDENTIALS = {"token", "access_token", "api_key"}
+_EFFECTIVE_ACCESS_DENIED = "effective access denied"
 
 
 def _bearer_token_from_request(request: Request) -> Optional[str]:
@@ -98,9 +100,19 @@ async def _verify_browser_session(raw_cookie: str | None) -> dict:
         raise HTTPException(status_code=503, detail="auth backend not initialised")
     except AuthError as exc:
         if exc.reason == AuthFailureReason.MISSING:
-            detail = exc.detail or "Missing session or agent token"
-            raise HTTPException(status_code=401, detail=detail)
+            raise HTTPException(
+                status_code=401, detail="Missing session or agent token"
+            )
+        if (
+            exc.reason == AuthFailureReason.USER_SUSPENDED
+            or exc.detail == _EFFECTIVE_ACCESS_DENIED
+        ):
+            raise HTTPException(status_code=403, detail="Access denied")
         raise HTTPException(status_code=401, detail="Invalid session")
+    except Exception:
+        raise HTTPException(
+            status_code=503, detail="Authentication service unavailable"
+        ) from None
 
 
 async def _verify_agent_bearer(token: str) -> dict:
@@ -108,9 +120,27 @@ async def _verify_agent_bearer(token: str) -> dict:
     try:
         return await get_auth_session_port().verify_agent_session(token)
     except port_registry.PortNotRegistered:
-        raise HTTPException(status_code=401, detail="Agent sessions require control plane")
-    except AuthError:
+        raise HTTPException(
+            status_code=401, detail="Agent sessions require control plane"
+        )
+    except AuthError as exc:
+        if (
+            exc.reason == AuthFailureReason.USER_SUSPENDED
+            or exc.detail == _EFFECTIVE_ACCESS_DENIED
+        ):
+            raise HTTPException(status_code=403, detail="Access denied")
         raise HTTPException(status_code=401, detail="Invalid agent session")
+    except Exception:
+        raise HTTPException(
+            status_code=503, detail="Authentication service unavailable"
+        ) from None
+
+
+def _reject_unsupported_credential_classes(request: Request) -> None:
+    if request.headers.get("X-API-Key"):
+        raise HTTPException(status_code=401, detail="Unsupported credential")
+    if any(name in request.query_params for name in UNSUPPORTED_QUERY_CREDENTIALS):
+        raise HTTPException(status_code=401, detail="Unsupported credential")
 
 
 def _enforce_agent_request_boundary(request: Request, user: dict) -> None:
@@ -133,11 +163,7 @@ def _enforce_agent_request_boundary(request: Request, user: dict) -> None:
         if current_kind != "project" or current_project != requested_project:
             raise HTTPException(
                 status_code=403,
-                detail=(
-                    "agent session scope mismatch: "
-                    f"current={current_kind}:{current_project}, "
-                    f"requested=project:{requested_project}"
-                ),
+                detail="Agent session scope mismatch",
             )
 
     if request.method.upper() in UNSAFE_METHODS:
@@ -150,14 +176,12 @@ async def get_api_user(
     request: Request,
 ) -> dict:
     """Verify browser session or agent session credentials."""
+    _reject_unsupported_credential_classes(request)
     bearer = _bearer_token_from_request(request)
     if bearer:
         user = await _verify_agent_bearer(bearer)
         _enforce_agent_request_boundary(request, user)
         return user
-
-    if request.headers.get("X-API-Key") and AUTH_COOKIE_NAME not in request.cookies:
-        raise HTTPException(status_code=401, detail="Missing session or agent token")
 
     if _is_local_trusted_agent_request(request):
         return _local_trusted_agent_user()
@@ -232,14 +256,7 @@ def require_project_scope(needed: str) -> Callable[[str, dict], dict]:
 
 async def verify_credential_for_request(request: Request) -> dict | None:
     """Best-effort credential recheck for middleware / long-lived streams."""
-    bearer = _bearer_token_from_request(request)
-    if bearer:
-        try:
-            return await _verify_agent_bearer(bearer)
-        except Exception:  # noqa: BLE001 - middleware fallback path
-            return None
-
     try:
-        return await _verify_browser_session(request.cookies.get(AUTH_COOKIE_NAME))
+        return await get_api_user(request)
     except Exception:  # noqa: BLE001 - middleware fallback path
         return None

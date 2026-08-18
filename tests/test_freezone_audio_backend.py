@@ -404,6 +404,7 @@ async def test_freezone_audio_preset_speech_does_not_require_reference_voice(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     calls: list[dict] = []
+    local_egress_context = object()
 
     async def fake_write_edge_tts_speech(**kwargs):
         calls.append(kwargs)
@@ -426,6 +427,7 @@ async def test_freezone_audio_preset_speech_does_not_require_reference_voice(
         # Previously generated workflows may still carry this retired default.
         preset_model="qwen3-tts-flash",
         preset_voice="Serena",
+        egress_context=local_egress_context,
     )
 
     assert result.model == "edge-tts"
@@ -437,8 +439,42 @@ async def test_freezone_audio_preset_speech_does_not_require_reference_voice(
             "output_path": freezone_audio_speech_output_path(tmp_path, "speech-preset-1"),
             "input_text": "欢迎使用运动相机。",
             "voice": "zh-CN-XiaoxiaoNeural",
+            "egress_context": local_egress_context,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_edge_preset_writer_forwards_egress_context(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+    local_egress_context = object()
+
+    class FakeEdgeTTSGenerator:
+        def __init__(self, *, voice, egress_context=None):
+            captured.update(voice=voice, egress_context=egress_context)
+
+        async def generate(self, **_kwargs):
+            return SimpleNamespace(success=True)
+
+    monkeypatch.setattr(
+        "novelvideo.generators.tts_generator.EdgeTTSGenerator",
+        FakeEdgeTTSGenerator,
+    )
+
+    await audio_node._write_edge_tts_speech(
+        output_path=tmp_path / "speech.mp3",
+        input_text="测试旁白。",
+        voice="zh-CN-XiaoxiaoNeural",
+        egress_context=local_egress_context,
+    )
+
+    assert captured == {
+        "voice": "zh-CN-XiaoxiaoNeural",
+        "egress_context": local_egress_context,
+    }
 
 
 @pytest.mark.asyncio

@@ -37,6 +37,8 @@ server {
     root /usr/share/nginx/html;
     index index.html;
 
+    access_log /var/log/nginx/access.log combined;
+
     # Larger upload window for ingest/audio assets posted through /api.
     client_max_body_size 200m;
 
