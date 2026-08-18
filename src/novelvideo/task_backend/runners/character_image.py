@@ -102,7 +102,7 @@ async def _run_character_image(
     ctx: ProjectContext,
 ) -> dict[str, Any] | None:
     from novelvideo.cognee import CogneeStore
-    from novelvideo.project_config import load_project_config_file
+    from novelvideo.project_config import load_project_config_file_from_state_dir
 
     payload = envelope.get("payload") or {}
     mode = str(payload["mode"])
@@ -129,14 +129,18 @@ async def _run_character_image(
         )
 
     update(0.10, "加载角色数据...")
-    store = CogneeStore(ctx.owner_project_label, output_dir=str(output_dir))
+    store = CogneeStore(
+        ctx.owner_project_label,
+        output_dir=str(output_dir),
+        state_dir=str(ctx.state_dir),
+    )
     await store.initialize()
     await store.load_graph_state()
     try:
         character = await store.get_character_from_graph(character_name)
         if character is None:
             raise RuntimeError(f"找不到角色: {character_name}")
-        project_config = load_project_config_file(ctx.owner_username, ctx.project_name)
+        project_config = load_project_config_file_from_state_dir(ctx.state_dir)
         ethnicity = project_config.get("ethnicity", "Chinese")
 
         update(0.25, "准备生成参数...")
@@ -144,6 +148,7 @@ async def _run_character_image(
             output_path = await _generate_character_portrait(
                 character=character,
                 ethnicity=ethnicity,
+                state_dir=str(ctx.state_dir),
                 output_dir=output_dir,
                 style=style,
                 model=model,
@@ -157,6 +162,7 @@ async def _run_character_image(
                 store=store,
                 character=character,
                 ethnicity=ethnicity,
+                state_dir=str(ctx.state_dir),
                 identity_id=identity_id,
                 identity_name=identity_name,
                 output_dir=output_dir,
@@ -171,6 +177,7 @@ async def _run_character_image(
             output_path = await _generate_identity_image(
                 character=character,
                 ethnicity=ethnicity,
+                state_dir=str(ctx.state_dir),
                 identity_id=identity_id,
                 identity_name=identity_name,
                 output_dir=output_dir,
@@ -198,6 +205,7 @@ async def _generate_character_portrait(
     *,
     character,
     ethnicity: str,
+    state_dir: str,
     output_dir: Path,
     style: str,
     model: str,
@@ -227,6 +235,7 @@ async def _generate_character_portrait(
             ethnicity=ethnicity,
             model=model,
             project_dir=str(output_dir),
+            state_dir=state_dir,
             usage_task_type=task_type,
             usage_scope=scope,
             raise_on_error=True,
@@ -244,6 +253,7 @@ async def _generate_identity_portrait(
     store,
     character,
     ethnicity: str,
+    state_dir: str,
     identity_id: str,
     identity_name: str,
     output_dir: Path,
@@ -279,6 +289,7 @@ async def _generate_identity_portrait(
             ethnicity=ethnicity,
             model=model,
             project_dir=str(output_dir),
+            state_dir=state_dir,
             usage_task_type=task_type,
             usage_scope=scope,
             identity_name=identity.identity_name,
@@ -302,6 +313,7 @@ async def _generate_identity_image(
     *,
     character,
     ethnicity: str,
+    state_dir: str,
     identity_id: str,
     identity_name: str,
     output_dir: Path,
@@ -374,6 +386,7 @@ async def _generate_identity_image(
             style=style,
             model=model,
             project_dir=str(output_dir),
+            state_dir=state_dir,
             costume_image_path=costume_image if has_costume_image else "",
             usage_task_type=task_type,
             usage_scope=scope,

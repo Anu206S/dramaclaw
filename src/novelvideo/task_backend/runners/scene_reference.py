@@ -78,7 +78,11 @@ async def _run_scene_reference_asset(
         )
 
     update(0.10, "加载场景数据...")
-    store = CogneeStore(ctx.owner_project_label, output_dir=str(output_dir))
+    store = CogneeStore(
+        ctx.owner_project_label,
+        output_dir=str(output_dir),
+        state_dir=str(ctx.state_dir),
+    )
     await store.initialize()
     try:
         scene = await store.sqlite_store.get_scene(scene_name)
@@ -95,6 +99,7 @@ async def _run_scene_reference_asset(
             username=ctx.owner_username,
             project=ctx.project_name,
             project_dir=str(output_dir),
+            state_dir=str(ctx.state_dir),
         )
         style_prompt = str(preset.get("style_instructions", "") or "").strip()
         avoid_instructions = str(preset.get("avoid_instructions", "") or "").strip()
