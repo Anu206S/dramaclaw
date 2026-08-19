@@ -162,6 +162,24 @@ def _read_owner_only(path: Path) -> bytes:
         raise ValueError(f"{path.name} must be an owner-only regular file")
     return path.read_bytes()
 
+def _binary_key_bytes(raw: bytes) -> bytes:
+    """Return a binary key without mangling it.
+
+    ``bytes.strip()`` removes every ASCII whitespace byte from both ends, and a
+    random 32-byte key begins or ends with one about 5% of the time. That either
+    shortens the key below the minimum — a loud failure — or, worse, leaves a
+    still-long-enough key whose two ends disagree, so the same file derives
+    different ids on either side of the protocol with nothing to signal it.
+
+    Only a single trailing newline is removed, because that is the artefact an
+    editor or ``echo`` adds. Nothing is ever taken from the front.
+    """
+    if raw.endswith(b"\r\n"):
+        return raw[:-2]
+    if raw.endswith(b"\n"):
+        return raw[:-1]
+    return raw
+
 
 class ControlCapabilityIssuer:
     """Mints one capability per agent turn.
@@ -185,7 +203,7 @@ class ControlCapabilityIssuer:
 
         self.signing_key_id = signing_key_id
         self.signing_key = _load_keyring_secret(keyring_path, signing_key_id)
-        self.grouping_key = _read_owner_only(grouping_key_path).strip()
+        self.grouping_key = _binary_key_bytes(_read_owner_only(grouping_key_path))
         if len(self.grouping_key) < 32:
             raise ValueError("grouping key is too short")
         if self.grouping_key == self.signing_key:

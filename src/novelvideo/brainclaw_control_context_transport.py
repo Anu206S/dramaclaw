@@ -131,7 +131,7 @@ class ControlContextRuntime:
         self.grouping_key: bytes | None = None
         self.grouping_key_epoch = grouping_key_epoch
         if grouping_key_path is not None:
-            self.grouping_key = _read_owner_only(grouping_key_path).strip()
+            self.grouping_key = _binary_key_bytes(_read_owner_only(grouping_key_path))
             if len(self.grouping_key) < 32:
                 raise ValueError("BrainClaw control context grouping key is too short")
             if self.grouping_key == self.signing_key:
@@ -197,6 +197,24 @@ def _read_owner_only(path: Path) -> bytes:
     if not stat.S_ISREG(info.st_mode) or stat.S_IMODE(info.st_mode) & 0o077:
         raise ValueError(f"{path.name} must be an owner-only regular file")
     return path.read_bytes()
+
+def _binary_key_bytes(raw: bytes) -> bytes:
+    """Return a binary key without mangling it.
+
+    ``bytes.strip()`` removes every ASCII whitespace byte from both ends, and a
+    random 32-byte key begins or ends with one about 5% of the time. That either
+    shortens the key below the minimum — a loud failure — or, worse, leaves a
+    still-long-enough key whose two ends disagree, so the same file derives
+    different ids on either side of the protocol with nothing to signal it.
+
+    Only a single trailing newline is removed, because that is the artefact an
+    editor or ``echo`` adds. Nothing is ever taken from the front.
+    """
+    if raw.endswith(b"\r\n"):
+        return raw[:-2]
+    if raw.endswith(b"\n"):
+        return raw[:-1]
+    return raw
 
 
 def _load_keyring_secret(path: Path, key_id: str) -> bytes:
