@@ -258,6 +258,10 @@ def test_freezone_hermes_worker_disables_skill_manage(
     )
 
     assert env["DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE"] == "1"
+    assert env["DRAMACLAW_HERMES_TOOL_DENY"] == ",".join(
+        hermes_pool.FREEZONE_HERMES_TOOL_DENY
+    )
+    assert "terminal" in env["DRAMACLAW_HERMES_TOOL_DENY"]
     assert env["PYTHONPATH"].split(os.pathsep)[0] == str(tmp_path / ".dramaclaw-python")
 
 

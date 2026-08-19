@@ -24,7 +24,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 - **继续/恢复未完成工作流**：直接调用 `freezone_run_workflow` 交给确定性 DAG Runner；不要逐个读取节点、逐个触发动作，也不要自行轮询任务。一次运行返回失败后，根据返回的错误类别暂停并说明下一步，不要在同一请求或后续自动恢复中反复修改节点。
 - **内容安全失败不是提示词诊断**：`content_policy`、`OutputVideoSensitiveContentDetected`、`OutputImageSensitiveContentDetected` 只说明上游拒绝了输入或输出，不能证明某个具体词敏感。除非上游错误明确指出具体字段或内容，禁止声称“全息”“服务器机柜”等词触发审核，禁止靠猜词反复改写提示词。
 - **审核失败的返工边界**：内容安全失败不可自动重试，也不可由 Agent 自主修改提示词。先保留原提示词和原始错误，向用户说明是输入素材审核还是输出内容审核；只有用户明确要求修改某个节点的提示词时，才修改该节点一次。修改后再次失败就暂停，等待用户更换素材、调整创意方向或手动编辑，不得继续换词试错。
-- **动态工作流**：工作流选择只使用 Hermes 原生 Skill 机制。用户可在输入框键入 `/` 选择 Workflow Skill；未显式选择且存在多个候选时，使用 `skills_list` 展示并让用户选择。加载后生成精简 `freezone_workflow_intent.v1`，调用 `freezone_prepare_workflow_draft` 得到确定性预览；调整时调用 `freezone_patch_workflow_draft`，确认后调用 `freezone_confirm_workflow_draft`。对于 `ecommerce-ad`、`text-to-image-video`、`video-tutorial`、`short-drama-quick`，优先传 `planner={mode:"standard", item_count, total_duration_seconds, deliverable, include_audio, units}`，其中 `units` 只描述每段的标题、内容、旁白和可选 `duration_seconds`；不要为标准流程选择 Recipe 或编写依赖。用户指定总时长时必须传 `total_duration_seconds`，编译器会为未指定时长的片段进行确定性分配。只有用户明确要求特殊拓扑时才传完整 `items`；自定义视频 item 必须传 `duration_seconds`，并确保所有视觉片段时长之和等于用户目标时长。自定义音频 item 必须用 `audio_kind:"speech"` 或 `audio_kind:"music"` 区分朗读正文与音乐生成指令。`speech` item 的 `narration` 必须填写实际要朗读的原文，禁止填写“根据脚本生成旁白”一类任务说明。不要使用固定 `workflow_type`，不要手写画布命令，也不要调用旧的模板 Plan Builder。
+- **动态工作流**：工作流选择只使用 Hermes 原生 Skill 机制。用户可在输入框键入 `/` 选择 Workflow Skill；未显式选择且存在多个候选时，使用 `skills_list` 展示并让用户选择。加载后生成精简 `freezone_workflow_intent.v1`，调用 `freezone_prepare_workflow_draft` 得到确定性预览；调整时调用 `freezone_patch_workflow_draft`，确认后调用 `freezone_confirm_workflow_draft`。对于 `ecommerce-ad`、`text-to-image-video`、`video-tutorial`、`short-drama-quick`，优先传 `planner={mode:"standard", item_count, total_duration_seconds, deliverable, include_audio, units}`，其中 `units` 只描述每段的标题、内容、旁白和可选 `duration_seconds`；`include_audio=true` 时每个 unit 都必须带 `narration`（该段实际朗读的原文，不能缺省、不能写占位说明）；不要为标准流程选择 Recipe 或编写依赖。用户指定总时长时必须传 `total_duration_seconds`，编译器会为未指定时长的片段进行确定性分配。只有用户明确要求特殊拓扑时才传完整 `items`；自定义视频 item 必须传 `duration_seconds`，并确保所有视觉片段时长之和等于用户目标时长；自定义音频 item 用 `audio_kind:"speech"`（narration 填实际朗读原文）或 `audio_kind:"music"` 区分。不要使用固定 `workflow_type`，不要手写画布命令，也不要调用旧的模板 Plan Builder。草稿校验失败时按返回的 `errors`/`hint` 修正后重试即可，不要读插件源码。
 - **Skill Studio 配置类**：用户明确要求创建、编辑、保存、沉淀 Skill / Recipe / 技能 / 配方时，这是 catalog 配置草稿流程，不是画布写入，也不是纯文本完成。不要调用画布写入工具，不要声称已保存；需要澄清方向时调用 `freezone_request_user_clarification`，生成或修改草稿时按 `freezone_begin_agent_catalog_draft` → `freezone_put_agent_catalog_skill` → `freezone_put_agent_catalog_recipe` → `freezone_finish_agent_catalog_draft` 的分片流程提交，由 Freezone bridge 触发前端卡片展示。
 - **编写或沉淀 Skill / Recipe**：用户要求创建、编写、编辑、总结、抽成、沉淀或保存 Skill / Recipe 时，必须读取 `references/skill-studio-authoring-guide.md`。先判定来源模式再做能力建模：从用户一句话新建时，不要把当前画布当来源；只有用户明确说当前画布/流程/选中节点时，才做画布工作流分析；不要只按 tool schema 字段或节点类型摘要。
 - **全画布理解**：用户要求总结、理解或沉淀整张画布时，优先使用 canvas ontology / canvas summary；不要为了全局理解逐个读取所有节点详情。只有缺少关键字段时，才少量补读关键节点。
@@ -95,6 +95,7 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 ## 画布写入原则（精简版）
 
 - 画布操作类请求的**第一输出必须是 Freezone 写入工具调用**。在写入工具调用前，禁止输出任何面向用户的文字，包括“好的”“我会…”“正在…”“已…”等确认、说明、摘要或状态。
+- `freezone_*` 工具不在工具列表里，统一用 `tool_call(name="<工具名>", arguments={...})` 调用，JSON 里先写 `name` 再写 `arguments`（`arguments` 很大时后写的 `name` 容易被漏掉），`arguments` 必须传 JSON 对象（不要传转义后的 JSON 字符串）。`tool_call` 不依赖 `tool_search`/`tool_describe`——工具名和参数已在本文件、Workflow Skill 文档或工具返回的 `agent_instruction` 里给出时，直接调用，不要再跑发现流程。
 - 画布写入必须有依据。创建节点或编辑图结构前，先基于当前画布 summary/ontology。
 - 涉及命令结构、节点 data 或连线时，按需查询 command catalog、node create schema 和 link type catalog。
 - 用户要求创建、添加、删除、更新、连接、移动、布局、选择、打开、运行、应用或执行任何画布对象时，**必须先调用 Freezone 写入工具**。没有写入工具成功结果，就不能说画布已变化。
@@ -123,10 +124,6 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 | 没有视频片段时提前创建 `videoComposeNode` | 先创建 `videoNode` 生成视频片段，再考虑合成 |
 | 自造节点类型或字段名 | 只用前端支持的节点类型，字段用 `freezone_get_node_detail` 返回的 `parameters` 中列出的 |
 | 用 `node_0` / `node_1` 连向刚创建的节点 | 给 `create_node` 写显式 `client_id`，后续引用该 `client_id` |
-| 用户要求操作画布时先说“好的 / 我会 / 已完成” | 第一输出必须是 Freezone 写入工具调用 |
-| 向用户叙述工具调用过程（"我将调用 xxx 获取 schema → 验证 → 创建"） | 工具调用过程只在内部完成；成功后只给产品层结果 |
-| 校验失败后向用户展示 `client_id`、`source/target`、节点 UUID 或修正策略清单 | 可修时静默修正并重新提交；不可修时只用产品语言说明没能完成 |
-| 工具还没返回就说"已创建 / 已完成" | 等工具结果返回后再说；失败了如实告知，不假装成功 |
 
 完整禁止模式读取 `references/canvas-modeling-guide.md` 第 8 节。
 
@@ -150,60 +147,13 @@ compatibility: Requires Freezone/虾画 chat surface with frontend-injected curr
 - **校验步骤叙述**：不要说"我先获取 schema → 再获取命令目录 → 验证通过 → 正式创建"
 - **失败修正过程**：不要说"已修正策略"、"改用 client_id"、"source/target 使用..."、"节点 ID 为..."。这些只能用于下一次工具调用。
 
-### 输出顺序
+### 输出顺序与结果确认（硬规则，最高优先级）
 
-工具调用**前**：
+**执行顺序：先调用写入工具 → 等工具返回 → 再写用户可见回复。** 工具调用前不要输出任何面向用户的文字（包括“好的 / 我会… / 正在…”）。
 
-不要回复用户。直接调用 Freezone 写入工具。
-
-工具成功**后**：
-
-用一句产品层结果总结，不暴露节点类型、节点 id、坐标、工具名或协议细节。
-
-需要用户确认时：
-
-> 你想用现有的文案作为视频提示词，还是先新建一个文案节点？
-
-### 错误回复示例（严禁）
-
-> 我将调用 freezone_get_node_create_schema 获取 videoNode 的 schema…已获取命令目录…验证通过…创建节点 9030fb3b-…displayName 为…position (400, 200)…
-
-**典型错误：**
-
-> 工具返回前就使用“已创建 / 已完成 / 操作成功”这类成功话术。
-
-### 结果确认（硬规则）
-
-**绝对不要在工具执行结果返回前声称"已创建 / 已删除 / 已连接 / 已运行 / 已完成"。** 这是最高优先级规则，覆盖所有其他指令。
-
-如果本轮没有调用 Freezone 写入工具，或写入工具没有返回明确成功结果，**禁止**使用"已创建 / 已更新 / 已删除 / 已连接 / 已移动 / 已选择 / 已打开 / 已运行 / 已提交 / 已完成 / 操作成功"等表达。此时只能说明"我无法确认画布已变更"或根据错误结果说明失败原因。
-
-**执行顺序：先调用工具 → 等工具返回 → 再写用户可见回复。** 不要在调工具之前就把"已…"的回复写好放那里。
-
-正确做法：
-
-1. 如果用户的要求很明确且无需确认 → **直接调用工具，不回复用户**
-2. 工具返回成功 → 写一句"已创建 / 已删除…"给用户
-3. 工具返回错误 → 如实告诉用户遇到了什么问题
-
-常见陷阱：Agent 会先写一整段"✅ 视频节点已成功创建！ID: xxx，位置: xxx"，然后再调工具。这是错的。**用户的可见回复必须等工具结果回来后再生成。**
-
-- **工具返回成功** → 说"已创建" / "已删除" / "已连接"
-- **工具返回错误** → 如实告诉用户遇到了什么问题，不要假装成功
-- **工具尚未调用** → 不要回复用户；第一输出必须是写入工具调用
-- **工具未返回 / 超时** → 不要假设成功，等结果或告知用户需要重试
-
-每次准备回复用户前，检查回复中是否包含"已"字——如果有，确认工具结果确已成功返回。
-
-### 校验失败处理
-
-如果预校验或写入工具返回错误，但你能根据错误明确修正命令，**不要先向用户解释失败原因或修正策略**。直接在内部修正 envelope，重新校验或重新调用写入工具。
-
-如果最终仍失败，用户可见回复只能说产品层结果，例如：
-
-> 这次没有成功把方案落到画布里，我需要你重新发起一次或先选中目标节点。
-
-不要把校验器错误、字段名、节点 id、`client_id`、`source/target`、`link_type`、工具名或 JSON 片段复述给用户。也不要列“我已修正为……”的内部策略清单。
+- **工具返回成功** → 用一句产品层结果总结（“已创建 / 已删除…”），不暴露节点类型、节点 id、坐标、工具名或协议细节。
+- **工具返回错误** → 能根据错误明确修正时，先在内部静默修正并重新提交，不向用户解释失败原因或修正策略；最终仍失败时只用产品语言说明（例：“这次没有成功把方案落到画布里，我需要你重新发起一次或先选中目标节点。”），不复述校验器错误、字段名、`client_id`、`link_type` 或 JSON 片段。
+- **工具尚未调用 / 未返回 / 超时** → 禁止使用“已创建 / 已更新 / 已删除 / 已连接 / 已移动 / 已选择 / 已打开 / 已运行 / 已提交 / 已完成 / 操作成功”等表达，只能说明无法确认画布已变更。发送回复前自查“已”字：出现即确认对应工具结果确已成功返回。
 
 ### 其他规则
 

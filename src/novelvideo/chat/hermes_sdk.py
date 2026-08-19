@@ -342,10 +342,26 @@ class _TurnToolCallGuard:
         if not _is_skill_loading_tool(tool_name):
             self.total += 1
         if not _is_dramaclaw_write_tool(tool_name) and not _is_freezone_canvas_write_tool(tool_name):
-            try:
-                encoded_input = json.dumps(event.input, ensure_ascii=False, sort_keys=True, default=str)
-            except (TypeError, ValueError):
-                encoded_input = repr(event.input)
+            if event.input is None:
+                # Hermes "polished" tools (skill_view, read_file, search_files…)
+                # omit rawInput in the ACP event, and _split_tool_title reduces
+                # their titles to one word — without more detail, distinct reads
+                # collapse into one signature and falsely trip the repeated-read
+                # stop. The title alone is not enough either: a chunked read of
+                # one file titles every chunk "read: <path>", so also fold in the
+                # start event's content blocks, which carry the args JSON
+                # (offset/limit included).
+                raw = event.raw if isinstance(event.raw, dict) else {}
+                title = str(raw.get("title") or "")
+                detail = _extract_tool_update_content_text(raw) if raw else ""
+                encoded_input = f"{title}|{detail[:600]}"
+            else:
+                try:
+                    encoded_input = json.dumps(
+                        event.input, ensure_ascii=False, sort_keys=True, default=str
+                    )
+                except (TypeError, ValueError):
+                    encoded_input = repr(event.input)
             signature = f"{tool_name}:{encoded_input}"
             repeat_count = self._read_signature_counts.get(signature, 0) + 1
             self._read_signature_counts[signature] = repeat_count
@@ -604,6 +620,7 @@ class HermesSdkThread:
         self.id: str = session_id or ""
         self._is_new = session_id is None
         self._proc: asyncio.subprocess.Process | None = None
+        self._stderr_task: asyncio.Task | None = None
         self._req_counter = 0
         self._closed = False
         self._initialized = False
@@ -694,6 +711,35 @@ class HermesSdkThread:
             stderr=asyncio.subprocess.PIPE,
             limit=HERMES_STDIO_LINE_LIMIT_BYTES,
         )
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
+
+    async def _drain_stderr(self) -> None:
+        """Surface worker stderr in backend logs (and keep the pipe drained).
+
+        The DramaClaw sitecustomize startup hook prints a red "DramaClaw
+        Freezone warning" line only when a denied tool survived registry
+        cleanup — promote those to warning so they show in the backend
+        console; everything else is debug noise.
+        """
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            while True:
+                line = await proc.stderr.readline()
+                if not line:
+                    return
+                text = line.decode("utf-8", "replace").rstrip()
+                if not text:
+                    continue
+                if "DramaClaw Freezone warning" in text:
+                    _log.warning("hermes[%s] %s", self._username, text)
+                else:
+                    _log.debug("hermes[%s] %s", self._username, text)
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - drain must never take down the client
+            return
 
     async def _read_until_id(
         self, target_id: int, timeout: float
@@ -1223,6 +1269,9 @@ class HermesSdkThread:
         if self._closed:
             return
         self._closed = True
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            self._stderr_task = None
         if self._proc is None:
             return
         try:

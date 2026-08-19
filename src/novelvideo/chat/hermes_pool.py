@@ -37,6 +37,7 @@ from novelvideo.chat.hermes_egress import (
     build_hermes_child_env,
 )
 from novelvideo.chat.hermes_workspace import (
+    FREEZONE_HERMES_TOOL_DENY,
     effective_gateway_credentials,
     effective_gateway_fingerprint,
     ensure_user_hermes_workspace,
@@ -928,6 +929,7 @@ class HermesPool:
                 f"{hook_dir}{os.pathsep}{existing_pythonpath}" if existing_pythonpath else str(hook_dir)
             )
             env["DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE"] = "1"
+            env["DRAMACLAW_HERMES_TOOL_DENY"] = ",".join(FREEZONE_HERMES_TOOL_DENY)
         if project_id:
             env["DRAMACLAW_PROJECT_ID"] = project_id
             env["DRAMACLAW_PROJECT"] = project_id
@@ -936,6 +938,13 @@ class HermesPool:
             env["SUPERTALE_PROJECT"] = project_id
         if project_env:
             env.update(project_env)
+        # Debug tracing: when the backend opts in, Hermes writes every model
+        # request payload (messages + tool schemas, secrets redacted) to
+        # logs/request_dump_*.json in the worker home, for token-consumption
+        # analysis via scripts/dev/analyze_hermes_requests.py.
+        dump_requests = os.environ.get("HERMES_DUMP_REQUESTS", "").strip()
+        if dump_requests:
+            env["HERMES_DUMP_REQUESTS"] = dump_requests
         api_key, _base_url = effective_gateway_credentials()
         if api_key:
             env["NEWAPI_API_KEY"] = api_key
