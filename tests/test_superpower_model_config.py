@@ -99,10 +99,10 @@ def test_keyframe_prompt_builder_uses_video_optimizer_model(monkeypatch):
     from novelvideo import config
     from novelvideo.agents import keyframe_prompt_builder
 
-    calls: list[tuple[str, str]] = []
+    calls: list[tuple[str, str | None]] = []
 
     def fake_get_newapi_text_pydantic_model(
-        model_env: str, default_model: str, **_kwargs
+        model_env: str, default_model: str | None = None, **_kwargs
     ):
         calls.append((model_env, default_model))
         return object()
@@ -116,4 +116,4 @@ def test_keyframe_prompt_builder_uses_video_optimizer_model(monkeypatch):
 
     keyframe_prompt_builder.create_keyframe_prompt_builder_agent()
 
-    assert calls == [("KEYFRAME_PROMPT_MODEL", "brainclaw")]
+    assert calls == [("KEYFRAME_PROMPT_MODEL", None)]

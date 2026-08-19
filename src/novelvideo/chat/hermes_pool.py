@@ -224,12 +224,26 @@ class _ManagedHermesThread:
     def __getattr__(self, name: str) -> Any:
         return getattr(self._slot.thread, name)
 
-    async def stream(self, prompt: str, *, current_project: str | None = None):
+    async def stream(
+        self,
+        prompt: str,
+        *,
+        current_project: str | None = None,
+        episode_id: str | None = None,
+        project_id: str | None = None,
+    ):
+        # The signature is explicit rather than **kwargs, so anything the caller
+        # passes has to be named here to reach the worker. episode_id and
+        # project_id were silently swallowed until this was widened, which made
+        # the egress capability unmintable on the real chat path while every
+        # unit test still passed.
         await self._owner._begin_turn(self._slot)
         try:
             async for event in self._slot.thread.stream(
                 prompt,
                 current_project=current_project,
+                episode_id=episode_id,
+                project_id=project_id,
             ):
                 yield event
         finally:

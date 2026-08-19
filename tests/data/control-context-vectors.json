@@ -1,0 +1,146 @@
+{
+  "algorithm": {
+    "comparison": "constant_time",
+    "encoding": "base64url without padding",
+    "failure_attribution": "indistinguishable_by_design: any altered signed part yields signature_invalid",
+    "header_name": "X-DramaClaw-Control-Context",
+    "mac": "HMAC-SHA256",
+    "max_header_bytes": 4096,
+    "separator": "0x00",
+    "signed_parts": [
+      "method",
+      "endpoint_path",
+      "envelope_version",
+      "signing_key_id",
+      "payload_base64url",
+      "hex(sha256(exact_request_body))"
+    ]
+  },
+  "envelope_version": "v1",
+  "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9.kwQvyD6VblokMuWwRTJyuJTFr6Zgcra0ZGhTRmi3YbY",
+  "negative_cases": [
+    {
+      "expect_reason": "signature_invalid",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9.kwQvyD6VblokMuWwRTJyuJTFr6Zgcra0ZGhTRmi3YbY",
+      "name": "body_tampered",
+      "note": "A failed MAC cannot be attributed to which input was altered — body, path, payload and key all fail identically. Reporting them apart would be an oracle. request_binding_invalid therefore never appears as a verification outcome; it exists only as an attestation field asserting that binding WAS checked.",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"完全不同的请求\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "signature_invalid",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9.kwQvyD6VblokMuWwRTJyuJTFr6Zgcra0ZGhTRmi3YbY",
+      "name": "path_swapped",
+      "note": "A failed MAC cannot be attributed to which input was altered — body, path, payload and key all fail identically. Reporting them apart would be an oracle. request_binding_invalid therefore never appears as a verification outcome; it exists only as an attestation field asserting that binding WAS checked.",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/responses",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "signature_invalid",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njpmb3JnZWQiLCJncm91cGluZ19rZXlfZXBvY2giOjEsInByb2plY3RfZ3JvdXBfaWQiOiJobWFjLXNoYTI1NjozZTVhMWQ5YjdjMjA0NjgiLCJyZXBsYXlfc2NvcGVfbGltaXQiOiJtb2RlbF9vdXRwdXRfb25seSIsInNjaGVtYV92ZXJzaW9uIjoiZHJhbWFjbGF3LmJyYWluY2xhdy1jb250ZXh0L3YxIiwidHVybl9raW5kIjoiZm9yZWdyb3VuZF91c2VyIn0.kwQvyD6VblokMuWwRTJyuJTFr6Zgcra0ZGhTRmi3YbY",
+      "name": "payload_tampered",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "signature_invalid",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9.AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA",
+      "name": "signature_flipped",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "signing_key_unknown",
+      "header_value": "v1.dc-unknown.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9.aqnbGSrg6ZI9cr1Y01uUYmMFYDuZ4QMS11Qq9Jy_d-U",
+      "name": "unknown_key_id",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "context_malformed",
+      "header_value": "v9.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9.SPKZcOpatsrMkKT1XCAHTHoPGiTiV_0-ZIiUlYdvN-8",
+      "name": "unknown_version",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "replay_scope_none",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0Ijoibm9uZSIsInNjaGVtYV92ZXJzaW9uIjoiZHJhbWFjbGF3LmJyYWluY2xhdy1jb250ZXh0L3YxIiwidHVybl9raW5kIjoiZm9yZWdyb3VuZF91c2VyIn0.VxjgslFah6mgyBZM1FlRaEaZ_OqKAtkt9vhPsUnUO6E",
+      "name": "replay_scope_none",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "turn_kind_not_foreground",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImludGVybmFsX21haW50ZW5hbmNlIn0.lV76q69fWbAfpVg35-YBJYvJnMbt7Dh-fRpIjMM8IWE",
+      "name": "internal_maintenance_turn",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "ordinal_conflict",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQyOTQ5NjcyOTYsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9.u_9SNbyoFgz34Kha4meuNbaY5ZMFyBkXLfLlXcut004",
+      "name": "ordinal_out_of_range",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    },
+    {
+      "expect_reason": "context_malformed",
+      "header_value": "v1.dc-2026-08.eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJyZXBsYXlfc2NvcGVfbGltaXQiOiJtb2RlbF9vdXRwdXRfb25seSIsInNjaGVtYV92ZXJzaW9uIjoiZHJhbWFjbGF3LmJyYWluY2xhdy1jb250ZXh0L3YxIiwidHVybl9raW5kIjoiZm9yZWdyb3VuZF91c2VyIn0.CFaMpkmlTDd1eYgtN7U2rJ_0eOZbuA0qUMrfm9wy9-Q",
+      "name": "project_group_missing",
+      "request": {
+        "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+        "endpoint_path": "/v1/chat/completions",
+        "method": "POST"
+      }
+    }
+  ],
+  "note": "Frozen cross-language vectors. Both the DramaClaw signer and the BrainClaw Go verifier must reproduce these byte-for-byte before either is trusted. Signing covers the exact payload base64 string, never a re-serialized JSON object, so canonicalization can never diverge between languages.",
+  "payload": {
+    "checkpoint_ordinal": 4,
+    "episode_group_id": "hmac-sha256:9f2b7c1e4a6d8035",
+    "grouping_key_epoch": 1,
+    "project_group_id": "hmac-sha256:3e5a1d9b7c20468",
+    "replay_scope_limit": "model_output_only",
+    "schema_version": "dramaclaw.brainclaw-context/v1",
+    "turn_kind": "foreground_user"
+  },
+  "payload_base64url": "eyJjaGVja3BvaW50X29yZGluYWwiOjQsImVwaXNvZGVfZ3JvdXBfaWQiOiJobWFjLXNoYTI1Njo5ZjJiN2MxZTRhNmQ4MDM1IiwiZ3JvdXBpbmdfa2V5X2Vwb2NoIjoxLCJwcm9qZWN0X2dyb3VwX2lkIjoiaG1hYy1zaGEyNTY6M2U1YTFkOWI3YzIwNDY4IiwicmVwbGF5X3Njb3BlX2xpbWl0IjoibW9kZWxfb3V0cHV0X29ubHkiLCJzY2hlbWFfdmVyc2lvbiI6ImRyYW1hY2xhdy5icmFpbmNsYXctY29udGV4dC92MSIsInR1cm5fa2luZCI6ImZvcmVncm91bmRfdXNlciJ9",
+  "request": {
+    "body_sha256_hex": "b885744b888ad1468eeb2e078fc92563bd2853e87043726b7479083f98d52a5b",
+    "body_utf8": "{\"model\":\"brainclaw\",\"messages\":[{\"role\":\"user\",\"content\":\"修复刚才失败的画布命令\"}]}",
+    "endpoint_path": "/v1/chat/completions",
+    "method": "POST"
+  },
+  "schema_version": "brainclaw.control-context-vectors/v1",
+  "signature_base64url": "kwQvyD6VblokMuWwRTJyuJTFr6Zgcra0ZGhTRmi3YbY",
+  "signing_key_hex": "6b657900112233445566778899aabbccddeeff00112233445566778899aabbcc",
+  "signing_key_id": "dc-2026-08"
+}

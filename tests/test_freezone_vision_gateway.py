@@ -70,7 +70,7 @@ async def test_vision_gateway_uses_pydantic_agent_and_logical_model(
 ) -> None:
     captured: dict[str, object] = {}
 
-    def fake_get_model(model_env, default_model, **kwargs):
+    def fake_get_model(model_env, default_model=None, **kwargs):
         captured.update(
             {
                 "model_env": model_env,

@@ -191,7 +191,6 @@ async def rewrite_episode_content(
     agent = Agent(
         get_newapi_text_pydantic_model(
             "CONTENT_REWRITER_MODEL",
-            "gpt-5.4-mini",
             brainclaw_profile=BrainClawProfile.CONTENT_REWRITE,
             capability="text.generate",
         ),

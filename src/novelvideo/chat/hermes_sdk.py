@@ -724,6 +724,37 @@ class HermesSdkClient:
         )
 
 
+def _issue_turn_capability(
+    *, episode_id: str | None, project_id: str | None, turn_id: str
+) -> str | None:
+    """Mint this turn's capability, or None when it cannot be minted.
+
+    Never raises into the turn. Attestation is observability: a misconfigured
+    key, a missing identity or an issuer failure must cost evidence, never the
+    user's conversation.
+
+    There is no runtime feature check here, and none is needed. A worker without
+    the patch ignores the ``_meta`` field, the request goes out with no
+    capability header, and the Gateway records that traffic as diagnostic —
+    already the correct outcome. Keeping the two sides on the same build is an
+    installation concern, handled where installs are.
+    """
+    if not episode_id or not project_id:
+        return None
+    try:
+        from novelvideo.brainclaw_control_capability import control_capability_issuer
+
+        issuer = control_capability_issuer()
+        if issuer is None:
+            return None
+        return issuer.issue(
+            episode_id=episode_id, project_id=project_id, turn_id=turn_id
+        )
+    except Exception:
+        _log.debug("could not issue an egress capability for this turn", exc_info=True)
+        return None
+
+
 class HermesSdkThread:
     """One ACP session against a sandboxed hermes subprocess.
 
@@ -892,6 +923,10 @@ class HermesSdkThread:
         if "error" in resp:
             raise RuntimeError(f"hermes initialize error: {resp['error']}")
         self._initialized = True
+        # Record what this runtime declared it implements. It is the only signal
+        # that describes the *running* process: a stock build reports the same
+        # version, can pass a revision check whenever the operator forgot to
+        # resync, and then silently drops the _meta extension.
         _log.debug("hermes initialized: %s", resp.get("result", {}).get("agentInfo"))
 
     async def _ensure_session(self) -> None:
@@ -960,17 +995,35 @@ class HermesSdkThread:
             text="(hermes timed out)",
         )
 
-    async def stream(self, prompt: str, *, current_project: str | None = None) \
-            -> AsyncIterator[ChatBackendEvent]:
+
+    async def stream(
+        self,
+        prompt: str,
+        *,
+        current_project: str | None = None,
+        episode_id: str | None = None,
+        project_id: str | None = None,
+    ) -> AsyncIterator[ChatBackendEvent]:
         """Send a prompt and yield ChatBackendEvent items as hermes streams them.
 
         ``current_project`` is included as a prompt prefix so per-user hermes
         knows which DramaClaw project the user is talking about (see plan).
+
+        ``episode_id`` and ``project_id`` are raw internal identifiers used to
+        mint this turn's egress capability. They are hashed before they leave
+        this process and are never sent as-is; Hermes receives only the signed
+        capability. Both absent means the turn is unattested, which is a
+        first-class state, not an error.
         """
         async with self._turn_lock:
             if self._closed:
                 raise RuntimeError("HermesSdkThread is closed")
-            async for event in self._stream_turn(prompt, current_project=current_project):
+            async for event in self._stream_turn(
+                prompt,
+                current_project=current_project,
+                episode_id=episode_id,
+                project_id=project_id,
+            ):
                 yield event
 
     async def _stream_turn(
@@ -978,6 +1031,8 @@ class HermesSdkThread:
         prompt: str,
         *,
         current_project: str | None = None,
+        episode_id: str | None = None,
+        project_id: str | None = None,
     ) -> AsyncIterator[ChatBackendEvent]:
         """Run one prompt while ``_turn_lock`` owns the ACP stdout reader."""
 
@@ -991,14 +1046,24 @@ class HermesSdkThread:
                 text = f"[CONTEXT: current_project={current_project}]\n\n{prompt}"
             yield ChatBackendEvent(type="thread_started", thread_id=self.id, turn_id=turn_id)
 
-            req_id = await self._send(
-                "session/prompt",
-                {
-                    "sessionId": self.id,
-                    "messageId": turn_id,
-                    "prompt": [{"type": "text", "text": text}],
-                },
+            prompt_params: dict[str, Any] = {
+                "sessionId": self.id,
+                "messageId": turn_id,
+                "prompt": [{"type": "text", "text": text}],
+            }
+            # Per-turn egress capability. It rides in ACP _meta rather than in
+            # the process environment or a session field because one Hermes
+            # worker is pooled per user and serves many episodes and projects
+            # concurrently; anything longer-lived than the turn would attach one
+            # turn's identity to another turn's requests.
+            capability = _issue_turn_capability(
+                episode_id=episode_id, project_id=project_id, turn_id=turn_id
             )
+            if capability:
+                prompt_params["_meta"] = {
+                    "dramaclaw.control_context_capability": capability
+                }
+            req_id = await self._send("session/prompt", prompt_params)
 
             # Read until we see the final session/prompt response (id matches).
             # Along the way emit assistant/tool/plan/thought/usage events for any

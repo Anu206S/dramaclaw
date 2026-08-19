@@ -155,21 +155,36 @@ def get_newapi_text_model_name(model_env: str, default_model: str) -> str:
 
 def get_effective_newapi_text_model_name(
     model_env: str,
-    default_model: str,
+    default_model: str | None = None,
     *,
     model_name_override: str | None = None,
 ) -> str:
-    """Resolve a text model against the active BrainClaw or advanced route."""
+    """Resolve one text route without silently falling back across editions."""
     from novelvideo.model_gateway_settings import get_effective_llm_config
     from novelvideo.official_defaults import ADVANCED_TEXT_MODEL_BY_ENV
 
+    explicit_model = str(model_name_override or "").strip()
+    env_model = _clean_env_value(model_env)
+    if not is_ce_effective():
+        # EE never binds a route to BrainClaw. The deployment environment owns
+        # the choice: each task's model env selects the alias, and BrainClaw is
+        # reached by pointing that env at the BrainClaw alias. Fixed EE task
+        # call sites omit ``default_model`` so a missing route fails fast;
+        # generic/provider entry points may still supply an explicit default as
+        # part of their public API.
+        selected = explicit_model or env_model or default_model
+        if selected:
+            return selected
+        raise ValueError(f"Missing required EE model route: {model_env}")
+
     if get_effective_llm_config().is_brainclaw:
         return "brainclaw"
-    return (
-        str(model_name_override or "").strip()
-        or _clean_env_value(model_env)
-        or ADVANCED_TEXT_MODEL_BY_ENV.get(model_env, default_model)
-    )
+    selected = explicit_model or env_model or ADVANCED_TEXT_MODEL_BY_ENV.get(model_env)
+    if selected:
+        return selected
+    if default_model:
+        return default_model
+    raise ValueError(f"Missing required CE Advanced model route: {model_env}")
 
 
 def _get_newapi_text_model_profile(model_name: str):
@@ -192,7 +207,20 @@ def _newapi_text_http_client_factory(
     def factory():
         import httpx
 
-        kwargs: dict[str, Any] = {"timeout": timeout_seconds}
+        from novelvideo.brainclaw_control_context_transport import (
+            sign_brainclaw_control_context,
+        )
+        from novelvideo.brainclaw_outcome_runtime import capture_brainclaw_receipt
+
+        kwargs: dict[str, Any] = {
+            "timeout": timeout_seconds,
+            # The request hook signs the serialised body; it is the last point
+            # where the exact bytes BrainClaw will digest are still visible.
+            "event_hooks": {
+                "request": [sign_brainclaw_control_context],
+                "response": [capture_brainclaw_receipt],
+            },
+        }
         if not trust_env:
             kwargs["trust_env"] = False
         return httpx.AsyncClient(**kwargs)
@@ -247,14 +275,43 @@ def _newapi_text_openai_model(
 
     class _AutoClosingOpenAIChatModel(OpenAIChatModel):
         async def request(self, *args: Any, **kwargs: Any) -> Any:
-            async with self:
-                return await super().request(*args, **kwargs)
+            from novelvideo.brainclaw_outcome_runtime import (
+                begin_request_outcomes,
+                report_request_outcomes,
+                reset_request_outcomes,
+            )
+
+            token = begin_request_outcomes()
+            try:
+                async with self:
+                    result = await super().request(*args, **kwargs)
+                report_request_outcomes(passed=True)
+                return result
+            except BaseException:
+                report_request_outcomes(passed=False)
+                raise
+            finally:
+                reset_request_outcomes(token)
 
         @asynccontextmanager
         async def request_stream(self, *args: Any, **kwargs: Any):
-            async with self:
-                async with super().request_stream(*args, **kwargs) as response:
-                    yield response
+            from novelvideo.brainclaw_outcome_runtime import (
+                begin_request_outcomes,
+                report_request_outcomes,
+                reset_request_outcomes,
+            )
+
+            token = begin_request_outcomes()
+            try:
+                async with self:
+                    async with super().request_stream(*args, **kwargs) as response:
+                        yield response
+                report_request_outcomes(passed=True)
+            except BaseException:
+                report_request_outcomes(passed=False)
+                raise
+            finally:
+                reset_request_outcomes(token)
 
     return _AutoClosingOpenAIChatModel(
         model_name,
@@ -270,7 +327,7 @@ def _newapi_text_openai_model(
 
 def get_newapi_text_pydantic_model(
     model_env: str,
-    default_model: str,
+    default_model: str | None = None,
     *,
     model_name_override: str | None = None,
     timeout_seconds_override: float | None = None,
@@ -303,10 +360,14 @@ def get_newapi_text_pydantic_model(
         )
     )
     profile = _get_newapi_text_model_profile(model_name)
+    # CE resolves its own route from the settings database, so it knows when
+    # Advanced mode should stay clean. EE only hands a logical alias to NewAPI
+    # and cannot know which upstream NewAPI maps it to, so it always declares
+    # the Profile and lets NewAPI/BrainClaw decide whether to act on it.
     default_headers = brainclaw_profile_headers(
         brainclaw_profile,
         profile_variant=brainclaw_profile_variant,
-        brainclaw_active=llm_config.is_brainclaw,
+        brainclaw_active=llm_config.is_brainclaw if is_ce_effective() else True,
     )
     if not is_ce_effective():
         from novelvideo.model_gateway_runtime import (

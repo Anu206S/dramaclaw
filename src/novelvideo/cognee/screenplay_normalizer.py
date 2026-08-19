@@ -179,7 +179,6 @@ def _create_screenplay_normalizer_agent(
     return Agent(
         get_newapi_text_pydantic_model(
             "SCREENPLAY_NORMALIZER_MODEL",
-            "gemini-3.5-flash",
             brainclaw_profile=brainclaw_profile,
             capability="cognee.llm",
         ),

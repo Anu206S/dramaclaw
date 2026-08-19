@@ -288,8 +288,12 @@ def effective_gateway_credentials() -> tuple[str, str]:
 
 def _hermes_model_default() -> str:
     from novelvideo.model_gateway_settings import get_effective_llm_config
+    from novelvideo.shared.runtime_env import is_ce_effective
 
-    if get_effective_llm_config().is_brainclaw:
+    # Only CE resolves the route from its gateway settings database. EE keeps
+    # the deployment environment in charge, so HERMES_MODEL selects the alias
+    # and BrainClaw is reached by pointing it at the BrainClaw alias.
+    if is_ce_effective() and get_effective_llm_config().is_brainclaw:
         return "brainclaw"
     return (
         _root_value(

@@ -402,7 +402,6 @@ class IdentityPlanner:
     @staticmethod
     def _identity_model(
         model_env: str,
-        default_model: str = "gemini-3.5-flash",
         *,
         brainclaw_profile: BrainClawProfile | None = None,
     ):
@@ -412,7 +411,6 @@ class IdentityPlanner:
         }
         return get_newapi_text_pydantic_model(
             model_env,
-            default_model,
             brainclaw_profile=brainclaw_profile or profile_by_env.get(model_env),
             capability="text.generate.agent",
         )

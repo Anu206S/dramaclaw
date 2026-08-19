@@ -111,7 +111,6 @@ def test_advanced_mode_preserves_custom_llm_model_and_has_no_profile_headers(
     monkeypatch.setattr(config, "_newapi_text_openai_model", fake_model)
     result = config.get_newapi_text_pydantic_model(
         "CONTENT_REWRITER_MODEL",
-        "DC-content-rewriter-LLM",
         model_name_override="custom-text-model",
         brainclaw_profile=BrainClawProfile.CONTENT_REWRITE,
     )
@@ -134,10 +133,7 @@ def test_advanced_mode_preserves_historical_dc_alias_default(monkeypatch, tmp_pa
         return "model"
 
     monkeypatch.setattr(config, "_newapi_text_openai_model", fake_model)
-    config.get_newapi_text_pydantic_model(
-        "CONTENT_REWRITER_MODEL",
-        "fallback-that-must-not-win",
-    )
+    config.get_newapi_text_pydantic_model("CONTENT_REWRITER_MODEL")
 
     assert captured["model_name"] == "DC-content-rewriter-LLM"
 
@@ -148,13 +144,115 @@ def test_effective_text_defaults_cover_freezone_advanced_paths(monkeypatch, tmp_
     set_custom_llm_mode(CUSTOM_LLM_MODE_ADVANCED)
 
     assert config.get_effective_newapi_text_model_name(
-        "FREEZONE_VISION_MODEL",
-        "brainclaw",
+        "FREEZONE_VISION_MODEL"
     ) == "DC-freezone-vision-LLM"
     assert config.get_effective_newapi_text_model_name(
-        "FREEZONE_RECIPE_COMPILER_MODEL",
-        "brainclaw",
+        "FREEZONE_RECIPE_COMPILER_MODEL"
     ) == "DC-freezone-recipe-compiler-LLM"
+
+
+def test_advanced_mode_rejects_an_unmapped_fixed_task(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    _configure_custom_media()
+    set_custom_llm_mode(CUSTOM_LLM_MODE_ADVANCED)
+    monkeypatch.delenv("UNDECLARED_FIXED_MODEL", raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="Missing required CE Advanced model route: UNDECLARED_FIXED_MODEL",
+    ):
+        config.get_effective_newapi_text_model_name("UNDECLARED_FIXED_MODEL")
+
+
+def test_ee_route_follows_env_even_when_the_relay_is_brainclaw(monkeypatch):
+    """EE never binds a route to BrainClaw; the model env owns the choice."""
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.delenv("NEWAPI_BASE_URL", raising=False)
+    monkeypatch.setenv("EPISODE_SCENE_PLANNER_MODEL", "DC-ee-scene-planner")
+
+    assert get_effective_llm_config().is_brainclaw is True
+    assert (
+        config.get_effective_newapi_text_model_name("EPISODE_SCENE_PLANNER_MODEL")
+        == "DC-ee-scene-planner"
+    )
+
+    monkeypatch.setenv("EPISODE_SCENE_PLANNER_MODEL", "brainclaw")
+    assert (
+        config.get_effective_newapi_text_model_name("EPISODE_SCENE_PLANNER_MODEL")
+        == "brainclaw"
+    )
+
+
+def test_ee_fixed_task_uses_declared_env_model(monkeypatch):
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("EPISODE_SCENE_PLANNER_MODEL", "DC-ee-scene-planner")
+
+    assert (
+        config.get_effective_newapi_text_model_name("EPISODE_SCENE_PLANNER_MODEL")
+        == "DC-ee-scene-planner"
+    )
+
+
+def test_ee_always_declares_the_profile_regardless_of_relay(monkeypatch):
+    """EE hands a logical alias to NewAPI and cannot know which upstream that
+    alias maps to, so it always declares the Profile and lets NewAPI/BrainClaw
+    decide whether to act on it."""
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.delenv("ST_CONTROL_PLANE_DSN", raising=False)
+    monkeypatch.setenv("NEWAPI_BASE_URL", "http://self-hosted-newapi:3000")
+    monkeypatch.setenv("CONTENT_REWRITER_MODEL", "DC-content-rewriter-LLM")
+    captured: dict[str, object] = {}
+
+    from novelvideo import model_gateway_runtime
+
+    def fake_gateway_model(**kwargs):
+        captured.update(kwargs)
+        return "model"
+
+    monkeypatch.setattr(
+        model_gateway_runtime,
+        "create_request_scoped_gateway_model",
+        fake_gateway_model,
+    )
+
+    # The relay is explicitly not BrainClaw, so nothing can be inferred.
+    assert get_effective_llm_config().is_brainclaw is False
+
+    result = config.get_newapi_text_pydantic_model(
+        "CONTENT_REWRITER_MODEL",
+        brainclaw_profile=BrainClawProfile.CONTENT_REWRITE,
+    )
+
+    assert result == "model"
+    assert captured["model_name"] == "DC-content-rewriter-LLM"
+    assert captured["default_headers"] == {
+        PROFILE_HEADER: "content_rewrite",
+        PROFILE_VERSION_HEADER: PROFILE_VERSION,
+    }
+
+
+def test_ee_fixed_task_rejects_missing_env_model(monkeypatch):
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.delenv("UNDECLARED_FIXED_MODEL", raising=False)
+
+    with pytest.raises(
+        ValueError,
+        match="Missing required EE model route: UNDECLARED_FIXED_MODEL",
+    ):
+        config.get_effective_newapi_text_model_name("UNDECLARED_FIXED_MODEL")
+
+
+def test_ee_generic_route_can_keep_an_explicit_api_default(monkeypatch):
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.delenv("GENERIC_PROVIDER_MODEL", raising=False)
+
+    assert (
+        config.get_effective_newapi_text_model_name(
+            "GENERIC_PROVIDER_MODEL",
+            "provider-default",
+        )
+        == "provider-default"
+    )
 
 
 def test_official_text_defaults_are_brainclaw_and_advanced_tasks_are_distinct():

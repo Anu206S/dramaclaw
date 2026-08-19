@@ -80,7 +80,7 @@ def test_outdoor_stage_duel_character_elements_use_one_turnaround_reference():
 def test_recipe_compiler_uses_the_dedicated_brainclaw_profile(monkeypatch):
     captured: dict[str, object] = {}
 
-    def fake_model(model_env, default_model, **kwargs):
+    def fake_model(model_env, default_model=None, **kwargs):
         captured.update(
             model_env=model_env,
             default_model=default_model,

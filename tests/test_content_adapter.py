@@ -313,7 +313,7 @@ async def test_content_rewriter_uses_newapi_text_model(monkeypatch) -> None:
 
     def fake_newapi_model(
         model_env: str,
-        default_model: str,
+        default_model: str | None = None,
         *,
         capability: str = "text.generate",
         **_kwargs,
@@ -353,6 +353,6 @@ async def test_content_rewriter_uses_newapi_text_model(monkeypatch) -> None:
     assert rewritten == "改写第一行\n改写第二行"
     assert calls["model"] == "newapi-model"
     assert calls["model_env"] == "CONTENT_REWRITER_MODEL"
-    assert calls["default_model"] == "gpt-5.4-mini"
+    assert calls["default_model"] is None
     assert calls["capability"] == "text.generate"
     assert calls["structured_settings_called"] is True

@@ -70,15 +70,11 @@ Return ONLY valid JSON with no markdown formatting:
             get_newapi_text_pydantic_model,
         )
 
-        self.model = (
-            model
-            or os.environ.get("STYLE_ANALYZER_MODEL", "").strip()
-            or "gemini-3.5-flash"
-        )
+        self.model = model or os.environ.get("STYLE_ANALYZER_MODEL", "").strip()
         self.agent = Agent(
             get_newapi_text_pydantic_model(
                 "STYLE_ANALYZER_MODEL",
-                self.model,
+                model_name_override=self.model or None,
                 brainclaw_profile=BrainClawProfile.STYLE_ANALYSIS,
             ),
             system_prompt="You analyze reference images and return reusable visual style settings.",
