@@ -20,6 +20,11 @@ from novelvideo.ports.egress_operations import (
 from novelvideo.ports.model_credentials import CredentialReference, RequestCredential
 from novelvideo.task_backend.subprocesses import EgressBoundaryError
 
+#: Stands in for the model-gateway key in a worker's environment. It is not a
+#: credential and must never authenticate anything; Hermes refuses to send it
+#: because the same environment sets DRAMACLAW_GATEWAY_CREDENTIAL_MODE.
+PER_TURN_CREDENTIAL_PLACEHOLDER = "dramaclaw-per-turn-placeholder"
+
 HOME_SCOPE_EGRESS_PROJECT_ID = "__home__"
 """home 态出网身份用的 project 哨兵值（本模块只定义，暂无产品代码消费）。
 
@@ -185,8 +190,16 @@ def build_hermes_child_env(
         "TMPDIR": str(home / "tmp"),
         "DRAMACLAW_USER": username,
         "DRAMACLAW_API_URL": api_url,
-        "NEWAPI_API_KEY": authorization.credential.api_key,
+        # The real key no longer travels in the environment. A worker is pooled
+        # per user and serves many tenants' turns concurrently, so an
+        # environment key is whichever tenant happened to start it — which is
+        # why an organisation request used to cost a worker rollout. The key now
+        # arrives with each turn; this placeholder exists only so the OpenAI SDK
+        # can construct a client, and the latch below guarantees it can never
+        # authenticate a request.
+        "NEWAPI_API_KEY": PER_TURN_CREDENTIAL_PLACEHOLDER,
         "NEWAPI_BASE_URL": authorization.credential.base_url,
+        "DRAMACLAW_GATEWAY_CREDENTIAL_MODE": "per_turn_required",
     }
     env.update(
         {
