@@ -534,7 +534,16 @@ def _parse_env_assignments(text: str) -> dict[str, str]:
     return values
 
 
-from novelvideo.chat.hermes_egress import PER_TURN_CREDENTIAL_MODE
+from novelvideo.chat.hermes_egress import (
+    GATEWAY_CREDENTIAL_MODE_ENV,
+    LEGACY_ENVIRONMENT_CREDENTIAL_MODE,
+    PER_TURN_CREDENTIAL_MODE,
+)
+
+
+class GatewayCredentialModeError(RuntimeError):
+    """An unrecognised credential mode. Raised rather than guessed."""
+
 
 
 def _per_turn_credentials_required() -> bool:
@@ -544,14 +553,23 @@ def _per_turn_credentials_required() -> bool:
     several workspace entry points, and a parameter would have to be threaded
     through all of them, leaving whichever one was missed writing a real key.
     """
-    # Not read from the environment: this runs in the API process, which writes
-    # the workers' environment rather than sharing it, so the variable is absent
-    # here and reading it would silently answer "no" and write the key back.
-    # An explicit override still wins, for a deployment that has not migrated.
-    override = os.environ.get("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", "").strip().lower()
-    if override:
-        return override == PER_TURN_CREDENTIAL_MODE
-    return True
+    # Not read as a plain flag: this runs in the API process, which writes the
+    # workers' environment rather than sharing it, so the variable is absent
+    # here by construction and "absent" has to mean the safe mode.
+    #
+    # An unrecognised value is a startup failure rather than a fallback. The
+    # previous spelling treated anything non-empty and unequal as legacy, so a
+    # typo — `per_tun_required` — silently wrote a real gateway key back to
+    # disk. A misconfiguration must not be able to choose the unsafe branch.
+    override = os.environ.get(GATEWAY_CREDENTIAL_MODE_ENV, "").strip().lower()
+    if not override or override == PER_TURN_CREDENTIAL_MODE:
+        return True
+    if override == LEGACY_ENVIRONMENT_CREDENTIAL_MODE:
+        return False
+    raise GatewayCredentialModeError(
+        f"{GATEWAY_CREDENTIAL_MODE_ENV}={override!r} is not a recognised "
+        f"credential mode; expected {PER_TURN_CREDENTIAL_MODE!r}, "
+        f"{LEGACY_ENVIRONMENT_CREDENTIAL_MODE!r} or an empty value")
 
 
 def _ensure_gateway_env_file(env_file: Path) -> None:

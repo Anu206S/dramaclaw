@@ -106,21 +106,60 @@ def test_the_turn_key_reaches_the_worker_through_every_hop() -> None:
         )
 
 
+def _build_child_environment(hermes_egress, secret: str) -> dict[str, str]:
+    """Build a worker environment the way the pool does, with a real key set.
+
+    The key is deliberately a live-looking value: the assertion is that it does
+    not survive into the child, which is only meaningful if it was present.
+    """
+    import pathlib as _pathlib
+
+    from novelvideo.egress_context import TrustedEgressContext
+    from novelvideo.ports.authz import BillingPrincipal
+    from novelvideo.ports.model_credentials import CredentialReference, RequestCredential
+
+    reference = CredentialReference(
+        source="organization", credential_id="c-1", key_version=1, org_id="org-1")
+    context = TrustedEgressContext(
+        envelope_id="e-1", project_id="p-1", task_type="chat",
+        requester_user_id="u-1", root_task_id="r-1", admission_id="a-1",
+        admitted_at="2026-08-19T00:00:00Z", membership_id="m-1", authz_version=1,
+        billing_principal=BillingPrincipal(kind="organization", id="org-1"),
+        credential=reference)
+    authorization = hermes_egress.HermesTurnAuthorization.for_test(
+        context=context,
+        credential=RequestCredential(reference=reference, api_key=secret,
+                                     base_url="https://gateway.example"))
+    return hermes_egress.build_hermes_child_env(
+        home=_pathlib.Path("/tmp/canary-home"), username="u-1",
+        requester_user_id="u-1", api_url="https://api.example",
+        agent_token_env={}, project_id="p-1", egress_project_id="p-1",
+        project_env=None, authorization=authorization)
+
+
 def test_the_child_environment_holds_a_placeholder_not_a_key() -> None:
     """A pooled worker serves many tenants, so its environment cannot hold one.
 
     The placeholder exists only so the OpenAI SDK can build a client; the latch
     beside it is what stops the placeholder ever authenticating a request.
+
+    Checked by building the environment and reading it, rather than by grepping
+    the function's source. The source form was pinned to a literal that later
+    moved into a shared constant — so the test failed on a refactor while
+    saying nothing about what the child actually receives, which is the only
+    thing that matters here.
     """
     from novelvideo.chat import hermes_egress
 
-    assert hermes_egress.PER_TURN_CREDENTIAL_PLACEHOLDER == "dramaclaw-per-turn-placeholder"
-    source = inspect.getsource(hermes_egress.build_hermes_child_env)
-    assert "PER_TURN_CREDENTIAL_PLACEHOLDER" in source
-    assert '"DRAMACLAW_GATEWAY_CREDENTIAL_MODE": "per_turn_required"' in source
-    assert "authorization.credential.api_key" not in source, (
-        "the real key must not reach the child environment"
-    )
+    secret = "sk-should-never-appear"
+    environment = _build_child_environment(hermes_egress, secret)
+
+    assert environment["NEWAPI_API_KEY"] == (
+        hermes_egress.PER_TURN_CREDENTIAL_PLACEHOLDER)
+    assert environment[hermes_egress.GATEWAY_CREDENTIAL_MODE_ENV] == (
+        hermes_egress.PER_TURN_CREDENTIAL_MODE)
+    assert secret not in "\n".join(f"{k}={v}" for k, v in environment.items()), (
+        "the real key must not reach the child environment")
 
 
 def test_a_credential_no_longer_costs_a_worker_rollout() -> None:
