@@ -36,7 +36,7 @@ from novelvideo.chat.hermes_sdk import HermesSdkClient, HermesSdkThread
 from novelvideo.chat.hermes_egress import (
     PER_TURN_CREDENTIAL_PLACEHOLDER,
     EgressBoundaryError,
-    HermesLaunchAuthorization,
+    HermesTurnAuthorization,
     build_hermes_child_env,
 )
 from novelvideo.chat.hermes_workspace import (
@@ -229,7 +229,7 @@ class GatewayOriginMismatch(RuntimeError):
 
 
 def _resolve_turn_gateway_api_key(
-    authorization: HermesLaunchAuthorization | None,
+    authorization: HermesTurnAuthorization | None,
 ) -> str | None:
     """The model-gateway key for this turn, platform or organisation alike.
 
@@ -384,7 +384,7 @@ class HermesPool:
         canvas_id: str | None = None,
         egress_project_id: str | None = None,
         requester_user_id: str | None = None,
-        authorization: HermesLaunchAuthorization | None = None,
+        authorization: HermesTurnAuthorization | None = None,
     ) -> HermesSdkThread:
         """Lazily create / return the per-user hermes thread.
 
@@ -629,7 +629,7 @@ class HermesPool:
         egress_project_id: str | None = None,
         requester_user_id: str | None = None,
         resume_session_id: str | None = None,
-        authorization: HermesLaunchAuthorization | None = None,
+        authorization: HermesTurnAuthorization | None = None,
     ) -> _WorkerSlot:
         """Spawn a worker slot.
 
@@ -934,7 +934,7 @@ class HermesPool:
         egress_project_id: str | None = None,
         requester_user_id: str | None = None,
         project_env: dict[str, str] | None = None,
-        authorization: HermesLaunchAuthorization | None = None,
+        authorization: HermesTurnAuthorization | None = None,
     ) -> dict[str, str]:
         """Build the strict environment passed only to this Hermes worker.
 
