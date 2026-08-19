@@ -1,0 +1,48 @@
+# DramaClaw with the BrainClaw evidence plane wired.
+#
+# This side holds two of the three keys and must never hold the third:
+#   K1 capability      signed here, verified by the Gateway
+#   K3 grouping        here only. It derives every opaque trajectory and project
+#                      identifier, so a copy anywhere else would let that side
+#                      mint identities rather than pass them through — which is
+#                      the whole separation.
+#   K2 control context NOT here. The Gateway signs it, BrainClaw verifies it;
+#                      DramaClaw is not a party to that hop.
+#
+# The image must carry the Hermes fork. The default install spec in the
+# Dockerfile pulls hermes-agent from PyPI, which keeps the same version string
+# and drops every `_meta` extension at runtime: no per-turn credential, no
+# capability, no evidence, and a turn that still answers. `deploy/verify_hermes_fork.py`
+# fails the build rather than shipping that.
+services:
+  dramaclaw:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        HERMES_INSTALL_SPEC: ${HERMES_INSTALL_SPEC:?point this at the fork, e.g. git+https://github.com/dramaclaw/hermes-agent@<sha>#egg=hermes-agent[acp]}
+    image: ${DRAMACLAW_IMAGE:-dramaclaw/dramaclaw:brainclaw-evidence}
+    restart: always
+    ports:
+      - "${DRAMACLAW_BIND_ADDRESS:-127.0.0.1}:${DRAMACLAW_PORT:-8000}:8000"
+    volumes:
+      - ${DRAMACLAW_STATE_DIR:?set DRAMACLAW_STATE_DIR}/capability-keyring.json:/run/secrets/brainclaw_capability_keyring:ro
+      - ${DRAMACLAW_STATE_DIR}/grouping.key:/run/secrets/brainclaw_grouping_key:ro
+      - ${DRAMACLAW_DATA_DIR:-./data}:/data
+    environment:
+      # K1: the capability this side signs for each turn.
+      - BRAINCLAW_CAPABILITY_KEYRING_FILE=/run/secrets/brainclaw_capability_keyring
+      - BRAINCLAW_CAPABILITY_SIGNING_KEY_ID=${BRAINCLAW_CAPABILITY_SIGNING_KEY_ID:?set the key id the keyring names}
+      # K3: never leaves this container.
+      - BRAINCLAW_CONTROL_CONTEXT_GROUPING_KEY_FILE=/run/secrets/brainclaw_grouping_key
+      - BRAINCLAW_CONTROL_CONTEXT_GROUPING_KEY_EPOCH=${BRAINCLAW_CONTROL_CONTEXT_GROUPING_KEY_EPOCH:-1}
+      # Where the workers send model traffic. Also the only host they may reach:
+      # under the per-turn latch a request to anything else is refused before it
+      # is sent, since an unauthenticated call still carries the prompt away.
+      - NEWAPI_BASE_URL=${NEWAPI_BASE_URL:?set the gateway origin}
+      # Absent means per-turn, which is the safe default. Set it only to opt a
+      # legacy deployment out, and only to the exact value `legacy_environment`:
+      # anything else is rejected at startup rather than silently writing a real
+      # key into each worker's workspace.
+      - DRAMACLAW_GATEWAY_CREDENTIAL_MODE=${DRAMACLAW_GATEWAY_CREDENTIAL_MODE:-}
+      - TZ=${TZ:-Asia/Singapore}
