@@ -68,15 +68,32 @@ def test_an_existing_workspace_is_migrated_idempotently(per_turn, tmp_path):
         "migration must not discard unrelated workspace settings"
 
 
-def test_without_the_latch_the_previous_behaviour_is_unchanged(monkeypatch, tmp_path):
-    """Deployments that still authenticate from the environment keep working.
+def test_per_turn_is_the_default_because_this_process_launches_the_workers(
+        monkeypatch, tmp_path):
+    """An absent variable means per-turn, not legacy.
 
-    The latch is what makes writing the key wrong. A deployment that has not
-    moved to per-turn credentials still needs the key where Hermes reads it,
-    and silently removing it there would break the worker instead of securing
-    it.
+    The workspace writer runs in the API process, which *writes* the workers'
+    environment rather than sharing it — so the latch variable is absent here by
+    construction. Reading it and concluding "not per-turn" is what left a real
+    key on disk while every worker-environment assertion passed.
     """
     monkeypatch.delenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", raising=False)
+    monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
+                        lambda: (PLATFORM, "https://gateway.example"))
+    env_file = tmp_path / ".env"
+    env_file.write_text("# workspace\n")
+    hermes_workspace._ensure_gateway_env_file(env_file)
+    assert _keys_on_disk(tmp_path) == []
+
+
+def test_an_explicit_legacy_override_still_writes_the_key(monkeypatch, tmp_path):
+    """A deployment that has not migrated can still opt out explicitly.
+
+    Removing the key from a worker that authenticates from its environment
+    would break it rather than secure it, so the escape hatch is deliberate —
+    but it has to be stated, not inferred from an absent variable.
+    """
+    monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", "legacy_environment")
     monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
                         lambda: (PLATFORM, "https://gateway.example"))
     env_file = tmp_path / ".env"
@@ -85,14 +102,18 @@ def test_without_the_latch_the_previous_behaviour_is_unchanged(monkeypatch, tmp_
     assert f"NEWAPI_API_KEY={PLATFORM}" in env_file.read_text()
 
 
-@pytest.mark.parametrize("mode", ["", "per_turn", "PER_TURN_REQUIRED ", "off"])
-def test_only_the_exact_latch_value_suppresses_the_write(monkeypatch, tmp_path, mode):
-    """A near-miss must not be read as the latch being on, or off."""
+@pytest.mark.parametrize("mode", ["per_turn", "PER_TURN_REQUIRED ", "off"])
+def test_only_an_exact_opt_out_restores_the_write(monkeypatch, tmp_path, mode):
+    """A near-miss must not be read as an opt-out.
+
+    The empty string is excluded because it means "unset", which the test above
+    covers: absent is per-turn, and only a stated legacy mode writes a key.
+    """
     monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", mode)
     monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
                         lambda: (PLATFORM, "https://gateway.example"))
     env_file = tmp_path / ".env"
     env_file.write_text("# workspace\n")
     hermes_workspace._ensure_gateway_env_file(env_file)
-    suppressed = mode.strip().lower() == "per_turn_required"
-    assert (f"NEWAPI_API_KEY={PLATFORM}" in env_file.read_text()) is not suppressed
+    wrote = f"NEWAPI_API_KEY={PLATFORM}" in env_file.read_text()
+    assert wrote is (mode.strip().lower() != "per_turn_required")

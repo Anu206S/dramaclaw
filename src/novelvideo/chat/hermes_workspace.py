@@ -534,6 +534,9 @@ def _parse_env_assignments(text: str) -> dict[str, str]:
     return values
 
 
+from novelvideo.chat.hermes_egress import PER_TURN_CREDENTIAL_MODE
+
+
 def _per_turn_credentials_required() -> bool:
     """Whether workers authenticate per turn rather than from their environment.
 
@@ -541,9 +544,14 @@ def _per_turn_credentials_required() -> bool:
     several workspace entry points, and a parameter would have to be threaded
     through all of them, leaving whichever one was missed writing a real key.
     """
-    return os.environ.get(
-        "DRAMACLAW_GATEWAY_CREDENTIAL_MODE", ""
-    ).strip().lower() == "per_turn_required"
+    # Not read from the environment: this runs in the API process, which writes
+    # the workers' environment rather than sharing it, so the variable is absent
+    # here and reading it would silently answer "no" and write the key back.
+    # An explicit override still wins, for a deployment that has not migrated.
+    override = os.environ.get("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", "").strip().lower()
+    if override:
+        return override == PER_TURN_CREDENTIAL_MODE
+    return True
 
 
 def _ensure_gateway_env_file(env_file: Path) -> None:
