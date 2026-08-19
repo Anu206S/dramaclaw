@@ -163,23 +163,25 @@ def _read_owner_only(path: Path) -> bytes:
     return path.read_bytes()
 
 def _binary_key_bytes(raw: bytes) -> bytes:
-    """Return a binary key without mangling it.
+    """Return a raw binary key exactly as stored.
 
-    ``bytes.strip()`` removes every ASCII whitespace byte from both ends, and a
-    random 32-byte key begins or ends with one about 5% of the time. That either
-    shortens the key below the minimum — a loud failure — or, worse, leaves a
-    still-long-enough key whose two ends disagree, so the same file derives
-    different ids on either side of the protocol with nothing to signal it.
+    Nothing is trimmed, deliberately. ``bytes.strip()`` was the original bug: a
+    random 32-byte key begins or ends with an ASCII whitespace byte about 5% of
+    the time, so stripping either shortened it below the minimum or — worse —
+    left a still-long-enough key whose two ends derived different opaque ids
+    from the same file.
 
-    Only a single trailing newline is removed, because that is the artefact an
-    editor or ``echo`` adds. Nothing is ever taken from the front.
+    Trimming only a trailing newline was the same mistake in a smaller size. A
+    raw key ends in 0x0a once every 256 files, and that byte is key material,
+    not an editor artefact. This file is binary; if a human-editable form is
+    ever wanted it should be an explicit base64 or hex encoding, decoded here,
+    rather than a guess about which trailing bytes were meant.
+
+    A file that accidentally carries a trailing newline is simply a different
+    32-or-33-byte key, and both sides read the same file, so they still agree.
+    Length is enforced by the caller.
     """
-    if raw.endswith(b"\r\n"):
-        return raw[:-2]
-    if raw.endswith(b"\n"):
-        return raw[:-1]
     return raw
-
 
 class ControlCapabilityIssuer:
     """Mints one capability per agent turn.
