@@ -534,6 +534,18 @@ def _parse_env_assignments(text: str) -> dict[str, str]:
     return values
 
 
+def _per_turn_credentials_required() -> bool:
+    """Whether workers authenticate per turn rather than from their environment.
+
+    Read from the environment rather than passed in: this file is reached from
+    several workspace entry points, and a parameter would have to be threaded
+    through all of them, leaving whichever one was missed writing a real key.
+    """
+    return os.environ.get(
+        "DRAMACLAW_GATEWAY_CREDENTIAL_MODE", ""
+    ).strip().lower() == "per_turn_required"
+
+
 def _ensure_gateway_env_file(env_file: Path) -> None:
     """Keep Hermes profile secrets aligned with DramaClaw gateway settings.
 
@@ -543,6 +555,17 @@ def _ensure_gateway_env_file(env_file: Path) -> None:
     profile-scoped secrets. Keep both aliases synchronized so old
     ``OPENAI_API_KEY`` values cannot shadow the current NewAPI gateway key.
     """
+    # A per-turn-required worker must not have a usable key anywhere it can
+    # reach. The process environment already carries only a placeholder, but
+    # Hermes loads this file at startup and `config.yaml` resolves its provider
+    # key through `key_env`, so a real value here silently restores exactly the
+    # deployment-level credential the latch exists to remove — and an
+    # organisation turn would bill the platform without any error to show for
+    # it. `_remove_managed_model_env_values` has already stripped the managed
+    # names by the time this runs, so returning here both stops writing a key
+    # and migrates a workspace that was written before this rule existed.
+    if _per_turn_credentials_required():
+        return
     api_key, _base_url = effective_gateway_credentials()
     if not api_key:
         return
