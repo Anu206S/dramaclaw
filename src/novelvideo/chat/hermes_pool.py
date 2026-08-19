@@ -736,7 +736,6 @@ class HermesPool:
             one_shot=False,
             egress_project_id=egress_project_id,
             requester_user_id=requester_user_id,
-            authorization=authorization,
         )
 
     def _token_needs_renewal(self, slot: _WorkerSlot) -> bool:
