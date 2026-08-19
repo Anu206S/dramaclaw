@@ -652,7 +652,7 @@ class HermesPool:
         _ensure_supported_hermes_version(cli_path)
         # Checked before the subprocess exists, so a mismatched pair fails here
         # with a cause rather than at the first turn as a connection error.
-        require_hermes_fork()
+        require_hermes_fork(cli_path)
         home = ensure_user_hermes_workspace(
             username,
             profile=_workspace_profile_for_agent(agent_profile, tool_mode, surface),
