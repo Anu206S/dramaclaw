@@ -512,6 +512,11 @@ def compile_workflow_intent(intent: Any) -> dict[str, Any]:
             {
                 "path": f"inputs.{parameter_id}",
                 "message": "required Skill input is missing",
+                "hint": (
+                    f"Provide inputs.{parameter_id}; its definition (type, "
+                    "description, allowed values) is in the input_contract "
+                    "returned by freezone_get_workflow_skill."
+                ),
             }
             for parameter_id in input_contract["missing_required"]
         )
@@ -520,6 +525,7 @@ def compile_workflow_intent(intent: Any) -> dict[str, Any]:
             "status": "invalid_workflow_intent",
             "error": errors[0]["message"],
             "errors": errors,
+            "agent_instruction": _INTENT_FIX_INSTRUCTION,
         }
 
     compiled_intent = deepcopy(intent)
@@ -911,7 +917,28 @@ def _expand_standard_skill_intent(
         for index, unit in enumerate(units):
             narration = _text(unit.get("narration"))
             title = _text(unit.get("title"))
-            if not narration or narration == title or re.fullmatch(
+            if not narration:
+                return (
+                    intent,
+                    None,
+                    _intent_error(
+                        f"planner.units.{index} is missing narration; when "
+                        "include_audio=true EVERY unit must carry its own "
+                        "literal narration text (narration on another unit "
+                        "does not cover this one)",
+                        path=f"planner.units.{index}.narration",
+                        hint=(
+                            "Add narration to each unit: the exact sentence(s) the "
+                            "voice-over should speak aloud for that unit, in the "
+                            "user's language. If you want one overall voice-over "
+                            "line instead of per-unit narration, drop the planner "
+                            "units and plan explicit items with a single speech "
+                            "audio item carrying that line. If the user did not "
+                            "ask for audio, set include_audio=false."
+                        ),
+                    ),
+                )
+            if narration == title or re.fullmatch(
                 r"(?:这是)?(?:短剧|视频)?的?第?[一二三四五六七八九十\d]+段(?:旁白|解说)[。.!！]?",
                 narration,
             ):
@@ -922,6 +949,14 @@ def _expand_standard_skill_intent(
                         "speech audio requires the literal narration text; "
                         "do not use a placeholder or a request to generate narration",
                         path=f"planner.units.{index}.narration",
+                        hint=(
+                            "Write the exact sentence(s) the voice-over should speak "
+                            "aloud for this unit, in the user's language. Placeholders "
+                            'like "第一段旁白" / "这是短剧的第二段解说" and unit titles '
+                            "are rejected. Example: \"深夜的便利店，只有他一个人。\" "
+                            "If include_audio was not requested by the user, set "
+                            "include_audio=false instead of inventing narration."
+                        ),
                     ),
                 )
     items = _standard_skill_items(
@@ -1081,6 +1116,11 @@ def _compile_dynamic_recipe_items_intent(
                 "speech audio item must provide narration as the literal text to speak; "
                 "prompt must not be a request to generate narration",
                 path=f"items.{index}.narration",
+                hint=(
+                    'Set items[].narration to the exact spoken sentence(s), e.g. '
+                    '"深夜的便利店，只有他一个人。" — an instruction such as '
+                    '"为这段视频生成旁白" is not narration and is rejected.'
+                ),
             )
         node = _intent_item_node(
             skill=skill,
@@ -1451,12 +1491,24 @@ def _intent_music_length_ms(
     return None
 
 
-def _intent_error(message: str, *, path: str) -> dict[str, Any]:
+_INTENT_FIX_INSTRUCTION = (
+    "Fix the intent fields listed in `errors` and call this tool again with the "
+    "corrected freezone_workflow_intent.v1. Each error message (and `hint`, when "
+    "present) already contains everything needed to fix the payload — do NOT "
+    "search or read plugin/source code to debug validation rules."
+)
+
+
+def _intent_error(message: str, *, path: str, hint: str | None = None) -> dict[str, Any]:
+    error: dict[str, Any] = {"path": path, "message": message}
+    if hint:
+        error["hint"] = hint
     return {
         "ok": False,
         "status": "invalid_workflow_intent",
         "error": message,
-        "errors": [{"path": path, "message": message}],
+        "errors": [error],
+        "agent_instruction": _INTENT_FIX_INSTRUCTION,
     }
 
 
