@@ -751,19 +751,32 @@ def _issue_turn_capability(
     already the correct outcome. Keeping the two sides on the same build is an
     installation concern, handled where installs are.
     """
+    from novelvideo.chat import evidence_metrics
+
     if not trajectory_id or not project_id:
+        # Not a failure: a turn with no trajectory has nothing to attest. Kept
+        # apart from a real issuer failure so "we never had an identity" is not
+        # read as "the issuer is broken".
+        evidence_metrics.observe("capability_no_identity")
         return None
     try:
         from novelvideo.brainclaw_control_capability import control_capability_issuer
 
         issuer = control_capability_issuer()
         if issuer is None:
+            # An unconfigured issuer, which is the normal state before the keys
+            # are rolled out. Distinct from a failure so a stage that has not
+            # been given keys does not look like one whose keys are broken.
+            evidence_metrics.observe("capability_issuer_absent")
             return None
-        return issuer.issue(
+        capability = issuer.issue(
             trajectory_id=trajectory_id, project_id=project_id, turn_id=turn_id
         )
+        evidence_metrics.observe("capability_issued")
+        return capability
     except Exception:
         _log.debug("could not issue an egress capability for this turn", exc_info=True)
+        evidence_metrics.observe("capability_issue_failure")
         return None
 
 
