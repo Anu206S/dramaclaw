@@ -64,7 +64,8 @@ RUN set -eux; \
         uv tool install "hermes-agent[acp]==${HERMES_VERSION}" --force; \
     fi; \
     python3 deploy/patch_hermes_acp_toolsets.py; \
-    hermes --version
+    hermes --version; \
+    python3 deploy/verify_hermes_fork.py
 
 ENV PATH="/app/.venv/bin:/root/.local/bin:$PATH"
 
