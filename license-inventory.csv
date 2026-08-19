@@ -1623,6 +1623,7 @@ src/novelvideo/task_backend/cancel.py,Elastic-2.0,2026 SuperTale contributors,RE
 src/novelvideo/task_backend/client.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/task_backend/consumer.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/task_backend/envelope.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/task_backend/limit_logging.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/task_backend/limits.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/task_backend/producer.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/task_backend/projection.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
