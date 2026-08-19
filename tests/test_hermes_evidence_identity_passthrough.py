@@ -35,9 +35,11 @@ async def test_the_facade_actually_passes_them_through() -> None:
     seen: dict[str, object] = {}
 
     class FakeThread:
-        async def stream(self, prompt, *, current_project=None, trajectory_id=None, project_id=None):
+        async def stream(self, prompt, *, current_project=None, trajectory_id=None,
+                         project_id=None, gateway_api_key=None):
             seen.update(prompt=prompt, current_project=current_project,
-                        trajectory_id=trajectory_id, project_id=project_id)
+                        trajectory_id=trajectory_id, project_id=project_id,
+                        gateway_api_key=gateway_api_key)
             if False:  # pragma: no cover - makes this an async generator
                 yield None
 
@@ -49,10 +51,11 @@ async def test_the_facade_actually_passes_them_through() -> None:
         thread = FakeThread()
 
     facade = hermes_pool._ManagedHermesThread(FakeOwner(), FakeSlot())
-    async for _ in facade.stream("hi", current_project="p", trajectory_id="ep", project_id="pr"):
+    async for _ in facade.stream("hi", current_project="p", trajectory_id="tr",
+                                 project_id="pr", gateway_api_key="sk-org-A"):
         pass
-    assert seen == {"prompt": "hi", "current_project": "p",
-                    "trajectory_id": "ep", "project_id": "pr"}
+    assert seen == {"prompt": "hi", "current_project": "p", "trajectory_id": "tr",
+                    "project_id": "pr", "gateway_api_key": "sk-org-A"}
 
 
 def test_home_scope_states_the_absence_of_a_project_explicitly() -> None:
@@ -93,3 +96,139 @@ def test_different_projects_never_share_a_group() -> None:
     b = service._evidence_identity("proj-b", None, "main")
     assert a["project_id"] != b["project_id"]
     assert a["trajectory_id"] != b["trajectory_id"]
+
+
+def test_the_turn_key_reaches_the_worker_through_every_hop() -> None:
+    """Each layer declares its parameters explicitly, so each must name it."""
+    for target in (hermes_pool._ManagedHermesThread.stream, hermes_sdk.HermesSdkThread.stream):
+        assert "gateway_api_key" in inspect.signature(target).parameters, (
+            f"{target.__qualname__} drops the turn credential"
+        )
+
+
+def test_the_child_environment_holds_a_placeholder_not_a_key() -> None:
+    """A pooled worker serves many tenants, so its environment cannot hold one.
+
+    The placeholder exists only so the OpenAI SDK can build a client; the latch
+    beside it is what stops the placeholder ever authenticating a request.
+    """
+    from novelvideo.chat import hermes_egress
+
+    assert hermes_egress.PER_TURN_CREDENTIAL_PLACEHOLDER == "dramaclaw-per-turn-placeholder"
+    source = inspect.getsource(hermes_egress.build_hermes_child_env)
+    assert "PER_TURN_CREDENTIAL_PLACEHOLDER" in source
+    assert '"DRAMACLAW_GATEWAY_CREDENTIAL_MODE": "per_turn_required"' in source
+    assert "authorization.credential.api_key" not in source, (
+        "the real key must not reach the child environment"
+    )
+
+
+def test_a_credential_no_longer_costs_a_worker_rollout() -> None:
+    """The key is a property of the turn now, not of the worker."""
+    source = inspect.getsource(hermes_pool.HermesPool.get_for_user)
+    assert "slot.state = \"draining\"\n                if slot.active_turns or not await" not in source, (
+        "an authorised turn still drains the worker"
+    )
+    creation = inspect.getsource(hermes_pool.HermesPool)
+    assert "one_shot=authorization is not None" not in creation, (
+        "an authorised worker is still one-shot"
+    )
+    # And the fingerprint that decides rotation no longer includes the key.
+    fingerprint = inspect.getsource(hermes_pool.gateway_origin_fingerprint)
+    assert "api_key" not in fingerprint.split('"""')[-1], (
+        "the rotation fingerprint still depends on the credential"
+    )
+
+
+# --- per-turn gateway credential ------------------------------------------
+
+def test_the_facade_supplies_the_turn_key_so_no_call_site_can_forget() -> None:
+    """The shape that removes a whole class of mistake.
+
+    Three call sites reach thread.stream(); two of them pass no credential at
+    all. Requiring each to pass one would mean any future call site could omit
+    it and silently authenticate as the platform. The facade carries it instead,
+    and a caller has to go out of its way to override.
+    """
+    seen: dict[str, object] = {}
+
+    class FakeThread:
+        async def stream(self, prompt, *, current_project=None, trajectory_id=None,
+                         project_id=None, gateway_api_key=None):
+            seen["gateway_api_key"] = gateway_api_key
+            if False:  # pragma: no cover - makes this an async generator
+                yield None
+
+    class FakeOwner:
+        async def _begin_turn(self, slot): return None
+        async def _finish_turn(self, slot): return None
+
+    class FakeSlot:
+        thread = FakeThread()
+
+    import asyncio
+
+    facade = hermes_pool._ManagedHermesThread(FakeOwner(), FakeSlot(), "sk-org-A")
+
+    async def drive():
+        # A call site that passes nothing still authenticates as this turn.
+        async for _ in facade.stream("hi"):
+            pass
+
+    asyncio.run(drive())
+    assert seen["gateway_api_key"] == "sk-org-A"
+
+
+def test_platform_and_organisation_keys_both_travel_per_turn(monkeypatch) -> None:
+    """A platform turn used to rely on the worker environment. It no longer does."""
+    monkeypatch.setattr(hermes_pool, "effective_gateway_credentials",
+                        lambda: ("sk-platform-P", "https://gateway.example/v1"))
+    assert hermes_pool._resolve_turn_gateway_api_key(None) == "sk-platform-P"
+
+    class Credential:
+        api_key = "sk-org-A"
+        base_url = "https://gateway.example/v1"
+
+    class Authorization:
+        credential = Credential()
+
+    assert hermes_pool._resolve_turn_gateway_api_key(Authorization()) == "sk-org-A"
+
+
+def test_a_credential_for_another_gateway_is_refused(monkeypatch) -> None:
+    """Workers are shared by origin, so a mismatched key must not be sent."""
+    monkeypatch.setattr(hermes_pool, "effective_gateway_credentials",
+                        lambda: ("sk-platform-P", "https://gateway.example/v1"))
+
+    class Credential:
+        api_key = "sk-org-A"
+        base_url = "https://other-gateway.example/v1"
+
+    class Authorization:
+        credential = Credential()
+
+    with pytest.raises(hermes_pool.GatewayOriginMismatch):
+        hermes_pool._resolve_turn_gateway_api_key(Authorization())
+
+
+def test_no_worker_environment_ever_holds_a_real_key() -> None:
+    """Both spawn paths, not just the organisation one.
+
+    A platform-started worker that kept a real key was the dangerous half: an
+    organisation turn reusing it would fall back to the platform account the
+    moment its _meta went missing.
+    """
+    source = inspect.getsource(hermes_pool.HermesPool._build_env)
+    assert 'env["NEWAPI_API_KEY"] = PER_TURN_CREDENTIAL_PLACEHOLDER' in source
+    assert 'env["OPENAI_API_KEY"] = PER_TURN_CREDENTIAL_PLACEHOLDER' in source
+    assert 'env["DRAMACLAW_GATEWAY_CREDENTIAL_MODE"] = "per_turn_required"' in source
+    assert 'env["NEWAPI_API_KEY"] = api_key' not in source
+
+
+def test_a_slot_never_retains_a_credential() -> None:
+    """A slot outlives the turn; a credential must not."""
+    import dataclasses
+
+    fields = {f.name for f in dataclasses.fields(hermes_pool._WorkerSlot)}
+    assert "authorization" not in fields, "the slot still retains a real API key"
+    assert "slot.authorization" not in inspect.getsource(hermes_pool.HermesPool)

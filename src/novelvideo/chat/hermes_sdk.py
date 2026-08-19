@@ -1003,6 +1003,7 @@ class HermesSdkThread:
         current_project: str | None = None,
         trajectory_id: str | None = None,
         project_id: str | None = None,
+        gateway_api_key: str | None = None,
     ) -> AsyncIterator[ChatBackendEvent]:
         """Send a prompt and yield ChatBackendEvent items as hermes streams them.
 
@@ -1023,6 +1024,7 @@ class HermesSdkThread:
                 current_project=current_project,
                 trajectory_id=trajectory_id,
                 project_id=project_id,
+                gateway_api_key=gateway_api_key,
             ):
                 yield event
 
@@ -1033,6 +1035,7 @@ class HermesSdkThread:
         current_project: str | None = None,
         trajectory_id: str | None = None,
         project_id: str | None = None,
+        gateway_api_key: str | None = None,
     ) -> AsyncIterator[ChatBackendEvent]:
         """Run one prompt while ``_turn_lock`` owns the ACP stdout reader."""
 
@@ -1059,10 +1062,18 @@ class HermesSdkThread:
             capability = _issue_turn_capability(
                 trajectory_id=trajectory_id, project_id=project_id, turn_id=turn_id
             )
+            meta: dict[str, Any] = {}
             if capability:
-                prompt_params["_meta"] = {
-                    "dramaclaw.control_context_capability": capability
-                }
+                meta["dramaclaw.control_context_capability"] = capability
+            if gateway_api_key:
+                # Authentication for this turn. The worker's environment holds
+                # only a placeholder, and its credential-mode latch makes that
+                # placeholder unusable, so a turn that omits this key fails
+                # rather than billing the platform account.
+                meta["dramaclaw.gateway_api_key"] = gateway_api_key
+                meta["dramaclaw.gateway_api_key_required"] = True
+            if meta:
+                prompt_params["_meta"] = meta
             req_id = await self._send("session/prompt", prompt_params)
 
             # Read until we see the final session/prompt response (id matches).
