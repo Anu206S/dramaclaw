@@ -21,9 +21,18 @@ class ChatBackendEvent:
         "permission_requested",
         "usage_update",
         "complete",
+        # Internal lifecycle signals. They never reach a WebSocket, a chat
+        # transcript or model text; the streaming loop already carries turn
+        # boundaries, and the egress ledger needs to know exactly where the
+        # request crossed into the agent.
+        "egress_submitted",
+        "egress_disposition",
     ]
     thread_id: str | None = None
     turn_id: str | None = None
+    #: Set on ``egress_disposition`` only. States how the turn ended, because
+    #: ``complete`` is also synthesised for timeouts and cannot prove success.
+    disposition: str | None = None
     text: str | None = None
     name: str | None = None
     call_id: str | None = None

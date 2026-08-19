@@ -1260,6 +1260,38 @@ def force_release_chat_run_lock(username: str, project: str) -> None:
     _remove_chat_run_lock_file(_chat_run_lock_path(username, project))
 
 
+#: A turn that ends without ever reaching a terminal event failed; it did not
+#: succeed quietly.
+_DEFAULT_TURN_DISPOSITION = "failed"
+
+
+def _turn_operation_finalizer(authorization: Any | None) -> Any | None:
+    """Own the egress claim for this turn, if there is one.
+
+    Placed here rather than on the worker slot because this is the only layer
+    that sees a whole business turn: the slot outlives it and the streaming loop
+    is re-entered by both retry paths.
+    """
+    claim = getattr(authorization, "claim", None)
+    if claim is None:
+        return None
+    from novelvideo.chat.hermes_operation import TurnOperationFinalizer
+    from novelvideo.ports import get_egress_operation_port
+
+    return TurnOperationFinalizer(get_egress_operation_port(), claim)
+
+
+def _turn_disposition_for(event: Any) -> str:
+    """Classify how this turn ended.
+
+    ``complete`` is also synthesised for a timeout, so the event type cannot
+    settle the ledger on its own.
+    """
+    from novelvideo.chat.hermes_operation import disposition_for
+
+    return disposition_for(event)
+
+
 def _evidence_identity(
     project: str | None, store_scope: Any | None, agent_profile: str
 ) -> dict[str, str]:
@@ -4479,8 +4511,27 @@ async def _stream_assistant_reply_hermes(
     seen_display_calls: set[str] = set()
     seen_tool_chat_errors: set[str] = set()
 
+    # One claim per business turn, settled exactly once at this boundary. The
+    # retries below re-send the prompt but are still this turn, so they share
+    # the finalizer and must not claim again. A platform turn has no
+    # authorization and therefore nothing to settle.
+    turn_operation = _turn_operation_finalizer(authorization)
+    turn_disposition = _DEFAULT_TURN_DISPOSITION
+
+    async def _settle_turn_operation() -> None:
+        """Close the ledger entry for this turn, whatever ended it.
+
+        Runs from the generator's finally, so it also covers the cancellation
+        path: an aclose() during streaming means the turn stopped after the
+        prompt had reached the agent, which is unknown rather than rejected.
+        """
+        if turn_operation is None:
+            return
+        await turn_operation.finish(turn_disposition)
+
     async def hermes_events_with_session_retry():
         nonlocal thread, assistant_text, tool_text, current_tool_name, current_tool_hidden
+        nonlocal turn_disposition
         from novelvideo.chat.hermes_sdk import (
             HermesSessionUnavailableError,
             _is_session_unavailable_error,
@@ -4500,8 +4551,17 @@ async def _stream_assistant_reply_hermes(
                     # inside DramaClaw and never leave the process as-is.
                     **_evidence_identity(project, store_scope, agent_profile),
                 ):
+                    if stream_event.type == "egress_submitted":
+                        # The prompt reached the ACP stream. Past this point the
+                        # ledger may no longer claim the request was never sent.
+                        # Internal signal: it is consumed here and never
+                        # forwarded to the client or the transcript.
+                        if turn_operation is not None:
+                            await turn_operation.submitted_to_agent()
+                        continue
                     if stream_event.type == "complete":
                         saw_complete = True
+                        turn_disposition = _turn_disposition_for(stream_event)
                     guard_details = (
                         stream_event.raw
                         if stream_event.type == "complete" and isinstance(stream_event.raw, dict)
@@ -4943,7 +5003,13 @@ async def _stream_assistant_reply_hermes(
     except Exception:
         raise
     finally:
-        persist_partial_reply()
+        # Nested so neither can prevent the other. A turn that cannot persist
+        # its partial reply must still settle its ledger entry, and a ledger
+        # that cannot be written must still leave the transcript intact.
+        try:
+            await _settle_turn_operation()
+        finally:
+            persist_partial_reply()
 
 
 async def _stream_assistant_reply_claude(
