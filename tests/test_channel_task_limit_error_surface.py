@@ -516,10 +516,13 @@ def test_message_split_leaves_channel_handler_data_untouched() -> None:
     }
 
 
+_LIMIT_LOGGER = "novelvideo.task_backend.limit_logging"
+
 # ---------------------------------------------------------------------------
 # 5. 限流日志
 #    429 的 limit_scope 此前只活在返回体里，日志一个字不记 —— 生产上撞闸后
-#    无法归因是五道闸里的哪一道。这五个 handler 是唯一能统一覆盖全部闸门的接缝。
+#    无法归因是五道闸里的哪一道。这五个 handler 覆盖「异常逃到 HTTP 层」这条出口；
+#    扇出循环吞掉异常的那条出口另见 tests/test_fanout_partial_dispatch.py。
 # ---------------------------------------------------------------------------
 
 _LIMIT_LOG_CASES = (
@@ -620,14 +623,14 @@ def test_every_limit_handler_emits_one_attributable_warning(
     exc: RuntimeError,
     expected_fragments: tuple[str, ...],
 ) -> None:
-    caplog.set_level(logging.WARNING, logger="novelvideo.api.app")
+    caplog.set_level(logging.WARNING, logger=_LIMIT_LOGGER)
 
     _client_raising(exc).get("/_test/task-limit")
 
     records = [
         record
         for record in caplog.records
-        if record.name == "novelvideo.api.app"
+        if record.name == _LIMIT_LOGGER
         and "task lane limit rejected" in record.getMessage()
     ]
     assert len(records) == 1, "每次拒绝恰好一条，不多不少"
@@ -642,7 +645,7 @@ def test_limit_log_never_carries_names_only_ids(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     """可记业务 ID，不记用户名/项目名。"""
-    caplog.set_level(logging.WARNING, logger="novelvideo.api.app")
+    caplog.set_level(logging.WARNING, logger=_LIMIT_LOGGER)
 
     _client_raising(
         ChannelTaskLimitExceeded(
