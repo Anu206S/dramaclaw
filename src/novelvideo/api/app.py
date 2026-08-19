@@ -90,6 +90,38 @@ def _record_resource_request(resource_key: str) -> tuple[int, int]:
         return _RESOURCE_REQUEST_TOTAL, _RESOURCE_REQUEST_COUNTS[resource_key]
 
 
+_TASK_LIMIT_LOG_FIELDS = (
+    "limit_scope",
+    "scope_kind",
+    "org_id",
+    "queue_kind",
+    "limit",
+    "active",
+    "queued",
+    "requester_user_id",
+    "project_id",
+)
+
+
+def _limit_log_value(value: object) -> str:
+    return "-" if value is None else str(value)
+
+
+def _log_task_limit_rejection(**fields: object) -> None:
+    """把一次限流拒绝写成一行可 grep 的日志。
+
+    ``limit_scope`` 此前只活在 429 返回体里,日志一个字不记 —— 线上撞闸后
+    无法归因是五道闸里的哪一道。这五个 handler 是唯一能统一覆盖全部闸门的
+    接缝(三道项目级 + 两道渠道级),所以日志落在这里,而不是任何单个预留
+    调用点。只记业务 ID,不记用户名/项目名。
+    """
+    rendered = " ".join(
+        "%s=%s" % (name, _limit_log_value(fields.get(name)))
+        for name in _TASK_LIMIT_LOG_FIELDS
+    )
+    logger.warning("task lane limit rejected %s", rendered)
+
+
 def create_app() -> FastAPI:
     register_verification_routes()
 
@@ -102,6 +134,13 @@ def create_app() -> FastAPI:
         exc: ProjectTaskLimitExceeded,
     ) -> JSONResponse:
         _ = request
+        _log_task_limit_rejection(
+            limit_scope="project",
+            queue_kind=exc.queue_kind,
+            limit=exc.limit,
+            active=exc.active,
+            project_id=exc.project_id,
+        )
         return JSONResponse(
             status_code=429,
             content={
@@ -123,6 +162,14 @@ def create_app() -> FastAPI:
         exc: ProjectUserTaskLimitExceeded,
     ) -> JSONResponse:
         _ = request
+        _log_task_limit_rejection(
+            limit_scope="user",
+            queue_kind=exc.queue_kind,
+            limit=exc.limit,
+            active=exc.active,
+            requester_user_id=exc.requester_user_id,
+            project_id=exc.project_id,
+        )
         return JSONResponse(
             status_code=429,
             content={
@@ -148,6 +195,13 @@ def create_app() -> FastAPI:
         exc: GlobalLaneQueueLimitExceeded,
     ) -> JSONResponse:
         _ = request
+        _log_task_limit_rejection(
+            limit_scope="global_lane_queue",
+            queue_kind=exc.queue_kind,
+            limit=exc.limit,
+            queued=exc.queued,
+            project_id=exc.project_id,
+        )
         return JSONResponse(
             status_code=429,
             content={
@@ -169,20 +223,36 @@ def create_app() -> FastAPI:
         exc: ChannelTaskLimitExceeded,
     ) -> JSONResponse:
         _ = request
+        limit_scope = "platform" if exc.scope_kind == "platform" else "channel"
+        _log_task_limit_rejection(
+            limit_scope=limit_scope,
+            scope_kind=exc.scope_kind,
+            org_id=exc.org_id,
+            queue_kind=exc.queue_kind,
+            limit=exc.limit,
+            active=exc.active,
+        )
+        if exc.scope_kind == "platform":
+            # 共享池(``org_id is None``)拦下的是不归属任何渠道的请求,对他们
+            # 说"渠道"没有对应概念;而池子是全平台共享的,"等待已有任务完成"
+            # 也无从等起 —— 撞闸的人自己可能一个任务都没在跑。
+            message = f"当前平台 {exc.queue_kind} 队列任务已满，请稍后再试"
+        else:
+            message = (
+                f"当前渠道 {exc.queue_kind} 队列任务已满，请等待已有任务完成后再提交"
+            )
         return JSONResponse(
             status_code=429,
             content={
                 "ok": False,
-                "error": f"当前渠道 {exc.queue_kind} 队列任务已满，请等待已有任务完成后再提交",
+                "error": message,
                 "data": {
                     "scope_kind": exc.scope_kind,
                     "org_id": exc.org_id,
                     "queue_kind": exc.queue_kind,
                     "limit": exc.limit,
                     "active": exc.active,
-                    "limit_scope": (
-                        "platform" if exc.scope_kind == "platform" else "channel"
-                    ),
+                    "limit_scope": limit_scope,
                 },
             },
         )
@@ -193,6 +263,13 @@ def create_app() -> FastAPI:
         exc: UserTaskLimitExceeded,
     ) -> JSONResponse:
         _ = request
+        _log_task_limit_rejection(
+            limit_scope="user",
+            queue_kind=exc.queue_kind,
+            limit=exc.limit,
+            active=exc.active,
+            requester_user_id=exc.requester_user_id,
+        )
         return JSONResponse(
             status_code=429,
             content={
