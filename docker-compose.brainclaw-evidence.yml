@@ -40,9 +40,4 @@ services:
       # under the per-turn latch a request to anything else is refused before it
       # is sent, since an unauthenticated call still carries the prompt away.
       - NEWAPI_BASE_URL=${NEWAPI_BASE_URL:?set the gateway origin}
-      # Absent means per-turn, which is the safe default. Set it only to opt a
-      # legacy deployment out, and only to the exact value `legacy_environment`:
-      # anything else is rejected at startup rather than silently writing a real
-      # key into each worker's workspace.
-      - DRAMACLAW_GATEWAY_CREDENTIAL_MODE=${DRAMACLAW_GATEWAY_CREDENTIAL_MODE:-}
       - TZ=${TZ:-Asia/Singapore}

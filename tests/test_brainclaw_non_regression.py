@@ -111,18 +111,38 @@ def test_a_turn_for_a_different_gateway_is_refused_not_silently_retargeted(byo_g
         _resolve_turn_gateway_api_key(elsewhere)
 
 
-# -- 3. the workspace change must not strand a legacy deployment ------------
+# -- 3. pairing is the contract, and there is no half-way ------------------
 
-def test_a_legacy_deployment_can_still_keep_its_key_on_disk(monkeypatch, tmp_path):
-    """The opt-out exists for deployments that authenticate from the workspace.
+def test_there_is_no_legacy_mode_to_strand_a_deployment_in(monkeypatch, tmp_path):
+    """The escape hatch is gone, and its absence is the safer state.
 
-    Removing the key there would break such a worker rather than secure it, so
-    the escape hatch is deliberate — but it must be stated, never inferred.
+    It restored the real key to disk while `build_hermes_child_env` still gave
+    the worker a placeholder and the per-turn latch. A deployment that set it
+    got the exposure of the old design and the behaviour of the new one at
+    once: the worker still failed closed, and now a live credential sat on disk
+    as well. Half a compatibility mode is more dangerous than none, because it
+    reads as a supported path and is discovered only by someone looking for why
+    a key is on disk.
     """
-    monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", "legacy_environment")
     monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
                         lambda: (BYO_KEY, BYO_ENDPOINT))
+    monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", "legacy_environment")
     env_file = tmp_path / ".env"
     env_file.write_text("# workspace\n")
     hermes_workspace._ensure_gateway_env_file(env_file)
-    assert f"NEWAPI_API_KEY={BYO_KEY}" in env_file.read_text()
+    assert BYO_KEY not in env_file.read_text()
+
+
+def test_the_install_is_paired_and_says_so(byo_gateway):
+    """A BYO deployment is compatible *with the fork installed*, not without.
+
+    This is the honest form of the compatibility claim. Per-turn credentials
+    are not optional, so a stock Hermes cannot serve this DramaClaw at all —
+    and the refusal happens before a worker exists, naming the cause, rather
+    than at the first turn as a connection error.
+    """
+    from novelvideo.chat.hermes_fork_requirement import hermes_fork_is_installed
+
+    installed, detail = hermes_fork_is_installed()
+    assert isinstance(installed, bool)
+    assert detail, "a refusal must always carry a reason an operator can act on"

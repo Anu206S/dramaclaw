@@ -68,73 +68,40 @@ def test_an_existing_workspace_is_migrated_idempotently(per_turn, tmp_path):
         "migration must not discard unrelated workspace settings"
 
 
-def test_per_turn_is_the_default_because_this_process_launches_the_workers(
-        monkeypatch, tmp_path):
-    """An absent variable means per-turn, not legacy.
+def test_no_credential_mode_can_put_a_key_back_on_disk(monkeypatch, tmp_path):
+    """There is no escape hatch, and that is deliberate.
 
-    The workspace writer runs in the API process, which *writes* the workers'
-    environment rather than sharing it — so the latch variable is absent here by
-    construction. Reading it and concluding "not per-turn" is what left a real
-    key on disk while every worker-environment assertion passed.
+    A `legacy_environment` mode used to exist and was worse than none. It wrote
+    the real key back to disk while `build_hermes_child_env` still gave the
+    worker a placeholder and the per-turn latch — so a "legacy" deployment got
+    the exposure of the old design and the behaviour of the new one at once:
+    the worker still failed closed, and now a live credential sat on disk too.
+
+    Half a compatibility mode is more dangerous than none, because it reads as
+    a supported path. New DramaClaw is installed paired with the Hermes fork.
     """
-    monkeypatch.delenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", raising=False)
     monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
                         lambda: (PLATFORM, "https://gateway.example"))
-    env_file = tmp_path / ".env"
-    env_file.write_text("# workspace\n")
-    hermes_workspace._ensure_gateway_env_file(env_file)
-    assert _keys_on_disk(tmp_path) == []
-
-
-def test_an_explicit_legacy_override_still_writes_the_key(monkeypatch, tmp_path):
-    """A deployment that has not migrated can still opt out explicitly.
-
-    Removing the key from a worker that authenticates from its environment
-    would break it rather than secure it, so the escape hatch is deliberate —
-    but it has to be stated, not inferred from an absent variable.
-    """
-    monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", "legacy_environment")
-    monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
-                        lambda: (PLATFORM, "https://gateway.example"))
-    env_file = tmp_path / ".env"
-    env_file.write_text("# workspace\n")
-    hermes_workspace._ensure_gateway_env_file(env_file)
-    assert f"NEWAPI_API_KEY={PLATFORM}" in env_file.read_text()
-
-
-@pytest.mark.parametrize("mode", [
-    "per_tun_required",      # the typo that motivated this
-    "per_turn",
-    "PER_TURN_REQUIRED_",
-    "off",
-    "legacy",
-    "legacy environment",
-])
-def test_an_unrecognised_mode_fails_instead_of_writing_a_key(
-        monkeypatch, tmp_path, mode):
-    """A misconfiguration must not be able to select the unsafe branch.
-
-    Anything non-empty and unequal used to mean legacy, so `per_tun_required`
-    wrote a real gateway key back to disk — a typo silently undoing the whole
-    protection, with a workspace that looked correctly configured.
-    """
-    monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", mode)
-    monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
-                        lambda: (PLATFORM, "https://gateway.example"))
-    env_file = tmp_path / ".env"
-    env_file.write_text("# workspace\n")
-    with pytest.raises(hermes_workspace.GatewayCredentialModeError):
+    for mode in ("", "legacy_environment", "per_turn_required", "anything",
+                 "per_tun_required", "LEGACY_ENVIRONMENT"):
+        monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", mode)
+        env_file = tmp_path / f"env-{mode or 'unset'}"
+        env_file.write_text("# workspace\n")
         hermes_workspace._ensure_gateway_env_file(env_file)
-    assert _keys_on_disk(tmp_path) == [], \
-        "a rejected mode must leave no key behind"
+        assert PLATFORM not in env_file.read_text(), \
+            f"mode {mode!r} put a gateway key back on disk"
 
 
-@pytest.mark.parametrize("mode", ["", "  ", "per_turn_required", "PER_TURN_REQUIRED "])
-def test_absent_or_exact_per_turn_is_the_safe_mode(monkeypatch, tmp_path, mode):
-    monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", mode)
+def test_an_existing_workspace_is_still_migrated(monkeypatch, tmp_path):
+    """A workspace written before this rule loses its key and keeps the rest."""
     monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
                         lambda: (PLATFORM, "https://gateway.example"))
     env_file = tmp_path / ".env"
-    env_file.write_text("# workspace\n")
-    hermes_workspace._ensure_gateway_env_file(env_file)
-    assert _keys_on_disk(tmp_path) == []
+    env_file.write_text(
+        f"# workspace\nNEWAPI_API_KEY={PLATFORM}\nOPENAI_API_KEY={PLATFORM}\n"
+        "DRAMACLAW_KEEP_ME=preserved\n")
+    for _ in range(3):
+        hermes_workspace._remove_managed_model_env_values(env_file)
+        hermes_workspace._ensure_gateway_env_file(env_file)
+        assert _keys_on_disk(tmp_path) == []
+    assert "DRAMACLAW_KEEP_ME=preserved" in env_file.read_text()
