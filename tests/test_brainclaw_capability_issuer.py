@@ -142,27 +142,33 @@ def test_the_helper_mints_whenever_an_identity_and_issuer_exist(issuer) -> None:
     assert _claims(header)["turn_id"] == "turn-9"
 
 
-def test_a_binary_grouping_key_is_never_mangled(tmp_path: Path) -> None:
-    """A random key begins or ends with a whitespace byte about 5% of the time.
+def test_a_binary_grouping_key_is_used_byte_for_byte(tmp_path: Path) -> None:
+    """Nothing may be trimmed from a raw binary key. Nothing at all.
 
-    ``bytes.strip()`` would silently shorten it. Sometimes that fails loudly on
-    the length check; sometimes it leaves a still-valid key whose two ends
-    disagree, so the same file derives different ids on either side of the
-    protocol with nothing at all to signal it. A canary run hit this on its
-    second execution.
+    ``bytes.strip()`` was the original bug: a random 32-byte key begins or ends
+    with an ASCII whitespace byte about 5% of the time, and the canary hit it on
+    its second run. Trimming only a trailing newline was the same mistake in a
+    smaller size — a raw key ends in 0x0a once every 256 files, and that byte is
+    key material, not an editor artefact.
+
+    The quiet failure is what makes this worth a test: a key that stays long
+    enough while its two ends derive different opaque ids from one file, in a
+    protocol whose whole purpose is that both sides agree on an identity.
     """
     from novelvideo.brainclaw_control_capability import _binary_key_bytes
 
-    for key in (b"\n" + b"k" * 30 + b"\t",
-                b" " + b"k" * 31,
-                b"k" * 31 + b"\r",
-                bytes([0x0b]) + b"k" * 31):
+    for key in (
+        b"k" * 31 + b"\n",            # a raw key really can end in 0x0a
+        b"k" * 30 + b"\r\n",
+        b"\n" + b"k" * 30 + b"\t",     # whitespace at both ends
+        b" " + b"k" * 31,
+        bytes(range(32)),             # includes 0x09-0x0d and 0x20
+        b"k" * 32,
+    ):
         assert _binary_key_bytes(key) == key, "a binary key must survive verbatim"
 
-    # Only the trailing newline an editor adds is removed.
-    assert _binary_key_bytes(b"k" * 32 + b"\n") == b"k" * 32
-    assert _binary_key_bytes(b"k" * 32 + b"\r\n") == b"k" * 32
-    assert _binary_key_bytes(b"k" * 32) == b"k" * 32
+    # Short keys are rejected by the length gate, not silently repaired here.
+    assert _binary_key_bytes(b"short") == b"short"
 
 
 def test_a_whitespace_edged_key_still_produces_stable_ids(tmp_path: Path) -> None:
