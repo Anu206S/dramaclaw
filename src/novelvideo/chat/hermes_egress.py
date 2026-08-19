@@ -41,8 +41,8 @@ project 记录。真实 project id 是 ULID（26 位 Crockford base32），取�
 
 
 @dataclass(frozen=True, slots=True)
-class HermesLaunchAuthorization:
-    """Secret-bearing authorization kept only for one child launch."""
+class HermesTurnAuthorization:
+    """Secret-bearing authorization kept only for one agent turn."""
 
     context: TrustedEgressContext
     credential: RequestCredential
@@ -54,7 +54,7 @@ class HermesLaunchAuthorization:
         *,
         context: TrustedEgressContext,
         credential: RequestCredential,
-    ) -> "HermesLaunchAuthorization":
+    ) -> "HermesTurnAuthorization":
         snapshot = OperationSnapshot(
             operation_id="test-operation",
             operation_key="test-operation-key",
@@ -113,7 +113,7 @@ async def authorize_credentialed_hermes(
     prompt: str,
     credential_resolver: Any,
     operation_port: Any,
-) -> HermesLaunchAuthorization:
+) -> HermesTurnAuthorization:
     """Claim the operation, then resolve the exact frozen Gateway reference.
 
     ``username`` is the login name and is kept for the caller's workspace/env
@@ -154,7 +154,7 @@ async def authorize_credentialed_hermes(
         raise EgressBoundaryError("ORG_CREDENTIAL_DECRYPT_FAILED") from None
     if type(resolved) is not RequestCredential or resolved.reference != credential:
         raise EgressBoundaryError("ORG_CREDENTIAL_VERSION_MISMATCH")
-    return HermesLaunchAuthorization(context=context, credential=resolved, claim=claim)
+    return HermesTurnAuthorization(context=context, credential=resolved, claim=claim)
 
 
 def build_hermes_child_env(
@@ -167,7 +167,7 @@ def build_hermes_child_env(
     project_id: str | None,
     egress_project_id: str,
     project_env: dict[str, str] | None,
-    authorization: HermesLaunchAuthorization,
+    authorization: HermesTurnAuthorization,
 ) -> dict[str, str]:
     """Build a minimal child env without consulting workspace/process credentials.
 
@@ -223,7 +223,7 @@ def build_hermes_child_env(
 __all__ = [
     "HOME_SCOPE_EGRESS_PROJECT_ID",
     "EgressBoundaryError",
-    "HermesLaunchAuthorization",
+    "HermesTurnAuthorization",
     "authorize_credentialed_hermes",
     "build_hermes_child_env",
 ]
