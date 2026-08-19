@@ -25,6 +25,12 @@ from novelvideo.task_backend.subprocesses import EgressBoundaryError
 #: because the same environment sets DRAMACLAW_GATEWAY_CREDENTIAL_MODE.
 PER_TURN_CREDENTIAL_PLACEHOLDER = "dramaclaw-per-turn-placeholder"
 
+#: Every worker this module launches authenticates per turn. Declared here
+#: rather than read back from the environment because the workers' environment
+#: is written by this module: a reader in the parent process — the workspace
+#: writer, for one — would find the variable absent and conclude the opposite.
+PER_TURN_CREDENTIAL_MODE = "per_turn_required"
+
 HOME_SCOPE_EGRESS_PROJECT_ID = "__home__"
 """home 态出网身份用的 project 哨兵值（本模块只定义，暂无产品代码消费）。
 
@@ -199,7 +205,7 @@ def build_hermes_child_env(
         # authenticate a request.
         "NEWAPI_API_KEY": PER_TURN_CREDENTIAL_PLACEHOLDER,
         "NEWAPI_BASE_URL": authorization.credential.base_url,
-        "DRAMACLAW_GATEWAY_CREDENTIAL_MODE": "per_turn_required",
+        "DRAMACLAW_GATEWAY_CREDENTIAL_MODE": PER_TURN_CREDENTIAL_MODE,
     }
     env.update(
         {
