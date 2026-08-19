@@ -19,7 +19,6 @@ import {
   Languages,
   Library,
   Loader2,
-  Palette,
   Upload,
   X,
 } from 'lucide-react';
@@ -27,11 +26,14 @@ import { useTranslation } from 'react-i18next';
 
 import {
   CANVAS_NODE_TYPES,
+  isStyleNode,
+  type CanvasNodeData,
   type ImageGenCameraSelection,
   type ImageGenCount,
   type ImageGenNodeData,
   type ImageQuality,
   type ImageSize,
+  type StyleNodeData,
 } from '@/features/canvas/domain/canvasNodes';
 import { buildImageFeatureBillingParams } from '@/features/canvas/domain/imageBilling';
 import {
@@ -144,12 +146,31 @@ import {
 } from '@/features/canvas/application/generationTaskArbitration';
 import { useFreezoneCameraOptions } from '@/features/canvas/hooks/useFreezoneCameraOptions';
 import {
-  StylePickerPopover,
+  StyleGalleryModal,
   describeStyleSelection,
-} from '@/features/canvas/nodes/StylePickerPopover';
+  resolveStyleSelectionState,
+} from '@/features/canvas/ui/StyleGalleryModal';
+import {
+  StyleThumbnail,
+  StyleTriggerChip,
+} from '@/features/canvas/nodes/StyleChip';
 import { useFreezoneStyleTemplates } from '@/features/canvas/hooks/useFreezoneStyleTemplates';
+import {
+  STYLE_NODE_HEIGHT,
+  STYLE_NODE_WIDTH,
+} from '@/features/canvas/nodes/StyleNode';
+import {
+  advanceStyleNodeSync,
+  isStyleSyncReady,
+  resolveStyleNodePlacement,
+  readStyleNodeSyncState,
+  writeStyleNodeSyncState,
+} from '@/features/canvas/application/styleNodeSync';
 import { joinUpstreamText } from '@/features/canvas/application/graphContentResolver';
-import { useUpstreamContents } from '@/features/canvas/application/useUpstreamGraph';
+import {
+  useUpstreamContents,
+  useUpstreamNodes,
+} from '@/features/canvas/application/useUpstreamGraph';
 import { useNodeGenerationTaskState } from '@/features/canvas/application/useNodeGenerationTaskState';
 import {
   PromptMentionEditor,
@@ -272,6 +293,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   const updateNodeData = useCanvasStore((state) => state.updateNodeData);
   const updateNodeSize = useCanvasStore((state) => state.updateNodeSize);
   const deleteEdge = useCanvasStore((state) => state.deleteEdge);
+  const deleteNodeAction = useCanvasStore((state) => state.deleteNode);
   const addNodeAction = useCanvasStore((state) => state.addNode);
   const addEdgeAction = useCanvasStore((state) => state.addEdge);
 
@@ -478,8 +500,19 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   }, [imageBillingRuleMissing, imageCreditCost.data?.data.display, t]);
   const { options: cameraOptions } = useFreezoneCameraOptions();
   const cameraSummary = describeCameraSelection(cameraSelection, cameraOptions);
-  const { templates: styleTemplates } = useFreezoneStyleTemplates();
+  const {
+    templates: styleTemplates,
+    assetBase: styleAssetBase,
+    isLoading: styleTemplatesLoading,
+    error: styleTemplatesError,
+    retry: retryStyleTemplates,
+  } = useFreezoneStyleTemplates();
   const selectedStyle = describeStyleSelection(styleTemplateId, styleTemplates);
+  const styleSelectionState = resolveStyleSelectionState(
+    styleTemplateId,
+    selectedStyle,
+    { isLoading: styleTemplatesLoading, hasError: styleTemplatesError !== null },
+  );
 
   const upstreamContents = useUpstreamContents(id);
   // ImageGen 上游只消费「文本 + 图片」，视频/音频内容被丢弃 ——
@@ -547,11 +580,101 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     () => collectCandidateBindingsForNode(connectedEdges, id).map((binding) => binding.role),
     [connectedEdges, id],
   );
+  const upstreamNodes = useUpstreamNodes(id);
   // 节点被连线（存在入边）后：隐藏「试试」CTA，只在节点中间显示一个图标（对齐 libtv）。
+  // 风格节点不算 —— 它是本节点自己的选择在画布上的投影，不是「用户接了个上游」，
+  // 选个风格就把空节点的 CTA 收掉会很莫名。
   const isConnected = useMemo(
-    () => connectedEdges.some((edge) => edge.target === id),
-    [connectedEdges, id],
+    () => upstreamNodes.some((node) => !isStyleNode(node)),
+    [upstreamNodes],
   );
+
+  // 主线只读判定：风格对账（下面）和工具条都要用，所以提到这里统一算一次。
+  const mainlineFlags = useMemo(
+    () => nodeMainlineFlags({ data, id, type: 'imageGenNode', position: { x: 0, y: 0 } } as never),
+    [data, id],
+  );
+  const mainlineCanvasReadonly = mainlineFlags.isPresetManaged && !canAutoCommitOnGenerate;
+
+  // ===== 选中的风格 ⇄ 画布上的风格节点 =====
+  // 真源始终是本节点的 styleTemplateId（提交读的就是它），风格节点只是它在画布上
+  // 的投影。判定规则（含「刚建完还没回流」「存量画布补建」两个时序坑）抽在
+  // styleNodeSync 里，这里只负责把动作落到 store。
+  const upstreamStyleNodeId = useMemo(
+    () => upstreamNodes.find((item) => isStyleNode(item))?.id ?? null,
+    [upstreamNodes],
+  );
+  // 「这个风格节点还连着别人吗」只能看它自己的出边，本节点的 connectedEdges 看不到。
+  // 取成布尔值订阅，别的边怎么动都不会让这里重渲染。
+  const styleNodeIsShared = useCanvasStore((state) =>
+    upstreamStyleNodeId === null
+      ? false
+      : state.edges.filter((edge) => edge.source === upstreamStyleNodeId).length > 1,
+  );
+  const upstreamStyleNode = useMemo(() => {
+    const node = upstreamNodes.find((item) => isStyleNode(item));
+    if (!node) return null;
+    const raw = (node.data as StyleNodeData).styleTemplateId;
+    return {
+      id: node.id,
+      templateId: typeof raw === 'string' && raw.length > 0 ? raw : null,
+      sharedWithOtherTargets: styleNodeIsShared,
+    };
+  }, [styleNodeIsShared, upstreamNodes]);
+  // 对账要等风格清单到手才能开工，理由是补建那一支：清单换代后旧画布里存的
+  // 清单没到、或者选中的是清单里查不到的旧 id，都不许动手（判据见 isStyleSyncReady）。
+  const styleSyncReady = isStyleSyncReady(styleTemplateId, styleTemplates);
+  useEffect(() => {
+    // 只读的主线画布一律不碰：那上面的节点不归用户管，补建/删除都是越权写入。
+    if (!styleSyncReady || mainlineCanvasReadonly) return;
+    const { action, state } = advanceStyleNodeSync(readStyleNodeSyncState(id), {
+      selectedTemplateId: styleTemplateId,
+      styleNode: upstreamStyleNode,
+    });
+    writeStyleNodeSyncState(id, state);
+    switch (action.kind) {
+      case 'create': {
+        const self = useCanvasStore.getState().nodes.find((node) => node.id === id);
+        if (!self) return;
+        const selfHeight =
+          self.measured?.height
+          ?? (typeof self.height === 'number' ? self.height : DEFAULT_HEIGHT);
+        const newNodeId = addNodeAction(
+          CANVAS_NODE_TYPES.style,
+          resolveStyleNodePlacement({
+            imageNodePosition: self.position,
+            imageNodeHeight: selfHeight,
+            styleNodeWidth: STYLE_NODE_WIDTH,
+            styleNodeHeight: STYLE_NODE_HEIGHT,
+          }),
+          { styleTemplateId: action.templateId } as Partial<CanvasNodeData>,
+        );
+        addEdgeAction(newNodeId, id);
+        break;
+      }
+      case 'update':
+        updateNodeData(action.nodeId, { styleTemplateId: action.templateId });
+        break;
+      case 'remove':
+        deleteNodeAction(action.nodeId);
+        break;
+      case 'clear-selection':
+        updateNodeData(id, { styleTemplateId: null });
+        break;
+      default:
+        break;
+    }
+  }, [
+    addEdgeAction,
+    addNodeAction,
+    deleteNodeAction,
+    id,
+    mainlineCanvasReadonly,
+    styleSyncReady,
+    styleTemplateId,
+    updateNodeData,
+    upstreamStyleNode,
+  ]);
 
   // 候选按 orderedReferenceUrls 编号（自身参考图在场时就是图片1），保证 @ 出来的
   // 缩略图与后端解析到的 图片N 是同一张。key 优先用上游 nodeId；自身参考图没有
@@ -677,6 +800,11 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // 收起态浮动面板固定基础尺寸；放大用居中弹窗（见下方 OperationPanelShell）。
   const [panelExpanded, setPanelExpanded] = useState(false);
   const [stylePickerOpen, setStylePickerOpen] = useState(false);
+  // 打开图墙是个明确的用户动作，顺手把上次失败的清单重拉一遍（成功态是空操作）。
+  const openStylePicker = useCallback(() => {
+    retryStyleTemplates();
+    setStylePickerOpen(true);
+  }, [retryStyleTemplates]);
   const panelHeight = OPERATIONS_PANEL_HEIGHT;
   const panelWidth = Math.max(resolvedWidth, OPERATIONS_PANEL_MIN_WIDTH);
 
@@ -1267,12 +1395,7 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   //   context_only       — 有 mainline_context 但无 slot_target:cyan 细线 + context chip
   //   ordinary           — 都没有:默认白色 border
   //
-  const mainlineFlags = useMemo(
-    () => nodeMainlineFlags({ data, id, type: 'imageGenNode', position: { x: 0, y: 0 } } as never),
-    [data, id],
-  );
   const visualState = mainlineNodeVisualState(mainlineFlags);
-  const mainlineCanvasReadonly = mainlineFlags.isPresetManaged && !canAutoCommitOnGenerate;
   const cardToneClass = (() => {
     switch (visualState) {
       case 'preset_locked':
@@ -1290,6 +1413,10 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // 一道，防止展开后用户点节点重新选中时面板叠到宫格上。
   const showImageOpsPanel =
     selected && !isBoxSelecting && !hasActiveOverlay && !mainlineCanvasReadonly && !albumExpanded;
+  // 面板一收（取消选中 / 展开画册），图墙的开关跟着复位，免得下次选中节点弹层自己冒出来。
+  useEffect(() => {
+    if (!showImageOpsPanel) setStylePickerOpen(false);
+  }, [showImageOpsPanel]);
 
   return (
     <div
@@ -1804,12 +1931,12 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
             className="absolute right-2 top-2 z-20"
           />
           <div className="flex shrink-0 items-center gap-2 pl-3 pr-10 pt-3">
-            <StyleChip
-              selectedId={styleTemplateId}
-              selectedLabel={selectedStyle?.label ?? null}
-              onChange={(nextId) => updateNodeData(id, { styleTemplateId: nextId })}
-              onOpenChange={setStylePickerOpen}
-            />
+            {styleSelectionState !== 'ready' && (
+              <StyleTriggerChip
+                state={styleSelectionState}
+                onOpen={openStylePicker}
+              />
+            )}
             <NodeContextPromptPaletteButton
               nodeId={id}
               onInsert={insertContextPaletteEntry}
@@ -1879,6 +2006,33 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
               </div>
             )}
           </div>
+
+          {/* 选中的风格单独占一行，贴着输入区顶部，和顶排的功能 chip 分开。 */}
+          {selectedStyle && (
+            <div className="flex shrink-0 items-center gap-1.5 px-3 pt-2">
+              <StyleThumbnail
+                template={selectedStyle}
+                assetBase={styleAssetBase}
+                onOpen={openStylePicker}
+                onClear={() => updateNodeData(id, { styleTemplateId: null })}
+              />
+            </div>
+          )}
+
+          {/* 图墙走 portal 挂 body，不受节点缩放/裁剪影响，关闭交给弹层自己的遮罩和 Esc。 */}
+          {stylePickerOpen && (
+            <StyleGalleryModal
+              templates={styleTemplates}
+              assetBase={styleAssetBase}
+              selectedId={styleTemplateId}
+              isLoading={styleTemplatesLoading}
+              onSelect={(nextId) => {
+                updateNodeData(id, { styleTemplateId: nextId });
+                setStylePickerOpen(false);
+              }}
+              onClose={() => setStylePickerOpen(false)}
+            />
+          )}
 
           <PromptMentionEditor
             ref={promptEditorRef}
@@ -2248,79 +2402,6 @@ function AspectSizeChip({ aspectRatio, size, sizeOptions, aspectOptions, quality
               );
             })}
           </div>
-        </div>
-      )}
-    </div>
-  );
-}
-
-interface StyleChipProps {
-  selectedId: string | null;
-  selectedLabel: string | null;
-  onChange: (nextId: string | null) => void;
-  onOpenChange?: (open: boolean) => void;
-}
-
-function StyleChip({ selectedId, selectedLabel, onChange, onOpenChange }: StyleChipProps) {
-  const triggerRef = useRef<HTMLButtonElement>(null);
-  const popoverRef = useRef<HTMLDivElement>(null);
-  const [isOpen, setIsOpen] = useState(false);
-
-  useEffect(() => {
-    onOpenChange?.(isOpen);
-  }, [isOpen, onOpenChange]);
-
-  useEffect(() => {
-    return () => onOpenChange?.(false);
-  }, [onOpenChange]);
-
-  useEffect(() => {
-    if (!isOpen) return;
-    const onPointerDown = (event: MouseEvent) => {
-      if (
-        triggerRef.current?.contains(event.target as Node) ||
-        popoverRef.current?.contains(event.target as Node)
-      ) {
-        return;
-      }
-      setIsOpen(false);
-    };
-    document.addEventListener('mousedown', onPointerDown, true);
-    return () => document.removeEventListener('mousedown', onPointerDown, true);
-  }, [isOpen]);
-
-  const isActive = Boolean(selectedId);
-  const label = isActive ? selectedLabel ?? '风格' : '风格';
-
-  return (
-    <div className="relative">
-      <button
-        ref={triggerRef}
-        type="button"
-        onClick={(event) => {
-          event.stopPropagation();
-          setIsOpen((prev) => !prev);
-        }}
-        title={isActive ? selectedLabel ?? undefined : '风格'}
-        className={`${NODE_TEXT_CONTROL_TRIGGER_CLASS} max-w-[160px]`}
-      >
-        <Palette className={`${NODE_TEXT_CONTROL_ICON_CLASS} shrink-0`} />
-        <span className="truncate">{label}</span>
-      </button>
-      {isOpen && (
-        <div
-          ref={popoverRef}
-          className="absolute top-full left-0 z-50 mt-2"
-          onClick={(event) => event.stopPropagation()}
-        >
-          <StylePickerPopover
-            selectedId={selectedId}
-            onSelect={(nextId) => {
-              onChange(nextId);
-              setIsOpen(false);
-            }}
-            onClose={() => setIsOpen(false)}
-          />
         </div>
       )}
     </div>

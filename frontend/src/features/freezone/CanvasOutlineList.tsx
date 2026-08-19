@@ -22,6 +22,7 @@ import {
   ListTree,
   MoreHorizontal,
   Navigation,
+  Palette,
   Pencil,
   Play,
   ScrollText,
@@ -88,6 +89,7 @@ const NODE_TYPE_ICON: Record<CanvasNodeType, LucideIcon> = {
   [CANVAS_NODE_TYPES.pano360Viewer]: Globe,
   [CANVAS_NODE_TYPES.threeDWorld]: Box,
   [CANVAS_NODE_TYPES.skill]: Sparkles,
+  [CANVAS_NODE_TYPES.style]: Palette,
 };
 
 /** 缩略图取节点自己的画面；视频/音频这类没有静帧的走图标兜底。 */
@@ -212,6 +214,8 @@ export const CANVAS_OUTLINE_FILTERS: ReadonlyArray<{
       CANVAS_NODE_TYPES.imageEdit,
       CANVAS_NODE_TYPES.imageGen,
       CANVAS_NODE_TYPES.exportImage,
+      // 风格节点不独立存在，它是图片节点所选风格的投影，跟着图片一起筛。
+      CANVAS_NODE_TYPES.style,
     ],
   },
   {
