@@ -534,110 +534,34 @@ def _parse_env_assignments(text: str) -> dict[str, str]:
     return values
 
 
-from novelvideo.chat.hermes_egress import (
-    GATEWAY_CREDENTIAL_MODE_ENV,
-    LEGACY_ENVIRONMENT_CREDENTIAL_MODE,
-    PER_TURN_CREDENTIAL_MODE,
-)
 
-
-class GatewayCredentialModeError(RuntimeError):
-    """An unrecognised credential mode. Raised rather than guessed."""
-
-
-
-def _per_turn_credentials_required() -> bool:
-    """Whether workers authenticate per turn rather than from their environment.
-
-    Read from the environment rather than passed in: this file is reached from
-    several workspace entry points, and a parameter would have to be threaded
-    through all of them, leaving whichever one was missed writing a real key.
-    """
-    # Not read as a plain flag: this runs in the API process, which writes the
-    # workers' environment rather than sharing it, so the variable is absent
-    # here by construction and "absent" has to mean the safe mode.
-    #
-    # An unrecognised value is a startup failure rather than a fallback. The
-    # previous spelling treated anything non-empty and unequal as legacy, so a
-    # typo — `per_tun_required` — silently wrote a real gateway key back to
-    # disk. A misconfiguration must not be able to choose the unsafe branch.
-    override = os.environ.get(GATEWAY_CREDENTIAL_MODE_ENV, "").strip().lower()
-    if not override or override == PER_TURN_CREDENTIAL_MODE:
-        return True
-    if override == LEGACY_ENVIRONMENT_CREDENTIAL_MODE:
-        return False
-    raise GatewayCredentialModeError(
-        f"{GATEWAY_CREDENTIAL_MODE_ENV}={override!r} is not a recognised "
-        f"credential mode; expected {PER_TURN_CREDENTIAL_MODE!r}, "
-        f"{LEGACY_ENVIRONMENT_CREDENTIAL_MODE!r} or an empty value")
 
 
 def _ensure_gateway_env_file(env_file: Path) -> None:
-    """Keep Hermes profile secrets aligned with DramaClaw gateway settings.
+    """Leave the workspace ``.env`` without a gateway credential.
 
-    Hermes profile-scoped secret reads are backed by ``HERMES_HOME/.env``. The
-    worker process also receives ``NEWAPI_API_KEY`` and ``OPENAI_API_KEY`` in
-    its environment, but restored Hermes custom-provider sessions may consult
-    profile-scoped secrets. Keep both aliases synchronized so old
-    ``OPENAI_API_KEY`` values cannot shadow the current NewAPI gateway key.
+    Kept as a named step rather than deleted at the call site so the intent
+    stays visible: this file used to hold ``NEWAPI_API_KEY`` and
+    ``OPENAI_API_KEY``, Hermes still reads it at startup, and a future change
+    that puts a key back here would otherwise look like restoring a helpful
+    default rather than reopening a hole.
     """
-    # A per-turn-required worker must not have a usable key anywhere it can
-    # reach. The process environment already carries only a placeholder, but
-    # Hermes loads this file at startup and `config.yaml` resolves its provider
-    # key through `key_env`, so a real value here silently restores exactly the
-    # deployment-level credential the latch exists to remove — and an
-    # organisation turn would bill the platform without any error to show for
-    # it. `_remove_managed_model_env_values` has already stripped the managed
-    # names by the time this runs, so returning here both stops writing a key
-    # and migrates a workspace that was written before this rule existed.
-    if _per_turn_credentials_required():
-        return
-    api_key, _base_url = effective_gateway_credentials()
-    if not api_key:
-        return
-    try:
-        text = env_file.read_text(encoding="utf-8")
-    except OSError:
-        text = _DEFAULT_ENV_TEMPLATE
-
-    out: list[str] = []
-    wrote_newapi = False
-    wrote_openai = False
-    changed = False
-    for raw_line in text.splitlines():
-        line = raw_line.strip()
-        if line and not line.startswith("#") and "=" in line:
-            key = line.split("=", 1)[0].strip()
-            if key == _DRAMACLAW_HERMES_KEY_ENV:
-                replacement = f"{_DRAMACLAW_HERMES_KEY_ENV}={api_key}"
-                if raw_line != replacement:
-                    changed = True
-                out.append(replacement)
-                wrote_newapi = True
-                continue
-            if key == "OPENAI_API_KEY":
-                replacement = f"OPENAI_API_KEY={api_key}"
-                if raw_line != replacement:
-                    changed = True
-                out.append(replacement)
-                wrote_openai = True
-                continue
-        out.append(raw_line)
-    if not wrote_newapi:
-        if out and out[-1].strip():
-            out.append("")
-        out.append(f"{_DRAMACLAW_HERMES_KEY_ENV}={api_key}")
-        changed = True
-    if not wrote_openai:
-        out.append(f"OPENAI_API_KEY={api_key}")
-        changed = True
-    new_text = "\n".join(out).rstrip() + "\n"
-    if changed or new_text != text:
-        env_file.write_text(new_text, encoding="utf-8")
-        try:
-            env_file.chmod(0o600)
-        except OSError:
-            pass
+    # Never written. Workers authenticate per turn, unconditionally, so a key
+    # here is exposure that buys nothing: `build_hermes_child_env` gives every
+    # worker a placeholder and the per-turn latch, and no value in this file
+    # will authenticate anything.
+    #
+    # A `legacy_environment` escape hatch used to live here and was worse than
+    # none at all. It restored the real key to disk while the child environment
+    # kept the placeholder and the latch, so a "legacy" deployment got the
+    # exposure of the old design together with the behaviour of the new one:
+    # the worker still failed closed, and now a live credential sat on disk as
+    # well. Half a compatibility mode is more dangerous than none, because it
+    # reads as a supported path.
+    #
+    # `_remove_managed_model_env_values` runs before this, so returning here
+    # also migrates a workspace written before the rule existed.
+    return
 
 
 def _ensure_identity_context(home: Path, *, profile: str = "director") -> None:

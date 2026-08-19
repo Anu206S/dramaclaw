@@ -34,6 +34,7 @@ from typing import Any, Awaitable, Callable
 from novelvideo import config
 from novelvideo.chat.hermes_sdk import HermesSdkClient, HermesSdkThread
 from novelvideo.chat import evidence_metrics
+from novelvideo.chat.hermes_fork_requirement import require_hermes_fork
 from novelvideo.chat.hermes_egress import (
     PER_TURN_CREDENTIAL_PLACEHOLDER,
     EgressBoundaryError,
@@ -649,6 +650,9 @@ class HermesPool:
                 "Run `uv tool install 'hermes-agent[acp]'`."
             )
         _ensure_supported_hermes_version(cli_path)
+        # Checked before the subprocess exists, so a mismatched pair fails here
+        # with a cause rather than at the first turn as a connection error.
+        require_hermes_fork()
         home = ensure_user_hermes_workspace(
             username,
             profile=_workspace_profile_for_agent(agent_profile, tool_mode, surface),
