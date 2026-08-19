@@ -993,6 +993,10 @@ class HermesSdkThread:
             thread_id=self.id,
             turn_id=turn_id,
             text="(hermes timed out)",
+            # Carried on the event itself rather than inferred from the text: a
+            # caller that matched on "(hermes timed out)" would settle the
+            # ledger as a success the day that string changes.
+            disposition="timeout",
         )
 
 
@@ -1075,6 +1079,11 @@ class HermesSdkThread:
             if meta:
                 prompt_params["_meta"] = meta
             req_id = await self._send("session/prompt", prompt_params)
+            # The request has now crossed into the agent. Anything that goes
+            # wrong past this line cannot prove the upstream call did not
+            # happen, so the ledger may no longer say "rejected before submit".
+            yield ChatBackendEvent(
+                type="egress_submitted", thread_id=self.id, turn_id=turn_id)
 
             # Read until we see the final session/prompt response (id matches).
             # Along the way emit assistant/tool/plan/thought/usage events for any
