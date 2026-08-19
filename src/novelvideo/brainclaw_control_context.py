@@ -1,6 +1,6 @@
 """Sign the BrainClaw Control Context for a DramaClaw request.
 
-BrainClaw cannot derive which episode or project a request belongs to, and that
+BrainClaw cannot derive which trajectory or project a request belongs to, and that
 identity cannot be reconstructed afterwards, so DramaClaw states it here. The
 grouping IDs are HMACs of DramaClaw-side identifiers: BrainClaw only ever
 compares them for equality and never learns the underlying project, session or
@@ -41,9 +41,9 @@ def _b64u(raw: bytes) -> str:
 def group_id(grouping_key: bytes, kind: str, raw_identifier: str) -> str:
     """Derive an opaque, stable group id.
 
-    ``kind`` separates the episode and project namespaces so the same string
+    ``kind`` separates the trajectory and project namespaces so the same string
     cannot collide across them. The grouping key must outlive signing-key
-    rotation: rotating it silently splits one episode into two families, which
+    rotation: rotating it silently splits one trajectory into two families, which
     is why ``grouping_key_epoch`` travels with the payload.
     """
     digest = hmac.new(grouping_key, f"{kind}\x00{raw_identifier}".encode(), hashlib.sha256)
@@ -52,7 +52,7 @@ def group_id(grouping_key: bytes, kind: str, raw_identifier: str) -> str:
 
 @dataclass(frozen=True)
 class ControlContext:
-    episode_group_id: str
+    trajectory_group_id: str
     project_group_id: str
     grouping_key_epoch: int
     checkpoint_ordinal: int
@@ -64,11 +64,11 @@ class ControlContext:
             raise ValueError("checkpoint_ordinal must fit in uint32")
         if self.grouping_key_epoch < 0:
             raise ValueError("grouping_key_epoch must be non-negative")
-        # A project-less caller repeats the episode id rather than omitting the
+        # A project-less caller repeats the trajectory id rather than omitting the
         # field: BrainClaw refuses to invent a grouping it cannot see.
         return {
             "schema_version": PAYLOAD_SCHEMA,
-            "episode_group_id": self.episode_group_id,
+            "trajectory_group_id": self.trajectory_group_id,
             "project_group_id": self.project_group_id,
             "grouping_key_epoch": self.grouping_key_epoch,
             "checkpoint_ordinal": self.checkpoint_ordinal,
