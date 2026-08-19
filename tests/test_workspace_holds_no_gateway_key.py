@@ -102,18 +102,39 @@ def test_an_explicit_legacy_override_still_writes_the_key(monkeypatch, tmp_path)
     assert f"NEWAPI_API_KEY={PLATFORM}" in env_file.read_text()
 
 
-@pytest.mark.parametrize("mode", ["per_turn", "PER_TURN_REQUIRED ", "off"])
-def test_only_an_exact_opt_out_restores_the_write(monkeypatch, tmp_path, mode):
-    """A near-miss must not be read as an opt-out.
+@pytest.mark.parametrize("mode", [
+    "per_tun_required",      # the typo that motivated this
+    "per_turn",
+    "PER_TURN_REQUIRED_",
+    "off",
+    "legacy",
+    "legacy environment",
+])
+def test_an_unrecognised_mode_fails_instead_of_writing_a_key(
+        monkeypatch, tmp_path, mode):
+    """A misconfiguration must not be able to select the unsafe branch.
 
-    The empty string is excluded because it means "unset", which the test above
-    covers: absent is per-turn, and only a stated legacy mode writes a key.
+    Anything non-empty and unequal used to mean legacy, so `per_tun_required`
+    wrote a real gateway key back to disk — a typo silently undoing the whole
+    protection, with a workspace that looked correctly configured.
     """
     monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", mode)
     monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
                         lambda: (PLATFORM, "https://gateway.example"))
     env_file = tmp_path / ".env"
     env_file.write_text("# workspace\n")
+    with pytest.raises(hermes_workspace.GatewayCredentialModeError):
+        hermes_workspace._ensure_gateway_env_file(env_file)
+    assert _keys_on_disk(tmp_path) == [], \
+        "a rejected mode must leave no key behind"
+
+
+@pytest.mark.parametrize("mode", ["", "  ", "per_turn_required", "PER_TURN_REQUIRED "])
+def test_absent_or_exact_per_turn_is_the_safe_mode(monkeypatch, tmp_path, mode):
+    monkeypatch.setenv("DRAMACLAW_GATEWAY_CREDENTIAL_MODE", mode)
+    monkeypatch.setattr(hermes_workspace, "effective_gateway_credentials",
+                        lambda: (PLATFORM, "https://gateway.example"))
+    env_file = tmp_path / ".env"
+    env_file.write_text("# workspace\n")
     hermes_workspace._ensure_gateway_env_file(env_file)
-    wrote = f"NEWAPI_API_KEY={PLATFORM}" in env_file.read_text()
-    assert wrote is (mode.strip().lower() != "per_turn_required")
+    assert _keys_on_disk(tmp_path) == []

@@ -1511,6 +1511,10 @@ class HermesSdkThread:
         drain = getattr(self, "_stderr_drain", None)
         if drain is not None and not drain.done():
             drain.cancel()
+            # Awaited, not merely cancelled: cancellation only requests it, and
+            # returning here would leave the task pending long enough for the
+            # loop to complain about it at shutdown.
+            await asyncio.gather(drain, return_exceptions=True)
         if self._proc is None:
             return
         try:
