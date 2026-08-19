@@ -581,6 +581,35 @@ def _write_hermes_tool_mode(username: str, *, mode: str) -> None:
         logger.warning("failed to write hermes tool mode for user=%s mode=%s: %s", username, mode, exc)
 
 
+def _route_prompt_with_execution_context(
+    prompt: str,
+    route_prompt: str | None,
+) -> tuple[str, str]:
+    """Separate visible user intent from transport-only execution context.
+
+    The UI appends canvas ontology, attachment analysis, node references, and
+    command context after the visible text. Hermes still needs that context,
+    but BrainClaw must classify and embed only the visible intent following the
+    final ``[USER_MESSAGE]`` marker.
+
+    Only split the prompt when the clean route prompt is an exact leading text
+    segment followed by a line boundary. Older callers and transformed prompts
+    retain the previous behavior instead of risking lost user content.
+    """
+
+    transport_prompt = str(prompt or "")
+    clean_route_prompt = str(route_prompt or "").strip()
+    if not clean_route_prompt:
+        return transport_prompt, ""
+    if transport_prompt == clean_route_prompt:
+        return clean_route_prompt, ""
+    if transport_prompt.startswith(clean_route_prompt):
+        suffix = transport_prompt[len(clean_route_prompt) :]
+        if suffix.startswith(("\n", "\r")):
+            return clean_route_prompt, suffix.strip()
+    return transport_prompt, ""
+
+
 def _prompt_with_user_context(
     username: str,
     project: str,
@@ -591,6 +620,10 @@ def _prompt_with_user_context(
     route_prompt: str | None = None,
 ) -> str:
     preferences = load_user_preferences(username)
+    user_message, execution_context = _route_prompt_with_execution_context(
+        prompt,
+        route_prompt,
+    )
     scope = f"project:{project}" if project else "home"
     canvas_id = _freezone_canvas_id_from_context(surface_context)
     canvas_context = (
@@ -616,6 +649,13 @@ def _prompt_with_user_context(
     rendering_instructions = (
         "" if tool_mode == "freezone_canvas" else f"{_JSON_RENDER_CHAT_INSTRUCTIONS}\n\n"
     )
+    execution_context_block = (
+        "[DRAMACLAW_EXECUTION_CONTEXT]\n"
+        f"{execution_context}\n"
+        "[/DRAMACLAW_EXECUTION_CONTEXT]\n\n"
+        if execution_context
+        else ""
+    )
     return (
         "[DRAMACLAW_USER_CONTEXT]\n"
         f"username: {username}\n"
@@ -627,8 +667,9 @@ def _prompt_with_user_context(
         f"{rendering_instructions}"
         f"{continuation_instructions}"
         f"{surface_instructions}\n\n"
+        f"{execution_context_block}"
         "[USER_MESSAGE]\n"
-        f"{prompt}"
+        f"{user_message}"
     )
 
 
@@ -1217,6 +1258,30 @@ def chat_run_lock_is_active(username: str, project: str = "") -> bool:
 
 def force_release_chat_run_lock(username: str, project: str) -> None:
     _remove_chat_run_lock_file(_chat_run_lock_path(username, project))
+
+
+def _evidence_identity(
+    project: str | None, store_scope: Any | None, agent_profile: str
+) -> dict[str, str]:
+    """Name the episode and project this turn belongs to.
+
+    ``project_group_id`` is the DramaClaw project, or the home sentinel when
+    there is none — BrainClaw refuses to invent a grouping it cannot see, so the
+    caller must say "no project" explicitly rather than omit it.
+
+    ``episode_id`` is the most specific conversation scope available: a Freezone
+    canvas when there is one, otherwise the project-and-profile conversation.
+    That deliberately over-groups — every turn of one long conversation lands in
+    one family — because over-grouping only costs statistical power, while
+    under-grouping manufactures independence that does not exist and silently
+    inflates any sign test built on it.
+    """
+    from novelvideo.chat.hermes_egress import HOME_SCOPE_EGRESS_PROJECT_ID
+
+    project_id = (project or "").strip() or HOME_SCOPE_EGRESS_PROJECT_ID
+    canvas_id = str(getattr(store_scope, "canvas_id", "") or "").strip()
+    episode_id = f"canvas:{canvas_id}" if canvas_id else f"conversation:{project_id}:{agent_profile}"
+    return {"episode_id": episode_id, "project_id": project_id}
 
 
 async def _chat_run_lock_heartbeat_loop(
@@ -4431,6 +4496,9 @@ async def _stream_assistant_reply_hermes(
                 async for stream_event in thread.stream(
                     stream_prompt,
                     current_project=project or None,
+                    # Evidence identity for this turn. Raw ids: they are hashed
+                    # inside DramaClaw and never leave the process as-is.
+                    **_evidence_identity(project, store_scope, agent_profile),
                 ):
                     if stream_event.type == "complete":
                         saw_complete = True

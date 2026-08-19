@@ -137,7 +137,7 @@ def test_text_writer_uses_plain_text_agent_without_structured_output_settings(
             agent_kwargs["model"] = model
             agent_kwargs.update(kwargs)
 
-    def fake_model(model_env: str, default_model: str, **kwargs):
+    def fake_model(model_env: str, default_model: str | None = None, **kwargs):
         model_kwargs.update(kwargs)
         return model_env, default_model
 
@@ -148,7 +148,7 @@ def test_text_writer_uses_plain_text_agent_without_structured_output_settings(
 
     assert agent_kwargs["model"] == (
         "FREEZONE_TEXT_WRITER_MODEL",
-        "brainclaw",
+        None,
     )
     assert model_kwargs == {
         "brainclaw_profile": BrainClawProfile.FREEZONE_TEXT_GENERATION,

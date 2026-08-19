@@ -410,7 +410,6 @@ class LiteralScriptWritingWorkflow:
             self._agent = Agent(
                 get_newapi_text_pydantic_model(
                     "LITERAL_BEAT_META_MODEL",
-                    "gemini-3.5-flash",
                     brainclaw_profile=BrainClawProfile.LITERAL_BEAT_METADATA,
                     capability="text.generate.workflow",
                 ),

@@ -581,7 +581,6 @@ def _create_scene_build_agent(system_prompt: str, output_type: Any, name: str):
     return Agent(
         get_newapi_text_pydantic_model(
             "SCENE_BUILD_MODEL",
-            "gemini-3-flash-preview",
             brainclaw_profile=BrainClawProfile.SCENE_ENVIRONMENT_ENRICHMENT,
             capability="cognee.llm",
         ),

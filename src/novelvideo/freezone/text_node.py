@@ -230,7 +230,6 @@ def create_freezone_translation_agent() -> Agent:
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_TRANSLATION_MODEL",
-        FREEZONE_TRANSLATION_MODEL,
         brainclaw_profile=BrainClawProfile.FREEZONE_TRANSLATION,
         capability="freezone.text.generate",
     )
@@ -261,7 +260,6 @@ def create_freezone_text_writer_agent() -> Agent:
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_TEXT_WRITER_MODEL",
-        FREEZONE_TEXT_WRITER_MODEL,
         brainclaw_profile=BrainClawProfile.FREEZONE_TEXT_GENERATION,
     )
     return Agent(
@@ -312,10 +310,9 @@ def create_freezone_story_script_agent(model: str | None = None) -> Agent:
     )
     from novelvideo.brainclaw_contract import BrainClawProfile
 
-    resolved = resolve_freezone_story_script_model(model)
+    resolve_freezone_story_script_model(model)
     llm_model = get_newapi_text_pydantic_model(
         "FREEZONE_STORY_SCRIPT_MODEL",
-        resolved["model"],
         brainclaw_profile=BrainClawProfile.FREEZONE_STORY_SCRIPT_WRITING,
         capability="freezone.text.generate",
     )
@@ -601,12 +598,9 @@ def create_freezone_video_story_script_agent() -> Agent:
         get_newapi_text_pydantic_model,
     )
     from novelvideo.brainclaw_contract import BrainClawProfile
-    from novelvideo.official_defaults import DEFAULT_FREEZONE_VISION_MODEL
-
     return Agent(
         get_newapi_text_pydantic_model(
             "FREEZONE_VISION_MODEL",
-            DEFAULT_FREEZONE_VISION_MODEL,
             timeout_seconds_override=300.0,
             brainclaw_profile=BrainClawProfile.FREEZONE_VISION_ANALYSIS,
             capability="vision.analyze",

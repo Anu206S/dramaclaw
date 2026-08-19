@@ -573,7 +573,6 @@ def create_seedance2_prompt_composer_agent():
     return Agent(
         get_newapi_text_pydantic_model(
             "SEEDANCE2_PROMPT_COMPOSER_MODEL",
-            "gemini-3.5-flash",
             brainclaw_profile=BrainClawProfile.SEEDANCE2_PROMPT_COMPOSITION,
             capability="text.generate.workflow",
         ),

@@ -185,7 +185,7 @@ def create_global_video_optimizer_agent(language: str = "en") -> Agent:
     return Agent(
         get_newapi_text_pydantic_model(
             "GLOBAL_VIDEO_OPTIMIZER_MODEL",
-            legacy_model or "gemini-3.5-flash",
+            model_name_override=legacy_model or None,
             brainclaw_profile=BrainClawProfile.GLOBAL_VIDEO_MOTION_PLANNING,
             capability="text.generate.agent",
         ),
@@ -739,7 +739,7 @@ def _create_identity_detector_agent() -> Agent:
     return Agent(
         get_newapi_text_pydantic_model(
             "GLOBAL_VIDEO_IDENTITY_DETECTOR_MODEL",
-            legacy_model or "gemini-3.5-flash",
+            model_name_override=legacy_model or None,
             brainclaw_profile=BrainClawProfile.GLOBAL_VIDEO_IDENTITY_DETECTION,
             capability="text.generate.agent",
         ),

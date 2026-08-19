@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from novelvideo.official_defaults import DEFAULT_FREEZONE_VISION_MODEL
-
 FREEZONE_VIDEO_ANALYSIS_TIMEOUT_SECONDS = 300.0
 FREEZONE_IMAGE_REVERSE_PROMPT_TIMEOUT_SECONDS = 180.0
 FREEZONE_MARK_TIMEOUT_SECONDS = 90.0
@@ -51,7 +49,6 @@ def resolve_freezone_vision_model(model_override: str | None = None) -> str:
 
     return get_effective_newapi_text_model_name(
         "FREEZONE_VISION_MODEL",
-        DEFAULT_FREEZONE_VISION_MODEL,
         model_name_override=clean_override or None,
     )
 
@@ -84,7 +81,6 @@ async def call_freezone_vision_model(
         model = resolve_freezone_vision_model(model_override)
         transport_model = get_newapi_text_pydantic_model(
             "FREEZONE_VISION_MODEL",
-            DEFAULT_FREEZONE_VISION_MODEL,
             model_name_override=model,
             timeout_seconds_override=timeout_seconds,
             brainclaw_profile=BrainClawProfile.FREEZONE_VISION_ANALYSIS,

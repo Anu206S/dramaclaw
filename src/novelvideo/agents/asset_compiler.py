@@ -651,7 +651,6 @@ class AssetCompiler:
         agent = Agent(
             get_newapi_text_pydantic_model(
                 "EPISODE_SCENE_RECONCILE_MODEL",
-                "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.EPISODE_SCENE_RECONCILIATION,
                 capability="text.generate.agent",
             ),
@@ -963,7 +962,6 @@ class AssetCompiler:
         agent = Agent(
             get_newapi_text_pydantic_model(
                 "NARRATED_SCENE_ASSET_MODEL",
-                "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.NARRATED_SCENE_ASSET_PLANNING,
                 capability="text.generate.agent",
             ),
@@ -1047,7 +1045,6 @@ class AssetCompiler:
         agent = Agent(
             get_newapi_text_pydantic_model(
                 "EPISODE_SCENE_PLANNER_MODEL",
-                "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.EPISODE_SCENE_PLANNING,
                 capability="text.generate.agent",
             ),
@@ -1235,7 +1232,6 @@ class AssetCompiler:
         agent = Agent(
             get_newapi_text_pydantic_model(
                 "EPISODE_PROP_PLANNER_MODEL",
-                "gemini-3.5-flash",
                 brainclaw_profile=BrainClawProfile.EPISODE_PROP_PLANNING,
                 capability="text.generate.agent",
             ),

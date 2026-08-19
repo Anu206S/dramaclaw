@@ -5,7 +5,7 @@ def test_identity_planner_uses_split_newapi_model_envs(monkeypatch):
     calls = []
     sentinel = object()
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
+    def fake_newapi_model(model_env, default_model=None, **_kwargs):
         calls.append((model_env, default_model))
         return sentinel
 
@@ -16,7 +16,7 @@ def test_identity_planner_uses_split_newapi_model_envs(monkeypatch):
     )
 
     assert IdentityPlanner._identity_model("IDENTITY_PLANNER_CAST_MODEL") is sentinel
-    assert calls == [("IDENTITY_PLANNER_CAST_MODEL", "gemini-3.5-flash")]
+    assert calls == [("IDENTITY_PLANNER_CAST_MODEL", None)]
 
 
 def test_structured_output_model_settings_force_reasoning_off(monkeypatch):
@@ -276,7 +276,7 @@ def test_asset_compiler_scene_planner_uses_scene_newapi_env(monkeypatch):
     settings_calls = []
     agent_kwargs = {}
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
+    def fake_newapi_model(model_env, default_model=None, **_kwargs):
         model_calls.append((model_env, default_model))
         return "scene-model"
 
@@ -310,7 +310,7 @@ def test_asset_compiler_scene_planner_uses_scene_newapi_env(monkeypatch):
     result = asyncio.run(compiler._analyze_derived_scenes("古董店", block))
 
     assert result == []
-    assert model_calls == [("EPISODE_SCENE_PLANNER_MODEL", "gemini-3.5-flash")]
+    assert model_calls == [("EPISODE_SCENE_PLANNER_MODEL", None)]
     assert settings_calls == [()]
     assert agent_kwargs["model"] == "scene-model"
     assert agent_kwargs["name"] == "派生场景分析师"
@@ -326,7 +326,7 @@ def test_asset_compiler_prop_planner_uses_prop_newapi_env(monkeypatch):
     settings_calls = []
     agent_kwargs = {}
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
+    def fake_newapi_model(model_env, default_model=None, **_kwargs):
         model_calls.append((model_env, default_model))
         return "prop-model"
 
@@ -366,7 +366,7 @@ def test_asset_compiler_prop_planner_uses_prop_newapi_env(monkeypatch):
     )
 
     assert result == []
-    assert model_calls == [("EPISODE_PROP_PLANNER_MODEL", "gemini-3.5-flash")]
+    assert model_calls == [("EPISODE_PROP_PLANNER_MODEL", None)]
     assert settings_calls == [()]
     assert agent_kwargs["model"] == "prop-model"
     assert agent_kwargs["name"] == "场景块道具分析师"
@@ -379,7 +379,7 @@ def test_literal_script_writer_uses_literal_newapi_env(monkeypatch):
     settings_calls = []
     agent_kwargs = {}
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
+    def fake_newapi_model(model_env, default_model=None, **_kwargs):
         model_calls.append((model_env, default_model))
         return "literal-model"
 
@@ -407,7 +407,7 @@ def test_literal_script_writer_uses_literal_newapi_env(monkeypatch):
     workflow = literal_script_writing.LiteralScriptWritingWorkflow(cognee_store=None)
 
     assert workflow.agent is workflow.agent
-    assert model_calls == [("LITERAL_BEAT_META_MODEL", "gemini-3.5-flash")]
+    assert model_calls == [("LITERAL_BEAT_META_MODEL", None)]
     assert settings_calls == [()]
     assert agent_kwargs["model"] == "literal-model"
     assert agent_kwargs["name"] == "逐行剧本分镜标注师"
@@ -423,7 +423,7 @@ def test_ai_identity_detector_uses_newapi_detector_model_env(monkeypatch):
     settings_calls = []
     agent_kwargs = {}
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
+    def fake_newapi_model(model_env, default_model=None, **_kwargs):
         model_calls.append((model_env, default_model))
         return "detector-model"
 
@@ -443,7 +443,7 @@ def test_ai_identity_detector_uses_newapi_detector_model_env(monkeypatch):
 
     global_video_optimizer._create_identity_detector_agent()
 
-    assert model_calls == [("GLOBAL_VIDEO_IDENTITY_DETECTOR_MODEL", "gemini-3.5-flash")]
+    assert model_calls == [("GLOBAL_VIDEO_IDENTITY_DETECTOR_MODEL", None)]
     assert settings_calls == [()]
     assert agent_kwargs["model"] == "detector-model"
     assert agent_kwargs["name"] == "角色颜色识别"
@@ -457,7 +457,7 @@ def test_global_video_optimizer_uses_newapi_optimizer_model_env(monkeypatch):
     model_calls = []
     agent_kwargs = {}
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
+    def fake_newapi_model(model_env, default_model=None, **_kwargs):
         model_calls.append((model_env, default_model))
         return "optimizer-model"
 
@@ -472,7 +472,7 @@ def test_global_video_optimizer_uses_newapi_optimizer_model_env(monkeypatch):
 
     global_video_optimizer.create_global_video_optimizer_agent()
 
-    assert model_calls == [("GLOBAL_VIDEO_OPTIMIZER_MODEL", "gemini-3.5-flash")]
+    assert model_calls == [("GLOBAL_VIDEO_OPTIMIZER_MODEL", None)]
     assert agent_kwargs["model"] == "optimizer-model"
     assert agent_kwargs["output_type"] is str
     assert "model_settings" not in agent_kwargs
@@ -519,11 +519,12 @@ def test_global_video_optimizer_wraps_plain_text_output_locally(monkeypatch, tmp
 def test_global_video_optimizer_keeps_legacy_global_video_model_fallback(monkeypatch):
     import novelvideo.config as config
     import novelvideo.agents.global_video_optimizer as global_video_optimizer
+    from novelvideo.brainclaw_contract import BrainClawProfile
 
     model_calls = []
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
-        model_calls.append((model_env, default_model))
+    def fake_newapi_model(model_env, default_model=None, **kwargs):
+        model_calls.append((model_env, default_model, kwargs))
         return "optimizer-model"
 
     class FakeAgent:
@@ -536,7 +537,17 @@ def test_global_video_optimizer_keeps_legacy_global_video_model_fallback(monkeyp
 
     global_video_optimizer.create_global_video_optimizer_agent()
 
-    assert model_calls == [("GLOBAL_VIDEO_OPTIMIZER_MODEL", "legacy-gemini-model")]
+    assert model_calls == [
+        (
+            "GLOBAL_VIDEO_OPTIMIZER_MODEL",
+            None,
+            {
+                "model_name_override": "legacy-gemini-model",
+                "brainclaw_profile": BrainClawProfile.GLOBAL_VIDEO_MOTION_PLANNING,
+                "capability": "text.generate.agent",
+            },
+        )
+    ]
 
 
 def test_seedance2_prompt_composer_uses_newapi_composer_model_env(monkeypatch):
@@ -546,7 +557,7 @@ def test_seedance2_prompt_composer_uses_newapi_composer_model_env(monkeypatch):
     model_calls = []
     agent_kwargs = {}
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
+    def fake_newapi_model(model_env, default_model=None, **_kwargs):
         model_calls.append((model_env, default_model))
         return "composer-model"
 
@@ -560,7 +571,7 @@ def test_seedance2_prompt_composer_uses_newapi_composer_model_env(monkeypatch):
 
     seedance2_prompt.create_seedance2_prompt_composer_agent()
 
-    assert model_calls == [("SEEDANCE2_PROMPT_COMPOSER_MODEL", "gemini-3.5-flash")]
+    assert model_calls == [("SEEDANCE2_PROMPT_COMPOSER_MODEL", None)]
     assert agent_kwargs["model"] == "composer-model"
     assert "model_settings" not in agent_kwargs
     assert agent_kwargs["name"] == "Seedance 2.0 Prompt Composer"
@@ -571,11 +582,12 @@ def test_seedance2_prompt_composer_uses_newapi_composer_model_env(monkeypatch):
 def test_ai_identity_detector_keeps_legacy_global_video_model_fallback(monkeypatch):
     import novelvideo.config as config
     import novelvideo.agents.global_video_optimizer as global_video_optimizer
+    from novelvideo.brainclaw_contract import BrainClawProfile
 
     model_calls = []
 
-    def fake_newapi_model(model_env, default_model, **_kwargs):
-        model_calls.append((model_env, default_model))
+    def fake_newapi_model(model_env, default_model=None, **kwargs):
+        model_calls.append((model_env, default_model, kwargs))
         return "detector-model"
 
     class FakeAgent:
@@ -594,7 +606,15 @@ def test_ai_identity_detector_keeps_legacy_global_video_model_fallback(monkeypat
     global_video_optimizer._create_identity_detector_agent()
 
     assert model_calls == [
-        ("GLOBAL_VIDEO_IDENTITY_DETECTOR_MODEL", "legacy-gemini-model")
+        (
+            "GLOBAL_VIDEO_IDENTITY_DETECTOR_MODEL",
+            None,
+            {
+                "model_name_override": "legacy-gemini-model",
+                "brainclaw_profile": BrainClawProfile.GLOBAL_VIDEO_IDENTITY_DETECTION,
+                "capability": "text.generate.agent",
+            },
+        )
     ]
 
 
@@ -611,7 +631,7 @@ def test_ai_identity_detector_forces_structured_reasoning_off(monkeypatch):
     monkeypatch.setattr(
         config,
         "get_newapi_text_pydantic_model",
-        lambda model_env, default_model, **_kwargs: "detector-model",
+        lambda model_env, default_model=None, **_kwargs: "detector-model",
     )
     monkeypatch.setattr(
         config,

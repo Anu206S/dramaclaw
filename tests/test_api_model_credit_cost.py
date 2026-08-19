@@ -522,7 +522,7 @@ async def test_generation_credit_cost_route_resolves_freezone_image_reverse_prom
             "billable_chars": 1_201,
             "pricing_quantity": 1_201,
             "pricing_kind": "text",
-            "pricing_model": "brainclaw",
+            "pricing_model": "freezone-vision-model",
             "pricing_params": {},
         },
         expected_quantity=1_201,
