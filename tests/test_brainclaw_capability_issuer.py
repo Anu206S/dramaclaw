@@ -140,3 +140,46 @@ def test_the_helper_mints_whenever_an_identity_and_issuer_exist(issuer) -> None:
         trajectory_id="tr-9", project_id="proj-9", turn_id="turn-9")
     assert header is not None
     assert _claims(header)["turn_id"] == "turn-9"
+
+
+def test_a_binary_grouping_key_is_never_mangled(tmp_path: Path) -> None:
+    """A random key begins or ends with a whitespace byte about 5% of the time.
+
+    ``bytes.strip()`` would silently shorten it. Sometimes that fails loudly on
+    the length check; sometimes it leaves a still-valid key whose two ends
+    disagree, so the same file derives different ids on either side of the
+    protocol with nothing at all to signal it. A canary run hit this on its
+    second execution.
+    """
+    from novelvideo.brainclaw_control_capability import _binary_key_bytes
+
+    for key in (b"\n" + b"k" * 30 + b"\t",
+                b" " + b"k" * 31,
+                b"k" * 31 + b"\r",
+                bytes([0x0b]) + b"k" * 31):
+        assert _binary_key_bytes(key) == key, "a binary key must survive verbatim"
+
+    # Only the trailing newline an editor adds is removed.
+    assert _binary_key_bytes(b"k" * 32 + b"\n") == b"k" * 32
+    assert _binary_key_bytes(b"k" * 32 + b"\r\n") == b"k" * 32
+    assert _binary_key_bytes(b"k" * 32) == b"k" * 32
+
+
+def test_a_whitespace_edged_key_still_produces_stable_ids(tmp_path: Path) -> None:
+    """The failure mode that matters: two ends deriving different ids."""
+    keyring = tmp_path / "k.json"
+    keyring.write_text(json.dumps({
+        "schema_version": "brainclaw.control-context-keyring/v1",
+        "keys": {KEY_ID: base64.b64encode(SIGNING_KEY).decode()}}))
+    keyring.chmod(0o600)
+    grouping = tmp_path / "g.key"
+    grouping.write_bytes(b"\n" + b"g" * 30 + b" ")   # 32 bytes, whitespace at both ends
+    grouping.chmod(0o600)
+
+    issuer = cap.ControlCapabilityIssuer(
+        keyring_path=keyring, signing_key_id=KEY_ID,
+        grouping_key_path=grouping, grouping_key_epoch=1)
+    assert len(issuer.grouping_key) == 32
+    first, _ = issuer.group_ids("tr-1", "proj-1")
+    second, _ = issuer.group_ids("tr-1", "proj-1")
+    assert first == second
