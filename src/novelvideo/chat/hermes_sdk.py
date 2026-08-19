@@ -680,6 +680,18 @@ def _load_recent_freezone_tool_result(
     return None
 
 
+#: Only lines that describe the worker's own failure are summarised; the rest
+#: of stderr is the user's content and must not reach our logs.
+#: A traceback's type line carries no level marker, and that line is usually
+#: the one that names the cause — it is what identified the refused egress this
+#: drain was added for. So an exception type at the start of a line counts as
+#: diagnostic on its own.
+_WORKER_DIAGNOSTIC = re.compile(
+    r"\b(ERROR|CRITICAL|Traceback)\b"
+    r"|^[A-Za-z_][\w.]*(?:Error|Exception)\b")
+_WORKER_ERROR_TYPE = re.compile(r"\b([A-Z][A-Za-z0-9_]*(?:Error|Exception))\b")
+
+
 class HermesSdkClient:
     """Holds spawn configuration for a hermes worker subprocess.
 
@@ -784,6 +796,7 @@ class HermesSdkThread:
         self.id: str = session_id or ""
         self._is_new = session_id is None
         self._proc: asyncio.subprocess.Process | None = None
+        self._stderr_drain: asyncio.Task | None = None
         self._req_counter = 0
         self._closed = False
         self._initialized = False
@@ -874,6 +887,41 @@ class HermesSdkThread:
             stderr=asyncio.subprocess.PIPE,
             limit=HERMES_STDIO_LINE_LIMIT_BYTES,
         )
+        # Consume stderr for as long as the worker lives. It was piped and never
+        # read: the pipe fills, the worker blocks on its next write, and the
+        # turn stalls for a reason nothing reports. It also meant the worker's
+        # own diagnosis of a failure was invisible — a refused egress surfaced
+        # to us as an unexplained connection error minutes later.
+        self._stderr_drain = asyncio.create_task(self._drain_stderr())
+
+    async def _drain_stderr(self) -> None:
+        """Log what the worker reports about itself, and nothing it processes.
+
+        Deliberately narrow: a level, an error type and the pid. Worker stderr
+        carries prompts, tool output and provider bodies, so forwarding lines
+        verbatim would route user content into DramaClaw's logs through a path
+        no telemetry allowlist governs.
+        """
+        stream = self._proc.stderr if self._proc else None
+        if stream is None:
+            return
+        pid = self._proc.pid if self._proc else None
+        try:
+            while True:
+                line = await stream.readline()
+                if not line:
+                    return
+                text = line.decode("utf-8", "replace")
+                if not _WORKER_DIAGNOSTIC.search(text.strip()):
+                    continue
+                match = _WORKER_ERROR_TYPE.search(text)
+                _log.warning(
+                    "hermes worker pid=%s reported %s",
+                    pid, match.group(1) if match else "an error")
+        except asyncio.CancelledError:
+            raise
+        except Exception:  # noqa: BLE001 - draining must not kill the turn
+            _log.debug("hermes worker stderr drain stopped", exc_info=True)
 
     async def _read_until_id(
         self, target_id: int, timeout: float
@@ -1457,6 +1505,12 @@ class HermesSdkThread:
         if self._closed:
             return
         self._closed = True
+        # The drain's lifetime is the worker's. Cancelling it here rather than
+        # letting it end on EOF means a worker killed rather than closed does
+        # not leave a task waiting on a dead pipe.
+        drain = getattr(self, "_stderr_drain", None)
+        if drain is not None and not drain.done():
+            drain.cancel()
         if self._proc is None:
             return
         try:
