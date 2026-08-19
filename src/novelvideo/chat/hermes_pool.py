@@ -33,6 +33,7 @@ from typing import Any, Awaitable, Callable
 
 from novelvideo import config
 from novelvideo.chat.hermes_sdk import HermesSdkClient, HermesSdkThread
+from novelvideo.chat import evidence_metrics
 from novelvideo.chat.hermes_egress import (
     PER_TURN_CREDENTIAL_PLACEHOLDER,
     EgressBoundaryError,
@@ -242,6 +243,7 @@ def _resolve_turn_gateway_api_key(
         return configured_key or None
     credential = authorization.credential
     if _origin_of(credential.base_url) != _origin_of(configured_base_url):
+        evidence_metrics.observe("foreign_endpoint_refused")
         raise GatewayOriginMismatch(
             "the turn credential targets a different gateway origin than the "
             "worker is configured for")
@@ -720,6 +722,7 @@ class HermesPool:
             token.session_id,
             resumed_session,
         )
+        evidence_metrics.observe("worker_spawned")
         return _WorkerSlot(
             username=username,
             client=client,
@@ -828,6 +831,7 @@ class HermesPool:
         The session identity still follows the caller's scope; only the egress
         identity is inherited, which is exactly why S3 split the two parameters.
         """
+        evidence_metrics.observe(f"worker_rotated:{reason}")
         if resume_existing_session:
             self._remember_session(slot)
         else:
