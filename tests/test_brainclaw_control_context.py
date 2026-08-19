@@ -27,7 +27,7 @@ def _vectors() -> dict:
 
 def _context(payload: dict) -> ControlContext:
     return ControlContext(
-        episode_group_id=payload["episode_group_id"],
+        trajectory_group_id=payload["trajectory_group_id"],
         project_group_id=payload["project_group_id"],
         grouping_key_epoch=payload["grouping_key_epoch"],
         checkpoint_ordinal=payload["checkpoint_ordinal"],
@@ -76,13 +76,13 @@ def test_signature_is_bound_to_the_request() -> None:
 
 def test_group_ids_are_stable_and_namespaced() -> None:
     key = b"g" * 32
-    assert group_id(key, "episode", "ep-1") == group_id(key, "episode", "ep-1")
+    assert group_id(key, "trajectory", "tr-1") == group_id(key, "trajectory", "tr-1")
     # The same raw identifier must not collide across the two namespaces.
-    assert group_id(key, "episode", "ep-1") != group_id(key, "project", "ep-1")
-    assert group_id(key, "episode", "ep-1").startswith("hmac-sha256:")
-    # Rotating the grouping key splits the episode, which is why the payload
+    assert group_id(key, "trajectory", "tr-1") != group_id(key, "project", "tr-1")
+    assert group_id(key, "trajectory", "tr-1").startswith("hmac-sha256:")
+    # Rotating the grouping key splits the trajectory, which is why the payload
     # carries grouping_key_epoch for BrainClaw to see the split.
-    assert group_id(b"h" * 32, "episode", "ep-1") != group_id(key, "episode", "ep-1")
+    assert group_id(b"h" * 32, "trajectory", "tr-1") != group_id(key, "trajectory", "tr-1")
 
 
 def test_out_of_range_values_are_refused_before_signing() -> None:
@@ -92,7 +92,7 @@ def test_out_of_range_values_are_refused_before_signing() -> None:
         ("grouping_key_epoch", -1),
     ):
         payload = {
-            "episode_group_id": "hmac-sha256:ep",
+            "trajectory_group_id": "hmac-sha256:ep",
             "project_group_id": "hmac-sha256:proj",
             "grouping_key_epoch": 1,
             "checkpoint_ordinal": 4,

@@ -43,12 +43,12 @@ def _claims(header: str) -> dict:
 
 
 def test_a_minted_capability_carries_only_pseudonymised_identity(issuer) -> None:
-    header = issuer.issue(episode_id="ep-77", project_id="proj-4", turn_id="turn-a")
+    header = issuer.issue(trajectory_id="tr-77", project_id="proj-4", turn_id="turn-a")
     claims = _claims(header)
     # Raw identifiers must never leave this process.
-    assert "ep-77" not in header and "proj-4" not in header
-    assert claims["episode_group_id"].startswith("hmac-sha256:")
-    assert claims["project_group_id"] != claims["episode_group_id"]
+    assert "tr-77" not in header and "proj-4" not in header
+    assert claims["trajectory_group_id"].startswith("hmac-sha256:")
+    assert claims["project_group_id"] != claims["trajectory_group_id"]
     assert claims["grouping_key_epoch"] == 2
     assert claims["audience"] == cap.AUDIENCE
     assert claims["issuer"] == cap.ISSUER
@@ -57,33 +57,33 @@ def test_a_minted_capability_carries_only_pseudonymised_identity(issuer) -> None
 
 def test_the_same_episode_is_stable_and_projects_group_across_episodes(issuer) -> None:
     """The three statistical layers have to survive minting."""
-    a1 = _claims(issuer.issue(episode_id="ep-1", project_id="proj-x", turn_id="t1"))
-    a2 = _claims(issuer.issue(episode_id="ep-1", project_id="proj-x", turn_id="t2"))
-    b = _claims(issuer.issue(episode_id="ep-2", project_id="proj-x", turn_id="t3"))
-    c = _claims(issuer.issue(episode_id="ep-3", project_id="proj-y", turn_id="t4"))
+    a1 = _claims(issuer.issue(trajectory_id="tr-1", project_id="proj-x", turn_id="t1"))
+    a2 = _claims(issuer.issue(trajectory_id="tr-1", project_id="proj-x", turn_id="t2"))
+    b = _claims(issuer.issue(trajectory_id="tr-2", project_id="proj-x", turn_id="t3"))
+    c = _claims(issuer.issue(trajectory_id="tr-3", project_id="proj-y", turn_id="t4"))
 
-    assert a1["episode_group_id"] == a2["episode_group_id"], "one episode, one id"
-    assert b["episode_group_id"] != a1["episode_group_id"], "different episodes differ"
+    assert a1["trajectory_group_id"] == a2["trajectory_group_id"], "one trajectory, one id"
+    assert b["trajectory_group_id"] != a1["trajectory_group_id"], "different episodes differ"
     assert b["project_group_id"] == a1["project_group_id"], "same project groups them"
     assert c["project_group_id"] != a1["project_group_id"], "different projects separate"
 
 
 def test_every_capability_is_unique_even_for_one_episode(issuer) -> None:
     """The nonce is what stops two turns producing an identical bearer token."""
-    headers = {issuer.issue(episode_id="ep-1", project_id="proj-x", turn_id=f"t{i}")
+    headers = {issuer.issue(trajectory_id="tr-1", project_id="proj-x", turn_id=f"t{i}")
                for i in range(20)}
     assert len(headers) == 20
 
 
 def test_the_ttl_is_bounded(issuer) -> None:
-    claims = _claims(issuer.issue(episode_id="ep-1", project_id="proj-x", turn_id="t"))
+    claims = _claims(issuer.issue(trajectory_id="tr-1", project_id="proj-x", turn_id="t"))
     lifetime = claims["expires_at"] - claims["issued_at"]
     assert 0 < lifetime <= cap.MAX_TTL_SECONDS
     assert lifetime == cap.DEFAULT_TTL_SECONDS
 
 
 def test_one_secret_may_not_serve_both_roles(tmp_path: Path) -> None:
-    """Sharing them would tie episode identity to signing-key rotation."""
+    """Sharing them would tie trajectory identity to signing-key rotation."""
     keyring = tmp_path / "k.json"
     keyring.write_text(json.dumps({
         "schema_version": "brainclaw.control-context-keyring/v1",
@@ -117,9 +117,9 @@ def test_the_turn_helper_never_raises_into_the_conversation(monkeypatch) -> None
 
     # No identity at all.
     assert hermes_sdk._issue_turn_capability(
-        episode_id=None, project_id=None, turn_id="t") is None
+        trajectory_id=None, project_id=None, turn_id="t") is None
     assert hermes_sdk._issue_turn_capability(
-        episode_id="ep", project_id=None, turn_id="t") is None
+        trajectory_id="ep", project_id=None, turn_id="t") is None
 
     # A broken issuer.
     def explode() -> None:
@@ -129,7 +129,7 @@ def test_the_turn_helper_never_raises_into_the_conversation(monkeypatch) -> None
         "novelvideo.brainclaw_control_capability.control_capability_issuer", explode
     )
     assert hermes_sdk._issue_turn_capability(
-        episode_id="ep", project_id="proj", turn_id="t") is None
+        trajectory_id="ep", project_id="proj", turn_id="t") is None
 
 
 def test_the_helper_mints_whenever_an_identity_and_issuer_exist(issuer) -> None:
@@ -137,6 +137,6 @@ def test_the_helper_mints_whenever_an_identity_and_issuer_exist(issuer) -> None:
     from novelvideo.chat import hermes_sdk
 
     header = hermes_sdk._issue_turn_capability(
-        episode_id="ep-9", project_id="proj-9", turn_id="turn-9")
+        trajectory_id="tr-9", project_id="proj-9", turn_id="turn-9")
     assert header is not None
     assert _claims(header)["turn_id"] == "turn-9"

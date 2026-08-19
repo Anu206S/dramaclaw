@@ -725,7 +725,7 @@ class HermesSdkClient:
 
 
 def _issue_turn_capability(
-    *, episode_id: str | None, project_id: str | None, turn_id: str
+    *, trajectory_id: str | None, project_id: str | None, turn_id: str
 ) -> str | None:
     """Mint this turn's capability, or None when it cannot be minted.
 
@@ -739,7 +739,7 @@ def _issue_turn_capability(
     already the correct outcome. Keeping the two sides on the same build is an
     installation concern, handled where installs are.
     """
-    if not episode_id or not project_id:
+    if not trajectory_id or not project_id:
         return None
     try:
         from novelvideo.brainclaw_control_capability import control_capability_issuer
@@ -748,7 +748,7 @@ def _issue_turn_capability(
         if issuer is None:
             return None
         return issuer.issue(
-            episode_id=episode_id, project_id=project_id, turn_id=turn_id
+            trajectory_id=trajectory_id, project_id=project_id, turn_id=turn_id
         )
     except Exception:
         _log.debug("could not issue an egress capability for this turn", exc_info=True)
@@ -1001,7 +1001,7 @@ class HermesSdkThread:
         prompt: str,
         *,
         current_project: str | None = None,
-        episode_id: str | None = None,
+        trajectory_id: str | None = None,
         project_id: str | None = None,
     ) -> AsyncIterator[ChatBackendEvent]:
         """Send a prompt and yield ChatBackendEvent items as hermes streams them.
@@ -1009,7 +1009,7 @@ class HermesSdkThread:
         ``current_project`` is included as a prompt prefix so per-user hermes
         knows which DramaClaw project the user is talking about (see plan).
 
-        ``episode_id`` and ``project_id`` are raw internal identifiers used to
+        ``trajectory_id`` and ``project_id`` are raw internal identifiers used to
         mint this turn's egress capability. They are hashed before they leave
         this process and are never sent as-is; Hermes receives only the signed
         capability. Both absent means the turn is unattested, which is a
@@ -1021,7 +1021,7 @@ class HermesSdkThread:
             async for event in self._stream_turn(
                 prompt,
                 current_project=current_project,
-                episode_id=episode_id,
+                trajectory_id=trajectory_id,
                 project_id=project_id,
             ):
                 yield event
@@ -1031,7 +1031,7 @@ class HermesSdkThread:
         prompt: str,
         *,
         current_project: str | None = None,
-        episode_id: str | None = None,
+        trajectory_id: str | None = None,
         project_id: str | None = None,
     ) -> AsyncIterator[ChatBackendEvent]:
         """Run one prompt while ``_turn_lock`` owns the ACP stdout reader."""
@@ -1057,7 +1057,7 @@ class HermesSdkThread:
             # concurrently; anything longer-lived than the turn would attach one
             # turn's identity to another turn's requests.
             capability = _issue_turn_capability(
-                episode_id=episode_id, project_id=project_id, turn_id=turn_id
+                trajectory_id=trajectory_id, project_id=project_id, turn_id=turn_id
             )
             if capability:
                 prompt_params["_meta"] = {

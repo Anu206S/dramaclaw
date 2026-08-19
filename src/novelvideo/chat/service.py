@@ -1269,7 +1269,7 @@ def _evidence_identity(
     there is none — BrainClaw refuses to invent a grouping it cannot see, so the
     caller must say "no project" explicitly rather than omit it.
 
-    ``episode_id`` is the most specific conversation scope available: a Freezone
+    ``trajectory_id`` is the most specific conversation scope available: a Freezone
     canvas when there is one, otherwise the project-and-profile conversation.
     That deliberately over-groups — every turn of one long conversation lands in
     one family — because over-grouping only costs statistical power, while
@@ -1280,8 +1280,8 @@ def _evidence_identity(
 
     project_id = (project or "").strip() or HOME_SCOPE_EGRESS_PROJECT_ID
     canvas_id = str(getattr(store_scope, "canvas_id", "") or "").strip()
-    episode_id = f"canvas:{canvas_id}" if canvas_id else f"conversation:{project_id}:{agent_profile}"
-    return {"episode_id": episode_id, "project_id": project_id}
+    trajectory_id = f"canvas:{canvas_id}" if canvas_id else f"conversation:{project_id}:{agent_profile}"
+    return {"trajectory_id": trajectory_id, "project_id": project_id}
 
 
 async def _chat_run_lock_heartbeat_loop(
@@ -2770,11 +2770,11 @@ def _infer_display_tool_call_from_text(
                 beat = 0
             if beat > 0:
                 return "dramaclaw_get_sketch_candidates", {
-                    "episode": episode,
+                    "trajectory": episode,
                     "beat": beat,
                 }
         return None
-    return "dramaclaw_get_sketches", {"episode": episode}
+    return "dramaclaw_get_sketches", {"trajectory": episode}
 
 
 def _backend_api_get(path: str, token: str) -> dict[str, Any]:
@@ -2823,8 +2823,8 @@ async def _fallback_display_tool_ui_specs(
         if tool_name == "dramaclaw_get_final_video":
             raw_episode_indices = args.get("episode_indices")
             episode_indices: list[int] = []
-            if args.get("episode") is not None and not raw_episode_indices:
-                episode_indices = [int(args["episode"])]
+            if args.get("trajectory") is not None and not raw_episode_indices:
+                episode_indices = [int(args["trajectory"])]
             elif isinstance(raw_episode_indices, list):
                 for value in raw_episode_indices:
                     try:
@@ -2879,7 +2879,7 @@ async def _fallback_display_tool_ui_specs(
                 )
             ]
         if tool_name in {"dramaclaw_get_sketches", "dramaclaw_get_first_frames"}:
-            episode = int(args.get("episode") or 1)
+            episode = int(args.get("trajectory") or 1)
             media_kind = (
                 "frame" if tool_name == "dramaclaw_get_first_frames" else "sketch"
             )
@@ -2925,7 +2925,7 @@ async def _fallback_display_tool_ui_specs(
             )
 
         if tool_name == "dramaclaw_get_sketch_candidates":
-            episode = int(args.get("episode") or 1)
+            episode = int(args.get("trajectory") or 1)
             try:
                 beat = int(
                     args.get("beat")
@@ -3156,7 +3156,7 @@ async def _fallback_display_tool_ui_specs(
             )
 
         if tool_name == "dramaclaw_get_episode_media":
-            episode = int(args.get("episode") or 1)
+            episode = int(args.get("trajectory") or 1)
             media_type = str(args.get("media_type") or "video").strip().lower()
             resp = _backend_api_get(
                 f"/api/v1/projects/{project_q}/episodes/{episode}/beats",

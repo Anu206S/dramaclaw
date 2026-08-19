@@ -86,7 +86,7 @@ def _verify(header: str, method: str, path: str, body: bytes) -> dict:
 
 
 async def test_hook_signs_the_serialised_body_and_path(configured: Path) -> None:
-    scope = transport.ControlContextScope(episode_id="ep-77", project_id="proj-4")
+    scope = transport.ControlContextScope(trajectory_id="tr-77", project_id="proj-4")
     seen = await _post({"model": "brainclaw", "messages": []}, scope=scope)
     header = seen["headers"][HEADER]
     payload = _verify(header, "POST", "/v1/chat/completions", seen["content"])
@@ -94,20 +94,20 @@ async def test_hook_signs_the_serialised_body_and_path(configured: Path) -> None
     assert payload["checkpoint_ordinal"] == 0
     assert payload["turn_kind"] == "foreground_user"
     # Raw identifiers must never appear anywhere in the envelope.
-    assert "ep-77" not in header and "proj-4" not in header
-    assert payload["episode_group_id"].startswith("hmac-sha256:")
-    assert payload["episode_group_id"] != payload["project_group_id"]
+    assert "tr-77" not in header and "proj-4" not in header
+    assert payload["trajectory_group_id"].startswith("hmac-sha256:")
+    assert payload["trajectory_group_id"] != payload["project_group_id"]
 
 
 async def test_signature_is_bound_to_the_exact_body(configured: Path) -> None:
-    scope = transport.ControlContextScope(episode_id="ep-77", project_id="proj-4")
+    scope = transport.ControlContextScope(trajectory_id="tr-77", project_id="proj-4")
     seen = await _post({"model": "brainclaw", "messages": [{"role": "user", "content": "a"}]}, scope=scope)
     with pytest.raises(AssertionError):
         _verify(seen["headers"][HEADER], "POST", "/v1/chat/completions", b'{"model":"other"}')
 
 
 async def test_caller_supplied_header_is_replaced_not_appended(configured: Path) -> None:
-    scope = transport.ControlContextScope(episode_id="ep-77", project_id="proj-4")
+    scope = transport.ControlContextScope(trajectory_id="tr-77", project_id="proj-4")
     seen = await _post({"model": "brainclaw"}, scope=scope, extra_headers={HEADER: "v1.forged.x.y"})
     values = seen["headers"].get_list(HEADER)
     assert len(values) == 1 and "forged" not in values[0]
@@ -121,7 +121,7 @@ async def test_no_scope_and_no_configuration_send_no_header(
 
     monkeypatch.delenv("BRAINCLAW_CONTROL_CONTEXT_KEYRING_FILE")
     transport.reset_control_context_runtime()
-    scope = transport.ControlContextScope(episode_id="ep-77", project_id="proj-4")
+    scope = transport.ControlContextScope(trajectory_id="tr-77", project_id="proj-4")
     seen = await _post({"model": "brainclaw"}, scope=scope)
     assert HEADER not in seen["headers"], "unconfigured deployment must stay diagnostic"
 
@@ -188,13 +188,13 @@ def test_opaque_scope_signs_without_the_grouping_key(tmp_path: Path) -> None:
     assert runtime.derives_group_ids is False
 
     scope = transport.OpaqueControlContextScope(
-        episode_group_id="hmac-sha256:" + "a" * 16,
+        trajectory_group_id="hmac-sha256:" + "a" * 16,
         project_group_id="hmac-sha256:" + "b" * 16,
         grouping_key_epoch=7,
     )
     header = runtime.header_for(scope, "POST", "/v1/chat/completions", b'{"model":"brainclaw"}')
     payload = _verify(header, "POST", "/v1/chat/completions", b'{"model":"brainclaw"}')
-    assert payload["episode_group_id"] == scope.episode_group_id
+    assert payload["trajectory_group_id"] == scope.trajectory_group_id
     assert payload["project_group_id"] == scope.project_group_id
     # The epoch travels with the ids, because the deriving side knows it and
     # the signing side does not.
@@ -203,14 +203,14 @@ def test_opaque_scope_signs_without_the_grouping_key(tmp_path: Path) -> None:
     # The same signer must refuse a raw scope rather than mishandle it.
     with pytest.raises(ValueError):
         runtime.header_for(
-            transport.ControlContextScope(episode_id="ep", project_id="pr"),
+            transport.ControlContextScope(trajectory_id="ep", project_id="pr"),
             "POST", "/v1/chat/completions", b"{}",
         )
 
 
 def test_a_raw_identifier_cannot_enter_through_the_opaque_path() -> None:
     """Without the format check a raw project name would be signed as a group id."""
-    for episode, project in (
+    for trajectory, project in (
         ("proj-one", "hmac-sha256:" + "b" * 16),
         ("hmac-sha256:" + "a" * 16, "proj-two"),
         ("hmac-sha256:NOTHEX0123456789", "hmac-sha256:" + "b" * 16),
@@ -218,7 +218,7 @@ def test_a_raw_identifier_cannot_enter_through_the_opaque_path() -> None:
     ):
         with pytest.raises(ValueError):
             transport.OpaqueControlContextScope(
-                episode_group_id=episode, project_group_id=project, grouping_key_epoch=1
+                trajectory_group_id=trajectory, project_group_id=project, grouping_key_epoch=1
             )
 
 
@@ -227,9 +227,9 @@ def test_the_dramaclaw_side_still_derives_from_raw_identifiers(configured: Path)
     runtime = transport.control_context_runtime()
     assert runtime.derives_group_ids is True
     header = runtime.header_for(
-        transport.ControlContextScope(episode_id="ep-77", project_id="proj-4"),
+        transport.ControlContextScope(trajectory_id="tr-77", project_id="proj-4"),
         "POST", "/v1/chat/completions", b'{"model":"brainclaw"}',
     )
     payload = _verify(header, "POST", "/v1/chat/completions", b'{"model":"brainclaw"}')
-    assert payload["episode_group_id"].startswith("hmac-sha256:")
-    assert "ep-77" not in header
+    assert payload["trajectory_group_id"].startswith("hmac-sha256:")
+    assert "tr-77" not in header

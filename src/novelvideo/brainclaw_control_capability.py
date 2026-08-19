@@ -80,7 +80,7 @@ def new_nonce() -> str:
 class ControlCapability:
     key_id: str
     turn_id: str
-    episode_group_id: str
+    trajectory_group_id: str
     project_group_id: str
     grouping_key_epoch: int
     issued_at: int
@@ -90,7 +90,7 @@ class ControlCapability:
     replay_scope_limit: ReplayScopeLimit = "model_output_only"
 
     def payload(self) -> dict[str, Any]:
-        for name in ("episode_group_id", "project_group_id"):
+        for name in ("trajectory_group_id", "project_group_id"):
             if not OPAQUE_GROUP_ID.match(getattr(self, name) or ""):
                 raise ValueError(f"{name} is not an opaque group id")
         for name in ("key_id", "turn_id", "nonce"):
@@ -108,7 +108,7 @@ class ControlCapability:
             "audience": AUDIENCE,
             "key_id": self.key_id,
             "turn_id": self.turn_id,
-            "episode_group_id": self.episode_group_id,
+            "trajectory_group_id": self.trajectory_group_id,
             "project_group_id": self.project_group_id,
             "grouping_key_epoch": self.grouping_key_epoch,
             "turn_kind": self.turn_kind,
@@ -167,7 +167,7 @@ class ControlCapabilityIssuer:
     """Mints one capability per agent turn.
 
     This is the only place that holds both keys, and the only place that ever
-    sees a raw episode or project id. The grouping key derives the opaque ids
+    sees a raw trajectory or project id. The grouping key derives the opaque ids
     here; the capability signing key attests them to the Gateway. Nothing
     downstream — not Hermes, not the Gateway — can derive or reverse a group id.
     """
@@ -189,7 +189,7 @@ class ControlCapabilityIssuer:
         if len(self.grouping_key) < 32:
             raise ValueError("grouping key is too short")
         if self.grouping_key == self.signing_key:
-            # One secret for both would tie an episode's identity lifetime to
+            # One secret for both would tie an trajectory's identity lifetime to
             # signing-key rotation, which is the split the epoch exists to show.
             raise ValueError("grouping key must not equal the capability signing key")
         if grouping_key_epoch < 0:
@@ -199,16 +199,16 @@ class ControlCapabilityIssuer:
         self.grouping_key_epoch = grouping_key_epoch
         self.ttl_seconds = ttl_seconds
 
-    def group_ids(self, episode_id: str, project_id: str) -> tuple[str, str]:
+    def group_ids(self, trajectory_id: str, project_id: str) -> tuple[str, str]:
         return (
-            group_id(self.grouping_key, "episode", episode_id),
+            group_id(self.grouping_key, "trajectory", trajectory_id),
             group_id(self.grouping_key, "project", project_id),
         )
 
     def issue(
         self,
         *,
-        episode_id: str,
+        trajectory_id: str,
         project_id: str,
         turn_id: str,
         turn_kind: TurnKind = "foreground_user",
@@ -217,11 +217,11 @@ class ControlCapabilityIssuer:
     ) -> str:
         """Return the header value for one turn."""
         issued_at = int(now if now is not None else time.time())
-        episode, project = self.group_ids(episode_id, project_id)
+        trajectory, project = self.group_ids(trajectory_id, project_id)
         capability = ControlCapability(
             key_id=self.signing_key_id,
             turn_id=turn_id,
-            episode_group_id=episode,
+            trajectory_group_id=trajectory,
             project_group_id=project,
             grouping_key_epoch=self.grouping_key_epoch,
             issued_at=issued_at,
