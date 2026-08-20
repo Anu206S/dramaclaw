@@ -658,6 +658,62 @@ def test_workflow_draft_returns_actionable_errors_for_wrong_phase_arguments():
     assert "execute_code" in invalid_intent["agent_instruction"]
 
 
+def test_workflow_draft_tolerates_common_model_argument_shapes(monkeypatch, tmp_path):
+    plugin = _load_plugin_module()
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
+    compiled = {
+        "ok": True,
+        "skill_id": "video-ad",
+        "edge_count": 0,
+        "plan": {"summary": "广告", "inputs": {}, "phases": [], "nodes": [], "edges": []},
+    }
+    monkeypatch.setattr(
+        plugin,
+        "compile_workflow_intent",
+        lambda intent: {**compiled, "skill_id": intent.get("skill_id") or "video-ad"},
+    )
+
+    # 确认后允许 intent 字段平铺在 arguments 顶层(模型常忘记包 intent 壳)。
+    prepared = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "planning_confirmed": True,
+            "skill_id": "video-ad",
+            "user_goal": "制作广告",
+            "planner": {"deliverable": "video", "units": []},
+        }
+    )
+    assert prepared["ok"] is True
+    assert prepared["status"] == "workflow_draft_ready"
+
+    # changes 支持 patch 别名;等值回显的 skill_id 被忽略而不是打回。
+    patched = plugin._handle_patch_workflow_draft(
+        {
+            "draft_id": prepared["draft_id"],
+            "expected_revision": 1,
+            "planning_confirmed": True,
+            "patch": {"skill_id": "video-ad", "user_goal": "改成 30 秒"},
+        }
+    )
+    assert patched["ok"] is True
+    assert patched["revision"] == 2
+
+    # 真正不可修改的字段仍然打回,并附可修改字段清单与纠正指令。
+    rejected = plugin._handle_patch_workflow_draft(
+        {
+            "draft_id": prepared["draft_id"],
+            "expected_revision": 2,
+            "planning_confirmed": True,
+            "changes": {"skill_id": "other-skill"},
+        }
+    )
+    assert rejected["ok"] is False
+    assert rejected["status"] == "invalid_workflow_draft_patch"
+    assert "planner" in rejected["patchable_fields"]
+    assert "freezone_patch_workflow_draft" in rejected["agent_instruction"]
+
+
 def test_workflow_planning_quote_skips_billing_in_ce(monkeypatch):
     plugin = _load_plugin_module()
     monkeypatch.setenv("DRAMACLAW_PROJECT_ID", "project-a")

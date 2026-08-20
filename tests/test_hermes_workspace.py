@@ -86,6 +86,9 @@ def isolated_workspace(tmp_path, monkeypatch):
     ):
         monkeypatch.delenv(key, raising=False)
     monkeypatch.delenv("MODEL_GATEWAY_MODE", raising=False)
+    # Pin explicitly: the repo .env may opt into auto, and config loading would
+    # re-add a deleted var via load_dotenv(override=False).
+    monkeypatch.setenv("HERMES_TOOL_SEARCH_MODE", "off")
     monkeypatch.delenv("ST_HERMES_SKILLS", raising=False)
     monkeypatch.delenv("HERMES_MODEL", raising=False)
     monkeypatch.delenv("HERMES_MODEL_DEFAULT", raising=False)
@@ -174,6 +177,7 @@ def test_freezone_profile_uses_isolated_workspace(
     assert parsed["tools"]["tool_search"]["enabled"] == "off"
     assert parsed["plugins"]["enabled"] == ["freezone"]
     assert parsed["tools"]["skill_manage"]["enabled"] == "off"
+    assert parsed["agent"]["coding_context"] == "off"
     assert "dramaclaw-acp" in parsed["disabled_toolsets"]
     soul = (home / "SOUL.md").read_text(encoding="utf-8")
     memory = (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")
@@ -221,6 +225,7 @@ def test_freezone_sitecustomize_disables_only_skill_manage(
     monkeypatch.setitem(sys.modules, "tools", tools_module)
     monkeypatch.setitem(sys.modules, "tools.registry", registry_module)
     monkeypatch.setenv("DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE", "1")
+    monkeypatch.delenv("DRAMACLAW_HERMES_TOOL_DENY", raising=False)
 
     runpy.run_path(str(sitecustomize))
 
@@ -228,6 +233,76 @@ def test_freezone_sitecustomize_disables_only_skill_manage(
     assert fake_registry.register("skill_manage") is None
     assert fake_registry.register("skill_view") == "skill_view"
     assert registered == ["skill_view"]
+
+
+def test_freezone_sitecustomize_denies_tools_from_env(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+    monkeypatch,
+):
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    sitecustomize = hw.freezone_python_hook_dir(home) / "sitecustomize.py"
+
+    class FakeRegistry:
+        def __init__(self) -> None:
+            self._tools = {"terminal": object(), "todo": object()}
+            self._lock = threading.RLock()
+
+        def register(self, name: str, **kwargs) -> str:
+            self._tools[name] = kwargs
+            return name
+
+        def deregister(self, name: str) -> None:
+            self._tools.pop(name, None)
+
+    fake_registry = FakeRegistry()
+    tools_module = types.ModuleType("tools")
+    registry_module = types.ModuleType("tools.registry")
+    registry_module.registry = fake_registry
+    monkeypatch.setitem(sys.modules, "tools", tools_module)
+    monkeypatch.setitem(sys.modules, "tools.registry", registry_module)
+    monkeypatch.delenv("DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE", raising=False)
+    monkeypatch.setenv("DRAMACLAW_HERMES_TOOL_DENY", "terminal, delegate_task")
+
+    runpy.run_path(str(sitecustomize))
+
+    assert "terminal" not in fake_registry._tools
+    assert fake_registry.register("terminal") is None
+    assert fake_registry.register("delegate_task") is None
+    assert fake_registry.register("read_file") == "read_file"
+    assert "todo" in fake_registry._tools
+
+
+def test_freezone_sitecustomize_verify_warns_red_only_on_leftover(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+    monkeypatch,
+    capsys,
+):
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    sitecustomize = hw.freezone_python_hook_dir(home) / "sitecustomize.py"
+    monkeypatch.delenv("DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE", raising=False)
+    monkeypatch.delenv("DRAMACLAW_HERMES_TOOL_DENY", raising=False)
+
+    module = runpy.run_path(str(sitecustomize))
+    verify = module["_verify_denied_tools_removed"]
+
+    class FakeRegistry:
+        def __init__(self, tools: dict) -> None:
+            self._tools = tools
+
+    leftover = verify(FakeRegistry({"terminal": object()}), frozenset({"terminal"}))
+    captured = capsys.readouterr()
+    assert leftover == ["terminal"]
+    assert "\033[31m" in captured.err
+    assert "terminal" in captured.err
+
+    clean = verify(FakeRegistry({"todo": object()}), frozenset({"terminal"}))
+    captured = capsys.readouterr()
+    assert clean == []
+    assert captured.err == ""
 
 
 def test_freezone_profile_materializes_native_workflow_skills(
@@ -297,6 +372,24 @@ def test_freezone_profile_preserves_tool_search_disable(
     updated = yaml.safe_load(config_file.read_text(encoding="utf-8"))
     assert updated["tools"]["tool_search"]["enabled"] == "off"
     assert updated["tools"]["skill_manage"]["enabled"] == "off"
+
+
+def test_freezone_profile_tool_search_mode_from_env(
+    isolated_workspace,
+    repo_skills,
+    repo_plugins,
+    monkeypatch,
+):
+    monkeypatch.setenv("HERMES_TOOL_SEARCH_MODE", "auto")
+    home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    parsed = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert parsed["tools"]["tool_search"]["enabled"] == "auto"
+    assert parsed["tools"]["skill_manage"]["enabled"] == "off"
+
+    monkeypatch.setenv("HERMES_TOOL_SEARCH_MODE", "bogus")
+    hw.ensure_user_hermes_workspace("admin", profile="freezone")
+    parsed = yaml.safe_load((home / "config.yaml").read_text(encoding="utf-8"))
+    assert parsed["tools"]["tool_search"]["enabled"] == "off"
 
 
 def test_freezone_profile_refreshes_stale_repo_symlinks(
@@ -733,33 +826,59 @@ def test_hermes_tool_call_guard_still_stops_repeated_skill_loading():
     assert guard.total == 0
 
 
-def test_hermes_tool_call_guard_distinguishes_skill_resources_without_raw_input():
+def test_hermes_tool_call_guard_distinguishes_inputless_reads_by_title():
+    # Hermes "polished" tools (skill_view etc.) send rawInput=None over ACP and
+    # _split_tool_title collapses "skill view (x)" to "skill"; the title tail is
+    # the only per-call distinguisher. Distinct reads must not trip the guard.
     guard = hermes_sdk._TurnToolCallGuard()
 
-    for index, title in enumerate(
-        (
-            "skill view (dramaclaw)",
-            "skill view (dramaclaw/playbooks/episode.md)",
-            "skill view (dramaclaw/references/script.md)",
-        )
-    ):
-        assert (
-            guard.observe(
-                hermes_sdk.ChatBackendEvent(
-                    type="tool_started",
-                    name="skill",
-                    call_id=f"skill-{index}",
-                    input=None,
-                    raw={"title": title},
-                )
+    for index, title in enumerate([
+        "skill view (workflows)",
+        "skill view (ecommerce-ad)",
+        "skill view (workflows/references/product-video.md)",
+    ]):
+        assert guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="skill",
+                call_id=f"view-{index}",
+                input=None,
+                raw={"title": title},
             )
-            is None
-        )
-
-    assert guard.total == 0
+        ) is None
 
 
-def test_hermes_tool_call_guard_stops_repeated_titled_skill_resource():
+def test_hermes_tool_call_guard_distinguishes_chunked_reads_by_content_args():
+    # read_file is also "polished" (rawInput=None) and its title is only
+    # "read: <path>", so chunked reads of one file share a title. The start
+    # event's content blocks carry the args JSON (offset/limit) — distinct
+    # chunks must not trip the guard.
+    guard = hermes_sdk._TurnToolCallGuard()
+
+    for index, offset in enumerate([488, 748, 1028]):
+        assert guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="read",
+                call_id=f"read-{index}",
+                input=None,
+                raw={
+                    "title": "read: /repo/plugins/freezone/json_workflow_catalog.py",
+                    "content": [
+                        {
+                            "type": "content",
+                            "content": {
+                                "type": "text",
+                                "text": f'{{\n  "limit": 300,\n  "offset": {offset},\n  "path": "..."\n}}',
+                            },
+                        }
+                    ],
+                },
+            )
+        ) is None
+
+
+def test_hermes_tool_call_guard_still_stops_repeated_inputless_reads():
     guard = hermes_sdk._TurnToolCallGuard()
     stop_message = None
 
@@ -768,14 +887,14 @@ def test_hermes_tool_call_guard_stops_repeated_titled_skill_resource():
             hermes_sdk.ChatBackendEvent(
                 type="tool_started",
                 name="skill",
-                call_id=f"skill-{index}",
+                call_id=f"view-{index}",
                 input=None,
-                raw={"title": "skill view (dramaclaw)"},
+                raw={"title": "skill view (workflows)"},
             )
         )
 
     assert stop_message is not None
-    assert guard.total == 0
+    assert "重复读取" in stop_message
 
 
 def test_hermes_tool_call_guard_reason_is_machine_readable():

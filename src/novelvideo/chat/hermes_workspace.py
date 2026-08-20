@@ -121,6 +121,9 @@ plugins:
   enabled:
     - freezone
 
+agent:
+  coding_context: "off"
+
 tools:
   tool_search:
     enabled: off
@@ -153,59 +156,123 @@ _DEFAULT_ENV_TEMPLATE = """# DramaClaw-managed Hermes workspace.
 # secret scoping resolves the same gateway key as the API process.
 """
 
+# Hermes core tools stripped from Freezone workers at tool-registry level (the
+# sitecustomize hook below; hermes_pool passes the list via
+# DRAMACLAW_HERMES_TOOL_DENY). No freezone skill uses any of these, their
+# schemas cost ~7.6k input tokens on every model call, and read/search would
+# reopen the plugin-source-diving hole. skill_view / skills_list / todo /
+# memory / vision_analyze and the tool_search bridge tools stay enabled.
+FREEZONE_HERMES_TOOL_DENY = (
+    "delegate_task",
+    "execute_code",
+    "patch",
+    "process",
+    "read_file",
+    "search_files",
+    "session_search",
+    "terminal",
+    "write_file",
+)
+
 _FREEZONE_SITECUSTOMIZE_PY = '''"""DramaClaw-managed Freezone Hermes startup hooks."""
 
 from __future__ import annotations
 
 import os
 import sys
+import threading
 
 
 def _truthy(value: str | None) -> bool:
     return str(value or "").strip().lower() in {"1", "true", "yes", "on"}
 
 
-def _disable_skill_manage() -> None:
+def _denied_tool_names() -> frozenset[str]:
+    names = set()
+    if _truthy(os.environ.get("DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE")):
+        names.add("skill_manage")
+    for part in os.environ.get("DRAMACLAW_HERMES_TOOL_DENY", "").split(","):
+        part = part.strip()
+        if part:
+            names.add(part)
+    return frozenset(names)
+
+
+def _warn_red(message: str) -> None:
+    print(f"\\033[31mDramaClaw Freezone warning: {message}\\033[0m", file=sys.stderr)
+
+
+def _pop_registered_tool(registry, name: str) -> None:
     try:
-        from tools.registry import registry
-    except Exception as exc:  # noqa: BLE001
-        print(
-            f"DramaClaw Freezone warning: failed to import Hermes tool registry: {exc}",
-            file=sys.stderr,
-        )
-        return
-
-    if getattr(registry, "_dramaclaw_skill_manage_disabled", False):
-        return
-
-    original_register = registry.register
-
-    def register_without_skill_manage(*args, **kwargs):
-        name = kwargs.get("name")
-        if name is None and args:
-            name = args[0]
-        if name == "skill_manage":
-            return None
-        return original_register(*args, **kwargs)
-
-    registry.register = register_without_skill_manage
-    setattr(registry, "_dramaclaw_skill_manage_disabled", True)
-
-    try:
-        registry.deregister("skill_manage")
+        registry.deregister(name)
     except Exception:
         tools = getattr(registry, "_tools", None)
         lock = getattr(registry, "_lock", None)
         if isinstance(tools, dict):
             if lock is None:
-                tools.pop("skill_manage", None)
+                tools.pop(name, None)
             else:
                 with lock:
-                    tools.pop("skill_manage", None)
+                    tools.pop(name, None)
 
 
-if _truthy(os.environ.get("DRAMACLAW_DISABLE_HERMES_SKILL_MANAGE")):
-    _disable_skill_manage()
+def _verify_denied_tools_removed(registry, denied) -> list[str]:
+    """Startup self-check: warn in red only when a denied tool survived."""
+    tools = getattr(registry, "_tools", None)
+    if not isinstance(tools, dict):
+        _warn_red("cannot verify denied-tool cleanup: registry._tools unavailable")
+        return []
+    leftover = sorted(set(denied) & set(tools))
+    if leftover:
+        _warn_red(
+            "denied Hermes tools still registered after startup: "
+            + ", ".join(leftover)
+        )
+    return leftover
+
+
+def _disable_denied_tools(denied) -> None:
+    try:
+        from tools.registry import registry
+    except Exception as exc:  # noqa: BLE001
+        _warn_red(
+            f"failed to import Hermes tool registry: {exc}; "
+            f"denied tools NOT removed: {', '.join(sorted(denied))}"
+        )
+        return
+
+    if getattr(registry, "_dramaclaw_denied_tools", None) == denied:
+        return
+
+    original_register = registry.register
+
+    def register_without_denied(*args, **kwargs):
+        name = kwargs.get("name")
+        if name is None and args:
+            name = args[0]
+        if name in denied:
+            return None
+        return original_register(*args, **kwargs)
+
+    registry.register = register_without_denied
+    setattr(registry, "_dramaclaw_denied_tools", denied)
+
+    for name in sorted(denied):
+        _pop_registered_tool(registry, name)
+
+    # Tool modules keep registering while Hermes finishes importing, after
+    # this hook has run. Re-check once the process has settled; silence means
+    # the cleanup held.
+    timer = threading.Timer(
+        20.0, _verify_denied_tools_removed, args=(registry, denied)
+    )
+    timer.daemon = True
+    timer.start()
+
+
+_DENIED_TOOLS = _denied_tool_names()
+if _DENIED_TOOLS:
+    _disable_denied_tools(_DENIED_TOOLS)
 '''
 
 _MANAGED_MODEL_ENV_KEYS = {
@@ -876,6 +943,21 @@ def _configured_max_turns(env_name: str, default: int) -> int:
         return default
 
 
+def _configured_tool_search_mode() -> str:
+    """Freezone Tool Search mode: "off" (default) | "auto" | "on".
+
+    "auto" lets Hermes defer the freezone plugin tool schemas behind its
+    tool_search/tool_describe/tool_call bridge when they would exceed the
+    context-window threshold, instead of serializing all of them every turn.
+    """
+    raw = str(_root_value("HERMES_TOOL_SEARCH_MODE") or "").strip().lower()
+    if raw in {"auto", "on", "off"}:
+        return raw
+    if raw:
+        _log.warning("invalid HERMES_TOOL_SEARCH_MODE=%r, using default 'off'", raw)
+    return "off"
+
+
 def _ensure_director_config_policy(config_yaml: Path) -> None:
     """Keep the outer assistant on a small, DramaClaw-only agent surface."""
     try:
@@ -934,6 +1016,10 @@ def _ensure_freezone_config_policy(config_yaml: Path) -> None:
     if not isinstance(agent, dict):
         agent = {}
     agent["max_turns"] = _configured_max_turns("HERMES_FREEZONE_MAX_TURNS", 12)
+    # 虾画 worker 是画布 agent,不是 coding agent:关掉 Hermes 的 coding 姿态,
+    # 否则每个 system prompt 多 ~3.9k 字符,且教模型用 registry 已禁用的
+    # read_file/patch/terminal 等工具。
+    agent["coding_context"] = "off"
     config["agent"] = agent
 
     tools = config.get("tools")
@@ -942,10 +1028,11 @@ def _ensure_freezone_config_policy(config_yaml: Path) -> None:
     tool_search = tools.get("tool_search")
     if not isinstance(tool_search, dict):
         tool_search = {}
-    # Keep Tool Search disabled through config while preserving the native
-    # runtime skill selection path; only skill_manage is removed at registry
-    # level by sitecustomize so Hermes cannot self-create project skills.
-    tool_search["enabled"] = "off"
+    # Tool Search defaults to "off" to preserve the native runtime skill
+    # selection path; HERMES_TOOL_SEARCH_MODE=auto opts into progressive tool
+    # disclosure. skill_manage stays removed at registry level by
+    # sitecustomize so Hermes cannot self-create project skills.
+    tool_search["enabled"] = _configured_tool_search_mode()
     tools["tool_search"] = tool_search
     skill_manage = tools.get("skill_manage")
     if not isinstance(skill_manage, dict):

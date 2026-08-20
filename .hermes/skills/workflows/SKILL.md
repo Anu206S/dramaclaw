@@ -14,17 +14,25 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 
 读取 Skill 规划包后，Agent 只决定用户目标、结构化输入、作品/镜头 PlanItems、每项使用的允许 Recipe、真实输入依赖、是否生成素材锚点和是否自动执行。调用 `freezone_prepare_workflow_draft` 后，节点数据、稳定 ID、连线类型、分组、布局和成片合成由工具确定性完成。用户调整方案时调用 `freezone_patch_workflow_draft`，确认后调用 `freezone_confirm_workflow_draft`。不得调用 `freezone_build_workflow_plan`，也不得用通用画布命令手写工作流。
 
+## 工具调用方式
+
+`freezone_*` 工具不在工具列表里，统一用 `tool_call(name="<工具名>", arguments={...})` 调用；JSON 里先写 `name` 再写 `arguments`（arguments 很大时后写的 `name` 容易被漏掉，缺 `name` 会直接报错）；`arguments` 必须传 JSON 对象——不要传转义后的 JSON 字符串，大型嵌套 intent 会因转义损坏而反复失败。**不要先跑 `tool_search` 或 `tool_describe`**——`tool_call` 不依赖它们。**顺序固定：报价 → 读规划包 → 编译**，报价 ack 后必须先读规划包再写 intent——`deliverable`、Recipe、字段枚举都来自规划包，跳过它自造字段会被校验反复打回。所需参数如下：
+
+- 报价：`tool_call(name="freezone_prepare_workflow_draft", arguments={"skill_id": ...})`（不传 `intent`）
+- 读规划包：`tool_call(name="freezone_get_workflow_skill", arguments={"skill_id": ..., "inputs": {...}, "compact": true})`
+- 编译草稿：`tool_call(name="freezone_prepare_workflow_draft", arguments={"canvas_id": ..., "planning_confirmed": true, "intent": {...}})`——`planning_confirmed` 必须放在 arguments 顶层，不能放进 `intent` 里
+- 修改草稿：`freezone_patch_workflow_draft`，arguments `{"draft_id": ..., "expected_revision": ..., "planning_confirmed": true, "changes": {...}}`——patch 同样需要顶层 `planning_confirmed: true`，缺了会一直收到报价 ack
+- 确认落图：`freezone_confirm_workflow_draft`，arguments `{"draft_id": ..., "revision": ...}`
+
 如果用户只是咨询或分析，只展示一般性说明，不创建草稿或写画布。用户提出具体创建需求后，必须先使用当前已选的唯一 Skill 调用一次 `freezone_prepare_workflow_draft` 获取规划报价（不传 `intent`）；如果需要用户确认报价，立即停止本轮。报价无需确认时，才读取这一个 Skill 的紧凑规划包并生成结构化 `intent`，随后以 `planning_confirmed=true` 调用一次 `freezone_prepare_workflow_draft`。不要在报价前生成 intent、不要加载其它候选 Skill、不要根据 Intent 自己推算节点清单。只有用户明确要求 Skill 蓝图无法表达的自定义拓扑时，才使用完整 `freezone_create_workflow_graph(plan=...)` 兼容入口。
 
-“再创建一个 / 再来一个 / 再添加一个 / 重新建一个 / 复制一个同类型工作流”都属于创建请求。当前画布已经存在相同工作流时，不要改为查询列表、解释已有工作流、复用旧节点或等待用户重新选择，仍然创建一个新的工作流实例。
+“再创建一个 / 再来一个 / 再添加一个 / 重新建一个 / 复制一个同类型工作流”都属于创建请求。当前画布已经存在相同工作流时，不要改为查询列表、解释已有工作流、复用旧节点或等待用户重新选择，仍然创建一个新的工作流实例并走确认流程；不要复用旧 `draft_id`，也不要调用 `freezone_emit_canvas_command`。
 
 ## 可用工作流
 
 当用户问“有哪些工作流 / 有哪些工作流技能 / 我的工作流技能有哪些 / 支持哪些流程 / 有哪些模板 / workflow skill”时，使用 Hermes 原生 `skills_list` 查看当前 Profile 中可用的 Workflow Skills，并提示用户在输入框键入 `/` 选择。不要编造固定数量。
 
 不保留独立的 Workflow Skill 列表或语义评分路由。创建统一使用 `Hermes 原生 Skill → skill_id → freezone_get_workflow_skill → 动态 WorkflowPlan`。
-
-用户没有显式选择 Skill 时，优先使用 Hermes 原生 Skill 发现结果；若存在多个相近 Skill，列出名称并让用户通过 `/skill-id` 选择，不得调用自定义评分路由或静默使用第一项。
 
 动态工作流必须按以下顺序执行：
 
@@ -34,7 +42,7 @@ compatibility: Requires Freezone/虾画 chat surface and preferably injected can
 4. 生成精简 `freezone_workflow_intent.v1`：只写 `skill_id`、`user_goal`、当前 `inputs`、PlanItems 和必要选项。每个 item 使用语义化 `id`、`title`、`prompt`、一个来自 `available_recipes` 的 `recipe_id`，并用 `depends_on` 声明真实输入依赖；需要配音时再提供只含实际朗读正文的 `narration`。当图片或视频节点需要根据上游剧本、分镜或 Shot List 生成时，必须把对应文本 PlanItem 写入 `depends_on`；当它还需要角色、场景、道具等生成素材作为实际参考时，再把这些素材写入 `reference_inputs`。每个视频 item 的 `prompt` 必须说明所对应 Shot 或 Shot Group 的具体叙事、动作和目标，不能只写“开场日常”“镜头一”等泛化标题。不要把时间码、时长、语气、环境音、音效或配乐说明写入 `narration`。调用 `freezone_prepare_workflow_draft` 编译并保存，记录返回的 `draft_id` 和 `revision`。不要生成画布 nodes/edges、UUID、连线类型、布局或分组。
 5. 缺少素材但允许从文字创建时，把素材锚点作为第一个 PlanItem，选择同一 Skill 允许的、`requires_source_media=false` 且输出类型匹配的 Recipe；后续依赖项通过 `depends_on` 引用该语义 item id。
 6. 严格按草稿工具返回的 `preview` 展示节点数量、作品清单、阶段和执行方式，不展示内部 JSON、`draft_id` 或 `revision`。
-7. 用户调整方案时，只把发生变化的字段传给 `freezone_patch_workflow_draft(draft_id=..., expected_revision=..., changes=...)`；不要重建 Intent 或创建新草稿。按新预览展示结果并记录新 revision。
+7. 用户调整方案时，只把发生变化的字段传给 `freezone_patch_workflow_draft(draft_id=..., expected_revision=..., planning_confirmed=true, changes=...)`；不要重建 Intent 或创建新草稿。按新预览展示结果并记录新 revision。
 8. 用户确认后调用一次 `freezone_confirm_workflow_draft(draft_id=..., revision=...)`。执行方式默认使用草稿中已经确认的 `run_after_create`。
 9. 草稿校验失败时只修正返回的输入、item 或选项字段后重试；禁止改用单节点工具绕过校验，也不要退回生成整份 Plan。
 
@@ -51,8 +59,6 @@ Plan 中的边只表示真实输入依赖，不表示时间顺序。节点 ID �
 电商商品图场景中，用户没有产品图时，默认先生成一张清晰、中性背景、外观定义完整的“产品锚点图”，再生成主图、细节图和生活场景图。向用户确认时只说明“将先生成产品基准图以保持后续一致”，不要展示 Recipe、模型或内部字段。只有用户明确要求必须忠实还原真实商品时，才把上传真实产品图作为阻塞条件。
 
 语音节点默认使用系统预设音色，不要求用户上传参考音频。只有用户明确提出“使用我的声音”“克隆声音”或指定项目/角色声线时，才把节点切换为克隆音色并检查对应参考声线；背景音乐始终走 music 模式，不依赖声线样本。
-
-注意：“再创建一个文生图工作流 / 再来一个图生视频 / 新增一个同样的工作流”不是列表查询请求。应创建一个新草稿并走确认流程；不要复用旧 `draft_id`，也不要调用 `freezone_emit_canvas_command`。
 
 不要列 `freezone.sketch_from_context`、`freezone.frame_from_context`、`freezone.scene_360`、`agent.review_frame`。这些是画布原子执行技能，不是工作流技能。
 
@@ -94,7 +100,6 @@ Plan 中的边只表示真实输入依赖，不表示时间顺序。节点 ID �
 - 用户修改某个节点后要求“从这里重跑/重做后续”时，调用 `freezone_run_workflow(node_ids=[...], direction="downstream", regenerate=true)`；Agent 不遍历或枚举下游节点。
 - 仅重试一个失败节点时使用 `direction="node"`；没有明确要求覆盖已有结果时不得设置 `regenerate=true`。
 - 禁止为动态工作流调用 `freezone_emit_canvas_command`。这个通用批量工具只用于非工作流的普通画布编辑。
-- “再创建一个 / 再来一个 / 再添加一个 / 新增一个同类型工作流”必须按新的实例落画布；画布上已有同类型工作流不是阻止条件。
 - 如果用户的创建请求无法唯一匹配一个 Hermes 原生 Workflow Skill，先让用户通过输入框 `/` 选择，不要凭经验猜测。例如“创建一个视频工作流”可能是广告视频、产品视频、MV、文生视频、图生视频或短剧。
 - 当用户一次要求多个交付分支时，把它们规划进同一份动态 `freezone_workflow_plan.v1`；需要完全独立的多个工作流时，逐份确认和创建，不得传 `workflow_types`。
 - 创建成功后的节点清单必须直接使用工具结果中的 `created_nodes[].displayName`，保持原顺序并完整列出；不要凭计划重新组织名称。无法完整列出时只报告节点总数，不要输出残缺的表格行。
