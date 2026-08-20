@@ -5,6 +5,15 @@ from __future__ import annotations
 from typing import Any, Optional, Protocol
 
 
+class FeatureCreditSettlementConflict(RuntimeError):
+    """A reservation has already advanced to an incompatible final action."""
+
+    def __init__(self) -> None:
+        super().__init__(
+            "feature credit settlement action conflicts with durable state"
+        )
+
+
 class UsageMeter(Protocol):
     async def reserve_current_model_call_credit(
         self,
@@ -92,6 +101,15 @@ class UsageMeter(Protocol):
         metadata: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Refund a reservation when no usable business result was delivered."""
+        ...
+
+    async def mark_feature_credit_settlement_for_review(
+        self,
+        reservation_id: str,
+        *,
+        metadata: Optional[dict[str, Any]] = None,
+    ) -> dict[str, Any]:
+        """Keep a post-start reservation in review without refund or confirm."""
         ...
 
     async def mark_current_paid_execution_attempt(

@@ -25,7 +25,9 @@ import websockets
 from dotenv import load_dotenv
 
 from novelvideo.egress_context import ambient_egress_context
+from novelvideo.authz_retry import retry_authz_read
 from novelvideo.ports import get_usage_meter, update_current_model_call_log
+from novelvideo.ports.authz import AuthzError, detach_authz_error
 from novelvideo.video_request_usage import (
     record_video_request,
     update_video_request_status,
@@ -41,6 +43,7 @@ from novelvideo.storage.media_relay import (
     upload_media_bytes,
 )
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut
+from novelvideo.task_backend.envelope import RunningTaskAuthorityIndeterminate
 from novelvideo.task_backend.subprocesses import run_project_subprocess
 
 # 确保加载 .env 环境变量
@@ -48,6 +51,11 @@ load_dotenv()
 
 NEWAPI_VIDEO_HTTP_TIMEOUT_SECONDS = 1800.0
 NEWAPI_MEDIA_INPUT_MIN_TTL_SECONDS = 2 * 60 * 60
+_POST_ACCEPT_AUTHZ_MAX_RETRIES = 5
+_POST_ACCEPT_AUTHZ_RETRY_BASE_SECONDS = 2.0
+_POST_ACCEPT_AUTHZ_RETRY_CAP_SECONDS = 60.0
+_POST_ACCEPT_AUTHZ_RETRY_SLEEP = asyncio.sleep
+_POST_ACCEPT_AUTHZ_RETRY_RANDOM = random.random
 
 _VIDEO_EGRESS_ERROR_MESSAGES = {
     "TASK_ENVELOPE_INVALID": "trusted video egress context is invalid",
@@ -2760,11 +2768,21 @@ class NewApiVideoGenerator(VideoGeneratorBase):
         if context is None or not context.is_organization:
             return
         from novelvideo.ports import get_authz_port
-        from novelvideo.ports.authz import AuthzError
 
-        current = await get_authz_port().admit_model_task(
-            user_id=context.requester_user_id,
-            root_task_id=context.root_task_id,
+        async def read_current():
+            return await get_authz_port().admit_model_task(
+                user_id=context.requester_user_id,
+                root_task_id=context.root_task_id,
+            )
+
+        current = await retry_authz_read(
+            read_current,
+            max_retries=_POST_ACCEPT_AUTHZ_MAX_RETRIES,
+            base_delay=_POST_ACCEPT_AUTHZ_RETRY_BASE_SECONDS,
+            cap_delay=_POST_ACCEPT_AUTHZ_RETRY_CAP_SECONDS,
+            sleep=_POST_ACCEPT_AUTHZ_RETRY_SLEEP,
+            random=_POST_ACCEPT_AUTHZ_RETRY_RANDOM,
+            call_site="video_post_accept_revalidation",
         )
         if (
             current.requester_user_id != context.requester_user_id
@@ -2774,6 +2792,16 @@ class NewApiVideoGenerator(VideoGeneratorBase):
             or current.authz_version != context.authz_version
         ):
             raise AuthzError("ORG_AUTHZ_STALE")
+
+    @staticmethod
+    def _running_authority_error(
+        exc: AuthzError,
+    ) -> AuthzError | RunningTaskAuthorityIndeterminate:
+        if exc.code == "P0_GRAY_DISABLED":
+            return detach_authz_error(exc)
+        return RunningTaskAuthorityIndeterminate(
+            failure_kind=str(getattr(exc, "failure_kind", "drift"))
+        )
 
     @staticmethod
     async def _mark_operation_unknown(
@@ -3344,8 +3372,17 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
             for poll_count in range(max_polls):
                 if organization_request:
+                    running_authority_error = None
                     try:
                         await self._revalidate_organization(egress_context)
+                    except AuthzError as exc:
+                        await self._mark_operation_unknown(
+                            operation_port,
+                            operation_claim,
+                            expected_version=operation_version,
+                        )
+                        operation_terminal = True
+                        running_authority_error = self._running_authority_error(exc)
                     except Exception as exc:
                         await self._mark_operation_unknown(
                             operation_port,
@@ -3358,6 +3395,8 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                             error=_safe_video_error_code(exc, "ORG_AUTHZ_STALE"),
                             task_id=task_id,
                         )
+                    if running_authority_error is not None:
+                        raise running_authority_error from None
                     polled = await self._get_json(
                         f"{request_base_url}/video/generations/{task_id}",
                         headers=request_headers,
@@ -3409,8 +3448,17 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                             task_id=task_id,
                         )
                     if organization_request:
+                        running_authority_error = None
                         try:
                             await self._revalidate_organization(egress_context)
+                        except AuthzError as exc:
+                            await self._mark_operation_unknown(
+                                operation_port,
+                                operation_claim,
+                                expected_version=operation_version,
+                            )
+                            operation_terminal = True
+                            running_authority_error = self._running_authority_error(exc)
                         except Exception as exc:
                             await self._mark_operation_unknown(
                                 operation_port,
@@ -3423,6 +3471,8 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                                 error=_safe_video_error_code(exc, "ORG_AUTHZ_STALE"),
                                 task_id=task_id,
                             )
+                        if running_authority_error is not None:
+                            raise running_authority_error from None
                     log("视频生成完成，正在下载...")
                     video_content = await self._download_video(video_url, output_path)
                     provider_task_id = self._extract_provider_task_id(
@@ -3435,8 +3485,19 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                         last_frame_url = self._extract_returned_last_frame_url(task)
                         if last_frame_url:
                             if organization_request:
+                                running_authority_error = None
                                 try:
                                     await self._revalidate_organization(egress_context)
+                                except AuthzError as exc:
+                                    await self._mark_operation_unknown(
+                                        operation_port,
+                                        operation_claim,
+                                        expected_version=operation_version,
+                                    )
+                                    operation_terminal = True
+                                    running_authority_error = (
+                                        self._running_authority_error(exc)
+                                    )
                                 except Exception as exc:
                                     await self._mark_operation_unknown(
                                         operation_port,
@@ -3451,6 +3512,8 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                                         ),
                                         task_id=task_id,
                                     )
+                                if running_authority_error is not None:
+                                    raise running_authority_error from None
                             last_frame_output_path = (
                                 self._returned_last_frame_output_path(
                                     output_path,
@@ -3569,6 +3632,11 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 error="Timeout waiting for DramaClawAPI video task",
                 task_id=task_id,
             )
+        except RunningTaskAuthorityIndeterminate:
+            # Provider acceptance is already durable.  This branch must not
+            # resubmit the provider request or decide refund/confirm locally;
+            # run_core moves the feature settlement to review.
+            raise
         except VideoEgressError:
             raise
         except NewApiVideoError as exc:

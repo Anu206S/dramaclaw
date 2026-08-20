@@ -8,7 +8,7 @@ import re
 from types import MappingProxyType
 from typing import Any
 
-from novelvideo.ports.authz import AuthzError, AuthzPort
+from novelvideo.ports.authz import AuthzError, AuthzPort, detach_authz_error
 from novelvideo.task_backend.envelope import InvalidTaskEnvelope, SignedTaskEnvelope
 
 _FORBIDDEN_PAYLOAD_FIELDS = {
@@ -121,7 +121,7 @@ class TaskEnvelopeProducer:
     ) -> SignedTaskEnvelope:
         _validate_forbidden_payload_fields(payload)
 
-        authz_error_code: str | None = None
+        authz_failure: AuthzError | None = None
         ordinary_failure = False
         try:
             admission = await self._authz.admit_model_task(
@@ -129,13 +129,13 @@ class TaskEnvelopeProducer:
                 root_task_id=root_task_id,
             )
         except AuthzError as exc:
-            authz_error_code = exc.code
+            authz_failure = exc
             admission = None
         except Exception:
             ordinary_failure = True
             admission = None
-        if authz_error_code is not None:
-            raise AuthzError(authz_error_code) from None
+        if authz_failure is not None:
+            raise detach_authz_error(authz_failure) from None
         if ordinary_failure:
             raise _invalid() from None
 
