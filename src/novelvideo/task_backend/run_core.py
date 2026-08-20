@@ -18,7 +18,12 @@ from novelvideo.egress_context import (
 from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
 from novelvideo.ports import get_usage_meter
 from novelvideo.ports.authz import AdmissionContext
-from novelvideo.ports.usage import FeatureCreditSettlementConflict
+from novelvideo.ports.usage import (
+    FeatureCreditSettlementConflict,
+    FeatureSettlementResolution,
+    FeatureSettlementResolutionRejected,
+    VerifiedTaskSettlementIdentity,
+)
 from novelvideo.project_context import require_project_home_node
 from novelvideo.shared.billing_errors import (
     INSUFFICIENT_CREDITS_MESSAGE,
@@ -217,6 +222,49 @@ def _clean_billing_metadata(value: Any) -> dict[str, Any]:
     return cleaned
 
 
+def _without_settlement_handles(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep delivery metadata observable without trusting it to move money."""
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"feature_credit_reservation_id", "feature_credit_charge_id"}
+    }
+
+
+async def _resolve_feature_reservation_id(
+    delivery: VerifiedTaskDelivery,
+    *,
+    task_type: str,
+    episode: int,
+    beat_num: Any,
+    scope: Any,
+) -> FeatureSettlementResolution:
+    payload = delivery.payload if type(delivery.payload) is dict else {}
+    billing = payload.get("billing")
+    signed_feature_key = (
+        str(billing.get("feature_key") or "").strip()
+        if type(billing) is dict and type(billing.get("feature_key")) is str
+        else ""
+    )
+    identity = VerifiedTaskSettlementIdentity(
+        root_task_id=delivery.admission.root_task_id,
+        project_id=delivery.project_id,
+        requester_user_id=delivery.requester_user_id,
+        task_type=task_type,
+        episode=episode,
+        beat_num=beat_num if type(beat_num) is int else None,
+        scope=scope if type(scope) is str else None,
+        feature_key=signed_feature_key,
+    )
+    resolution = await get_usage_meter().resolve_feature_credit_reservation(identity)
+    if resolution.outcome == "resolved":
+        resolution.trusted_billing_metadata()
+        return resolution
+    if resolution.outcome == "not_applicable":
+        return resolution
+    raise FeatureSettlementResolutionRejected(resolution.outcome)
+
+
 def _build_trusted_egress_context(
     delivery: VerifiedTaskDelivery,
     ctx: Any,
@@ -305,10 +353,23 @@ async def _confirm_feature_credit_reservation(
             action="confirm",
             metadata=metadata,
         )
+    except FeatureCreditSettlementConflict as exc:
+        logger.warning(
+            "feature_credit_settlement_conflict",
+            extra={
+                "settlement_action": "confirm",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "feature credit confirmation intent remains awaiting retry: %s",
-            exc,
+            "feature_credit_settlement_adapter_failure",
+            extra={
+                "settlement_action": "confirm",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
         )
 
 
@@ -325,10 +386,23 @@ async def _refund_feature_credit_reservation(
             action="refund",
             metadata=metadata,
         )
+    except FeatureCreditSettlementConflict as exc:
+        logger.warning(
+            "feature_credit_settlement_conflict",
+            extra={
+                "settlement_action": "refund",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "feature credit refund intent remains awaiting retry: %s",
-            exc,
+            "feature_credit_settlement_adapter_failure",
+            extra={
+                "settlement_action": "refund",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
         )
 
 
@@ -356,8 +430,11 @@ async def refund_undelivered_feature_credit_reservation(
         )
     except FeatureCreditSettlementConflict:
         logger.warning(
-            "undelivered feature credit refund conflicts with durable settlement",
-            extra={"failure_kind": "settlement_action_conflict"},
+            "feature_credit_settlement_conflict",
+            extra={
+                "settlement_action": "refund",
+                "failure_kind": "settlement_action_conflict",
+            },
         )
         return SettlementIntentResult(accepted=False, retryable=False)
     except Exception as exc:  # noqa: BLE001
@@ -615,7 +692,6 @@ def run_project_task_core_sync(
     episode = int(delivery.episode or 0)
     beat_num = delivery.beat_num
     scope = delivery.scope
-    billing_metadata = _clean_billing_metadata(delivery.billing_metadata)
     envelope = TrustedRunnerEnvelope(
         {
             "project_id": delivery.project_id,
@@ -629,10 +705,91 @@ def run_project_task_core_sync(
             TRUSTED_EGRESS_CONTEXT_KEY: trusted_egress_context,
         }
     )
-    if billing_metadata:
-        envelope["billing_metadata"] = billing_metadata
-    run_metadata = {**dict(metadata or {}), **billing_metadata}
-    feature_reservation_id = _feature_credit_reservation_id(run_metadata)
+    run_metadata = _without_settlement_handles(dict(metadata or {}))
+    try:
+        feature_settlement_resolution = asyncio.run(
+            _resolve_feature_reservation_id(
+                delivery,
+                task_type=task_type,
+                episode=episode,
+                beat_num=beat_num,
+                scope=scope,
+            )
+        )
+    except FeatureSettlementResolutionRejected as exc:
+        try:
+            manager.fail_task_for_project(
+                ctx,
+                task_type,
+                episode,
+                beat_num=beat_num,
+                scope=scope,
+                error=str(exc),
+                metadata={**run_metadata, "error_code": exc.code},
+                expected_task_id=run_task_id,
+            )
+        except Exception as terminalization_exc:  # noqa: BLE001
+            logger.error(
+                "feature_settlement_resolution_rejected_fast_path_failed",
+                extra={
+                    "safe_error_type": type(terminalization_exc).__name__,
+                    "error_id": uuid.uuid4().hex,
+                },
+            )
+        asyncio.run(
+            _emit_project_task_metrics(
+                ctx,
+                task_type,
+                episode=episode,
+                beat_num=beat_num,
+                scope=scope,
+                outcome="failed",
+            )
+        )
+        return {"failed": True, "error_code": exc.code}
+    except Exception as exc:  # noqa: BLE001
+        error_code = "FEATURE_SETTLEMENT_RESOLUTION_FAILED"
+        logger.error(
+            "feature_settlement_resolution_failed",
+            extra={
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
+        )
+        try:
+            manager.fail_task_for_project(
+                ctx,
+                task_type,
+                episode,
+                beat_num=beat_num,
+                scope=scope,
+                error="feature settlement resolution failed",
+                metadata={**run_metadata, "error_code": error_code},
+                expected_task_id=run_task_id,
+            )
+        except Exception as terminalization_exc:  # noqa: BLE001
+            logger.error(
+                "feature_settlement_resolution_fast_path_failed",
+                extra={
+                    "safe_error_type": type(terminalization_exc).__name__,
+                    "error_id": uuid.uuid4().hex,
+                },
+            )
+        asyncio.run(
+            _emit_project_task_metrics(
+                ctx,
+                task_type,
+                episode=episode,
+                beat_num=beat_num,
+                scope=scope,
+                outcome="failed",
+            )
+        )
+        return {"failed": True, "error_code": error_code}
+    feature_reservation_id = feature_settlement_resolution.reservation_id
+    trusted_billing_metadata = feature_settlement_resolution.trusted_billing_metadata()
+    if trusted_billing_metadata:
+        envelope["billing_metadata"] = trusted_billing_metadata
     timeout_seconds = _project_task_timeout_seconds()
     deadline_monotonic = (
         time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
@@ -687,7 +844,7 @@ def run_project_task_core_sync(
             _set_project_task_metrics_context(
                 ctx,
                 task_type,
-                billing_metadata=billing_metadata,
+                billing_metadata=trusted_billing_metadata,
             )
             execution_started = manager.begin_task_execution_for_project(
                 ctx,
