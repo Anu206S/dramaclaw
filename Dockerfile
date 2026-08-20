@@ -55,14 +55,14 @@ RUN set -eux; \
     fi; \
     mkdir -p /data
 
-ARG HERMES_INSTALL_SPEC=""
+# Hermes comes from this project's own fork, always. A PyPI release cannot
+# serve this image: it keeps the same version string as the fork and then drops
+# the `_meta` extension the per-turn credential travels in, so every turn fails
+# closed and reports it as a connection error. There is no version to pin here
+# — which upstream release the fork carries is a property of the branch.
+ARG HERMES_INSTALL_SPEC="git+https://github.com/dramaclaw/hermes-agent@brainclaw/evidence-plane#egg=hermes-agent[acp]"
 RUN set -eux; \
-    HERMES_VERSION="$(cat .hermes-version)"; \
-    if [ -n "$HERMES_INSTALL_SPEC" ]; then \
-        uv tool install "$HERMES_INSTALL_SPEC" --force; \
-    else \
-        uv tool install "hermes-agent[acp]==${HERMES_VERSION}" --force; \
-    fi; \
+    uv tool install "$HERMES_INSTALL_SPEC" --force; \
     python3 deploy/patch_hermes_acp_toolsets.py; \
     hermes --version; \
     python3 deploy/verify_hermes_fork.py
