@@ -60,12 +60,33 @@ RUN set -eux; \
 # the `_meta` extension the per-turn credential travels in, so every turn fails
 # closed and reports it as a connection error. There is no version to pin here
 # — which upstream release the fork carries is a property of the branch.
-ARG HERMES_INSTALL_SPEC="git+https://github.com/dramaclaw/hermes-agent@brainclaw/evidence-plane#egg=hermes-agent[acp]"
+# Hermes comes from this project's own fork, cloned and installed editable.
+#
+# Not from PyPI: a release keeps the same version string as the fork and then
+# drops the `_meta` extension the per-turn credential travels in, so every turn
+# fails closed and reports it as a connection error. Not as a wheel either —
+# upstream refuses to build one on purpose ("distributed via the shell
+# installer, Docker image, or Nix"), and an editable install from a clone is
+# the supported path that a pinned commit can actually use.
+#
+# HERMES_REF is a branch by default and resolves to whatever it points at when
+# the image is built. Pass a commit sha to make a build reproducible.
+ARG HERMES_REPO="https://github.com/dramaclaw/hermes-agent.git"
+ARG HERMES_REF="brainclaw/evidence-plane"
 RUN set -eux; \
-    uv tool install "$HERMES_INSTALL_SPEC" --force; \
+    apt-get update; \
+    apt-get install -y --no-install-recommends git; \
+    rm -rf /var/lib/apt/lists/*; \
+    git clone --depth 1 --branch "$HERMES_REF" "$HERMES_REPO" /opt/hermes-agent \
+      || { git clone "$HERMES_REPO" /opt/hermes-agent; git -C /opt/hermes-agent checkout "$HERMES_REF"; }; \
+    HERMES_SHA="$(git -C /opt/hermes-agent rev-parse HEAD)"; \
+    echo "$HERMES_SHA" > /opt/hermes-agent.sha; \
+    rm -rf /opt/hermes-agent/.git; \
+    uv pip install --system -e "/opt/hermes-agent[acp]"; \
     python3 deploy/patch_hermes_acp_toolsets.py; \
     hermes --version; \
-    python3 deploy/verify_hermes_fork.py
+    python3 deploy/verify_hermes_fork.py; \
+    apt-get purge -y git; apt-get autoremove -y
 
 ENV PATH="/app/.venv/bin:/root/.local/bin:$PATH"
 
