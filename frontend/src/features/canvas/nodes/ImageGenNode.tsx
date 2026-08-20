@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import {
   Handle,
   Position,
+  useStore,
   useUpdateNodeInternals,
   type NodeProps,
 } from '@xyflow/react';
@@ -43,9 +44,15 @@ import {
   resolveModelSizeOptions,
 } from '@/features/canvas/domain/mediaModelOptions';
 import {
+  nodeBodyImageMeasurement,
+  nodeBodyImageSrc,
+  nodeBodyRecordDescribesImage,
+  planNaturalSizeRecordWrite,
   parseAspectRatio,
   pickClosestAspectRatio,
+  readNodeNaturalSize,
   resolveImageDisplayUrl,
+  shouldUseOriginalImageByZoom,
   snapToAllowedAspectRatio,
   withImageCacheBust,
 } from '@/features/canvas/application/imageData';
@@ -85,6 +92,8 @@ import {
   CANVAS_NODE_PANEL_SURFACE_CLASS,
   canvasNodeFrameClass,
 } from '@/features/canvas/ui/nodeFrameStyles';
+import { useNaturalSizeRecordTrust } from '@/features/canvas/hooks/useNaturalSizeRecordTrust';
+import { useNodeBodyVariantBudget } from '@/features/canvas/hooks/useNodeBodyVariantBudget';
 import { useCanvasStore, useIsBoxSelecting } from '@/stores/canvasStore';
 import { useShallow } from 'zustand/react/shallow';
 import { getFreezoneCanvasMetadata } from '@/features/freezone/canvasMetadataContext';
@@ -815,6 +824,38 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
     return null;
   }, [data.imageUrl, data.previewImageUrl, referenceImageUrl]);
   const visiblePreviewUrl = isGenerating ? null : previewUrl;
+  // selector 返回 boolean，平移中每帧变的 transform[0]/[1] 不会触发重渲染，
+  // 只在缩放跨过 1.45 那一次翻转（与 ImageNode/UploadNode 同一条线）。
+  const preferOriginalImage = useStore((state) => shouldUseOriginalImageByZoom(state.transform[2]));
+  // 已记录的原图像素尺寸；决定主体图能不能喂降采样副本，也是角标的初值。
+  const recordedNaturalSize = useMemo(() => readNodeNaturalSize(data), [data]);
+  // 记录里的尺寸没有和 URL 绑定，而主图是会被换掉的（画册选主图、从历史恢复、
+  // 生成完成回填，三条路都只改 imageUrl/previewImageUrl）。不信任记录的这一轮改
+  // 喂原图，onLoad 就能量到真尺寸并落库，而不是把一组属于别的图的数字写进去。
+  const { distrusted, distrustRecord, trustAgain } = useNaturalSizeRecordTrust(visiblePreviewUrl);
+  // 主体图把整幅原图解码进几百 CSS px 的盒子里；变体只在真实尺寸已知、且没放大
+  // 到细看那一档时启用，详见 nodeBodyImageSrc 的注释。查看器仍拿 visiblePreviewUrl。
+  // 这一格要多少设备像素，决定挑哪一档副本（拉大的节点会一路挑到原图）。
+  const bodyVariantBudget = useNodeBodyVariantBudget({
+    width: resolvedWidth,
+    height: resolvedHeight,
+  });
+  const bodyImage = useMemo(
+    () =>
+      visiblePreviewUrl
+        ? nodeBodyImageSrc(visiblePreviewUrl, recordedNaturalSize, {
+            preferOriginal: preferOriginalImage || distrusted,
+            requiredEdge: bodyVariantBudget,
+          })
+        : null,
+    [
+      bodyVariantBudget,
+      distrusted,
+      preferOriginalImage,
+      recordedNaturalSize,
+      visiblePreviewUrl,
+    ],
+  );
 
   const hasGeneratedResult = Boolean(data.imageUrl);
   // Natural pixel size of the displayed image, mirrored from data when present
@@ -822,13 +863,9 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
   // the resolution badge shows even for nodes whose size already matched (those
   // skip the persist branch). Lets us render a top-right resolution chip like the
   // video node.
-  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(() => {
-    const w = (data as { imageNaturalWidth?: unknown }).imageNaturalWidth;
-    const h = (data as { imageNaturalHeight?: unknown }).imageNaturalHeight;
-    return typeof w === 'number' && typeof h === 'number' && w > 0 && h > 0
-      ? { width: w, height: h }
-      : null;
-  });
+  const [naturalSize, setNaturalSize] = useState<{ width: number; height: number } | null>(
+    () => readNodeNaturalSize(data),
+  );
   // ── 叠卡画册（count > 1 的一组生成结果）──
   // 收拢时主图后探出 N-1 张卡片边缘；hover 出现右上角数量徽标，点开展开成
   // 宫格画册（同一节点内，天然不可解组）。展开态可对任意一张「设为主图」
@@ -1537,26 +1574,49 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
         {visiblePreviewUrl ? (
           <>
             <CanvasNodeImage
-              src={visiblePreviewUrl}
+              src={bodyImage?.src ?? visiblePreviewUrl}
               alt={resolvedTitle}
+              // 双击进查看器的必须是原图，不能跟着 src 走降采样副本。
               viewerSourceUrl={visiblePreviewUrl}
               onLoad={(event) => {
-                const naturalW = event.currentTarget.naturalWidth;
-                const naturalH = event.currentTarget.naturalHeight;
-                if (naturalW > 0 && naturalH > 0) {
+                // 记录描述的不是这张图：降采样副本上量不出源图真尺寸。第一次退回
+                // 原图重测（preferOriginal 会让下一轮 downscaled 为 false，不会来
+                // 回抖）；已经退过一次还是对不上，就什么都不写——记录和副本都不是
+                // 真相，保留旧值好过写一个确定错误的尺寸。
+                if (
+                  bodyImage?.downscaled &&
+                  !nodeBodyRecordDescribesImage(
+                    event.currentTarget,
+                    recordedNaturalSize,
+                    bodyImage.maxEdge ?? 0,
+                  )
+                ) {
+                  distrustRecord();
+                  return;
+                }
+                // 为纠正记录才退回来的那一轮，真尺寸这就量到了：解除不信任，下一
+                // 轮回到副本。这张图已经纠正过，钩子记着，不会再退第二次。
+                trustAgain();
+                // 喂的是降采样副本时元素上的 naturalWidth 是变体的尺寸，改用记录里的
+                // 真实尺寸——下面的角标、比例、自动尺寸因此与喂原图时完全一致。
+                const measured = bodyImage
+                  ? nodeBodyImageMeasurement(event.currentTarget, bodyImage, recordedNaturalSize)
+                  : { width: event.currentTarget.naturalWidth, height: event.currentTarget.naturalHeight };
+                if (measured.width > 0 && measured.height > 0) {
                   setNaturalSize((prev) =>
-                    prev && prev.width === naturalW && prev.height === naturalH
+                    prev && prev.width === measured.width && prev.height === measured.height
                       ? prev
-                      : { width: naturalW, height: naturalH },
+                      : { width: measured.width, height: measured.height },
                   );
                 }
                 const forceNaturalSize = shouldForceNaturalImageSize(data as Record<string, unknown>);
-                if (data.isSizeManuallyAdjusted === true && !forceNaturalSize) {
-                  return;
-                }
+                // 用户拖定过尺寸：屏幕上的尺寸归他。但记录归事实——这里原本直接
+                // return，于是换图之后真实尺寸永远写不回去，重新挂载读到的还是
+                // 旧记录，同比例换图时副本校验那层也认不出来。
+                const sizeLockedByUser = data.isSizeManuallyAdjusted === true && !forceNaturalSize;
                 const nextAspectRatio = aspectRatioFromImageDimensions(
-                  event.currentTarget.naturalWidth,
-                  event.currentTarget.naturalHeight,
+                  measured.width,
+                  measured.height,
                 );
                 if (!nextAspectRatio) {
                   return;
@@ -1568,17 +1628,40 @@ export const ImageGenNode = memo(({ id, data, selected, width, height }: ImageGe
                 const displaySizeMismatch =
                   Math.abs(resolvedWidth - nextSize.width) > 1 ||
                   Math.abs(resolvedHeight - nextSize.height) > 1;
-                if (nextAspectRatio !== data.aspectRatio || displaySizeMismatch) {
-                  updateNodeSize(id, nextSize, {
-                    lockManualSize: forceNaturalSize ? false : undefined,
-                    data: {
-                      aspectRatio: nextAspectRatio,
-                      imageNaturalWidth: event.currentTarget.naturalWidth,
-                      imageNaturalHeight: event.currentTarget.naturalHeight,
-                      imageAspectRatioUpdatedAt: Date.now(),
-                    },
-                  });
+                // 记录空着、或者和刚量到的真相对不上，都得写回去——比例和显示尺
+                // 寸这两个条件盖不住它们（同比例换图、老项目里早就贴合的节点）。
+                // 这里没有 ImageNode 那种放大档换 URL 的问题：主体图始终是
+                // visiblePreviewUrl 这一张，所以量到的一定是记录该描述的那张图。
+                const recordWrite = planNaturalSizeRecordWrite({
+                  aspectRatioChanged: nextAspectRatio !== data.aspectRatio,
+                  displaySizeMismatch,
+                  record: recordedNaturalSize,
+                  measured,
+                  measuringRecordSubject: true,
+                  sizeLockedByUser,
+                });
+                if (!recordWrite.persist) {
+                  return;
                 }
+                // 只是补记事实那一类：不碰节点尺寸，也不碰比例。
+                if (!recordWrite.applySize) {
+                  updateNodeData(
+                    id,
+                    { imageNaturalWidth: measured.width, imageNaturalHeight: measured.height },
+                    { recordHistory: false },
+                  );
+                  return;
+                }
+                updateNodeSize(id, nextSize, {
+                  lockManualSize: forceNaturalSize ? false : undefined,
+                  recordHistory: recordWrite.recordHistory,
+                  data: {
+                    aspectRatio: nextAspectRatio,
+                    imageNaturalWidth: measured.width,
+                    imageNaturalHeight: measured.height,
+                    imageAspectRatioUpdatedAt: Date.now(),
+                  },
+                });
               }}
               className="h-full w-full object-contain"
             />
