@@ -5,6 +5,7 @@ from typing import Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.time_of_day import LlmTimeOfDay, normalize_time_of_day
 from novelvideo.utils.screenplay_scene_parser import TIME_TOKEN_RE, parse_scene_blocks
 
@@ -165,7 +166,9 @@ class NormalizedSceneBlock(NormalizedSceneHeader):
         return self
 
 
-def _create_screenplay_normalizer_agent():
+def _create_screenplay_normalizer_agent(
+    brainclaw_profile: BrainClawProfile = BrainClawProfile.SCENE_BLOCK_NORMALIZATION,
+):
     from pydantic_ai import Agent
 
     from novelvideo.config import (
@@ -176,7 +179,7 @@ def _create_screenplay_normalizer_agent():
     return Agent(
         get_newapi_text_pydantic_model(
             "SCREENPLAY_NORMALIZER_MODEL",
-            "gemini-3.5-flash",
+            brainclaw_profile=brainclaw_profile,
             capability="cognee.llm",
         ),
         system_prompt=SCREENPLAY_NORMALIZER_SYSTEM_PROMPT,
@@ -231,7 +234,9 @@ async def normalize_screenplay_scene_header(
         if str(line or "").strip()
     )
 
-    runner = agent or _create_screenplay_normalizer_agent()
+    runner = agent or _create_screenplay_normalizer_agent(
+        BrainClawProfile.SCENE_BLOCK_NORMALIZATION
+    )
     prompt = f"""请按系统规则规范化下面这一个场景块的场景元数据。
 
 程序解析提示只用于补充多行场景头中已被程序识别的字段，不包含场景正文：
@@ -278,7 +283,9 @@ async def normalize_screenplay_scenes(
     if not source:
         return []
 
-    runner = agent or _create_screenplay_normalizer_agent()
+    runner = agent or _create_screenplay_normalizer_agent(
+        BrainClawProfile.SCREENPLAY_NORMALIZATION
+    )
     normalized_blocks: list[NormalizedSceneBlock] = []
     for block in parse_scene_blocks(source):
         if not block.header_line:

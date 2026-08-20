@@ -22,6 +22,11 @@ CANDIDATE_PATTERNS = [
     str(Path.home() / ".local/share/uv/tools/hermes-agent/lib/python*/site-packages/acp_adapter/session.py"),
     "/root/.local/share/uv/tools/hermes-agent/lib/python*/site-packages/acp_adapter/session.py",
     "/home/appuser/.local/share/uv/tools/hermes-agent/lib/python*/site-packages/acp_adapter/session.py",
+    # An editable install from a clone, which is how the image gets the fork:
+    # upstream refuses to build a wheel, so `uv tool install` cannot be used and
+    # the source stays where it was cloned rather than landing in site-packages.
+    "/opt/hermes-agent/acp_adapter/session.py",
+    str(Path(os.environ.get("HERMES_SOURCE_DIR", "/nonexistent")) / "acp_adapter/session.py"),
 ]
 if override := os.environ.get("HERMES_AGENT_SESSION_PY"):
     CANDIDATE_PATTERNS.insert(0, override)

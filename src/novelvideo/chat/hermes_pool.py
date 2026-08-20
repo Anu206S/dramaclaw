@@ -18,28 +18,30 @@ deployment this should move behind the task worker/runtime boundary.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import logging
 import os
-import re
 import shutil
-import subprocess
 import time
 import uuid
+from urllib.parse import urlsplit
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Awaitable, Callable
 
 from novelvideo import config
 from novelvideo.chat.hermes_sdk import HermesSdkClient, HermesSdkThread
+from novelvideo.chat import evidence_metrics
+from novelvideo.chat.hermes_fork_requirement import require_hermes_fork
 from novelvideo.chat.hermes_egress import (
+    PER_TURN_CREDENTIAL_PLACEHOLDER,
     EgressBoundaryError,
-    HermesLaunchAuthorization,
+    HermesTurnAuthorization,
     build_hermes_child_env,
 )
 from novelvideo.chat.hermes_workspace import (
     FREEZONE_HERMES_TOOL_DENY,
     effective_gateway_credentials,
-    effective_gateway_fingerprint,
     ensure_user_hermes_workspace,
     freezone_python_hook_dir,
 )
@@ -54,7 +56,6 @@ DEFAULT_TOKEN_TTL_SECS = 2 * 3600  # 2 hours
 DEFAULT_TOKEN_RENEW_SKEW_SECS = 15 * 60  # rotate 15 min before expiry
 DEFAULT_API_URL = "http://127.0.0.1:8780"
 DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
-_checked_hermes_versions: dict[Path, str] = {}
 
 
 class HermesDrainingError(RuntimeError):
@@ -114,55 +115,6 @@ def is_hermes_backend_available() -> bool:
     return _hermes_cli_path().exists()
 
 
-def _parse_hermes_version(output: str) -> tuple[int, int, int] | None:
-    match = re.search(r"Hermes Agent v(\d+)\.(\d+)\.(\d+)", output)
-    if not match:
-        return None
-    return tuple(int(part) for part in match.groups())
-
-
-def _required_hermes_version() -> tuple[str, tuple[int, int, int]]:
-    version_file = DRAMACLAW_ROOT / ".hermes-version"
-    try:
-        raw = version_file.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise RuntimeError(f"missing DramaClaw Hermes version file: {version_file}") from exc
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", raw)
-    if not match:
-        raise RuntimeError(f"invalid DramaClaw Hermes version requirement: {raw!r}")
-    return raw, tuple(int(part) for part in match.groups())
-
-
-def _ensure_supported_hermes_version(cli_path: Path) -> None:
-    if cli_path in _checked_hermes_versions:
-        return
-    required_text, required_version = _required_hermes_version()
-    try:
-        proc = subprocess.run(
-            [str(cli_path), "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except Exception as exc:  # noqa: BLE001 - surface a clear startup error
-        raise RuntimeError(f"failed to check hermes version at {cli_path}: {exc}") from exc
-    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-    version = _parse_hermes_version(output)
-    if proc.returncode != 0 or version is None:
-        raise RuntimeError(
-            f"unable to determine hermes version from `{cli_path} --version`: {output[:500]}"
-        )
-    if version != required_version:
-        current = ".".join(str(part) for part in version)
-        raise RuntimeError(
-            f"hermes {current} does not match DramaClaw's pinned version {required_text}. "
-            "Run `scripts/setup-hermes.sh` and restart the API."
-        )
-    _checked_hermes_versions[cli_path] = output.splitlines()[0] if output else str(version)
-    _log.info("using %s", _checked_hermes_versions[cli_path])
-
-
 def _workspace_profile_for_agent(agent_profile: str, tool_mode: str, surface: str | None) -> str:
     if str(surface or "").strip() == "freezone":
         return "freezone"
@@ -212,25 +164,109 @@ class _WorkerSlot:
     # `NEWAPI_API_KEY`——组织身份被洗掉，不报错也不留痕（OI-54 同一种病）。
     egress_project_id: str | None = None
     requester_user_id: str | None = None
-    authorization: HermesLaunchAuthorization | None = None
+    # No authorization is kept. It carries a real API key, and a slot outlives
+    # the turn that produced it: organisation A's credential would still be
+    # sitting here when B reused the worker, and a rotation would replay it.
+    # Rotation needs only the gateway origin, which is not a secret.
+
+
+class GatewayOriginMismatch(RuntimeError):
+    """Raised when a turn's credential belongs to a different gateway.
+
+    Workers are shared by origin. Sending one tenant's key to a gateway the
+    platform configured, rather than the one that issued it, would authenticate
+    against the wrong deployment — so the mismatch is refused instead.
+    """
+
+
+def _resolve_turn_gateway_api_key(
+    authorization: HermesTurnAuthorization | None,
+) -> str | None:
+    """The model-gateway key for this turn, platform or organisation alike.
+
+    Both are passed per turn. A platform turn used to rely on the worker's
+    environment, which is what made a shared worker unsafe: an organisation turn
+    landing on a platform-started worker could fall back to the platform key.
+    """
+    configured_key, configured_base_url = effective_gateway_credentials()
+    if authorization is None:
+        return configured_key or None
+    credential = authorization.credential
+    if _origin_of(credential.base_url) != _origin_of(configured_base_url):
+        evidence_metrics.observe("foreign_endpoint_refused")
+        raise GatewayOriginMismatch(
+            "the turn credential targets a different gateway origin than the "
+            "worker is configured for")
+    return credential.api_key
+
+
+def _origin_of(url: str | None) -> tuple[str, str]:
+    parts = urlsplit((url or "").strip())
+    return parts.scheme.lower(), parts.netloc.lower()
+
+
+def gateway_origin_fingerprint() -> str:
+    """Fingerprint the gateway a worker talks to, deliberately excluding the key.
+
+    Rotating a worker is expensive — a new subprocess, a fresh ACP session, a
+    cold connection pool — and the key is no longer a property of the worker.
+    It now arrives with each turn, so two turns that differ only by credential
+    can share one worker; only a change of endpoint requires a new one.
+
+    ``hermes_workspace.effective_gateway_fingerprint`` still hashes the key and
+    is left untouched: that module is frozen pending a recovery review, and this
+    is the one call site that needed the narrower key.
+    """
+    _, base_url = effective_gateway_credentials()
+    parts = urlsplit((base_url or "").strip())
+    origin = f"{parts.scheme.lower()}://{parts.netloc.lower()}"
+    return hashlib.sha256(origin.encode("utf-8")).hexdigest()
 
 
 class _ManagedHermesThread:
-    """Thread facade that lets the pool observe complete turn boundaries."""
+    """Thread facade that lets the pool observe complete turn boundaries.
 
-    def __init__(self, owner: "HermesPool", slot: _WorkerSlot) -> None:
+    It also carries this turn's gateway credential. A fresh facade is handed out
+    per ``get_for_user`` call and the key lives only on it, never on the shared
+    ``_WorkerSlot`` — so one pooled worker can serve several tenants, and a call
+    site cannot silently omit the credential and fall back to a platform key,
+    because it never passes one explicitly.
+    """
+
+    def __init__(self, owner: "HermesPool", slot: _WorkerSlot,
+                 gateway_api_key: str | None = None) -> None:
         self._owner = owner
         self._slot = slot
+        self._gateway_api_key = gateway_api_key
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._slot.thread, name)
 
-    async def stream(self, prompt: str, *, current_project: str | None = None):
+    async def stream(
+        self,
+        prompt: str,
+        *,
+        current_project: str | None = None,
+        trajectory_id: str | None = None,
+        project_id: str | None = None,
+        gateway_api_key: str | None = None,
+    ):
+        # Defaults to the credential this facade was created with, so an
+        # ordinary caller never passes one and never forgets one.
+        gateway_api_key = gateway_api_key or self._gateway_api_key
+        # The signature is explicit rather than **kwargs, so anything the caller
+        # passes has to be named here to reach the worker. trajectory_id and
+        # project_id were silently swallowed until this was widened, which made
+        # the egress capability unmintable on the real chat path while every
+        # unit test still passed.
         await self._owner._begin_turn(self._slot)
         try:
             async for event in self._slot.thread.stream(
                 prompt,
                 current_project=current_project,
+                trajectory_id=trajectory_id,
+                project_id=project_id,
+                gateway_api_key=gateway_api_key,
             ):
                 yield event
         finally:
@@ -300,7 +336,7 @@ class HermesPool:
         canvas_id: str | None = None,
         egress_project_id: str | None = None,
         requester_user_id: str | None = None,
-        authorization: HermesLaunchAuthorization | None = None,
+        authorization: HermesTurnAuthorization | None = None,
     ) -> HermesSdkThread:
         """Lazily create / return the per-user hermes thread.
 
@@ -320,16 +356,19 @@ class HermesPool:
             or None
         )
         normalized_canvas_id = str(canvas_id or "").strip() or None
+        # P, A and B all travel the same way: an organisation turn uses its
+        # resolved credential, a platform turn uses the configured one. Neither
+        # reaches the worker's environment.
+        turn_gateway_api_key = _resolve_turn_gateway_api_key(authorization)
         authz_generation = await self._authz_generation(username)
         async with self._lock:
             slot = self._slots.get(slot_key)
-            if slot is not None and authorization is not None:
-                slot.state = "draining"
-                if slot.active_turns or not await self._close_slot(slot, strict=True):
-                    raise HermesDrainingError()
-                slot.state = "closed"
-                self._slots.pop(slot_key, None)
-                slot = None
+            # An organisation credential used to drain the worker here, because
+            # the key could only reach the child through its environment. It now
+            # travels with the turn, so the same worker serves platform and
+            # organisation traffic without a rollout. Genuine rotation reasons —
+            # an authz generation change, a scope change, a closed thread —
+            # still apply below.
             if slot is not None:
                 if authz_generation > slot.authz_generation:
                     slot.state = "draining"
@@ -367,7 +406,7 @@ class HermesPool:
                         canvas_id=normalized_canvas_id,
                         reason="thread-closed",
                     )
-                elif slot.gateway_fingerprint != effective_gateway_fingerprint():
+                elif slot.gateway_fingerprint != gateway_origin_fingerprint():
                     slot = await self._rotate_slot_locked(
                         slot,
                         model=model,
@@ -413,7 +452,7 @@ class HermesPool:
                 else:
                     await self._update_scope_locked(slot, scope_kind, project_id)
                 slot.last_used = time.time()
-                return _ManagedHermesThread(self, slot)  # type: ignore[return-value]
+                return _ManagedHermesThread(self, slot, turn_gateway_api_key)  # type: ignore[return-value]
 
             await self._evict_lru_if_full()
             self._dirty_profiles.discard(slot_key)
@@ -435,7 +474,7 @@ class HermesPool:
             # Ensure background reaper is running
             if self._cleanup_task is None or self._cleanup_task.done():
                 self._cleanup_task = asyncio.create_task(self._reaper_loop())
-            return _ManagedHermesThread(self, slot)  # type: ignore[return-value]
+            return _ManagedHermesThread(self, slot, turn_gateway_api_key)  # type: ignore[return-value]
 
     async def _begin_turn(self, slot: _WorkerSlot) -> None:
         authz_generation = await self._authz_generation(slot.username)
@@ -542,7 +581,7 @@ class HermesPool:
         egress_project_id: str | None = None,
         requester_user_id: str | None = None,
         resume_session_id: str | None = None,
-        authorization: HermesLaunchAuthorization | None = None,
+        authorization: HermesTurnAuthorization | None = None,
     ) -> _WorkerSlot:
         """Spawn a worker slot.
 
@@ -559,7 +598,19 @@ class HermesPool:
                 f"hermes CLI not found at {cli_path}. "
                 "Run `uv tool install 'hermes-agent[acp]'`."
             )
-        _ensure_supported_hermes_version(cli_path)
+        # No version gate. A version string cannot distinguish the fork from
+        # stock — the fork keeps upstream's version, so `hermes --version`
+        # reads identically for a build that carries the per-turn contract and
+        # one that silently drops it. It checked the weaker property while
+        # costing a manual edit on every upstream alignment.
+        #
+        # `require_hermes_fork` below checks the property we actually depend
+        # on, by behaviour: whether `_meta` survives the ACP router. Hermes is
+        # installed from this project's own fork branch, so which upstream
+        # release it carries is an installation fact, not a runtime check.
+        # Checked before the subprocess exists, so a mismatched pair fails here
+        # with a cause rather than at the first turn as a connection error.
+        require_hermes_fork(cli_path)
         home = ensure_user_hermes_workspace(
             username,
             profile=_workspace_profile_for_agent(agent_profile, tool_mode, surface),
@@ -633,6 +684,7 @@ class HermesPool:
             token.session_id,
             resumed_session,
         )
+        evidence_metrics.observe("worker_spawned")
         return _WorkerSlot(
             username=username,
             client=client,
@@ -645,13 +697,10 @@ class HermesPool:
             project_id=session_project_id,
             surface=surface,
             canvas_id=canvas_id,
-            gateway_fingerprint=(
-                "" if authorization is not None else effective_gateway_fingerprint()
-            ),
-            one_shot=authorization is not None,
+            gateway_fingerprint=gateway_origin_fingerprint(),
+            one_shot=False,
             egress_project_id=egress_project_id,
             requester_user_id=requester_user_id,
-            authorization=authorization,
         )
 
     def _token_needs_renewal(self, slot: _WorkerSlot) -> bool:
@@ -744,6 +793,7 @@ class HermesPool:
         The session identity still follows the caller's scope; only the egress
         identity is inherited, which is exactly why S3 split the two parameters.
         """
+        evidence_metrics.observe(f"worker_rotated:{reason}")
         if resume_existing_session:
             self._remember_session(slot)
         else:
@@ -773,7 +823,6 @@ class HermesPool:
             egress_project_id=slot.egress_project_id,
             requester_user_id=slot.requester_user_id,
             resume_session_id=resume_session_id,
-            authorization=slot.authorization,
         )
         _log.info(
             "rotating hermes worker for user=%s old_agent_session=%s new_agent_session=%s reason=%s",
@@ -850,7 +899,7 @@ class HermesPool:
         egress_project_id: str | None = None,
         requester_user_id: str | None = None,
         project_env: dict[str, str] | None = None,
-        authorization: HermesLaunchAuthorization | None = None,
+        authorization: HermesTurnAuthorization | None = None,
     ) -> dict[str, str]:
         """Build the strict environment passed only to this Hermes worker.
 
@@ -945,13 +994,19 @@ class HermesPool:
         dump_requests = os.environ.get("HERMES_DUMP_REQUESTS", "").strip()
         if dump_requests:
             env["HERMES_DUMP_REQUESTS"] = dump_requests
-        api_key, _base_url = effective_gateway_credentials()
-        if api_key:
-            env["NEWAPI_API_KEY"] = api_key
-            # Hermes 0.18 can restore older custom-provider sessions through
-            # its generic OpenAI-compatible path, which still looks for this
-            # alias even though new DramaClaw configs use NEWAPI_API_KEY.
-            env["OPENAI_API_KEY"] = api_key
+        _api_key, base_url = effective_gateway_credentials()
+        # Both spawn paths look identical from here on. A worker started by a
+        # platform turn used to carry the real platform key with no latch, so an
+        # organisation turn reusing that worker would fall back to the platform
+        # account the moment its _meta went missing — the exact cross-tenant
+        # failure the per-turn credential removes. Neither path holds a key now.
+        env["NEWAPI_API_KEY"] = PER_TURN_CREDENTIAL_PLACEHOLDER
+        # Hermes can restore older custom-provider sessions through its generic
+        # OpenAI-compatible path, which still reads this alias.
+        env["OPENAI_API_KEY"] = PER_TURN_CREDENTIAL_PLACEHOLDER
+        env["DRAMACLAW_GATEWAY_CREDENTIAL_MODE"] = "per_turn_required"
+        if base_url:
+            env["NEWAPI_BASE_URL"] = base_url
         return env
 
     async def _evict_lru_if_full(self) -> None:

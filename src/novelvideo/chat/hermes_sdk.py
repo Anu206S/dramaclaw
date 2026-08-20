@@ -14,6 +14,7 @@ See docs/hermes-acp-protocol.md for the full protocol.
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -71,6 +72,14 @@ FREEZONE_TURN_TOOL_CALL_LIMIT = max(
 REPEATED_READ_TOOL_CALL_LIMIT = max(
     1,
     _env_int("HERMES_REPEATED_READ_TOOL_CALL_LIMIT", 2),
+)
+REPEATED_FAILED_TOOL_CALL_LIMIT = max(
+    2,
+    _env_int("HERMES_REPEATED_FAILED_TOOL_CALL_LIMIT", 2),
+)
+REPEATED_VALIDATION_TOOL_CALL_LIMIT = max(
+    2,
+    _env_int("HERMES_REPEATED_VALIDATION_TOOL_CALL_LIMIT", 3),
 )
 TOOL_DETAIL_LIMIT = 1600
 PERMISSION_REQUEST_TIMEOUT_SECONDS = 60.0
@@ -310,6 +319,16 @@ def _tool_call_limit_stop_message(name: object) -> str:
     )
 
 
+def _read_signature_input(event: ChatBackendEvent) -> object:
+    if event.input is not None or not _is_skill_loading_tool(event.name):
+        return event.input
+    if isinstance(event.raw, dict):
+        title = str(event.raw.get("title") or "").strip()
+        if title:
+            return {"resource_title": title}
+    return event.input
+
+
 def _tool_call_guard_reason(stop_text: object) -> str:
     """Return a machine-readable reason without coupling callers to UI copy."""
     if "重复读取" in str(stop_text or ""):
@@ -322,10 +341,22 @@ class _TurnToolCallGuard:
         self.total = 0
         self._counted_call_ids: set[str] = set()
         self._read_signature_counts: dict[str, int] = {}
+        self._failed_signature_counts: dict[str, int] = {}
+        self._validation_signature_counts: dict[str, int] = {}
 
     def observe(self, event: ChatBackendEvent) -> str | None:
         if event.type not in {"tool_started", "tool_updated"}:
             return None
+        if event.type == "tool_updated":
+            failure_signature = _failed_tool_call_signature(event)
+            if failure_signature is not None:
+                failure_count = self._failed_signature_counts.get(failure_signature, 0) + 1
+                self._failed_signature_counts[failure_signature] = failure_count
+                if failure_count >= REPEATED_FAILED_TOOL_CALL_LIMIT:
+                    return (
+                        "本轮操作已停止：同一个工具以相同参数重复返回相同错误。"
+                        "请检查工具参数或等待相关状态变化后再重试。"
+                    )
         call_id = str(event.call_id or "").strip()
         if call_id:
             if call_id in self._counted_call_ids:
@@ -341,6 +372,25 @@ class _TurnToolCallGuard:
         # loader consume the per-turn action budget.
         if not _is_skill_loading_tool(tool_name):
             self.total += 1
+        if tool_name == "freezone_validate_canvas_commands":
+            try:
+                encoded_input = json.dumps(
+                    event.input,
+                    ensure_ascii=False,
+                    sort_keys=True,
+                    default=str,
+                    separators=(",", ":"),
+                )
+            except (TypeError, ValueError):
+                encoded_input = repr(event.input)
+            signature = f"{tool_name}:{encoded_input}"
+            validation_count = self._validation_signature_counts.get(signature, 0) + 1
+            self._validation_signature_counts[signature] = validation_count
+            if validation_count >= REPEATED_VALIDATION_TOOL_CALL_LIMIT:
+                return (
+                    "本轮操作已停止：虾画重复校验同一批画布命令，且没有执行新的写入。"
+                    "请重新发送一条明确的继续或重试指令。"
+                )
         if not _is_dramaclaw_write_tool(tool_name) and not _is_freezone_canvas_write_tool(tool_name):
             if event.input is None:
                 # Hermes "polished" tools (skill_view, read_file, search_files…)
@@ -376,6 +426,98 @@ class _TurnToolCallGuard:
         if call_limit is not None and self.total > call_limit:
             return _tool_call_limit_stop_message(tool_name)
         return None
+
+
+def _is_terminal_tool_update(event: ChatBackendEvent) -> bool:
+    return str(event.status or "").strip().lower() in {
+        "completed",
+        "failed",
+        "error",
+        "cancelled",
+        "canceled",
+    }
+
+
+def _failed_tool_call_signature(event: ChatBackendEvent) -> str | None:
+    if not _is_terminal_tool_update(event):
+        return None
+    failure_payload = _tool_failure_payload(event)
+    if failure_payload is None:
+        return None
+    encoded = json.dumps(
+        {
+            "tool": str(event.name or "").strip(),
+            "input": event.input,
+            "failure": _stable_tool_failure_payload(failure_payload),
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        default=str,
+        separators=(",", ":"),
+    ).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _tool_failure_payload(event: ChatBackendEvent) -> object | None:
+    status = str(event.status or "").strip().lower()
+    if status in {"failed", "error"}:
+        return event.error or event.structured or event.output or status
+    if event.error:
+        return event.error
+    for candidate in (event.structured, event.output):
+        payload = _coerce_tool_result(candidate)
+        if not isinstance(payload, dict):
+            continue
+        result_status = str(
+            payload.get("status")
+            or payload.get("tool_call_status")
+            or payload.get("canvas_context_status")
+            or payload.get("canvas_apply_status")
+            or ""
+        ).strip().lower()
+        if payload.get("ok") is False or result_status in {
+            "failed",
+            "error",
+            "validation_failed",
+            "empty_validation_payload",
+        }:
+            return payload
+    return None
+
+
+def _coerce_tool_result(value: object) -> object:
+    if not isinstance(value, str):
+        return value
+    try:
+        return json.loads(value)
+    except (TypeError, ValueError):
+        try:
+            decoded, _ = json.JSONDecoder().raw_decode(value.lstrip())
+        except (TypeError, ValueError):
+            return value
+        return decoded
+
+
+_VOLATILE_TOOL_RESULT_KEYS = {
+    "bridge_key",
+    "key",
+    "resolved_at",
+    "timestamp",
+    "tool_call_id",
+}
+
+
+def _stable_tool_failure_payload(value: object) -> object:
+    value = _coerce_tool_result(value)
+    if isinstance(value, dict):
+        return {
+            str(key): _stable_tool_failure_payload(item)
+            for key, item in value.items()
+            if str(key) not in _VOLATILE_TOOL_RESULT_KEYS
+        }
+    if isinstance(value, list):
+        return [_stable_tool_failure_payload(item) for item in value]
+    return value
 
 
 def _should_stop_after_write_tool(first_write_tool: str | None, next_tool_name: object) -> bool:
@@ -547,6 +689,18 @@ def _load_recent_freezone_tool_result(
     return None
 
 
+#: Only lines that describe the worker's own failure are summarised; the rest
+#: of stderr is the user's content and must not reach our logs.
+#: A traceback's type line carries no level marker, and that line is usually
+#: the one that names the cause — it is what identified the refused egress this
+#: drain was added for. So an exception type at the start of a line counts as
+#: diagnostic on its own.
+_WORKER_DIAGNOSTIC = re.compile(
+    r"\b(ERROR|CRITICAL|Traceback)\b"
+    r"|^[A-Za-z_][\w.]*(?:Error|Exception)\b")
+_WORKER_ERROR_TYPE = re.compile(r"\b([A-Z][A-Za-z0-9_]*(?:Error|Exception))\b")
+
+
 class HermesSdkClient:
     """Holds spawn configuration for a hermes worker subprocess.
 
@@ -589,6 +743,50 @@ class HermesSdkClient:
             username=self._username,
             session_id=(session_id or "").strip() or None,
         )
+
+
+def _issue_turn_capability(
+    *, trajectory_id: str | None, project_id: str | None, turn_id: str
+) -> str | None:
+    """Mint this turn's capability, or None when it cannot be minted.
+
+    Never raises into the turn. Attestation is observability: a misconfigured
+    key, a missing identity or an issuer failure must cost evidence, never the
+    user's conversation.
+
+    There is no runtime feature check here, and none is needed. A worker without
+    the patch ignores the ``_meta`` field, the request goes out with no
+    capability header, and the Gateway records that traffic as diagnostic —
+    already the correct outcome. Keeping the two sides on the same build is an
+    installation concern, handled where installs are.
+    """
+    from novelvideo.chat import evidence_metrics
+
+    if not trajectory_id or not project_id:
+        # Not a failure: a turn with no trajectory has nothing to attest. Kept
+        # apart from a real issuer failure so "we never had an identity" is not
+        # read as "the issuer is broken".
+        evidence_metrics.observe("capability_no_identity")
+        return None
+    try:
+        from novelvideo.brainclaw_control_capability import control_capability_issuer
+
+        issuer = control_capability_issuer()
+        if issuer is None:
+            # An unconfigured issuer, which is the normal state before the keys
+            # are rolled out. Distinct from a failure so a stage that has not
+            # been given keys does not look like one whose keys are broken.
+            evidence_metrics.observe("capability_issuer_absent")
+            return None
+        capability = issuer.issue(
+            trajectory_id=trajectory_id, project_id=project_id, turn_id=turn_id
+        )
+        evidence_metrics.observe("capability_issued")
+        return capability
+    except Exception:
+        _log.debug("could not issue an egress capability for this turn", exc_info=True)
+        evidence_metrics.observe("capability_issue_failure")
+        return None
 
 
 class HermesSdkThread:
@@ -711,19 +909,32 @@ class HermesSdkThread:
             stderr=asyncio.subprocess.PIPE,
             limit=HERMES_STDIO_LINE_LIMIT_BYTES,
         )
+        # Consume stderr for as long as the worker lives. It was piped and never
+        # read: the pipe fills, the worker blocks on its next write, and the
+        # turn stalls for a reason nothing reports.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
 
     async def _drain_stderr(self) -> None:
-        """Surface worker stderr in backend logs (and keep the pipe drained).
+        """Keep the pipe drained, and report only what the worker says about itself.
 
-        The DramaClaw sitecustomize startup hook prints a red "DramaClaw
-        Freezone warning" line only when a denied tool survived registry
-        cleanup — promote those to warning so they show in the backend
-        console; everything else is debug noise.
+        Two requirements met by one loop, because both sides of this merge had
+        written their own. Freezone needs the sitecustomize startup warning
+        promoted so a denied tool that survived registry cleanup is visible in
+        the backend console. The evidence plane needs a worker's own failure to
+        be diagnosable at all — a refused egress used to reach us as an
+        unexplained connection error minutes later.
+
+        What neither may do is forward stderr verbatim at anything above debug.
+        Worker stderr carries prompts, tool output and provider bodies, so a
+        warning-level echo would route user content into DramaClaw's logs
+        through a path no telemetry allowlist governs. The Freezone line is
+        promoted because it is a fixed marker; an error is reduced to its
+        exception type and the pid.
         """
         proc = self._proc
         if proc is None or proc.stderr is None:
             return
+        pid = proc.pid
         try:
             while True:
                 line = await proc.stderr.readline()
@@ -734,11 +945,16 @@ class HermesSdkThread:
                     continue
                 if "DramaClaw Freezone warning" in text:
                     _log.warning("hermes[%s] %s", self._username, text)
+                elif _WORKER_DIAGNOSTIC.search(text):
+                    match = _WORKER_ERROR_TYPE.search(text)
+                    _log.warning(
+                        "hermes worker pid=%s reported %s",
+                        pid, match.group(1) if match else "an error")
                 else:
                     _log.debug("hermes[%s] %s", self._username, text)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - drain must never take down the client
+        except Exception:  # noqa: BLE001 - draining must not take down the turn
             return
 
     async def _read_until_id(
@@ -789,6 +1005,10 @@ class HermesSdkThread:
         if "error" in resp:
             raise RuntimeError(f"hermes initialize error: {resp['error']}")
         self._initialized = True
+        # Record what this runtime declared it implements. It is the only signal
+        # that describes the *running* process: a stock build reports the same
+        # version, can pass a revision check whenever the operator forgot to
+        # resync, and then silently drops the _meta extension.
         _log.debug("hermes initialized: %s", resp.get("result", {}).get("agentInfo"))
 
     async def _ensure_session(self) -> None:
@@ -855,19 +1075,43 @@ class HermesSdkThread:
             thread_id=self.id,
             turn_id=turn_id,
             text="(hermes timed out)",
+            # Carried on the event itself rather than inferred from the text: a
+            # caller that matched on "(hermes timed out)" would settle the
+            # ledger as a success the day that string changes.
+            disposition="timeout",
         )
 
-    async def stream(self, prompt: str, *, current_project: str | None = None) \
-            -> AsyncIterator[ChatBackendEvent]:
+
+    async def stream(
+        self,
+        prompt: str,
+        *,
+        current_project: str | None = None,
+        trajectory_id: str | None = None,
+        project_id: str | None = None,
+        gateway_api_key: str | None = None,
+    ) -> AsyncIterator[ChatBackendEvent]:
         """Send a prompt and yield ChatBackendEvent items as hermes streams them.
 
         ``current_project`` is included as a prompt prefix so per-user hermes
         knows which DramaClaw project the user is talking about (see plan).
+
+        ``trajectory_id`` and ``project_id`` are raw internal identifiers used to
+        mint this turn's egress capability. They are hashed before they leave
+        this process and are never sent as-is; Hermes receives only the signed
+        capability. Both absent means the turn is unattested, which is a
+        first-class state, not an error.
         """
         async with self._turn_lock:
             if self._closed:
                 raise RuntimeError("HermesSdkThread is closed")
-            async for event in self._stream_turn(prompt, current_project=current_project):
+            async for event in self._stream_turn(
+                prompt,
+                current_project=current_project,
+                trajectory_id=trajectory_id,
+                project_id=project_id,
+                gateway_api_key=gateway_api_key,
+            ):
                 yield event
 
     async def _stream_turn(
@@ -875,6 +1119,9 @@ class HermesSdkThread:
         prompt: str,
         *,
         current_project: str | None = None,
+        trajectory_id: str | None = None,
+        project_id: str | None = None,
+        gateway_api_key: str | None = None,
     ) -> AsyncIterator[ChatBackendEvent]:
         """Run one prompt while ``_turn_lock`` owns the ACP stdout reader."""
 
@@ -888,14 +1135,37 @@ class HermesSdkThread:
                 text = f"[CONTEXT: current_project={current_project}]\n\n{prompt}"
             yield ChatBackendEvent(type="thread_started", thread_id=self.id, turn_id=turn_id)
 
-            req_id = await self._send(
-                "session/prompt",
-                {
-                    "sessionId": self.id,
-                    "messageId": turn_id,
-                    "prompt": [{"type": "text", "text": text}],
-                },
+            prompt_params: dict[str, Any] = {
+                "sessionId": self.id,
+                "messageId": turn_id,
+                "prompt": [{"type": "text", "text": text}],
+            }
+            # Per-turn egress capability. It rides in ACP _meta rather than in
+            # the process environment or a session field because one Hermes
+            # worker is pooled per user and serves many episodes and projects
+            # concurrently; anything longer-lived than the turn would attach one
+            # turn's identity to another turn's requests.
+            capability = _issue_turn_capability(
+                trajectory_id=trajectory_id, project_id=project_id, turn_id=turn_id
             )
+            meta: dict[str, Any] = {}
+            if capability:
+                meta["dramaclaw.control_context_capability"] = capability
+            if gateway_api_key:
+                # Authentication for this turn. The worker's environment holds
+                # only a placeholder, and its credential-mode latch makes that
+                # placeholder unusable, so a turn that omits this key fails
+                # rather than billing the platform account.
+                meta["dramaclaw.gateway_api_key"] = gateway_api_key
+                meta["dramaclaw.gateway_api_key_required"] = True
+            if meta:
+                prompt_params["_meta"] = meta
+            req_id = await self._send("session/prompt", prompt_params)
+            # The request has now crossed into the agent. Anything that goes
+            # wrong past this line cannot prove the upstream call did not
+            # happen, so the ledger may no longer say "rejected before submit".
+            yield ChatBackendEvent(
+                type="egress_submitted", thread_id=self.id, turn_id=turn_id)
 
             # Read until we see the final session/prompt response (id matches).
             # Along the way emit assistant/tool/plan/thought/usage events for any
@@ -1269,8 +1539,13 @@ class HermesSdkThread:
         if self._closed:
             return
         self._closed = True
+        # The drain's lifetime is the worker's. Cancelled here rather than left
+        # to end on EOF, so a worker killed rather than closed leaves no task
+        # waiting on a dead pipe — and awaited, because cancellation only
+        # requests it and returning would leave the task pending into shutdown.
         if self._stderr_task is not None:
             self._stderr_task.cancel()
+            await asyncio.gather(self._stderr_task, return_exceptions=True)
             self._stderr_task = None
         if self._proc is None:
             return

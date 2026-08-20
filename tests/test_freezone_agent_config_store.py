@@ -47,9 +47,9 @@ def _recipe_payload(item_id: str, *, name: str | None = None) -> dict:
         "version": "1.0.0",
         "output_kind": "text",
         "action_keys": [item_id],
-        "system_prompt": "把输入转换成下游文本节点提示词。",
-        "planning_prompt": "根据用户目标生成文本提示词。",
-        "result_summary": "文本提示词。",
+        "system_prompt": "根据输入直接生成最终文本结果。",
+        "planning_prompt": "根据用户目标生成最终文本结果。",
+        "result_summary": "最终文本结果。",
     }
 
 

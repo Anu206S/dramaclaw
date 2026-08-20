@@ -192,10 +192,15 @@ def test_settings_db_retries_transient_sqlite_io_error(monkeypatch, tmp_path):
         real_configure(connection)
 
     monkeypatch.setattr(gateway_settings.sqlite3, "connect", tracking_connect)
-    monkeypatch.setattr(gateway_settings, "configure_sqlite_connection", flaky_configure)
+    monkeypatch.setattr(
+        gateway_settings, "configure_sqlite_connection", flaky_configure
+    )
     monkeypatch.setattr(gateway_settings.time, "sleep", lambda _seconds: None)
 
-    assert gateway_settings.get_model_gateway_settings()["model_gateway_mode"] == MODE_OFFICIAL
+    assert (
+        gateway_settings.get_model_gateway_settings()["model_gateway_mode"]
+        == MODE_OFFICIAL
+    )
     assert configure_calls == 2
     with pytest.raises(sqlite3.ProgrammingError, match="closed database"):
         connections[0].execute("SELECT 1")
@@ -398,10 +403,16 @@ def test_hybrid_mode_uses_official_gateway_by_default(monkeypatch, tmp_path):
     set_model_gateway_mode(MODE_HYBRID)
 
     effective = get_effective_newapi_config()
+    effective_llm = gateway_settings.get_effective_llm_config()
 
     assert effective.mode == MODE_HYBRID
     assert effective.source == "hybrid"
     assert effective.api_key == "sk-official-secret"
+    assert effective_llm.mode == MODE_HYBRID
+    assert effective_llm.source == "hybrid"
+    assert effective_llm.api_key == "sk-official-secret"
+    assert effective_llm.model == "brainclaw"
+    assert effective_llm.is_brainclaw is True
 
 
 def test_hybrid_video_routes_only_comfyui_models_to_local_gateway(
@@ -620,8 +631,8 @@ def test_cognee_provider_env_cannot_bypass_newapi(monkeypatch):
     monkeypatch.setenv("COGNEE_LLM_API_KEY", "direct-secret")
     monkeypatch.setattr(
         cognee_config,
-        "_effective_newapi_gateway",
-        lambda: ("gateway-secret", "https://gateway.example/v1"),
+        "_effective_llm_gateway",
+        lambda: ("gateway-secret", "https://gateway.example/v1", False),
     )
 
     assert cognee_config._resolve_llm_provider() == "newapi"

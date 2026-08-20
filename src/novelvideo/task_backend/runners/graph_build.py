@@ -128,7 +128,6 @@ async def _run_build_episodes(
     payload = envelope.get("payload") or {}
     config = dict(payload.get("config") or {})
     target = int(config.get("target_episodes", 10))
-    use_agent = bool(config.get("use_agent_planner", True))
     planning_mode = str(config.get("planning_mode", "ai"))
     generate_metadata = bool(config.get("generate_metadata", False))
     require_imported_novel(ctx.output_dir)
@@ -150,28 +149,14 @@ async def _run_build_episodes(
                 on_progress=update,
                 on_log=lambda message: update(None, message),
             )
-        elif use_agent:
-            try:
-                planner = EpisodePlannerAgent(store)
-                episodes = await planner.plan_episodes(
-                    target_episodes=target,
-                    on_progress=update,
-                    on_log=lambda message: update(None, message),
-                )
-            except Exception:
-                episodes = await store.build_episodes(
-                    target_episodes=target,
-                    on_progress=update,
-                    on_log=lambda message: update(None, message),
-                )
-            else:
-                await store.replace_episodes(episodes)
         else:
-            episodes = await store.build_episodes(
+            planner = EpisodePlannerAgent(store)
+            episodes = await planner.plan_episodes(
                 target_episodes=target,
                 on_progress=update,
                 on_log=lambda message: update(None, message),
             )
+            await store.replace_episodes(episodes)
         return {"episodes": len(episodes)}
     finally:
         await store.close()

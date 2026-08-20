@@ -2016,11 +2016,7 @@ def _handle_mainline_projection_assets(args: dict[str, Any], **_: Any) -> str:
 
 
 def _validation_payload(args: dict[str, Any]) -> dict[str, Any]:
-    if isinstance(args.get("body"), dict):
-        return dict(args["body"])
-    if isinstance(args.get("envelope"), dict):
-        return dict(args["envelope"])
-    if isinstance(args.get("commands"), list):
+    if isinstance(args.get("commands"), list) and args["commands"]:
         return {
             "schema_version": "canvas_chat_commands.v1",
             "commands": args["commands"],
@@ -2028,14 +2024,35 @@ def _validation_payload(args: dict[str, Any]) -> dict[str, Any]:
     return {}
 
 
+def _legacy_tool_argument_error(
+    args: dict[str, Any], legacy_names: tuple[str, ...]
+) -> dict[str, Any] | None:
+    legacy_fields = sorted(field for field in legacy_names if field in args)
+    if not legacy_fields:
+        return None
+    return {
+        "ok": False,
+        "status": "legacy_tool_argument_rejected",
+        "error": (
+            "unsupported legacy field(s): "
+            + ", ".join(legacy_fields)
+            + "; use project_id and canvas_id"
+        ),
+    }
+
+
 def _handle_validate_commands(args: dict[str, Any], **_: Any) -> str:
     try:
+        if legacy_error := _legacy_tool_argument_error(
+            args, ("project", "canvasId", "body", "envelope")
+        ):
+            return tool_result(legacy_error)
         project = (
-            str(args.get("project_id") or args.get("project") or _default_project_id()).strip()
+            str(args.get("project_id") or _default_project_id()).strip()
             or None
         )
         canvas = (
-            str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip()
+            str(args.get("canvas_id") or _default_canvas_id()).strip()
             or None
         )
         payload = _validation_payload(args)
@@ -2044,7 +2061,7 @@ def _handle_validate_commands(args: dict[str, Any], **_: Any) -> str:
                 {
                     "ok": False,
                     "status": "empty_validation_payload",
-                    "error": "commands, envelope, or body is required",
+                    "error": "commands is required",
                     **(_scope_meta(project, canvas) if project and canvas else {}),
                 }
             )
@@ -2275,7 +2292,7 @@ def _validate_write_commands_shape(
         missing_required = [
             field
             for field in _COMMAND_REQUIRED_FIELDS.get(command_type, ())
-            if command.get(field) in (None, "", [])
+            if command.get(field) in (None, "", [], {})
         ]
         if missing_required:
             return _emit_command_error(
@@ -2299,6 +2316,23 @@ def _validate_write_commands_shape(
                         "nodes, and only use creatable node types exposed by the command catalog."
                     ),
                 )
+            if node_type == "textAnnotationNode":
+                node_data = command.get("data")
+                missing_text_fields = [
+                    field
+                    for field in ("title", "content")
+                    if not isinstance(node_data, dict) or not str(node_data.get(field) or "").strip()
+                ]
+                if missing_text_fields:
+                    return _emit_command_error(
+                        project,
+                        canvas,
+                        "invalid_command_schema",
+                        (
+                            f"commands[{index}] create_node requires textAnnotationNode "
+                            f"{', '.join(missing_text_fields)} in data"
+                        ),
+                    )
         if command.get("type") == "create_edge":
             missing = [
                 field for field in ("source", "target", "link_type") if not command.get(field)
@@ -3252,15 +3286,17 @@ def _summarize_canvas_command_result(
 
 
 def _handle_emit_canvas_command(args: dict[str, Any], **_: Any) -> str:
+    if legacy_error := _legacy_tool_argument_error(
+        args, ("project", "canvasId", "body", "envelope")
+    ):
+        return tool_result(legacy_error)
     project = (
-        str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
+        str(args.get("project_id") or _default_project_id()).strip() or None
     )
     canvas = (
-        str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
+        str(args.get("canvas_id") or _default_canvas_id()).strip() or None
     )
     commands = args.get("commands")
-    if commands is None and isinstance(args.get("body"), dict):
-        commands = args["body"].get("commands")
     return _emit_canvas_commands(project, canvas, commands, slim_result=True)
 
 
@@ -4168,15 +4204,23 @@ def _handle_add_next_node(args: dict[str, Any], **_: Any) -> str:
 
 
 def _handle_update_node_data(args: dict[str, Any], **_: Any) -> str:
-    node_id = str(args.get("node_id") or args.get("nodeId") or "").strip()
+    if legacy_error := _legacy_tool_argument_error(
+        args, ("project", "canvasId", "nodeId")
+    ):
+        return tool_result(legacy_error)
+    node_id = str(args.get("node_id") or "").strip()
     if not node_id:
         return tool_result(
             {"ok": False, "status": "node_id_required", "error": "node_id is required"}
         )
     data = args.get("data")
-    if not isinstance(data, dict):
+    if not isinstance(data, dict) or not data:
         return tool_result(
-            {"ok": False, "status": "data_required", "error": "data must be an object"}
+            {
+                "ok": False,
+                "status": "data_required",
+                "error": "data must be a non-empty object",
+            }
         )
     return _single_write_command(
         args, {"type": "update_node_data", "node_id": node_id, "data": data}
@@ -4551,23 +4595,30 @@ def _handle_link_type_catalog(args: dict[str, Any], **_: Any) -> str:
 
 
 def _schema(
-    name: str, description: str, properties: dict[str, Any], required: list[str] | None = None
+    name: str,
+    description: str,
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+    *,
+    reject_unknown: bool = False,
 ) -> dict[str, Any]:
+    parameters: dict[str, Any] = {
+        "type": "object",
+        "properties": properties,
+        "required": required or [],
+    }
+    if reject_unknown:
+        parameters["additionalProperties"] = False
     return {
         "name": name,
         "description": description,
-        "parameters": {
-            "type": "object",
-            "properties": properties,
-            "required": required or [],
-        },
+        "parameters": parameters,
     }
 
 
 _SCOPE_PROPS = {
     "project_id": {"type": "string", "description": "Defaults to the current project context."},
     "canvas_id": {"type": "string", "description": "Defaults to the current canvas context."},
-    "canvasId": {"type": "string", "description": "Alias of canvas_id."},
 }
 
 _WORKFLOW_INTENT_OBJECT_SCHEMA = {
@@ -5191,49 +5242,197 @@ _MAINLINE_PROJECTION_ASSET_KIND_VALUES = [
     "prop_ref",
 ]
 
-_CANVAS_COMMAND_ITEM_SCHEMA = {
+def _command_variant(
+    command_type: str,
+    properties: dict[str, Any],
+    required: list[str] | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "object",
+        "properties": {
+            "type": {"type": "string", "enum": [command_type]},
+            **properties,
+        },
+        "required": ["type", *(required or [])],
+        "additionalProperties": False,
+    }
+
+
+_NON_EMPTY_STRING = {"type": "string", "minLength": 1}
+_NODE_IDS_SCHEMA = {
+    "type": "array",
+    "items": _NON_EMPTY_STRING,
+    "minItems": 1,
+}
+_POSITION_SCHEMA = {
+    "type": "object",
+    "properties": {"x": {"type": "number"}, "y": {"type": "number"}},
+    "required": ["x", "y"],
+    "additionalProperties": False,
+}
+_POSITIONS_SCHEMA = {
+    "type": "object",
+    "additionalProperties": _POSITION_SCHEMA,
+    "minProperties": 1,
+}
+_TEXT_ANNOTATION_DATA_SCHEMA = {
     "type": "object",
     "properties": {
-        "type": {
-            "type": "string",
-            "enum": sorted(_COMMAND_TYPES),
-            "description": "Required command discriminator. Use 'type', never legacy 'command'.",
-        },
-        "node_type": {
-            "type": "string",
-            "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
-            "description": "Required for create_node. Batch commands use snake_case node_type, never nodeType.",
-        },
-        "data": {
-            "type": "object",
-            "description": "Node data. Do not put nodeType or imageGenerationParams here.",
-        },
-        "client_id": {"type": "string", "description": "Same-batch alias for newly created nodes."},
-        "node_id": {"type": "string", "description": "Existing node id for update_node_data or run_node_action."},
-        "node_ids": {"type": "array", "items": {"type": "string"}, "description": "Existing node ids for group/delete/run_workflow."},
-        "action": {"type": "string", "description": "Action id for run_node_action."},
-        "parameters": {
-            "type": "object",
-            "description": "Optional run_node_action parameters. For generation actions, omit regenerate unless the user explicitly asks to regenerate/overwrite existing output.",
-        },
-        "regenerate": {
-            "type": "boolean",
-            "description": "Only for run_workflow: true means regenerate completed workflow nodes. Omit for normal continue/complete requests so completed nodes are skipped.",
-        },
-        "scope": {"type": "string", "enum": ["selection", "canvas"], "description": "Optional run_workflow scope."},
-        "source": {"type": "string"},
-        "target": {"type": "string"},
-        "link_type": {
-            "type": "string",
-            "enum": _LINK_TYPE_VALUES,
-            "description": "Required for create_edge.",
-        },
-        "request": {
-            "type": "object",
-            "description": "Required for open_mainline_projection. Mainline projection request with scope, episode/beat, primary_slot, or asset fields.",
-        },
+        "title": _NON_EMPTY_STRING,
+        "content": _NON_EMPTY_STRING,
     },
-    "required": ["type"],
+    "required": ["title", "content"],
+}
+_OTHER_AGENT_CREATABLE_NODE_TYPE_VALUES = [
+    value for value in _AGENT_CREATABLE_NODE_TYPE_VALUES if value != "textAnnotationNode"
+]
+
+# Keep this JSON Schema mechanically aligned with the frontend's
+# CanvasChatCommand discriminated union. A single object containing every
+# optional field makes some providers fill the union with zero values and omit
+# the payload that actually matters. Each branch therefore exposes only the
+# fields valid for that command type.
+_CANVAS_COMMAND_ITEM_SCHEMA = {
+    "oneOf": [
+        _command_variant(
+            "create_node",
+            {
+                "client_id": _NON_EMPTY_STRING,
+                "node_type": {
+                    "type": "string",
+                    "enum": ["textAnnotationNode"],
+                },
+                "position": _POSITION_SCHEMA,
+                "data": _TEXT_ANNOTATION_DATA_SCHEMA,
+            },
+            ["node_type", "data"],
+        ),
+        _command_variant(
+            "create_node",
+            {
+                "client_id": _NON_EMPTY_STRING,
+                "node_type": {
+                    "type": "string",
+                    "enum": _OTHER_AGENT_CREATABLE_NODE_TYPE_VALUES,
+                },
+                "position": _POSITION_SCHEMA,
+                "data": {"type": "object"},
+            },
+            ["node_type"],
+        ),
+        _command_variant(
+            "add_next_node",
+            {
+                "client_id": _NON_EMPTY_STRING,
+                "source_node_id": _NON_EMPTY_STRING,
+                "node_type": {
+                    "type": "string",
+                    "enum": _AGENT_CREATABLE_NODE_TYPE_VALUES,
+                },
+                "data": {"type": "object"},
+                "connect": {"type": "boolean"},
+            },
+            ["source_node_id"],
+        ),
+        _command_variant(
+            "update_node_data",
+            {"node_id": _NON_EMPTY_STRING, "data": {"type": "object"}},
+            ["node_id", "data"],
+        ),
+        _command_variant("delete_nodes", {"node_ids": _NODE_IDS_SCHEMA}, ["node_ids"]),
+        _command_variant(
+            "delete_edges",
+            {"edge_ids": _NODE_IDS_SCHEMA},
+            ["edge_ids"],
+        ),
+        _command_variant(
+            "delete_edges",
+            {
+                "pairs": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "source": _NON_EMPTY_STRING,
+                            "target": _NON_EMPTY_STRING,
+                        },
+                        "required": ["source", "target"],
+                        "additionalProperties": False,
+                    },
+                    "minItems": 1,
+                }
+            },
+            ["pairs"],
+        ),
+        _command_variant(
+            "create_edge",
+            {
+                "source": _NON_EMPTY_STRING,
+                "target": _NON_EMPTY_STRING,
+                "link_type": {"type": "string", "enum": _LINK_TYPE_VALUES},
+            },
+            ["source", "target", "link_type"],
+        ),
+        _command_variant(
+            "layout_nodes",
+            {
+                "node_ids": _NODE_IDS_SCHEMA,
+                "mode": {"type": "string", "enum": ["horizontal", "vertical", "grid"]},
+            },
+            ["mode"],
+        ),
+        _command_variant(
+            "group_nodes",
+            {"node_ids": _NODE_IDS_SCHEMA, "label": {"type": "string"}},
+            ["node_ids"],
+        ),
+        _command_variant(
+            "move_nodes",
+            {"positions": _POSITIONS_SCHEMA},
+            ["positions"],
+        ),
+        _command_variant(
+            "move_nodes",
+            {"deltas": _POSITIONS_SCHEMA},
+            ["deltas"],
+        ),
+        _command_variant(
+            "select_nodes",
+            {"node_ids": _NODE_IDS_SCHEMA, "focus": {"type": "boolean"}},
+            ["node_ids"],
+        ),
+        _command_variant(
+            "run_node_action",
+            {
+                "node_id": _NON_EMPTY_STRING,
+                "action": _NON_EMPTY_STRING,
+                "parameters": {"type": "object"},
+            },
+            ["node_id", "action"],
+        ),
+        _command_variant(
+            "open_mainline_projection",
+            {"project_id": _NON_EMPTY_STRING, "request": {"type": "object"}},
+            ["request"],
+        ),
+        _command_variant(
+            "run_workflow",
+            {
+                "node_ids": _NODE_IDS_SCHEMA,
+                "scope": {"type": "string", "enum": ["selection", "canvas"]},
+                "direction": {
+                    "type": "string",
+                    "enum": ["connected", "node", "downstream"],
+                },
+                "regenerate": {"type": "boolean"},
+            },
+        ),
+    ]
+}
+
+_CANVAS_COMMAND_TOOL_SCOPE_PROPS = {
+    "project_id": _SCOPE_PROPS["project_id"],
+    "canvas_id": _SCOPE_PROPS["canvas_id"],
 }
 
 
@@ -5935,21 +6134,15 @@ TOOLS = (
             "freezone_validate_canvas_commands",
             "Preflight validate canvas_chat_commands.v1 against the current frontend canvas before emitting commands.",
             {
-                **_SCOPE_PROPS,
+                **_CANVAS_COMMAND_TOOL_SCOPE_PROPS,
                 "commands": {
                     "type": "array",
                     "description": "Commands array from a canvas_chat_commands.v1 envelope. Batch commands require snake_case fields such as type and node_type; do not use legacy command/nodeType/imageGenerationParams.",
                     "items": _CANVAS_COMMAND_ITEM_SCHEMA,
                 },
-                "envelope": {
-                    "type": "object",
-                    "description": "Full canvas_chat_commands.v1 envelope to validate.",
-                },
-                "body": {
-                    "type": "object",
-                    "description": "Raw canvas_chat_commands.v1 envelope or object containing commands.",
-                },
             },
+            ["commands"],
+            reject_unknown=True,
         ),
         _handle_validate_commands,
     ),
@@ -5960,18 +6153,15 @@ TOOLS = (
             "freezone_emit_canvas_command",
             "Default Freezone write tool for ordinary non-workflow canvas edits. Submit one complete canvas_chat_commands.v1 commands array for the user's requested canvas changes. Do not use this tool for registered or dynamic WorkflowPlans; use freezone_create_workflow_graph instead. If commands[] fields are unclear, call freezone_get_canvas_command_catalog first.",
             {
-                **_SCOPE_PROPS,
+                **_CANVAS_COMMAND_TOOL_SCOPE_PROPS,
                 "commands": {
                     "type": "array",
                     "description": "Complete canvas_chat_commands.v1 commands array for ordinary non-workflow edits. For workflows, do not build this array manually; call freezone_create_workflow_graph with a complete dynamic plan. Batch command objects require snake_case fields from freezone_get_canvas_command_catalog: type, node_type, source_node_id, node_id, node_ids, source, target, link_type, etc.",
                     "items": _CANVAS_COMMAND_ITEM_SCHEMA,
                 },
-                "body": {
-                    "type": "object",
-                    "description": "Optional raw body containing a commands array.",
-                },
             },
             ["commands"],
+            reject_unknown=True,
         ),
         _handle_emit_canvas_command,
     ),
@@ -6070,13 +6260,14 @@ TOOLS = (
             {
                 **_SCOPE_PROPS,
                 "node_id": {"type": "string", "description": "Existing canvas node id."},
-                "nodeId": {"type": "string", "description": "Alias of node_id."},
                 "data": {
                     "type": "object",
+                    "minProperties": 1,
                     "description": "Only fields to change. Do not include reserved or non-editable fields.",
                 },
             },
             ["node_id", "data"],
+            reject_unknown=True,
         ),
         _handle_update_node_data,
     ),

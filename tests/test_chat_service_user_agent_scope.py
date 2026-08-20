@@ -1233,6 +1233,45 @@ def test_freezone_prompt_routes_skill_studio_by_user_text_not_canvas_context(mon
     assert "available_actions: add_next_node, run_skill" in prompt
 
 
+def test_prompt_keeps_transport_context_out_of_user_message(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    transport_context = (
+        "[SUPERTALE_CANVAS_NODE_REFERENCES]\n"
+        "node_type: skillNode\n"
+        "available_actions: add_next_node, run_skill\n"
+        "[/SUPERTALE_CANVAS_NODE_REFERENCES]"
+    )
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        f"你是谁？\n\n{transport_context}",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+        route_prompt="你是谁？",
+    )
+
+    assert "[DRAMACLAW_EXECUTION_CONTEXT]" in prompt
+    assert transport_context in prompt
+    assert prompt.index(transport_context) < prompt.index("[USER_MESSAGE]")
+    assert prompt.rsplit("[USER_MESSAGE]\n", 1)[1] == "你是谁？"
+    assert prompt.count(transport_context) == 1
+
+
+def test_prompt_preserves_legacy_full_message_without_route_prompt(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    legacy_prompt = "你是谁？\n\n[LEGACY_CONTEXT]\nlarge transport context"
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        legacy_prompt,
+    )
+
+    assert "[DRAMACLAW_EXECUTION_CONTEXT]" not in prompt
+    assert prompt.rsplit("[USER_MESSAGE]\n", 1)[1] == legacy_prompt
+
+
 def test_freezone_prompt_includes_clarification_card_rule_for_interactive_questions(
     monkeypatch, tmp_path
 ):

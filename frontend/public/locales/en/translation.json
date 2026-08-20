@@ -4398,6 +4398,17 @@
         "mediaCatalogUpToDate": "The official media model catalog is up to date.",
         "mediaCatalogCheckFailed": "Could not check the official media model catalog. Try again later."
       },
+      "brainclaw": {
+        "tab": "RelayClaw BrainClaw (Recommended)",
+        "advancedTab": "Advanced Custom",
+        "title": "BrainClaw by RelayClaw (Recommended)",
+        "description": "BrainClaw handles text understanding, generation, structured output, tool calling, and vision tasks without per-feature mappings. It connects to RelayClaw by default; development setups may point it at a NewAPI-compatible endpoint that exposes BrainClaw. Image, video, audio, and Embedding still use the Local NewAPI settings below.",
+        "model": "Fixed model",
+        "save": "Save & Enable BrainClaw",
+        "enabled": "RelayClaw BrainClaw is enabled.",
+        "missingEndpoint": "Enter the BrainClaw NewAPI URL.",
+        "advancedEnabled": "Advanced custom LLM is enabled."
+      },
       "custom": {
         "description": "CE uses a local SQLite-backed NewAPI. DramaClaw connects the database, creates a runtime token, and enables the local channel automatically.",
         "init": "Initialize Local NewAPI",
@@ -4543,6 +4554,7 @@
           "FREEZONE_TRANSLATION": "Prompt zh/en translation",
           "FREEZONE_TEXT_WRITER": "AI text generation",
           "FREEZONE_STORY_SCRIPT": "Story script generation",
+          "FREEZONE_RECIPE_COMPILER": "Compile and execute Freezone recipes",
           "FREEZONE_VISION": "Image and video content analysis",
           "STYLE_ANALYZER": "Analyze a custom style from reference images",
           "CONTENT_REWRITER": "Rewrite source text as short-video voiceover",
