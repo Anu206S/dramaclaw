@@ -46,6 +46,7 @@ from novelvideo.shared.billing_errors import (
     BillingRuleNotConfiguredError,
     InsufficientCreditsError,
 )
+from novelvideo.stage_asset_tasks import resolve_scene_360_image_model
 from novelvideo.task_backend.limits import ProjectUserTaskLimitExceeded
 from novelvideo.task_state import get_task_manager
 
@@ -4133,7 +4134,23 @@ async def test_scene_360_endpoint_keeps_image_size_below_the_cap(
             queue="node.node_a.world",
         )
 
+    async def fake_resolve_catalog_request(*_args, **_kwargs):
+        return (
+            {},
+            {},
+            {
+                "catalogId": "cat-77",
+                "providerId": "newapi",
+                "apiModel": "google/gemini-2.5-flash-image-preview",
+            },
+        )
+
     monkeypatch.setattr(freezone_routes, "_resolve_freezone_project", fake_resolve_freezone_project)
+    monkeypatch.setattr(
+        freezone_routes,
+        "_resolve_catalog_request",
+        fake_resolve_catalog_request,
+    )
     monkeypatch.setattr(
         freezone_routes,
         "get_task_backend",
@@ -4259,8 +4276,47 @@ async def test_scene_360_takes_model_and_billing_identity_from_the_catalog(
     )
 
     assert captured["payload"]["params"]["model"] == "real-pano-model"
+    assert captured["payload"]["scene_360_model_authority"] == {
+        "kind": "catalog",
+        "catalog_id": "cat-real",
+        "provider": "newapi",
+        "model": "real-pano-model",
+    }
     assert captured["payload"]["billing"]["catalog_id"] == "cat-real"
     assert captured["payload"]["billing"]["pricing_model"] == "real-pano-model"
+
+
+@pytest.mark.asyncio
+async def test_scene_360_rejects_client_model_without_catalog_authority_before_enqueue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+    _patch_scene_360_enqueue(monkeypatch, tmp_path, captured)
+
+    async def fake_resolve_catalog_request(*_args, **_kwargs):
+        return {}, {}, None
+
+    monkeypatch.setattr(
+        freezone_routes, "_resolve_catalog_request", fake_resolve_catalog_request
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await freezone_routes.freezone_scene_360(
+            project="proj_freezone",
+            body=freezone_routes.FreezoneScene360Request(
+                reference_url=(
+                    "/api/v1/projects/proj_freezone/media/assets/scenes/小区/master.png"
+                ),
+                model="attacker-controlled-model",
+                catalog_id="forged-catalog",
+            ),
+            user={"username": "admin"},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "scene 360 image model" in str(exc_info.value.detail)
+    assert not captured
 
 
 @pytest.mark.asyncio
@@ -6775,6 +6831,10 @@ async def test_skill_run_scene_360_uses_reverse_master_and_scene_slot_target(
     assert captured["payload"]["step"] == "pano_from_master"
     assert captured["payload"]["params"]["provider"] == "newapi"
     assert captured["payload"]["params"]["model"] == NEWAPI_IMAGE_MODEL
+    assert resolve_scene_360_image_model(
+        provider=captured["payload"]["params"]["provider"],
+        model=captured["payload"]["params"]["model"],
+    ) == NEWAPI_IMAGE_MODEL
     assert captured["payload"]["params"]["image_size"] == "2K"
     assert captured["payload"]["params"]["update_manifest"] is False
     assert captured["payload"]["params"]["master_path"].endswith("/assets/scenes/小区/master.png")

@@ -22,6 +22,7 @@ import shutil
 import subprocess
 import sys
 import threading
+from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -231,6 +232,25 @@ def resolve_scene_360_image_provider(provider: str = "") -> str:
     )
 
 
+class Scene360ImageModelSelectionError(ValueError):
+    """Raised when a scene 360 model selection is unknown or uses another provider."""
+
+
+@dataclass(frozen=True, slots=True)
+class Scene360CatalogModelAuthority:
+    """Catalog model identity recovered from a verified task envelope."""
+
+    catalog_id: str
+    provider: str
+    model: str
+
+    def __post_init__(self) -> None:
+        for field_name in ("catalog_id", "provider", "model"):
+            value = getattr(self, field_name)
+            if type(value) is not str or not value.strip():
+                raise ValueError(f"{field_name} is required")
+
+
 def resolve_scene_360_image_model(provider: str = "", model: str = "") -> str:
     """Return the model used by scene 360 image generation."""
     resolved_provider = resolve_scene_360_image_provider(provider)
@@ -239,9 +259,24 @@ def resolve_scene_360_image_model(provider: str = "", model: str = "") -> str:
         from novelvideo.config import IMAGE_GENERATION_SELECTIONS
 
         selection = IMAGE_GENERATION_SELECTIONS.get(resolved_model)
-        if selection and selection.get("provider") == resolved_provider:
+        if selection is not None:
+            selection_provider = str(selection.get("provider") or "").strip().lower()
+            if selection_provider != resolved_provider:
+                raise Scene360ImageModelSelectionError(
+                    f"scene 360 image model selection {resolved_model} does not use provider "
+                    f"{resolved_provider}"
+                )
             return str(selection.get("model") or "").strip()
-        return resolved_model
+
+        for registered in IMAGE_GENERATION_SELECTIONS.values():
+            registered_provider = str(registered.get("provider") or "").strip().lower()
+            registered_model = str(registered.get("model") or "").strip()
+            if registered_provider == resolved_provider and registered_model == resolved_model:
+                return registered_model
+
+        raise Scene360ImageModelSelectionError(
+            f"unknown scene 360 image model selection: {resolved_model}"
+        )
     if resolved_provider in {"huimeng", "huimengi"}:
         return (
             os.environ.get("SCENE_360_HUIMENG_MODEL")
@@ -1168,6 +1203,7 @@ def run_scene_360(
     update_manifest: bool = True,
     timeout_seconds: int = 1800,
     progress_callback: Callable[[float, str], None] | None = None,
+    model_authority: Scene360CatalogModelAuthority | None = None,
     _manage_model_credit: bool = True,
     egress_context: TrustedEgressContext | None = None,
 ) -> dict[str, Any]:
@@ -1200,7 +1236,25 @@ def run_scene_360(
     generation_dir.mkdir(parents=True, exist_ok=True)
 
     provider = resolve_scene_360_image_provider(provider)
-    resolved_model = resolve_scene_360_image_model(provider=provider, model=model)
+    requested_model = str(model or "").strip()
+    if model_authority is None:
+        resolved_model = resolve_scene_360_image_model(
+            provider=provider,
+            model=requested_model,
+        )
+    else:
+        if type(model_authority) is not Scene360CatalogModelAuthority:
+            raise TypeError(
+                "model_authority must be a Scene360CatalogModelAuthority"
+            )
+        if (
+            model_authority.provider.strip().lower() != provider
+            or model_authority.model.strip() != requested_model
+        ):
+            raise Scene360ImageModelSelectionError(
+                "scene 360 catalog model authority does not match execution model"
+            )
+        resolved_model = model_authority.model.strip()
     style = (style or os.environ.get("SCENE_360_STYLE") or "realistic").strip()
     image_size = (image_size or os.environ.get("SCENE_360_IMAGE_SIZE") or "2K").strip()
     quality = (
