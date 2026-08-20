@@ -566,12 +566,12 @@ async def test_c1_07b_pool_rechecks_identity_against_an_independent_source(harne
     from novelvideo.chat import hermes_pool
     from novelvideo.chat.hermes_egress import (
         EgressBoundaryError,
-        HermesLaunchAuthorization,
+        HermesTurnAuthorization,
     )
     from novelvideo.ports.model_credentials import RequestCredential
 
     context = _org_context()
-    authorization = HermesLaunchAuthorization.for_test(
+    authorization = HermesTurnAuthorization.for_test(
         context=context,
         credential=RequestCredential(
             reference=context.credential,

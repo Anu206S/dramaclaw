@@ -214,31 +214,6 @@ def test_gemini_direct_does_not_inherit_newapi_endpoint(monkeypatch):
     assert "LLM_ENDPOINT" not in os.environ
 
 
-def test_cognee_gateway_structured_output_disables_reasoning(monkeypatch):
-    import asyncio
-    from types import SimpleNamespace
-
-    from cognee.infrastructure.llm.LLMGateway import LLMGateway
-
-    from novelvideo.cognee.pipeline import extract_episodes_from_text
-
-    calls: list[dict] = []
-
-    async def fake_structured_output(*args, **kwargs):
-        calls.append(kwargs)
-        return SimpleNamespace(episodes=[])
-
-    monkeypatch.setattr(LLMGateway, "acreate_structured_output", fake_structured_output)
-
-    assert asyncio.run(extract_episodes_from_text("text", target_episodes=1)) == []
-    assert calls == [
-        {
-            "reasoning_effort": "none",
-            "allowed_openai_params": ["reasoning_effort"],
-        }
-    ]
-
-
 def test_cognee_litellm_structured_output_disables_reasoning(monkeypatch, tmp_path):
     import asyncio
     from types import SimpleNamespace

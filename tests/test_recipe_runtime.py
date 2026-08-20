@@ -7,7 +7,45 @@ from types import SimpleNamespace
 
 import pytest
 
+from novelvideo.brainclaw_contract import (
+    BrainClawProfile,
+    BrainClawProfileVariant,
+)
 from novelvideo.freezone import recipe_runtime
+from novelvideo.freezone.agent_catalog_schema import validate_agent_recipe_config
+
+
+def test_builtin_text_recipes_produce_final_deliverables():
+    recipe_root = (
+        Path(__file__).resolve().parents[1]
+        / "src/novelvideo/freezone/agent_catalog/builtins/recipes"
+    )
+    text_recipe_ids: list[str] = []
+    for recipe_path in sorted(recipe_root.glob("*.json")):
+        payload = json.loads(recipe_path.read_text(encoding="utf-8"))
+        if payload.get("output_kind") != "text":
+            continue
+        validated = validate_agent_recipe_config(payload)
+        text_recipe_ids.append(str(validated["id"]))
+
+    assert len(text_recipe_ids) == 24
+    assert "general-text" in text_recipe_ids
+    assert "ecommerce-text-plan" in text_recipe_ids
+
+
+def test_text_recipe_rejects_second_stage_model_instruction():
+    with pytest.raises(ValueError, match="must produce the final deliverable"):
+        validate_agent_recipe_config(
+            {
+                "id": "invalid-text-recipe",
+                "name": "Invalid text Recipe",
+                "output_kind": "text",
+                "action_keys": ["invalid-text-recipe"],
+                "system_prompt": "不要自己编写大纲，只输出能指导 LLM 的指令。",
+                "planning_prompt": "生成大纲",
+                "result_summary": "大纲",
+            }
+        )
 
 
 def test_retro_skill_keeps_entry_guard_out_of_recipe_runtime_constraints():
@@ -37,6 +75,39 @@ def test_outdoor_stage_duel_character_elements_use_one_turnaround_reference():
 
     assert "正面、侧面、背面" in recipe["system_prompt"]
     assert "全身三视图" in "\n".join(recipe["must_have_items"])
+
+
+def test_recipe_compiler_uses_the_dedicated_brainclaw_profile(monkeypatch):
+    captured: dict[str, object] = {}
+
+    def fake_model(model_env, default_model=None, **kwargs):
+        captured.update(
+            model_env=model_env,
+            default_model=default_model,
+            **kwargs,
+        )
+        return "model"
+
+    class FakeAgent:
+        def __init__(self, model, **kwargs):
+            captured.update(model=model, agent_kwargs=kwargs)
+
+        async def run(self, _task, **kwargs):
+            captured.update(run_kwargs=kwargs)
+            return SimpleNamespace(output="compiled prompt")
+
+    from novelvideo import config
+
+    monkeypatch.setattr(config, "get_newapi_text_pydantic_model", fake_model)
+    monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
+
+    result = asyncio.run(recipe_runtime._run_recipe_compiler("compile this"))
+
+    assert result == "compiled prompt"
+    assert captured["brainclaw_profile"] is BrainClawProfile.FREEZONE_RECIPE_COMPILATION
+    assert captured["run_kwargs"] == {
+        "model_settings": {"openai_reasoning_effort": "none"}
+    }
 
 
 def test_build_recipe_compiler_task_checks_output_kind():
@@ -191,7 +262,7 @@ async def test_compile_recipe_prompt_loads_server_recipe_and_returns_only_prompt
         def __init__(self, *_args, **_kwargs):
             pass
 
-        async def run(self, task):
+        async def run(self, task, **_kwargs):
             nonlocal calls
             calls += 1
             assert "trusted internal method" in task
@@ -269,7 +340,7 @@ async def test_compile_recipe_prompt_deduplicates_concurrent_model_calls(
         def __init__(self, *_args, **_kwargs):
             pass
 
-        async def run(self, _task):
+        async def run(self, _task, **_kwargs):
             nonlocal calls
             calls += 1
             await asyncio.sleep(0.01)
@@ -457,13 +528,16 @@ def test_recipe_pipeline_rejects_explicit_conflicts(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
+    captured: dict[str, object] = {}
     monkeypatch.setattr(
         recipe_runtime,
         "get_recipe_for_runtime",
         lambda **_kwargs: {
             "id": "ecommerce-text-plan",
+            "version": "1.0.0",
             "output_kind": "text",
             "system_prompt": "生成三屏详情页方案",
+            "_catalog_source": "builtin",
         },
     )
 
@@ -479,7 +553,7 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
     monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
     monkeypatch.setattr(
         "novelvideo.config.get_newapi_text_pydantic_model",
-        lambda *_args, **_kwargs: object(),
+        lambda *_args, **kwargs: captured.update(kwargs) or object(),
     )
 
     result = await recipe_runtime.generate_recipe_text(
@@ -490,3 +564,49 @@ async def test_generate_recipe_text_executes_compiled_instruction(monkeypatch):
     )
 
     assert result == "# 详情页方案"
+    assert captured["brainclaw_profile"] is (
+        BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION
+    )
+    assert captured["brainclaw_profile_variant"] == BrainClawProfileVariant(
+        "recipe/ecommerce-text-plan@1.0.0"
+    )
+
+
+@pytest.mark.asyncio
+async def test_generate_recipe_text_omits_variant_for_user_recipe(monkeypatch):
+    captured: dict[str, object] = {}
+    monkeypatch.setattr(
+        recipe_runtime,
+        "get_recipe_for_runtime",
+        lambda **_kwargs: {
+            "id": "private-recipe",
+            "version": "1.0.0",
+            "output_kind": "text",
+            "system_prompt": "生成正文",
+            "_catalog_source": "user",
+        },
+    )
+
+    class FakeAgent:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        async def run(self, _task):
+            return SimpleNamespace(output="正文")
+
+    monkeypatch.setattr(recipe_runtime, "Agent", FakeAgent)
+    monkeypatch.setattr(
+        "novelvideo.config.get_newapi_text_pydantic_model",
+        lambda *_args, **kwargs: captured.update(kwargs) or object(),
+    )
+
+    assert (
+        await recipe_runtime.generate_recipe_text(
+            username="local",
+            recipe_id="private-recipe",
+            node_kind="text",
+            node_prompt="写作",
+        )
+        == "正文"
+    )
+    assert captured["brainclaw_profile_variant"] is None

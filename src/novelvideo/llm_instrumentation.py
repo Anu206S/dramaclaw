@@ -25,9 +25,11 @@ _RESOURCE_KIND_CTX: contextvars.ContextVar[str] = contextvars.ContextVar(
 _BILLING_METADATA_CTX: contextvars.ContextVar[dict[str, Any]] = contextvars.ContextVar(
     "novelvideo_billing_metadata", default={}
 )
-_CREDIT_RESERVATION_STACK: contextvars.ContextVar[tuple[str, ...]] = contextvars.ContextVar(
-    "st_credit_reservation_stack",
-    default=(),
+_CREDIT_RESERVATION_STACK: contextvars.ContextVar[tuple[str, ...]] = (
+    contextvars.ContextVar(
+        "st_credit_reservation_stack",
+        default=(),
+    )
 )
 _AGENT_CREDIT_RESERVATION_ACTIVE: contextvars.ContextVar[bool] = contextvars.ContextVar(
     "st_agent_credit_reservation_active",
@@ -147,14 +149,18 @@ def _text_billing_params_from_model_settings(
     params: dict[str, str] = {}
     for settings_value in (getattr(agent, "model_settings", None), run_model_settings):
         settings = _model_settings_dict(settings_value)
-        effort = settings.get("openai_reasoning_effort") or settings.get("reasoning_effort")
+        effort = settings.get("openai_reasoning_effort") or settings.get(
+            "reasoning_effort"
+        )
         clean_effort = str(effort or "").strip().lower()
         if clean_effort:
             params["effort"] = clean_effort
     return params or None
 
 
-def _text_billing_params_from_openai_kwargs(kwargs: dict | None) -> dict[str, str] | None:
+def _text_billing_params_from_openai_kwargs(
+    kwargs: dict | None,
+) -> dict[str, str] | None:
     if not isinstance(kwargs, dict):
         return None
     effort = kwargs.get("reasoning_effort") or kwargs.get("openai_reasoning_effort")
@@ -219,7 +225,9 @@ def _extract_provider_ids(response_obj: object) -> tuple[str, str, str]:
         req = _first_nonempty_str(
             getattr(obj, "request_id", None), getattr(obj, "_request_id", None)
         )
-        task = _first_nonempty_str(getattr(obj, "task_id", None), getattr(obj, "taskId", None))
+        task = _first_nonempty_str(
+            getattr(obj, "task_id", None), getattr(obj, "taskId", None)
+        )
         resp = _first_nonempty_str(
             getattr(obj, "id", None),
             getattr(obj, "response_id", None),
@@ -227,16 +235,28 @@ def _extract_provider_ids(response_obj: object) -> tuple[str, str, str]:
         )
         if isinstance(obj, dict):
             resp = _first_nonempty_str(
-                resp, obj.get("id"), obj.get("response_id"), obj.get("provider_response_id")
+                resp,
+                obj.get("id"),
+                obj.get("response_id"),
+                obj.get("provider_response_id"),
             )
             req = _first_nonempty_str(req, obj.get("request_id"), obj.get("requestId"))
             task = _first_nonempty_str(task, obj.get("task_id"), obj.get("taskId"))
-        for details in (getattr(obj, "provider_details", None), getattr(obj, "metadata", None)):
+        for details in (
+            getattr(obj, "provider_details", None),
+            getattr(obj, "metadata", None),
+        ):
             if isinstance(details, dict):
-                req = _first_nonempty_str(req, details.get("request_id"), details.get("requestId"))
-                task = _first_nonempty_str(task, details.get("task_id"), details.get("taskId"))
+                req = _first_nonempty_str(
+                    req, details.get("request_id"), details.get("requestId")
+                )
+                task = _first_nonempty_str(
+                    task, details.get("task_id"), details.get("taskId")
+                )
                 resp = _first_nonempty_str(
-                    resp, details.get("response_id"), details.get("provider_response_id")
+                    resp,
+                    details.get("response_id"),
+                    details.get("provider_response_id"),
                 )
         response_headers = getattr(obj, "_response_headers", None)
         req = _first_nonempty_str(
@@ -248,7 +268,9 @@ def _extract_provider_ids(response_obj: object) -> tuple[str, str, str]:
             req = _first_nonempty_str(
                 req, _header_value(headers, *_PROVIDER_REQUEST_ID_HEADER_NAMES)
             )
-            req = _first_nonempty_str(req, hidden.get("request_id"), hidden.get("requestId"))
+            req = _first_nonempty_str(
+                req, hidden.get("request_id"), hidden.get("requestId")
+            )
         return req, task, resp
 
     try:
@@ -345,7 +367,9 @@ def _extract_litellm_usage(kwargs: dict, response_obj: object) -> tuple[int, int
         else:
             in_tok = int(getattr(usage, "prompt_tokens", 0) or 0)
             out_tok = int(getattr(usage, "completion_tokens", 0) or 0)
-        model = (kwargs or {}).get("model", "") or getattr(response_obj, "model", "") or ""
+        model = (
+            (kwargs or {}).get("model", "") or getattr(response_obj, "model", "") or ""
+        )
     except Exception:
         pass
     return in_tok, out_tok, _normalize_recorded_model_name(model)
@@ -395,9 +419,15 @@ async def _forward_agent_usage(
         usage = usage_fn() if callable(usage_fn) else None
         if usage is None:
             return
-        in_tok = getattr(usage, "input_tokens", None) or getattr(usage, "request_tokens", None) or 0
+        in_tok = (
+            getattr(usage, "input_tokens", None)
+            or getattr(usage, "request_tokens", None)
+            or 0
+        )
         out_tok = (
-            getattr(usage, "output_tokens", None) or getattr(usage, "response_tokens", None) or 0
+            getattr(usage, "output_tokens", None)
+            or getattr(usage, "response_tokens", None)
+            or 0
         )
         await meter.record_llm_tokens(
             user_id=user_id,
@@ -448,7 +478,8 @@ def _install_pydantic_ai_openai_trace_patch() -> None:
                 str(getattr(response, "_request_id", "") or "").strip()
                 or str(getattr(response, "request_id", "") or "").strip()
                 or _header_value(
-                    getattr(response, "_response_headers", None), *_PROVIDER_REQUEST_ID_HEADER_NAMES
+                    getattr(response, "_response_headers", None),
+                    *_PROVIDER_REQUEST_ID_HEADER_NAMES,
                 )
             )
         except Exception:
@@ -495,7 +526,9 @@ def _install_agent_run_patch() -> None:
         finally:
             _AGENT_CREDIT_RESERVATION_ACTIVE.reset(token)
         try:
-            await _forward_agent_usage(self, result, credit_reservation_id=reservation_id)
+            await _forward_agent_usage(
+                self, result, credit_reservation_id=reservation_id
+            )
         except Exception:
             pass
         return result
@@ -555,6 +588,11 @@ def _patch_litellm_acompletion(litellm_module: object) -> None:
         return
 
     async def _tracked_acompletion(*args, **kwargs):
+        from novelvideo.brainclaw_contract import merge_brainclaw_headers
+
+        merged_headers = merge_brainclaw_headers(kwargs.get("extra_headers"))
+        if merged_headers:
+            kwargs["extra_headers"] = merged_headers
         if _AGENT_CREDIT_RESERVATION_ACTIVE.get() or not _USER_CTX.get():
             return await original_acompletion(*args, **kwargs)
         model = str(kwargs.get("model") or (args[0] if args else "") or "").strip()
@@ -588,6 +626,15 @@ def _patch_litellm_acompletion(litellm_module: object) -> None:
     _litellm_acompletion_patched = True
 
 
+def install_litellm_brainclaw_profile_routing() -> None:
+    """Install the idempotent profile-header boundary before Cognee imports."""
+    try:
+        import litellm  # type: ignore[import-not-found]
+    except Exception:
+        return
+    _patch_litellm_acompletion(litellm)
+
+
 def _install_litellm_hook() -> None:
     global _litellm_hook_installed
     if _litellm_hook_installed:
@@ -615,19 +662,26 @@ def _install_litellm_hook() -> None:
                 return None
             if not _USER_CTX.get():
                 return None
-            model = str(data.get("model") or "").strip() if isinstance(data, dict) else ""
+            model = (
+                str(data.get("model") or "").strip() if isinstance(data, dict) else ""
+            )
             if not model:
                 return None
             reservation_id = await _meter_reserve(
                 model=model,
                 billing_kind="text",
                 billing_params=_text_billing_params_from_openai_kwargs(data),
-                metadata={"source": "litellm_pre_call", "call_type": str(call_type or "")},
+                metadata={
+                    "source": "litellm_pre_call",
+                    "call_type": str(call_type or ""),
+                },
             )
             _push_credit_reservation(reservation_id)
             return None
 
-        async def async_log_failure_event(self, kwargs, response_obj, start_time, end_time):
+        async def async_log_failure_event(
+            self, kwargs, response_obj, start_time, end_time
+        ):
             reservation_id = _pop_credit_reservation()
             await _meter_refund(reservation_id)
 
@@ -645,7 +699,9 @@ def _install_litellm_hook() -> None:
             else:
                 asyncio.run(coro)
 
-        async def async_log_success_event(self, kwargs, response_obj, start_time, end_time):
+        async def async_log_success_event(
+            self, kwargs, response_obj, start_time, end_time
+        ):
             await self._forward_success(kwargs, response_obj)
 
         def log_success_event(self, kwargs, response_obj, start_time, end_time):

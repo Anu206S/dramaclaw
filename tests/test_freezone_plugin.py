@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import copy
 import importlib.util
 import json
@@ -8,6 +9,8 @@ import threading
 import types
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
+
+import pytest
 
 _MINIMAL_ECOMMERCE_SKILL = {
     "id": "ecommerce-product",
@@ -248,6 +251,52 @@ def test_freezone_plugin_registers_canvas_command_tools():
         "expected_revision",
         "changes",
     ]
+
+
+def test_validation_payload_uses_only_the_declared_commands_contract():
+    plugin = _load_plugin_module()
+    commands = [{"type": "create_node", "client_id": "node-a"}]
+
+    payload = plugin._validation_payload(
+        {"body": {"commands": [{"type": "ignored"}]}, "commands": commands}
+    )
+
+    assert payload == {
+        "schema_version": "canvas_chat_commands.v1",
+        "commands": commands,
+    }
+
+
+def test_validation_payload_rejects_removed_wrapper_only_contracts():
+    plugin = _load_plugin_module()
+    assert plugin._validation_payload(
+        {"body": {"commands": [{"type": "create_node"}]}}
+    ) == {}
+    assert plugin._validation_payload(
+        {"envelope": {"commands": [{"type": "create_node"}]}}
+    ) == {}
+
+
+def test_validate_canvas_commands_rejects_empty_required_data():
+    plugin = _load_plugin_module()
+    result = plugin._handle_validate_commands(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "commands": [
+                {
+                    "type": "create_node",
+                    "node_type": "textAnnotationNode",
+                    "client_id": "node-a",
+                    "data": {},
+                }
+            ],
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["status"] == "invalid_command_schema"
+    assert "data" in result["error"]
 
 
 def test_freezone_run_workflow_emits_one_deterministic_runner_command(monkeypatch):
@@ -3052,9 +3101,17 @@ def test_freezone_plugin_create_node_schema_hides_internal_node_types():
     assert group_tool is not None
     enum_values = create_node_tool["parameters"]["properties"]["node_type"]["enum"]
     add_next_enum_values = add_next_tool["parameters"]["properties"]["node_type"]["enum"]
-    emit_enum_values = (
-        emit_tool["parameters"]["properties"]["commands"]["items"]["properties"]["node_type"]["enum"]
+    command_variants = emit_tool["parameters"]["properties"]["commands"]["items"]["oneOf"]
+    create_command = next(
+        variant
+        for variant in command_variants
+        if variant["properties"]["type"].get("enum") == ["create_node"]
+        and "imageGenNode" in variant["properties"]["node_type"]["enum"]
     )
+    emit_enum_values = [
+        "textAnnotationNode",
+        *create_command["properties"]["node_type"]["enum"],
+    ]
 
     assert "imageGenNode" in enum_values
     assert "uploadNode" in enum_values
@@ -3067,7 +3124,219 @@ def test_freezone_plugin_create_node_schema_hides_internal_node_types():
     assert "skillNode" in enum_values
     assert enum_values == create_node_tool["parameters"]["properties"]["nodeType"]["enum"]
     assert add_next_enum_values == enum_values
-    assert emit_enum_values == enum_values
+    assert set(emit_enum_values) == set(enum_values)
+
+
+def test_canvas_command_tools_expose_discriminated_minimal_schema():
+    plugin = _load_plugin_module()
+    schemas = {name: schema for name, schema, _handler in plugin.TOOLS}
+    validate = schemas["freezone_validate_canvas_commands"]["parameters"]
+    emit = schemas["freezone_emit_canvas_command"]["parameters"]
+
+    assert validate["required"] == ["commands"]
+    assert emit["required"] == ["commands"]
+    assert validate["additionalProperties"] is False
+    assert emit["additionalProperties"] is False
+    assert set(validate["properties"]) == {"project_id", "canvas_id", "commands"}
+    assert set(emit["properties"]) == {"project_id", "canvas_id", "commands"}
+
+    variants = emit["properties"]["commands"]["items"]["oneOf"]
+    assert len(variants) == 16
+    by_type = {}
+    for variant in variants:
+        by_type.setdefault(variant["properties"]["type"]["enum"][0], []).append(
+            variant
+        )
+    assert set(by_type) == plugin._COMMAND_TYPES
+    assert all(variant["additionalProperties"] is False for variant in variants)
+    create_annotation, create_other = by_type["create_node"]
+    assert set(create_annotation["properties"]) == {
+        "type",
+        "client_id",
+        "node_type",
+        "position",
+        "data",
+    }
+    assert create_annotation["required"] == ["type", "node_type", "data"]
+    assert create_annotation["properties"]["node_type"]["enum"] == [
+        "textAnnotationNode"
+    ]
+    assert create_annotation["properties"]["data"]["required"] == [
+        "title", "content"
+    ]
+    assert "textAnnotationNode" not in create_other["properties"]["node_type"]["enum"]
+    assert [set(item["properties"]) for item in by_type["delete_edges"]] == [
+        {"type", "edge_ids"},
+        {"type", "pairs"},
+    ]
+    assert [set(item["properties"]) for item in by_type["move_nodes"]] == [
+        {"type", "positions"},
+        {"type", "deltas"},
+    ]
+    assert "direction" in by_type["run_workflow"][0]["properties"]
+
+
+def test_canvas_command_tools_and_handlers_share_one_contract():
+    plugin = _load_plugin_module()
+    schemas = {name: schema for name, schema, _handler in plugin.TOOLS}
+
+    validate_properties = schemas["freezone_validate_canvas_commands"]["parameters"][
+        "properties"
+    ]
+    emit_properties = schemas["freezone_emit_canvas_command"]["parameters"][
+        "properties"
+    ]
+    assert "canvasId" not in validate_properties
+    assert "canvasId" not in emit_properties
+    assert "body" not in validate_properties
+    assert "body" not in emit_properties
+    assert "envelope" not in validate_properties
+
+    assert plugin._validation_payload(
+        {"canvasId": "old", "body": {"commands": [{"type": "x"}]}}
+    ) == {}
+
+
+def test_canvas_command_handlers_reject_legacy_scope_instead_of_using_defaults():
+    plugin = _load_plugin_module()
+
+    for handler in (
+        plugin._handle_validate_commands,
+        plugin._handle_emit_canvas_command,
+    ):
+        result = handler(
+            {
+                "project": "legacy-project",
+                "canvasId": "second-canvas",
+                "commands": [{"type": "run_workflow"}],
+            }
+        )
+
+        assert result["ok"] is False
+        assert result["status"] == "legacy_tool_argument_rejected"
+        assert "canvasId" in result["error"]
+        assert "project" in result["error"]
+
+
+def test_agent_tool_scope_exposes_only_canonical_canvas_id():
+    plugin = _load_plugin_module()
+
+    for _name, schema, _handler in plugin.TOOLS:
+        properties = schema["parameters"]["properties"]
+        assert "canvasId" not in properties
+
+
+def test_update_node_data_rejects_aliases_and_empty_payloads():
+    plugin = _load_plugin_module()
+    schema = next(
+        schema
+        for name, schema, _handler in plugin.TOOLS
+        if name == "freezone_update_node_data"
+    )["parameters"]
+
+    assert schema["additionalProperties"] is False
+    assert "nodeId" not in schema["properties"]
+    assert schema["properties"]["data"]["minProperties"] == 1
+
+    alias_result = plugin._handle_update_node_data(
+        {"nodeId": "node-a", "data": {"content": "fixed"}}
+    )
+    assert alias_result["ok"] is False
+    assert alias_result["status"] == "legacy_tool_argument_rejected"
+
+    empty_result = plugin._handle_update_node_data(
+        {"node_id": "node-a", "data": {}}
+    )
+    assert empty_result["ok"] is False
+    assert empty_result["status"] == "data_required"
+
+
+def test_canvas_command_schema_accepts_minimal_variants_and_rejects_union_shell():
+    from jsonschema import Draft202012Validator
+    from jsonschema.exceptions import ValidationError
+
+    plugin = _load_plugin_module()
+    schemas = {name: schema for name, schema, _handler in plugin.TOOLS}
+    parameters = schemas["freezone_emit_canvas_command"]["parameters"]
+    Draft202012Validator.check_schema(parameters)
+    validator = Draft202012Validator(parameters)
+    commands = [
+        {
+            "type": "create_node",
+            "node_type": "textAnnotationNode",
+            "data": {"title": "Fix", "content": "Apply the validated repair."},
+        },
+        {"type": "create_node", "node_type": "imageGenNode"},
+        {"type": "add_next_node", "source_node_id": "node-1"},
+        {"type": "update_node_data", "node_id": "node-1", "data": {"title": "Fixed"}},
+        {"type": "delete_nodes", "node_ids": ["node-1"]},
+        {"type": "delete_edges", "edge_ids": ["edge-1"]},
+        {"type": "delete_edges", "pairs": [{"source": "node-1", "target": "node-2"}]},
+        {
+            "type": "create_edge",
+            "source": "node-1",
+            "target": "node-2",
+            "link_type": "context_for",
+        },
+        {"type": "layout_nodes", "mode": "grid"},
+        {"type": "group_nodes", "node_ids": ["node-1", "node-2"]},
+        {"type": "move_nodes", "positions": {"node-1": {"x": 1, "y": 2}}},
+        {"type": "move_nodes", "deltas": {"node-1": {"x": 1, "y": -1}}},
+        {"type": "select_nodes", "node_ids": ["node-1"]},
+        {"type": "run_node_action", "node_id": "node-1", "action": "generate"},
+        {"type": "open_mainline_projection", "request": {"scope": "episode"}},
+        {"type": "run_workflow"},
+    ]
+    for command in commands:
+        validator.validate({"commands": [command]})
+
+    union_shell = {
+        "type": "create_node",
+        "client_id": "retry_annotation",
+        "node_type": "textAnnotationNode",
+        "data": {},
+        "node_id": "",
+        "node_ids": [],
+        "action": "",
+        "parameters": {},
+        "regenerate": False,
+        "scope": "canvas",
+        "source": "",
+        "target": "",
+        "link_type": "context_for",
+        "request": {},
+    }
+    with pytest.raises(ValidationError):
+        validator.validate({"commands": [union_shell]})
+
+
+def test_agent_mcp_exposes_the_reviewed_canvas_command_schema(monkeypatch):
+    plugin = _load_plugin_module()
+    expected = {
+        name: schema["parameters"]
+        for name, schema, _handler in plugin.TOOLS
+        if name in {"freezone_validate_canvas_commands", "freezone_emit_canvas_command"}
+    }
+
+    # agent_mcp establishes local CLI defaults at import time. Pin every
+    # affected variable through monkeypatch so this contract test cannot leak
+    # those defaults into unrelated environment-sensitive tests.
+    monkeypatch.setenv("DRAMACLAW_API_URL", "http://127.0.0.1:8780")
+    monkeypatch.setenv("DRAMACLAW_LOCAL_AGENT_TRUST", "1")
+    monkeypatch.setenv("DRAMACLAW_EXTERNAL_MCP", "1")
+    monkeypatch.setenv("DRAMACLAW_MCP_DIRECT_CANVAS_APPLY", "0")
+    monkeypatch.setenv("DRAMACLAW_USER", "test-user")
+    monkeypatch.setenv("SUPERTALE_USER", "test-user")
+    monkeypatch.setenv("DRAMACLAW_CANVAS_COMMAND_BRIDGE_DIR", "/tmp/test-bridge")
+
+    from novelvideo.chat import agent_mcp
+
+    exposed = {
+        tool.name: tool.inputSchema
+        for tool in asyncio.run(agent_mcp.list_tools())
+        if tool.name in expected
+    }
+    assert exposed == expected
 
 
 def test_freezone_mcp_default_create_node_uses_frontend_bridge(monkeypatch):

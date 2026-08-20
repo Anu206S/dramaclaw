@@ -13,9 +13,12 @@ from typing import Any, Literal
 
 from pydantic_ai import Agent
 
+from novelvideo.brainclaw_contract import (
+    BrainClawProfile,
+    builtin_text_recipe_profile_variant,
+)
 from novelvideo.freezone.agent_config_store import list_user_agent_config_items
 from novelvideo.config import OUTPUT_DIR
-from novelvideo.official_defaults import DEFAULT_FREEZONE_STORY_SCRIPT_MODEL
 
 RecipeNodeKind = Literal["image", "video", "audio", "text"]
 RecipePromptStrategy = Literal[
@@ -56,8 +59,7 @@ Rules:
 _TEXT_EXECUTOR_SYSTEM_PROMPT = """Execute the supplied text-generation instruction completely.
 Return only the requested deliverable. Do not discuss the instruction, Recipe, workflow, model, or internal process.
 Use clear Markdown when the instruction asks for a structured document.
-The trusted Recipe is a production method. If it says to write a downstream prompt, apply that method
-directly to produce the final requested text deliverable instead of returning another instruction.
+The trusted Recipe defines the final deliverable contract and must not request another model call.
 """
 
 
@@ -113,9 +115,9 @@ def compose_deterministic_prompt(
 
 def _recipe_compiler_timeout_seconds() -> float:
     try:
-        value = float(os.getenv("FREEZONE_RECIPE_COMPILER_TIMEOUT_SECONDS", "20"))
+        value = float(os.getenv("FREEZONE_RECIPE_COMPILER_TIMEOUT_SECONDS", "30"))
     except (TypeError, ValueError):
-        value = 20.0
+        value = 30.0
     return min(max(value, 0.1), 120.0)
 
 
@@ -255,7 +257,7 @@ async def _run_recipe_compiler(task: str) -> str:
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
-        DEFAULT_FREEZONE_STORY_SCRIPT_MODEL,
+        brainclaw_profile=BrainClawProfile.FREEZONE_RECIPE_COMPILATION,
     )
     agent = Agent(
         model,
@@ -263,7 +265,12 @@ async def _run_recipe_compiler(task: str) -> str:
         output_type=str,
         name="Freezone Recipe Compiler",
     )
-    response = await agent.run(task)
+    response = await agent.run(
+        task,
+        # Recipe compilation is a bounded text transformation. Keep reasoning
+        # disabled without depending on the removed legacy text-settings helper.
+        model_settings={"openai_reasoning_effort": "none"},
+    )
     compiled = str(response.output or "").strip()
     if not compiled:
         raise RuntimeError("recipe compiler returned an empty prompt")
@@ -696,7 +703,11 @@ async def generate_recipe_text(**compile_args: Any) -> str:
 
     model = get_newapi_text_pydantic_model(
         "FREEZONE_RECIPE_COMPILER_MODEL",
-        DEFAULT_FREEZONE_STORY_SCRIPT_MODEL,
+        brainclaw_profile=BrainClawProfile.FREEZONE_RECIPE_TEXT_GENERATION,
+        brainclaw_profile_variant=builtin_text_recipe_profile_variant(
+            recipe,
+            has_supplemental_recipes=len(recipes) > 1,
+        ),
     )
     agent = Agent(
         model,

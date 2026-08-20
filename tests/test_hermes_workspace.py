@@ -41,9 +41,7 @@ def _enabled_toolsets(config: str) -> list[str]:
 
 def _dramaclaw_provider(config: dict) -> dict:
     return next(
-        item
-        for item in config["custom_providers"]
-        if item.get("name") == "dramaclaw"
+        item for item in config["custom_providers"] if item.get("name") == "dramaclaw"
     )
 
 
@@ -162,7 +160,9 @@ def test_fresh_create_layout(isolated_workspace, repo_skills, repo_plugins):
     assert "我是虾导，DramaClaw 的小说转视频创作助手。" not in memory
 
 
-def test_freezone_profile_uses_isolated_workspace(isolated_workspace, repo_skills, repo_plugins):
+def test_freezone_profile_uses_isolated_workspace(
+    isolated_workspace, repo_skills, repo_plugins
+):
     home = hw.ensure_user_hermes_workspace("admin", profile="freezone")
 
     assert home == isolated_workspace / "state" / "admin" / ".hermes-freezone"
@@ -329,7 +329,7 @@ def test_freezone_profile_materializes_native_workflow_skills(
     summaries = hw.list_freezone_hermes_workflow_skills("admin")
 
     assert "name: ecommerce-ad" in content
-    assert "skill_id=\"ecommerce-ad\"" in content
+    assert 'skill_id="ecommerce-ad"' in content
     assert "freezone_prepare_workflow_draft" in content
     assert "freezone_patch_workflow_draft" in content
     assert "freezone_confirm_workflow_draft" in content
@@ -495,17 +495,23 @@ def test_hermes_translates_thought_plan_and_usage_updates():
             {
                 "sessionUpdate": "plan",
                 "entries": [
-                    {"content": "读取资产", "status": "completed", "priority": "medium"},
-                    {"content": "生成分镜", "status": "in_progress", "priority": "high"},
+                    {
+                        "content": "读取资产",
+                        "status": "completed",
+                        "priority": "medium",
+                    },
+                    {
+                        "content": "生成分镜",
+                        "status": "in_progress",
+                        "priority": "high",
+                    },
                 ],
             }
         ),
         "turn-a",
     )
     usage = thread._translate_notification(
-        _session_update(
-            {"sessionUpdate": "usage_update", "used": 128, "size": 4096}
-        ),
+        _session_update({"sessionUpdate": "usage_update", "used": 128, "size": 4096}),
         "turn-a",
     )
 
@@ -637,7 +643,11 @@ async def test_hermes_rejects_expired_permission_response(monkeypatch):
                 "sessionId": "session-a",
                 "toolCall": {"title": "运行命令"},
                 "options": [
-                    {"optionId": "allow_once", "kind": "allow_once", "name": "Allow once"}
+                    {
+                        "optionId": "allow_once",
+                        "kind": "allow_once",
+                        "name": "Allow once",
+                    }
                 ],
             },
         },
@@ -675,7 +685,11 @@ def test_hermes_clears_pending_permissions_for_completed_turn():
 
 
 def test_hermes_detects_content_filter_error_text():
-    payload = {"error": {"message": "Content filter triggered. Finish reason: 'content_filter'"}}
+    payload = {
+        "error": {
+            "message": "Content filter triggered. Finish reason: 'content_filter'"
+        }
+    }
 
     assert hermes_sdk._has_content_filter_signal(payload)
 
@@ -702,7 +716,9 @@ def test_hermes_detects_nested_session_unavailable_error_payload():
         "message": "prompt failed",
         "data": {
             "details": [
-                {"message": "prompt: session 5e14b825-b50c-4fed-be9e-aaa2a3882b7e not found"},
+                {
+                    "message": "prompt: session 5e14b825-b50c-4fed-be9e-aaa2a3882b7e not found"
+                },
             ],
         },
     }
@@ -727,12 +743,19 @@ def test_hermes_stops_mainline_writes_but_not_freezone_canvas_writes():
 
 
 def test_hermes_keeps_mainline_tool_call_limit_narrow():
-    assert hermes_sdk._turn_tool_call_limit_for_tool("dramaclaw_generate_script") is None
+    assert (
+        hermes_sdk._turn_tool_call_limit_for_tool("dramaclaw_generate_script") is None
+    )
 
 
 def test_hermes_allows_more_freezone_tool_calls():
-    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_emit_canvas_command") == 20
-    assert hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe") == 20
+    assert (
+        hermes_sdk._turn_tool_call_limit_for_tool("freezone_emit_canvas_command") == 20
+    )
+    assert (
+        hermes_sdk._turn_tool_call_limit_for_tool("freezone_put_agent_catalog_recipe")
+        == 20
+    )
 
 
 def test_hermes_tool_call_guard_counts_update_only_calls():
@@ -753,27 +776,35 @@ def test_hermes_tool_call_guard_counts_update_only_calls():
     assert guard.total == 3
 
 
-def test_hermes_tool_call_guard_does_not_charge_skill_loading_to_action_limit(monkeypatch):
+def test_hermes_tool_call_guard_does_not_charge_skill_loading_to_action_limit(
+    monkeypatch,
+):
     monkeypatch.setattr(hermes_sdk, "TURN_TOOL_CALL_LIMIT", 1)
     guard = hermes_sdk._TurnToolCallGuard()
 
-    assert guard.observe(
-        hermes_sdk.ChatBackendEvent(
-            type="tool_started",
-            name="skill",
-            call_id="skill-a",
-            input={"name": "dramaclaw"},
+    assert (
+        guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="skill",
+                call_id="skill-a",
+                input={"name": "dramaclaw"},
+            )
         )
-    ) is None
+        is None
+    )
     assert guard.total == 0
-    assert guard.observe(
-        hermes_sdk.ChatBackendEvent(
-            type="tool_started",
-            name="dramaclaw_pipeline_status",
-            call_id="status-a",
-            input={"episode": 2},
+    assert (
+        guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_started",
+                name="dramaclaw_pipeline_status",
+                call_id="status-a",
+                input={"episode": 2},
+            )
         )
-    ) is None
+        is None
+    )
     assert guard.total == 1
 
 
@@ -917,15 +948,18 @@ def test_hermes_tool_call_guard_allows_distinct_mainline_reads():
     guard = hermes_sdk._TurnToolCallGuard()
 
     for index in range(10):
-        assert guard.observe(
-            hermes_sdk.ChatBackendEvent(
-                type="tool_updated",
-                name="dramaclaw_get_episode_media",
-                call_id=f"call-{index}",
-                input={"episode": 1, "beat": index + 1},
-                status="completed",
+        assert (
+            guard.observe(
+                hermes_sdk.ChatBackendEvent(
+                    type="tool_updated",
+                    name="dramaclaw_get_episode_media",
+                    call_id=f"call-{index}",
+                    input={"episode": 1, "beat": index + 1},
+                    status="completed",
+                )
             )
-        ) is None
+            is None
+        )
 
 
 def test_hermes_tool_call_guard_does_not_double_count_start_and_update():
@@ -949,8 +983,150 @@ def test_hermes_tool_call_guard_does_not_double_count_start_and_update():
     assert guard.total == 1
 
 
+def test_hermes_tool_call_guard_stops_repeated_identical_failures():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+    tool_input = {
+        "body": {},
+        "envelope": {},
+        "commands": [{"type": "create_node", "client_id": "node-a"}],
+    }
+    tool_output = [
+        {
+            "type": "content",
+            "content": {
+                "type": "text",
+                "text": "freezone_validate_canvas_commands failed: commands required",
+            },
+        }
+    ]
+
+    for index in range(2):
+        call_id = f"call-{index}"
+        assert (
+            guard.observe(
+                hermes_sdk.ChatBackendEvent(
+                    type="tool_started",
+                    name="freezone_validate_canvas_commands",
+                    call_id=call_id,
+                    input=tool_input,
+                )
+            )
+            is None
+        )
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_validate_canvas_commands",
+                call_id=call_id,
+                input=tool_input,
+                output=tool_output,
+                status="failed",
+            )
+        )
+
+    assert stop_message is not None
+    assert "重复返回相同错误" in stop_message
+    assert guard.total == 2
+
+
+def test_hermes_tool_call_guard_tracks_same_failure_across_unrelated_success():
+    guard = hermes_sdk._TurnToolCallGuard()
+
+    first_failure = hermes_sdk.ChatBackendEvent(
+        type="tool_updated",
+        name="freezone_validate_canvas_commands",
+        call_id="failed-a",
+        input={"commands": []},
+        output={"ok": False, "status": "empty_validation_payload"},
+        status="completed",
+    )
+    success = hermes_sdk.ChatBackendEvent(
+        type="tool_updated",
+        name="freezone_summarize_canvas",
+        call_id="success",
+        input={},
+        output={"ok": True},
+        status="completed",
+    )
+    second_failure = hermes_sdk.ChatBackendEvent(
+        type="tool_updated",
+        name="freezone_validate_canvas_commands",
+        call_id="failed-b",
+        input={"commands": []},
+        output={"ok": False, "status": "empty_validation_payload"},
+        status="completed",
+    )
+
+    assert guard.observe(first_failure) is None
+    assert guard.observe(success) is None
+    stop_message = guard.observe(second_failure)
+
+    assert stop_message is not None
+    assert "重复返回相同错误" in stop_message
+
+
+def test_hermes_tool_call_guard_normalizes_volatile_failure_fields():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+
+    for index in range(2):
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_emit_canvas_command",
+                call_id=f"failed-{index}",
+                input={"commands": [{"type": "create_node", "data": {}}]},
+                output=json.dumps(
+                    {
+                        "ok": False,
+                        "tool_call_status": "failed",
+                        "bridge_key": f"bridge-{index}",
+                        "resolved_at": 100.0 + index,
+                        "errors": ["create_node requires title and content"],
+                    }
+                ),
+                status="failed",
+            )
+        )
+
+    assert stop_message is not None
+    assert "重复返回相同错误" in stop_message
+
+
+def test_hermes_tool_call_guard_stops_repeated_successful_validation():
+    guard = hermes_sdk._TurnToolCallGuard()
+    stop_message = None
+    tool_input = {
+        "commands": [
+            {
+                "type": "create_node",
+                "node_type": "textAnnotationNode",
+                "data": {"title": "线索核对", "content": "核对账册"},
+            }
+        ]
+    }
+
+    for index in range(hermes_sdk.REPEATED_VALIDATION_TOOL_CALL_LIMIT):
+        stop_message = guard.observe(
+            hermes_sdk.ChatBackendEvent(
+                type="tool_updated",
+                name="freezone_validate_canvas_commands",
+                call_id=f"validation-{index}",
+                input=tool_input,
+                output={"ok": True, "validation": {"valid": True}},
+                status="completed",
+            )
+        )
+
+    assert stop_message is not None
+    assert "重复校验同一批画布命令" in stop_message
+
+
 def test_hermes_freezone_tool_limit_message_uses_freezone_context():
-    message = hermes_sdk._tool_call_limit_stop_message("freezone_put_agent_catalog_recipe")
+    message = hermes_sdk._tool_call_limit_stop_message(
+        "freezone_put_agent_catalog_recipe"
+    )
 
     assert "虾画" in message
     assert "虾导" not in message
@@ -970,7 +1146,7 @@ def test_state_root_falls_back_to_repo(monkeypatch, tmp_path):
     assert hw._state_root() == tmp_path / "repo" / "state"
 
 
-def test_fresh_config_uses_model_env_but_keeps_newapi_transport(
+def test_official_brainclaw_ignores_legacy_hermes_model_env(
     isolated_workspace, repo_skills, repo_plugins, monkeypatch
 ):
     save_official_newapi_key(api_key="root-key", activate=True)
@@ -992,10 +1168,10 @@ def test_fresh_config_uses_model_env_but_keeps_newapi_transport(
     home = hw.ensure_user_hermes_workspace("admin")
     config = (home / "config.yaml").read_text(encoding="utf-8")
 
-    assert "  default: gemini-3.5-flash" in config
+    assert "  default: brainclaw" in config
     parsed = yaml.safe_load(config)
     assert parsed["model"]["provider"] == "custom:dramaclaw"
-    assert parsed["model"]["default"] == "gemini-3.5-flash"
+    assert parsed["model"]["default"] == "brainclaw"
     assert parsed["model"]["context_length"] == 65536
     assert "api_key" not in parsed["model"]
     provider = _dramaclaw_provider(parsed)
@@ -1083,8 +1259,7 @@ def test_hermes_env_syncs_current_newapi_key_and_replaces_stale_openai_key(
     home = isolated_workspace / "state" / "admin" / ".hermes-freezone"
     home.mkdir(parents=True)
     (home / ".env").write_text(
-        "OPENAI_API_KEY=stale-test-key\n"
-        "UNRELATED_SECRET=keep-me\n",
+        "OPENAI_API_KEY=stale-test-key\nUNRELATED_SECRET=keep-me\n",
         encoding="utf-8",
     )
 
@@ -1159,8 +1334,7 @@ custom_providers:
     assert "api_key" not in config["model"]
     assert "legacy-key" not in text
     assert any(
-        item.get("name") == "user-provider"
-        for item in config["custom_providers"]
+        item.get("name") == "user-provider" for item in config["custom_providers"]
     )
     assert _dramaclaw_provider(config)["key_env"] == "NEWAPI_API_KEY"
 
@@ -1191,7 +1365,9 @@ def test_existing_openai_env_is_synced_to_current_newapi_key(
     assert "OPENROUTER_API_KEY=plugin-key" in env_text
 
 
-def test_legacy_config_gets_default_plugin_block(isolated_workspace, repo_skills, repo_plugins):
+def test_legacy_config_gets_default_plugin_block(
+    isolated_workspace, repo_skills, repo_plugins
+):
     home = isolated_workspace / "state" / "admin" / ".hermes"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text("enabled_toolsets:\n  - dramaclaw\n")
@@ -1203,7 +1379,7 @@ def test_legacy_config_gets_default_plugin_block(isolated_workspace, repo_skills
     assert _enabled_toolsets(config) == ["hermes-acp", "memory"]
     assert "plugins:\n  enabled:\n    - dramaclaw" in config
     assert "    - freezone" not in config
-    assert parsed["model"]["default"] == "DC-hermes-LLM"
+    assert parsed["model"]["default"] == "brainclaw"
     assert parsed["model"]["provider"] == "custom:dramaclaw"
     assert _dramaclaw_provider(parsed)["key_env"] == "NEWAPI_API_KEY"
     assert parsed["agent"]["max_turns"] == 4
@@ -1215,11 +1391,7 @@ def test_existing_plugin_block_gets_missing_freezone_plugin(
     home = isolated_workspace / "state" / "admin" / ".hermes"
     home.mkdir(parents=True)
     (home / "config.yaml").write_text(
-        "enabled_toolsets:\n"
-        "  - hermes-acp\n"
-        "plugins:\n"
-        "  enabled:\n"
-        "    - dramaclaw\n",
+        "enabled_toolsets:\n  - hermes-acp\nplugins:\n  enabled:\n    - dramaclaw\n",
         encoding="utf-8",
     )
 
@@ -1233,7 +1405,9 @@ def test_existing_plugin_block_gets_missing_freezone_plugin(
     assert parsed["agent"]["max_turns"] == 4
 
 
-def test_legacy_identity_context_is_migrated(isolated_workspace, repo_skills, repo_plugins):
+def test_legacy_identity_context_is_migrated(
+    isolated_workspace, repo_skills, repo_plugins
+):
     home = isolated_workspace / "state" / "admin" / ".hermes"
     memories = home / "memories"
     memories.mkdir(parents=True)

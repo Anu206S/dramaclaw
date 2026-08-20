@@ -65,4 +65,3 @@ async def broadcast_project_chat_event(
             stale.append(websocket)
     for websocket in stale:
         await unregister_chat_websocket(websocket)
-

@@ -31,7 +31,7 @@
 
 如果校验返回某对 source/target 的 `Allowed link_type values: none`，不要继续尝试其它 `link_type`。可以用 `group_nodes` 做视觉分组兜底，或保持这些节点不连接。
 
-如果编辑前需要只读画布上下文、动态参数选项、命令字段规则或前端预校验，使用具体的 Freezone 工具：`freezone_get_canvas_ontology`、`freezone_summarize_canvas`、`freezone_get_canvas_action_catalog`、`freezone_get_canvas_command_catalog`、`freezone_get_link_type_catalog`、`freezone_get_selection`、`freezone_get_node_detail`、`freezone_get_neighbor_graph`、`freezone_get_node_action_catalog`、`freezone_get_node_create_schema`、`freezone_get_audio_voice_options` 和 `freezone_get_slot_candidates`。非平凡的创建、更新、删除、连接、布局操作，在写入前调用 `freezone_validate_canvas_commands`，传入准确的 `canvas_chat_commands.v1` envelope；如果校验返回问题，修正 envelope 后再次校验。不要把 `canvas_context_request.v1` 放进任何写入工具，也不要用 `run_node_action` 获取选项。
+如果编辑前需要只读画布上下文、动态参数选项、命令字段规则或前端预校验，使用具体的 Freezone 工具：`freezone_get_canvas_ontology`、`freezone_summarize_canvas`、`freezone_get_canvas_action_catalog`、`freezone_get_canvas_command_catalog`、`freezone_get_link_type_catalog`、`freezone_get_selection`、`freezone_get_node_detail`、`freezone_get_neighbor_graph`、`freezone_get_node_action_catalog`、`freezone_get_node_create_schema`、`freezone_get_audio_voice_options` 和 `freezone_get_slot_candidates`。非平凡的创建、更新、删除、连接、布局操作，在写入前调用 `freezone_validate_canvas_commands`，只传入 `canvas_chat_commands.v1` envelope 中的 `commands` 数组；如果校验返回问题，修正 `commands` 后再次校验。不要把完整 envelope 或 `canvas_context_request.v1` 放进任何写入工具，也不要用 `run_node_action` 获取选项。
 
 如果可用且需要只读画布上下文或动态参数选项，可以使用 `freezone_request_canvas_context`。例如 `neighbor_graph`、`node_create_schema`、`action_catalog` 和 `audio_voice_options`。不要把 `canvas_context_request.v1` 放进 `freezone_emit_canvas_command.commands`，也不要用 `run_node_action` 获取选项。
 

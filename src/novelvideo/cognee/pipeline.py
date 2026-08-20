@@ -13,8 +13,8 @@ import re
 from typing import Any, Awaitable, Callable, Dict, List, Literal, Optional, TypeVar
 from pydantic import BaseModel, Field, field_validator, model_validator
 
+from novelvideo.brainclaw_contract import BrainClawProfile
 from novelvideo.shared.env_guard import preserve_st_env
-from novelvideo.config import get_newapi_structured_output_litellm_kwargs
 from novelvideo.models import (
     CharacterIdentity,
     NovelCharacter,
@@ -22,6 +22,7 @@ from novelvideo.models import (
     NovelEvent,
     NovelVisualBeat,
 )
+from novelvideo.config import get_newapi_structured_output_litellm_kwargs
 from novelvideo.cognee.screenplay_normalizer import (
     NormalizedSceneBlock,
     clean_scene_name_and_time,
@@ -58,12 +59,6 @@ class CharacterList(BaseModel):
     """角色列表容器。"""
 
     characters: List[NovelCharacter]
-
-
-class EpisodeList(BaseModel):
-    """剧集列表容器。"""
-
-    episodes: List[NovelEpisode]
 
 
 _GraphReadResult = TypeVar("_GraphReadResult")
@@ -160,43 +155,6 @@ def _select_scene_primary_name(original_name: str, normalized_name: str) -> str:
     return original
 
 
-# ============================================================
-# 自定义提取 Tasks
-# ============================================================
-
-
-async def extract_episodes_from_text(
-    text: str,
-    target_episodes: int = 10,
-) -> List[NovelEpisode]:
-    """从小说文本中规划剧集。"""
-    with preserve_st_env():
-        from cognee.infrastructure.llm.LLMGateway import LLMGateway
-
-    system_prompt = f"""你是一个专业的剧集规划师。将小说内容规划为 {target_episodes} 集。
-
-对于每集，生成：
-1. number: 集数
-2. title: 吸引人的标题
-3. content_summary: 内容摘要（50字以内）
-4. main_conflict: 主要冲突
-5. cliffhanger: 结尾悬念（让观众想看下一集）
-6. key_events: 关键事件列表
-
-规则：
-- 每集要有明确的冲突和悬念
-- 情节连贯，前后呼应
-- 高潮放在中后期"""
-
-    result = await LLMGateway.acreate_structured_output(
-        text,
-        system_prompt,
-        EpisodeList,
-        **get_newapi_structured_output_litellm_kwargs(),
-    )
-    return result.episodes
-
-
 async def generate_visual_prompts(
     characters: List[NovelCharacter],
 ) -> List[NovelCharacter]:
@@ -228,17 +186,6 @@ async def _attach_character_metadata(
     return characters
 
 
-async def _attach_episode_metadata(
-    episodes: List[NovelEpisode],
-    project_name: str = "",  # 保留参数用于向后兼容，但不再使用
-) -> List[NovelEpisode]:
-    """为剧集附加元数据。
-
-    注意：由于使用数据库级别隔离，不再需要 project_name。
-    """
-    return episodes
-
-
 async def run_character_extraction_pipeline(
     text: str,
     dataset_name: str = "novel",
@@ -252,48 +199,6 @@ async def run_character_extraction_pipeline(
         "extract_characters_from_text 已移除。"
         "请使用 CogneeStore.build_characters_from_graph() 从图谱提取角色。"
     )
-
-
-async def run_episode_planning_pipeline(
-    text: str,
-    target_episodes: int = 10,
-    dataset_name: str = "novel",
-    project_name: str = "",
-) -> List[NovelEpisode]:
-    """运行剧集规划 Pipeline。"""
-    with preserve_st_env():
-        from cognee.modules.pipelines import Task, run_pipeline
-        from cognee.modules.engine.operations.setup import setup
-
-    await setup()
-
-    async def extract_with_count(t: str) -> List[NovelEpisode]:
-        return await extract_episodes_from_text(t, target_episodes)
-
-    async def attach_metadata(episodes: List[NovelEpisode]) -> List[NovelEpisode]:
-        return await _attach_episode_metadata(episodes, project_name)
-
-    # 用于捕获中间结果的包装函数
-    captured_episodes: List[NovelEpisode] = []
-
-    async def capture_episodes(episodes: List[NovelEpisode]) -> List[NovelEpisode]:
-        """Capture planner output; the caller persists episodes to SQLite."""
-        nonlocal captured_episodes
-        captured_episodes = episodes
-        return episodes
-
-    tasks = [
-        Task(extract_with_count),
-        Task(attach_metadata),
-        Task(capture_episodes),
-    ]
-
-    async for result in run_pipeline(tasks=tasks, data=text, datasets=[dataset_name]):
-        # 尝试从结果中获取剧集
-        if isinstance(result, list) and result and isinstance(result[0], NovelEpisode):
-            captured_episodes = result
-
-    return captured_episodes
 
 
 # ============================================================
@@ -504,123 +409,6 @@ async def extract_characters_from_graph(
 
 
 # ============================================================
-# 分阶段构建：增强的剧集规划
-# ============================================================
-
-
-async def extract_episodes_with_characters(
-    text: str,
-    target_episodes: int = 10,
-    known_characters: Optional[List[str]] = None,
-    dataset_name: str = "novel",
-    project_name: str = "",
-    on_log: Optional[Any] = None,
-) -> List[NovelEpisode]:
-    """规划剧集（支持已知角色列表）。
-
-    与 extract_episodes_from_text 的区别：
-    - 接受已确认的角色列表，确保剧集中引用的角色一致
-    - 会将角色列表注入到 Prompt 中
-
-    Args:
-        text: 小说全文
-        target_episodes: 目标剧集数
-        known_characters: 已确认的角色名称列表
-        dataset_name: 数据集名称
-        project_name: 项目名称
-        on_log: 日志回调函数
-
-    Returns:
-        规划的剧集列表
-    """
-    with preserve_st_env():
-        from cognee.infrastructure.llm.LLMGateway import LLMGateway
-        from cognee.modules.engine.operations.setup import setup
-
-    def log(message: str):
-        # 只打印到控制台，不调用 on_log（由 store.py 统一管理日志回调）
-        print(f"[extract_episodes] {message}")
-
-    await setup()
-    log(f"开始规划 {target_episodes} 集...")
-
-    character_hint = ""
-    if known_characters:
-        character_hint = f"""
-已确认的角色列表：
-{', '.join(known_characters)}
-
-⚠️ 重要：character_names 字段只能从上述列表中选择，不要添加新角色名。
-"""
-        log(f"已知角色: {len(known_characters)} 个")
-
-    system_prompt = f"""你是一个专业的剧集规划师。将小说内容规划为 {target_episodes} 集。
-{character_hint}
-对于每集，生成：
-1. number: 集数
-2. title: 吸引人的标题
-3. chapter_start: 对应的起始章节（估计值）
-4. chapter_end: 对应的结束章节（估计值）
-5. content_summary: 内容摘要（50字以内）
-6. main_conflict: 主要冲突
-7. cliffhanger: 结尾悬念（让观众想看下一集）
-8. key_events: 关键事件列表（3-5个）
-9. character_names: 本集出场角色（从已确认角色中选择）
-
-规则：
-- 每集要有明确的冲突和悬念
-- 情节连贯，前后呼应
-- 高潮放在中后期
-- 确保角色名称与已确认列表一致"""
-
-    log("调用 LLM 规划剧集...")
-    result = await LLMGateway.acreate_structured_output(
-        text,
-        system_prompt,
-        EpisodeList,
-        **get_newapi_structured_output_litellm_kwargs(),
-    )
-    log(f"LLM 返回 {len(result.episodes)} 集")
-
-    # 验证剧集编号
-    episode_numbers = [ep.number for ep in result.episodes]
-    log(f"剧集编号: {episode_numbers}")
-
-    if len(result.episodes) < target_episodes:
-        log(
-            f"⚠️ 警告：LLM 返回的集数 ({len(result.episodes)}) 少于目标 ({target_episodes})"
-        )
-
-    # 检查是否从 1 开始，如果不是则自动修正
-    if episode_numbers and min(episode_numbers) != 1:
-        log(
-            f"⚠️ 警告：剧集编号不是从 1 开始，最小编号: {min(episode_numbers)}，正在自动修正..."
-        )
-        result.episodes.sort(key=lambda ep: ep.number)
-        for i, ep in enumerate(result.episodes, start=1):
-            if ep.number != i:
-                log(f"  修正剧集编号: {ep.number} → {i}")
-                ep.number = i
-
-    # 检查编号是否连续
-    sorted_numbers = sorted(episode_numbers)
-    expected_numbers = list(range(1, len(result.episodes) + 1))
-    if sorted_numbers != expected_numbers:
-        log(f"⚠️ 警告：剧集编号不连续，正在自动修正...")
-        result.episodes.sort(key=lambda ep: ep.number)
-        for i, ep in enumerate(result.episodes, start=1):
-            if ep.number != i:
-                log(f"  修正剧集编号: {ep.number} → {i}")
-                ep.number = i
-
-    log(
-        f"剧集规划完成: {len(result.episodes)} 集，编号: {[ep.number for ep in result.episodes]}"
-    )
-
-    return result.episodes
-
-
-# ============================================================
 # 场景提取 Pipeline
 # ============================================================
 
@@ -793,7 +581,7 @@ def _create_scene_build_agent(system_prompt: str, output_type: Any, name: str):
     return Agent(
         get_newapi_text_pydantic_model(
             "SCENE_BUILD_MODEL",
-            "gemini-3-flash-preview",
+            brainclaw_profile=BrainClawProfile.SCENE_ENVIRONMENT_ENRICHMENT,
             capability="cognee.llm",
         ),
         system_prompt=system_prompt,
@@ -1234,7 +1022,7 @@ async def extract_scenes_from_script(
 
         for idx, cand in enumerate(candidates):
             progress = 0.2 + 0.25 * (idx / total)
-            report(progress, f"规范化场景 ({idx+1}/{total}): {cand.name}")
+            report(progress, f"规范化场景 ({idx + 1}/{total}): {cand.name}")
 
             context = "\n".join(cand.context_lines[:30])
             synopsis_section = (
@@ -1388,7 +1176,7 @@ async def extract_scenes_from_script(
 
     for idx, cand in enumerate(normalized_scene_candidates):
         progress = 0.5 + 0.4 * (idx / max(total, 1))
-        report(progress, f"生成场景描述 ({idx+1}/{total}): {cand['name']}")
+        report(progress, f"生成场景描述 ({idx + 1}/{total}): {cand['name']}")
 
         scene_type = cand["scene_type"] or (
             "interior" if cand["interior"] else "exterior"
