@@ -2802,11 +2802,11 @@ def _infer_display_tool_call_from_text(
                 beat = 0
             if beat > 0:
                 return "dramaclaw_get_sketch_candidates", {
-                    "trajectory": episode,
+                    "episode": episode,
                     "beat": beat,
                 }
         return None
-    return "dramaclaw_get_sketches", {"trajectory": episode}
+    return "dramaclaw_get_sketches", {"episode": episode}
 
 
 def _backend_api_get(path: str, token: str) -> dict[str, Any]:
@@ -2855,8 +2855,8 @@ async def _fallback_display_tool_ui_specs(
         if tool_name == "dramaclaw_get_final_video":
             raw_episode_indices = args.get("episode_indices")
             episode_indices: list[int] = []
-            if args.get("trajectory") is not None and not raw_episode_indices:
-                episode_indices = [int(args["trajectory"])]
+            if args.get("episode") is not None and not raw_episode_indices:
+                episode_indices = [int(args["episode"])]
             elif isinstance(raw_episode_indices, list):
                 for value in raw_episode_indices:
                     try:
@@ -2911,7 +2911,7 @@ async def _fallback_display_tool_ui_specs(
                 )
             ]
         if tool_name in {"dramaclaw_get_sketches", "dramaclaw_get_first_frames"}:
-            episode = int(args.get("trajectory") or 1)
+            episode = int(args.get("episode") or 1)
             media_kind = (
                 "frame" if tool_name == "dramaclaw_get_first_frames" else "sketch"
             )
@@ -2957,7 +2957,7 @@ async def _fallback_display_tool_ui_specs(
             )
 
         if tool_name == "dramaclaw_get_sketch_candidates":
-            episode = int(args.get("trajectory") or 1)
+            episode = int(args.get("episode") or 1)
             try:
                 beat = int(
                     args.get("beat")
@@ -3188,7 +3188,7 @@ async def _fallback_display_tool_ui_specs(
             )
 
         if tool_name == "dramaclaw_get_episode_media":
-            episode = int(args.get("trajectory") or 1)
+            episode = int(args.get("episode") or 1)
             media_type = str(args.get("media_type") or "video").strip().lower()
             resp = _backend_api_get(
                 f"/api/v1/projects/{project_q}/episodes/{episode}/beats",

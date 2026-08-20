@@ -654,6 +654,19 @@ async def save_custom_brainclaw_config(
     )
     api_key = normalize_api_key(body.new_api_api_key)
     base_url = normalize_relay_base_url(body.new_api_base_url)
+    # A custom endpoint must carry its own key. The previous condition accepted
+    # a non-empty apiKeyPreview as proof one existed, but the preview falls back
+    # to the official key — so saving a custom URL with an empty key was
+    # accepted, and every later request sent the official RelayClaw credential
+    # to that host.
+    from novelvideo.model_gateway_settings import _is_official_relay_url
+
+    target_is_official = _is_official_relay_url(base_url or current["brainclaw"]["baseUrl"])
+    has_dedicated_key = bool(current["brainclaw"].get("dedicatedKeyConfigured"))
+    if not api_key and not has_dedicated_key and not target_is_official:
+        raise HTTPException(
+            status_code=400,
+            detail="newApiApiKey is required for a custom BrainClaw endpoint")
     if not api_key and not current["brainclaw"]["apiKeyPreview"]:
         raise HTTPException(status_code=400, detail="newApiApiKey is required")
     if body.new_api_base_url is not None and not base_url:

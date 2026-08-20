@@ -1051,6 +1051,17 @@ def get_ce_newapi_config_for_mode(mode: str) -> EffectiveNewApiConfig:
     )
 
 
+def _is_official_relay_url(base_url: str) -> bool:
+    """Whether a base URL is the official RelayClaw endpoint.
+
+    Compared after normalisation so a trailing slash or a missing /v1 does not
+    decide whether a credential may travel.
+    """
+    return normalize_relay_base_url(base_url or "") == normalize_relay_base_url(
+        OFFICIAL_NEWAPI_BASE_URL
+    )
+
+
 def get_effective_llm_config() -> EffectiveLlmConfig:
     """Resolve LLM independently from media and embedding gateways."""
     if not _uses_ce_gateway_settings():
@@ -1085,9 +1096,16 @@ def get_effective_llm_config() -> EffectiveLlmConfig:
             settings.get("brainclaw_newapi_base_url", "")
             or OFFICIAL_NEWAPI_BASE_URL
         )
+        # The official key may only be reused when the endpoint is the official
+        # one. Falling back unconditionally sends a RelayClaw credential to
+        # whatever host the operator typed — a third party, or a local gateway
+        # that logs it — and nothing in the request looks wrong: billing,
+        # audit and tenant attribution all follow a key the operator never
+        # meant to expose there.
         brainclaw_api_key = normalize_api_key(
             settings.get("brainclaw_newapi_api_key", "")
-            or settings.get("official_newapi_api_key", "")
+            or (settings.get("official_newapi_api_key", "")
+                if _is_official_relay_url(brainclaw_base_url) else "")
         )
         return EffectiveLlmConfig(
             mode=CUSTOM_LLM_MODE_RELAYCLAW_BRAINCLAW,
@@ -1346,8 +1364,13 @@ def build_model_gateway_status(
     brainclaw_base_url = normalize_relay_base_url(
         settings.get("brainclaw_newapi_base_url", "") or OFFICIAL_NEWAPI_BASE_URL
     )
-    brainclaw_api_key = normalize_api_key(
-        settings.get("brainclaw_newapi_api_key", "") or official_api_key_value
+    # Same rule as the effective config: the official key is only shown as the
+    # BrainClaw key when the endpoint is the official one.
+    dedicated_brainclaw_key = normalize_api_key(
+        settings.get("brainclaw_newapi_api_key", "")
+    )
+    brainclaw_api_key = dedicated_brainclaw_key or (
+        official_api_key_value if _is_official_relay_url(brainclaw_base_url) else ""
     )
     return {
         "mode": effective.mode,
@@ -1380,6 +1403,12 @@ def build_model_gateway_status(
         "brainclaw": {
             "baseUrl": brainclaw_base_url,
             "apiKeyPreview": mask_secret(brainclaw_api_key),
+            # Distinct from apiKeyPreview, which is non-empty even when it is
+            # only the official key showing through. A caller asking "is a
+            # BrainClaw key configured?" must read this: the preview answers a
+            # different question and treating it as this one is what allowed a
+            # custom endpoint to be saved with no dedicated key at all.
+            "dedicatedKeyConfigured": bool(dedicated_brainclaw_key),
             "configured": bool(brainclaw_base_url and brainclaw_api_key),
         },
         "custom": {
