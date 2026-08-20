@@ -21,9 +21,7 @@ import asyncio
 import hashlib
 import logging
 import os
-import re
 import shutil
-import subprocess
 import time
 import uuid
 from urllib.parse import urlsplit

@@ -48,35 +48,6 @@ def refuse_foreign_endpoint(url): return None
 '''
 
 
-def _build_hermes(tmp_path: pathlib.Path, server: str, *,
-                  credential: str | None = CREDENTIAL) -> pathlib.Path:
-    """Lay out an importable Hermes and return a CLI whose shebang names it."""
-    site = tmp_path / "site"
-    (site / "acp_adapter").mkdir(parents=True)
-    (site / "acp_adapter" / "__init__.py").write_text("")
-    (site / "acp_adapter" / "server.py").write_text(server)
-    if credential is not None:
-        (site / "agent").mkdir()
-        (site / "agent" / "__init__.py").write_text("")
-        (site / "agent" / "gateway_credential.py").write_text(credential)
-
-    # A launcher that puts that directory on the path, standing in for a
-    # virtualenv's console script.
-    launcher = tmp_path / "python-shim"
-    launcher.write_text(textwrap.dedent(f'''\
-        #!/bin/sh
-        exec {sys.executable} -c "import sys; sys.path.insert(0, '{site}'); exec(open('/dev/stdin').read())" "$@"
-    '''))
-    launcher.chmod(0o755)
-
-    cli = tmp_path / "hermes"
-    cli.write_text(f"#!{launcher}\n")
-    cli.chmod(0o755)
-    return cli
-
-
-
-
 def _this_python(tmp_path: pathlib.Path) -> pathlib.Path:
     """A console script whose shebang names the interpreter running the tests.
 
