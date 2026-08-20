@@ -57,7 +57,6 @@ DEFAULT_TOKEN_TTL_SECS = 2 * 3600  # 2 hours
 DEFAULT_TOKEN_RENEW_SKEW_SECS = 15 * 60  # rotate 15 min before expiry
 DEFAULT_API_URL = "http://127.0.0.1:8780"
 DRAMACLAW_ROOT = Path(__file__).resolve().parents[3]
-_checked_hermes_versions: dict[Path, str] = {}
 
 
 class HermesDrainingError(RuntimeError):
@@ -115,55 +114,6 @@ def _hermes_cli_path() -> Path:
 
 def is_hermes_backend_available() -> bool:
     return _hermes_cli_path().exists()
-
-
-def _parse_hermes_version(output: str) -> tuple[int, int, int] | None:
-    match = re.search(r"Hermes Agent v(\d+)\.(\d+)\.(\d+)", output)
-    if not match:
-        return None
-    return tuple(int(part) for part in match.groups())
-
-
-def _required_hermes_version() -> tuple[str, tuple[int, int, int]]:
-    version_file = DRAMACLAW_ROOT / ".hermes-version"
-    try:
-        raw = version_file.read_text(encoding="utf-8").strip()
-    except OSError as exc:
-        raise RuntimeError(f"missing DramaClaw Hermes version file: {version_file}") from exc
-    match = re.fullmatch(r"(\d+)\.(\d+)\.(\d+)", raw)
-    if not match:
-        raise RuntimeError(f"invalid DramaClaw Hermes version requirement: {raw!r}")
-    return raw, tuple(int(part) for part in match.groups())
-
-
-def _ensure_supported_hermes_version(cli_path: Path) -> None:
-    if cli_path in _checked_hermes_versions:
-        return
-    required_text, required_version = _required_hermes_version()
-    try:
-        proc = subprocess.run(
-            [str(cli_path), "--version"],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except Exception as exc:  # noqa: BLE001 - surface a clear startup error
-        raise RuntimeError(f"failed to check hermes version at {cli_path}: {exc}") from exc
-    output = ((proc.stdout or "") + "\n" + (proc.stderr or "")).strip()
-    version = _parse_hermes_version(output)
-    if proc.returncode != 0 or version is None:
-        raise RuntimeError(
-            f"unable to determine hermes version from `{cli_path} --version`: {output[:500]}"
-        )
-    if version != required_version:
-        current = ".".join(str(part) for part in version)
-        raise RuntimeError(
-            f"hermes {current} does not match DramaClaw's pinned version {required_text}. "
-            "Run `scripts/setup-hermes.sh` and restart the API."
-        )
-    _checked_hermes_versions[cli_path] = output.splitlines()[0] if output else str(version)
-    _log.info("using %s", _checked_hermes_versions[cli_path])
 
 
 def _workspace_profile_for_agent(agent_profile: str, tool_mode: str, surface: str | None) -> str:
@@ -649,7 +599,16 @@ class HermesPool:
                 f"hermes CLI not found at {cli_path}. "
                 "Run `uv tool install 'hermes-agent[acp]'`."
             )
-        _ensure_supported_hermes_version(cli_path)
+        # No version gate. A version string cannot distinguish the fork from
+        # stock — the fork keeps upstream's version, so `hermes --version`
+        # reads identically for a build that carries the per-turn contract and
+        # one that silently drops it. It checked the weaker property while
+        # costing a manual edit on every upstream alignment.
+        #
+        # `require_hermes_fork` below checks the property we actually depend
+        # on, by behaviour: whether `_meta` survives the ACP router. Hermes is
+        # installed from this project's own fork branch, so which upstream
+        # release it carries is an installation fact, not a runtime check.
         # Checked before the subprocess exists, so a mismatched pair fails here
         # with a cause rather than at the first turn as a connection error.
         require_hermes_fork(cli_path)
