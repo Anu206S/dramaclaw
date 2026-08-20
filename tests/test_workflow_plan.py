@@ -367,6 +367,19 @@ def test_standard_audio_planner_rejects_missing_or_placeholder_narration(monkeyp
         )
         assert result["ok"] is False
         assert result["errors"][0]["path"] == "planner.units.0.narration"
+        # The rejection must be self-contained so the agent fixes the payload
+        # instead of source-diving for the validation rules.
+        assert "narration" in result["errors"][0]["hint"]
+        assert "do NOT" in result["agent_instruction"]
+        # Missing narration and placeholder narration are different mistakes and
+        # must produce different messages: a real narration on another unit does
+        # not satisfy the per-unit requirement, and the error has to say so.
+        message = result["errors"][0]["message"]
+        if narration is None:
+            assert "missing narration" in message
+            assert "EVERY unit" in message
+        else:
+            assert "placeholder" in message
 
 
 def test_custom_items_take_precedence_over_standard_planner(monkeypatch):

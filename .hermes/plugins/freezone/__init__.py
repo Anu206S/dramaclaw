@@ -3308,8 +3308,22 @@ def _handle_get_workflow_skill(args: dict[str, Any], **_: Any) -> str:
         )
     request = dict(args)
     request["compact"] = True
+    package = get_workflow_skill(request)
+    if isinstance(package, dict) and package.get("ok"):
+        # 把编译期最常踩的三个坑在最新鲜的位置(编译前一步)提醒一遍;
+        # SKILL.md 文档层不保证被读到,这里是必经之路。
+        package.setdefault(
+            "agent_instruction",
+            "Next step: compile the intent from this package only (deliverable, "
+            "recipes, and field enums come from here) and call "
+            "freezone_prepare_workflow_draft through tool_call, writing the "
+            "\"name\" field BEFORE \"arguments\". planning_confirmed=true goes at "
+            "the TOP LEVEL of arguments, not inside intent. If include_audio=true, "
+            "EVERY planner unit must carry narration with the literal voice-over "
+            "text for that unit.",
+        )
     return _structured_tool_result(
-        get_workflow_skill(request),
+        package,
         tool_name="freezone_get_workflow_skill",
     )
 
@@ -3465,7 +3479,12 @@ def _normalize_workflow_intent_arg(args: dict[str, Any]) -> tuple[dict[str, Any]
     }
 
 
-def _agent_planning_confirmation_result(project_id: str) -> str:
+def _agent_planning_confirmation_result(
+    project_id: str,
+    *,
+    requested_tool: str = "freezone_prepare_workflow_draft",
+    has_intent: bool = False,
+) -> str:
     response = _request(
         "POST",
         _agent_planning_quote_path(project_id),
@@ -3489,10 +3508,19 @@ def _agent_planning_confirmation_result(project_id: str) -> str:
                 "status": "agent_planning_billing_not_required",
                 "agent_instruction": (
                     "Agent capability billing is not enabled on this edition. Do not mention "
-                    "credits, billing, pricing, editions, or confirmation to the user. Continue "
-                    "the original workflow planning request in this same turn: load the selected "
-                    "Workflow Skill, compile the intent, and call freezone_prepare_workflow_draft "
-                    "with planning_confirmed=true."
+                    "credits, billing, pricing, editions, or confirmation to the user. "
+                    + (
+                        "Continue the original workflow request in this same turn: retry the "
+                        f"same {requested_tool} call with the same arguments plus top-level "
+                        "planning_confirmed=true (not inside intent)."
+                        if has_intent or requested_tool != "freezone_prepare_workflow_draft"
+                        else "Continue the original workflow request in this same turn: first "
+                        "call freezone_get_workflow_skill(skill_id=..., compact=true) to read "
+                        "the planning package (do NOT invent intent fields such as deliverable "
+                        "without it), then compile the full intent and call "
+                        "freezone_prepare_workflow_draft with top-level planning_confirmed=true "
+                        "(not inside intent)."
+                    )
                 ),
             }
         )
@@ -3730,7 +3758,32 @@ def _handle_prepare_workflow_draft(args: dict[str, Any], **_: Any) -> str:
     if intent_error is not None:
         return tool_result(intent_error)
     if not _planning_confirmed_arg(args):
-        return _agent_planning_confirmation_result(project_id)
+        return _agent_planning_confirmation_result(project_id, has_intent=intent is not None)
+    if intent is None:
+        # 模型常把 intent 字段(尤其 planner)平铺在 arguments 顶层而不包进 intent；
+        # 确认之后语义无歧义,直接收拢,省一次报错往返。报价阶段(未确认)不做
+        # 收拢——那时应引导先读规划包,而不是拿自造字段去编译。
+        flattened = {
+            key: args[key]
+            for key in (
+                "schema_version",
+                "skill_id",
+                "user_goal",
+                "planner",
+                "items",
+                "inputs",
+                "assumptions",
+                "include_audio",
+                "include_compose",
+                "summary",
+                "title",
+            )
+            if args.get(key) is not None
+        }
+        if isinstance(flattened.get("planner"), dict) or isinstance(
+            flattened.get("items"), list
+        ):
+            intent = flattened
     if intent is None:
         return tool_result(
             {
@@ -3811,33 +3864,49 @@ def _handle_patch_workflow_draft(args: dict[str, Any], **_: Any) -> str:
             }
         )
     if not _planning_confirmed_arg(args):
-        return _agent_planning_confirmation_result(project_id)
+        return _agent_planning_confirmation_result(
+            project_id, requested_tool="freezone_patch_workflow_draft"
+        )
     changes = args.get("changes")
     if not isinstance(changes, dict):
-        return tool_result(
-            {
-                "ok": False,
-                "status": "workflow_draft_changes_required",
-                "error": "changes must be an object",
-            }
-        )
+        # 模型常把 changes 写成 patch/intent_updates/updates；语义无歧义，直接接受。
+        for alias in ("patch", "intent_updates", "intentUpdates", "updates"):
+            candidate = args.get(alias)
+            if isinstance(candidate, dict):
+                changes = candidate
+                break
     raw_revision = args.get("expected_revision", args.get("expectedRevision"))
+    problems = []
+    if not isinstance(changes, dict):
+        problems.append("changes must be an object holding only the changed intent fields")
     if raw_revision is None:
+        problems.append("expected_revision (the current draft revision integer) is required")
+    expected_revision = None
+    if raw_revision is not None:
+        try:
+            expected_revision = int(raw_revision)
+        except (TypeError, ValueError):
+            problems.append("expected_revision must be an integer")
+    if problems:
+        # 一次性报出全部参数问题并给出完整签名，避免模型逐个试错。
         return tool_result(
             {
                 "ok": False,
-                "status": "workflow_draft_revision_required",
-                "error": "expected_revision is required",
-            }
-        )
-    try:
-        expected_revision = int(raw_revision)
-    except (TypeError, ValueError):
-        return tool_result(
-            {
-                "ok": False,
-                "status": "invalid_workflow_draft_revision",
-                "error": "expected_revision must be an integer",
+                "status": "workflow_draft_patch_args_invalid",
+                "error": "; ".join(problems),
+                "expected_arguments": {
+                    "draft_id": "<current draft_id>",
+                    "expected_revision": "<current revision integer>",
+                    "planning_confirmed": True,
+                    "changes": {"<changed intent field>": "<new value>"},
+                },
+                "agent_instruction": (
+                    "Retry freezone_patch_workflow_draft exactly once with ALL of: "
+                    "draft_id, integer expected_revision matching the current draft "
+                    "revision, top-level planning_confirmed=true, and changes as an "
+                    "object holding only the changed intent fields. Apply every "
+                    "requested change in this single call."
+                ),
             }
         )
     payload, error = _workflow_draft_response(

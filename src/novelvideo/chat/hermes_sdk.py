@@ -391,18 +391,27 @@ class _TurnToolCallGuard:
                     "本轮操作已停止：虾画重复校验同一批画布命令，且没有执行新的写入。"
                     "请重新发送一条明确的继续或重试指令。"
                 )
-        if not _is_dramaclaw_write_tool(
-            tool_name
-        ) and not _is_freezone_canvas_write_tool(tool_name):
-            try:
-                encoded_input = json.dumps(
-                    _read_signature_input(event),
-                    ensure_ascii=False,
-                    sort_keys=True,
-                    default=str,
-                )
-            except (TypeError, ValueError):
-                encoded_input = repr(event.input)
+        if not _is_dramaclaw_write_tool(tool_name) and not _is_freezone_canvas_write_tool(tool_name):
+            if event.input is None:
+                # Hermes "polished" tools (skill_view, read_file, search_files…)
+                # omit rawInput in the ACP event, and _split_tool_title reduces
+                # their titles to one word — without more detail, distinct reads
+                # collapse into one signature and falsely trip the repeated-read
+                # stop. The title alone is not enough either: a chunked read of
+                # one file titles every chunk "read: <path>", so also fold in the
+                # start event's content blocks, which carry the args JSON
+                # (offset/limit included).
+                raw = event.raw if isinstance(event.raw, dict) else {}
+                title = str(raw.get("title") or "")
+                detail = _extract_tool_update_content_text(raw) if raw else ""
+                encoded_input = f"{title}|{detail[:600]}"
+            else:
+                try:
+                    encoded_input = json.dumps(
+                        event.input, ensure_ascii=False, sort_keys=True, default=str
+                    )
+                except (TypeError, ValueError):
+                    encoded_input = repr(event.input)
             signature = f"{tool_name}:{encoded_input}"
             repeat_count = self._read_signature_counts.get(signature, 0) + 1
             self._read_signature_counts[signature] = repeat_count
@@ -809,7 +818,7 @@ class HermesSdkThread:
         self.id: str = session_id or ""
         self._is_new = session_id is None
         self._proc: asyncio.subprocess.Process | None = None
-        self._stderr_drain: asyncio.Task | None = None
+        self._stderr_task: asyncio.Task | None = None
         self._req_counter = 0
         self._closed = False
         self._initialized = False
@@ -902,39 +911,51 @@ class HermesSdkThread:
         )
         # Consume stderr for as long as the worker lives. It was piped and never
         # read: the pipe fills, the worker blocks on its next write, and the
-        # turn stalls for a reason nothing reports. It also meant the worker's
-        # own diagnosis of a failure was invisible — a refused egress surfaced
-        # to us as an unexplained connection error minutes later.
-        self._stderr_drain = asyncio.create_task(self._drain_stderr())
+        # turn stalls for a reason nothing reports.
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
 
     async def _drain_stderr(self) -> None:
-        """Log what the worker reports about itself, and nothing it processes.
+        """Keep the pipe drained, and report only what the worker says about itself.
 
-        Deliberately narrow: a level, an error type and the pid. Worker stderr
-        carries prompts, tool output and provider bodies, so forwarding lines
-        verbatim would route user content into DramaClaw's logs through a path
-        no telemetry allowlist governs.
+        Two requirements met by one loop, because both sides of this merge had
+        written their own. Freezone needs the sitecustomize startup warning
+        promoted so a denied tool that survived registry cleanup is visible in
+        the backend console. The evidence plane needs a worker's own failure to
+        be diagnosable at all — a refused egress used to reach us as an
+        unexplained connection error minutes later.
+
+        What neither may do is forward stderr verbatim at anything above debug.
+        Worker stderr carries prompts, tool output and provider bodies, so a
+        warning-level echo would route user content into DramaClaw's logs
+        through a path no telemetry allowlist governs. The Freezone line is
+        promoted because it is a fixed marker; an error is reduced to its
+        exception type and the pid.
         """
-        stream = self._proc.stderr if self._proc else None
-        if stream is None:
+        proc = self._proc
+        if proc is None or proc.stderr is None:
             return
-        pid = self._proc.pid if self._proc else None
+        pid = proc.pid
         try:
             while True:
-                line = await stream.readline()
+                line = await proc.stderr.readline()
                 if not line:
                     return
-                text = line.decode("utf-8", "replace")
-                if not _WORKER_DIAGNOSTIC.search(text.strip()):
+                text = line.decode("utf-8", "replace").rstrip()
+                if not text:
                     continue
-                match = _WORKER_ERROR_TYPE.search(text)
-                _log.warning(
-                    "hermes worker pid=%s reported %s",
-                    pid, match.group(1) if match else "an error")
+                if "DramaClaw Freezone warning" in text:
+                    _log.warning("hermes[%s] %s", self._username, text)
+                elif _WORKER_DIAGNOSTIC.search(text):
+                    match = _WORKER_ERROR_TYPE.search(text)
+                    _log.warning(
+                        "hermes worker pid=%s reported %s",
+                        pid, match.group(1) if match else "an error")
+                else:
+                    _log.debug("hermes[%s] %s", self._username, text)
         except asyncio.CancelledError:
             raise
-        except Exception:  # noqa: BLE001 - draining must not kill the turn
-            _log.debug("hermes worker stderr drain stopped", exc_info=True)
+        except Exception:  # noqa: BLE001 - draining must not take down the turn
+            return
 
     async def _read_until_id(
         self, target_id: int, timeout: float
@@ -1518,16 +1539,14 @@ class HermesSdkThread:
         if self._closed:
             return
         self._closed = True
-        # The drain's lifetime is the worker's. Cancelling it here rather than
-        # letting it end on EOF means a worker killed rather than closed does
-        # not leave a task waiting on a dead pipe.
-        drain = getattr(self, "_stderr_drain", None)
-        if drain is not None and not drain.done():
-            drain.cancel()
-            # Awaited, not merely cancelled: cancellation only requests it, and
-            # returning here would leave the task pending long enough for the
-            # loop to complain about it at shutdown.
-            await asyncio.gather(drain, return_exceptions=True)
+        # The drain's lifetime is the worker's. Cancelled here rather than left
+        # to end on EOF, so a worker killed rather than closed leaves no task
+        # waiting on a dead pipe — and awaited, because cancellation only
+        # requests it and returning would leave the task pending into shutdown.
+        if self._stderr_task is not None:
+            self._stderr_task.cancel()
+            await asyncio.gather(self._stderr_task, return_exceptions=True)
+            self._stderr_task = None
         if self._proc is None:
             return
         try:

@@ -18,6 +18,7 @@ PATCHABLE_FIELDS = {
     "user_goal",
 }
 MERGED_OBJECT_FIELDS = {"inputs"}
+IDENTITY_ECHO_FIELDS = {"skill_id", "draft_id", "canvas_id"}
 
 
 def build_workflow_draft_patch(
@@ -27,6 +28,15 @@ def build_workflow_draft_patch(
     compile_intent: Any,
     run_after_create: bool | None = None,
 ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
+    # 模型常把 skill_id/draft_id 原样回显进 changes；等值回显不是修改,直接忽略。
+    changes = {
+        key: value
+        for key, value in changes.items()
+        if not (
+            key in IDENTITY_ECHO_FIELDS
+            and str(value) == str(payload.get(key) or "")
+        )
+    }
     unsupported = sorted(set(changes) - PATCHABLE_FIELDS)
     if unsupported:
         return None, {
@@ -34,6 +44,13 @@ def build_workflow_draft_patch(
             "status": "invalid_workflow_draft_patch",
             "error": f"unsupported workflow draft field: {unsupported[0]}",
             "unsupported_fields": unsupported,
+            "patchable_fields": sorted(PATCHABLE_FIELDS),
+            "agent_instruction": (
+                "Retry freezone_patch_workflow_draft exactly once, keeping only "
+                "patchable fields in changes: "
+                + ", ".join(sorted(PATCHABLE_FIELDS))
+                + ". Drop every other key."
+            ),
         }
     intent = deepcopy(payload.get("intent") or {})
     before_intent = deepcopy(intent)
