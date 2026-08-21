@@ -25,7 +25,14 @@
     "logoHomeTooltip": "Click to return to project management center"
   },
   "loginCinematic": {
-    "moreInfo": "More information"
+    "moreInfo": "More information",
+    "announcement": {
+      "open": "View announcement",
+      "title": "Announcement",
+      "close": "Close announcement",
+      "confirm": "Got it",
+      "body": "A channel release is going live between <time>18:00 and 19:00</time>. Please avoid using the product during that window. <hl>Stay tuned!</hl>"
+    }
   },
   "downloadPage": {
     "nav": {

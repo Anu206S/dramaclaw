@@ -25,7 +25,14 @@
     "logoHomeTooltip": "点击返回项目管理中心"
   },
   "loginCinematic": {
-    "moreInfo": "更多信息"
+    "moreInfo": "更多信息",
+    "announcement": {
+      "open": "查看公告",
+      "title": "公告",
+      "close": "关闭公告",
+      "confirm": "我知道了",
+      "body": "渠道版本即将上线，更新时间在 <time>18:00-19:00</time> 点，请避开这个时间段使用。<hl>敬请期待！</hl>"
+    }
   },
   "downloadPage": {
     "nav": {
