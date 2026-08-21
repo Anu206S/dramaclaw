@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import threading
+import time
 from pathlib import Path
 
 import pytest
@@ -141,6 +142,14 @@ def test_second_call_reuses_the_cached_variant(tmp_path, monkeypatch):
     assert thumbnails.ensure_thumbnail(tmp_path, source, "thumb") is not None
 
 
+def _age_out(variant_dir: Path) -> None:
+    """Push every variant in `variant_dir` past the sweep's grace period."""
+
+    stale = time.time() - thumbnails._SUPERSEDED_GRACE_SECONDS - 60
+    for entry in variant_dir.iterdir():
+        os.utime(entry, (stale, stale))
+
+
 def test_regenerated_source_invalidates_the_variant(tmp_path):
     source = _write_png(tmp_path / "a.png", (1600, 900), color=(10, 10, 200))
     first = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
@@ -150,6 +159,9 @@ def test_regenerated_source_invalidates_the_variant(tmp_path):
     # Same path, different content and a newer mtime — what a regenerate does.
     _write_png(tmp_path / "a.png", (1600, 900), color=(240, 240, 10))
     os.utime(source, ns=(source.stat().st_mtime_ns + 10**9,) * 2)
+    # Past the window that protects a variant a response may still be opening,
+    # so what this asserts below is the sweep and not the grace period.
+    _age_out(first.parent)
 
     second = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
     assert second is not None
@@ -170,10 +182,63 @@ def test_superseded_revisions_do_not_accumulate(tmp_path):
         # move the clock rather than relying on the size half of the stamp.
         moved = _MTIME_AFTER + index * 10**9
         os.utime(source, ns=(moved, moved))
+        # Every revision so far is old enough to sweep; without this they are
+        # all inside the window that protects an in-flight response.
+        if variant_dir.exists():
+            _age_out(variant_dir)
         assert thumbnails.ensure_thumbnail(tmp_path, source, "thumb") is not None
 
     current = thumbnails.thumbnail_path(tmp_path, source, "thumb")
     assert [entry.name for entry in variant_dir.iterdir()] == [current.name]
+
+
+def test_a_late_render_does_not_delete_the_revision_that_replaced_it(tmp_path):
+    """Two revisions can render at once, and the older one can finish last.
+
+    They have different destinations and so usually different stripe locks, so
+    nothing serialises them. If the straggler swept the directory flat it would
+    delete the variant that superseded it -- and not merely cost a rebuild: the
+    route hands `FileResponse` a path it opens later, so unlinking underneath a
+    live response fails the request.
+    """
+
+    source = _write_png(tmp_path / "b.png", (1600, 900))
+    os.utime(source, ns=(_MTIME_AFTER, _MTIME_AFTER))
+    stale_dest = thumbnails.thumbnail_path(tmp_path, source, "thumb")
+
+    _write_png(source, (1600, 900), color=(200, 50, 50))
+    moved = _MTIME_AFTER + 10**9
+    os.utime(source, ns=(moved, moved))
+    current = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
+    assert current is not None and current != stale_dest
+
+    # The older render lands now, after the newer one is already on disk. Age
+    # the directory first so the grace period is not what saves it.
+    _age_out(current.parent)
+    thumbnails._render(source, stale_dest, thumbnails.VARIANTS["thumb"])
+
+    assert current.exists(), "a late render deleted the revision that replaced it"
+
+
+def test_a_just_written_variant_survives_the_sweep(tmp_path):
+    """The sweep must not race the gap between handing out a path and opening it.
+
+    `fresh_thumbnail` returns a path and Starlette opens it from its own
+    `__call__`, long after the handler returned. A variant young enough to be
+    inside that gap is left for a later render to collect.
+    """
+
+    source = _write_png(tmp_path / "c.png", (1600, 900))
+    os.utime(source, ns=(_MTIME_AFTER, _MTIME_AFTER))
+    serving = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
+    assert serving is not None
+
+    _write_png(source, (1600, 900), color=(200, 50, 50))
+    moved = _MTIME_AFTER + 10**9
+    os.utime(source, ns=(moved, moved))
+    assert thumbnails.ensure_thumbnail(tmp_path, source, "thumb") is not None
+
+    assert serving.exists(), "swept a variant a response could still be opening"
 
 
 def test_variant_follows_the_orientation_the_browser_shows(tmp_path):

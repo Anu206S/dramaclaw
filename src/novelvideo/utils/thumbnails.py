@@ -28,11 +28,25 @@ before variants existed, for no effect a user could see.
 
 Putting the revision in the path removes the assumption instead of tightening
 it: whatever mtime the filesystem decides to hand the variant, nothing reads
-it. Seconds rather than nanoseconds for the same reason — sub-second mtime is
-not something every mount reports, let alone reports stably, and a stamp that
-wobbles between two stats of an unchanged file would land us right back on the
-re-render treadmill. Size rides along so a rewrite inside the same second still
-invalidates.
+it.
+
+Seconds rather than nanoseconds, and that costs something worth naming. A
+source rewritten in place, inside the same second, to a byte-identical size
+keeps its stamp, so the previous variant is served until the source changes
+again. The finer clock would close that, and is exactly what must not be
+trusted here: ossfs derives an object's mtime from OSS metadata, which is
+second-granularity, but may serve the local write time — nanoseconds and all —
+until its attribute cache expires. A stamp that wobbles between two stats of an
+unchanged file puts every request back on the re-render treadmill, silently,
+which is the failure this module exists to undo. Serving one stale thumbnail is
+the smaller loss, so the coarser clock wins. Size rides along and catches the
+same-second rewrites that do change length, which is most of them.
+
+Nothing in the tree is written that way today — generated images and uploads
+both carry a job id or a timestamp in their names, so a rewrite lands on a new
+path. Should something start overwriting sources in place, close this by
+deleting the source's variant directory at the write site rather than by
+reaching for a finer clock.
 
 Building and serving are deliberately separate. ``fresh_thumbnail`` is what a
 request calls and it never builds; ``ensure_thumbnail`` builds and only ever
@@ -50,6 +64,7 @@ import logging
 import os
 import queue
 import threading
+import time
 from collections.abc import Iterable
 from pathlib import Path
 from typing import Optional
@@ -352,22 +367,60 @@ def _render(source: Path, dest: Path, max_edge: int) -> Optional[Path]:
     return dest
 
 
+# How long a superseded variant is left alone before it may be swept. A route
+# hands back a path and Starlette opens it later, from its own `__call__` —
+# unlink in that gap and the response dies with FileNotFoundError instead of
+# serving. Nothing legitimate sits in that gap for a minute.
+_SUPERSEDED_GRACE_SECONDS = 60.0
+
+
+def _stamp_parts(name: str) -> Optional[tuple[int, int]]:
+    """``(seconds, size)`` out of a variant file name, or ``None`` if unparsable.
+
+    Split from the right: the size is the last field, and everything before it
+    is the mtime — which is signed, so it may carry a ``-`` of its own.
+    """
+
+    if not name.endswith(".webp"):
+        return None
+    seconds, _, size = name[: -len(".webp")].rpartition("-")
+    try:
+        return int(seconds), int(size)
+    except ValueError:
+        return None
+
+
 def _discard_superseded(dest: Path) -> None:
-    """Drop the revisions this variant replaces.
+    """Drop the revisions this variant demonstrably replaces.
 
     A new revision writes a new file name instead of overwriting the old one,
     so without this the directory would keep one copy per revision of the
-    source forever. Everything beside ``dest`` is by construction an older
-    variant of the same source at the same tier, which is what makes this a
-    single small listing rather than a filtered scan.
+    source forever.
 
-    Best effort in both directions. A failure only costs disk — the variant the
-    caller asked for is already in place. And a render that finishes out of
-    order can delete a *newer* sibling, which costs one rebuild the next time
-    that revision is asked for; the alternative is holding a lock across the
-    decode, which is the thing the striped locks exist to avoid.
+    Two things this deliberately will not do, both of which cost a live request
+    rather than disk:
+
+    *Delete forwards.* Renders of two revisions can be in flight at once — they
+    have different destinations and therefore usually different stripe locks —
+    and the older one can finish last. It must not take the newer variant with
+    it, so a sibling is swept only when its own stamp is strictly older than
+    ours. Equal seconds with a different size is not an ordering, so those are
+    left alone too; the cost of keeping one extra file is a rounding error
+    against getting this wrong.
+
+    *Delete something that may already be on its way out.* ``fresh_thumbnail``
+    hands the route a path, and ``FileResponse`` does not open it until well
+    after the handler returned. A file young enough to be inside that window is
+    skipped and swept by a later render instead.
+
+    Best effort throughout: every failure here costs disk, and the variant the
+    caller asked for is already in place.
     """
 
+    ours = _stamp_parts(dest.name)
+    if ours is None:
+        return
+    now = time.time()
     try:
         with os.scandir(dest.parent) as entries:
             for entry in entries:
@@ -375,7 +428,12 @@ def _discard_superseded(dest: Path) -> None:
                 # the one that is about to supersede this one.
                 if entry.name == dest.name or entry.name.endswith(".tmp"):
                     continue
+                theirs = _stamp_parts(entry.name)
+                if theirs is None or theirs[0] >= ours[0]:
+                    continue
                 try:
+                    if now - entry.stat().st_mtime < _SUPERSEDED_GRACE_SECONDS:
+                        continue
                     os.unlink(entry.path)
                 except OSError:
                     pass
