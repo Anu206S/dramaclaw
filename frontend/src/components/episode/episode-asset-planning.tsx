@@ -88,6 +88,7 @@ interface EpisodeAssetPlanningProps {
   propCostDisplay?: string | null;
   propPromotion?: CreditPromotionDisplay | null;
   identityPending?: boolean;
+  identityDisabledReason?: string | null;
   scenePending?: boolean;
   propPending?: boolean;
   labels: EpisodeAssetPlanningLabels;
@@ -150,6 +151,7 @@ export function EpisodeAssetPlanning({
   propCostDisplay,
   propPromotion,
   identityPending = false,
+  identityDisabledReason,
   scenePending = false,
   propPending = false,
   labels,
@@ -217,6 +219,7 @@ export function EpisodeAssetPlanning({
           defaultLabel={labels.defaultIdentity}
           actionLabel={hasIdentities ? labels.replanIdentities : labels.planIdentities}
           pending={identityPending}
+          disabledReason={identityDisabledReason}
           onPlan={onPlanIdentities}
           onSetDefault={handleSetDefaultIdentity}
         />
@@ -365,6 +368,7 @@ function IdentityAssetCard({
   defaultLabel,
   actionLabel,
   pending,
+  disabledReason,
   onPlan,
   onSetDefault,
 }: {
@@ -378,6 +382,7 @@ function IdentityAssetCard({
   defaultLabel: string;
   actionLabel: string;
   pending: boolean;
+  disabledReason?: string | null;
   onPlan: () => void;
   onSetDefault?: (characterName: string, identityId: string) => void;
 }) {
@@ -399,7 +404,8 @@ function IdentityAssetCard({
           variant="ghost"
           size="sm"
           onClick={onPlan}
-          disabled={pending}
+          disabled={pending || Boolean(disabledReason)}
+          title={disabledReason || actionLabel}
           className={ASSET_PLAN_ACTION_BUTTON_CLASS}
         >
           {pending && <Loader2 className="animate-spin" />}
@@ -421,7 +427,7 @@ function IdentityAssetCard({
           ))
         ) : (
           <span className="text-xs italic text-muted-foreground/60">
-            {emptyLabel}
+            {disabledReason || emptyLabel}
           </span>
         )}
       </div>

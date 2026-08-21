@@ -3,6 +3,11 @@ import sys
 
 import pytest
 
+from novelvideo.identity_prerequisites import (
+    IDENTITY_CHARACTERS_REQUIRED_CODE,
+    IDENTITY_CHARACTERS_REQUIRED_MESSAGE,
+    IdentityCharactersRequiredError,
+)
 from novelvideo.novel_source import (
     NOVEL_IMPORT_REQUIRED_CODE,
     NOVEL_IMPORT_REQUIRED_MESSAGE,
@@ -70,6 +75,18 @@ def test_task_failure_maps_novel_import_prerequisite(monkeypatch) -> None:
     assert handled is True
     assert error == NOVEL_IMPORT_REQUIRED_MESSAGE
     assert metadata == {"error_code": NOVEL_IMPORT_REQUIRED_CODE}
+
+
+def test_task_failure_maps_identity_character_prerequisite(monkeypatch) -> None:
+    celery_tasks = _import_celery_tasks(monkeypatch)
+
+    error, metadata, handled = celery_tasks._project_task_failure_for_exception(
+        IdentityCharactersRequiredError()
+    )
+
+    assert handled is True
+    assert error == IDENTITY_CHARACTERS_REQUIRED_MESSAGE
+    assert metadata == {"error_code": IDENTITY_CHARACTERS_REQUIRED_CODE}
 
 
 def test_celery_task_failure_maps_output_moderation(monkeypatch) -> None:
