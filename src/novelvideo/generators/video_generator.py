@@ -1935,29 +1935,31 @@ class NewApiVideoGenerator(VideoGeneratorBase):
             self.base_url = ""
         else:
             from novelvideo.config import get_effective_newapi_gateway_config
+            from novelvideo.shared.runtime_env import is_ce_effective
 
             gateway = get_effective_newapi_gateway_config()
-            try:
-                from novelvideo.model_gateway_settings import (
-                    MODE_CUSTOM,
-                    MODE_HYBRID,
-                    get_ce_newapi_config_for_mode,
-                    get_effective_newapi_config,
-                    get_newapi_media_model_mappings,
-                )
+            if is_ce_effective():
+                try:
+                    from novelvideo.model_gateway_settings import (
+                        MODE_CUSTOM,
+                        MODE_HYBRID,
+                        get_ce_newapi_config_for_mode,
+                        get_effective_newapi_config,
+                        get_newapi_media_model_mappings,
+                    )
 
-                active_gateway = get_effective_newapi_config()
-                media_mapping = get_newapi_media_model_mappings().get(
-                    model or NEWAPI_VIDEO_MODEL,
-                    {},
-                )
-                if (
-                    active_gateway.mode == MODE_HYBRID
-                    and media_mapping.get("provider") == "comfyui"
-                ):
-                    gateway = get_ce_newapi_config_for_mode(MODE_CUSTOM)
-            except (RuntimeError, ImportError):
-                pass
+                    active_gateway = get_effective_newapi_config()
+                    media_mapping = get_newapi_media_model_mappings().get(
+                        model or NEWAPI_VIDEO_MODEL,
+                        {},
+                    )
+                    if (
+                        active_gateway.mode == MODE_HYBRID
+                        and media_mapping.get("provider") == "comfyui"
+                    ):
+                        gateway = get_ce_newapi_config_for_mode(MODE_CUSTOM)
+                except (RuntimeError, ImportError):
+                    pass
             self.api_key = api_key if api_key is not None else gateway.api_key
             self.base_url = (endpoint or gateway.base_url).rstrip("/")
         self.model = model or NEWAPI_VIDEO_MODEL
@@ -4325,26 +4327,28 @@ def newapi_video_backend_options(
     *, include_seedance2_variants: bool = False
 ) -> dict[str, str]:
     from novelvideo.config import NEWAPI_VIDEO_MODELS
+    from novelvideo.shared.runtime_env import is_ce_effective
 
     models = [
         model
         for model in NEWAPI_VIDEO_MODELS
         if model not in NEWAPI_DISABLED_VIDEO_MODELS
     ]
-    try:
-        from novelvideo.model_gateway_settings import get_newapi_media_model_mappings
+    if is_ce_effective():
+        try:
+            from novelvideo.model_gateway_settings import get_newapi_media_model_mappings
 
-        for model, mapping in get_newapi_media_model_mappings().items():
-            media_type = str(mapping.get("mediaType") or "video").strip().lower()
-            if (
-                mapping.get("provider") == "comfyui"
-                and mapping.get("enabled") is not False
-                and media_type == "video"
-                and model not in models
-            ):
-                models.append(model)
-    except (RuntimeError, ImportError):
-        pass
+            for model, mapping in get_newapi_media_model_mappings().items():
+                media_type = str(mapping.get("mediaType") or "video").strip().lower()
+                if (
+                    mapping.get("provider") == "comfyui"
+                    and mapping.get("enabled") is not False
+                    and media_type == "video"
+                    and model not in models
+                ):
+                    models.append(model)
+        except (RuntimeError, ImportError):
+            pass
     if include_seedance2_variants:
         for model in NEWAPI_MAINLINE_SEEDANCE2_MODELS:
             if model not in models:
