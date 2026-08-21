@@ -138,6 +138,16 @@ describe("EpisodeAssetPlanning", () => {
     expect(screen.getByRole("button", { name: "规划场景" })).toBeDisabled();
   });
 
+  it("blocks identity planning until characters are ready", () => {
+    renderPlanning({
+      selectedCategory: "identities",
+      identityDisabledReason: "请先从知识图谱构建角色",
+    });
+
+    expect(screen.getByText("请先从知识图谱构建角色")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "规划身份" })).toBeDisabled();
+  });
+
   it("shows planned character identities grouped by character with the default marked", async () => {
     const user = userEvent.setup();
     const onPlanIdentities = vi.fn();

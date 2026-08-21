@@ -551,7 +551,11 @@ def _project_task_timeout_seconds() -> int:
 def _project_task_failure_for_exception(
     exc: BaseException,
 ) -> tuple[str, dict[str, Any], bool]:
+    from novelvideo.identity_prerequisites import IdentityPlanningPrerequisiteError
     from novelvideo.novel_source import NovelImportRequiredError
+
+    if isinstance(exc, IdentityPlanningPrerequisiteError):
+        return str(exc), {"error_code": exc.error_code}, True
 
     if isinstance(exc, NovelImportRequiredError):
         return str(exc), {"error_code": exc.error_code}, True

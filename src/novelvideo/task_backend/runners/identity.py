@@ -6,10 +6,14 @@ import asyncio
 from typing import Any
 
 from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
+from novelvideo.identity_prerequisites import (
+    IdentityCharactersBuildingError,
+    require_identity_characters,
+)
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
-from novelvideo.task_state import get_task_manager
+from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
 
 def _build_identity_planner_result(
@@ -83,6 +87,14 @@ async def _run_identity_planner(
     )
     await cognee_store.initialize()
     await cognee_store.load_graph_state()
+
+    # API admission performs the same check before enqueue/credit reservation.
+    # Keep this runner-side gate as the final defence against state races and
+    # non-HTTP producers.
+    build_task = manager.get_task_for_project(ctx, "build_characters", 0)
+    if build_task is not None and build_task.status in ACTIVE_PROJECT_TASK_STATUSES:
+        raise IdentityCharactersBuildingError()
+    require_identity_characters(cognee_store.get_all_characters())
 
     episode_obj = cognee_store.get_episode(episode)
     if episode_obj is None:

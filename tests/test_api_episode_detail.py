@@ -394,9 +394,26 @@ async def test_plan_episode_identities_enqueues_celery_task(monkeypatch):
 
     async def fail_if_sync_store_is_used(*args, **kwargs):
         raise AssertionError("identity planning API must enqueue a Celery task")
+    class ReadyCharacterStore:
+        def get_all_characters(self):
+            return [SimpleNamespace(name="秦")]
+
+        async def close(self):
+            pass
+
+    class IdleTaskManager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return None
+
     monkeypatch.setattr(episodes, "resolve_project_scope", resolve_project_scope)
     monkeypatch.setattr(episodes, "get_task_backend", lambda: SimpleNamespace(enqueue_project_task=enqueue_project_task))
     monkeypatch.setattr(episodes, "make_cognee_store", fail_if_sync_store_is_used)
+    monkeypatch.setattr(
+        episodes,
+        "make_sqlite_store_for_context",
+        lambda _ctx: _async_value(ReadyCharacterStore()),
+    )
+    monkeypatch.setattr(episodes, "get_task_manager", IdleTaskManager)
 
     response = await episodes.plan_episode_identities(
         project="proj_123",
@@ -423,9 +440,124 @@ async def test_plan_episode_identities_enqueues_celery_task(monkeypatch):
     ]
 
 
+async def _async_value(value):
+    return value
+
+
+@pytest.mark.asyncio
+async def test_plan_episode_identities_rejects_empty_character_library_before_enqueue(
+    monkeypatch,
+):
+    from novelvideo.api.routes import episodes
+    from novelvideo.identity_prerequisites import (
+        IDENTITY_CHARACTERS_REQUIRED_CODE,
+        IDENTITY_CHARACTERS_REQUIRED_MESSAGE,
+    )
+
+    ctx = SimpleNamespace(project_id="proj_123")
+
+    async def resolve_project_scope(
+        project: str, user: dict, required_role: str = "viewer"
+    ):
+        return SimpleNamespace(ctx=ctx)
+
+    class EmptyCharacterStore:
+        def get_all_characters(self):
+            return []
+
+        async def close(self):
+            pass
+
+    class IdleTaskManager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return None
+
+    async def reject_enqueue(*_args, **_kwargs):
+        raise AssertionError("identity planning must not enqueue without characters")
+
+    monkeypatch.setattr(episodes, "resolve_project_scope", resolve_project_scope)
+    monkeypatch.setattr(episodes, "get_task_manager", IdleTaskManager)
+    monkeypatch.setattr(
+        episodes,
+        "make_sqlite_store_for_context",
+        lambda _ctx: _async_value(EmptyCharacterStore()),
+    )
+    monkeypatch.setattr(
+        episodes,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=reject_enqueue),
+    )
+
+    response = await episodes.plan_episode_identities(
+        project="proj_123",
+        episode_num=1,
+        user={"username": "admin"},
+    )
+
+    assert response == {
+        "ok": False,
+        "code": IDENTITY_CHARACTERS_REQUIRED_CODE,
+        "error": IDENTITY_CHARACTERS_REQUIRED_MESSAGE,
+    }
+
+
+@pytest.mark.asyncio
+async def test_plan_episode_identities_rejects_active_character_build_before_enqueue(
+    monkeypatch,
+):
+    from novelvideo.api.routes import episodes
+    from novelvideo.identity_prerequisites import (
+        IDENTITY_CHARACTERS_BUILDING_CODE,
+        IDENTITY_CHARACTERS_BUILDING_MESSAGE,
+    )
+
+    ctx = SimpleNamespace(project_id="proj_123")
+
+    async def resolve_project_scope(
+        project: str, user: dict, required_role: str = "viewer"
+    ):
+        return SimpleNamespace(ctx=ctx)
+
+    class BuildingTaskManager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return SimpleNamespace(status="running")
+
+    async def reject_store_open(*_args, **_kwargs):
+        raise AssertionError(
+            "active character build must be rejected before reading characters"
+        )
+
+    async def reject_enqueue(*_args, **_kwargs):
+        raise AssertionError(
+            "identity planning must not enqueue during character build"
+        )
+
+    monkeypatch.setattr(episodes, "resolve_project_scope", resolve_project_scope)
+    monkeypatch.setattr(episodes, "get_task_manager", BuildingTaskManager)
+    monkeypatch.setattr(episodes, "make_sqlite_store_for_context", reject_store_open)
+    monkeypatch.setattr(
+        episodes,
+        "get_task_backend",
+        lambda: SimpleNamespace(enqueue_project_task=reject_enqueue),
+    )
+
+    response = await episodes.plan_episode_identities(
+        project="proj_123",
+        episode_num=1,
+        user={"username": "admin"},
+    )
+
+    assert response == {
+        "ok": False,
+        "code": IDENTITY_CHARACTERS_BUILDING_CODE,
+        "error": IDENTITY_CHARACTERS_BUILDING_MESSAGE,
+    }
+
+
 @pytest.mark.asyncio
 async def test_plan_episode_scenes_returns_updated_episode_detail(tmp_path, monkeypatch):
     from novelvideo.api.routes import episodes
+
     episode = NovelEpisode(number=1, title="第一集", beat_source_text="第一行")
     store = _CogneeEpisodeStore(episode)
     _patch_project_and_cognee_store(monkeypatch, episodes, tmp_path, store)
