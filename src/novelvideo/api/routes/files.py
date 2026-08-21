@@ -32,8 +32,10 @@ def _variant_cache_control(request: Request | None) -> str:
 
     So: versioned URL -> cache hard, the URL changes when the bytes do.
     Bare URL -> revalidate, and let ``FileResponse``'s ETag/Last-Modified turn
-    that into a cheap 304. Variants are stamped with their source's mtime, so
-    the validator moves exactly when the source does.
+    that into a cheap 304. A regenerated source is served out of a different
+    variant file (the revision is part of its path, see
+    ``novelvideo.utils.thumbnails``), so the validator moves exactly when the
+    source does.
     """
 
     params = request.query_params if request is not None else {}

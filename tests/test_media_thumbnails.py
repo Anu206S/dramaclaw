@@ -92,7 +92,16 @@ def test_builds_webp_within_the_variant_budget(tmp_path):
     dest = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
 
     assert dest is not None
-    assert dest == tmp_path / "_thumbs" / "thumb" / "freezone" / "_outputs" / "big.png.webp"
+    stat = source.stat()
+    assert dest == (
+        tmp_path
+        / "_thumbs"
+        / "thumb"
+        / "freezone"
+        / "_outputs"
+        / "big.png"
+        / f"{int(stat.st_mtime)}-{stat.st_size}.webp"
+    )
     with Image.open(dest) as im:
         assert im.format == "WEBP"
         assert max(im.size) <= thumbnails.VARIANTS["thumb"]
@@ -100,13 +109,25 @@ def test_builds_webp_within_the_variant_budget(tmp_path):
     assert dest.stat().st_size < source.stat().st_size
 
 
-def test_variant_is_stamped_with_the_source_mtime(tmp_path):
+def test_a_variant_is_found_whatever_mtime_the_filesystem_gave_it(tmp_path):
+    """The production failure, as a test.
+
+    The project tree is an ossfs mount, and a file lands there carrying the
+    time it was written no matter what the writer asked for. The first version
+    of this cache stamped the source's mtime onto the variant and called it
+    current when the two matched, so on that mount every lookup missed, every
+    request re-rendered the variant it had just discarded, and every response
+    was still the original. Nothing may read a variant's own timestamps.
+    """
+
     source = _write_png(tmp_path / "a.png")
+    built = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
+    assert built is not None
 
-    dest = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
+    os.utime(built, ns=(_MTIME_AFTER, _MTIME_AFTER))
 
-    assert dest is not None
-    assert dest.stat().st_mtime_ns == source.stat().st_mtime_ns
+    assert thumbnails.fresh_thumbnail(tmp_path, source, "thumb") == built
+    assert thumbnails.ensure_thumbnail(tmp_path, source, "thumb") == built
 
 
 def test_second_call_reuses_the_cached_variant(tmp_path, monkeypatch):
@@ -133,7 +154,26 @@ def test_regenerated_source_invalidates_the_variant(tmp_path):
     second = thumbnails.ensure_thumbnail(tmp_path, source, "thumb")
     assert second is not None
     assert second.read_bytes() != first_bytes
-    assert second.stat().st_mtime_ns == source.stat().st_mtime_ns
+    # A revision is a distinct file rather than an overwrite, so the one it
+    # supersedes has to be swept or the cache grows a copy per regeneration.
+    assert second != first
+    assert not first.exists()
+
+
+def test_superseded_revisions_do_not_accumulate(tmp_path):
+    source = _write_png(tmp_path / "a.png", (1600, 900))
+    variant_dir = thumbnails.thumbnail_path(tmp_path, source, "thumb").parent
+
+    for index, shade in enumerate((20, 90, 160, 230)):
+        _write_png(source, (1600, 900), color=(shade, shade, shade))
+        # A solid PNG of the same size can encode to the same byte count, so
+        # move the clock rather than relying on the size half of the stamp.
+        moved = _MTIME_AFTER + index * 10**9
+        os.utime(source, ns=(moved, moved))
+        assert thumbnails.ensure_thumbnail(tmp_path, source, "thumb") is not None
+
+    current = thumbnails.thumbnail_path(tmp_path, source, "thumb")
+    assert [entry.name for entry in variant_dir.iterdir()] == [current.name]
 
 
 def test_variant_follows_the_orientation_the_browser_shows(tmp_path):
@@ -498,6 +538,40 @@ def test_a_regenerated_source_is_revalidated_to_the_new_variant(monkeypatch, tmp
     )
     assert stale.status_code == 200
     assert stale.content == second.content
+
+
+def test_variants_survive_a_mount_that_rewrites_the_stamp(monkeypatch, tmp_path):
+    """ossfs, simulated end to end.
+
+    There the rename behind a variant write is a server-side copy, and the
+    object comes back carrying the copy's time rather than the one that was
+    stamped on it. This is the shape of the bug that made the first version of
+    this feature a no-op online, so it is checked through the route rather than
+    against the cache helpers alone.
+    """
+
+    real_replace = os.replace
+
+    def replace_and_lose_the_stamp(src, dst):
+        real_replace(src, dst)
+        # Only the cache, so patching `os.replace` process-wide cannot disturb
+        # anything else this test happens to run through.
+        if thumbnails.THUMB_ROOT in Path(dst).parts:
+            os.utime(dst, ns=(_MTIME_AFTER, _MTIME_AFTER))
+
+    monkeypatch.setattr(thumbnails.os, "replace", replace_and_lose_the_stamp)
+
+    source = _write_png(tmp_path / "freezone" / "_outputs" / "big.png", (2000, 1200))
+    _warm(tmp_path, source, "thumb")
+    client = _client(monkeypatch, tmp_path)
+
+    response = client.get(
+        "/projects/demo/media/freezone/_outputs/big.png", params={"st_thumb": "thumb"}
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"] == "image/webp"
+    assert len(response.content) < source.stat().st_size
 
 
 def test_a_cold_variant_request_serves_the_original_and_warms_up_behind_it(

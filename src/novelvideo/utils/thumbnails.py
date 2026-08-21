@@ -7,17 +7,32 @@ free, nine such images cost ~2.1s of main-thread decode + raster in the
 browser and drop seven frames. Serving a pre-shrunk variant removes that
 work entirely (measured: 105.4MB -> 0.23MB, 2156ms of long tasks -> 0).
 
-The cache is addressed purely by source path::
+The cache is addressed by the source's path *and revision*::
 
-    <project_dir>/_thumbs/<variant>/<path relative to project_dir>.webp
+    <project_dir>/_thumbs/<variant>/<path relative to project_dir>/<stamp>.webp
 
 so nothing about it leaks into a data schema. History records and canvas
 JSON keep storing the original URL; callers opt in per render by asking for
 a variant, and old data benefits without any backfill.
-Freshness is exact rather than heuristic: a generated variant is stamped
-with its source's mtime, so ``thumb.mtime == source.mtime`` means current
-and a regenerated source invalidates automatically without leaving stale
-files behind.
+
+``<stamp>`` is the source's mtime-in-seconds and size, which makes freshness a
+question of *which file exists* rather than of comparing metadata between two
+files. The first shipped version compared them — the variant was stamped with
+its source's mtime through ``os.utime`` and "current" meant ``thumb.mtime ==
+source.mtime`` — and that is precisely what did not survive production: the
+project tree is an ossfs mount, where the stamp is lost across ``os.replace``
+(the rename is a server-side copy, and the object comes back carrying the write
+time). Every lookup missed, so every request re-rendered the variant it had
+just discarded and then served the original anyway — strictly more work than
+before variants existed, for no effect a user could see.
+
+Putting the revision in the path removes the assumption instead of tightening
+it: whatever mtime the filesystem decides to hand the variant, nothing reads
+it. Seconds rather than nanoseconds for the same reason — sub-second mtime is
+not something every mount reports, let alone reports stably, and a stamp that
+wobbles between two stats of an unchanged file would land us right back on the
+re-render treadmill. Size rides along so a rewrite inside the same second still
+invalidates.
 
 Building and serving are deliberately separate. ``fresh_thumbnail`` is what a
 request calls and it never builds; ``ensure_thumbnail`` builds and only ever
@@ -134,8 +149,32 @@ def normalize_variant(value: str | None) -> Optional[str]:
     return name if name in VARIANTS else None
 
 
-def thumbnail_path(project_dir: Path, source: Path, variant: str) -> Optional[Path]:
-    """Map a source file to its cache location, or ``None`` if out of scope."""
+def _source_stamp(stat_result: os.stat_result) -> str:
+    """The revision half of a variant's address. See the module docstring."""
+
+    return f"{int(stat_result.st_mtime)}-{stat_result.st_size}"
+
+
+def thumbnail_path(
+    project_dir: Path,
+    source: Path,
+    variant: str,
+    *,
+    stat_result: "os.stat_result | None" = None,
+) -> Optional[Path]:
+    """Map a source file to its cache location, or ``None`` if out of scope.
+
+    The source's own relative path becomes a *directory* holding one file per
+    revision. A flat ``<name>.<stamp>.webp`` would have worked for lookups just
+    as well, but not for the housekeeping: superseding a variant would then
+    have to filter a sibling list shared with every other image in the same
+    folder — and ``freezone/_outputs/freezone_gen/`` holds thousands. One
+    directory per source keeps that sweep to a handful of entries.
+
+    Returns ``None`` rather than raising when the source cannot be stat'ed, so
+    a file that vanished mid-request falls back to the original like every
+    other decline here.
+    """
 
     try:
         rel = source.resolve().relative_to(project_dir.resolve())
@@ -144,9 +183,13 @@ def thumbnail_path(project_dir: Path, source: Path, variant: str) -> Optional[Pa
     # Never thumbnail a thumbnail — that would nest caches on every request.
     if rel.parts and rel.parts[0] == THUMB_ROOT:
         return None
-    # Suffix is appended rather than replaced so `a.png` and `a.jpg` cannot
-    # collide on a shared `a.webp`.
-    return project_dir / THUMB_ROOT / variant / rel.with_name(rel.name + ".webp")
+    # The source's file name stays a whole path segment, suffix included, so
+    # `a.png` and `a.jpg` cannot collide on a shared `a/`.
+    try:
+        stamp = _source_stamp(stat_result if stat_result is not None else source.stat())
+    except OSError:
+        return None
+    return project_dir / THUMB_ROOT / variant / rel / f"{stamp}.webp"
 
 
 def is_thumbnailable(source: Path) -> bool:
@@ -172,23 +215,25 @@ def ensure_thumbnail(
     try:
         if not is_thumbnailable(source):
             return None
-        dest = thumbnail_path(project_dir, source, name)
-        if dest is None:
-            return None
         stat = source.stat()
         if stat.st_size > _MAX_SOURCE_BYTES:
             return None
-        source_mtime_ns = stat.st_mtime_ns
+        # One stat, reused for the ceiling above and the stamp below: the
+        # revision has to be the one we just checked, not one re-read a syscall
+        # later.
+        dest = thumbnail_path(project_dir, source, name, stat_result=stat)
+        if dest is None:
+            return None
 
-        if _is_current(dest, source_mtime_ns):
+        if _is_current(dest):
             return dest
         with _stripe_for(dest):
             # Re-check under the lock: whoever we queued behind may have just
             # written exactly the file we were about to render.
-            if _is_current(dest, source_mtime_ns):
+            if _is_current(dest):
                 return dest
             with _render_slots:
-                return _render(source, dest, max_edge, source_mtime_ns)
+                return _render(source, dest, max_edge)
     except Exception:
         logger.debug("thumbnail skipped for %s (%s)", source, variant, exc_info=True)
         return None
@@ -223,21 +268,27 @@ def fresh_thumbnail(
         dest = thumbnail_path(project_dir, source, name)
         if dest is None:
             return None
-        return dest if _is_current(dest, source.stat().st_mtime_ns) else None
+        return dest if _is_current(dest) else None
     except OSError:
         return None
 
 
-def _is_current(dest: Path, source_mtime_ns: int) -> bool:
+def _is_current(dest: Path) -> bool:
+    """Whether a variant for this exact source revision is already on disk.
+
+    Existence *is* the answer: the revision is part of the path, so a file that
+    is there was built from the bytes we are being asked about. The variant's
+    own metadata is never consulted — the module docstring records what
+    happened the last time it was.
+    """
+
     try:
-        return dest.stat().st_mtime_ns == source_mtime_ns
+        return dest.is_file()
     except OSError:
         return False
 
 
-def _render(
-    source: Path, dest: Path, max_edge: int, source_mtime_ns: int
-) -> Optional[Path]:
+def _render(source: Path, dest: Path, max_edge: int) -> Optional[Path]:
     from PIL import Image, ImageOps
 
     with Image.open(source) as opened:
@@ -293,15 +344,43 @@ def _render(
     tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         out.save(tmp, "WEBP", quality=_WEBP_QUALITY, method=_WEBP_METHOD)
-        # Stamp the source's mtime onto the variant; that equality *is* the
-        # freshness check, and it closes the race where the source is
-        # rewritten while we render.
-        os.utime(tmp, ns=(source_mtime_ns, source_mtime_ns))
         os.replace(tmp, dest)
     except Exception:
         tmp.unlink(missing_ok=True)
         raise
+    _discard_superseded(dest)
     return dest
+
+
+def _discard_superseded(dest: Path) -> None:
+    """Drop the revisions this variant replaces.
+
+    A new revision writes a new file name instead of overwriting the old one,
+    so without this the directory would keep one copy per revision of the
+    source forever. Everything beside ``dest`` is by construction an older
+    variant of the same source at the same tier, which is what makes this a
+    single small listing rather than a filtered scan.
+
+    Best effort in both directions. A failure only costs disk — the variant the
+    caller asked for is already in place. And a render that finishes out of
+    order can delete a *newer* sibling, which costs one rebuild the next time
+    that revision is asked for; the alternative is holding a lock across the
+    decode, which is the thing the striped locks exist to avoid.
+    """
+
+    try:
+        with os.scandir(dest.parent) as entries:
+            for entry in entries:
+                # A `.tmp` belongs to a render still in flight — quite possibly
+                # the one that is about to supersede this one.
+                if entry.name == dest.name or entry.name.endswith(".tmp"):
+                    continue
+                try:
+                    os.unlink(entry.path)
+                except OSError:
+                    pass
+    except OSError:
+        logger.debug("could not sweep superseded variants in %s", dest.parent)
 
 
 # --- background prewarm ---------------------------------------------------

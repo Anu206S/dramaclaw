@@ -9,9 +9,10 @@ of an untouched project is all originals, which is exactly the slow paint
 variants exist to remove. Worth running ahead of time for a project you know is
 about to be opened; unnecessary for one already in use.
 
-Safe to re-run: a variant whose mtime already matches its source is left
-alone, so a second pass over an unchanged project does nothing but stat
-files. Interrupting is safe too — variants are written atomically.
+Safe to re-run: a variant that already exists for the source's current
+revision is left alone, so a second pass over an unchanged project does
+nothing but stat files. Interrupting is safe too — variants are written
+atomically.
 
     scripts/backfill_thumbnails.py output/alice/my-project
     scripts/backfill_thumbnails.py --root output --jobs 8
@@ -105,12 +106,11 @@ def backfill_project(
             if dest is None:
                 totals.skipped += 1
                 continue
-            try:
-                if dest.stat().st_mtime_ns == source.stat().st_mtime_ns:
-                    totals.current += 1
-                    continue
-            except OSError:
-                pass
+            # Existence is the whole freshness check — the source's revision is
+            # part of `dest` (see novelvideo.utils.thumbnails).
+            if dest.is_file():
+                totals.current += 1
+                continue
             work.append((source, variant))
 
     if dry_run:
