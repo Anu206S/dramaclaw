@@ -555,6 +555,45 @@ def test_legacy_pydantic_factory_uses_ee_deployment_gateway(monkeypatch, tmp_pat
     assert captured["base_url"] == "https://ee-gateway.example/v1"
 
 
+def test_ee_media_model_mappings_do_not_open_ce_settings(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgresql://control-plane")
+    monkeypatch.setattr(
+        model_gateway_settings,
+        "_connect",
+        lambda: pytest.fail("EE must not open CE settings.db"),
+    )
+
+    assert get_newapi_media_model_mappings() == {}
+    assert not (tmp_path / "state").exists()
+
+
+def test_ee_platform_video_paths_do_not_call_ce_media_model_accessor(
+    monkeypatch,
+    tmp_path,
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgresql://control-plane")
+    monkeypatch.setenv("NEWAPI_API_KEY", "sk-ee-secret")
+    monkeypatch.setenv("NEWAPI_BASE_URL", "https://ee-gateway.example/v1")
+    monkeypatch.setattr(config, "NEWAPI_API_KEY", "sk-ee-secret")
+    monkeypatch.setattr(config, "NEWAPI_BASE_URL", "https://ee-gateway.example/v1")
+    monkeypatch.setattr(
+        model_gateway_settings,
+        "get_newapi_media_model_mappings",
+        lambda: pytest.fail("EE video paths must not call the CE accessor"),
+    )
+
+    generator = NewApiVideoGenerator(model="seedance-2.0")
+    options = newapi_video_backend_options()
+
+    assert generator.api_key == "sk-ee-secret"
+    assert generator.base_url == "https://ee-gateway.example/v1"
+    assert "newapi_seedance-2.0" in options
+
+
 def test_cognee_newapi_resolution_prefers_saved_gateway(monkeypatch, tmp_path):
     _isolate_settings_db(monkeypatch, tmp_path)
     monkeypatch.delenv("COGNEE_LLM_PROVIDER", raising=False)

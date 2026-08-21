@@ -529,6 +529,8 @@ def save_newapi_provider_channels(
 
 
 def get_newapi_media_model_mappings() -> dict[str, dict[str, Any]]:
+    if not _uses_ce_gateway_settings():
+        return {}
     settings = get_model_gateway_settings()
     return _decode_media_model_mappings(
         settings.get("custom_newapi_media_model_mappings")
