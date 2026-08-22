@@ -573,3 +573,32 @@ def test_text_before_the_first_scene_heading_is_still_analysed():
     chunks = chunk_source_text(script, "drama")
     assert chunks[0].source_start == 0
     assert "人物小传" in "".join(c.text for c in chunks)
+
+
+def test_text_before_the_first_chapter_marker_is_still_analysed():
+    """Prose sources carry a synopsis or cast list ahead of chapter one.
+
+    The screenplay path already kept it; the chapter path was dropping it, and
+    it is exactly the passage that names and describes the cast.
+    """
+    novel = (
+        "《测试小说》\n\n人物小传：\n【林默】：22岁，性格沉静。\n\n"
+        + NARRATED_LONG
+    )
+    chunks = chunk_source_text(novel, "narrated")
+    assert chunks[0].source_start == 0
+    assert "人物小传" in chunks[0].text
+
+
+def test_every_spine_covers_the_whole_source_without_gaps():
+    """Nothing may fall between two chunks, whichever way the source is cut."""
+    for text, spine in (
+        ("《剧》\n\n人物小传：\n【林默】\n\n" + DRAMA_LONG, "drama"),
+        ("《书》\n\n人物小传：\n【林默】\n\n" + NARRATED_LONG, "narrated"),
+    ):
+        chunks = chunk_source_text(text, spine)
+        assert chunks[0].source_start == 0
+        assert chunks[-1].source_end == len(text)
+        for earlier, later in zip(chunks, chunks[1:]):
+            assert earlier.source_end == later.source_start
+        assert sum(len(c.text) for c in chunks) == len(text)

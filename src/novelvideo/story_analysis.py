@@ -273,6 +273,23 @@ def _chunk_by_chapter(text: str) -> list[SourceChunk]:
         return line_offsets[clamped]
 
     chunks: list[SourceChunk] = []
+    # Same reason as the screenplay path: a synopsis or cast list sitting before
+    # the first chapter marker is the densest description the source has, and it
+    # would otherwise fall outside every chunk.
+    first_start = offset_of(chapters[0].start_line)
+    if first_start > 0:
+        chunks.append(
+            SourceChunk(
+                chunk_id="chapter-preamble",
+                chunk_index=0,
+                section_type="chapter",
+                section_label="卷首",
+                source_start=0,
+                source_end=first_start,
+                text=text[:first_start],
+            )
+        )
+
     for index, chapter in enumerate(chapters):
         start = offset_of(chapter.start_line)
         end = min(offset_of(chapter.end_line), len(text))
