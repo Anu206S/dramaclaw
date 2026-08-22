@@ -22,6 +22,7 @@ from novelvideo.config import (
 from novelvideo.models import CharacterIdentity
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.cognee.ladybug_access import ladybug_graph_access
+from novelvideo.knowledge_pipeline import is_structured_pipeline
 from novelvideo.sqlite_store import load_episode_planning_content
 
 if TYPE_CHECKING:
@@ -337,6 +338,9 @@ class IdentityPlanner:
 
     def __init__(self, cognee_store: "CogneeStore"):
         self.cognee_store = cognee_store
+        # Reads and writes that need no graph go to the SQLite store directly.
+        self.store = getattr(cognee_store, "sqlite_store", cognee_store)
+        self._structured = is_structured_pipeline(getattr(cognee_store, "state_dir", None))
         self.auto_promoted_characters: list[str] = []
 
     @staticmethod
@@ -574,6 +578,72 @@ class IdentityPlanner:
 
         return results
 
+    def _alias_context_from_sqlite(self, all_names: list[str]) -> str:
+        """Build alias context from the character table instead of the graph.
+
+        Structured builds record every alias they could prove from the source
+        text, so the same "陛下 → 萧玦" resolution the graph query provided is
+        already on disk and needs no search to retrieve.
+        """
+        lines: list[str] = []
+        for name in all_names:
+            character = self.store.get_character(self.store.resolve_name(name))
+            if character is None:
+                continue
+            if character.aliases:
+                lines.append(
+                    f"{character.name}：别名/称谓 {'、'.join(character.aliases)}"
+                )
+            else:
+                lines.append(f"{character.name}：无已知别名")
+        return "\n".join(lines)
+
+    async def _graph_alias_context(
+        self, episode: "NovelEpisode", on_log: Optional[Callable] = None
+    ) -> str:
+        """Legacy-only: read alias context from the Cognee graph.
+
+        Failure is non-fatal, as it always was here: the cast filter still runs
+        on the episode text alone, just without alias hints.
+        """
+
+        with preserve_st_env():
+            import cognee
+            from cognee.api.v1.search import SearchType
+
+        try:
+            async with ladybug_graph_access(
+                self.cognee_store.state_dir,
+                read_only=True,
+            ):
+                with self.cognee_store.embedding_model_scope():
+                    graph_results = await cognee.search(
+                        query_text=(
+                            f"第{episode.number}集出场的人物角色，"
+                            "以及他们的别名、称谓和关系"
+                        ),
+                        query_type=SearchType.GRAPH_COMPLETION,
+                        datasets=[self.cognee_store.dataset_name],
+                        only_context=True,
+                        top_k=20,
+                    )
+        except Exception as exc:
+            if on_log:
+                on_log(f"[EP{episode.number:03d}] 图谱上下文获取失败（非致命）: {exc}")
+            return ""
+
+        if not graph_results:
+            return ""
+        parts = []
+        for item in graph_results:
+            if hasattr(item, "search_result"):
+                parts.append(str(item.search_result))
+            elif isinstance(item, dict):
+                parts.append(str(item.get("search_result", item)))
+            else:
+                parts.append(str(item))
+        return "\n".join(parts)
+
     async def _filter_cast(
         self,
         all_names: list[str],
@@ -590,50 +660,24 @@ class IdentityPlanner:
         """
         graph_context = ""
         try:
-            with preserve_st_env():
-                import cognee
-                from cognee.api.v1.search import SearchType
+            if self._structured:
+                # structured_v1 has no graph. Alias resolution comes from the
+                # SQLite alias index and the evidence recorded when characters
+                # were built, both of which are derived from the source text
+                # rather than from a vector search over it.
+                graph_context = self._alias_context_from_sqlite(all_names)
+            else:
+                graph_context = await self._graph_alias_context(episode, on_log)
 
-            # 获取与本集相关的图谱上下文（人物关系、别名、背景信息）
-            try:
-                async with ladybug_graph_access(
-                    self.cognee_store.state_dir,
-                    read_only=True,
-                ):
-                    with self.cognee_store.embedding_model_scope():
-                        graph_results = await cognee.search(
-                            query_text=f"第{episode.number}集出场的人物角色，以及他们的别名、称谓和关系",
-                            query_type=SearchType.GRAPH_COMPLETION,
-                            datasets=[self.cognee_store.dataset_name],
-                            only_context=True,
-                            top_k=20,
-                        )
-                if graph_results:
-                    parts = []
-                    for item in graph_results:
-                        if hasattr(item, "search_result"):
-                            parts.append(str(item.search_result))
-                        elif isinstance(item, dict):
-                            parts.append(str(item.get("search_result", item)))
-                        else:
-                            parts.append(str(item))
-                    graph_context = "\n".join(parts)
-            except Exception as e:
-                if on_log:
-                    on_log(
-                        f"[EP{episode.number:03d}] 图谱上下文获取失败（非致命）: {e}"
-                    )
-
-            # 用 AI 结构化输出筛选出场角色（结合图谱上下文）
             graph_section = ""
             if graph_context:
                 graph_section = f"""
 
-以下是知识图谱中的人物关系信息（包含别名和称谓解析，如"陛下"→某角色名）：
+以下是已知的人物关系与别名信息（包含称谓解析，如"陛下"→某角色名）：
 ---
 {graph_context[:4000]}
 ---
-利用上述图谱信息，将原文中的称谓/别名解析为角色主名。
+利用上述信息，将原文中的称谓/别名解析为角色主名。
 """
 
             cast_agent = Agent(

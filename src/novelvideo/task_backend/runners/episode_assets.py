@@ -6,6 +6,7 @@ import asyncio
 from typing import Any
 
 from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
+from novelvideo.knowledge_pipeline import is_structured_pipeline
 from novelvideo.project_context import ProjectContext
 from novelvideo.ports import get_usage_meter
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
@@ -105,14 +106,20 @@ async def _run_episode_asset_planner(
     await sqlite_store.initialize()
     await sqlite_store.load_graph_state()
 
-    cognee_store = CogneeStore(
-        ctx.owner_project_label,
-        output_dir=str(ctx.output_dir),
-        state_dir=str(ctx.state_dir),
-        sqlite_store=sqlite_store,
-    )
-    await cognee_store.initialize()
-    await cognee_store.load_graph_state()
+    # structured_v1 planning needs no graph, so it uses the SQLite store
+    # directly rather than wrapping it in the Cognee facade. Both planners
+    # accept either, so the rest of this runner is unchanged.
+    if is_structured_pipeline(ctx.state_dir):
+        cognee_store = sqlite_store
+    else:
+        cognee_store = CogneeStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+            sqlite_store=sqlite_store,
+        )
+        await cognee_store.initialize()
+        await cognee_store.load_graph_state()
 
     episode_obj = cognee_store.get_episode(episode)
     if episode_obj is None:

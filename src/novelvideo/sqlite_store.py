@@ -366,6 +366,18 @@ CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
 );
 """
 
+# Distinguishes "do not touch this column" from "set it to empty" in
+# patch_episode; None is a legitimate value for several of those columns.
+_UNSET: Any = object()
+
+
+def _model_to_dict(value: Any) -> dict:
+    dump = getattr(value, "model_dump", None)
+    if callable(dump):
+        return dump()
+    return dict(value) if isinstance(value, dict) else {}
+
+
 _PROJECT_STORE_SCHEMA_COMPONENT = "project_store"
 # MIGRATION CONTRACT: increment this whenever SQLITE_SCHEMA_SQL or any
 # _ensure_*_columns migration above changes. Existing databases skip the
@@ -1755,6 +1767,133 @@ class SQLiteStore:
             self._episodes[new_number] = episode
         await self.add_episodes([episode])
         console.print(f"[green]已更新剧集: 第{episode.number}集[/green]")
+
+    async def patch_episode(
+        self,
+        episode_number: int,
+        *,
+        scene_menu: Any = _UNSET,
+        prop_menu: Any = _UNSET,
+        identity_ids: Any = _UNSET,
+        character_names: Any = _UNSET,
+        identity_default_map: Any = _UNSET,
+    ) -> None:
+        """Update only the columns the caller named, atomically.
+
+        Scene, prop and identity planning for one episode can run concurrently
+        in separate workers. Any read-modify-write of the whole row loses the
+        other planner's result: re-reading first does not close the window,
+        because both can re-read before either commits. Writing only the named
+        columns removes the race entirely rather than narrowing it.
+
+        ``_UNSET`` distinguishes "leave this column alone" from "clear it", so an
+        empty list is a real update that empties the menu.
+
+        This does not replace add_episodes()/replace_episodes(), which still own
+        whole-row writes. The in-memory cache refresh below only makes this
+        process read its own write; correctness comes from the SQL, since the
+        cache is not shared across workers.
+        """
+        assignments: list[str] = []
+        params: list[Any] = []
+
+        if scene_menu is not _UNSET:
+            normalized = await self._normalize_scene_menu_for_write(scene_menu or [])
+            assignments.append("scene_menu_json = ?")
+            params.append(json.dumps(normalized, ensure_ascii=False))
+        if prop_menu is not _UNSET:
+            normalized = self._normalize_prop_menu_for_write(prop_menu or [])
+            assignments.append("prop_menu_json = ?")
+            params.append(json.dumps(normalized, ensure_ascii=False))
+        if identity_ids is not _UNSET:
+            assignments.append("identity_ids = ?")
+            params.append(json.dumps(list(identity_ids or []), ensure_ascii=False))
+        if character_names is not _UNSET:
+            assignments.append("character_names = ?")
+            params.append(json.dumps(list(character_names or []), ensure_ascii=False))
+        if identity_default_map is not _UNSET:
+            assignments.append("identity_default_map_json = ?")
+            params.append(json.dumps(dict(identity_default_map or {}), ensure_ascii=False))
+
+        if not assignments:
+            return
+
+        db = await self._ensure_db()
+        assignments.append("updated_at = datetime('now')")
+        params.append(int(episode_number))
+        cursor = await db.execute(
+            f"UPDATE episodes SET {', '.join(assignments)} WHERE number = ?",
+            params,
+        )
+        if not cursor.rowcount:
+            raise ValueError(f"剧集 {episode_number} 不存在")
+        await db.commit()
+
+        refreshed = await self.get_episode_from_graph(episode_number)
+        if refreshed is not None:
+            self._episodes[episode_number] = refreshed
+
+    async def _normalize_scene_menu_for_write(self, scene_menu: Any) -> list:
+        """Resolve menu entries against the scene table before persisting.
+
+        Normalization has to happen before the write, not on read, so every
+        reader sees the same canonical names regardless of which planner wrote.
+        """
+        normalized: list[dict] = []
+        for item in scene_menu or []:
+            entry = item if isinstance(item, dict) else _model_to_dict(item)
+            name = str(entry.get("scene_id") or "").strip()
+            if not name:
+                continue
+            # A menu may name a scene by an alias. Resolving to the canonical
+            # name at write time means every reader sees the same identifier
+            # regardless of which planner produced the entry.
+            if await self.get_scene(name) is None:
+                resolved = await self.resolve_scene_alias(name)
+                if resolved:
+                    entry = {**entry, "scene_id": resolved}
+            normalized.append(entry)
+        return normalized
+
+    def _normalize_prop_menu_for_write(self, prop_menu: Any) -> list:
+        normalized: list[dict] = []
+        for item in prop_menu or []:
+            entry = item if isinstance(item, dict) else _model_to_dict(item)
+            name = str(entry.get("prop_id") or "").strip()
+            if not name:
+                continue
+            canonical = self._prop_alias_index.get(name)
+            if canonical:
+                entry = {**entry, "prop_id": canonical}
+            normalized.append(entry)
+        return normalized
+
+    @property
+    def _prop_alias_index(self) -> dict[str, str]:
+        """Alias -> canonical prop name, built from the cached prop table."""
+        index: dict[str, str] = {}
+        for prop in self._props.values():
+            for alias in getattr(prop, "aliases", []) or []:
+                index[str(alias)] = prop.name
+        return index
+
+    async def resolve_scene_alias(self, name: str) -> str | None:
+        """Return the canonical scene name for an alias, if one exists."""
+        db = await self._ensure_db()
+        async with db.execute(
+            "SELECT name, aliases_json FROM scenes"
+        ) as cursor:
+            rows = await cursor.fetchall()
+        target = " ".join(str(name or "").strip().lower().split())
+        for row in rows:
+            try:
+                aliases = json.loads(row["aliases_json"] or "[]")
+            except (TypeError, ValueError):
+                aliases = []
+            for alias in aliases:
+                if " ".join(str(alias).strip().lower().split()) == target:
+                    return str(row["name"])
+        return None
 
     async def delete_all_episodes(self) -> int:
         try:

@@ -123,11 +123,12 @@ def test_ce_auth_me_logout_and_project_crud_contract(
         detail = client.get(f"/api/v1/projects/{project_id}")
         assert detail.status_code == 200
         assert detail.json()["data"]["project_id"] == project_id
-        assert (
-            detail.json()["data"]["cognee_embedding_model"]
-            == "DC-cognee-embedding-v2"
-        )
-        assert detail.json()["data"]["cognee_embedding_dimension"] == 1024
+        # New projects use structured extraction and are deliberately not bound
+        # to an embedding model. The binding is permanent once written, so this
+        # is decided at creation time; existing projects keep theirs.
+        assert detail.json()["data"]["knowledge_pipeline"] == "structured_v1"
+        assert "cognee_embedding_model" not in detail.json()["data"]
+        assert "cognee_embedding_dimension" not in detail.json()["data"]
 
 
 @pytest.mark.ee
