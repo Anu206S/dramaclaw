@@ -9,6 +9,7 @@ source or the candidate never reaches the table.
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
@@ -890,3 +891,228 @@ async def test_a_single_candidate_needs_no_adjudication():
     merged = [_merged("郑玉琴", 96)]
     agent = AdjudicatorAgent(non_characters=["郑玉琴"])
     assert await adjudicate_characters(merged, agent=agent) == merged
+
+
+# ── scene adjudication ──────────────────────────────────────────────────────
+
+
+def _scene(name, *, aliases=()):
+    from novelvideo.models import NovelScene
+
+    return NovelScene(name=name, aliases=list(aliases))
+
+
+class SceneAdjudicatorAgent:
+    def __init__(self, groups=(), explode=False):
+        from novelvideo.structured_extraction import (
+            SameLocationGroup, SceneAdjudication,
+        )
+
+        self.explode = explode
+        self.prompt = ""
+        self.result = SceneAdjudication(
+            groups=[
+                SameLocationGroup(canonical_name=c, alias_names=list(a))
+                for c, a in groups
+            ]
+        )
+
+    async def run(self, prompt: str):
+        self.prompt = prompt
+        if self.explode:
+            raise RuntimeError("adjudicator unavailable")
+        return SimpleNamespace(output=self.result)
+
+
+async def test_scene_adjudication_merges_spellings_of_one_location():
+    """Hand-written headings spell one room several ways."""
+    from novelvideo.structured_extraction import adjudicate_scenes
+
+    scenes = [_scene("郑玉琴办公室"), _scene("郑玉琴办公室内")]
+    agent = SceneAdjudicatorAgent(groups=[("郑玉琴办公室", ["郑玉琴办公室内"])])
+
+    result = await adjudicate_scenes(scenes, agent=agent)
+    assert [s.name for s in result] == ["郑玉琴办公室"]
+    assert "郑玉琴办公室内" in result[0].aliases
+
+
+async def test_scene_adjudication_never_drops_a_location():
+    """A duplicate is redundant art; a missing scene leaves shots with no asset.
+
+    Unlike characters, there is no removal path here at all, so a model that
+    proposes nothing simply leaves every scene standing.
+    """
+    from novelvideo.structured_extraction import adjudicate_scenes
+
+    scenes = [_scene("郑家别墅客厅"), _scene("郑家别墅餐厅"), _scene("郑家别墅外")]
+    result = await adjudicate_scenes(scenes, agent=SceneAdjudicatorAgent())
+    assert {s.name for s in result} == {name.name for name in scenes}
+
+
+async def test_scene_adjudication_cannot_invent_a_location():
+    from novelvideo.structured_extraction import adjudicate_scenes
+
+    scenes = [_scene("郑玉琴办公室"), _scene("郑玉琴办公室内")]
+    agent = SceneAdjudicatorAgent(groups=[("查无此地", ["郑玉琴办公室内"])])
+
+    result = await adjudicate_scenes(scenes, agent=agent)
+    assert len(result) == 2
+
+
+async def test_scene_adjudication_failure_keeps_every_scene():
+    from novelvideo.structured_extraction import adjudicate_scenes
+
+    scenes = [_scene("郑玉琴办公室"), _scene("郑玉琴办公室内")]
+    logs: list[str] = []
+    result = await adjudicate_scenes(
+        scenes, agent=SceneAdjudicatorAgent(explode=True), on_log=logs.append
+    )
+    assert len(result) == 2
+    assert any("裁决失败" in line for line in logs)
+
+
+async def test_scene_prompt_reports_how_often_each_heading_is_used():
+    """The most-used spelling is the better canonical name."""
+    from novelvideo.structured_extraction import adjudicate_scenes
+
+    scenes = [_scene("主任办公室"), _scene("郑家别墅客厅")]
+    agent = SceneAdjudicatorAgent()
+    await adjudicate_scenes(
+        scenes, occurrences={"主任办公室": 18, "郑家别墅客厅": 16}, agent=agent
+    )
+    assert "出现 18 场" in agent.prompt
+    assert "出现 16 场" in agent.prompt
+
+
+def test_scene_heading_counts_come_from_the_script():
+    from novelvideo.structured_builders import _scene_heading_counts
+
+    script = (
+        "第一集\n\n"
+        "1-1 林家客厅 日 内\n人物：林默\n林默推开门。\n\n"
+        "1-2 巷口 夜 外\n人物：林默\n林默走过巷口。\n\n"
+        "1-3 林家客厅 夜 内\n人物：林默\n林默坐下。\n"
+    )
+    counts = _scene_heading_counts(script)
+    assert counts.get("林家客厅") == 2
+    assert counts.get("巷口") == 1
+
+
+# ── resume after an outage, and source-change invalidation ──────────────────
+
+
+class FlakyAgent:
+    """Fails for a set of chunk labels, then can be repaired."""
+
+    def __init__(self, outputs, failing=()):
+        self.outputs = outputs
+        self.failing = set(failing)
+        # Keep the label vocabulary stable across repair, so a recovered agent
+        # still recognises the chunk it previously refused.
+        self.labels = list(outputs) + list(failing)
+        self.calls: list[str] = []
+
+    def repair(self):
+        self.failing.clear()
+
+    async def run(self, prompt: str):
+        label = next((k for k in self.labels if k in prompt), "")
+        self.calls.append(label)
+        if label in self.failing:
+            raise RuntimeError("gateway down")
+        return SimpleNamespace(
+            output=self.outputs.get(label, ChunkCharacterOutput())
+        )
+
+
+async def _ingested(store, state_dir, text=NARRATED_TEXT):
+    from novelvideo.structured_ingest import ingest_source_text_structured
+
+    source = state_dir / "source.txt"
+    source.write_text(text, encoding="utf-8")
+    return await ingest_source_text_structured(
+        store, str(source), spine_template="narrated"
+    )
+
+
+def _patched_extract(monkeypatch, agent):
+    from novelvideo.structured_extraction import extract_characters_from_chunks
+
+    real = extract_characters_from_chunks
+
+    async def fake(chunks, **kwargs):
+        kwargs.pop("agent", None)
+        kwargs.setdefault("adjudicate", False)
+        return await real(chunks, agent=agent, **kwargs)
+
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction.extract_characters_from_chunks", fake
+    )
+
+
+async def test_a_chunk_that_failed_is_retried_while_others_are_not(
+    structured_store, monkeypatch
+):
+    """An outage mid-build must cost only the chunks it actually broke."""
+    from novelvideo import structured_builders
+
+    store, state_dir = structured_store
+    run = await _ingested(store, state_dir)
+
+    agent = FlakyAgent(
+        outputs={
+            "第一章": ChunkCharacterOutput(
+                characters=[_candidate("林默", quotes=["林默回到阔别十年的故乡。"])]
+            ),
+            "第三章": ChunkCharacterOutput(
+                characters=[_candidate("苏晴", quotes=["苏晴告诉林默一个秘密。"])]
+            ),
+        },
+        failing=["第二章"],
+    )
+    _patched_extract(monkeypatch, agent)
+
+    await structured_builders.build_characters_structured(store)
+    assert len(agent.calls) == 3
+    failed = await store.list_analysis_chunks(run["run_id"], status="failed")
+    assert [row["chunk_id"] for row in failed] == ["chapter-0001"]
+
+    # The gateway comes back and the user clicks build again.
+    agent.repair()
+    agent.calls.clear()
+    await structured_builders.build_characters_structured(store)
+
+    assert agent.calls == ["第二章"], "a healthy chunk was paid for twice"
+    assert not await store.list_analysis_chunks(run["run_id"], status="failed")
+
+
+async def test_editing_the_source_discards_the_stored_plan(
+    structured_store, monkeypatch
+):
+    """A result produced from text that has since changed is not a result."""
+    from novelvideo import structured_builders
+
+    store, state_dir = structured_store
+    await _ingested(store, state_dir)
+
+    outputs = {
+        "第一章": ChunkCharacterOutput(
+            characters=[_candidate("林默", quotes=["林默回到阔别十年的故乡。"])]
+        )
+    }
+    agent = FlakyAgent(outputs=outputs)
+    _patched_extract(monkeypatch, agent)
+
+    await structured_builders.build_characters_structured(store)
+    first_calls = len(agent.calls)
+    assert first_calls > 0
+
+    # Rewriting novel.txt without re-importing: the hash no longer matches any
+    # recorded run, so nothing may be replayed.
+    (Path(store.project_dir) / "novel.txt").write_text(
+        NARRATED_TEXT + "\n第四章 结局\n\n他终于释怀。\n", encoding="utf-8"
+    )
+    agent.calls.clear()
+    await structured_builders.build_characters_structured(store)
+
+    assert agent.calls, "stale results were replayed for text that changed"

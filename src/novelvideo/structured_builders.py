@@ -187,6 +187,7 @@ async def build_scenes_structured(
     discovered per episode from that episode's own text instead.
     """
     from novelvideo.cognee.pipeline import extract_scenes_from_script
+    from novelvideo.structured_extraction import adjudicate_scenes
 
     def report(progress: float, task: str) -> None:
         if on_progress:
@@ -219,6 +220,11 @@ async def build_scenes_structured(
         log("⚠️ 未从场次头提取到场景，保留现有场景数据")
         report(1.0, "提取无结果")
         return {"scenes": 0, "added_scenes": 0, "mode": "script"}
+
+    report(0.8, "归一同一地点的不同写法...")
+    scenes = await adjudicate_scenes(
+        scenes, occurrences=_scene_heading_counts(novel_text), on_log=log
+    )
 
     report(0.85, "保存新增场景...")
     added = 0
@@ -259,6 +265,22 @@ async def build_props_structured(
         "mode": "episode_on_demand",
         "message": PROP_BUILD_DEFERRED_MESSAGE,
     }
+
+
+def _scene_heading_counts(novel_text: str) -> dict[str, int]:
+    """How many scenes each heading location covers.
+
+    The adjudicator prefers the spelling the script actually uses most, which
+    is a better canonical name than whichever variant happened to sort first.
+    """
+    from novelvideo.utils.screenplay_scene_parser import parse_scene_blocks
+
+    counts: dict[str, int] = {}
+    for block in parse_scene_blocks(novel_text):
+        location = (block.location or "").strip()
+        if location:
+            counts[location] = counts.get(location, 0) + 1
+    return counts
 
 
 async def _current_run(store: Any, novel_text: str, spine_template: str) -> dict | None:

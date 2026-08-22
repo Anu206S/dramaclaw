@@ -663,3 +663,122 @@ async def adjudicate_characters(
     survivors = [item for item in merged if item.name not in removed]
     log(f"裁决完成: {len(merged)} → {len(survivors)} 个角色")
     return sorted(survivors, key=lambda item: (-len(item.evidence), item.name))
+
+
+# ── scene adjudication ──────────────────────────────────────────────────────
+
+
+class SameLocationGroup(BaseModel):
+    canonical_name: str = Field(description="该组的主名，必须来自候选列表")
+    alias_names: list[str] = Field(
+        default_factory=list, description="指向同一地点的其他候选名，必须来自候选列表"
+    )
+    reason: str = Field(default="", description="判定依据")
+
+
+class SceneAdjudication(BaseModel):
+    groups: list[SameLocationGroup] = Field(default_factory=list)
+
+
+SCENE_ADJUDICATION_SYSTEM_PROMPT = """你是场景归一裁决器。
+
+输入是从同一部剧本的场次头中解析出的地点候选，每个附带它在剧本中出现的场次数。
+
+你的任务只有一件：判断哪些候选其实是同一个物理地点，把它们归为一组并选出主名。
+
+规则：
+- 只能使用输入中出现过的候选名，不许发明新名字。
+- canonical_name 必须是该组候选之一，优先选出现场次最多、最完整具体的那个。
+- 同一地点的不同写法要合并，例如“舞蹈室镜子前”和“舞蹈室照镜子”，
+  “郑玉琴办公室”和“郑玉琴办公室内”，“学校教室”和“名门高级人才学院教室”。
+- 同一建筑里的不同房间是不同地点，绝不能合并：
+  “郑家别墅客厅”和“郑家别墅餐厅”是两个场景，“郑家别墅外”和“郑家别墅客厅”也是。
+- 时间、天气、损毁状态不构成新地点，但这里的候选都已经是基础地点，不用管这些。
+- 不确定就不要合并。多留一个重复场景只是资产冗余，错误合并会让两处戏共用一个场景图。"""
+
+
+def _create_scene_adjudication_agent(agent: Any = None):
+    if agent is not None:
+        return agent
+
+    from pydantic_ai import Agent
+
+    from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
+        get_newapi_text_pydantic_model,
+    )
+
+    return Agent(
+        get_newapi_text_pydantic_model(
+            "SCENE_BUILD_MODEL",
+            "gemini-3-flash-preview",
+            capability="text.generate.agent",
+        ),
+        system_prompt=SCENE_ADJUDICATION_SYSTEM_PROMPT,
+        model_settings=get_newapi_structured_output_model_settings(),
+        output_type=SceneAdjudication,
+        name="Structured Scene Adjudicator",
+    )
+
+
+async def adjudicate_scenes(
+    scenes: list,
+    *,
+    occurrences: Optional[dict] = None,
+    agent: Any = None,
+    on_log: Optional[Callable[[str], None]] = None,
+) -> list:
+    """Fold differently-written spellings of one location into a single scene.
+
+    Scene headings are written by hand, so the same room appears as
+    "郑玉琴办公室" and "郑玉琴办公室内". Each spelling otherwise becomes its own
+    base scene with its own generated art.
+
+    Unlike character adjudication this never drops a candidate. A duplicate
+    scene is redundant art; a missing one leaves shots with no location asset,
+    and nothing in the UI would show what went missing.
+    """
+
+    def log(message: str) -> None:
+        if on_log:
+            on_log(message)
+
+    if len(scenes) < 2:
+        return scenes
+
+    counts = occurrences or {}
+    by_name = {scene.name: scene for scene in scenes}
+    listing = "\n".join(
+        f"- {scene.name}（出现 {counts.get(scene.name, 0)} 场）"
+        f"{'，别名 ' + '、'.join(scene.aliases) if scene.aliases else ''}"
+        for scene in scenes
+    )
+
+    try:
+        result = (await _create_scene_adjudication_agent(agent).run(
+            "以下是同一部剧本的地点候选：\n" + listing
+        )).output
+    except Exception as exc:  # noqa: BLE001 - degrade to the unmerged result
+        log(f"⚠️ 场景归一裁决失败，保留原始场景: {exc}")
+        return scenes
+
+    removed: set[str] = set()
+    for group in result.groups:
+        primary = by_name.get(str(group.canonical_name or "").strip())
+        if primary is None:
+            continue
+        for alias in group.alias_names:
+            secondary = by_name.get(str(alias or "").strip())
+            if secondary is None or secondary is primary or secondary.name in removed:
+                continue
+            merged_aliases = list(primary.aliases)
+            for candidate in [secondary.name, *secondary.aliases]:
+                if candidate != primary.name and candidate not in merged_aliases:
+                    merged_aliases.append(candidate)
+            primary.aliases = merged_aliases
+            removed.add(secondary.name)
+            log(f"  归并场景 {secondary.name} → {primary.name}")
+
+    survivors = [scene for scene in scenes if scene.name not in removed]
+    log(f"场景裁决完成: {len(scenes)} → {len(survivors)} 个")
+    return survivors
