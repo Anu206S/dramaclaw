@@ -70,6 +70,7 @@ from novelvideo.seedance2_i2v.pipeline import (
 from novelvideo.seedance2_i2v.voice_clone import normalize_seedance2_audio_type
 from novelvideo.project_config import load_project_config, save_project_config
 from novelvideo.project_context import ProjectContext
+from novelvideo.knowledge_pipeline import is_structured_pipeline
 from novelvideo.ports import get_credit_quote, get_task_backend, get_usage_meter
 from novelvideo.task_backend.limit_logging import log_task_limit_rejection
 from novelvideo.task_backend.limits import (
@@ -6025,7 +6026,16 @@ async def assign_sketch_colors(
                 prop_id = str(item.get("prop_id") or item.get("name") or "").strip()
                 if prop_id in prop_marker_colors:
                     item["marker_color"] = prop_marker_colors[prop_id]
-            await store.update_episode(episode_num, prop_menu=runtime_prop_menu)
+            # Marker colours are written back into the menu this request loaded
+            # earlier, so a whole-row write here discards whatever scene, prop
+            # or identity planning stored meanwhile. Structured projects take
+            # the column-level patch; legacy keeps the write it has always used,
+            # whose normalizer backfills prop metadata the patch path does not
+            # reproduce.
+            if is_structured_pipeline(getattr(store, "state_dir", None)):
+                await store.patch_episode(episode_num, prop_menu=runtime_prop_menu)
+            else:
+                await store.update_episode(episode_num, prop_menu=runtime_prop_menu)
     except Exception:
         pass
 

@@ -10,6 +10,7 @@ from novelvideo.identity_prerequisites import (
     IdentityCharactersBuildingError,
     require_identity_characters,
 )
+from novelvideo.knowledge_pipeline import is_structured_pipeline
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -79,14 +80,20 @@ async def _run_identity_planner(
     await sqlite_store.initialize()
     await sqlite_store.load_graph_state()
 
-    cognee_store = CogneeStore(
-        ctx.owner_project_label,
-        output_dir=str(ctx.output_dir),
-        state_dir=str(ctx.state_dir),
-        sqlite_store=sqlite_store,
-    )
-    await cognee_store.initialize()
-    await cognee_store.load_graph_state()
+    # structured_v1 planning needs no graph, so it uses the SQLite store
+    # directly rather than wrapping it in the Cognee facade. Both planners
+    # accept either, so the rest of this runner is unchanged.
+    if is_structured_pipeline(ctx.state_dir):
+        cognee_store = sqlite_store
+    else:
+        cognee_store = CogneeStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+            sqlite_store=sqlite_store,
+        )
+        await cognee_store.initialize()
+        await cognee_store.load_graph_state()
 
     # API admission performs the same check before enqueue/credit reservation.
     # Keep this runner-side gate as the final defence against state races and
