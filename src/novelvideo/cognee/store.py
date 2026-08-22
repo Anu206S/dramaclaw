@@ -35,6 +35,10 @@ from novelvideo.graph_preview import (
     delete_graph_preview,
     write_graph_preview,
 )
+from novelvideo.knowledge_pipeline import (
+    KnowledgePipelineUnsupported,
+    is_structured_v2,
+)
 from novelvideo.official_defaults import DEFAULT_COGNEE_LLM_MODEL
 from novelvideo.novel_source import require_imported_novel
 from novelvideo.project_config import ensure_cognee_embedding_binding_in_state_dir
@@ -286,7 +290,36 @@ class CogneeStore:
         """统一别名查找键，降低空格/大小写差异导致的失配。"""
         return " ".join((value or "").replace("\u3000", " ").strip().lower().split())
 
+    @property
+    def _cognee_enabled(self) -> bool:
+        """Whether this project may touch Cognee, embeddings or the graph.
+
+        Resolved lazily from the project's recorded track so that stores built
+        without ``initialize()`` (legacy tests, ad-hoc scripts) are gated too.
+        ``initialize()`` overwrites the cached value once it has decided.
+        """
+        cached = self.__dict__.get("_cognee_enabled_flag")
+        if cached is None:
+            cached = not is_structured_v2(self.__dict__.get("state_dir"))
+            self.__dict__["_cognee_enabled_flag"] = cached
+        return cached
+
+    def _require_cognee(self, operation: str) -> None:
+        """Fail loudly instead of silently falling back to the Cognee path.
+
+        A fallback here would bind a structured project to an embedding model,
+        which is the one outcome the second track exists to prevent.
+        """
+        if not self._cognee_enabled:
+            raise KnowledgePipelineUnsupported(
+                f"{operation} is unavailable for structured_v2 projects"
+            )
+
     def embedding_model_scope(self):
+        # Guarded as well as the public graph methods: entering the scope is how
+        # an embedding binding gets created, so a caller reaching past the public
+        # API must not be able to bind a structured project by accident.
+        self._require_cognee("embedding model scope")
         model = getattr(self, "cognee_embedding_model", None)
         dimensions = getattr(self, "cognee_embedding_dimensions", None)
         if not model or dimensions is None:
@@ -445,7 +478,25 @@ class CogneeStore:
         return await store._ensure_db()
 
     async def initialize(self):
-        """初始化 SQLite 数据库和 Cognee 配置。"""
+        """初始化 SQLite 数据库和 Cognee 配置。
+
+        structured_v2 项目降级为纯 SQLite 门面而不是抛异常：生产中有大量
+        runner 和 API 依赖（肖像、参考图、剧本、分镜、视频、Freezone 等）只把
+        本类当 SQLite 门面使用，完全不需要图谱。在这里硬失败会让这些路径在
+        新项目上全线 500。图谱能力本身由 ``_require_cognee`` 单独把守。
+        """
+        # 必须先判定 track，再决定是否绑定 embedding：
+        # ensure_cognee_embedding_binding_in_state_dir() 会为缺字段的项目回填
+        # 绑定并写回 project_config.json，一旦调用就再也退不回去了。
+        if is_structured_v2(self.state_dir):
+            self.__dict__["_cognee_enabled_flag"] = False
+            await self._ensure_db()
+            console.print(
+                f"[dim]存储层已初始化 (structured_v2, 无图谱, db: {self.db_path})[/dim]"
+            )
+            return
+
+        self.__dict__["_cognee_enabled_flag"] = True
         embedding_binding = ensure_cognee_embedding_binding_in_state_dir(self.state_dir)
         self.cognee_embedding_model = embedding_binding.internal_model
         self.cognee_embedding_dimensions = embedding_binding.dimensions
@@ -537,6 +588,7 @@ class CogneeStore:
         on_log: Optional[Callable[[str], None]] = None,
     ) -> dict:
         """快速导入，并独占当前项目的 Cognee/Ladybug 图谱。"""
+        self._require_cognee("Cognee graph ingest")
         async with ladybug_graph_access(self.state_dir, read_only=False):
             return await self._ingest_novel_fast_locked(
                 novel_path,
@@ -668,6 +720,7 @@ class CogneeStore:
         }
 
     async def materialize_graph_preview(self, max_nodes: int = 48) -> dict:
+        self._require_cognee("graph preview")
         async with ladybug_graph_access(self.state_dir, read_only=True):
             snapshot = await self.get_graph_snapshot(max_nodes=max_nodes)
             if not snapshot.get("nodes"):
@@ -684,6 +737,7 @@ class CogneeStore:
         oversized or vector-shaped values before returning them to the browser.
         """
 
+        self._require_cognee("graph snapshot")
         max_nodes = max(20, min(int(max_nodes), 80))
         max_edges = min(max_nodes * 3, 160)
         raw_nodes, raw_edges = await self._get_dataset_graph_data(
@@ -929,6 +983,7 @@ class CogneeStore:
         图谱构建只负责发现缺失的基础角色。已有角色可能已经有用户编辑、
         身份图、声线和资产配置，不能被一次图谱重扫覆盖。
         """
+        self._require_cognee("graph character build")
         from .pipeline import extract_characters_from_graph
 
         def report(progress: float, task: str):
@@ -1561,6 +1616,7 @@ class CogneeStore:
 
     async def search(self, query: str, mode: str = "graph", top_k: int = 10) -> str:
         """语义检索。"""
+        self._require_cognee("graph search")
         async with ladybug_graph_access(self.state_dir, read_only=True):
             with preserve_st_env():
                 from cognee.modules.data.exceptions.exceptions import DatasetNotFoundError
@@ -1891,6 +1947,7 @@ class CogneeStore:
         这里只补缺失的基础场景；已有基础场景和派生 plate 都是资产事实，
         不能被一次图谱重扫清空或覆盖。
         """
+        self._require_cognee("graph scene build")
         from .pipeline import extract_scenes_from_graph
 
         def report(progress: float, task: str):
@@ -1949,6 +2006,7 @@ class CogneeStore:
         on_log: Optional[Callable[[str], None]] = None,
     ) -> List[NovelProp]:
         """从图谱构建道具（分阶段架构第二步）。"""
+        self._require_cognee("graph prop build")
         from .pipeline import extract_props_from_graph
 
         def report(progress: float, task: str):

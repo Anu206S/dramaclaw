@@ -508,6 +508,9 @@ async def extract_characters_from_graph(
 # ============================================================
 
 
+# Legacy-only: reached from build_episodes(), which runs only when
+# planning_mode="ai". No current frontend workflow selects that mode.
+# Structured-v2 projects must not enter this path.
 async def extract_episodes_with_characters(
     text: str,
     target_episodes: int = 10,
