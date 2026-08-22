@@ -295,13 +295,69 @@ CREATE TABLE IF NOT EXISTS seedance2_voice_audio_records (
 );
 CREATE INDEX IF NOT EXISTS idx_seedance2_voice_audio_speaker
     ON seedance2_voice_audio_records(episode_number, speaker);
+
+-- structured_v2 analysis bookkeeping.
+--
+-- A run is keyed by what it analysed (source_sha256) and how (schema_version),
+-- so re-importing identical text reuses completed chunks and only failed or
+-- stale ones are recomputed. Chunks store source offsets rather than a copy of
+-- the text: duplicating a whole novel per run would dwarf the rest of the
+-- project database.
+CREATE TABLE IF NOT EXISTS story_analysis_runs (
+    run_id            TEXT PRIMARY KEY,
+    pipeline_version  TEXT NOT NULL,
+    schema_version    INTEGER NOT NULL DEFAULT 1,
+    spine_template    TEXT NOT NULL DEFAULT '',
+    source_sha256     TEXT NOT NULL,
+    source_length     INTEGER NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    error             TEXT NOT NULL DEFAULT '',
+    created_at        TEXT DEFAULT (datetime('now')),
+    completed_at      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_story_analysis_runs_source
+    ON story_analysis_runs(source_sha256, schema_version);
+
+CREATE TABLE IF NOT EXISTS story_analysis_chunks (
+    run_id            TEXT NOT NULL,
+    chunk_id          TEXT NOT NULL,
+    chunk_index       INTEGER NOT NULL DEFAULT 0,
+    section_type      TEXT NOT NULL DEFAULT '',
+    section_label     TEXT NOT NULL DEFAULT '',
+    source_start      INTEGER NOT NULL DEFAULT 0,
+    source_end        INTEGER NOT NULL DEFAULT 0,
+    source_hash       TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    error             TEXT NOT NULL DEFAULT '',
+    result_json       TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (run_id, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_story_analysis_chunks_status
+    ON story_analysis_chunks(run_id, status);
+
+-- Every structured entity keeps at least one span of real source text, so a
+-- character or scene can always be traced back to what produced it.
+CREATE TABLE IF NOT EXISTS entity_evidence (
+    run_id            TEXT NOT NULL,
+    entity_type       TEXT NOT NULL,
+    entity_id         TEXT NOT NULL,
+    chunk_id          TEXT NOT NULL,
+    source_start      INTEGER NOT NULL,
+    source_end        INTEGER NOT NULL,
+    evidence_kind     TEXT NOT NULL DEFAULT '',
+    evidence_text     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, entity_type, entity_id, chunk_id, source_start, source_end)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_evidence_entity
+    ON entity_evidence(entity_type, entity_id);
 """
 
 _PROJECT_STORE_SCHEMA_COMPONENT = "project_store"
 # MIGRATION CONTRACT: increment this whenever SQLITE_SCHEMA_SQL or any
 # _ensure_*_columns migration above changes. Existing databases skip the
 # initializer after this version has been recorded.
-_PROJECT_STORE_SCHEMA_VERSION = 1
+_PROJECT_STORE_SCHEMA_VERSION = 2
 
 
 def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
@@ -2257,6 +2313,197 @@ class SQLiteStore:
         cursor = await db.execute("DELETE FROM scenes")
         await db.commit()
         return cursor.rowcount or 0
+
+    # ============================================================
+    # structured_v2 分析 run / chunk / 证据
+    # ============================================================
+
+    async def get_reusable_analysis_run(
+        self,
+        *,
+        source_sha256: str,
+        schema_version: int,
+        pipeline_version: str,
+    ) -> dict | None:
+        """Find a run that analysed identical text with identical code.
+
+        Reuse is keyed on all three: different source text or a changed
+        extraction contract must not inherit another run's chunk results.
+        """
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT * FROM story_analysis_runs
+               WHERE source_sha256 = ? AND schema_version = ?
+                 AND pipeline_version = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (source_sha256, int(schema_version), pipeline_version),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def start_analysis_run(
+        self,
+        *,
+        run_id: str,
+        pipeline_version: str,
+        schema_version: int,
+        spine_template: str,
+        source_sha256: str,
+        source_length: int,
+        chunks: list,
+    ) -> None:
+        """Record a run and its chunk plan in one transaction.
+
+        A half-written plan would let a resume believe chunks are missing rather
+        than pending, so the run row and every chunk land together.
+        """
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN")
+            await db.execute(
+                """INSERT OR REPLACE INTO story_analysis_runs
+                   (run_id, pipeline_version, schema_version, spine_template,
+                    source_sha256, source_length, status, error, completed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'pending', '', '')""",
+                (
+                    run_id,
+                    pipeline_version,
+                    int(schema_version),
+                    spine_template,
+                    source_sha256,
+                    int(source_length),
+                ),
+            )
+            await db.execute(
+                "DELETE FROM story_analysis_chunks WHERE run_id = ?", (run_id,)
+            )
+            await db.executemany(
+                """INSERT INTO story_analysis_chunks
+                   (run_id, chunk_id, chunk_index, section_type, section_label,
+                    source_start, source_end, source_hash, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+                [
+                    (
+                        run_id,
+                        chunk.chunk_id,
+                        int(chunk.chunk_index),
+                        chunk.section_type,
+                        chunk.section_label,
+                        int(chunk.source_start),
+                        int(chunk.source_end),
+                        chunk.source_hash,
+                    )
+                    for chunk in chunks
+                ],
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    async def list_analysis_chunks(
+        self, run_id: str, *, status: str | None = None
+    ) -> list[dict]:
+        db = await self._ensure_db()
+        sql = "SELECT * FROM story_analysis_chunks WHERE run_id = ?"
+        params: list = [run_id]
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY chunk_index"
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_analysis_chunk_done(
+        self, run_id: str, chunk_id: str, result_json: str
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            """UPDATE story_analysis_chunks
+               SET status = 'done', error = '', result_json = ?,
+                   attempts = attempts + 1
+               WHERE run_id = ? AND chunk_id = ?""",
+            (result_json, run_id, chunk_id),
+        )
+        await db.commit()
+
+    async def mark_analysis_chunk_failed(
+        self, run_id: str, chunk_id: str, error: str
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            """UPDATE story_analysis_chunks
+               SET status = 'failed', error = ?, attempts = attempts + 1
+               WHERE run_id = ? AND chunk_id = ?""",
+            (str(error)[:2000], run_id, chunk_id),
+        )
+        await db.commit()
+
+    async def finish_analysis_run(
+        self, run_id: str, *, status: str, error: str = ""
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            """UPDATE story_analysis_runs
+               SET status = ?, error = ?, completed_at = datetime('now')
+               WHERE run_id = ?""",
+            (status, str(error)[:2000], run_id),
+        )
+        await db.commit()
+
+    async def replace_entity_evidence(
+        self, run_id: str, entity_type: str, entity_id: str, evidence: list[dict]
+    ) -> None:
+        """Rewrite one entity's evidence for a run.
+
+        Replacing rather than appending keeps a re-run of the same chunk from
+        accumulating duplicate spans for the same entity.
+        """
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN")
+            await db.execute(
+                """DELETE FROM entity_evidence
+                   WHERE run_id = ? AND entity_type = ? AND entity_id = ?""",
+                (run_id, entity_type, entity_id),
+            )
+            await db.executemany(
+                """INSERT OR REPLACE INTO entity_evidence
+                   (run_id, entity_type, entity_id, chunk_id, source_start,
+                    source_end, evidence_kind, evidence_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        run_id,
+                        entity_type,
+                        entity_id,
+                        str(item.get("chunk_id", "")),
+                        int(item.get("source_start", 0)),
+                        int(item.get("source_end", 0)),
+                        str(item.get("evidence_kind", "")),
+                        str(item.get("evidence_text", "")),
+                    )
+                    for item in evidence
+                ],
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    async def list_entity_evidence(
+        self, entity_type: str, entity_id: str
+    ) -> list[dict]:
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT * FROM entity_evidence
+               WHERE entity_type = ? AND entity_id = ?
+               ORDER BY chunk_id, source_start""",
+            (entity_type, entity_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def delete_all_props(self) -> int:
         """删除所有道具。"""

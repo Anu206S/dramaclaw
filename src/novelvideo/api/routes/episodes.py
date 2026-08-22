@@ -27,6 +27,10 @@ from novelvideo.identity_prerequisites import (
     identity_prerequisite_response,
     require_identity_characters,
 )
+from novelvideo.knowledge_pipeline import (
+    KnowledgePipelineUnsupported,
+    is_structured_v2,
+)
 from novelvideo.ports import get_task_backend, get_usage_meter
 from novelvideo.project_config import load_project_config_file_from_state_dir
 from novelvideo.task_identity import project_task_state_key
@@ -271,6 +275,15 @@ async def plan_episodes(project: str, body: EpisodePlanRequest, user: dict = Dep
     if ctx is not None:
         if not has_imported_novel(resolved.project_dir):
             return novel_import_required_response()
+        # The AI planners read the Cognee graph, which structured_v2 projects do
+        # not have. Reject before enqueue so the user gets an answer instead of
+        # a task that is guaranteed to fail after reserving credit.
+        if is_structured_v2(state_dir) and body.planning_mode != "chapters":
+            return {
+                "ok": False,
+                "code": KnowledgePipelineUnsupported.error_code,
+                "error": "该项目只支持按章节/集号的确定性分集",
+            }
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             product_surface="mainline",
