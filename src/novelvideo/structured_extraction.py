@@ -337,8 +337,8 @@ def merge_character_candidates(
     """
     merged: dict[str, MergedCharacter] = {}
     alias_pairs: set[tuple[str, str]] = set()
-    # appellation -> character -> the chunks that attributed it there.
-    appellation_claims: dict[str, dict[str, set[str]]] = {}
+    # appellation -> character -> the source positions attributing it there.
+    appellation_claims: dict[str, dict[str, set[tuple[int, int]]]] = {}
 
     for chunk, output in outcomes:
         alias_pairs |= find_explicit_aliases(chunk.text)
@@ -391,12 +391,21 @@ def merge_character_candidates(
                     not normalized
                     or normalized == name
                     or is_generic_address(normalized)
-                    or verify_evidence(normalized, chunk) is None
                 ):
                     continue
+                # Votes are counted per position in the source, not per chunk.
+                # Chunks overlap, so one occurrence sitting in an overlap would
+                # otherwise be counted twice and clear the margin on its own.
+                local = chunk.text.find(normalized)
+                if local < 0:
+                    continue
+                span = (
+                    chunk.source_start + local,
+                    chunk.source_start + local + len(normalized),
+                )
                 appellation_claims.setdefault(normalized, {}).setdefault(
                     name, set()
-                ).add(chunk.chunk_id)
+                ).add(span)
 
             for alias in candidate.aliases:
                 normalized_alias = normalize_character_name(alias)
@@ -419,14 +428,16 @@ def merge_character_candidates(
 
 
 def _apply_appellation_claims(
-    merged: dict[str, MergedCharacter], claims: dict[str, dict[str, set[str]]]
+    merged: dict[str, MergedCharacter],
+    claims: dict[str, dict[str, set[tuple[int, int]]]],
 ) -> None:
     """Award a contested appellation to whoever the text repeatedly supports.
 
     One claimant is taken at face value. When several characters are offered the
-    same nickname, the winner is decided by how many *distinct chunks*
-    independently attributed it there — not by how much evidence each character
-    has overall, which would simply hand every ambiguous form to the lead.
+    same nickname, the winner is decided by how many *distinct positions in the
+    source* attributed it there — not by how much evidence each character has
+    overall, which would simply hand every ambiguous form to the lead, and not
+    by chunk count, since chunks overlap and one occurrence can fall in two.
 
     A win has to be decisive: at least two independent chunks, and a clear
     margin over the runner-up. Anything closer stays unassigned, because a wrong
@@ -448,7 +459,7 @@ def _apply_appellation_claims(
 
         ranked = sorted(live.items(), key=lambda kv: len(kv[1]), reverse=True)
         (winner, won), (_, runner_up) = ranked[0], ranked[1]
-        if len(won) < _APPELLATION_MIN_CHUNKS:
+        if len(won) < _APPELLATION_MIN_OCCURRENCES:
             continue
         if len(won) < max(len(runner_up) * 2, len(runner_up) + 1):
             continue
@@ -563,10 +574,10 @@ _ADJUDICATION_SAMPLE_QUOTES = 3
 _CONTEXT_WINDOW_EVIDENCE_THRESHOLD = 6
 _CONTEXT_WINDOW_CHARS = 220
 
-# A contested appellation needs support from this many independent chunks
-# before it is awarded to anyone. One chunk is one author's phrasing, which
-# is not enough to overrule a competing claim.
-_APPELLATION_MIN_CHUNKS = 2
+# A contested appellation needs this many distinct source positions before it
+# is awarded to anyone. A single occurrence is one turn of phrase, which is
+# not enough to overrule a competing claim.
+_APPELLATION_MIN_OCCURRENCES = 2
 
 
 class SamePersonGroup(BaseModel):

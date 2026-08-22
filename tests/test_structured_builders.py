@@ -1471,3 +1471,73 @@ async def test_replaying_a_build_cannot_split_an_alias_back_into_a_character(
 
     assert second == first, "a rebuild changed the cast for unchanged source"
     assert "苏晴" not in second
+
+
+def test_one_occurrence_in_an_overlap_counts_once():
+    """Chunks overlap, so a single mention can appear in two of them.
+
+    Counting chunks would let that one occurrence clear the two-to-one margin by
+    itself and hand the appellation to whoever happened to sit on the seam.
+    """
+    source = "郑玉琴走进客厅。刘管家喊了一声郑太。她没有回头。"
+    seam = source.index("郑太")
+    # Two chunks whose spans overlap across the mention, exactly as
+    # _split_oversized produces them.
+    left = SourceChunk(
+        chunk_id="c0", chunk_index=0, section_type="chapter", section_label="上",
+        source_start=0, source_end=seam + 6, text=source[: seam + 6],
+    )
+    right = SourceChunk(
+        chunk_id="c1", chunk_index=1, section_type="chapter", section_label="下",
+        source_start=seam - 4, source_end=len(source), text=source[seam - 4 :],
+    )
+    assert right.source_start < left.source_end, "the fixture must overlap"
+
+    def claim(chunk, owner):
+        return (
+            chunk,
+            ChunkCharacterOutput(
+                characters=[
+                    _candidate_with_appellations(owner, [chunk.text], ["郑太"])
+                ]
+            ),
+        )
+
+    # 郑玉琴 is claimed twice, but both are the same mention seen from either
+    # side of the seam. 刘管家 is claimed once, elsewhere.
+    elsewhere = _chunk("刘管家看着郑太离开。", chunk_id="c2", start=400)
+    outcomes = [
+        claim(left, "郑玉琴"),
+        claim(right, "郑玉琴"),
+        claim(elsewhere, "刘管家"),
+    ]
+
+    for item in merge_character_candidates(outcomes):
+        assert "郑太" not in item.aliases, (
+            "an overlapped mention was counted twice and won the vote"
+        )
+
+
+def test_the_same_appellation_at_two_real_positions_still_wins():
+    """Deduplicating by position must not silently disable voting."""
+    source = "郑玉琴走进客厅。郑太点头。稍后郑太又开口。"
+    first = _chunk(source[:12], chunk_id="c0", start=0)
+    second = _chunk(source[12:], chunk_id="c1", start=12)
+
+    def claim(chunk, owner):
+        return (
+            chunk,
+            ChunkCharacterOutput(
+                characters=[
+                    _candidate_with_appellations(owner, [chunk.text], ["郑太"])
+                ]
+            ),
+        )
+
+    outcomes = [
+        claim(first, "郑玉琴"),
+        claim(second, "郑玉琴"),
+        claim(_chunk("刘管家在门口。郑太走了。", chunk_id="c2", start=400), "刘管家"),
+    ]
+    merged = {m.name: m for m in merge_character_candidates(outcomes)}
+    assert merged["郑玉琴"].aliases == {"郑太"}
