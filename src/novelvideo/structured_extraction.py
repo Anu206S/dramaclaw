@@ -80,6 +80,10 @@ class CharacterEvidence(BaseModel):
 class CharacterCandidate(BaseModel):
     name: str = Field(description="角色在本片段中的称呼，保持原文写法")
     aliases: list[str] = Field(default_factory=list, description="仅限本片段原文明确写出的别名")
+    appellations: list[str] = Field(
+        default_factory=list,
+        description="本片段中用来称呼该角色的其他说法（昵称、职务、称号），必须逐字出现在本片段原文中",
+    )
     gender: str = Field(default="", description="male / female / 空字符串表示未知")
     description: str = Field(default="", description="本片段支持的简短描述")
     evidence: list[CharacterEvidence] = Field(default_factory=list)
@@ -98,7 +102,10 @@ CHARACTER_EXTRACTION_SYSTEM_PROMPT = """你是剧本/小说的角色抽取器。
 - 每个角色至少给出一条 evidence.quote，必须是本片段原文中逐字出现的一句话。
 - 不要编造引用。找不到原文依据的角色不要输出。
 - aliases 只填本片段原文明确写出的别名，例如“林默又名小默”。
-  仅仅是同一段里出现的另一个称呼，不算别名。
+- appellations 填本片段中明显用来称呼这个角色的其他说法：昵称、职务、称号。
+  例如本片段里“郑太”“郑总”都指郑玉琴，就写进郑玉琴的 appellations。
+  每一个都必须逐字出现在本片段原文中，不要编造。
+  只有在本片段的上下文里能看出指向该角色时才填；看不出来就不要填。
 - 不确定两个称呼是不是同一个人时，分别输出两个角色，不要合并。
 - 旁白、画外音、镜头提示不是角色。
 - 群体（众人、士兵们、村民们）不是角色。"""
@@ -329,6 +336,8 @@ def merge_character_candidates(
     """
     merged: dict[str, MergedCharacter] = {}
     alias_pairs: set[tuple[str, str]] = set()
+    # appellation -> every character it was attributed to.
+    appellation_claims: dict[str, set[str]] = {}
 
     for chunk, output in outcomes:
         alias_pairs |= find_explicit_aliases(chunk.text)
@@ -370,6 +379,22 @@ def merge_character_candidates(
             if not entry.description and candidate.description.strip():
                 entry.description = candidate.description.strip()
 
+            # An appellation is asserted with the whole chunk in view, which is
+            # far more reliable than guessing across chunks — but it still has
+            # to appear in the text, or it is not something anyone was called.
+            # Attribution is settled later: a packed chunk holds several
+            # characters, and the model does mix up who is called what.
+            for appellation in candidate.appellations:
+                normalized = normalize_character_name(appellation)
+                if (
+                    not normalized
+                    or normalized == name
+                    or is_generic_address(normalized)
+                    or verify_evidence(normalized, chunk) is None
+                ):
+                    continue
+                appellation_claims.setdefault(normalized, set()).add(name)
+
             for alias in candidate.aliases:
                 normalized_alias = normalize_character_name(alias)
                 if not normalized_alias or normalized_alias == name:
@@ -384,9 +409,29 @@ def merge_character_candidates(
                 elif not is_generic_address(normalized_alias):
                     entry.ambiguous_with.add(normalized_alias)
 
+    _apply_appellation_claims(merged, appellation_claims)
     _apply_explicit_alias_merges(merged, alias_pairs)
     _apply_title_qualified_merges(merged)
     return sorted(merged.values(), key=lambda item: (-len(item.evidence), item.name))
+
+
+def _apply_appellation_claims(
+    merged: dict[str, MergedCharacter], claims: dict[str, set[str]]
+) -> None:
+    """Record an appellation only when exactly one character claimed it.
+
+    Two characters claiming the same nickname is the model telling us it could
+    not attribute it. Keeping both would send episode-level alias resolution to
+    the wrong person, which is worse than having no alias at all — a missing
+    alias fails to resolve, a wrong one resolves confidently and incorrectly.
+    """
+    for appellation, owners in claims.items():
+        live = {name for name in owners if name in merged}
+        if len(live) != 1:
+            continue
+        owner = merged[next(iter(live))]
+        if appellation not in merged:
+            owner.aliases.add(appellation)
 
 
 def _apply_title_qualified_merges(merged: dict[str, MergedCharacter]) -> None:

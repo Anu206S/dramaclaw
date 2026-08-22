@@ -45,6 +45,18 @@ NARRATED_TEXT = """第一章 归来
 """
 
 
+def _padded(body: str) -> str:
+    """Pad a chapter past the packing target so it stays its own chunk."""
+    return body + "\n" + "闲笔叙述。" * 640 + "\n"
+
+
+NARRATED_MULTI = (
+    "第一章 归来\n\n" + _padded("林默回到阔别十年的故乡。他的母亲在门口等他。")
+    + "\n第二章 旧友\n\n" + _padded("林默又名小默，村里人都这么叫他。他在巷口遇见了苏晴。")
+    + "\n第三章 真相\n\n" + _padded("苏晴告诉林默一个秘密。他的母亲听完沉默了很久。")
+)
+
+
 def _chunk(text: str, *, chunk_id="c0", start=0) -> SourceChunk:
     return SourceChunk(
         chunk_id=chunk_id,
@@ -273,7 +285,7 @@ class FakeAgent:
 
 
 async def test_extraction_runs_over_every_chunk():
-    chunks = chunk_source_text(NARRATED_TEXT, "narrated")
+    chunks = chunk_source_text(NARRATED_MULTI, "narrated")
     agent = FakeAgent(
         {
             "第一章": ChunkCharacterOutput(
@@ -290,7 +302,7 @@ async def test_extraction_runs_over_every_chunk():
 
 async def test_one_failing_chunk_does_not_discard_the_others():
     """A single unparseable scene must not take the whole build down with it."""
-    chunks = chunk_source_text(NARRATED_TEXT, "narrated")
+    chunks = chunk_source_text(NARRATED_MULTI, "narrated")
     agent = FakeAgent(
         {
             "第一章": ChunkCharacterOutput(
@@ -349,7 +361,7 @@ async def structured_store(tmp_path):
         json.dumps({KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED, "spine_template": "narrated"}),
         encoding="utf-8",
     )
-    (state_dir / "novel.txt").write_text(NARRATED_TEXT, encoding="utf-8")
+    (state_dir / "novel.txt").write_text(NARRATED_MULTI, encoding="utf-8")
     store = SQLiteStore(
         "user/structured", output_dir=str(state_dir), state_dir=str(state_dir)
     )
@@ -438,7 +450,7 @@ async def test_character_build_publishes_and_records_evidence(
 
     store, state_dir = structured_store
     source = state_dir / "source.txt"
-    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    source.write_text(NARRATED_MULTI, encoding="utf-8")
     run = await ingest_source_text_structured(
         store, str(source), spine_template="narrated"
     )
@@ -469,7 +481,7 @@ async def test_character_build_publishes_and_records_evidence(
     evidence = await store.list_entity_evidence("character", "林默")
     assert evidence
     assert evidence[0]["run_id"] == run["run_id"]
-    quoted = NARRATED_TEXT[
+    quoted = NARRATED_MULTI[
         evidence[0]["source_start"] : evidence[0]["source_end"]
     ]
     assert quoted == "林默回到阔别十年的故乡。"
@@ -516,7 +528,7 @@ async def test_completed_chunks_are_replayed_instead_of_re_billed(
 
     store, state_dir = structured_store
     source = state_dir / "source.txt"
-    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    source.write_text(NARRATED_MULTI, encoding="utf-8")
     await ingest_source_text_structured(store, str(source), spine_template="narrated")
 
     outputs = {
@@ -561,7 +573,7 @@ async def test_a_failed_chunk_leaves_the_run_partial(structured_store, monkeypat
 
     store, state_dir = structured_store
     source = state_dir / "source.txt"
-    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    source.write_text(NARRATED_MULTI, encoding="utf-8")
     run = await ingest_source_text_structured(
         store, str(source), spine_template="narrated"
     )
@@ -595,7 +607,7 @@ async def test_a_failed_chunk_leaves_the_run_partial(structured_store, monkeypat
     )
 
     stored = await store.get_reusable_analysis_run(
-        source_sha256=source_sha256(NARRATED_TEXT),
+        source_sha256=source_sha256(NARRATED_MULTI),
         schema_version=STRUCTURED_SCHEMA_VERSION,
         pipeline_version=STRUCTURED_PIPELINE_VERSION,
         spine_template="narrated",
@@ -622,13 +634,19 @@ def test_oversized_parts_keep_a_recognisable_section_label():
     assert all("第1章" in chunk.section_label for chunk in chunks)
 
 
-def test_a_short_chapter_is_not_split():
+def test_short_chapters_are_packed_into_one_call():
+    """A call costs the same round trip whether it carries 300 or 3000 chars."""
     chunks = chunk_source_text(NARRATED_TEXT, "narrated")
-    assert [chunk.chunk_id for chunk in chunks] == [
-        "chapter-0000",
-        "chapter-0001",
-        "chapter-0002",
-    ]
+    assert len(chunks) == 1
+    assert chunks[0].source_start == 0
+    assert chunks[0].text == NARRATED_TEXT
+
+
+def test_chapters_past_the_target_stay_separate():
+    chunks = chunk_source_text(NARRATED_MULTI, "narrated")
+    assert len(chunks) == 3
+    for chunk in chunks:
+        assert NARRATED_MULTI[chunk.source_start : chunk.source_end] == chunk.text
 
 
 def test_llm_concurrency_defaults_to_the_project_baseline(monkeypatch):
@@ -653,7 +671,7 @@ async def test_reuse_key_separates_drama_from_narrated(structured_store, tmp_pat
 
     store, state_dir = structured_store
     source = state_dir / "source.txt"
-    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    source.write_text(NARRATED_MULTI, encoding="utf-8")
 
     narrated = await ingest_source_text_structured(
         store, str(source), spine_template="narrated"
@@ -686,7 +704,7 @@ async def test_evidence_is_backfilled_when_the_characters_already_exist(
 
     store, state_dir = structured_store
     source = state_dir / "source.txt"
-    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    source.write_text(NARRATED_MULTI, encoding="utf-8")
     await ingest_source_text_structured(store, str(source), spine_template="narrated")
 
     # Stand in for a previous build that published the character but died
@@ -734,7 +752,7 @@ async def test_a_run_with_no_characters_is_still_closed_out(
 
     store, state_dir = structured_store
     source = state_dir / "source.txt"
-    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    source.write_text(NARRATED_MULTI, encoding="utf-8")
     await ingest_source_text_structured(store, str(source), spine_template="narrated")
 
     agent = FakeAgent({})  # every chunk yields nothing
@@ -751,7 +769,7 @@ async def test_a_run_with_no_characters_is_still_closed_out(
     assert await structured_builders.build_characters_structured(store) == []
 
     stored = await store.get_reusable_analysis_run(
-        source_sha256=source_sha256(NARRATED_TEXT),
+        source_sha256=source_sha256(NARRATED_MULTI),
         schema_version=STRUCTURED_SCHEMA_VERSION,
         pipeline_version=STRUCTURED_PIPELINE_VERSION,
         spine_template="narrated",
@@ -1025,7 +1043,7 @@ class FlakyAgent:
         )
 
 
-async def _ingested(store, state_dir, text=NARRATED_TEXT):
+async def _ingested(store, state_dir, text=NARRATED_MULTI):
     from novelvideo.structured_ingest import ingest_source_text_structured
 
     source = state_dir / "source.txt"
@@ -1057,7 +1075,7 @@ async def test_a_chunk_that_failed_is_retried_while_others_are_not(
     from novelvideo import structured_builders
 
     store, state_dir = structured_store
-    run = await _ingested(store, state_dir)
+    run = await _ingested(store, state_dir, NARRATED_MULTI)
 
     agent = FlakyAgent(
         outputs={
@@ -1093,7 +1111,7 @@ async def test_editing_the_source_discards_the_stored_plan(
     from novelvideo import structured_builders
 
     store, state_dir = structured_store
-    await _ingested(store, state_dir)
+    await _ingested(store, state_dir, NARRATED_MULTI)
 
     outputs = {
         "第一章": ChunkCharacterOutput(
@@ -1110,9 +1128,89 @@ async def test_editing_the_source_discards_the_stored_plan(
     # Rewriting novel.txt without re-importing: the hash no longer matches any
     # recorded run, so nothing may be replayed.
     (Path(store.project_dir) / "novel.txt").write_text(
-        NARRATED_TEXT + "\n第四章 结局\n\n他终于释怀。\n", encoding="utf-8"
+        NARRATED_MULTI + "\n第四章 结局\n\n他终于释怀。\n", encoding="utf-8"
     )
     agent.calls.clear()
     await structured_builders.build_characters_structured(store)
 
     assert agent.calls, "stale results were replayed for text that changed"
+
+
+# ── appellations ────────────────────────────────────────────────────────────
+
+
+def _candidate_with_appellations(name, quotes, appellations):
+    c = _candidate(name, quotes=quotes)
+    c.appellations = list(appellations)
+    return c
+
+
+def test_an_appellation_only_one_character_claims_becomes_an_alias():
+    """Packed chunks hold several scenes, so nicknames surface alongside names."""
+    text = "郑玉琴走进客厅。刘管家喊了一声郑太。"
+    outcomes = [
+        (
+            _chunk(text),
+            ChunkCharacterOutput(
+                characters=[
+                    _candidate_with_appellations("郑玉琴", [text], ["郑太"]),
+                    _candidate("刘管家", quotes=[text]),
+                ]
+            ),
+        )
+    ]
+    merged = {m.name: m for m in merge_character_candidates(outcomes)}
+    assert merged["郑玉琴"].aliases == {"郑太"}
+    assert merged["刘管家"].aliases == set()
+
+
+def test_an_appellation_two_characters_claim_is_dropped():
+    """Two claimants means the model could not attribute it.
+
+    A wrong alias resolves confidently to the wrong person, which is worse than
+    no alias at all.
+    """
+    text = "郑玉琴走进客厅。刘管家喊了一声郑太。"
+    outcomes = [
+        (
+            _chunk(text),
+            ChunkCharacterOutput(
+                characters=[
+                    _candidate_with_appellations("郑玉琴", [text], ["郑太"]),
+                    _candidate_with_appellations("刘管家", [text], ["郑太"]),
+                ]
+            ),
+        )
+    ]
+    for item in merge_character_candidates(outcomes):
+        assert "郑太" not in item.aliases
+
+
+def test_an_appellation_absent_from_the_chunk_is_rejected():
+    text = "郑玉琴走进客厅。"
+    outcomes = [
+        (
+            _chunk(text),
+            ChunkCharacterOutput(
+                characters=[
+                    _candidate_with_appellations("郑玉琴", [text], ["女王陛下"])
+                ]
+            ),
+        )
+    ]
+    assert merge_character_candidates(outcomes)[0].aliases == set()
+
+
+def test_a_generic_appellation_is_not_recorded_as_an_alias():
+    text = "郑玉琴走进客厅。她的母亲在门口。"
+    outcomes = [
+        (
+            _chunk(text),
+            ChunkCharacterOutput(
+                characters=[
+                    _candidate_with_appellations("郑玉琴", [text], ["母亲"])
+                ]
+            ),
+        )
+    ]
+    assert merge_character_candidates(outcomes)[0].aliases == set()
