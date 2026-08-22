@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import re
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field, field_validator, model_validator
 
@@ -14,6 +14,9 @@ from novelvideo.utils.screenplay_scene_parser import TIME_TOKEN_RE, parse_scene_
 
 SceneType = Literal["interior", "exterior", "nature"]
 InteriorExterior = Literal["内", "外", "无"]
+
+# Scene headings are ~14 characters each, so many fit comfortably in one call.
+_NORMALIZER_BATCH_SIZE = 20
 
 ATTACHED_SINGLE_CHAR_TIME_TOKENS = {"日", "夜", "晨", "午", "晚"}
 LOCATION_SUFFIXES_FOR_ATTACHED_TIME = {
@@ -169,6 +172,77 @@ class NormalizedSceneBlock(NormalizedSceneHeader):
         return self
 
 
+class BatchSceneHeaderItem(BaseModel):
+    """One scene inside a batched normalization response."""
+
+    index: int = Field(description="对应输入列表中的序号")
+    episode_number: int = Field(default=0)
+    scene_no: str = Field(default="")
+    location: str = Field(default="")
+    time_of_day: str = Field(default="无")
+    interior_exterior: str = Field(default="无")
+    aliases: list[str] = Field(default_factory=list)
+    scene_type: str = Field(default="interior")
+
+
+class NormalizedSceneHeaderBatch(BaseModel):
+    scenes: list[BatchSceneHeaderItem] = Field(default_factory=list)
+
+
+def _create_batch_normalizer_agent():
+    from pydantic_ai import Agent
+
+    from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
+        get_newapi_text_pydantic_model,
+    )
+
+    return Agent(
+        get_newapi_text_pydantic_model(
+            "SCREENPLAY_NORMALIZER_MODEL",
+            "gemini-3.5-flash",
+            capability="cognee.llm",
+        ),
+        system_prompt=(
+            SCREENPLAY_NORMALIZER_SYSTEM_PROMPT
+            + "\n\n本次一次给出多个场景头。请对每一个分别规范化，"
+            "并用 index 标明它对应输入中的哪一条。不要遗漏任何一条。"
+        ),
+        model_settings=get_newapi_structured_output_model_settings(),
+        output_type=NormalizedSceneHeaderBatch,
+        output_retries=2,
+        name="剧本标准化分析师（批量）",
+    )
+
+
+def normalize_scene_header_locally(block) -> NormalizedSceneHeader | None:
+    """Build a normalized header from the parser alone, when it suffices.
+
+    A standard heading already states location, time and interior/exterior, so
+    asking a model to restate them is a round trip that buys nothing. Only
+    headings the parser could not fully resolve go to the model.
+    """
+    location = (block.location or "").strip()
+    interior_exterior = (block.interior_exterior or "").strip()
+    time_of_day = (block.time_of_day or "").strip()
+    if not location or interior_exterior not in {"内", "外"}:
+        return None
+    # A time the parser had to guess is exactly the ambiguity worth a model call.
+    if getattr(block, "time_inferred", False) or not time_of_day:
+        return None
+    return NormalizedSceneHeader.model_validate(
+        {
+            "episode_number": int(block.episode or 0),
+            "scene_no": str(block.scene_no or "").strip(),
+            "location": location,
+            "time_of_day": time_of_day,
+            "interior_exterior": interior_exterior,
+            "aliases": [],
+            "scene_type": "interior" if interior_exterior == "内" else "exterior",
+        }
+    )
+
+
 def _create_screenplay_normalizer_agent():
     from pydantic_ai import Agent
 
@@ -282,34 +356,85 @@ async def normalize_screenplay_scenes(
     if not source:
         return []
 
-    runner = agent or _create_screenplay_normalizer_agent()
     blocks = [block for block in parse_scene_blocks(source) if block.header_line]
+    if not blocks:
+        return []
 
-    # Headers are normalized independently, so they run in parallel with a
-    # bounded number in flight. Order is preserved because downstream scene
-    # merging resolves ties by first appearance.
-    async def normalize(block) -> NormalizedSceneBlock | None:
-        normalized = await normalize_screenplay_scene_header(
-            block.header_line,
-            location_hint=block.location,
-            time_of_day_hint=block.time_of_day,
-            interior_exterior_hint=block.interior_exterior,
-            episode_number_hint=block.episode,
-            scene_no_hint=block.scene_no,
-            context_lines=block.lines,
-            agent=runner,
-        )
-        if not normalized:
-            return None
+    def attach(block, header: NormalizedSceneHeader) -> NormalizedSceneBlock:
         return NormalizedSceneBlock(
-            **normalized.model_dump(),
+            **header.model_dump(),
             raw_header=block.header_line,
             characters=list(block.characters),
             evidence_lines=[block.header_line],
             content_lines=list(block.lines),
         )
 
-    results = await map_bounded(
-        blocks, normalize, limit=default_llm_concurrency()
-    )
-    return [block for block in results if block is not None]
+    # A standard heading already states everything the model would be asked to
+    # restate, and a scene heading is about fourteen characters long — one round
+    # trip each is almost all latency. Resolve what the parser can, and send only
+    # the rest, in batches.
+    resolved: dict[int, NormalizedSceneBlock] = {}
+    unresolved: list[tuple[int, Any]] = []
+    for index, block in enumerate(blocks):
+        local = normalize_scene_header_locally(block)
+        if local is not None:
+            resolved[index] = attach(block, local)
+        else:
+            unresolved.append((index, block))
+
+    if unresolved:
+        runner = agent or _create_batch_normalizer_agent()
+        batches = [
+            unresolved[start : start + _NORMALIZER_BATCH_SIZE]
+            for start in range(0, len(unresolved), _NORMALIZER_BATCH_SIZE)
+        ]
+
+        async def run_batch(batch: list[tuple[int, Any]]):
+            lines = []
+            for position, (_, block) in enumerate(batch):
+                context = " / ".join(
+                    str(line or "").strip() for line in (block.lines or [])[:6]
+                )
+                lines.append(
+                    f"[{position}] 场景头：{block.header_line}\n"
+                    f"     程序解析：集={int(block.episode or 0)} "
+                    f"场次={block.scene_no or '无'} 地点={block.location or '无'} "
+                    f"时间={block.time_of_day or '无'} "
+                    f"内外={block.interior_exterior or '无'}\n"
+                    f"     正文片段：{context or '（无）'}"
+                )
+            result = await runner.run(
+                "请规范化以下每一个场景头，index 用方括号里的序号：\n"
+                + "\n".join(lines)
+            )
+            produced: list[tuple[int, NormalizedSceneBlock]] = []
+            for item in result.output.scenes:
+                if not 0 <= item.index < len(batch):
+                    continue
+                original_index, block = batch[item.index]
+                values = item.model_dump()
+                values.pop("index", None)
+                values["episode_number"] = int(
+                    item.episode_number or block.episode or 0
+                )
+                values["scene_no"] = str(item.scene_no or block.scene_no or "").strip()
+                values["location"] = str(item.location or block.location or "").strip()
+                values["time_of_day"] = str(
+                    item.time_of_day or block.time_of_day or "无"
+                ).strip()
+                values["interior_exterior"] = str(
+                    item.interior_exterior or block.interior_exterior or "无"
+                ).strip()
+                if not values["location"]:
+                    continue
+                header = NormalizedSceneHeader.model_validate(values)
+                produced.append((original_index, attach(block, header)))
+            return produced
+
+        for outcome in await map_bounded(
+            batches, run_batch, limit=default_llm_concurrency()
+        ):
+            for original_index, normalized in outcome or []:
+                resolved[original_index] = normalized
+
+    return [resolved[index] for index in sorted(resolved)]

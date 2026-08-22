@@ -1,7 +1,6 @@
 import pytest
 
 from novelvideo.cognee.screenplay_normalizer import (
-    NormalizedSceneHeader,
     NormalizedSceneBlock,
     clean_scene_name_and_time,
     normalize_time_of_day,
@@ -231,87 +230,79 @@ class _FakeAgent:
 
 
 @pytest.mark.asyncio
-async def test_normalize_screenplay_scenes_uses_agent_output():
-    fake_agent = _FakeAgent(
-        NormalizedSceneHeader(
-            episode_number=3,
-            scene_no="1",
-            location="凤鸣皇城·苏鸾寝殿",
-            time_of_day="亥时",
-            interior_exterior="内",
-            aliases=["苏鸾寝殿"],
-            scene_type="interior",
-        )
-    )
+async def test_standard_headings_are_normalized_without_a_model_call():
+    """A standard heading already states location, time and interior/exterior.
+
+    Asking a model to restate them is a round trip per scene, and a heading is
+    about fourteen characters long.
+    """
+
+    class _NeverCalled:
+        async def run(self, prompt: str):
+            raise AssertionError("a standard heading must not reach the model")
 
     scenes = await normalize_screenplay_scenes(
-        "3-1、凤鸣皇城·苏鸾寝殿 亥时 内\n人物：苏糖、沈晚、锦绣\n△寝殿内，床帐放下。",
-        agent=fake_agent,
+        "1-1 寝殿 夜 内\n人物：悟空\n悟空：师父。\n"
+        "1-2 山门 日 外\n人物：悟空、童子\n△悟空走出山门。",
+        agent=_NeverCalled(),
     )
 
-    assert len(scenes) == 1
-    assert scenes[0].location == "凤鸣皇城·苏鸾寝殿"
-    assert scenes[0].time_of_day == "夜晚"
-    assert scenes[0].characters == ["苏糖", "沈晚", "锦绣"]
-    assert scenes[0].content_lines == ["△寝殿内，床帐放下。"]
-    assert "3-1、凤鸣皇城·苏鸾寝殿 亥时 内" in fake_agent.prompts[0]
-    assert "<scene_header>" in fake_agent.prompts[0]
-    assert "</scene_header>" in fake_agent.prompts[0]
-    assert "人物：苏糖、沈晚、锦绣" not in fake_agent.prompts[0]
-    assert "<scene_context>" in fake_agent.prompts[0]
-    assert "△寝殿内，床帐放下。" in fake_agent.prompts[0]
-    assert "location 是稳定物理地点" not in fake_agent.prompts[0]
+    assert [scene.location for scene in scenes] == ["寝殿", "山门"]
+    assert [scene.interior_exterior for scene in scenes] == ["内", "外"]
+    assert [scene.content_lines for scene in scenes] == [
+        ["悟空：师父。"],
+        ["△悟空走出山门。"],
+    ]
 
 
-@pytest.mark.asyncio
-async def test_normalize_screenplay_scenes_returns_empty_without_calling_agent():
-    fake_agent = _FakeAgent(NormalizedSceneHeader(location="不会调用"))
+async def test_headings_the_parser_cannot_resolve_go_to_the_model_in_one_batch():
+    from novelvideo.cognee.screenplay_normalizer import (
+        BatchSceneHeaderItem,
+        NormalizedSceneHeaderBatch,
+    )
 
-    scenes = await normalize_screenplay_scenes(" \n\t ", agent=fake_agent)
-
-    assert scenes == []
-    assert fake_agent.prompts == []
-
-
-@pytest.mark.asyncio
-async def test_normalize_screenplay_scenes_calls_agent_once_per_scene_block():
-    class _HeaderAgent:
+    class _BatchAgent:
         def __init__(self):
             self.prompts: list[str] = []
 
         async def run(self, prompt: str):
             self.prompts.append(prompt)
-            location = "寝殿" if "1-1" in prompt else "山门"
             return _FakeRunResult(
-                NormalizedSceneHeader(
-                    episode_number=1,
-                    scene_no=str(len(self.prompts)),
-                    location=location,
-                    time_of_day="夜晚" if location == "寝殿" else "白天",
-                    interior_exterior="内" if location == "寝殿" else "外",
+                NormalizedSceneHeaderBatch(
+                    scenes=[
+                        BatchSceneHeaderItem(
+                            index=0, episode_number=3, scene_no="1",
+                            location="凤鸣皇城·苏鸾寝殿", time_of_day="亥时",
+                            interior_exterior="内", aliases=["苏鸾寝殿"],
+                        ),
+                        BatchSceneHeaderItem(
+                            index=1, episode_number=3, scene_no="2",
+                            location="御花园", time_of_day="日",
+                            interior_exterior="外",
+                        ),
+                    ]
                 )
             )
 
-    fake_agent = _HeaderAgent()
+    agent = _BatchAgent()
+    # Neither heading states interior/exterior, so the parser cannot finish
+    # either one and both must travel to the model.
     scenes = await normalize_screenplay_scenes(
-        "1-1 寝殿 夜 内\n人物：悟空\n悟空：师父。\n"
-        "1-2 山门 日 外\n人物：悟空、童子\n△悟空走出山门。",
-        agent=fake_agent,
+        "3-1、凤鸣皇城·苏鸾寝殿\n人物：苏糖、沈晚、锦绣\n△寝殿内，床帐放下。\n"
+        "3-2、御花园\n人物：苏糖\n△苏糖走过回廊。",
+        agent=agent,
     )
 
+    # Both unresolved headings travelled in a single request.
+    assert len(agent.prompts) == 1
+    assert "凤鸣皇城·苏鸾寝殿" in agent.prompts[0]
+    assert "御花园" in agent.prompts[0]
+
     assert len(scenes) == 2
-    assert [scene.location for scene in scenes] == ["寝殿", "山门"]
-    assert [scene.content_lines for scene in scenes] == [
-        ["悟空：师父。"],
-        ["△悟空走出山门。"],
-    ]
-    assert len(fake_agent.prompts) == 2
-    assert "1-2 山门 日 外" not in fake_agent.prompts[0]
-    assert "悟空：师父。" in fake_agent.prompts[0]
-    assert "△悟空走出山门。" not in fake_agent.prompts[0]
-    assert "1-1 寝殿 夜 内" not in fake_agent.prompts[1]
-    assert "△悟空走出山门。" in fake_agent.prompts[1]
-    assert "悟空：师父。" not in fake_agent.prompts[1]
+    by_location = {scene.location: scene for scene in scenes}
+    assert by_location["凤鸣皇城·苏鸾寝殿"].time_of_day == "夜晚"
+    assert by_location["凤鸣皇城·苏鸾寝殿"].characters == ["苏糖", "沈晚", "锦绣"]
+    assert by_location["凤鸣皇城·苏鸾寝殿"].content_lines == ["△寝殿内，床帐放下。"]
 
 
 @pytest.mark.asyncio
