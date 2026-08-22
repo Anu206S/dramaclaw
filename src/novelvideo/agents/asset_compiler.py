@@ -20,6 +20,7 @@ from novelvideo.models import (
     PropMenuItem,
     SceneMenuItem,
 )
+from novelvideo.knowledge_pipeline import is_structured_pipeline
 from novelvideo.sqlite_store import load_episode_planning_content
 from novelvideo.cognee.screenplay_normalizer import (
     normalize_screenplay_scene_header,
@@ -417,13 +418,32 @@ class AssetCompiler:
 
     def __init__(self, cognee_store: Any):
         self.cognee_store = cognee_store
-        # Scene, prop and identity planning for one episode run concurrently in
-        # separate workers, so menu writes go through the SQLite store's
-        # column-level patch rather than any whole-row update. Accepting either
-        # a CogneeStore or a SQLiteStore keeps legacy callers working while
+        # Reads that need no graph go straight to SQLite. Accepting either a
+        # CogneeStore or a SQLiteStore keeps legacy callers working while
         # structured callers pass SQLiteStore directly.
         self.store = getattr(cognee_store, "sqlite_store", cognee_store)
+        self._structured = is_structured_pipeline(
+            getattr(cognee_store, "state_dir", None)
+        )
         self.spine_template = "drama"
+
+    async def _write_menus(self, episode_number: int, **menus: Any) -> None:
+        """Persist episode menus by the route this project's track expects.
+
+        Structured projects use the column-level patch, so scene, prop and
+        identity planning running at once cannot overwrite each other's menu.
+
+        Legacy projects keep the whole-row update they have always used. Its
+        normalizer deduplicates through build_scene_menu/build_prop_menu,
+        resolves canonical prop ids and backfills type, prompt, description and
+        owner from the global asset library. The patch path reproduces none of
+        that, and a legacy project must behave exactly as it does today — so it
+        keeps its existing write, race and all.
+        """
+        if self._structured:
+            await self.store.patch_episode(episode_number, **menus)
+        else:
+            await self.cognee_store.update_episode(episode_number, **menus)
 
     async def compile_single_episode(
         self,
@@ -477,7 +497,7 @@ class AssetCompiler:
         report(0.9, "写入本集资产...")
         for scene in pending_scenes:
             await self.store.add_scene(scene)
-        await self.store.patch_episode(
+        await self._write_menus(
             episode.number,
             scene_menu=scene_menu,
             prop_menu=prop_menu,
@@ -545,7 +565,7 @@ class AssetCompiler:
         report(0.85, "写入本集场景规划...")
         for scene in pending_scenes:
             await self.store.add_scene(scene)
-        await self.store.patch_episode(episode.number, scene_menu=scene_menu)
+        await self._write_menus(episode.number, scene_menu=scene_menu)
 
         report(1.0, "完成")
         return scene_menu, len(pending_scenes)
@@ -615,7 +635,7 @@ class AssetCompiler:
         prop_menu = await self._compile_props(scene_blocks, episode, log)
 
         report(0.9, "写入本集道具规划...")
-        await self.store.patch_episode(episode.number, prop_menu=prop_menu)
+        await self._write_menus(episode.number, prop_menu=prop_menu)
 
         report(1.0, "完成")
         return prop_menu
