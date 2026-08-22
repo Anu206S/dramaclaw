@@ -14,18 +14,22 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import aiosqlite
 from rich.console import Console
 
 from novelvideo.models import (
+    build_prop_menu,
+    build_scene_menu,
     CharacterIdentity,
     NovelCharacter,
     NovelEpisode,
     NovelProp,
     NovelScene,
     NovelVisualBeat,
+    PropMenuItem,
+    SceneMenuItem,
     normalize_detected_identities,
     normalize_detected_props,
     sync_beat_asset_refs,
@@ -1798,13 +1802,21 @@ class SQLiteStore:
         params: list[Any] = []
 
         if scene_menu is not _UNSET:
-            normalized = await self._normalize_scene_menu_for_write(scene_menu or [])
+            items = await self._normalize_scene_menu_items(scene_menu or [])
             assignments.append("scene_menu_json = ?")
-            params.append(json.dumps(normalized, ensure_ascii=False))
+            params.append(
+                json.dumps(
+                    [item.model_dump() for item in items], ensure_ascii=False
+                )
+            )
         if prop_menu is not _UNSET:
-            normalized = self._normalize_prop_menu_for_write(prop_menu or [])
+            items = self._normalize_prop_menu_items(prop_menu or [])
             assignments.append("prop_menu_json = ?")
-            params.append(json.dumps(normalized, ensure_ascii=False))
+            params.append(
+                json.dumps(
+                    [item.model_dump() for item in items], ensure_ascii=False
+                )
+            )
         if identity_ids is not _UNSET:
             assignments.append("identity_ids = ?")
             params.append(json.dumps(list(identity_ids or []), ensure_ascii=False))
@@ -1833,67 +1845,72 @@ class SQLiteStore:
         if refreshed is not None:
             self._episodes[episode_number] = refreshed
 
-    async def _normalize_scene_menu_for_write(self, scene_menu: Any) -> list:
-        """Resolve menu entries against the scene table before persisting.
+    # ── episode menu normalization ──────────────────────────────────────
+    #
+    # Canonical implementations, shared by the legacy whole-row update and the
+    # column-level patch. Both routes must produce byte-identical menus: the
+    # only difference between them is which columns get written.
 
-        Normalization has to happen before the write, not on read, so every
-        reader sees the same canonical names regardless of which planner wrote.
-        """
-        normalized: list[dict] = []
-        for item in scene_menu or []:
-            entry = item if isinstance(item, dict) else _model_to_dict(item)
-            name = str(entry.get("scene_id") or "").strip()
-            if not name:
+    async def _normalize_scene_menu_items(
+        self, scene_menu: Iterable[Any] | None
+    ) -> list[SceneMenuItem]:
+        """将 episode scene_menu 规范化为资产库标准 scene_id。"""
+        normalized_items = build_scene_menu(scene_menu=list(scene_menu or []))
+        canonical_items: list[SceneMenuItem] = []
+        all_scenes = await self.list_scenes()
+        for item in normalized_items:
+            scene_id = str(item.scene_id or "").strip()
+            if not scene_id:
                 continue
-            # A menu may name a scene by an alias. Resolving to the canonical
-            # name at write time means every reader sees the same identifier
-            # regardless of which planner produced the entry.
-            if await self.get_scene(name) is None:
-                resolved = await self.resolve_scene_alias(name)
-                if resolved:
-                    entry = {**entry, "scene_id": resolved}
-            normalized.append(entry)
-        return normalized
+            canonical_id = scene_id
+            lookup = self._normalize_alias_lookup(scene_id)
+            for candidate in all_scenes:
+                if self._normalize_alias_lookup(candidate.name) == lookup:
+                    canonical_id = candidate.name
+                    break
+                aliases = getattr(candidate, "aliases", []) or []
+                if any(self._normalize_alias_lookup(alias) == lookup for alias in aliases):
+                    canonical_id = candidate.name
+                    break
+            canonical_items.append(
+                SceneMenuItem(
+                    scene_id=canonical_id,
+                    base_scene_id=str(getattr(item, "base_scene_id", "") or "").strip(),
+                    variant_id=str(getattr(item, "variant_id", "") or "").strip(),
+                    time_of_day=str(getattr(item, "time_of_day", "") or "").strip(),
+                )
+            )
+        return build_scene_menu(scene_menu=canonical_items)
 
-    def _normalize_prop_menu_for_write(self, prop_menu: Any) -> list:
-        normalized: list[dict] = []
-        for item in prop_menu or []:
-            entry = item if isinstance(item, dict) else _model_to_dict(item)
-            name = str(entry.get("prop_id") or "").strip()
-            if not name:
+    def _normalize_prop_menu_items(self, prop_menu: Iterable[Any] | None) -> list[PropMenuItem]:
+        """将 episode prop_menu 规范化为资产库标准 prop_id。"""
+        normalized_items = build_prop_menu(prop_menu=list(prop_menu or []))
+        canonical_items: list[PropMenuItem] = []
+        for item in normalized_items:
+            prop_id = str(item.prop_id or "").strip()
+            if not prop_id:
                 continue
-            canonical = self._prop_alias_index.get(name)
-            if canonical:
-                entry = {**entry, "prop_id": canonical}
-            normalized.append(entry)
-        return normalized
-
-    @property
-    def _prop_alias_index(self) -> dict[str, str]:
-        """Alias -> canonical prop name, built from the cached prop table."""
-        index: dict[str, str] = {}
-        for prop in self._props.values():
-            for alias in getattr(prop, "aliases", []) or []:
-                index[str(alias)] = prop.name
-        return index
-
-    async def resolve_scene_alias(self, name: str) -> str | None:
-        """Return the canonical scene name for an alias, if one exists."""
-        db = await self._ensure_db()
-        async with db.execute(
-            "SELECT name, aliases_json FROM scenes"
-        ) as cursor:
-            rows = await cursor.fetchall()
-        target = " ".join(str(name or "").strip().lower().split())
-        for row in rows:
-            try:
-                aliases = json.loads(row["aliases_json"] or "[]")
-            except (TypeError, ValueError):
-                aliases = []
-            for alias in aliases:
-                if " ".join(str(alias).strip().lower().split()) == target:
-                    return str(row["name"])
-        return None
+            cached = self.get_cached_prop(prop_id)
+            canonical_id = cached.name if cached else prop_id
+            canonical_items.append(
+                PropMenuItem(
+                    prop_id=canonical_id,
+                    prop_type=(getattr(cached, "prop_type", "") if cached else item.prop_type)
+                    or "object",
+                    visual_prompt=(
+                        getattr(cached, "visual_prompt", "")
+                        or getattr(cached, "description", "")
+                        or item.visual_prompt
+                    ),
+                    description=(
+                        getattr(cached, "visual_prompt", "")
+                        or getattr(cached, "description", "")
+                        or item.description
+                    ),
+                    owner_identity_id=item.owner_identity_id or getattr(cached, "owner", ""),
+                )
+            )
+        return build_prop_menu(prop_menu=canonical_items)
 
     async def delete_all_episodes(self) -> int:
         try:

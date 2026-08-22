@@ -428,22 +428,18 @@ class AssetCompiler:
         self.spine_template = "drama"
 
     async def _write_menus(self, episode_number: int, **menus: Any) -> None:
-        """Persist episode menus by the route this project's track expects.
+        """Persist episode menus with a column-level write.
 
-        Structured projects use the column-level patch, so scene, prop and
-        identity planning running at once cannot overwrite each other's menu.
+        Scene, prop and identity planning run at once for the same episode. Any
+        whole-row write re-serialises the menus this planner loaded earlier, so
+        a menu written meanwhile is lost. Writing only the named columns removes
+        that race rather than narrowing it.
 
-        Legacy projects keep the whole-row update they have always used. Its
-        normalizer deduplicates through build_scene_menu/build_prop_menu,
-        resolves canonical prop ids and backfills type, prompt, description and
-        owner from the global asset library. The patch path reproduces none of
-        that, and a legacy project must behave exactly as it does today — so it
-        keeps its existing write, race and all.
+        Both tracks take this route: the normalization behind it is the same
+        code the legacy whole-row write uses, so an existing project's menus
+        come out byte-identical.
         """
-        if self._structured:
-            await self.store.patch_episode(episode_number, **menus)
-        else:
-            await self.cognee_store.update_episode(episode_number, **menus)
+        await self.store.patch_episode(episode_number, **menus)
 
     async def compile_single_episode(
         self,
