@@ -112,3 +112,59 @@ async def test_the_patch_leaves_the_other_menu_alone(stores):
 
     assert await _row(sqlite, "scene_menu_json")
     assert await _row(sqlite, "prop_menu_json")
+
+
+# ── the race, from every writer ─────────────────────────────────────────────
+
+
+async def test_editing_an_unrelated_field_leaves_the_menus_alone(stores):
+    """A whole-row write loses menus even when it sets a different field.
+
+    Editing a title re-serialises every column from whatever the editor loaded
+    earlier, so planning results that landed in between disappear. This is why
+    plain field edits go through the patch too.
+    """
+    _, sqlite = stores
+    await sqlite.patch_episode(1, scene_menu=[{"scene_id": "主任办公室"}])
+    await sqlite.patch_episode(1, prop_menu=[{"prop_id": "怀表"}])
+
+    await sqlite.patch_episode(1, title="改名后的标题")
+
+    assert await _row(sqlite, "scene_menu_json")
+    assert await _row(sqlite, "prop_menu_json")
+    episode = await sqlite.get_episode_from_graph(1)
+    assert episode.title == "改名后的标题"
+
+
+async def test_an_identity_cascade_leaves_the_menus_alone(stores):
+    """Renaming an identity can happen while planning runs."""
+    from novelvideo.models import CharacterIdentity, NovelCharacter
+
+    legacy, sqlite = stores
+    await sqlite.add_character(
+        NovelCharacter(
+            name="林默",
+            identities=[CharacterIdentity(identity_id="林默_default", character_name="林默", identity_name="default")],
+        )
+    )
+    await sqlite.load_graph_state()
+    await sqlite.patch_episode(
+        1,
+        identity_ids=["林默_default"],
+        scene_menu=[{"scene_id": "主任办公室"}],
+        prop_menu=[{"prop_id": "怀表"}],
+    )
+
+    await sqlite._cascade_identity_change("林默_default", "林默_雨夜")
+
+    episode = await sqlite.get_episode_from_graph(1)
+    assert episode.identity_ids == ["林默_雨夜"]
+    assert await _row(sqlite, "scene_menu_json"), "the cascade wiped the scene menu"
+    assert await _row(sqlite, "prop_menu_json"), "the cascade wiped the prop menu"
+
+
+async def test_an_unknown_field_is_refused_rather_than_dropped(stores):
+    """Silently ignoring a field would look like a successful write."""
+    _, sqlite = stores
+    with pytest.raises(ValueError, match="cannot write"):
+        await sqlite.patch_episode(1, no_such_column="x")

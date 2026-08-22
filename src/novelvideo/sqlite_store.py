@@ -1581,7 +1581,10 @@ class SQLiteStore:
                     ids = [new_id if x == old_id else x for x in ids]
                 else:
                     ids = [x for x in ids if x != old_id]
-                await self.update_episode(ep.number, identity_ids=ids)
+                # Column-level: renaming or deleting an identity can happen
+                # while planning is running, and a whole-row write here would
+                # discard whatever menu landed in between.
+                await self.patch_episode(ep.number, identity_ids=ids)
 
     async def update_character_identity(
         self,
@@ -1772,60 +1775,80 @@ class SQLiteStore:
         await self.add_episodes([episode])
         console.print(f"[green]已更新剧集: 第{episode.number}集[/green]")
 
-    async def patch_episode(
-        self,
-        episode_number: int,
-        *,
-        scene_menu: Any = _UNSET,
-        prop_menu: Any = _UNSET,
-        identity_ids: Any = _UNSET,
-        character_names: Any = _UNSET,
-        identity_default_map: Any = _UNSET,
-    ) -> None:
+    # Episode fields the column-level patch understands, and how each is
+    # serialised. ``number`` is deliberately absent: renaming an episode moves
+    # the primary key and the cache entry, which is a whole-row concern.
+    _PATCHABLE_EPISODE_FIELDS: dict[str, tuple[str, str]] = {
+        "scene_menu": ("scene_menu_json", "scene_menu"),
+        "prop_menu": ("prop_menu_json", "prop_menu"),
+        "identity_ids": ("identity_ids", "json_list"),
+        "character_names": ("character_names", "json_list"),
+        "key_events": ("key_events", "json_list"),
+        "event_ids": ("event_ids", "json_list"),
+        "identity_default_map": ("identity_default_map_json", "json_dict"),
+        "sketch_colors": ("sketch_colors_json", "json_dict"),
+        "title": ("title", "text"),
+        "content_summary": ("content_summary", "text"),
+        "main_conflict": ("main_conflict", "text"),
+        "cliffhanger": ("cliffhanger", "text"),
+        "beat_source_text": ("beat_source_text", "text"),
+        "raw_content": ("raw_content", "text"),
+        "adapted_content": ("adapted_content", "text"),
+        "chapter_start": ("chapter_start", "int"),
+        "chapter_end": ("chapter_end", "int"),
+    }
+
+    async def patch_episode(self, episode_number: int, **fields: Any) -> None:
         """Update only the columns the caller named, atomically.
 
-        Scene, prop and identity planning for one episode can run concurrently
-        in separate workers. Any read-modify-write of the whole row loses the
-        other planner's result: re-reading first does not close the window,
-        because both can re-read before either commits. Writing only the named
-        columns removes the race entirely rather than narrowing it.
+        Anything that writes the whole episode row re-serialises columns it was
+        never asked to change, from whatever the caller happened to load
+        earlier. Scene, prop and identity planning run concurrently for one
+        episode, and a user can edit that episode while they run, so a
+        whole-row write loses whichever result landed in between — even when
+        the two writers touch entirely different fields. Re-reading first does
+        not close the window, because both can re-read before either commits.
 
-        ``_UNSET`` distinguishes "leave this column alone" from "clear it", so an
-        empty list is a real update that empties the menu.
+        Naming a field with no value at all is how a column is left alone, so an
+        empty list is a real update that empties it.
 
         This does not replace add_episodes()/replace_episodes(), which still own
-        whole-row writes. The in-memory cache refresh below only makes this
-        process read its own write; correctness comes from the SQL, since the
-        cache is not shared across workers.
+        whole-row writes, nor renaming an episode, which moves the primary key.
+        The in-memory cache refresh below only makes this process read its own
+        write; correctness comes from the SQL, since the cache is not shared
+        across workers.
         """
         assignments: list[str] = []
         params: list[Any] = []
 
-        if scene_menu is not _UNSET:
-            items = await self._normalize_scene_menu_items(scene_menu or [])
-            assignments.append("scene_menu_json = ?")
-            params.append(
-                json.dumps(
+        for field, value in fields.items():
+            spec = self._PATCHABLE_EPISODE_FIELDS.get(field)
+            if spec is None:
+                raise ValueError(
+                    f"patch_episode cannot write {field!r}; add it to "
+                    "_PATCHABLE_EPISODE_FIELDS or use update_episode"
+                )
+            column, kind = spec
+            if kind == "scene_menu":
+                items = await self._normalize_scene_menu_items(value or [])
+                encoded = json.dumps(
                     [item.model_dump() for item in items], ensure_ascii=False
                 )
-            )
-        if prop_menu is not _UNSET:
-            items = self._normalize_prop_menu_items(prop_menu or [])
-            assignments.append("prop_menu_json = ?")
-            params.append(
-                json.dumps(
+            elif kind == "prop_menu":
+                items = self._normalize_prop_menu_items(value or [])
+                encoded = json.dumps(
                     [item.model_dump() for item in items], ensure_ascii=False
                 )
-            )
-        if identity_ids is not _UNSET:
-            assignments.append("identity_ids = ?")
-            params.append(json.dumps(list(identity_ids or []), ensure_ascii=False))
-        if character_names is not _UNSET:
-            assignments.append("character_names = ?")
-            params.append(json.dumps(list(character_names or []), ensure_ascii=False))
-        if identity_default_map is not _UNSET:
-            assignments.append("identity_default_map_json = ?")
-            params.append(json.dumps(dict(identity_default_map or {}), ensure_ascii=False))
+            elif kind == "json_list":
+                encoded = json.dumps(list(value or []), ensure_ascii=False)
+            elif kind == "json_dict":
+                encoded = json.dumps(dict(value or {}), ensure_ascii=False)
+            elif kind == "int":
+                encoded = int(value or 0)
+            else:
+                encoded = str(value or "")
+            assignments.append(f"{column} = ?")
+            params.append(encoded)
 
         if not assignments:
             return

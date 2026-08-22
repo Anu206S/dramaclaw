@@ -52,6 +52,15 @@ class _EpisodeStore:
                 setattr(self.episode, key, value)
         return None
 
+    async def patch_episode(self, episode_number: int, **updates):
+        self.updates.append((episode_number, updates))
+        for key, value in updates.items():
+            if key == "identity_default_map":
+                self.episode.identity_default_map = value
+            elif hasattr(self.episode, key):
+                setattr(self.episode, key, value)
+        return None
+
 
 class _CogneeEpisodeStore:
     def __init__(self, episode: NovelEpisode):
