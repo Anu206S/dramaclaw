@@ -15,6 +15,7 @@ from novelvideo.cognee.pipeline import (
     _ensure_directional_environment_prompt,
     _has_required_scene_environment_headings,
     normalize_scene_environment_prompt,
+    should_repair_scene_placeholder,
 )
 
 SINGLE_LINE = (
@@ -102,3 +103,34 @@ def test_the_fallback_still_applies_without_any_usable_text():
         context_lines=[],
     )
     assert SCENE_FALLBACK_FINGERPRINT in generated
+
+
+# ── the repair predicate both tracks share ──────────────────────────────────
+
+PLACEHOLDER = _ensure_directional_environment_prompt(
+    prompt="",
+    scene_name="主任办公室",
+    scene_type="interior",
+    time_of_day="",
+    context_lines=["▲张秉权坐在办公桌后翻看文件。"],
+)
+
+
+def test_boilerplate_is_replaced_by_a_valid_contract():
+    assert should_repair_scene_placeholder(PLACEHOLDER, SINGLE_LINE)
+
+
+def test_a_prompt_a_user_wrote_is_never_touched():
+    """Only prompts this code generated carry the fingerprint."""
+    assert not should_repair_scene_placeholder(SINGLE_LINE, MULTI_LINE)
+    assert not should_repair_scene_placeholder("我自己写的场景描述", SINGLE_LINE)
+
+
+def test_boilerplate_is_not_churned_into_more_boilerplate():
+    assert not should_repair_scene_placeholder(PLACEHOLDER, PLACEHOLDER)
+
+
+@pytest.mark.parametrize("replacement", ["", "   ", "正面：a", "一段没有分区的描述"])
+def test_boilerplate_is_never_replaced_by_something_worse(replacement):
+    """A malformed or empty model response must not overwrite what is stored."""
+    assert not should_repair_scene_placeholder(PLACEHOLDER, replacement)

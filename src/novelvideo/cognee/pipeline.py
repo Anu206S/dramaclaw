@@ -773,6 +773,29 @@ def normalize_scene_environment_prompt(prompt: str) -> str:
     return "\n".join(f"{heading}：{body}" for heading, body in sections if body)
 
 
+def should_repair_scene_placeholder(existing_prompt: str, new_prompt: str) -> bool:
+    """Whether a stored environment prompt is boilerplate worth replacing.
+
+    Both tracks wrote the generated fallback for every scene while the contract
+    validator rejected valid single-line model output, so both need the same
+    narrow repair on rebuild. All three conditions matter:
+
+    * the stored prompt carries the fallback fingerprint, so it is something
+      this code wrote, never something a user typed or edited;
+    * the replacement does not carry it, so a rebuild that fell back again does
+      not churn the row;
+    * the replacement is itself a valid 360 contract, so a malformed or empty
+      model response can never overwrite a stored prompt with something worse.
+    """
+    existing = str(existing_prompt or "")
+    replacement = str(new_prompt or "")
+    if SCENE_FALLBACK_FINGERPRINT not in existing:
+        return False
+    if SCENE_FALLBACK_FINGERPRINT in replacement:
+        return False
+    return _has_required_scene_environment_headings(replacement)
+
+
 def _compact_scene_context(
     lines: list[str] | tuple[str, ...] | str, *, limit: int = 180
 ) -> str:

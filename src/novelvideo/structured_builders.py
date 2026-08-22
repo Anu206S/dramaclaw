@@ -257,8 +257,8 @@ async def build_scenes_structured(
     discovered per episode from that episode's own text instead.
     """
     from novelvideo.cognee.pipeline import (
-        SCENE_FALLBACK_FINGERPRINT,
         extract_scenes_from_script,
+        should_repair_scene_placeholder,
     )
     from novelvideo.structured_extraction import adjudicate_scenes
 
@@ -316,10 +316,10 @@ async def build_scenes_structured(
         # written for every scene while the contract validator rejected valid
         # single-line output, and skipping them would leave existing projects on
         # boilerplate forever. A prompt the user wrote or edited never matches
-        # this fingerprint and is never touched.
-        if (
-            SCENE_FALLBACK_FINGERPRINT in (existing.environment_prompt or "")
-            and SCENE_FALLBACK_FINGERPRINT not in (scene.environment_prompt or "")
+        # this fingerprint and is never touched.  Same predicate as the legacy
+        # track, so both repair exactly the same rows.
+        if should_repair_scene_placeholder(
+            existing.environment_prompt, scene.environment_prompt
         ):
             await store.update_scene(
                 existing.name, environment_prompt=scene.environment_prompt
