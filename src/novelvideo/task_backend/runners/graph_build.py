@@ -7,6 +7,10 @@ from typing import Any
 
 from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
 from novelvideo.novel_source import require_imported_novel
+from novelvideo.knowledge_pipeline import (
+    KnowledgePipelineUnsupported,
+    is_structured_v2,
+)
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
@@ -132,6 +136,13 @@ async def _run_build_episodes(
     planning_mode = str(config.get("planning_mode", "ai"))
     generate_metadata = bool(config.get("generate_metadata", False))
     require_imported_novel(ctx.output_dir)
+    # Defence in depth: the route rejects AI modes for structured projects
+    # before enqueue, but a task queued before the project's track was known
+    # must not reach a planner that needs the graph.
+    if is_structured_v2(ctx.state_dir) and planning_mode != "chapters":
+        raise KnowledgePipelineUnsupported(
+            "structured_v2 only supports deterministic chapter/episode mapping"
+        )
     store = await _load_store(ctx)
     try:
 

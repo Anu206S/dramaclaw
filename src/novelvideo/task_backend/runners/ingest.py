@@ -28,18 +28,32 @@ def run_ingest_fast(
 async def _run_ingest_fast(
     envelope: dict[str, Any], ctx: ProjectContext
 ) -> dict[str, Any]:
-    from novelvideo.cognee import CogneeStore
+    from novelvideo.knowledge_pipeline import is_structured_v2
 
     payload = envelope.get("payload") or {}
     novel_path = str(payload["novel_path"])
     config = dict(payload.get("config") or {})
     manager = get_task_manager()
 
-    store = CogneeStore(
-        ctx.owner_project_label,
-        output_dir=str(ctx.output_dir),
-        state_dir=str(ctx.state_dir),
-    )
+    # structured_v2 imports never build a graph, so they open the project with
+    # SQLiteStore directly rather than through the Cognee facade.
+    structured = is_structured_v2(ctx.state_dir)
+    if structured:
+        from novelvideo.sqlite_store import SQLiteStore
+
+        store = SQLiteStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+        )
+    else:
+        from novelvideo.cognee import CogneeStore
+
+        store = CogneeStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+        )
     await store.initialize()
 
     def update(progress: float | None, task: str) -> None:
@@ -59,6 +73,18 @@ async def _run_ingest_fast(
         )
 
     try:
+        if structured:
+            from novelvideo.structured_ingest import ingest_source_text_structured
+
+            return await ingest_source_text_structured(
+                store,
+                novel_path,
+                spine_template=str(config.get("spine_template") or "").strip()
+                or None,
+                on_progress=update,
+                on_log=lambda message: update(None, message),
+            )
+
         result = await store.ingest_novel_fast(
             novel_path,
             rebuild=bool(config.get("rebuild", False)),
