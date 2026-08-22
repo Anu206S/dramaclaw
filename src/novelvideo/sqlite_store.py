@@ -799,6 +799,68 @@ class SQLiteStore:
         for alias in character.aliases:
             self._alias_index[alias] = character.name
 
+    async def add_characters_atomic(
+        self, characters: list, *, skip_existing: bool = True
+    ) -> list[str]:
+        """Publish many characters in one transaction.
+
+        add_character() commits per row, so a failure partway through a build
+        leaves half a cast behind. Structured builds publish their whole result
+        at once instead: either every character lands or none does.
+
+        Existing characters are skipped by default. A character on disk may
+        already carry user edits, a portrait, identities and voice bindings, and
+        a rebuild must not overwrite any of that.
+        """
+        if not characters:
+            return []
+
+        db = await self._ensure_db()
+        existing = set(self._characters) if skip_existing else set()
+        pending = [
+            character
+            for character in characters
+            if not (skip_existing and character.name in existing)
+        ]
+        if not pending:
+            return []
+
+        try:
+            await db.execute("BEGIN")
+            for character in pending:
+                await db.execute(
+                    """INSERT INTO characters
+                       (name, aliases_json, role, is_main, gender, age_group,
+                        body_type, fish_voice_id, description, face_prompt,
+                        appearance_details, identities_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(name) DO NOTHING""",
+                    (
+                        character.name,
+                        json.dumps(character.aliases, ensure_ascii=False),
+                        character.role,
+                        1 if character.is_main else 0,
+                        character.gender,
+                        character.age_group,
+                        character.body_type,
+                        character.fish_voice_id,
+                        character.description,
+                        character.face_prompt,
+                        character.appearance_details,
+                        character.identities_json,
+                    ),
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+        for character in pending:
+            self._characters[character.name] = character
+            for alias in character.aliases:
+                self._alias_index[alias] = character.name
+        return [character.name for character in pending]
+
     async def update_character(self, name: str, **updates) -> None:
         char = self.get_character(name)
         if not char:

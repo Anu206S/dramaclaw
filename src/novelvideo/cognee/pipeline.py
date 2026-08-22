@@ -15,6 +15,7 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.config import get_newapi_structured_output_litellm_kwargs
+from novelvideo.utils.bounded_concurrency import map_bounded
 from novelvideo.models import (
     CharacterIdentity,
     NovelCharacter,
@@ -1389,10 +1390,13 @@ async def extract_scenes_from_script(
             "Scene Build Enricher",
         )
 
-    for idx, cand in enumerate(normalized_scene_candidates):
-        progress = 0.5 + 0.4 * (idx / max(total, 1))
-        report(progress, f"生成场景描述 ({idx+1}/{total}): {cand['name']}")
+    # Each candidate's enrichment is an independent round trip. A feature-length
+    # screenplay carries well over a hundred scenes, so running them one at a
+    # time makes the build minutes of pure latency.
+    completed = 0
 
+    async def enrich(cand: dict):
+        nonlocal completed
         scene_type = cand["scene_type"] or (
             "interior" if cand["interior"] else "exterior"
         )
@@ -1413,8 +1417,20 @@ async def extract_scenes_from_script(
             scene.notes,
             _format_observed_times_note(cand.get("time_counts")),
         )
-        scenes.append(scene)
+        completed += 1
+        report(
+            0.5 + 0.4 * (completed / max(total, 1)),
+            f"生成场景描述 ({completed}/{total}): {cand['name']}",
+        )
         log(f"  ✓ {cand['name']}: environment_prompt={len(scene.environment_prompt)}字")
+        return scene
+
+    enriched = await map_bounded(
+        normalized_scene_candidates,
+        enrich,
+        on_error=lambda cand, exc: log(f"  ⚠️ {cand['name']} 环境描述失败，已跳过: {exc}"),
+    )
+    scenes.extend(scene for scene in enriched if scene is not None)
 
     log(f"场景提取完成: {len(scenes)} 个")
     report(1.0, "完成")

@@ -1645,6 +1645,8 @@ src/novelvideo/sqlite_schema.py,Elastic-2.0,2026 SuperTale contributors,REUSE.to
 src/novelvideo/sqlite_store.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/stage_asset_tasks.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/story_analysis.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/structured_builders.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/structured_extraction.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/structured_ingest.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/storage/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/storage/media_relay.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1703,6 +1705,7 @@ src/novelvideo/utils/asset_names.py,Elastic-2.0,2026 SuperTale contributors,REUS
 src/novelvideo/utils/asset_resolver.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/async_ops.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/background_anchor.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/utils/bounded_concurrency.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/debug_context.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/derived_scenes.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/document_parsers.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -2052,6 +2055,7 @@ tests/test_stage_asset_scene_360_credit.py,Elastic-2.0,2026 SuperTale contributo
 tests/test_stage_asset_scene_360_provider.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_stage_asset_step_contract.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_storyboard_prompt_visual_authority.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_structured_builders.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_structured_ingest.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_style_template_manifest.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_superpower_model_config.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation

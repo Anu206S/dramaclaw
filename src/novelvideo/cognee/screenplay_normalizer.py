@@ -6,6 +6,7 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from novelvideo.time_of_day import LlmTimeOfDay, normalize_time_of_day
+from novelvideo.utils.bounded_concurrency import map_bounded
 from novelvideo.utils.screenplay_scene_parser import TIME_TOKEN_RE, parse_scene_blocks
 
 SceneType = Literal["interior", "exterior", "nature"]
@@ -279,10 +280,12 @@ async def normalize_screenplay_scenes(
         return []
 
     runner = agent or _create_screenplay_normalizer_agent()
-    normalized_blocks: list[NormalizedSceneBlock] = []
-    for block in parse_scene_blocks(source):
-        if not block.header_line:
-            continue
+    blocks = [block for block in parse_scene_blocks(source) if block.header_line]
+
+    # Headers are normalized independently, so they run in parallel with a
+    # bounded number in flight. Order is preserved because downstream scene
+    # merging resolves ties by first appearance.
+    async def normalize(block) -> NormalizedSceneBlock | None:
         normalized = await normalize_screenplay_scene_header(
             block.header_line,
             location_hint=block.location,
@@ -294,14 +297,14 @@ async def normalize_screenplay_scenes(
             agent=runner,
         )
         if not normalized:
-            continue
-        normalized_blocks.append(
-            NormalizedSceneBlock(
-                **normalized.model_dump(),
-                raw_header=block.header_line,
-                characters=list(block.characters),
-                evidence_lines=[block.header_line],
-                content_lines=list(block.lines),
-            )
+            return None
+        return NormalizedSceneBlock(
+            **normalized.model_dump(),
+            raw_header=block.header_line,
+            characters=list(block.characters),
+            evidence_lines=[block.header_line],
+            content_lines=list(block.lines),
         )
-    return normalized_blocks
+
+    results = await map_bounded(blocks, normalize)
+    return [block for block in results if block is not None]

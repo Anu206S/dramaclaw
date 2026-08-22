@@ -44,13 +44,27 @@ def _progress(
 
 
 async def _load_store(ctx: ProjectContext):
-    from novelvideo.cognee import CogneeStore
+    """Open the project store its knowledge pipeline calls for.
 
-    store = CogneeStore(
-        ctx.owner_project_label,
-        output_dir=str(ctx.output_dir),
-        state_dir=str(ctx.state_dir),
-    )
+    structured_v2 builds never touch the graph, so they use SQLiteStore directly
+    rather than reaching through the Cognee facade.
+    """
+    if is_structured_v2(ctx.state_dir):
+        from novelvideo.sqlite_store import SQLiteStore
+
+        store = SQLiteStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+        )
+    else:
+        from novelvideo.cognee import CogneeStore
+
+        store = CogneeStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+        )
     await store.initialize()
     await store.load_graph_state()
     return store
@@ -66,11 +80,22 @@ async def _run_build_characters(ctx: ProjectContext) -> dict[str, Any]:
     require_imported_novel(ctx.output_dir)
     store = await _load_store(ctx)
     try:
+        def on_progress(progress: float | None, task: str) -> None:
+            _progress(ctx, "build_characters", progress, task)
+
+        def on_log(message: str) -> None:
+            _progress(ctx, "build_characters", None, message)
+        if is_structured_v2(ctx.state_dir):
+            from novelvideo.structured_builders import build_characters_structured
+
+            added = await build_characters_structured(
+                store, on_progress=on_progress, on_log=on_log
+            )
+            return {"characters": len(added), "added_characters": len(added)}
+
         characters = await store.build_characters_from_graph(
-            on_progress=lambda progress, task: _progress(
-                ctx, "build_characters", progress, task
-            ),
-            on_log=lambda message: _progress(ctx, "build_characters", None, message),
+            on_progress=on_progress,
+            on_log=on_log,
         )
         return {"characters": len(characters), "added_characters": len(characters)}
     finally:
@@ -87,11 +112,21 @@ async def _run_build_scenes(ctx: ProjectContext) -> dict[str, Any]:
     require_imported_novel(ctx.output_dir)
     store = await _load_store(ctx)
     try:
+        def on_progress(progress: float | None, task: str) -> None:
+            _progress(ctx, "build_scenes", progress, task)
+
+        def on_log(message: str) -> None:
+            _progress(ctx, "build_scenes", None, message)
+        if is_structured_v2(ctx.state_dir):
+            from novelvideo.structured_builders import build_scenes_structured
+
+            return await build_scenes_structured(
+                store, on_progress=on_progress, on_log=on_log
+            )
+
         scenes = await store.build_scenes_from_graph(
-            on_progress=lambda progress, task: _progress(
-                ctx, "build_scenes", progress, task
-            ),
-            on_log=lambda message: _progress(ctx, "build_scenes", None, message),
+            on_progress=on_progress,
+            on_log=on_log,
         )
         return {"scenes": len(scenes), "added_scenes": len(scenes)}
     finally:
@@ -107,11 +142,21 @@ def run_build_props(
 async def _run_build_props(ctx: ProjectContext) -> dict[str, Any]:
     store = await _load_store(ctx)
     try:
+        def on_progress(progress: float | None, task: str) -> None:
+            _progress(ctx, "build_props", progress, task)
+
+        def on_log(message: str) -> None:
+            _progress(ctx, "build_props", None, message)
+        if is_structured_v2(ctx.state_dir):
+            from novelvideo.structured_builders import build_props_structured
+
+            return await build_props_structured(
+                store, on_progress=on_progress, on_log=on_log
+            )
+
         props = await store.build_props_from_graph(
-            on_progress=lambda progress, task: _progress(
-                ctx, "build_props", progress, task
-            ),
-            on_log=lambda message: _progress(ctx, "build_props", None, message),
+            on_progress=on_progress,
+            on_log=on_log,
         )
         return {"props": len(props)}
     finally:
