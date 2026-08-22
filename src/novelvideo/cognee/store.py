@@ -1840,27 +1840,8 @@ class CogneeStore:
         await self.add_episodes([episode])
         self._episodes[episode.number] = episode
 
-    async def patch_episode(self, episode_number: int, **updates) -> None:
-        """Column-level update, delegated to SQLiteStore.
-
-        Legacy callers reach this through the facade and get the same race-free
-        write as structured callers: the whole-row update below cannot avoid
-        losing a concurrent planner's menu, however carefully it re-reads.
-        """
-        await self.sqlite_store.patch_episode(episode_number, **updates)
-        refreshed = await self.sqlite_store.get_episode_from_graph(episode_number)
-        if refreshed is not None:
-            self._episodes[episode_number] = refreshed
-
     async def update_episode(self, episode_number: int, **updates) -> None:
-        """更新剧集属性。
-
-        Whole-row write, kept for callers that genuinely replace an episode.
-        Menu and identity updates should use :meth:`patch_episode` instead:
-        re-reading the row first narrows the window where a concurrent planner's
-        result is lost, but cannot close it, because both writers can re-read
-        before either commits.
-        """
+        """更新剧集属性。"""
         episode = self.get_episode(episode_number)
         if not episode:
             print(
