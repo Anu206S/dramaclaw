@@ -439,7 +439,7 @@ def _apply_appellation_claims(
     overall, which would simply hand every ambiguous form to the lead, and not
     by chunk count, since chunks overlap and one occurrence can fall in two.
 
-    A win has to be decisive: at least two independent chunks, and a clear
+    A win has to be decisive: at least two distinct occurrences, and a clear
     margin over the runner-up. Anything closer stays unassigned, because a wrong
     alias resolves confidently to the wrong person while a missing one merely
     fails to resolve.
