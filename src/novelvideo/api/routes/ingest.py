@@ -20,7 +20,7 @@ from novelvideo.api.chapter_preview import (
 from novelvideo.api.deps import make_cognee_store_for_context, resolve_project_scope
 from novelvideo.api.schemas import IngestStart
 from novelvideo.cognee.ladybug_access import ladybug_graph_access
-from novelvideo.knowledge_pipeline import is_structured_v2
+from novelvideo.knowledge_pipeline import is_structured_pipeline
 from novelvideo.graph_preview import (
     empty_graph_preview,
     load_graph_preview,
@@ -69,11 +69,11 @@ async def get_ingest_knowledge_graph(
     if not (ctx.output_dir / "novel.txt").is_file():
         return {"ok": True, "data": empty_graph_preview()}
 
-    # structured_v2 projects never build a graph. Return the empty preview
+    # structured_v1 projects never build a graph. Return the empty preview
     # rather than reaching the legacy materialization path below, which would
     # open Ladybug and construct a Cognee-backed store for a project that has
     # neither.
-    if is_structured_v2(ctx.state_dir):
+    if is_structured_pipeline(ctx.state_dir):
         return {"ok": True, "data": empty_graph_preview()}
 
     snapshot = load_graph_preview(ctx.state_dir)

@@ -1,4 +1,4 @@
-"""Deterministic source-text chunking for the structured_v2 pipeline.
+"""Deterministic source-text chunking for the structured_v1 pipeline.
 
 Structured extraction never hands a whole novel or screenplay to one model
 call.  It splits the imported text along boundaries the format already provides

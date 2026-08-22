@@ -9,7 +9,7 @@ from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
 from novelvideo.novel_source import require_imported_novel
 from novelvideo.knowledge_pipeline import (
     KnowledgePipelineUnsupported,
-    is_structured_v2,
+    is_structured_pipeline,
 )
 from novelvideo.project_context import ProjectContext
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
@@ -46,10 +46,10 @@ def _progress(
 async def _load_store(ctx: ProjectContext):
     """Open the project store its knowledge pipeline calls for.
 
-    structured_v2 builds never touch the graph, so they use SQLiteStore directly
+    structured_v1 builds never touch the graph, so they use SQLiteStore directly
     rather than reaching through the Cognee facade.
     """
-    if is_structured_v2(ctx.state_dir):
+    if is_structured_pipeline(ctx.state_dir):
         from novelvideo.sqlite_store import SQLiteStore
 
         store = SQLiteStore(
@@ -85,7 +85,7 @@ async def _run_build_characters(ctx: ProjectContext) -> dict[str, Any]:
 
         def on_log(message: str) -> None:
             _progress(ctx, "build_characters", None, message)
-        if is_structured_v2(ctx.state_dir):
+        if is_structured_pipeline(ctx.state_dir):
             from novelvideo.structured_builders import build_characters_structured
 
             added = await build_characters_structured(
@@ -117,7 +117,7 @@ async def _run_build_scenes(ctx: ProjectContext) -> dict[str, Any]:
 
         def on_log(message: str) -> None:
             _progress(ctx, "build_scenes", None, message)
-        if is_structured_v2(ctx.state_dir):
+        if is_structured_pipeline(ctx.state_dir):
             from novelvideo.structured_builders import build_scenes_structured
 
             return await build_scenes_structured(
@@ -147,7 +147,7 @@ async def _run_build_props(ctx: ProjectContext) -> dict[str, Any]:
 
         def on_log(message: str) -> None:
             _progress(ctx, "build_props", None, message)
-        if is_structured_v2(ctx.state_dir):
+        if is_structured_pipeline(ctx.state_dir):
             from novelvideo.structured_builders import build_props_structured
 
             return await build_props_structured(
@@ -184,9 +184,9 @@ async def _run_build_episodes(
     # Defence in depth: the route rejects AI modes for structured projects
     # before enqueue, but a task queued before the project's track was known
     # must not reach a planner that needs the graph.
-    if is_structured_v2(ctx.state_dir) and planning_mode != "chapters":
+    if is_structured_pipeline(ctx.state_dir) and planning_mode != "chapters":
         raise KnowledgePipelineUnsupported(
-            "structured_v2 only supports deterministic chapter/episode mapping"
+            "structured_v1 only supports deterministic chapter/episode mapping"
         )
     store = await _load_store(ctx)
     try:

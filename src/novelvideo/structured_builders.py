@@ -1,4 +1,4 @@
-"""Project-level asset builds for structured_v2 projects.
+"""Project-level asset builds for structured_v1 projects.
 
 Each build reads the imported source text and publishes to SQLite.  None of them
 touch Cognee, an embedding model or the graph.
@@ -116,15 +116,21 @@ async def build_characters_structured(
         on_chunk_done=persist_done,
         on_chunk_failed=persist_failed,
     )
-    if run_id:
-        # A run with failed chunks is "partial", not "completed": the next build
-        # must know there is work left rather than treating this as finished.
-        await store.finish_analysis_run(
-            run_id,
-            status="partial" if failures else "completed",
-            error=f"{len(failures)} chunks failed" if failures else "",
-        )
+    async def finish(status_error: tuple[str, str]) -> None:
+        if run_id:
+            await store.finish_analysis_run(
+                run_id, status=status_error[0], error=status_error[1]
+            )
+
+    outcome = (
+        ("partial", f"{len(failures)} chunks failed") if failures else ("completed", "")
+    )
+
     if not merged:
+        # Nothing to publish, but the run still has to be closed out, or the
+        # next build sees a run stuck at "pending" and cannot tell whether work
+        # is outstanding.
+        await finish(outcome)
         log("⚠️ 未抽取到有原文证据的角色，保留现有角色数据")
         report(1.0, "提取无结果")
         return []
@@ -145,13 +151,22 @@ async def build_characters_structured(
 
     report(0.95, "记录角色证据...")
     if run_id:
-        by_name = {item.name: item for item in merged}
-        for name in added:
-            item = by_name.get(name)
-            if item:
-                await store.replace_entity_evidence(
-                    run_id, "character", name, item.evidence
-                )
+        # Evidence is written for every merged character, not just the newly
+        # added ones. Publishing characters and writing their evidence are two
+        # steps: if the first succeeded and the second did not, a retry finds
+        # the characters already present, so keying on "added" would leave them
+        # permanently without provenance. Writing for all of them is idempotent
+        # — replace_entity_evidence rewrites rather than appends — and never
+        # touches the character rows a user may have edited.
+        for item in merged:
+            await store.replace_entity_evidence(
+                run_id, "character", item.name, item.evidence
+            )
+
+    # Only now is the run genuinely finished. Marking it complete before
+    # publishing would leave a run that claims success while its characters or
+    # evidence never landed.
+    await finish(outcome)
 
     report(1.0, "角色提取完成")
     return added

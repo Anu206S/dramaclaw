@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS seedance2_voice_audio_records (
 CREATE INDEX IF NOT EXISTS idx_seedance2_voice_audio_speaker
     ON seedance2_voice_audio_records(episode_number, speaker);
 
--- structured_v2 analysis bookkeeping.
+-- structured_v1 analysis bookkeeping.
 --
 -- A run is keyed by what it analysed (source_sha256) and how (schema_version),
 -- so re-importing identical text reuses completed chunks and only failed or
@@ -336,8 +336,9 @@ CREATE TABLE IF NOT EXISTS story_analysis_chunks (
 CREATE INDEX IF NOT EXISTS idx_story_analysis_chunks_status
     ON story_analysis_chunks(run_id, status);
 
--- Every structured entity keeps at least one span of real source text, so a
--- character or scene can always be traced back to what produced it.
+-- Structured entities keep spans of real source text so they can be traced back
+-- to what produced them. Only characters record evidence today; entity_type
+-- exists so scenes and props can join later without a schema change.
 CREATE TABLE IF NOT EXISTS entity_evidence (
     run_id            TEXT NOT NULL,
     entity_type       TEXT NOT NULL,
@@ -2377,7 +2378,7 @@ class SQLiteStore:
         return cursor.rowcount or 0
 
     # ============================================================
-    # structured_v2 分析 run / chunk / 证据
+    # structured_v1 分析 run / chunk / 证据
     # ============================================================
 
     async def get_reusable_analysis_run(

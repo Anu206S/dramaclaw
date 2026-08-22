@@ -1,4 +1,4 @@
-"""structured_v2 import: deterministic chunking, no graph, resumable runs."""
+"""structured_v1 import: deterministic chunking, no graph, resumable runs."""
 
 from __future__ import annotations
 
@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from novelvideo.knowledge_pipeline import KNOWLEDGE_PIPELINE_KEY, STRUCTURED_V2
+from novelvideo.knowledge_pipeline import KNOWLEDGE_PIPELINE_KEY, KNOWLEDGE_PIPELINE_STRUCTURED
 from novelvideo.story_analysis import chunk_source_text, source_sha256
 
 DRAMA_TEXT = """第一集
@@ -133,7 +133,7 @@ async def structured_project(tmp_path):
     from novelvideo.sqlite_store import SQLiteStore
 
     state_dir = tmp_path / "user" / "structured"
-    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: STRUCTURED_V2})
+    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED})
     store = SQLiteStore(
         "user/structured",
         output_dir=str(state_dir),
@@ -161,7 +161,7 @@ async def test_structured_import_records_run_and_chunks(structured_project, tmp_
         store, str(novel), spine_template="narrated"
     )
 
-    assert result["pipeline"] == "structured_v2"
+    assert result["pipeline"] == "structured_v1"
     assert result["status"] == "source_ready"
     assert result["chunks"] == 3
     assert result["section_type"] == "chapter"
@@ -189,7 +189,7 @@ async def test_structured_import_never_touches_cognee(
     from novelvideo.structured_ingest import ingest_source_text_structured
 
     def _boom(*args, **kwargs):
-        raise AssertionError("structured_v2 import must not touch Cognee")
+        raise AssertionError("structured_v1 import must not touch Cognee")
 
     for name in ("add", "cognify", "memify", "search"):
         monkeypatch.setattr(cognee, name, _boom, raising=False)
@@ -387,7 +387,7 @@ async def test_structured_project_rejects_ai_planning_before_enqueue(
     from novelvideo.knowledge_pipeline import KnowledgePipelineUnsupported
 
     state_dir = tmp_path / "user" / "structured"
-    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: STRUCTURED_V2})
+    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED})
     project_dir = tmp_path / "out"
     project_dir.mkdir()
     (project_dir / "novel.txt").write_text(NARRATED_TEXT, encoding="utf-8")
@@ -401,7 +401,7 @@ async def test_structured_project_rejects_ai_planning_before_enqueue(
         )
 
     async def reject_enqueue(*_args, **_kwargs):
-        raise AssertionError("structured_v2 must not enqueue an AI planning task")
+        raise AssertionError("structured_v1 must not enqueue an AI planning task")
 
     monkeypatch.setattr(episodes, "resolve_project_scope", resolve_project_scope)
     monkeypatch.setattr(
@@ -430,7 +430,7 @@ async def test_structured_project_allows_deterministic_chapter_planning(
     from novelvideo.api.schemas import EpisodePlanRequest
 
     state_dir = tmp_path / "user" / "structured"
-    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: STRUCTURED_V2})
+    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED})
     project_dir = tmp_path / "out"
     project_dir.mkdir()
     (project_dir / "novel.txt").write_text(NARRATED_TEXT, encoding="utf-8")

@@ -4,9 +4,9 @@ The contract this file defends:
 
 * legacy projects behave exactly as before, including projects that predate the
   ``knowledge_pipeline`` field entirely;
-* structured_v2 projects can still use the store as a plain SQLite facade,
+* structured_v1 projects can still use the store as a plain SQLite facade,
   because most runners and API routes depend on it that way;
-* structured_v2 projects can never reach Cognee, an embedding binding, or the
+* structured_v1 projects can never reach Cognee, an embedding binding, or the
   graph — the attempt must raise rather than silently fall back.
 """
 
@@ -21,8 +21,8 @@ from novelvideo.knowledge_pipeline import (
     COGNEE_LEGACY,
     KNOWLEDGE_PIPELINE_KEY,
     KnowledgePipelineUnsupported,
-    STRUCTURED_V2,
-    is_structured_v2,
+    KNOWLEDGE_PIPELINE_STRUCTURED,
+    is_structured_pipeline,
     knowledge_pipeline_from_state_dir,
 )
 
@@ -60,8 +60,8 @@ def test_embedding_bound_project_is_legacy(tmp_path):
 
 
 def test_explicit_structured_field_is_structured(tmp_path):
-    _write_config(tmp_path, {KNOWLEDGE_PIPELINE_KEY: STRUCTURED_V2})
-    assert is_structured_v2(tmp_path)
+    _write_config(tmp_path, {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED})
+    assert is_structured_pipeline(tmp_path)
 
 
 def test_unknown_pipeline_value_falls_back_to_legacy(tmp_path):
@@ -77,7 +77,7 @@ def test_absent_embedding_keys_do_not_imply_structured(tmp_path):
     projects, so only the explicit field can be trusted.
     """
     _write_config(tmp_path, {"user": "someone"})
-    assert not is_structured_v2(tmp_path)
+    assert not is_structured_pipeline(tmp_path)
 
 
 def test_default_project_config_does_not_carry_the_field():
@@ -107,7 +107,7 @@ def structured_store(tmp_path):
     from novelvideo.cognee.store import CogneeStore
 
     state_dir = tmp_path / "user" / "structured"
-    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: STRUCTURED_V2})
+    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED})
     return CogneeStore(
         "user/structured",
         output_dir=str(state_dir),
@@ -135,7 +135,7 @@ async def test_structured_initialize_never_binds_an_embedding_model(
     import novelvideo.cognee.store as store_module
 
     def _boom(*args, **kwargs):
-        raise AssertionError("structured_v2 must not touch Cognee or embeddings")
+        raise AssertionError("structured_v1 must not touch Cognee or embeddings")
 
     monkeypatch.setattr(
         store_module, "ensure_cognee_embedding_binding_in_state_dir", _boom
@@ -164,7 +164,7 @@ async def test_structured_initialize_writes_no_embedding_fields(structured_store
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert PROJECT_EMBEDDING_MODEL_KEY not in config
     assert PROJECT_EMBEDDING_DIMENSION_KEY not in config
-    assert config[KNOWLEDGE_PIPELINE_KEY] == STRUCTURED_V2
+    assert config[KNOWLEDGE_PIPELINE_KEY] == KNOWLEDGE_PIPELINE_STRUCTURED
 
 
 async def test_structured_store_still_works_as_a_sqlite_facade(structured_store):

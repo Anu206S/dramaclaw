@@ -1,4 +1,4 @@
-"""structured_v2 project-level builds: characters, scenes, props.
+"""structured_v1 project-level builds: characters, scenes, props.
 
 The rules under test are the conservative ones. A character name is at once a
 SQLite primary key, a REST identifier and an asset directory name, so the
@@ -13,7 +13,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from novelvideo.knowledge_pipeline import KNOWLEDGE_PIPELINE_KEY, STRUCTURED_V2
+from novelvideo.knowledge_pipeline import KNOWLEDGE_PIPELINE_KEY, KNOWLEDGE_PIPELINE_STRUCTURED
 from novelvideo.story_analysis import SourceChunk, chunk_source_text
 from novelvideo.structured_extraction import (
     CharacterCandidate,
@@ -343,7 +343,7 @@ async def structured_store(tmp_path):
     state_dir = tmp_path / "user" / "structured"
     state_dir.mkdir(parents=True)
     (state_dir / "project_config.json").write_text(
-        json.dumps({KNOWLEDGE_PIPELINE_KEY: STRUCTURED_V2, "spine_template": "narrated"}),
+        json.dumps({KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED, "spine_template": "narrated"}),
         encoding="utf-8",
     )
     (state_dir / "novel.txt").write_text(NARRATED_TEXT, encoding="utf-8")
@@ -581,12 +581,16 @@ async def test_a_failed_chunk_leaves_the_run_partial(structured_store, monkeypat
 
     failed = await store.list_analysis_chunks(run["run_id"], status="failed")
     assert failed, "the failing chunk was not recorded"
+    from novelvideo.story_analysis import source_sha256
+    from novelvideo.structured_ingest import (
+        STRUCTURED_PIPELINE_VERSION,
+        STRUCTURED_SCHEMA_VERSION,
+    )
+
     stored = await store.get_reusable_analysis_run(
-        source_sha256=__import__("novelvideo.story_analysis", fromlist=["x"]).source_sha256(
-            NARRATED_TEXT
-        ),
-        schema_version=1,
-        pipeline_version="structured_v2.1",
+        source_sha256=source_sha256(NARRATED_TEXT),
+        schema_version=STRUCTURED_SCHEMA_VERSION,
+        pipeline_version=STRUCTURED_PIPELINE_VERSION,
         spine_template="narrated",
     )
     assert stored["status"] == "partial"
@@ -657,3 +661,90 @@ async def test_reuse_key_separates_drama_from_narrated(structured_store, tmp_pat
         store, str(source), spine_template=""
     )
     assert drama["run_id"] != narrated["run_id"]
+
+
+async def test_evidence_is_backfilled_when_the_characters_already_exist(
+    structured_store, monkeypatch
+):
+    """Publishing characters and writing evidence are two steps.
+
+    If the first succeeds and the second fails, a retry finds the characters
+    already present. Keying evidence on "newly added" would leave them without
+    provenance forever.
+    """
+    from novelvideo import structured_builders
+    from novelvideo.cognee.pipeline import NovelCharacter
+    from novelvideo.structured_extraction import extract_characters_from_chunks
+    from novelvideo.structured_ingest import ingest_source_text_structured
+
+    store, state_dir = structured_store
+    source = state_dir / "source.txt"
+    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    await ingest_source_text_structured(store, str(source), spine_template="narrated")
+
+    # Stand in for a previous build that published the character but died
+    # before its evidence landed.
+    await store.add_character(NovelCharacter(name="林默"))
+    assert await store.list_entity_evidence("character", "林默") == []
+
+    agent = FakeAgent(
+        {
+            "第一章": ChunkCharacterOutput(
+                characters=[_candidate("林默", quotes=["林默回到阔别十年的故乡。"])]
+            )
+        }
+    )
+    real_extract = extract_characters_from_chunks
+
+    async def fake_extract(chunks, **kwargs):
+        kwargs.pop("agent", None)
+        return await real_extract(chunks, agent=agent, **kwargs)
+
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction.extract_characters_from_chunks", fake_extract
+    )
+
+    added = await structured_builders.build_characters_structured(store)
+    assert added == []  # nothing new to publish
+    assert await store.list_entity_evidence("character", "林默"), (
+        "evidence was never backfilled for an already-published character"
+    )
+
+
+async def test_a_run_with_no_characters_is_still_closed_out(
+    structured_store, monkeypatch
+):
+    """A run left at "pending" tells the next build nothing about what remains."""
+    from novelvideo import structured_builders
+    from novelvideo.story_analysis import source_sha256
+    from novelvideo.structured_extraction import extract_characters_from_chunks
+    from novelvideo.structured_ingest import (
+        STRUCTURED_PIPELINE_VERSION,
+        STRUCTURED_SCHEMA_VERSION,
+        ingest_source_text_structured,
+    )
+
+    store, state_dir = structured_store
+    source = state_dir / "source.txt"
+    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    await ingest_source_text_structured(store, str(source), spine_template="narrated")
+
+    agent = FakeAgent({})  # every chunk yields nothing
+    real_extract = extract_characters_from_chunks
+
+    async def fake_extract(chunks, **kwargs):
+        kwargs.pop("agent", None)
+        return await real_extract(chunks, agent=agent, **kwargs)
+
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction.extract_characters_from_chunks", fake_extract
+    )
+    assert await structured_builders.build_characters_structured(store) == []
+
+    stored = await store.get_reusable_analysis_run(
+        source_sha256=source_sha256(NARRATED_TEXT),
+        schema_version=STRUCTURED_SCHEMA_VERSION,
+        pipeline_version=STRUCTURED_PIPELINE_VERSION,
+        spine_template="narrated",
+    )
+    assert stored["status"] == "completed"
