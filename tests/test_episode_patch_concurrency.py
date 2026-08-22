@@ -73,7 +73,7 @@ async def test_patch_touches_only_the_named_columns(project):
 
 
 async def test_an_empty_list_really_clears_the_column(project):
-    """_UNSET means "leave alone"; an empty list is a genuine update."""
+    """Omitting a field leaves its column alone; an empty list clears it."""
     store, state_dir = project
     await store.patch_episode(1, prop_menu=[{"prop_id": "怀表"}])
     await store.patch_episode(1, prop_menu=[])

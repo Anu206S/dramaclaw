@@ -370,13 +370,6 @@ CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
 );
 """
 
-def _model_to_dict(value: Any) -> dict:
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        return dump()
-    return dict(value) if isinstance(value, dict) else {}
-
-
 _PROJECT_STORE_SCHEMA_COMPONENT = "project_store"
 # MIGRATION CONTRACT: increment this whenever SQLITE_SCHEMA_SQL or any
 # _ensure_*_columns migration above changes. Existing databases skip the
