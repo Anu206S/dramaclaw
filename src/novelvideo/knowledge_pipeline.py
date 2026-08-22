@@ -7,7 +7,7 @@ Two tracks coexist permanently:
     bound to a Cognee dataset and an embedding model, and their behaviour must
     not change.
 
-``structured_v2``
+``structured_v1``
     Deterministic extraction straight from the imported source text into SQLite.
     No embedding model, no vector index, no graph search.
 
@@ -35,7 +35,7 @@ from pathlib import Path
 KNOWLEDGE_PIPELINE_KEY = "knowledge_pipeline"
 
 COGNEE_LEGACY = "cognee_legacy"
-STRUCTURED_V2 = "structured_v2"
+KNOWLEDGE_PIPELINE_STRUCTURED = "structured_v1"
 
 
 class KnowledgePipelineUnsupported(RuntimeError):
@@ -58,12 +58,12 @@ def knowledge_pipeline_from_state_dir(state_dir: str | Path | None) -> str:
 
     raw = load_project_config_file_from_state_dir(state_dir)
     value = str(raw.get(KNOWLEDGE_PIPELINE_KEY, "") or "").strip()
-    return STRUCTURED_V2 if value == STRUCTURED_V2 else COGNEE_LEGACY
+    return KNOWLEDGE_PIPELINE_STRUCTURED if value == KNOWLEDGE_PIPELINE_STRUCTURED else COGNEE_LEGACY
 
 
-def is_structured_v2(state_dir: str | Path | None) -> bool:
-    return knowledge_pipeline_from_state_dir(state_dir) == STRUCTURED_V2
+def is_structured_pipeline(state_dir: str | Path | None) -> bool:
+    return knowledge_pipeline_from_state_dir(state_dir) == KNOWLEDGE_PIPELINE_STRUCTURED
 
 
 def is_cognee_legacy(state_dir: str | Path | None) -> bool:
-    return not is_structured_v2(state_dir)
+    return not is_structured_pipeline(state_dir)

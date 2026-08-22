@@ -37,7 +37,7 @@ from novelvideo.graph_preview import (
 )
 from novelvideo.knowledge_pipeline import (
     KnowledgePipelineUnsupported,
-    is_structured_v2,
+    is_structured_pipeline,
 )
 from novelvideo.official_defaults import DEFAULT_COGNEE_LLM_MODEL
 from novelvideo.novel_source import require_imported_novel
@@ -300,7 +300,7 @@ class CogneeStore:
         """
         cached = self.__dict__.get("_cognee_enabled_flag")
         if cached is None:
-            cached = not is_structured_v2(self.__dict__.get("state_dir"))
+            cached = not is_structured_pipeline(self.__dict__.get("state_dir"))
             self.__dict__["_cognee_enabled_flag"] = cached
         return cached
 
@@ -312,7 +312,7 @@ class CogneeStore:
         """
         if not self._cognee_enabled:
             raise KnowledgePipelineUnsupported(
-                f"{operation} is unavailable for structured_v2 projects"
+                f"{operation} is unavailable for structured_v1 projects"
             )
 
     def embedding_model_scope(self):
@@ -480,7 +480,7 @@ class CogneeStore:
     async def initialize(self):
         """初始化 SQLite 数据库和 Cognee 配置。
 
-        structured_v2 项目降级为纯 SQLite 门面而不是抛异常：生产中有大量
+        structured_v1 项目降级为纯 SQLite 门面而不是抛异常：生产中有大量
         runner 和 API 依赖（肖像、参考图、剧本、分镜、视频、Freezone 等）只把
         本类当 SQLite 门面使用，完全不需要图谱。在这里硬失败会让这些路径在
         新项目上全线 500。图谱能力本身由 ``_require_cognee`` 单独把守。
@@ -488,11 +488,11 @@ class CogneeStore:
         # 必须先判定 track，再决定是否绑定 embedding：
         # ensure_cognee_embedding_binding_in_state_dir() 会为缺字段的项目回填
         # 绑定并写回 project_config.json，一旦调用就再也退不回去了。
-        if is_structured_v2(self.state_dir):
+        if is_structured_pipeline(self.state_dir):
             self.__dict__["_cognee_enabled_flag"] = False
             await self._ensure_db()
             console.print(
-                f"[dim]存储层已初始化 (structured_v2, 无图谱, db: {self.db_path})[/dim]"
+                f"[dim]存储层已初始化 (structured_v1, 无图谱, db: {self.db_path})[/dim]"
             )
             return
 

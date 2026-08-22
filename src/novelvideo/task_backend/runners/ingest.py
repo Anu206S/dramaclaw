@@ -28,16 +28,16 @@ def run_ingest_fast(
 async def _run_ingest_fast(
     envelope: dict[str, Any], ctx: ProjectContext
 ) -> dict[str, Any]:
-    from novelvideo.knowledge_pipeline import is_structured_v2
+    from novelvideo.knowledge_pipeline import is_structured_pipeline
 
     payload = envelope.get("payload") or {}
     novel_path = str(payload["novel_path"])
     config = dict(payload.get("config") or {})
     manager = get_task_manager()
 
-    # structured_v2 imports never build a graph, so they open the project with
+    # structured_v1 imports never build a graph, so they open the project with
     # SQLiteStore directly rather than through the Cognee facade.
-    structured = is_structured_v2(ctx.state_dir)
+    structured = is_structured_pipeline(ctx.state_dir)
     if structured:
         from novelvideo.sqlite_store import SQLiteStore
 

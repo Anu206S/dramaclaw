@@ -296,7 +296,7 @@ CREATE TABLE IF NOT EXISTS seedance2_voice_audio_records (
 CREATE INDEX IF NOT EXISTS idx_seedance2_voice_audio_speaker
     ON seedance2_voice_audio_records(episode_number, speaker);
 
--- structured_v2 analysis bookkeeping.
+-- structured_v1 analysis bookkeeping.
 --
 -- A run is keyed by what it analysed (source_sha256) and how (schema_version),
 -- so re-importing identical text reuses completed chunks and only failed or
@@ -336,8 +336,9 @@ CREATE TABLE IF NOT EXISTS story_analysis_chunks (
 CREATE INDEX IF NOT EXISTS idx_story_analysis_chunks_status
     ON story_analysis_chunks(run_id, status);
 
--- Every structured entity keeps at least one span of real source text, so a
--- character or scene can always be traced back to what produced it.
+-- Structured entities keep spans of real source text so they can be traced back
+-- to what produced them. Only characters record evidence today; entity_type
+-- exists so scenes and props can join later without a schema change.
 CREATE TABLE IF NOT EXISTS entity_evidence (
     run_id            TEXT NOT NULL,
     entity_type       TEXT NOT NULL,
@@ -351,13 +352,25 @@ CREATE TABLE IF NOT EXISTS entity_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_entity_evidence_entity
     ON entity_evidence(entity_type, entity_id);
+
+-- The final result of a run, after merging and adjudication. Chunk results are
+-- not sufficient on their own: adjudication is a further model call whose
+-- outcome can differ between runs, so without this an unchanged source could
+-- produce a different cast every rebuild.
+CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
+    run_id            TEXT NOT NULL,
+    artifact_type     TEXT NOT NULL,
+    result_json       TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, artifact_type)
+);
 """
 
 _PROJECT_STORE_SCHEMA_COMPONENT = "project_store"
 # MIGRATION CONTRACT: increment this whenever SQLITE_SCHEMA_SQL or any
 # _ensure_*_columns migration above changes. Existing databases skip the
 # initializer after this version has been recorded.
-_PROJECT_STORE_SCHEMA_VERSION = 2
+_PROJECT_STORE_SCHEMA_VERSION = 3
 
 
 def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
@@ -798,6 +811,68 @@ class SQLiteStore:
         self._alias_index.update(updated_alias_index)
         for alias in character.aliases:
             self._alias_index[alias] = character.name
+
+    async def add_characters_atomic(
+        self, characters: list, *, skip_existing: bool = True
+    ) -> list[str]:
+        """Publish many characters in one transaction.
+
+        add_character() commits per row, so a failure partway through a build
+        leaves half a cast behind. Structured builds publish their whole result
+        at once instead: either every character lands or none does.
+
+        Existing characters are skipped by default. A character on disk may
+        already carry user edits, a portrait, identities and voice bindings, and
+        a rebuild must not overwrite any of that.
+        """
+        if not characters:
+            return []
+
+        db = await self._ensure_db()
+        existing = set(self._characters) if skip_existing else set()
+        pending = [
+            character
+            for character in characters
+            if not (skip_existing and character.name in existing)
+        ]
+        if not pending:
+            return []
+
+        try:
+            await db.execute("BEGIN")
+            for character in pending:
+                await db.execute(
+                    """INSERT INTO characters
+                       (name, aliases_json, role, is_main, gender, age_group,
+                        body_type, fish_voice_id, description, face_prompt,
+                        appearance_details, identities_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(name) DO NOTHING""",
+                    (
+                        character.name,
+                        json.dumps(character.aliases, ensure_ascii=False),
+                        character.role,
+                        1 if character.is_main else 0,
+                        character.gender,
+                        character.age_group,
+                        character.body_type,
+                        character.fish_voice_id,
+                        character.description,
+                        character.face_prompt,
+                        character.appearance_details,
+                        character.identities_json,
+                    ),
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+        for character in pending:
+            self._characters[character.name] = character
+            for alias in character.aliases:
+                self._alias_index[alias] = character.name
+        return [character.name for character in pending]
 
     async def update_character(self, name: str, **updates) -> None:
         char = self.get_character(name)
@@ -2315,7 +2390,7 @@ class SQLiteStore:
         return cursor.rowcount or 0
 
     # ============================================================
-    # structured_v2 分析 run / chunk / 证据
+    # structured_v1 分析 run / chunk / 证据
     # ============================================================
 
     async def get_reusable_analysis_run(
@@ -2324,19 +2399,22 @@ class SQLiteStore:
         source_sha256: str,
         schema_version: int,
         pipeline_version: str,
+        spine_template: str = "",
     ) -> dict | None:
-        """Find a run that analysed identical text with identical code.
+        """Find a run that analysed identical text the same way.
 
-        Reuse is keyed on all three: different source text or a changed
-        extraction contract must not inherit another run's chunk results.
+        Reuse is keyed on all four. Different source text or a changed
+        extraction contract must not inherit another run's chunk results, and
+        neither must a different spine template: the same novel chunked as a
+        screenplay and as narrated prose produces entirely different chunks.
         """
         db = await self._ensure_db()
         async with db.execute(
             """SELECT * FROM story_analysis_runs
                WHERE source_sha256 = ? AND schema_version = ?
-                 AND pipeline_version = ?
+                 AND pipeline_version = ? AND spine_template = ?
                ORDER BY created_at DESC LIMIT 1""",
-            (source_sha256, int(schema_version), pipeline_version),
+            (source_sha256, int(schema_version), pipeline_version, spine_template),
         ) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row else None
@@ -2449,6 +2527,39 @@ class SQLiteStore:
                SET status = ?, error = ?, completed_at = datetime('now')
                WHERE run_id = ?""",
             (status, str(error)[:2000], run_id),
+        )
+        await db.commit()
+
+    async def get_analysis_artifact(self, run_id: str, artifact_type: str) -> str:
+        """Return a stored final result for a run, or an empty string."""
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT result_json FROM story_analysis_artifacts
+               WHERE run_id = ? AND artifact_type = ?""",
+            (run_id, artifact_type),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["result_json"]) if row else ""
+
+    async def save_analysis_artifact(
+        self, run_id: str, artifact_type: str, result_json: str
+    ) -> None:
+        """Store a run's final result so a rebuild need not recompute it.
+
+        Chunk results alone are not enough to skip all work: merging is cheap
+        but adjudication is another model call, and re-running it can decide
+        differently, so an unchanged source could yield a different cast on
+        every rebuild.
+        """
+        db = await self._ensure_db()
+        await db.execute(
+            """INSERT INTO story_analysis_artifacts
+               (run_id, artifact_type, result_json, created_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(run_id, artifact_type) DO UPDATE SET
+                 result_json = excluded.result_json,
+                 created_at = excluded.created_at""",
+            (run_id, artifact_type, result_json),
         )
         await db.commit()
 

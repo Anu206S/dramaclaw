@@ -1,4 +1,4 @@
-"""Import for structured_v2 projects: no graph, no embedding, no vector index.
+"""Import for structured_v1 projects: no graph, no embedding, no vector index.
 
 The legacy import spends most of its wall clock inside ``cognee.add`` /
 ``cognify`` / ``memify``, and every one of those calls goes through the shared
@@ -21,9 +21,11 @@ from typing import Any, Callable, Optional
 from novelvideo.story_analysis import chunk_source_text, source_sha256
 from novelvideo.utils.document_parsers import load_novel_text
 
-# Bump when the chunking contract changes in a way that invalidates stored
-# chunk results. Runs are reused only when text, schema and pipeline all match.
-STRUCTURED_PIPELINE_VERSION = "structured_v2.1"
+# Bump when the chunking contract changes in a way that invalidates stored chunk
+# results — different chunk ids, boundaries or offsets. A run is reused only
+# when source text, schema version, this version and the spine template all
+# match, so a bump simply starts a fresh plan rather than corrupting an old one.
+STRUCTURED_PIPELINE_VERSION = "structured_v1"
 STRUCTURED_SCHEMA_VERSION = 1
 
 _PROGRESS = {
@@ -89,6 +91,7 @@ async def ingest_source_text_structured(
         source_sha256=digest,
         schema_version=STRUCTURED_SCHEMA_VERSION,
         pipeline_version=STRUCTURED_PIPELINE_VERSION,
+        spine_template=template,
     )
     if reused:
         # Identical text analysed by identical code: keep the existing run so a
@@ -117,7 +120,7 @@ async def ingest_source_text_structured(
     return {
         "char_count": len(content),
         "status": "source_ready",
-        "pipeline": "structured_v2",
+        "pipeline": "structured_v1",
         "run_id": run_id,
         "chunks": len(chunks),
         "section_type": section_type,

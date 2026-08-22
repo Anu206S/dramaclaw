@@ -15,6 +15,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.config import get_newapi_structured_output_litellm_kwargs
+from novelvideo.utils.bounded_concurrency import (
+    default_llm_concurrency,
+    map_bounded,
+)
 from novelvideo.models import (
     CharacterIdentity,
     NovelCharacter,
@@ -888,6 +892,118 @@ async def enrich_scene_environment_from_context(
     )
 
 
+# Several scenes fit in one enrichment call. Each description runs 150-200
+# characters, so a batch stays well inside a useful response length.
+_ENRICHMENT_BATCH_SIZE = 5
+
+
+async def enrich_scene_environments_batched(
+    candidates: list[dict[str, Any]],
+    *,
+    synopsis: str = "",
+    enrichment_agent: Any | None = None,
+    on_scene: Optional[Any] = None,
+) -> list[NovelScene]:
+    """Generate environment prompts for several scenes per request.
+
+    The enrichment agent already returns a list, but was being asked for one
+    scene at a time. A screenplay yields dozens of base scenes, and each call
+    costs the same few seconds of round trip regardless of how many it carries.
+
+    A batch that fails or comes back short falls through to per-scene calls for
+    exactly the scenes it missed, so batching can only cost time, never scenes.
+    """
+    if not candidates:
+        return []
+
+    agent = enrichment_agent or _create_scene_build_agent(
+        SCENE_ENRICHMENT_SYSTEM_PROMPT,
+        SceneEnrichmentList,
+        "Scene Build Enricher",
+    )
+    synopsis_section = f"\n\n【故事梗概与人物设定】\n{synopsis}" if synopsis else ""
+
+    def describe(candidate: dict[str, Any]) -> str:
+        context = "\n".join(
+            str(line) for line in (candidate.get("context_lines") or [])[:24]
+        )
+        interior = bool(candidate.get("interior", True))
+        return (
+            f"### 场景：{candidate['name']}\n"
+            f"室内外：{'内' if interior else '外'}\n"
+            f"出场人物：{', '.join(candidate.get('characters') or []) or '无'}\n"
+            f"原文段落：\n{context}"
+        )
+
+    async def run_batch(batch: list[dict[str, Any]]) -> list[NovelScene]:
+        prompt = (
+            "请为下面每一个场景分别生成 environment_prompt，"
+            "name 必须与给出的场景名完全一致，不要合并或遗漏：\n\n"
+            + "\n\n".join(describe(candidate) for candidate in batch)
+            + synopsis_section
+        )
+        produced: dict[str, NovelScene] = {}
+        try:
+            result = (await agent.run(prompt)).output
+            by_name = {
+                str(item.name or "").strip(): item for item in (result.scenes or [])
+            }
+            for candidate in batch:
+                item = by_name.get(candidate["name"])
+                if item is None:
+                    continue
+                scene_type = item.scene_type or candidate.get("scene_type") or (
+                    "interior" if candidate.get("interior", True) else "exterior"
+                )
+                produced[candidate["name"]] = NovelScene(
+                    name=candidate["name"],
+                    aliases=_clean_aliases(
+                        candidate["name"], candidate.get("aliases") or []
+                    ),
+                    scene_type=scene_type,
+                    environment_prompt=_ensure_directional_environment_prompt(
+                        prompt=item.environment_prompt,
+                        scene_name=candidate["name"],
+                        scene_type=scene_type,
+                        time_of_day="",
+                        context_lines=list(candidate.get("context_lines") or []),
+                    ),
+                    description=item.description,
+                )
+        except Exception as exc:  # noqa: BLE001 - falls back per scene below
+            import logging
+
+            logging.warning("批量场景描述生成失败，逐个重试: %s", exc)
+
+        scenes: list[NovelScene] = []
+        for candidate in batch:
+            scene = produced.get(candidate["name"])
+            if scene is None:
+                scene = await enrich_scene_environment_from_context(
+                    scene_name=candidate["name"],
+                    aliases=candidate.get("aliases") or [],
+                    scene_type=candidate.get("scene_type") or "",
+                    time_of_day=candidate.get("time_of_day") or "",
+                    interior=bool(candidate.get("interior", True)),
+                    episodes=candidate.get("episodes") or [],
+                    characters=candidate.get("characters") or [],
+                    context_lines=candidate.get("context_lines") or [],
+                    synopsis=synopsis,
+                    enrichment_agent=agent,
+                )
+            if on_scene:
+                on_scene(candidate, scene)
+            scenes.append(scene)
+        return scenes
+
+    batches = [
+        candidates[start : start + _ENRICHMENT_BATCH_SIZE]
+        for start in range(0, len(candidates), _ENRICHMENT_BATCH_SIZE)
+    ]
+    results = await map_bounded(batches, run_batch, limit=default_llm_concurrency())
+    return [scene for batch in results if batch for scene in batch]
+
+
 _DEFAULT_ENRICH_SCENE_ENVIRONMENT_FROM_CONTEXT = enrich_scene_environment_from_context
 
 
@@ -1389,32 +1505,33 @@ async def extract_scenes_from_script(
             "Scene Build Enricher",
         )
 
-    for idx, cand in enumerate(normalized_scene_candidates):
-        progress = 0.5 + 0.4 * (idx / max(total, 1))
-        report(progress, f"生成场景描述 ({idx+1}/{total}): {cand['name']}")
+    # Each candidate's enrichment is an independent round trip. A feature-length
+    # screenplay carries well over a hundred scenes, so running them one at a
+    # time makes the build minutes of pure latency.
+    completed = 0
 
-        scene_type = cand["scene_type"] or (
-            "interior" if cand["interior"] else "exterior"
-        )
-        scene = await enrich_scene_environment_from_context(
-            scene_name=cand["name"],
-            aliases=cand["aliases"],
-            scene_type=scene_type,
-            time_of_day=cand["time_of_day"],
-            interior=cand["interior"],
-            episodes=cand["episodes"],
-            characters=cand["characters"],
-            context_lines=cand["context_lines"],
-            synopsis=synopsis,
-            enrichment_agent=enrichment_agent,
-        )
+    def note_progress(cand: dict, scene) -> None:
+        nonlocal completed
         scene.time_of_day = ""
         scene.notes = _append_scene_note(
             scene.notes,
             _format_observed_times_note(cand.get("time_counts")),
         )
-        scenes.append(scene)
+        completed += 1
+        report(
+            0.5 + 0.4 * (completed / max(total, 1)),
+            f"生成场景描述 ({completed}/{total}): {cand['name']}",
+        )
         log(f"  ✓ {cand['name']}: environment_prompt={len(scene.environment_prompt)}字")
+
+    scenes.extend(
+        await enrich_scene_environments_batched(
+            normalized_scene_candidates,
+            synopsis=synopsis,
+            enrichment_agent=enrichment_agent,
+            on_scene=note_progress,
+        )
+    )
 
     log(f"场景提取完成: {len(scenes)} 个")
     report(1.0, "完成")

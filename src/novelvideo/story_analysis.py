@@ -1,4 +1,4 @@
-"""Deterministic source-text chunking for the structured_v2 pipeline.
+"""Deterministic source-text chunking for the structured_v1 pipeline.
 
 Structured extraction never hands a whole novel or screenplay to one model
 call.  It splits the imported text along boundaries the format already provides
@@ -20,7 +20,7 @@ order, so a forward-only scan cannot match an earlier occurrence.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 SectionType = Literal["scene", "chapter", "window"]
@@ -30,6 +30,11 @@ SectionType = Literal["scene", "chapter", "window"]
 # inside a model's useful attention span.
 _WINDOW_CHARS = 6000
 _WINDOW_OVERLAP = 200
+
+# Short neighbouring sections are packed up to this size. A call costs the
+# same few seconds whether it carries 300 characters or 3000, so packing is
+# what keeps a screenplay of many small scenes from being all latency.
+_TARGET_CHUNK_CHARS = 3000
 
 
 @dataclass(frozen=True)
@@ -69,7 +74,112 @@ def chunk_source_text(text: str, spine_template: str | None) -> list[SourceChunk
     else:
         chunks = _chunk_by_chapter(text)
 
-    return chunks or _chunk_by_window(text)
+    if not chunks:
+        return _chunk_by_window(text)
+
+    # A scene or chapter boundary is the right place to cut, but it says nothing
+    # about size: a single chapter can run tens of thousands of characters, while
+    # a screenplay scene is often a few hundred. Split what is too big, then pack
+    # what is too small, and renumber so chunk_index still matches position.
+    bounded: list[SourceChunk] = []
+    for chunk in chunks:
+        bounded.extend(_split_oversized(chunk))
+    packed = _pack_small(bounded)
+    return [
+        replace(chunk, chunk_index=index) for index, chunk in enumerate(packed)
+    ]
+
+
+def _pack_small(chunks: list[SourceChunk]) -> list[SourceChunk]:
+    """Group consecutive short sections into one analysable chunk.
+
+    A model call costs several seconds of round trip no matter how little text
+    it carries, so a screenplay of many short scenes spends nearly all its time
+    waiting rather than reading. Sections are contiguous by construction, so
+    joining neighbours keeps offsets exact and evidence still resolves against
+    the source.
+
+    Only neighbours of the same kind are joined, and packing stops at the target
+    size, so a chunk never grows past what one call can usefully consider.
+    """
+    packed: list[SourceChunk] = []
+    group: list[SourceChunk] = []
+
+    def flush() -> None:
+        if not group:
+            return
+        if len(group) == 1:
+            packed.append(group[0])
+        else:
+            first, last = group[0], group[-1]
+            label = first.section_label
+            if len(group) > 1:
+                label = f"{first.section_label} 等 {len(group)} 段"
+            characters: list[str] = []
+            for member in group:
+                for name in member.characters:
+                    if name not in characters:
+                        characters.append(name)
+            packed.append(
+                SourceChunk(
+                    chunk_id=f"{first.chunk_id}+{len(group)}",
+                    chunk_index=first.chunk_index,
+                    section_type=first.section_type,
+                    section_label=label,
+                    source_start=first.source_start,
+                    source_end=last.source_end,
+                    # Rebuilt from the members rather than re-sliced, so this
+                    # stays correct even if neighbours are ever non-contiguous.
+                    text="".join(member.text for member in group),
+                    characters=characters,
+                )
+            )
+        group.clear()
+
+    for chunk in chunks:
+        if group:
+            same_kind = chunk.section_type == group[0].section_type
+            contiguous = chunk.source_start == group[-1].source_end
+            width = (chunk.source_end - group[0].source_start)
+            if not (same_kind and contiguous) or width > _TARGET_CHUNK_CHARS:
+                flush()
+        group.append(chunk)
+    flush()
+    return packed
+
+
+def _split_oversized(chunk: SourceChunk) -> list[SourceChunk]:
+    """Break one section into overlapping parts if it exceeds the window size.
+
+    Parts keep the parent's label and derive their ids from it, so evidence
+    recorded against a part still points at a recognisable section.
+    """
+    if len(chunk.text) <= _WINDOW_CHARS:
+        return [chunk]
+
+    parts: list[SourceChunk] = []
+    offset = 0
+    part_index = 0
+    length = len(chunk.text)
+    while offset < length:
+        end = min(offset + _WINDOW_CHARS, length)
+        parts.append(
+            SourceChunk(
+                chunk_id=f"{chunk.chunk_id}-p{part_index:03d}",
+                chunk_index=chunk.chunk_index,
+                section_type=chunk.section_type,
+                section_label=f"{chunk.section_label}({part_index + 1})",
+                source_start=chunk.source_start + offset,
+                source_end=chunk.source_start + end,
+                text=chunk.text[offset:end],
+                characters=list(chunk.characters),
+            )
+        )
+        if end >= length:
+            break
+        offset = end - _WINDOW_OVERLAP
+        part_index += 1
+    return parts
 
 
 def _chunk_by_scene(text: str) -> list[SourceChunk]:
@@ -96,6 +206,22 @@ def _chunk_by_scene(text: str) -> list[SourceChunk]:
         cursor = found + max(len(anchor), 1)
 
     chunks: list[SourceChunk] = []
+    # Whatever precedes the first scene heading — a synopsis, a cast list, the
+    # character bios — is often the densest description in the whole script, so
+    # it must not fall outside every chunk.
+    if starts and starts[0] > 0:
+        chunks.append(
+            SourceChunk(
+                chunk_id="scene-preamble",
+                chunk_index=0,
+                section_type="scene",
+                section_label="片头",
+                source_start=0,
+                source_end=starts[0],
+                text=text[: starts[0]],
+            )
+        )
+
     for index, block in enumerate(blocks):
         start = starts[index]
         end = starts[index + 1] if index + 1 < len(starts) else len(text)
@@ -147,6 +273,23 @@ def _chunk_by_chapter(text: str) -> list[SourceChunk]:
         return line_offsets[clamped]
 
     chunks: list[SourceChunk] = []
+    # Same reason as the screenplay path: a synopsis or cast list sitting before
+    # the first chapter marker is the densest description the source has, and it
+    # would otherwise fall outside every chunk.
+    first_start = offset_of(chapters[0].start_line)
+    if first_start > 0:
+        chunks.append(
+            SourceChunk(
+                chunk_id="chapter-preamble",
+                chunk_index=0,
+                section_type="chapter",
+                section_label="卷首",
+                source_start=0,
+                source_end=first_start,
+                text=text[:first_start],
+            )
+        )
+
     for index, chapter in enumerate(chapters):
         start = offset_of(chapter.start_line)
         end = min(offset_of(chapter.end_line), len(text))
