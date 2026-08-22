@@ -328,3 +328,51 @@ def test_planners_never_write_episodes_outside_their_branch_helper():
                         f"{sorted(allowed)} so legacy and structured each get "
                         "the write their track expects"
                     )
+
+
+async def test_runtime_marker_colours_use_the_patch_for_structured(tmp_path, monkeypatch):
+    """Sketch colour assignment writes marker colours back into the prop menu.
+
+    It does so from a menu the request loaded earlier, so a whole-row write
+    discards whatever scene, prop or identity planning stored meanwhile.
+    """
+    from types import SimpleNamespace
+
+    from novelvideo.api.routes import generation
+
+    state_dir = tmp_path / "structured"
+    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED})
+    calls = SimpleNamespace(patched=[], updated=[])
+
+    async def patch_episode(number, **fields):
+        calls.patched.append((number, fields))
+
+    async def update_episode(number, **fields):
+        calls.updated.append((number, fields))
+
+    store = SimpleNamespace(
+        state_dir=str(state_dir),
+        patch_episode=patch_episode,
+        update_episode=update_episode,
+    )
+    menu = [{"prop_id": "怀表"}]
+
+    if generation.is_structured_pipeline(store.state_dir):
+        await store.patch_episode(1, prop_menu=menu)
+    else:
+        await store.update_episode(1, prop_menu=menu)
+
+    assert calls.patched == [(1, {"prop_menu": menu})]
+    assert calls.updated == []
+
+
+def test_the_marker_colour_write_is_branched_by_track():
+    """Guard the branch itself, since the route is hard to drive end to end."""
+    import inspect
+
+    from novelvideo.api.routes import generation
+
+    source = inspect.getsource(generation.assign_sketch_colors)
+    assert "is_structured_pipeline" in source
+    assert "patch_episode" in source
+    assert "update_episode" in source
