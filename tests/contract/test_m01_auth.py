@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import contextlib
 import importlib
 import sys
 from pathlib import Path
@@ -55,15 +56,36 @@ class _RejectingAuthPort:
         return None
 
 
-def _ce_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
+def _api_modules() -> dict[str, object]:
+    return {
+        name: module
+        for name, module in sys.modules.items()
+        if name == "novelvideo.api" or name.startswith("novelvideo.api.")
+    }
+
+
+@contextlib.contextmanager
+def _ce_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    """A CE app built against freshly imported API modules.
+
+    Building it means dropping every novelvideo.api.* module so the rebuilt app
+    picks up the patched roots. Those rebuilt modules must not outlive this
+    block: any test collected earlier holds functions whose globals belong to
+    the modules dropped here, and leaving the replacements in sys.modules turns
+    those references into orphans — patching by dotted path would then reach
+    the replacement while the call reads the original.
+
+    Restoring happens after the client closes, so the swap covers the whole
+    request phase and nothing survives it.
+    """
+    original = _api_modules()
     registry, _, _ = _reset_port_modules()
     monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "")
     monkeypatch.setenv("REDIS_URL", "")
     monkeypatch.setenv("ST_EDITION", "ce")
     monkeypatch.setenv("ST_LOCAL_USERNAME", "local")
-    for module_name in list(sys.modules):
-        if module_name == "novelvideo.api" or module_name.startswith("novelvideo.api."):
-            sys.modules.pop(module_name)
+    for module_name in original:
+        sys.modules.pop(module_name, None)
     _patch_roots(monkeypatch, tmp_path)
 
     from novelvideo.ports.local import project as local_project
@@ -76,7 +98,25 @@ def _ce_client(monkeypatch: pytest.MonkeyPatch, tmp_path: Path) -> TestClient:
     app = create_app()
     app.router.on_startup.clear()
     app.router.on_shutdown.clear()
-    return TestClient(app)
+    try:
+        with TestClient(app) as client:
+            yield client
+    finally:
+        for name in list(_api_modules()):
+            if name not in original:
+                del sys.modules[name]
+        sys.modules.update(original)
+        # sys.modules is only half of it. Importing a submodule also binds it as
+        # an attribute of its parent package, and the rebuild rebound
+        # novelvideo.api on novelvideo itself. Patch targets given as dotted
+        # strings are resolved by walking those attributes, not by looking in
+        # sys.modules — so leaving them pointing at the replacements makes a
+        # patch land on a module nobody is running.
+        for name, module in original.items():
+            parent_name, _, attr = name.rpartition(".")
+            parent = sys.modules.get(parent_name)
+            if parent is not None:
+                setattr(parent, attr, module)
 
 
 def test_ce_auth_me_logout_and_project_crud_contract(
@@ -165,3 +205,30 @@ def test_ee_auth_missing_and_bad_cookie_contract() -> None:
         assert bad_logout.json() == {"ok": True}
         assert "st_session=" in bad_logout.headers["set-cookie"]
         assert "Max-Age=0" in bad_logout.headers["set-cookie"]
+
+
+def test_ce_client_leaves_api_module_identity_untouched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Building the CE app must not outlive itself in the import system.
+
+    Every test collected earlier holds functions whose globals belong to the
+    modules this client drops. If the replacements survive, a later patch given
+    as a dotted string lands on a module nobody is running, and the test it was
+    written for silently exercises unpatched code.
+    """
+    import novelvideo.api.routes.projects as before_projects
+
+    before = sys.modules["novelvideo.api.routes.projects"]
+
+    with _ce_client(monkeypatch, tmp_path):
+        pass
+
+    assert sys.modules["novelvideo.api.routes.projects"] is before
+    assert before_projects is before
+    # Dotted-string patch targets are resolved by walking package attributes,
+    # so those have to come back as well as sys.modules.
+    import novelvideo
+
+    assert novelvideo.api.routes.projects is before
