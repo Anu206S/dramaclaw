@@ -37,7 +37,31 @@ GENERIC_ADDRESS_TERMS = {
     "陛下", "殿下", "大人", "公子", "小姐", "夫人", "先生", "少爷",
     "掌柜", "伙计", "路人", "村民", "宫女", "太监", "将军", "丫鬟",
     "男人", "女人", "老人", "孩子", "少年", "少女", "他", "她",
+    # Role labels from a treatment or cast list, not names anyone is called by.
+    "女主", "男主", "主角", "配角", "反派",
+    "大小姐", "少爷", "小少爷", "校霸", "狗腿子", "保镖", "佣人",
 }
+
+# Job titles and honorifics that a script attaches to a name: "校长吴显德",
+# "孙海教授". A name plus only these tokens is the same person under a fuller
+# form, so the two may be merged.
+#
+# Kinship terms are deliberately absent. "郑玉琴的女儿" minus "郑玉琴" leaves a
+# kinship remainder, and that names a *different* person — merging on it would
+# collapse a parent and a child into one character.
+TITLE_TOKENS = (
+    "董事长", "总经理", "副总裁", "总裁", "副总", "总监", "经理", "主管",
+    "校长", "主任", "教授", "老师", "医生", "护士", "律师", "警官",
+    "管家", "秘书", "助理", "司机", "保安", "店长", "老板", "厂长",
+    "学校", "公司", "集团", "郑氏", "先生", "女士", "小姐", "太太",
+    # Scripts also prefix a name with the role a character plays in the story,
+    # as in "校霸张小倩" or "佣人王妈".
+    "校霸", "佣人", "保镖", "学生", "狗腿子", "项目",
+)
+
+# Pronouns and possessives a script puts in front of a kinship word, giving
+# "你妈" or "他的母亲". These are the same non-characters as the bare terms.
+_POSSESSIVE_PREFIX_RE = re.compile(r"^(?:你|我|他|她|您|咱|其)(?:的)?")
 
 # Explicit alias statements. Only these license an alias link; a model asserting
 # two names are the same without the text saying so is not enough.
@@ -127,7 +151,51 @@ def normalize_character_name(value: str) -> str:
 
 
 def is_generic_address(name: str) -> bool:
-    return normalize_character_name(name) in GENERIC_ADDRESS_TERMS
+    """Whether a name refers to a role rather than a specific person.
+
+    A possessive prefix does not make a kinship term specific: "你妈" and
+    "他的母亲" name whoever is on stage, exactly as "母亲" does.
+    """
+    normalized = normalize_character_name(name)
+    if normalized in GENERIC_ADDRESS_TERMS:
+        return True
+    stripped = _POSSESSIVE_PREFIX_RE.sub("", normalized, count=1)
+    return bool(stripped) and stripped in GENERIC_ADDRESS_TERMS
+
+
+def title_qualified_of(long_name: str, short_name: str) -> bool:
+    """Whether ``long_name`` is ``short_name`` plus only job titles.
+
+    Scripts routinely introduce someone as "校长吴显德" and then call them
+    "吴显德". Treating those as two people would create duplicate characters,
+    each with its own primary key and asset directory.
+    """
+    long_normalized = normalize_character_name(long_name)
+    short_normalized = normalize_character_name(short_name)
+    if (
+        not short_normalized
+        or long_normalized == short_normalized
+        or short_normalized not in long_normalized
+    ):
+        return False
+
+    remainder = long_normalized.replace(short_normalized, "", 1)
+    remainder = remainder.replace("的", "")
+    # Peel off known titles until nothing is left. Anything that survives is not
+    # a title, so the two names are not the same person.
+    changed = True
+    while remainder and changed:
+        changed = False
+        for token in TITLE_TOKENS:
+            if remainder.startswith(token):
+                remainder = remainder[len(token):]
+                changed = True
+                break
+            if remainder.endswith(token):
+                remainder = remainder[: -len(token)]
+                changed = True
+                break
+    return not remainder
 
 
 def find_explicit_aliases(text: str) -> set[tuple[str, str]]:
@@ -175,6 +243,9 @@ async def extract_characters_from_chunks(
     agent: Any = None,
     concurrency: int | None = None,
     cached_outcomes: Optional[list] = None,
+    source_text: str = "",
+    adjudicate: bool = True,
+    adjudication_agent: Any = None,
     on_log: Optional[Callable[[str], None]] = None,
     on_chunk_done: Optional[Callable[[SourceChunk, ChunkCharacterOutput], Any]] = None,
     on_chunk_failed: Optional[Callable[[SourceChunk, BaseException], Any]] = None,
@@ -194,7 +265,13 @@ async def extract_characters_from_chunks(
     if not chunks:
         # Everything was replayed from a previous run; merging still has to run,
         # because merging is what turns per-chunk candidates into characters.
-        return merge_character_candidates(replayed), []
+        merged = merge_character_candidates(replayed)
+        if adjudicate:
+            merged = await adjudicate_characters(
+                merged, source_text=source_text,
+                agent=adjudication_agent, on_log=log,
+            )
+        return merged, []
 
     runner = _create_character_extraction_agent(agent)
 
@@ -230,7 +307,15 @@ async def extract_characters_from_chunks(
 
     # Replayed chunks merge alongside fresh ones, so a resumed build produces
     # the same characters as an uninterrupted one.
-    return merge_character_candidates(replayed + succeeded), failures
+    merged = merge_character_candidates(replayed + succeeded)
+    if adjudicate:
+        # Rules cannot see across chunks; this can. One call over the candidate
+        # set, not another pass over the source.
+        merged = await adjudicate_characters(
+            merged, source_text=source_text,
+            agent=adjudication_agent, on_log=log,
+        )
+    return merged, failures
 
 
 def merge_character_candidates(
@@ -300,7 +385,53 @@ def merge_character_candidates(
                     entry.ambiguous_with.add(normalized_alias)
 
     _apply_explicit_alias_merges(merged, alias_pairs)
+    _apply_title_qualified_merges(merged)
     return sorted(merged.values(), key=lambda item: (-len(item.evidence), item.name))
+
+
+def _apply_title_qualified_merges(merged: dict[str, MergedCharacter]) -> None:
+    """Fold "校长吴显德" into "吴显德" and keep the fuller form as an alias.
+
+    Unlike the model-proposed aliases held back as suggestions, this is a purely
+    textual containment test with a closed title vocabulary, so it cannot merge
+    two people who merely share a surname.
+
+    The better-evidenced name wins, which is usually the one the script actually
+    uses in dialogue rather than the one-off formal introduction.
+    """
+    names = sorted(merged, key=len, reverse=True)
+    for long_name in names:
+        long_entry = merged.get(long_name)
+        if long_entry is None:
+            continue
+        for short_name in names:
+            short_entry = merged.get(short_name)
+            if (
+                short_entry is None
+                or short_entry is long_entry
+                or not title_qualified_of(long_name, short_name)
+            ):
+                continue
+
+            primary, secondary = (
+                (long_entry, short_entry)
+                if len(long_entry.evidence) >= len(short_entry.evidence)
+                else (short_entry, long_entry)
+            )
+            primary.aliases.add(secondary.name)
+            primary.aliases |= secondary.aliases
+            primary.aliases.discard(primary.name)
+            primary.evidence.extend(secondary.evidence)
+            primary.chunk_ids |= secondary.chunk_ids
+            primary.ambiguous_with |= secondary.ambiguous_with
+            primary.ambiguous_with.discard(primary.name)
+            primary.ambiguous_with -= primary.aliases
+            if not primary.gender:
+                primary.gender = secondary.gender
+            if not primary.description:
+                primary.description = secondary.description
+            merged.pop(secondary.name, None)
+            break
 
 
 def _apply_explicit_alias_merges(
@@ -345,3 +476,190 @@ async def _maybe_await(value: Any) -> Any:
     if hasattr(value, "__await__"):
         return await value
     return value
+
+
+# ── ambiguity adjudication ──────────────────────────────────────────────────
+
+# A character carrying a large share of the evidence is load-bearing. The
+# adjudicator may fold names into it, but must never be able to delete it: one
+# bad call would silently drop a lead from the cast.
+_NON_CHARACTER_EVIDENCE_CEILING = 0.08
+
+# Enough of the text to recognise who is being talked about, without resending
+# the script.
+_ADJUDICATION_SAMPLE_QUOTES = 3
+
+# Below this many mentions, a candidate is more likely an alias than a person in
+# its own right, so it gets source context rather than a bare quote.
+_CONTEXT_WINDOW_EVIDENCE_THRESHOLD = 6
+_CONTEXT_WINDOW_CHARS = 220
+
+
+class SamePersonGroup(BaseModel):
+    canonical_name: str = Field(description="该组的主名，必须来自候选列表")
+    alias_names: list[str] = Field(
+        default_factory=list, description="指向同一人的其他候选名，必须来自候选列表"
+    )
+    reason: str = Field(default="", description="判定依据，引用证据中的线索")
+
+
+class CharacterAdjudication(BaseModel):
+    groups: list[SamePersonGroup] = Field(default_factory=list)
+    non_characters: list[str] = Field(
+        default_factory=list, description="根本不是人物的候选，例如称号、群体、骂人的话"
+    )
+
+
+ADJUDICATION_SYSTEM_PROMPT = """你是角色归一裁决器。
+
+输入是从同一部作品中逐段抽取出的角色候选，每个候选附带它在原文中的出现次数和几条原文引用。
+
+你的任务只有两件：
+1. 判断哪些候选其实指向同一个人，把它们归为一组，并选出主名。
+2. 指出哪些候选根本不是人物。
+
+规则：
+- 只能使用输入中出现过的候选名，不许发明新名字。
+- canonical_name 必须是该组候选之一，优先选原文中出现次数最多、最像正式姓名的那个。
+- 只有证据确实支持时才合并。"陈总"和"陈青"要有线索表明是同一人才能合并。
+- 两个都有大量独立证据、且看不出关联的候选，不要合并。
+- 称号、职务、群体、骂人的话（如"大小姐""校霸""扫把星"）如果只是用来称呼某个已知角色，
+  应该并入那个角色；如果无法确定指向谁，放进 non_characters。
+- 不确定就不要合并，也不要放进 non_characters。漏合并只是留下重复项，错合并会毁掉数据。"""
+
+
+def _create_adjudication_agent(agent: Any = None):
+    if agent is not None:
+        return agent
+
+    from pydantic_ai import Agent
+
+    from novelvideo.config import (
+        get_newapi_structured_output_model_settings,
+        get_newapi_text_pydantic_model,
+    )
+
+    return Agent(
+        get_newapi_text_pydantic_model(
+            "CHARACTER_BUILD_MODEL",
+            "gemini-3-flash-preview",
+            capability="text.generate.agent",
+        ),
+        system_prompt=ADJUDICATION_SYSTEM_PROMPT,
+        model_settings=get_newapi_structured_output_model_settings(),
+        output_type=CharacterAdjudication,
+        name="Structured Character Adjudicator",
+    )
+
+
+def _adjudication_prompt(
+    merged: list[MergedCharacter], source_text: str = ""
+) -> str:
+    """Describe every candidate, with enough context to link nicknames to names.
+
+    A quote on its own rarely proves identity: "小阳，你又闯祸了" does not
+    contain "郑旭阳". What does prove it is the surrounding text, where the
+    formal name almost always appears nearby. Rarely-seen candidates therefore
+    get a window of the source around their occurrences — the same co-occurrence
+    signal a graph search would surface, taken straight from the text.
+    """
+    lines: list[str] = []
+    for item in merged:
+        detail = f"- {item.name}（出现 {len(item.evidence)} 次）"
+        if item.gender:
+            detail += f"，性别 {item.gender}"
+        if item.description:
+            detail += f"，{item.description}"
+        lines.append(detail)
+
+        rare = len(item.evidence) <= _CONTEXT_WINDOW_EVIDENCE_THRESHOLD
+        shown = item.evidence if rare else item.evidence[:_ADJUDICATION_SAMPLE_QUOTES]
+        for evidence in shown:
+            if rare and source_text:
+                start = max(0, int(evidence["source_start"]) - _CONTEXT_WINDOW_CHARS)
+                end = min(len(source_text), int(evidence["source_end"]) + _CONTEXT_WINDOW_CHARS)
+                window = source_text[start:end].replace("\n", " ")
+                lines.append(f"    上下文：…{window}…")
+            else:
+                lines.append(f"    原文：{evidence['evidence_text']}")
+    return (
+        "以下是同一部作品的角色候选。出现次数少的候选通常是某个主要角色的"
+        "昵称、职务或称号，请利用上下文判断它指向谁：\n" + "\n".join(lines)
+    )
+
+
+async def adjudicate_characters(
+    merged: list[MergedCharacter],
+    *,
+    source_text: str = "",
+    agent: Any = None,
+    on_log: Optional[Callable[[str], None]] = None,
+) -> list[MergedCharacter]:
+    """Resolve cross-chunk identity that per-chunk extraction cannot see.
+
+    Rules can merge identical names and stated aliases, but nothing in a single
+    chunk reveals that "郑太" is "郑玉琴" — that only shows up when the whole
+    candidate set is considered at once. This is one call over the candidates
+    and their evidence, not another pass over the source.
+
+    The adjudicator may only group names it was given, so it cannot invent a
+    character, and it cannot delete a well-evidenced one.
+    """
+
+    def log(message: str) -> None:
+        if on_log:
+            on_log(message)
+
+    if len(merged) < 2:
+        return merged
+
+    by_name = {item.name: item for item in merged}
+    try:
+        result = (await _create_adjudication_agent(agent).run(
+            _adjudication_prompt(merged, source_text)
+        )).output
+    except Exception as exc:  # noqa: BLE001 - degrade to the rule-only result
+        log(f"⚠️ 归一裁决失败，保留规则归一结果: {exc}")
+        return merged
+
+    total_evidence = sum(len(item.evidence) for item in merged) or 1
+    removed: set[str] = set()
+
+    for group in result.groups:
+        primary = by_name.get(normalize_character_name(group.canonical_name))
+        if primary is None:
+            continue
+        for alias in group.alias_names:
+            secondary = by_name.get(normalize_character_name(alias))
+            if secondary is None or secondary is primary or secondary.name in removed:
+                continue
+            primary.aliases.add(secondary.name)
+            primary.aliases |= secondary.aliases
+            primary.aliases.discard(primary.name)
+            primary.evidence.extend(secondary.evidence)
+            primary.chunk_ids |= secondary.chunk_ids
+            primary.ambiguous_with |= secondary.ambiguous_with
+            primary.ambiguous_with -= primary.aliases
+            primary.ambiguous_with.discard(primary.name)
+            if not primary.gender:
+                primary.gender = secondary.gender
+            if not primary.description:
+                primary.description = secondary.description
+            removed.add(secondary.name)
+            log(f"  归并 {secondary.name} → {primary.name}")
+
+    for name in result.non_characters:
+        item = by_name.get(normalize_character_name(name))
+        if item is None or item.name in removed:
+            continue
+        share = len(item.evidence) / total_evidence
+        if share > _NON_CHARACTER_EVIDENCE_CEILING:
+            # Too central to discard on one model's say-so.
+            log(f"  保留 {item.name}：证据占比 {share:.0%}，不按非角色丢弃")
+            continue
+        removed.add(item.name)
+        log(f"  丢弃非角色 {item.name}")
+
+    survivors = [item for item in merged if item.name not in removed]
+    log(f"裁决完成: {len(merged)} → {len(survivors)} 个角色")
+    return sorted(survivors, key=lambda item: (-len(item.evidence), item.name))

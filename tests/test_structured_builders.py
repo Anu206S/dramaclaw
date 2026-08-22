@@ -283,7 +283,7 @@ async def test_extraction_runs_over_every_chunk():
             ),
         }
     )
-    merged, _ = await extract_characters_from_chunks(chunks, agent=agent)
+    merged, _ = await extract_characters_from_chunks(chunks, agent=agent, adjudicate=False)
     assert {item.name for item in merged} == {"林默", "苏晴"}
 
 
@@ -300,7 +300,7 @@ async def test_one_failing_chunk_does_not_discard_the_others():
     )
     logs: list[str] = []
     merged, failures = await extract_characters_from_chunks(
-        chunks, agent=agent, on_log=logs.append
+        chunks, agent=agent, on_log=logs.append, adjudicate=False
     )
     assert [item.name for item in merged] == ["林默"]
     assert any("失败" in line for line in logs)
@@ -328,7 +328,9 @@ async def test_extraction_is_bounded_but_not_serial():
         _chunk(f"片段{index}", chunk_id=f"c{index}", start=index * 10)
         for index in range(12)
     ]
-    await extract_characters_from_chunks(chunks, agent=SlowAgent(), concurrency=4)
+    await extract_characters_from_chunks(
+        chunks, agent=SlowAgent(), concurrency=4, adjudicate=False
+    )
     assert peak > 1
     assert peak <= 4
 
@@ -452,6 +454,7 @@ async def test_character_build_publishes_and_records_evidence(
 
     async def fake_extract(chunks, **kwargs):
         kwargs.pop("agent", None)
+        kwargs.setdefault("adjudicate", False)
         return await real_extract(chunks, agent=agent, **kwargs)
 
     monkeypatch.setattr(
@@ -489,6 +492,7 @@ async def test_character_build_never_touches_cognee(structured_store, monkeypatc
 
     async def fake_extract(chunks, **kwargs):
         kwargs.pop("agent", None)
+        kwargs.setdefault("adjudicate", False)
         return await real_extract(chunks, agent=agent, **kwargs)
 
     monkeypatch.setattr(
@@ -527,6 +531,7 @@ async def test_completed_chunks_are_replayed_instead_of_re_billed(
 
     async def fake_extract(chunks, **kwargs):
         kwargs.pop("agent", None)
+        kwargs.setdefault("adjudicate", False)
         return await real_extract(chunks, agent=agent, **kwargs)
 
     monkeypatch.setattr(
@@ -572,6 +577,7 @@ async def test_a_failed_chunk_leaves_the_run_partial(structured_store, monkeypat
 
     async def fake_extract(chunks, **kwargs):
         kwargs.pop("agent", None)
+        kwargs.setdefault("adjudicate", False)
         return await real_extract(chunks, agent=agent, **kwargs)
 
     monkeypatch.setattr(
@@ -698,6 +704,7 @@ async def test_evidence_is_backfilled_when_the_characters_already_exist(
 
     async def fake_extract(chunks, **kwargs):
         kwargs.pop("agent", None)
+        kwargs.setdefault("adjudicate", False)
         return await real_extract(chunks, agent=agent, **kwargs)
 
     monkeypatch.setattr(
@@ -734,6 +741,7 @@ async def test_a_run_with_no_characters_is_still_closed_out(
 
     async def fake_extract(chunks, **kwargs):
         kwargs.pop("agent", None)
+        kwargs.setdefault("adjudicate", False)
         return await real_extract(chunks, agent=agent, **kwargs)
 
     monkeypatch.setattr(
@@ -748,3 +756,137 @@ async def test_a_run_with_no_characters_is_still_closed_out(
         spine_template="narrated",
     )
     assert stored["status"] == "completed"
+
+
+# ── ambiguity adjudication ──────────────────────────────────────────────────
+
+
+def _merged(name, count, *, aliases=()):
+    from novelvideo.structured_extraction import MergedCharacter
+
+    return MergedCharacter(
+        name=name,
+        aliases=set(aliases),
+        evidence=[
+            {
+                "chunk_id": "c0",
+                "source_start": index,
+                "source_end": index + 1,
+                "evidence_kind": "mention",
+                "evidence_text": name,
+            }
+            for index in range(count)
+        ],
+    )
+
+
+class AdjudicatorAgent:
+    """Returns a scripted adjudication and records the prompt it received."""
+
+    def __init__(self, groups=(), non_characters=(), explode=False):
+        from novelvideo.structured_extraction import (
+            CharacterAdjudication,
+            SamePersonGroup,
+        )
+
+        self.explode = explode
+        self.prompt = ""
+        self.result = CharacterAdjudication(
+            groups=[
+                SamePersonGroup(canonical_name=c, alias_names=list(a))
+                for c, a in groups
+            ],
+            non_characters=list(non_characters),
+        )
+
+    async def run(self, prompt: str):
+        self.prompt = prompt
+        if self.explode:
+            raise RuntimeError("adjudicator unavailable")
+        return SimpleNamespace(output=self.result)
+
+
+async def test_adjudication_merges_a_nickname_into_its_character():
+    """Per-chunk extraction cannot see that 小阳 is 郑旭阳; this step can."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑旭阳", 38), _merged("小阳", 1)]
+    agent = AdjudicatorAgent(groups=[("郑旭阳", ["小阳"])])
+
+    result = await adjudicate_characters(merged, agent=agent)
+    assert [item.name for item in result] == ["郑旭阳"]
+    assert result[0].aliases == {"小阳"}
+    assert len(result[0].evidence) == 39
+
+
+async def test_adjudication_cannot_invent_a_character():
+    """It may only group names it was given."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑旭阳", 38), _merged("小阳", 1)]
+    agent = AdjudicatorAgent(groups=[("查无此人", ["小阳"])])
+
+    result = await adjudicate_characters(merged, agent=agent)
+    assert {item.name for item in result} == {"郑旭阳", "小阳"}
+
+
+async def test_adjudication_cannot_delete_a_load_bearing_character():
+    """One bad call must not silently drop a lead from the cast."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑玉琴", 96), _merged("郑家悦", 96), _merged("路人", 1)]
+    agent = AdjudicatorAgent(non_characters=["郑玉琴", "路人"])
+
+    result = await adjudicate_characters(merged, agent=agent)
+    names = {item.name for item in result}
+    assert "郑玉琴" in names, "a lead was dropped on the model's say-so"
+    assert "路人" not in names
+
+
+async def test_adjudication_failure_keeps_the_rule_result():
+    """A degraded adjudicator must not lose the characters rules already found."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑玉琴", 96), _merged("郑太", 5)]
+    logs: list[str] = []
+
+    result = await adjudicate_characters(
+        merged, agent=AdjudicatorAgent(explode=True), on_log=logs.append
+    )
+    assert {item.name for item in result} == {"郑玉琴", "郑太"}
+    assert any("裁决失败" in line for line in logs)
+
+
+async def test_rarely_seen_candidates_get_source_context():
+    """A bare quote rarely proves identity; the surrounding text usually does."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    source = "▲郑旭阳走进来。郑玉琴皱眉。\n郑玉琴：小阳，你又闯祸了。\n"
+    start = source.index("小阳")
+    rare = _merged("小阳", 0)
+    rare.evidence.append(
+        {
+            "chunk_id": "c0",
+            "source_start": start,
+            "source_end": start + 2,
+            "evidence_kind": "dialogue",
+            "evidence_text": "小阳",
+        }
+    )
+    agent = AdjudicatorAgent()
+
+    await adjudicate_characters(
+        [_merged("郑旭阳", 38), rare], source_text=source, agent=agent
+    )
+    assert "上下文" in agent.prompt
+    # The formal name sits next to the nickname, which is what makes the link
+    # inferable at all.
+    assert "郑旭阳" in agent.prompt
+
+
+async def test_a_single_candidate_needs_no_adjudication():
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑玉琴", 96)]
+    agent = AdjudicatorAgent(non_characters=["郑玉琴"])
+    assert await adjudicate_characters(merged, agent=agent) == merged

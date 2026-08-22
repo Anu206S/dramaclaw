@@ -113,6 +113,7 @@ async def build_characters_structured(
         pending,
         on_log=log,
         cached_outcomes=cached,
+        source_text=novel_text,
         on_chunk_done=persist_done,
         on_chunk_failed=persist_failed,
     )
