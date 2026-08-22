@@ -241,3 +241,90 @@ def _async(value):
         return value
 
     return _call
+
+
+# ── planner wiring ──────────────────────────────────────────────────────────
+
+
+def _planner_store(state_dir: Path, *, structured: bool):
+    """A stand-in exposing what the planners actually touch."""
+    from types import SimpleNamespace
+
+    config = {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED} if structured else {"user": "x"}
+    _write_config(state_dir, config)
+
+    sqlite = SimpleNamespace(patched=[], updated=[])
+
+    async def patch_episode(number, **fields):
+        sqlite.patched.append((number, fields))
+
+    async def update_episode(number, **fields):
+        sqlite.updated.append((number, fields))
+
+    sqlite.patch_episode = patch_episode
+    sqlite.update_episode = update_episode
+    return SimpleNamespace(
+        sqlite_store=sqlite, state_dir=str(state_dir),
+        update_episode=update_episode, patch_episode=patch_episode,
+    )
+
+
+async def test_structured_identity_planning_uses_the_column_patch(tmp_path):
+    """Identity planning runs alongside scene and prop planning.
+
+    A whole-row write here re-serialises the menus this planner loaded earlier,
+    losing whatever was written meanwhile.
+    """
+    from novelvideo.agents.identity_planner import IdentityPlanner
+
+    store = _planner_store(tmp_path / "structured", structured=True)
+    planner = IdentityPlanner(store)
+    await planner._write_episode_identities(1, identity_ids=["林默:default"])
+
+    assert store.sqlite_store.patched == [(1, {"identity_ids": ["林默:default"]})]
+    assert store.sqlite_store.updated == []
+
+
+async def test_legacy_identity_planning_keeps_the_whole_row_update(tmp_path):
+    from novelvideo.agents.identity_planner import IdentityPlanner
+
+    store = _planner_store(tmp_path / "legacy", structured=False)
+    planner = IdentityPlanner(store)
+    await planner._write_episode_identities(1, identity_ids=["林默:default"])
+
+    assert store.sqlite_store.updated == [(1, {"identity_ids": ["林默:default"]})]
+    assert store.sqlite_store.patched == []
+
+
+def test_planners_never_write_episodes_outside_their_branch_helper():
+    """Guard against the gap this class of bug keeps reappearing in.
+
+    Testing patch_episode proves the primitive works; it says nothing about
+    whether a planner actually calls it. Every episode write in these two
+    planners must go through the helper that picks a route by track.
+    """
+    import ast
+    import inspect
+
+    from novelvideo.agents import asset_compiler, identity_planner
+
+    allowed = {"_write_menus", "_write_episode_identities"}
+    for module in (asset_compiler, identity_planner):
+        tree = ast.parse(inspect.getsource(module))
+        for func in ast.walk(tree):
+            if not isinstance(func, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            if func.name in allowed:
+                continue
+            for node in ast.walk(func):
+                if (
+                    isinstance(node, ast.Call)
+                    and isinstance(node.func, ast.Attribute)
+                    and node.func.attr in {"update_episode", "patch_episode"}
+                ):
+                    raise AssertionError(
+                        f"{module.__name__}.{func.name} writes the episode row "
+                        f"directly via {node.func.attr}; route it through "
+                        f"{sorted(allowed)} so legacy and structured each get "
+                        "the write their track expects"
+                    )
