@@ -15,7 +15,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from novelvideo.shared.env_guard import preserve_st_env
 from novelvideo.config import get_newapi_structured_output_litellm_kwargs
-from novelvideo.utils.bounded_concurrency import map_bounded
+from novelvideo.utils.bounded_concurrency import (
+    default_llm_concurrency,
+    map_bounded,
+)
 from novelvideo.models import (
     CharacterIdentity,
     NovelCharacter,
@@ -1428,6 +1431,7 @@ async def extract_scenes_from_script(
     enriched = await map_bounded(
         normalized_scene_candidates,
         enrich,
+        limit=default_llm_concurrency(),
         on_error=lambda cand, exc: log(f"  ⚠️ {cand['name']} 环境描述失败，已跳过: {exc}"),
     )
     scenes.extend(scene for scene in enriched if scene is not None)

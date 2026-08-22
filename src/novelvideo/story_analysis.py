@@ -20,7 +20,7 @@ order, so a forward-only scan cannot match an earlier occurrence.
 from __future__ import annotations
 
 import hashlib
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from typing import Literal
 
 SectionType = Literal["scene", "chapter", "window"]
@@ -69,7 +69,53 @@ def chunk_source_text(text: str, spine_template: str | None) -> list[SourceChunk
     else:
         chunks = _chunk_by_chapter(text)
 
-    return chunks or _chunk_by_window(text)
+    if not chunks:
+        return _chunk_by_window(text)
+
+    # A scene or chapter boundary is the right place to cut, but it says nothing
+    # about size: a single chapter can run tens of thousands of characters. Split
+    # oversized sections further so every chunk stays within a useful context,
+    # and renumber so chunk_index still matches position.
+    bounded: list[SourceChunk] = []
+    for chunk in chunks:
+        bounded.extend(_split_oversized(chunk))
+    return [
+        replace(chunk, chunk_index=index) for index, chunk in enumerate(bounded)
+    ]
+
+
+def _split_oversized(chunk: SourceChunk) -> list[SourceChunk]:
+    """Break one section into overlapping parts if it exceeds the window size.
+
+    Parts keep the parent's label and derive their ids from it, so evidence
+    recorded against a part still points at a recognisable section.
+    """
+    if len(chunk.text) <= _WINDOW_CHARS:
+        return [chunk]
+
+    parts: list[SourceChunk] = []
+    offset = 0
+    part_index = 0
+    length = len(chunk.text)
+    while offset < length:
+        end = min(offset + _WINDOW_CHARS, length)
+        parts.append(
+            SourceChunk(
+                chunk_id=f"{chunk.chunk_id}-p{part_index:03d}",
+                chunk_index=chunk.chunk_index,
+                section_type=chunk.section_type,
+                section_label=f"{chunk.section_label}({part_index + 1})",
+                source_start=chunk.source_start + offset,
+                source_end=chunk.source_start + end,
+                text=chunk.text[offset:end],
+                characters=list(chunk.characters),
+            )
+        )
+        if end >= length:
+            break
+        offset = end - _WINDOW_OVERLAP
+        part_index += 1
+    return parts
 
 
 def _chunk_by_scene(text: str) -> list[SourceChunk]:

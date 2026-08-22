@@ -2386,19 +2386,22 @@ class SQLiteStore:
         source_sha256: str,
         schema_version: int,
         pipeline_version: str,
+        spine_template: str = "",
     ) -> dict | None:
-        """Find a run that analysed identical text with identical code.
+        """Find a run that analysed identical text the same way.
 
-        Reuse is keyed on all three: different source text or a changed
-        extraction contract must not inherit another run's chunk results.
+        Reuse is keyed on all four. Different source text or a changed
+        extraction contract must not inherit another run's chunk results, and
+        neither must a different spine template: the same novel chunked as a
+        screenplay and as narrated prose produces entirely different chunks.
         """
         db = await self._ensure_db()
         async with db.execute(
             """SELECT * FROM story_analysis_runs
                WHERE source_sha256 = ? AND schema_version = ?
-                 AND pipeline_version = ?
+                 AND pipeline_version = ? AND spine_template = ?
                ORDER BY created_at DESC LIMIT 1""",
-            (source_sha256, int(schema_version), pipeline_version),
+            (source_sha256, int(schema_version), pipeline_version, spine_template),
         ) as cursor:
             row = await cursor.fetchone()
         return dict(row) if row else None

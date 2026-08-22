@@ -283,7 +283,7 @@ async def test_extraction_runs_over_every_chunk():
             ),
         }
     )
-    merged = await extract_characters_from_chunks(chunks, agent=agent)
+    merged, _ = await extract_characters_from_chunks(chunks, agent=agent)
     assert {item.name for item in merged} == {"林默", "苏晴"}
 
 
@@ -299,11 +299,13 @@ async def test_one_failing_chunk_does_not_discard_the_others():
         fail_labels=["第二章"],
     )
     logs: list[str] = []
-    merged = await extract_characters_from_chunks(
+    merged, failures = await extract_characters_from_chunks(
         chunks, agent=agent, on_log=logs.append
     )
     assert [item.name for item in merged] == ["林默"]
     assert any("失败" in line for line in logs)
+    # The failure is reported back so the caller can persist it against the run.
+    assert [chunk.section_label for chunk, _ in failures]
 
 
 async def test_extraction_is_bounded_but_not_serial():
@@ -494,3 +496,164 @@ async def test_character_build_never_touches_cognee(structured_store, monkeypatc
         fake_extract,
     )
     await structured_builders.build_characters_structured(store)
+
+
+# ── resume, chunk bounds and concurrency defaults ───────────────────────────
+
+
+async def test_completed_chunks_are_replayed_instead_of_re_billed(
+    structured_store, monkeypatch
+):
+    """A retry or a second click must not pay for every chunk again."""
+    from novelvideo import structured_builders
+    from novelvideo.structured_extraction import extract_characters_from_chunks
+    from novelvideo.structured_ingest import ingest_source_text_structured
+
+    store, state_dir = structured_store
+    source = state_dir / "source.txt"
+    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    await ingest_source_text_structured(store, str(source), spine_template="narrated")
+
+    outputs = {
+        "第一章": ChunkCharacterOutput(
+            characters=[_candidate("林默", quotes=["林默回到阔别十年的故乡。"])]
+        ),
+        "第二章": ChunkCharacterOutput(
+            characters=[_candidate("苏晴", quotes=["他在巷口遇见了苏晴。"])]
+        ),
+    }
+    agent = FakeAgent(outputs)
+    real_extract = extract_characters_from_chunks
+
+    async def fake_extract(chunks, **kwargs):
+        kwargs.pop("agent", None)
+        return await real_extract(chunks, agent=agent, **kwargs)
+
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction.extract_characters_from_chunks", fake_extract
+    )
+
+    first = await structured_builders.build_characters_structured(store)
+    assert set(first) == {"林默", "苏晴"}
+    first_calls = len(agent.seen)
+    assert first_calls > 0
+
+    agent.seen.clear()
+    second = await structured_builders.build_characters_structured(store)
+
+    # Everything was replayed from stored results, so no chunk went to the model.
+    assert agent.seen == []
+    # And the characters are unchanged: they already exist, so nothing is added.
+    assert second == []
+
+
+async def test_a_failed_chunk_leaves_the_run_partial(structured_store, monkeypatch):
+    """A partial run must not look finished to the next build."""
+    from novelvideo import structured_builders
+    from novelvideo.structured_extraction import extract_characters_from_chunks
+    from novelvideo.structured_ingest import ingest_source_text_structured
+
+    store, state_dir = structured_store
+    source = state_dir / "source.txt"
+    source.write_text(NARRATED_TEXT, encoding="utf-8")
+    run = await ingest_source_text_structured(
+        store, str(source), spine_template="narrated"
+    )
+
+    agent = FakeAgent(
+        {
+            "第一章": ChunkCharacterOutput(
+                characters=[_candidate("林默", quotes=["林默回到阔别十年的故乡。"])]
+            )
+        },
+        fail_labels=["第二章"],
+    )
+    real_extract = extract_characters_from_chunks
+
+    async def fake_extract(chunks, **kwargs):
+        kwargs.pop("agent", None)
+        return await real_extract(chunks, agent=agent, **kwargs)
+
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction.extract_characters_from_chunks", fake_extract
+    )
+    await structured_builders.build_characters_structured(store)
+
+    failed = await store.list_analysis_chunks(run["run_id"], status="failed")
+    assert failed, "the failing chunk was not recorded"
+    stored = await store.get_reusable_analysis_run(
+        source_sha256=__import__("novelvideo.story_analysis", fromlist=["x"]).source_sha256(
+            NARRATED_TEXT
+        ),
+        schema_version=1,
+        pipeline_version="structured_v2.1",
+        spine_template="narrated",
+    )
+    assert stored["status"] == "partial"
+
+
+def test_an_oversized_chapter_is_split_further():
+    """A chapter boundary says where to cut, not how big the piece may be."""
+    text = "第一章 归来\n\n" + "林默回到故乡。" * 3000 + "\n\n第二章 旧友\n\n短章节。\n"
+    chunks = chunk_source_text(text, "narrated")
+
+    assert len(chunks) > 2
+    assert max(len(chunk.text) for chunk in chunks) <= 6000
+    for chunk in chunks:
+        assert text[chunk.source_start : chunk.source_end] == chunk.text
+    assert [chunk.chunk_index for chunk in chunks] == list(range(len(chunks)))
+
+
+def test_oversized_parts_keep_a_recognisable_section_label():
+    text = "第一章 归来\n\n" + "林默回到故乡。" * 3000
+    chunks = chunk_source_text(text, "narrated")
+    assert all(chunk.chunk_id.startswith("chapter-0000-p") for chunk in chunks)
+    assert all("第1章" in chunk.section_label for chunk in chunks)
+
+
+def test_a_short_chapter_is_not_split():
+    chunks = chunk_source_text(NARRATED_TEXT, "narrated")
+    assert [chunk.chunk_id for chunk in chunks] == [
+        "chapter-0000",
+        "chapter-0001",
+        "chapter-0002",
+    ]
+
+
+def test_llm_concurrency_defaults_to_the_project_baseline(monkeypatch):
+    """A second pool running deeper than COGNEE_LLM_CONCURRENCY would trip the
+    same gateway limits that setting exists to avoid."""
+    from novelvideo.utils.bounded_concurrency import default_llm_concurrency
+
+    monkeypatch.delenv("STRUCTURED_LLM_CONCURRENCY", raising=False)
+    assert default_llm_concurrency() == 2
+
+    monkeypatch.setenv("STRUCTURED_LLM_CONCURRENCY", "5")
+    assert default_llm_concurrency() == 5
+
+    monkeypatch.setenv("STRUCTURED_LLM_CONCURRENCY", "0")
+    with pytest.raises(ValueError):
+        default_llm_concurrency()
+
+
+async def test_reuse_key_separates_drama_from_narrated(structured_store, tmp_path):
+    """The same text chunked two ways must not share a chunk plan."""
+    from novelvideo.structured_ingest import ingest_source_text_structured
+
+    store, state_dir = structured_store
+    source = state_dir / "source.txt"
+    source.write_text(NARRATED_TEXT, encoding="utf-8")
+
+    narrated = await ingest_source_text_structured(
+        store, str(source), spine_template="narrated"
+    )
+    again = await ingest_source_text_structured(
+        store, str(source), spine_template="narrated"
+    )
+    assert again["run_id"] == narrated["run_id"]
+
+    # Same bytes, different spine: a fresh plan, not the chapter-based one.
+    drama = await ingest_source_text_structured(
+        store, str(source), spine_template=""
+    )
+    assert drama["run_id"] != narrated["run_id"]

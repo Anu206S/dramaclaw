@@ -170,6 +170,7 @@ async def test_structured_import_records_run_and_chunks(structured_project, tmp_
         source_sha256=source_sha256(NARRATED_TEXT),
         schema_version=STRUCTURED_SCHEMA_VERSION,
         pipeline_version=STRUCTURED_PIPELINE_VERSION,
+        spine_template="narrated",
     )
     assert run is not None and run["run_id"] == result["run_id"]
 

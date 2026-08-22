@@ -13,19 +13,41 @@ merging depends on chunk order to resolve ties deterministically.
 from __future__ import annotations
 
 import asyncio
+import os
 from typing import Any, Awaitable, Callable, Sequence, TypeVar
 
 T = TypeVar("T")
 R = TypeVar("R")
 
-DEFAULT_LIMIT = 6
+STRUCTURED_LLM_CONCURRENCY_ENV = "STRUCTURED_LLM_CONCURRENCY"
+
+# Matches COGNEE_LLM_CONCURRENCY's default. The gateway is the shared
+# bottleneck, so a second pool running deeper would trip the same rate limits
+# the Cognee pool is tuned to avoid.
+DEFAULT_LIMIT = 2
+
+
+def default_llm_concurrency() -> int:
+    """Slots for per-chunk LLM work, overridable per deployment."""
+    raw = os.getenv(STRUCTURED_LLM_CONCURRENCY_ENV, str(DEFAULT_LIMIT)).strip()
+    try:
+        value = int(raw)
+    except ValueError as exc:
+        raise ValueError(
+            f"{STRUCTURED_LLM_CONCURRENCY_ENV} must be a positive integer, got {raw!r}"
+        ) from exc
+    if value <= 0:
+        raise ValueError(
+            f"{STRUCTURED_LLM_CONCURRENCY_ENV} must be a positive integer, got {raw!r}"
+        )
+    return value
 
 
 async def map_bounded(
     items: Sequence[T],
     worker: Callable[[T], Awaitable[R]],
     *,
-    limit: int = DEFAULT_LIMIT,
+    limit: int | None = None,
     on_error: Callable[[T, BaseException], Any] | None = None,
 ) -> list[R | None]:
     """Run ``worker`` over ``items`` with at most ``limit`` calls in flight.
@@ -38,7 +60,8 @@ async def map_bounded(
     if not items:
         return []
 
-    semaphore = asyncio.Semaphore(max(1, int(limit)))
+    effective = default_llm_concurrency() if limit is None else int(limit)
+    semaphore = asyncio.Semaphore(max(1, effective))
 
     async def run(item: T) -> R | None:
         async with semaphore:

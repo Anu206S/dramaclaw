@@ -89,6 +89,7 @@ async def ingest_source_text_structured(
         source_sha256=digest,
         schema_version=STRUCTURED_SCHEMA_VERSION,
         pipeline_version=STRUCTURED_PIPELINE_VERSION,
+        spine_template=template,
     )
     if reused:
         # Identical text analysed by identical code: keep the existing run so a

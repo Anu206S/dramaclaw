@@ -22,7 +22,10 @@ from typing import Any, Callable, Optional
 from pydantic import BaseModel, Field
 
 from novelvideo.story_analysis import SourceChunk
-from novelvideo.utils.bounded_concurrency import map_bounded
+from novelvideo.utils.bounded_concurrency import (
+    default_llm_concurrency,
+    map_bounded,
+)
 
 # Titles and kinship terms refer to whoever is on stage at the time. The same
 # word in two chapters is routinely two different people, so they never merge
@@ -107,7 +110,7 @@ def _create_character_extraction_agent(agent: Any = None):
         get_newapi_text_pydantic_model(
             "CHARACTER_BUILD_MODEL",
             "gemini-3-flash-preview",
-            capability="cognee.llm",
+            capability="text.generate.agent",
         ),
         system_prompt=CHARACTER_EXTRACTION_SYSTEM_PROMPT,
         model_settings=get_newapi_structured_output_model_settings(),
@@ -170,11 +173,12 @@ async def extract_characters_from_chunks(
     chunks: list[SourceChunk],
     *,
     agent: Any = None,
-    concurrency: int = 6,
+    concurrency: int | None = None,
+    cached_outcomes: Optional[list] = None,
     on_log: Optional[Callable[[str], None]] = None,
     on_chunk_done: Optional[Callable[[SourceChunk, ChunkCharacterOutput], Any]] = None,
     on_chunk_failed: Optional[Callable[[SourceChunk, BaseException], Any]] = None,
-) -> list[MergedCharacter]:
+) -> tuple[list[MergedCharacter], list[tuple[SourceChunk, BaseException]]]:
     """Extract and merge characters across chunks.
 
     Chunks are independent, so they run in parallel up to ``concurrency``. A
@@ -186,8 +190,11 @@ async def extract_characters_from_chunks(
         if on_log:
             on_log(message)
 
+    replayed = list(cached_outcomes or [])
     if not chunks:
-        return []
+        # Everything was replayed from a previous run; merging still has to run,
+        # because merging is what turns per-chunk candidates into characters.
+        return merge_character_candidates(replayed), []
 
     runner = _create_character_extraction_agent(agent)
 
@@ -200,18 +207,30 @@ async def extract_characters_from_chunks(
             await _maybe_await(on_chunk_done(chunk, output))
         return chunk, output
 
+    failures: list[tuple[SourceChunk, BaseException]] = []
+
     def record_failure(chunk: SourceChunk, exc: BaseException) -> None:
         log(f"⚠️ 片段 {chunk.section_label} 抽取失败，已跳过: {exc}")
-        if on_chunk_failed:
-            on_chunk_failed(chunk, exc)
+        failures.append((chunk, exc))
 
     outcomes = await map_bounded(
-        chunks, analyse, limit=concurrency, on_error=record_failure
+        chunks,
+        analyse,
+        limit=default_llm_concurrency() if concurrency is None else concurrency,
+        on_error=record_failure,
     )
+    # Reported after the batch so the callback may be async without turning the
+    # error path inside map_bounded into an awaiting one.
+    for chunk, exc in failures:
+        if on_chunk_failed:
+            await _maybe_await(on_chunk_failed(chunk, exc))
+
     succeeded = [outcome for outcome in outcomes if outcome is not None]
     log(f"片段抽取完成: {len(succeeded)}/{len(chunks)} 成功")
 
-    return merge_character_candidates(succeeded)
+    # Replayed chunks merge alongside fresh ones, so a resumed build produces
+    # the same characters as an uninterrupted one.
+    return merge_character_candidates(replayed + succeeded), failures
 
 
 def merge_character_candidates(

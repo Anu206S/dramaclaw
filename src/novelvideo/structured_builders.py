@@ -19,7 +19,7 @@ from typing import Any, Callable, Optional
 
 from novelvideo.novel_source import require_imported_novel
 from novelvideo.project_config import load_project_config_file_from_state_dir
-from novelvideo.story_analysis import chunk_source_text
+from novelvideo.story_analysis import SourceChunk, chunk_source_text
 
 PROP_BUILD_DEFERRED_MESSAGE = "道具将在分集规划时按需生成"
 SCENE_BUILD_DEFERRED_MESSAGE = "解说剧场景将在分集规划时按需生成"
@@ -43,7 +43,10 @@ async def build_characters_structured(
     never overwrite one.
     """
     from novelvideo.cognee.pipeline import NovelCharacter
-    from novelvideo.structured_extraction import extract_characters_from_chunks
+    from novelvideo.structured_extraction import (
+        ChunkCharacterOutput,
+        extract_characters_from_chunks,
+    )
 
     def report(progress: float, task: str) -> None:
         if on_progress:
@@ -64,11 +67,63 @@ async def build_characters_structured(
         return []
     log(f"确定性切分: {len(chunks)} 个片段（{chunks[0].section_type}）")
 
+    run = await _current_run(store, novel_text, template)
+    run_id = run["run_id"] if run else ""
+
+    # Resume: a retried task or a second click on "build characters" must not
+    # pay for every chunk again. Chunks already recorded as done are replayed
+    # from their stored result instead of being sent to the model.
+    cached: list[tuple[SourceChunk, ChunkCharacterOutput]] = []
+    pending = chunks
+    if run_id:
+        done = {
+            row["chunk_id"]: row
+            for row in await store.list_analysis_chunks(run_id, status="done")
+        }
+        by_id = {chunk.chunk_id: chunk for chunk in chunks}
+        for chunk_id, row in done.items():
+            chunk = by_id.get(chunk_id)
+            # A stored result only applies if the span it was produced from is
+            # byte-identical; otherwise the text moved and it must be redone.
+            if chunk is None or row["source_hash"] != chunk.source_hash:
+                continue
+            try:
+                cached.append(
+                    (chunk, ChunkCharacterOutput.model_validate_json(row["result_json"]))
+                )
+            except Exception:
+                continue
+        replayed = {chunk.chunk_id for chunk, _ in cached}
+        pending = [chunk for chunk in chunks if chunk.chunk_id not in replayed]
+        if cached:
+            log(f"复用 {len(cached)} 个已完成片段，仅重算 {len(pending)} 个")
+
+    async def persist_done(chunk: SourceChunk, output: ChunkCharacterOutput) -> None:
+        if run_id:
+            await store.mark_analysis_chunk_done(
+                run_id, chunk.chunk_id, output.model_dump_json()
+            )
+
+    async def persist_failed(chunk: SourceChunk, exc: BaseException) -> None:
+        if run_id:
+            await store.mark_analysis_chunk_failed(run_id, chunk.chunk_id, str(exc))
+
     report(0.2, "逐片段抽取角色...")
-    merged = await extract_characters_from_chunks(
-        chunks,
+    merged, failures = await extract_characters_from_chunks(
+        pending,
         on_log=log,
+        cached_outcomes=cached,
+        on_chunk_done=persist_done,
+        on_chunk_failed=persist_failed,
     )
+    if run_id:
+        # A run with failed chunks is "partial", not "completed": the next build
+        # must know there is work left rather than treating this as finished.
+        await store.finish_analysis_run(
+            run_id,
+            status="partial" if failures else "completed",
+            error=f"{len(failures)} chunks failed" if failures else "",
+        )
     if not merged:
         log("⚠️ 未抽取到有原文证据的角色，保留现有角色数据")
         report(1.0, "提取无结果")
@@ -89,14 +144,13 @@ async def build_characters_structured(
     log(f"已新增 {len(added)} 个角色，跳过已有 {len(candidates) - len(added)} 个")
 
     report(0.95, "记录角色证据...")
-    run = await _current_run(store, novel_text)
-    if run:
+    if run_id:
         by_name = {item.name: item for item in merged}
         for name in added:
             item = by_name.get(name)
             if item:
                 await store.replace_entity_evidence(
-                    run["run_id"], "character", name, item.evidence
+                    run_id, "character", name, item.evidence
                 )
 
     report(1.0, "角色提取完成")
@@ -191,8 +245,13 @@ async def build_props_structured(
     }
 
 
-async def _current_run(store: Any, novel_text: str) -> dict | None:
-    """Find the analysis run recorded for the text now on disk."""
+async def _current_run(store: Any, novel_text: str, spine_template: str) -> dict | None:
+    """Find the analysis run recorded for the text now on disk.
+
+    The spine template is part of the key: the same novel chunked as a
+    screenplay and as narrated prose produces different chunk plans, so one
+    must never inherit the other's results.
+    """
     from novelvideo.story_analysis import source_sha256
     from novelvideo.structured_ingest import (
         STRUCTURED_PIPELINE_VERSION,
@@ -203,4 +262,5 @@ async def _current_run(store: Any, novel_text: str) -> dict | None:
         source_sha256=source_sha256(novel_text),
         schema_version=STRUCTURED_SCHEMA_VERSION,
         pipeline_version=STRUCTURED_PIPELINE_VERSION,
+        spine_template=spine_template,
     )

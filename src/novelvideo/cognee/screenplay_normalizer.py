@@ -6,7 +6,10 @@ from typing import Literal
 from pydantic import BaseModel, Field, field_validator, model_validator
 
 from novelvideo.time_of_day import LlmTimeOfDay, normalize_time_of_day
-from novelvideo.utils.bounded_concurrency import map_bounded
+from novelvideo.utils.bounded_concurrency import (
+    default_llm_concurrency,
+    map_bounded,
+)
 from novelvideo.utils.screenplay_scene_parser import TIME_TOKEN_RE, parse_scene_blocks
 
 SceneType = Literal["interior", "exterior", "nature"]
@@ -306,5 +309,7 @@ async def normalize_screenplay_scenes(
             content_lines=list(block.lines),
         )
 
-    results = await map_bounded(blocks, normalize)
+    results = await map_bounded(
+        blocks, normalize, limit=default_llm_concurrency()
+    )
     return [block for block in results if block is not None]
