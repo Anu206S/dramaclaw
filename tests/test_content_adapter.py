@@ -107,6 +107,11 @@ class _RewriteRouteStore:
         assert ep_num == self.episode.number
         self.adapted_content = content
 
+    async def patch_episode(self, episode_number: int, **updates) -> None:
+        # The real store offers both; the rewrite route takes the
+        # column-level one so it cannot roll back planned menus.
+        await self.update_episode(episode_number, **updates)
+
     async def update_episode(self, episode_number: int, **updates) -> None:
         self.episode_updates.append((episode_number, updates))
         for key, value in updates.items():

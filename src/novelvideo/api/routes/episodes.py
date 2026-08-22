@@ -663,7 +663,9 @@ async def update_episode(
     if not updates:
         return {"ok": True, "data": {"message": "No fields to update"}}
 
-    await store.update_episode(episode_num, **updates)
+    # Column-level: a user editing a title while planning runs must not roll
+    # back the menus that planning just wrote.
+    await store.patch_episode(episode_num, **updates)
 
     # 返回更新后的集信息
     ep = store.get_episode(episode_num)

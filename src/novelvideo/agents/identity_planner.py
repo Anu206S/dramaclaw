@@ -579,21 +579,13 @@ class IdentityPlanner:
         return results
 
     async def _write_episode_identities(self, episode_number: int, **fields) -> None:
-        """Persist this episode's identities by the route its track expects.
+        """Persist this episode's identities with a column-level write.
 
         Identity planning runs alongside scene and prop planning for the same
-        episode. A whole-row write here re-serialises whatever menus this
-        planner loaded earlier, so a menu written meanwhile is lost — which is
-        the race the column-level patch exists to remove.
-
-        Legacy keeps its whole-row update: its normalizer backfills prop
-        metadata the patch path does not reproduce, and an existing project must
-        behave exactly as it does today.
+        episode, so a whole-row write here would re-serialise — and lose — a
+        menu written meanwhile.
         """
-        if self._structured:
-            await self.store.patch_episode(episode_number, **fields)
-        else:
-            await self.cognee_store.update_episode(episode_number, **fields)
+        await self.store.patch_episode(episode_number, **fields)
 
     def _alias_context_from_sqlite(self, all_names: list[str]) -> str:
         """Build alias context from the character table instead of the graph.

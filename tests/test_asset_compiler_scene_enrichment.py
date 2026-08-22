@@ -391,10 +391,9 @@ async def test_compile_episode_scenes_uses_narrated_fallback_without_scene_heade
     assert new_count == 1
     assert scene_menu[0].scene_id == "医院走廊"
     assert store.sqlite_store.added[0].name == "医院走廊"
-    # A legacy project keeps the whole-row update it has always used: its
-    # normalizer backfills prop metadata from the global library, which the
-    # patch path does not reproduce.
-    assert store.updated == [(1, {"scene_menu": scene_menu})]
+    # Both tracks take the column-level patch, so concurrent scene and prop
+    # planning cannot overwrite each other's menu.
+    assert store.sqlite_store.patched == [(1, {"scene_menu": scene_menu})]
 
 
 @pytest.mark.asyncio
@@ -466,10 +465,9 @@ async def test_drama_without_scene_headers_uses_semantic_scene_planning(monkeypa
 
     assert new_count == 1
     assert [item.scene_id for item in scene_menu] == ["医院走廊"]
-    # A legacy project keeps the whole-row update it has always used: its
-    # normalizer backfills prop metadata from the global library, which the
-    # patch path does not reproduce.
-    assert store.updated == [(1, {"scene_menu": scene_menu})]
+    # Both tracks take the column-level patch, so concurrent scene and prop
+    # planning cannot overwrite each other's menu.
+    assert store.sqlite_store.patched == [(1, {"scene_menu": scene_menu})]
     assert any("项目类型仍保持精品剧" in message for message in logs)
 
 
@@ -642,10 +640,9 @@ async def test_compile_episode_scenes_persists_base_and_derived_as_normal_scenes
     assert [item.scene_id for item in scene_menu] == ["咖啡馆", "咖啡馆_暴雨版"]
     assert scene_menu[1].base_scene_id == "咖啡馆"
     assert scene_menu[1].variant_id == "暴雨版"
-    # A legacy project keeps the whole-row update it has always used: its
-    # normalizer backfills prop metadata from the global library, which the
-    # patch path does not reproduce.
-    assert store.updated == [(1, {"scene_menu": scene_menu})]
+    # Both tracks take the column-level patch, so concurrent scene and prop
+    # planning cannot overwrite each other's menu.
+    assert store.sqlite_store.patched == [(1, {"scene_menu": scene_menu})]
 
 
 @pytest.mark.asyncio
@@ -728,8 +725,8 @@ def test_derived_scene_normalization_filters_plain_time_but_keeps_stable_light_p
 
 
 @pytest.mark.asyncio
-async def test_structured_project_writes_menus_through_the_column_patch(tmp_path):
-    """Structured projects get the race-free write; legacy keeps its own."""
+async def test_menu_writes_go_through_the_column_patch(tmp_path):
+    """Every project gets the race-free write, whichever track it is on."""
     import json
 
     from novelvideo.agents.asset_compiler import AssetCompiler
@@ -751,18 +748,3 @@ async def test_structured_project_writes_menus_through_the_column_patch(tmp_path
 
     assert store.sqlite_store.patched == [(1, {"scene_menu": []})]
     assert store.updated == []
-
-
-@pytest.mark.asyncio
-async def test_legacy_project_keeps_the_whole_row_update(tmp_path):
-    from novelvideo.agents.asset_compiler import AssetCompiler
-
-    state_dir = tmp_path / "legacy"
-    state_dir.mkdir()
-    store = _FakeCogneeStore(project_dir=str(state_dir))
-    store.state_dir = str(state_dir)
-    compiler = AssetCompiler(store)
-    await compiler._write_menus(1, scene_menu=[])
-
-    assert store.updated == [(1, {"scene_menu": []})]
-    assert store.sqlite_store.patched == []

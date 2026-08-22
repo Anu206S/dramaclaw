@@ -63,8 +63,6 @@ from novelvideo.models import (
     SceneMenuItem,
     NovelProp,
     PropMenuItem,
-    build_scene_menu,
-    build_prop_menu,
     complete_detected_refs_from_visual_description,
     normalize_detected_identities,
     normalize_detected_props,
@@ -1531,66 +1529,18 @@ class CogneeStore:
                 return candidate
         return None
 
-    def _normalize_prop_menu_items(self, prop_menu: Iterable[Any] | None) -> list[PropMenuItem]:
-        """将 episode prop_menu 规范化为资产库标准 prop_id。"""
-        normalized_items = build_prop_menu(prop_menu=list(prop_menu or []))
-        canonical_items: list[PropMenuItem] = []
-        for item in normalized_items:
-            prop_id = str(item.prop_id or "").strip()
-            if not prop_id:
-                continue
-            cached = self.get_cached_prop(prop_id)
-            canonical_id = cached.name if cached else prop_id
-            canonical_items.append(
-                PropMenuItem(
-                    prop_id=canonical_id,
-                    prop_type=(getattr(cached, "prop_type", "") if cached else item.prop_type)
-                    or "object",
-                    visual_prompt=(
-                        getattr(cached, "visual_prompt", "")
-                        or getattr(cached, "description", "")
-                        or item.visual_prompt
-                    ),
-                    description=(
-                        getattr(cached, "visual_prompt", "")
-                        or getattr(cached, "description", "")
-                        or item.description
-                    ),
-                    owner_identity_id=item.owner_identity_id or getattr(cached, "owner", ""),
-                )
-            )
-        return build_prop_menu(prop_menu=canonical_items)
 
     async def _normalize_scene_menu_items(
         self, scene_menu: Iterable[Any] | None
     ) -> list[SceneMenuItem]:
-        """将 episode scene_menu 规范化为资产库标准 scene_id。"""
-        normalized_items = build_scene_menu(scene_menu=list(scene_menu or []))
-        canonical_items: list[SceneMenuItem] = []
-        all_scenes = await self.sqlite_store.list_scenes()
-        for item in normalized_items:
-            scene_id = str(item.scene_id or "").strip()
-            if not scene_id:
-                continue
-            canonical_id = scene_id
-            lookup = self._normalize_alias_lookup(scene_id)
-            for candidate in all_scenes:
-                if self._normalize_alias_lookup(candidate.name) == lookup:
-                    canonical_id = candidate.name
-                    break
-                aliases = getattr(candidate, "aliases", []) or []
-                if any(self._normalize_alias_lookup(alias) == lookup for alias in aliases):
-                    canonical_id = candidate.name
-                    break
-            canonical_items.append(
-                SceneMenuItem(
-                    scene_id=canonical_id,
-                    base_scene_id=str(getattr(item, "base_scene_id", "") or "").strip(),
-                    variant_id=str(getattr(item, "variant_id", "") or "").strip(),
-                    time_of_day=str(getattr(item, "time_of_day", "") or "").strip(),
-                )
-            )
-        return build_scene_menu(scene_menu=canonical_items)
+        """Delegate to the shared normalizer owned by SQLiteStore."""
+        return await self.sqlite_store._normalize_scene_menu_items(scene_menu)
+
+    def _normalize_prop_menu_items(
+        self, prop_menu: Iterable[Any] | None
+    ) -> list[PropMenuItem]:
+        """Delegate to the shared normalizer owned by SQLiteStore."""
+        return self.sqlite_store._normalize_prop_menu_items(prop_menu)
 
     def get_character(self, name: str) -> Optional[NovelCharacter]:
         """获取角色（支持别名）。"""
@@ -1780,7 +1730,10 @@ class CogneeStore:
                     ids = [new_id if x == old_id else x for x in ids]
                 else:
                     ids = [x for x in ids if x != old_id]
-                await self.update_episode(ep.number, identity_ids=ids)
+                # Column-level: renaming or deleting an identity can happen
+                # while planning is running, and a whole-row write here would
+                # discard whatever menu landed in between.
+                await self.patch_episode(ep.number, identity_ids=ids)
 
     async def delete_identity_image(
         self,
@@ -1839,6 +1792,19 @@ class CogneeStore:
         """添加单个剧集。"""
         await self.add_episodes([episode])
         self._episodes[episode.number] = episode
+
+    async def patch_episode(self, episode_number: int, **fields) -> None:
+        """Column-level update, delegated to SQLiteStore.
+
+        The facade offers this so its own methods — the identity cascade among
+        them — can write a single column without re-serialising the row, and so
+        the shared cache is refreshed the same way whichever store a caller
+        holds.
+        """
+        await self.sqlite_store.patch_episode(episode_number, **fields)
+        refreshed = await self.sqlite_store.get_episode_from_graph(episode_number)
+        if refreshed is not None:
+            self._episodes[episode_number] = refreshed
 
     async def update_episode(self, episode_number: int, **updates) -> None:
         """更新剧集属性。"""

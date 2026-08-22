@@ -14,18 +14,22 @@ import json
 import logging
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import aiosqlite
 from rich.console import Console
 
 from novelvideo.models import (
+    build_prop_menu,
+    build_scene_menu,
     CharacterIdentity,
     NovelCharacter,
     NovelEpisode,
     NovelProp,
     NovelScene,
     NovelVisualBeat,
+    PropMenuItem,
+    SceneMenuItem,
     normalize_detected_identities,
     normalize_detected_props,
     sync_beat_asset_refs,
@@ -365,18 +369,6 @@ CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
     PRIMARY KEY (run_id, artifact_type)
 );
 """
-
-# Distinguishes "do not touch this column" from "set it to empty" in
-# patch_episode; None is a legitimate value for several of those columns.
-_UNSET: Any = object()
-
-
-def _model_to_dict(value: Any) -> dict:
-    dump = getattr(value, "model_dump", None)
-    if callable(dump):
-        return dump()
-    return dict(value) if isinstance(value, dict) else {}
-
 
 _PROJECT_STORE_SCHEMA_COMPONENT = "project_store"
 # MIGRATION CONTRACT: increment this whenever SQLITE_SCHEMA_SQL or any
@@ -1577,7 +1569,10 @@ class SQLiteStore:
                     ids = [new_id if x == old_id else x for x in ids]
                 else:
                     ids = [x for x in ids if x != old_id]
-                await self.update_episode(ep.number, identity_ids=ids)
+                # Column-level: renaming or deleting an identity can happen
+                # while planning is running, and a whole-row write here would
+                # discard whatever menu landed in between.
+                await self.patch_episode(ep.number, identity_ids=ids)
 
     async def update_character_identity(
         self,
@@ -1768,52 +1763,80 @@ class SQLiteStore:
         await self.add_episodes([episode])
         console.print(f"[green]已更新剧集: 第{episode.number}集[/green]")
 
-    async def patch_episode(
-        self,
-        episode_number: int,
-        *,
-        scene_menu: Any = _UNSET,
-        prop_menu: Any = _UNSET,
-        identity_ids: Any = _UNSET,
-        character_names: Any = _UNSET,
-        identity_default_map: Any = _UNSET,
-    ) -> None:
+    # Episode fields the column-level patch understands, and how each is
+    # serialised. ``number`` is deliberately absent: renaming an episode moves
+    # the primary key and the cache entry, which is a whole-row concern.
+    _PATCHABLE_EPISODE_FIELDS: dict[str, tuple[str, str]] = {
+        "scene_menu": ("scene_menu_json", "scene_menu"),
+        "prop_menu": ("prop_menu_json", "prop_menu"),
+        "identity_ids": ("identity_ids", "json_list"),
+        "character_names": ("character_names", "json_list"),
+        "key_events": ("key_events", "json_list"),
+        "event_ids": ("event_ids", "json_list"),
+        "identity_default_map": ("identity_default_map_json", "json_dict"),
+        "sketch_colors": ("sketch_colors_json", "json_dict"),
+        "title": ("title", "text"),
+        "content_summary": ("content_summary", "text"),
+        "main_conflict": ("main_conflict", "text"),
+        "cliffhanger": ("cliffhanger", "text"),
+        "beat_source_text": ("beat_source_text", "text"),
+        "raw_content": ("raw_content", "text"),
+        "adapted_content": ("adapted_content", "text"),
+        "chapter_start": ("chapter_start", "int"),
+        "chapter_end": ("chapter_end", "int"),
+    }
+
+    async def patch_episode(self, episode_number: int, **fields: Any) -> None:
         """Update only the columns the caller named, atomically.
 
-        Scene, prop and identity planning for one episode can run concurrently
-        in separate workers. Any read-modify-write of the whole row loses the
-        other planner's result: re-reading first does not close the window,
-        because both can re-read before either commits. Writing only the named
-        columns removes the race entirely rather than narrowing it.
+        Anything that writes the whole episode row re-serialises columns it was
+        never asked to change, from whatever the caller happened to load
+        earlier. Scene, prop and identity planning run concurrently for one
+        episode, and a user can edit that episode while they run, so a
+        whole-row write loses whichever result landed in between — even when
+        the two writers touch entirely different fields. Re-reading first does
+        not close the window, because both can re-read before either commits.
 
-        ``_UNSET`` distinguishes "leave this column alone" from "clear it", so an
-        empty list is a real update that empties the menu.
+        Naming a field with no value at all is how a column is left alone, so an
+        empty list is a real update that empties it.
 
         This does not replace add_episodes()/replace_episodes(), which still own
-        whole-row writes. The in-memory cache refresh below only makes this
-        process read its own write; correctness comes from the SQL, since the
-        cache is not shared across workers.
+        whole-row writes, nor renaming an episode, which moves the primary key.
+        The in-memory cache refresh below only makes this process read its own
+        write; correctness comes from the SQL, since the cache is not shared
+        across workers.
         """
         assignments: list[str] = []
         params: list[Any] = []
 
-        if scene_menu is not _UNSET:
-            normalized = await self._normalize_scene_menu_for_write(scene_menu or [])
-            assignments.append("scene_menu_json = ?")
-            params.append(json.dumps(normalized, ensure_ascii=False))
-        if prop_menu is not _UNSET:
-            normalized = self._normalize_prop_menu_for_write(prop_menu or [])
-            assignments.append("prop_menu_json = ?")
-            params.append(json.dumps(normalized, ensure_ascii=False))
-        if identity_ids is not _UNSET:
-            assignments.append("identity_ids = ?")
-            params.append(json.dumps(list(identity_ids or []), ensure_ascii=False))
-        if character_names is not _UNSET:
-            assignments.append("character_names = ?")
-            params.append(json.dumps(list(character_names or []), ensure_ascii=False))
-        if identity_default_map is not _UNSET:
-            assignments.append("identity_default_map_json = ?")
-            params.append(json.dumps(dict(identity_default_map or {}), ensure_ascii=False))
+        for field, value in fields.items():
+            spec = self._PATCHABLE_EPISODE_FIELDS.get(field)
+            if spec is None:
+                raise ValueError(
+                    f"patch_episode cannot write {field!r}; add it to "
+                    "_PATCHABLE_EPISODE_FIELDS or use update_episode"
+                )
+            column, kind = spec
+            if kind == "scene_menu":
+                items = await self._normalize_scene_menu_items(value or [])
+                encoded = json.dumps(
+                    [item.model_dump() for item in items], ensure_ascii=False
+                )
+            elif kind == "prop_menu":
+                items = self._normalize_prop_menu_items(value or [])
+                encoded = json.dumps(
+                    [item.model_dump() for item in items], ensure_ascii=False
+                )
+            elif kind == "json_list":
+                encoded = json.dumps(list(value or []), ensure_ascii=False)
+            elif kind == "json_dict":
+                encoded = json.dumps(dict(value or {}), ensure_ascii=False)
+            elif kind == "int":
+                encoded = int(value or 0)
+            else:
+                encoded = str(value or "")
+            assignments.append(f"{column} = ?")
+            params.append(encoded)
 
         if not assignments:
             return
@@ -1833,67 +1856,72 @@ class SQLiteStore:
         if refreshed is not None:
             self._episodes[episode_number] = refreshed
 
-    async def _normalize_scene_menu_for_write(self, scene_menu: Any) -> list:
-        """Resolve menu entries against the scene table before persisting.
+    # ── episode menu normalization ──────────────────────────────────────
+    #
+    # Canonical implementations, shared by the legacy whole-row update and the
+    # column-level patch. Both routes must produce byte-identical menus: the
+    # only difference between them is which columns get written.
 
-        Normalization has to happen before the write, not on read, so every
-        reader sees the same canonical names regardless of which planner wrote.
-        """
-        normalized: list[dict] = []
-        for item in scene_menu or []:
-            entry = item if isinstance(item, dict) else _model_to_dict(item)
-            name = str(entry.get("scene_id") or "").strip()
-            if not name:
+    async def _normalize_scene_menu_items(
+        self, scene_menu: Iterable[Any] | None
+    ) -> list[SceneMenuItem]:
+        """将 episode scene_menu 规范化为资产库标准 scene_id。"""
+        normalized_items = build_scene_menu(scene_menu=list(scene_menu or []))
+        canonical_items: list[SceneMenuItem] = []
+        all_scenes = await self.list_scenes()
+        for item in normalized_items:
+            scene_id = str(item.scene_id or "").strip()
+            if not scene_id:
                 continue
-            # A menu may name a scene by an alias. Resolving to the canonical
-            # name at write time means every reader sees the same identifier
-            # regardless of which planner produced the entry.
-            if await self.get_scene(name) is None:
-                resolved = await self.resolve_scene_alias(name)
-                if resolved:
-                    entry = {**entry, "scene_id": resolved}
-            normalized.append(entry)
-        return normalized
+            canonical_id = scene_id
+            lookup = self._normalize_alias_lookup(scene_id)
+            for candidate in all_scenes:
+                if self._normalize_alias_lookup(candidate.name) == lookup:
+                    canonical_id = candidate.name
+                    break
+                aliases = getattr(candidate, "aliases", []) or []
+                if any(self._normalize_alias_lookup(alias) == lookup for alias in aliases):
+                    canonical_id = candidate.name
+                    break
+            canonical_items.append(
+                SceneMenuItem(
+                    scene_id=canonical_id,
+                    base_scene_id=str(getattr(item, "base_scene_id", "") or "").strip(),
+                    variant_id=str(getattr(item, "variant_id", "") or "").strip(),
+                    time_of_day=str(getattr(item, "time_of_day", "") or "").strip(),
+                )
+            )
+        return build_scene_menu(scene_menu=canonical_items)
 
-    def _normalize_prop_menu_for_write(self, prop_menu: Any) -> list:
-        normalized: list[dict] = []
-        for item in prop_menu or []:
-            entry = item if isinstance(item, dict) else _model_to_dict(item)
-            name = str(entry.get("prop_id") or "").strip()
-            if not name:
+    def _normalize_prop_menu_items(self, prop_menu: Iterable[Any] | None) -> list[PropMenuItem]:
+        """将 episode prop_menu 规范化为资产库标准 prop_id。"""
+        normalized_items = build_prop_menu(prop_menu=list(prop_menu or []))
+        canonical_items: list[PropMenuItem] = []
+        for item in normalized_items:
+            prop_id = str(item.prop_id or "").strip()
+            if not prop_id:
                 continue
-            canonical = self._prop_alias_index.get(name)
-            if canonical:
-                entry = {**entry, "prop_id": canonical}
-            normalized.append(entry)
-        return normalized
-
-    @property
-    def _prop_alias_index(self) -> dict[str, str]:
-        """Alias -> canonical prop name, built from the cached prop table."""
-        index: dict[str, str] = {}
-        for prop in self._props.values():
-            for alias in getattr(prop, "aliases", []) or []:
-                index[str(alias)] = prop.name
-        return index
-
-    async def resolve_scene_alias(self, name: str) -> str | None:
-        """Return the canonical scene name for an alias, if one exists."""
-        db = await self._ensure_db()
-        async with db.execute(
-            "SELECT name, aliases_json FROM scenes"
-        ) as cursor:
-            rows = await cursor.fetchall()
-        target = " ".join(str(name or "").strip().lower().split())
-        for row in rows:
-            try:
-                aliases = json.loads(row["aliases_json"] or "[]")
-            except (TypeError, ValueError):
-                aliases = []
-            for alias in aliases:
-                if " ".join(str(alias).strip().lower().split()) == target:
-                    return str(row["name"])
-        return None
+            cached = self.get_cached_prop(prop_id)
+            canonical_id = cached.name if cached else prop_id
+            canonical_items.append(
+                PropMenuItem(
+                    prop_id=canonical_id,
+                    prop_type=(getattr(cached, "prop_type", "") if cached else item.prop_type)
+                    or "object",
+                    visual_prompt=(
+                        getattr(cached, "visual_prompt", "")
+                        or getattr(cached, "description", "")
+                        or item.visual_prompt
+                    ),
+                    description=(
+                        getattr(cached, "visual_prompt", "")
+                        or getattr(cached, "description", "")
+                        or item.description
+                    ),
+                    owner_identity_id=item.owner_identity_id or getattr(cached, "owner", ""),
+                )
+            )
+        return build_prop_menu(prop_menu=canonical_items)
 
     async def delete_all_episodes(self) -> int:
         try:

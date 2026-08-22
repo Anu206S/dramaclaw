@@ -73,7 +73,7 @@ async def test_patch_touches_only_the_named_columns(project):
 
 
 async def test_an_empty_list_really_clears_the_column(project):
-    """_UNSET means "leave alone"; an empty list is a genuine update."""
+    """Omitting a field leaves its column alone; an empty list clears it."""
     store, state_dir = project
     await store.patch_episode(1, prop_menu=[{"prop_id": "怀表"}])
     await store.patch_episode(1, prop_menu=[])
@@ -285,15 +285,20 @@ async def test_structured_identity_planning_uses_the_column_patch(tmp_path):
     assert store.sqlite_store.updated == []
 
 
-async def test_legacy_identity_planning_keeps_the_whole_row_update(tmp_path):
+async def test_legacy_identity_planning_also_uses_the_column_patch(tmp_path):
+    """The race is fixed for existing projects too, not routed around them.
+
+    Safe because the normalization behind the patch is the same code the legacy
+    whole-row write used — proven byte-for-byte in the parity suite.
+    """
     from novelvideo.agents.identity_planner import IdentityPlanner
 
     store = _planner_store(tmp_path / "legacy", structured=False)
     planner = IdentityPlanner(store)
     await planner._write_episode_identities(1, identity_ids=["林默:default"])
 
-    assert store.sqlite_store.updated == [(1, {"identity_ids": ["林默:default"]})]
-    assert store.sqlite_store.patched == []
+    assert store.sqlite_store.patched == [(1, {"identity_ids": ["林默:default"]})]
+    assert store.sqlite_store.updated == []
 
 
 def test_planners_never_write_episodes_outside_their_branch_helper():
@@ -330,49 +335,14 @@ def test_planners_never_write_episodes_outside_their_branch_helper():
                     )
 
 
-async def test_runtime_marker_colours_use_the_patch_for_structured(tmp_path, monkeypatch):
-    """Sketch colour assignment writes marker colours back into the prop menu.
-
-    It does so from a menu the request loaded earlier, so a whole-row write
-    discards whatever scene, prop or identity planning stored meanwhile.
-    """
-    from types import SimpleNamespace
-
-    from novelvideo.api.routes import generation
-
-    state_dir = tmp_path / "structured"
-    _write_config(state_dir, {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED})
-    calls = SimpleNamespace(patched=[], updated=[])
-
-    async def patch_episode(number, **fields):
-        calls.patched.append((number, fields))
-
-    async def update_episode(number, **fields):
-        calls.updated.append((number, fields))
-
-    store = SimpleNamespace(
-        state_dir=str(state_dir),
-        patch_episode=patch_episode,
-        update_episode=update_episode,
-    )
-    menu = [{"prop_id": "怀表"}]
-
-    if generation.is_structured_pipeline(store.state_dir):
-        await store.patch_episode(1, prop_menu=menu)
-    else:
-        await store.update_episode(1, prop_menu=menu)
-
-    assert calls.patched == [(1, {"prop_menu": menu})]
-    assert calls.updated == []
 
 
-def test_the_marker_colour_write_is_branched_by_track():
-    """Guard the branch itself, since the route is hard to drive end to end."""
+def test_the_marker_colour_write_is_column_atomic():
+    """Guard the call itself, since the route is hard to drive end to end."""
     import inspect
 
     from novelvideo.api.routes import generation
 
     source = inspect.getsource(generation.assign_sketch_colors)
-    assert "is_structured_pipeline" in source
-    assert "patch_episode" in source
-    assert "update_episode" in source
+    assert "patch_episode(episode_num, prop_menu=" in source
+    assert "update_episode" not in source

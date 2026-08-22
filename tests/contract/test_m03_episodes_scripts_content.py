@@ -75,6 +75,11 @@ class _M03Store:
         for key, value in updates.items():
             setattr(self.episode, key, value)
 
+    async def patch_episode(self, episode_number: int, **updates):
+        # The real store offers both; routes take the column-level one so an
+        # edit cannot re-serialise columns it was not asked to change.
+        await self.update_episode(episode_number, **updates)
+
     def load_novel_content(self):
         return self.novel_text
 

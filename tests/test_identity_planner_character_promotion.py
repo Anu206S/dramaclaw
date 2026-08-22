@@ -38,6 +38,11 @@ class FakeIdentityStore:
     async def update_episode(self, episode_number, **updates):
         self.updated_episode = (episode_number, updates)
 
+    async def patch_episode(self, episode_number, **updates):
+        # The real store offers both; identity writes take the column-level one
+        # so they cannot clobber a menu written by concurrent planning.
+        self.updated_episode = (episode_number, updates)
+
 
 class ExistingCharacterIdentityPlanner(IdentityPlanner):
     async def _filter_cast(self, all_names, content_text, episode, on_log=None):
