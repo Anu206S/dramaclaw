@@ -700,14 +700,100 @@ environment_prompt 规则：
 5. description: 场景叙述性描述（中文，50字以内）"""
 
 
-def _has_required_scene_environment_headings(prompt: str) -> bool:
+# Every heading the contract may carry, in the order they must appear.
+SCENE_ENVIRONMENT_ALL_HEADINGS = (
+    "正面", "左侧", "右侧", "背面", "光源", "材质/风格", "禁止元素",
+)
+
+# A heading may open the text or follow a newline or a sentence break. Models
+# routinely emit the whole contract on one line, and rejecting that discards a
+# perfectly good description in favour of boilerplate.
+_SCENE_HEADING_RE = re.compile(
+    r"(?:^|[\n。；;])\s*(" + "|".join(re.escape(h) for h in SCENE_ENVIRONMENT_ALL_HEADINGS) + r")\s*[:：]"
+)
+
+# The first line of the generated fallback. Distinctive enough to recognise a
+# prompt the system wrote when it could not use the model's.
+SCENE_FALLBACK_FINGERPRINT = "最能代表地点身份的主入口、主墙面、主装置或主要活动面作为正面"
+
+
+def parse_scene_environment_sections(prompt: str) -> list[tuple[str, str]]:
+    """Split a 360 contract into (heading, body) pairs, wherever they sit.
+
+    Returns an empty list when the text is not a contract, so callers can tell
+    "no sections" from "sections with empty bodies".
+    """
     text = str(prompt or "").strip()
     if not text:
+        return []
+
+    matches = list(_SCENE_HEADING_RE.finditer(text))
+    if not matches:
+        return []
+
+    sections: list[tuple[str, str]] = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        body = text[match.end() : end].strip().strip("。；;")
+        sections.append((match.group(1), body))
+    return sections
+
+
+def _has_required_scene_environment_headings(prompt: str) -> bool:
+    """Whether the text is a usable 360 contract.
+
+    Presence alone is not enough: a body that merely mentions "左侧：" in passing
+    would pass a substring test. The four directions must each open a section,
+    appear in order, and actually say something.
+    """
+    sections = parse_scene_environment_sections(prompt)
+    if not sections:
         return False
-    return all(
-        re.search(rf"(^|\n)\s*{re.escape(label)}\s*[:：]", text)
-        for label in SCENE_ENVIRONMENT_REQUIRED_HEADINGS
-    )
+
+    seen = [heading for heading, body in sections if body]
+    position = 0
+    for required in SCENE_ENVIRONMENT_REQUIRED_HEADINGS:
+        try:
+            position = seen.index(required, position) + 1
+        except ValueError:
+            return False
+    return True
+
+
+def normalize_scene_environment_prompt(prompt: str) -> str:
+    """Rewrite a valid contract as one section per line.
+
+    Downstream readers and human reviewers both expect the sectioned form; the
+    model's single-line output carries the same content in a shape that is hard
+    to read and easy to mis-parse later.
+    """
+    sections = parse_scene_environment_sections(prompt)
+    if not sections:
+        return str(prompt or "").strip()
+    return "\n".join(f"{heading}：{body}" for heading, body in sections if body)
+
+
+def should_repair_scene_placeholder(existing_prompt: str, new_prompt: str) -> bool:
+    """Whether a stored environment prompt is boilerplate worth replacing.
+
+    Both tracks wrote the generated fallback for every scene while the contract
+    validator rejected valid single-line model output, so both need the same
+    narrow repair on rebuild. All three conditions matter:
+
+    * the stored prompt carries the fallback fingerprint, so it is something
+      this code wrote, never something a user typed or edited;
+    * the replacement does not carry it, so a rebuild that fell back again does
+      not churn the row;
+    * the replacement is itself a valid 360 contract, so a malformed or empty
+      model response can never overwrite a stored prompt with something worse.
+    """
+    existing = str(existing_prompt or "")
+    replacement = str(new_prompt or "")
+    if SCENE_FALLBACK_FINGERPRINT not in existing:
+        return False
+    if SCENE_FALLBACK_FINGERPRINT in replacement:
+        return False
+    return _has_required_scene_environment_headings(replacement)
 
 
 def _compact_scene_context(
@@ -732,9 +818,12 @@ def _ensure_directional_environment_prompt(
     """Ensure graph-built scene prompts are usable as a 360 spatial contract."""
     text = str(prompt or "").strip()
     if _has_required_scene_environment_headings(text):
-        return text
+        return normalize_scene_environment_prompt(text)
 
-    evidence = _compact_scene_context(text or context_lines)
+    # Evidence comes from the script, never from the prompt that just failed
+    # validation. Quoting a rejected description back as "原文证据" produced a
+    # self-referential contract that cited itself as its own source.
+    evidence = _compact_scene_context(context_lines)
     if not evidence:
         evidence = f"{scene_name}，{scene_type or 'interior'} 场景"
     type_label = scene_type or "interior"

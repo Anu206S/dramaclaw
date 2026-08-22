@@ -1541,3 +1541,124 @@ def test_the_same_appellation_at_two_real_positions_still_wins():
     ]
     merged = {m.name: m for m in merge_character_candidates(outcomes)}
     assert merged["郑玉琴"].aliases == {"郑太"}
+
+
+# ── repairing placeholder environment prompts ───────────────────────────────
+
+
+DRAMA_SCRIPT = (
+    "第一集\n\n"
+    "1-1 林家客厅 日 内\n人物：林默\n林默推开门。\n"
+)
+
+
+async def _drama_project(tmp_path, script):
+    from novelvideo.knowledge_pipeline import (
+        KNOWLEDGE_PIPELINE_KEY, KNOWLEDGE_PIPELINE_STRUCTURED,
+    )
+    from novelvideo.sqlite_store import SQLiteStore
+
+    state = tmp_path / "user" / "drama"
+    state.mkdir(parents=True)
+    (state / "project_config.json").write_text(
+        json.dumps(
+            {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED,
+             "spine_template": "drama"}
+        ),
+        encoding="utf-8",
+    )
+    (state / "novel.txt").write_text(script, encoding="utf-8")
+    store = SQLiteStore("user/drama", output_dir=str(state), state_dir=str(state))
+    await store.initialize()
+    await store.load_graph_state()
+    return store
+
+
+def _fresh_scene(name):
+    from novelvideo.models import NovelScene
+
+    return NovelScene(
+        name=name,
+        scene_type="interior",
+        environment_prompt="正面：主墙平整\n左侧：木门\n右侧：窗户\n背面：资料柜",
+    )
+
+
+async def test_a_placeholder_prompt_is_replaced_on_rebuild(tmp_path, monkeypatch):
+    """A prompt this code generated is a placeholder, not an asset fact.
+
+    Skipping every existing scene would leave projects built while the contract
+    validator was broken on boilerplate for good, since nothing else rewrites
+    those prompts.
+    """
+    from novelvideo import structured_builders
+    from novelvideo.cognee.pipeline import _ensure_directional_environment_prompt
+    from novelvideo.models import NovelScene
+
+    store = await _drama_project(tmp_path, DRAMA_SCRIPT)
+    try:
+        placeholder = _ensure_directional_environment_prompt(
+            prompt="", scene_name="林家客厅", scene_type="interior",
+            time_of_day="", context_lines=["▲林默推开门。"],
+        )
+        await store.add_scene(
+            NovelScene(name="林家客厅", environment_prompt=placeholder)
+        )
+
+        async def fake_extract(text, **kwargs):
+            return [_fresh_scene("林家客厅")]
+
+        monkeypatch.setattr(
+            "novelvideo.cognee.pipeline.extract_scenes_from_script", fake_extract
+        )
+        # Imported inside the builder, so it is patched at its source.
+        monkeypatch.setattr(
+            "novelvideo.structured_extraction.adjudicate_scenes",
+            lambda scenes, **kwargs: _async_value(scenes),
+        )
+
+        result = await structured_builders.build_scenes_structured(store)
+        assert result["repaired_scenes"] == 1
+
+        stored = await store.get_scene("林家客厅")
+        assert "主墙平整" in stored.environment_prompt
+    finally:
+        await store.close()
+
+
+async def test_a_user_written_prompt_is_never_replaced(tmp_path, monkeypatch):
+    """Only the known generated placeholder is overwritten."""
+    from novelvideo import structured_builders
+    from novelvideo.models import NovelScene
+
+    store = await _drama_project(tmp_path, DRAMA_SCRIPT)
+    try:
+        mine = "正面：我自己写的描述\n左侧：也是我写的\n右侧：我写的\n背面：我写的"
+        await store.add_scene(NovelScene(name="林家客厅", environment_prompt=mine))
+
+        async def fake_extract(text, **kwargs):
+            return [_fresh_scene("林家客厅")]
+
+        monkeypatch.setattr(
+            "novelvideo.cognee.pipeline.extract_scenes_from_script", fake_extract
+        )
+        # Imported inside the builder, so it is patched at its source.
+        monkeypatch.setattr(
+            "novelvideo.structured_extraction.adjudicate_scenes",
+            lambda scenes, **kwargs: _async_value(scenes),
+        )
+
+        result = await structured_builders.build_scenes_structured(store)
+        assert result["repaired_scenes"] == 0
+
+        stored = await store.get_scene("林家客厅")
+        assert stored.environment_prompt == mine
+    finally:
+        await store.close()
+
+
+def _async_value(value):
+    async def _call():
+        return value
+
+    return _call()

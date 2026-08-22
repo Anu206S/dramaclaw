@@ -1946,19 +1946,43 @@ class CogneeStore:
         log(f"从图谱提取了 {len(scenes)} 个场景")
         report(0.8, "保存新增场景...")
         log("保存新增场景到数据库...")
+        from .pipeline import should_repair_scene_placeholder
+
         added: list[NovelScene] = []
         skipped = 0
+        repaired = 0
         for scene in scenes:
             existing = await self.sqlite_store.get_scene(scene.name)
             if existing:
+                # The contract validator used to reject valid single-line model
+                # output, so every scene built while that bug was live stored a
+                # generated placeholder instead. Those are not asset facts, and
+                # skipping them would leave existing projects on boilerplate
+                # forever. Only the prompt is rewritten: images, plates and any
+                # other stored field stay untouched, and a prompt a user wrote
+                # never carries the fingerprint.
+                if should_repair_scene_placeholder(
+                    existing.environment_prompt, scene.environment_prompt
+                ):
+                    await self.sqlite_store.update_scene(
+                        existing.name, environment_prompt=scene.environment_prompt
+                    )
+                    repaired += 1
+                    continue
                 skipped += 1
                 continue
             await self.sqlite_store.add_scene(scene)
             added.append(scene)
-        log(f"已新增 {len(added)} 个场景，跳过已有 {skipped} 个")
+        log(
+            f"已新增 {len(added)} 个场景，修复占位描述 {repaired} 个，"
+            f"跳过已有 {skipped} 个"
+        )
 
         report(1.0, "场景提取完成")
-        log(f"场景提取完成: 新增 {len(added)} 个，已有 {skipped} 个")
+        log(
+            f"场景提取完成: 新增 {len(added)} 个，修复 {repaired} 个，"
+            f"已有 {skipped} 个"
+        )
 
         return added
 
