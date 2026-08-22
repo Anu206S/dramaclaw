@@ -748,5 +748,3 @@ async def test_menu_writes_go_through_the_column_patch(tmp_path):
 
     assert store.sqlite_store.patched == [(1, {"scene_menu": []})]
     assert store.updated == []
-
-

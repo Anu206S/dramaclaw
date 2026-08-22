@@ -370,11 +370,6 @@ CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
 );
 """
 
-# Distinguishes "do not touch this column" from "set it to empty" in
-# patch_episode; None is a legitimate value for several of those columns.
-_UNSET: Any = object()
-
-
 def _model_to_dict(value: Any) -> dict:
     dump = getattr(value, "model_dump", None)
     if callable(dump):

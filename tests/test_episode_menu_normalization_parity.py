@@ -168,3 +168,57 @@ async def test_an_unknown_field_is_refused_rather_than_dropped(stores):
     _, sqlite = stores
     with pytest.raises(ValueError, match="cannot write"):
         await sqlite.patch_episode(1, no_such_column="x")
+
+
+async def test_the_legacy_facade_can_cascade_an_identity_rename(stores):
+    """The cascade runs on the facade, not only on the plain store.
+
+    Testing the SQLiteStore path alone let a missing facade method through:
+    every focused test passed while renaming an identity on a legacy project
+    raised AttributeError.
+    """
+    from novelvideo.models import CharacterIdentity, NovelCharacter
+
+    legacy, sqlite = stores
+    await sqlite.add_character(
+        NovelCharacter(
+            name="林默",
+            identities=[
+                CharacterIdentity(
+                    identity_id="林默_default",
+                    character_name="林默",
+                    identity_name="default",
+                )
+            ],
+        )
+    )
+    await legacy.load_graph_state()
+    await sqlite.patch_episode(
+        1,
+        identity_ids=["林默_default"],
+        scene_menu=[{"scene_id": "主任办公室"}],
+    )
+    await legacy.load_graph_state()
+
+    await legacy._cascade_identity_change("林默_default", "林默_雨夜")
+
+    episode = await sqlite.get_episode_from_graph(1)
+    assert episode.identity_ids == ["林默_雨夜"]
+    assert await _row(sqlite, "scene_menu_json"), "the cascade wiped the scene menu"
+    # The facade's cached copy must reflect its own write.
+    assert legacy.get_episode(1).identity_ids == ["林默_雨夜"]
+
+
+async def test_both_stores_expose_the_same_episode_write_methods():
+    """Whatever one store offers for episode writes, the facade must too.
+
+    A caller holding either object writes episodes the same way; a method
+    present on one and missing on the other is a crash waiting for whichever
+    path is less exercised.
+    """
+    from novelvideo.cognee.store import CogneeStore
+    from novelvideo.sqlite_store import SQLiteStore
+
+    for name in ("patch_episode", "update_episode"):
+        assert hasattr(SQLiteStore, name), f"SQLiteStore lost {name}"
+        assert hasattr(CogneeStore, name), f"CogneeStore lost {name}"

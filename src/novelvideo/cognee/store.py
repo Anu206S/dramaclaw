@@ -1793,6 +1793,19 @@ class CogneeStore:
         await self.add_episodes([episode])
         self._episodes[episode.number] = episode
 
+    async def patch_episode(self, episode_number: int, **fields) -> None:
+        """Column-level update, delegated to SQLiteStore.
+
+        The facade offers this so its own methods — the identity cascade among
+        them — can write a single column without re-serialising the row, and so
+        the shared cache is refreshed the same way whichever store a caller
+        holds.
+        """
+        await self.sqlite_store.patch_episode(episode_number, **fields)
+        refreshed = await self.sqlite_store.get_episode_from_graph(episode_number)
+        if refreshed is not None:
+            self._episodes[episode_number] = refreshed
+
     async def update_episode(self, episode_number: int, **updates) -> None:
         """更新剧集属性。"""
         episode = self.get_episode(episode_number)
