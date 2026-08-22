@@ -3,7 +3,6 @@ from pathlib import Path
 
 import pytest
 
-from novelvideo.api.routes.projects import _summary_for_record
 from novelvideo.ports.project import ProjectRecord
 
 
@@ -24,7 +23,15 @@ async def test_project_summary_counts_from_registered_state_dir(
         conn.executemany("INSERT INTO episodes VALUES (?)", [(1,), (2,)])
         conn.executemany("INSERT INTO beats VALUES (?)", [(1,), (2,), (3,)])
 
-    monkeypatch.setattr("novelvideo.api.routes.projects.is_record_home_node", lambda _record: True)
+    # Resolved at call time rather than bound at import, which is how the route
+    # uses it anyway. The CE contract test that once orphaned this reference now
+    # restores the import system itself, so this is defence in depth rather than
+    # the thing standing between the patch below and the code it patches.
+    from novelvideo.api.routes.projects import _summary_for_record
+
+    monkeypatch.setattr(
+        "novelvideo.api.routes.projects.is_record_home_node", lambda _record: True
+    )
     record = ProjectRecord(
         id="project-1",
         owner_type="user",
