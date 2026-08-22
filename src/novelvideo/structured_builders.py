@@ -256,7 +256,10 @@ async def build_scenes_structured(
     marker: a full-text sweep would guess at locations, so those scenes are
     discovered per episode from that episode's own text instead.
     """
-    from novelvideo.cognee.pipeline import extract_scenes_from_script
+    from novelvideo.cognee.pipeline import (
+        SCENE_FALLBACK_FINGERPRINT,
+        extract_scenes_from_script,
+    )
     from novelvideo.structured_extraction import adjudicate_scenes
 
     def report(progress: float, task: str) -> None:
@@ -299,18 +302,42 @@ async def build_scenes_structured(
     report(0.85, "保存新增场景...")
     added = 0
     skipped = 0
+    repaired = 0
     for scene in scenes:
         # Existing base scenes and their derived plates are asset facts; a
         # rebuild adds what is missing and leaves the rest alone.
-        if await store.get_scene(scene.name):
-            skipped += 1
+        existing = await store.get_scene(scene.name)
+        if existing is None:
+            await store.add_scene(scene)
+            added += 1
             continue
-        await store.add_scene(scene)
-        added += 1
-    log(f"已新增 {added} 个场景，跳过已有 {skipped} 个")
+        # One exception: a prompt this code generated because it could not use
+        # the model's is not an asset fact, it is a placeholder. Those were
+        # written for every scene while the contract validator rejected valid
+        # single-line output, and skipping them would leave existing projects on
+        # boilerplate forever. A prompt the user wrote or edited never matches
+        # this fingerprint and is never touched.
+        if (
+            SCENE_FALLBACK_FINGERPRINT in (existing.environment_prompt or "")
+            and SCENE_FALLBACK_FINGERPRINT not in (scene.environment_prompt or "")
+        ):
+            await store.update_scene(
+                existing.name, environment_prompt=scene.environment_prompt
+            )
+            repaired += 1
+            continue
+        skipped += 1
+    log(
+        f"已新增 {added} 个场景，修复占位描述 {repaired} 个，跳过已有 {skipped} 个"
+    )
 
     report(1.0, "场景提取完成")
-    return {"scenes": len(scenes), "added_scenes": added, "mode": "script"}
+    return {
+        "scenes": len(scenes),
+        "added_scenes": added,
+        "repaired_scenes": repaired,
+        "mode": "script",
+    }
 
 
 async def build_props_structured(
