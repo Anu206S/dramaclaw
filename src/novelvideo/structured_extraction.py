@@ -337,8 +337,8 @@ def merge_character_candidates(
     """
     merged: dict[str, MergedCharacter] = {}
     alias_pairs: set[tuple[str, str]] = set()
-    # appellation -> every character it was attributed to.
-    appellation_claims: dict[str, set[str]] = {}
+    # appellation -> character -> the chunks that attributed it there.
+    appellation_claims: dict[str, dict[str, set[str]]] = {}
 
     for chunk, output in outcomes:
         alias_pairs |= find_explicit_aliases(chunk.text)
@@ -394,7 +394,9 @@ def merge_character_candidates(
                     or verify_evidence(normalized, chunk) is None
                 ):
                     continue
-                appellation_claims.setdefault(normalized, set()).add(name)
+                appellation_claims.setdefault(normalized, {}).setdefault(
+                    name, set()
+                ).add(chunk.chunk_id)
 
             for alias in candidate.aliases:
                 normalized_alias = normalize_character_name(alias)
@@ -417,22 +419,40 @@ def merge_character_candidates(
 
 
 def _apply_appellation_claims(
-    merged: dict[str, MergedCharacter], claims: dict[str, set[str]]
+    merged: dict[str, MergedCharacter], claims: dict[str, dict[str, set[str]]]
 ) -> None:
-    """Record an appellation only when exactly one character claimed it.
+    """Award a contested appellation to whoever the text repeatedly supports.
 
-    Two characters claiming the same nickname is the model telling us it could
-    not attribute it. Keeping both would send episode-level alias resolution to
-    the wrong person, which is worse than having no alias at all — a missing
-    alias fails to resolve, a wrong one resolves confidently and incorrectly.
+    One claimant is taken at face value. When several characters are offered the
+    same nickname, the winner is decided by how many *distinct chunks*
+    independently attributed it there — not by how much evidence each character
+    has overall, which would simply hand every ambiguous form to the lead.
+
+    A win has to be decisive: at least two independent chunks, and a clear
+    margin over the runner-up. Anything closer stays unassigned, because a wrong
+    alias resolves confidently to the wrong person while a missing one merely
+    fails to resolve.
     """
     for appellation, owners in claims.items():
-        live = {name for name in owners if name in merged}
-        if len(live) != 1:
+        if appellation in merged:
+            # Already a character in its own right, not an alias for anyone.
             continue
-        owner = merged[next(iter(live))]
-        if appellation not in merged:
-            owner.aliases.add(appellation)
+        live = {
+            name: chunks for name, chunks in owners.items() if name in merged
+        }
+        if not live:
+            continue
+        if len(live) == 1:
+            merged[next(iter(live))].aliases.add(appellation)
+            continue
+
+        ranked = sorted(live.items(), key=lambda kv: len(kv[1]), reverse=True)
+        (winner, won), (_, runner_up) = ranked[0], ranked[1]
+        if len(won) < _APPELLATION_MIN_CHUNKS:
+            continue
+        if len(won) < max(len(runner_up) * 2, len(runner_up) + 1):
+            continue
+        merged[winner].aliases.add(appellation)
 
 
 def _apply_title_qualified_merges(merged: dict[str, MergedCharacter]) -> None:
@@ -542,6 +562,11 @@ _ADJUDICATION_SAMPLE_QUOTES = 3
 # its own right, so it gets source context rather than a bare quote.
 _CONTEXT_WINDOW_EVIDENCE_THRESHOLD = 6
 _CONTEXT_WINDOW_CHARS = 220
+
+# A contested appellation needs support from this many independent chunks
+# before it is awarded to anyone. One chunk is one author's phrasing, which
+# is not enough to overrule a competing claim.
+_APPELLATION_MIN_CHUNKS = 2
 
 
 class SamePersonGroup(BaseModel):

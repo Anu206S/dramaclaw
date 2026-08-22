@@ -1206,26 +1206,78 @@ def test_an_appellation_only_one_character_claims_becomes_an_alias():
     assert merged["刘管家"].aliases == set()
 
 
-def test_an_appellation_two_characters_claim_is_dropped():
-    """Two claimants means the model could not attribute it.
+def _claim(chunk_id, start, name, appellation, text):
+    return (
+        _chunk(text, chunk_id=chunk_id, start=start),
+        ChunkCharacterOutput(
+            characters=[_candidate_with_appellations(name, [text], [appellation])]
+        ),
+    )
 
-    A wrong alias resolves confidently to the wrong person, which is worse than
-    no alias at all.
+
+def test_a_contested_appellation_goes_to_whoever_the_text_keeps_supporting():
+    """Decided by how many independent chunks say so, not by overall evidence.
+
+    Ranking by total evidence would hand every ambiguous form to the lead,
+    which is the opposite of evidence-driven.
     """
     text = "郑玉琴走进客厅。刘管家喊了一声郑太。"
+    outcomes = [
+        _claim("c0", 0, "郑玉琴", "郑太", text),
+        _claim("c1", 60, "郑玉琴", "郑太", text),
+        _claim("c2", 120, "郑玉琴", "郑太", text),
+        _claim("c3", 180, "刘管家", "郑太", text),
+    ]
+    merged = {m.name: m for m in merge_character_candidates(outcomes)}
+    assert merged["郑玉琴"].aliases == {"郑太"}
+    assert merged["刘管家"].aliases == set()
+
+
+def test_a_contested_appellation_with_a_narrow_lead_is_dropped():
+    """Leading is not enough; three-to-two leaves it unassigned.
+
+    A wrong alias resolves confidently to the wrong person, while a missing one
+    merely fails to resolve — so a close call is left alone.
+    """
+    text = "郑玉琴走进客厅。刘管家喊了一声郑太。"
+    outcomes = [
+        _claim("c0", 0, "郑玉琴", "郑太", text),
+        _claim("c1", 60, "郑玉琴", "郑太", text),
+        _claim("c2", 120, "郑玉琴", "郑太", text),
+        _claim("c3", 180, "刘管家", "郑太", text),
+        _claim("c4", 240, "刘管家", "郑太", text),
+    ]
+    for item in merge_character_candidates(outcomes):
+        assert "郑太" not in item.aliases
+
+
+def test_a_contested_appellation_seen_in_only_one_chunk_is_dropped():
+    """One chunk is one author's phrasing, not grounds to overrule a rival."""
+    text = "郑玉琴走进客厅。刘管家喊了一声郑太。"
+    outcomes = [
+        _claim("c0", 0, "郑玉琴", "郑太", text),
+        _claim("c1", 60, "刘管家", "郑太", text),
+    ]
+    for item in merge_character_candidates(outcomes):
+        assert "郑太" not in item.aliases
+
+
+def test_an_appellation_that_is_itself_a_character_never_becomes_an_alias():
+    text = "郑玉琴走进客厅。刘管家跟在后面。"
     outcomes = [
         (
             _chunk(text),
             ChunkCharacterOutput(
                 characters=[
-                    _candidate_with_appellations("郑玉琴", [text], ["郑太"]),
-                    _candidate_with_appellations("刘管家", [text], ["郑太"]),
+                    _candidate_with_appellations("郑玉琴", [text], ["刘管家"]),
+                    _candidate("刘管家", quotes=[text]),
                 ]
             ),
         )
     ]
-    for item in merge_character_candidates(outcomes):
-        assert "郑太" not in item.aliases
+    merged = {m.name: m for m in merge_character_candidates(outcomes)}
+    assert "刘管家" in merged
+    assert merged["郑玉琴"].aliases == set()
 
 
 def test_an_appellation_absent_from_the_chunk_is_rejected():

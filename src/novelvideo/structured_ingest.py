@@ -25,7 +25,7 @@ from novelvideo.utils.document_parsers import load_novel_text
 # results — different chunk ids, boundaries or offsets. A run is reused only
 # when source text, schema version, this version and the spine template all
 # match, so a bump simply starts a fresh plan rather than corrupting an old one.
-STRUCTURED_PIPELINE_VERSION = "structured_v1.1"
+STRUCTURED_PIPELINE_VERSION = "structured_v1"
 STRUCTURED_SCHEMA_VERSION = 1
 
 _PROGRESS = {
