@@ -251,6 +251,7 @@ async def extract_characters_from_chunks(
     concurrency: int | None = None,
     cached_outcomes: Optional[list] = None,
     source_text: str = "",
+    roster: Optional[set] = None,
     adjudicate: bool = True,
     adjudication_agent: Any = None,
     on_log: Optional[Callable[[str], None]] = None,
@@ -275,7 +276,7 @@ async def extract_characters_from_chunks(
         merged = merge_character_candidates(replayed)
         if adjudicate:
             merged = await adjudicate_characters(
-                merged, source_text=source_text,
+                merged, source_text=source_text, roster=roster,
                 agent=adjudication_agent, on_log=log,
             )
         return merged, []
@@ -319,7 +320,7 @@ async def extract_characters_from_chunks(
         # Rules cannot see across chunks; this can. One call over the candidate
         # set, not another pass over the source.
         merged = await adjudicate_characters(
-            merged, source_text=source_text,
+            merged, source_text=source_text, roster=roster,
             agent=adjudication_agent, on_log=log,
         )
     return merged, failures
@@ -525,10 +526,13 @@ async def _maybe_await(value: Any) -> Any:
 
 # ── ambiguity adjudication ──────────────────────────────────────────────────
 
-# A character carrying a large share of the evidence is load-bearing. The
-# adjudicator may fold names into it, but must never be able to delete it: one
-# bad call would silently drop a lead from the cast.
-_NON_CHARACTER_EVIDENCE_CEILING = 0.08
+# A candidate the model may fold into another. Anything better attested than
+# this stands on its own: a wrong merge destroys a character silently, while a
+# wrong split leaves a visible duplicate the user can remove.
+_MERGEABLE_EVIDENCE_CEILING = 2
+
+# Same idea for locations, counted in scenes rather than evidence spans.
+_MERGEABLE_SCENE_OCCURRENCES = 2
 
 # Enough of the text to recognise who is being talked about, without resending
 # the script.
@@ -633,10 +637,22 @@ def _adjudication_prompt(
     )
 
 
+def _roster_protects(name: str, roster: set[str]) -> bool:
+    """Whether a scene's cast list names this character.
+
+    A cast list is written by the author, not inferred, so a name appearing in
+    one is a fact about the script. Such a character is never merged away.
+    """
+    if not name:
+        return False
+    return any(name == entry or name in entry for entry in roster)
+
+
 async def adjudicate_characters(
     merged: list[MergedCharacter],
     *,
     source_text: str = "",
+    roster: Optional[set[str]] = None,
     agent: Any = None,
     on_log: Optional[Callable[[str], None]] = None,
 ) -> list[MergedCharacter]:
@@ -667,16 +683,46 @@ async def adjudicate_characters(
         log(f"⚠️ 归一裁决失败，保留规则归一结果: {exc}")
         return merged
 
-    total_evidence = sum(len(item.evidence) for item in merged) or 1
+    cast = roster or set()
     removed: set[str] = set()
 
+    def may_merge_away(candidate: MergedCharacter) -> bool:
+        """Whether this candidate is weak enough to be folded into another."""
+        if _roster_protects(candidate.name, cast):
+            return False
+        return len(candidate.evidence) <= _MERGEABLE_EVIDENCE_CEILING
+
     for group in result.groups:
-        primary = by_name.get(normalize_character_name(group.canonical_name))
-        if primary is None:
+        members = [
+            by_name[name]
+            for name in (
+                normalize_character_name(n)
+                for n in [group.canonical_name, *group.alias_names]
+            )
+            if name in by_name and by_name[name].name not in removed
+        ]
+        if len(members) < 2:
             continue
-        for alias in group.alias_names:
-            secondary = by_name.get(normalize_character_name(alias))
-            if secondary is None or secondary is primary or secondary.name in removed:
+
+        # The canonical name is decided here, not by the model: a cast-list name
+        # wins, then the best-attested one. Left to the model, a formal name can
+        # end up folded into a passing nickname.
+        primary = max(
+            members,
+            key=lambda item: (
+                _roster_protects(item.name, cast),
+                len(item.evidence),
+            ),
+        )
+        for secondary in members:
+            if secondary is primary or secondary.name in removed:
+                continue
+            if not may_merge_away(secondary):
+                log(
+                    f"  拒绝归并 {secondary.name} → {primary.name}："
+                    f"证据 {len(secondary.evidence)} 条"
+                    f"{'，且出现在场次人物栏' if _roster_protects(secondary.name, cast) else ''}"
+                )
                 continue
             primary.aliases.add(secondary.name)
             primary.aliases |= secondary.aliases
@@ -693,17 +739,14 @@ async def adjudicate_characters(
             removed.add(secondary.name)
             log(f"  归并 {secondary.name} → {primary.name}")
 
+    # Reported, never acted on. Every candidate here already survived
+    # verification against the source, so discarding one trades a visible
+    # duplicate for an invisible omission — the wrong way round for a first
+    # release. Surfacing the call lets the rule be tuned on real data first.
     for name in result.non_characters:
         item = by_name.get(normalize_character_name(name))
-        if item is None or item.name in removed:
-            continue
-        share = len(item.evidence) / total_evidence
-        if share > _NON_CHARACTER_EVIDENCE_CEILING:
-            # Too central to discard on one model's say-so.
-            log(f"  保留 {item.name}：证据占比 {share:.0%}，不按非角色丢弃")
-            continue
-        removed.add(item.name)
-        log(f"  丢弃非角色 {item.name}")
+        if item is not None and item.name not in removed:
+            log(f"  裁决认为不是角色（仅记录，未删除）：{item.name}")
 
     survivors = [item for item in merged if item.name not in removed]
     log(f"裁决完成: {len(merged)} → {len(survivors)} 个角色")
@@ -809,12 +852,31 @@ async def adjudicate_scenes(
 
     removed: set[str] = set()
     for group in result.groups:
-        primary = by_name.get(str(group.canonical_name or "").strip())
-        if primary is None:
+        members = [
+            by_name[name]
+            for name in (
+                str(n or "").strip()
+                for n in [group.canonical_name, *group.alias_names]
+            )
+            if name in by_name and by_name[name].name not in removed
+        ]
+        if len(members) < 2:
             continue
-        for alias in group.alias_names:
-            secondary = by_name.get(str(alias or "").strip())
-            if secondary is None or secondary is primary or secondary.name in removed:
+
+        # Decided here rather than by the model: the spelling the script uses
+        # most is the canonical one.
+        primary = max(members, key=lambda s: counts.get(s.name, 0))
+        for secondary in members:
+            if secondary is primary or secondary.name in removed:
+                continue
+            # A location the script keeps returning to is a real place, not a
+            # spelling variant. Folding one away would leave those scenes
+            # pointing at another room's art.
+            if counts.get(secondary.name, 0) > _MERGEABLE_SCENE_OCCURRENCES:
+                log(
+                    f"  拒绝归并场景 {secondary.name} → {primary.name}："
+                    f"出现 {counts.get(secondary.name, 0)} 场"
+                )
                 continue
             merged_aliases = list(primary.aliases)
             for candidate in [secondary.name, *secondary.aliases]:

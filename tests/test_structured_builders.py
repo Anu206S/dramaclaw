@@ -849,17 +849,59 @@ async def test_adjudication_cannot_invent_a_character():
     assert {item.name for item in result} == {"郑旭阳", "小阳"}
 
 
-async def test_adjudication_cannot_delete_a_load_bearing_character():
-    """One bad call must not silently drop a lead from the cast."""
+async def test_adjudication_never_deletes_a_candidate():
+    """Every candidate here already survived verification against the source.
+
+    Discarding one trades a visible duplicate for an invisible omission, which
+    is the wrong way round: the user can delete a duplicate but cannot see an
+    omission.
+    """
     from novelvideo.structured_extraction import adjudicate_characters
 
     merged = [_merged("郑玉琴", 96), _merged("郑家悦", 96), _merged("路人", 1)]
+    logs: list[str] = []
     agent = AdjudicatorAgent(non_characters=["郑玉琴", "路人"])
 
+    result = await adjudicate_characters(merged, agent=agent, on_log=logs.append)
+    assert {item.name for item in result} == {"郑玉琴", "郑家悦", "路人"}
+    assert any("仅记录，未删除" in line for line in logs)
+
+
+async def test_adjudication_cannot_merge_two_well_attested_characters():
+    """The model may not fold one lead into another, however it groups them."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑玉琴", 96), _merged("郑家悦", 96)]
+    agent = AdjudicatorAgent(groups=[("郑玉琴", ["郑家悦"])])
+
     result = await adjudicate_characters(merged, agent=agent)
-    names = {item.name for item in result}
-    assert "郑玉琴" in names, "a lead was dropped on the model's say-so"
-    assert "路人" not in names
+    assert {item.name for item in result} == {"郑玉琴", "郑家悦"}
+
+
+async def test_a_character_named_in_a_cast_list_is_never_merged_away():
+    """A cast list is authored, not inferred, so it outranks the model."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑玉琴", 96), _merged("王妈", 1)]
+    agent = AdjudicatorAgent(groups=[("郑玉琴", ["王妈"])])
+
+    result = await adjudicate_characters(
+        merged, roster={"佣人王妈"}, agent=agent
+    )
+    assert {item.name for item in result} == {"郑玉琴", "王妈"}
+
+
+async def test_the_canonical_name_is_chosen_by_the_code_not_the_model():
+    """Left to the model, a formal name can end up folded into a nickname."""
+    from novelvideo.structured_extraction import adjudicate_characters
+
+    merged = [_merged("郑旭阳", 38), _merged("小阳", 1)]
+    # The model nominates the nickname as canonical.
+    agent = AdjudicatorAgent(groups=[("小阳", ["郑旭阳"])])
+
+    result = await adjudicate_characters(merged, agent=agent)
+    assert [item.name for item in result] == ["郑旭阳"]
+    assert result[0].aliases == {"小阳"}
 
 
 async def test_adjudication_failure_keeps_the_rule_result():
@@ -1214,3 +1256,166 @@ def test_a_generic_appellation_is_not_recorded_as_an_alias():
         )
     ]
     assert merge_character_candidates(outcomes)[0].aliases == set()
+
+
+async def test_a_frequently_used_location_is_never_merged_away():
+    """A place the script keeps returning to is real, not a spelling variant.
+
+    Folding it away would leave those scenes pointing at another room's art.
+    """
+    from novelvideo.structured_extraction import adjudicate_scenes
+
+    scenes = [_scene("主任办公室"), _scene("郑家别墅客厅")]
+    agent = SceneAdjudicatorAgent(groups=[("主任办公室", ["郑家别墅客厅"])])
+
+    result = await adjudicate_scenes(
+        scenes, occurrences={"主任办公室": 18, "郑家别墅客厅": 16}, agent=agent
+    )
+    assert {s.name for s in result} == {"主任办公室", "郑家别墅客厅"}
+
+
+async def test_the_canonical_location_is_the_spelling_the_script_uses_most():
+    from novelvideo.structured_extraction import adjudicate_scenes
+
+    scenes = [_scene("郑玉琴办公室"), _scene("郑玉琴办公室内")]
+    # The model nominates the rarer spelling.
+    agent = SceneAdjudicatorAgent(groups=[("郑玉琴办公室内", ["郑玉琴办公室"])])
+
+    result = await adjudicate_scenes(
+        scenes,
+        occurrences={"郑玉琴办公室": 2, "郑玉琴办公室内": 1},
+        agent=agent,
+    )
+    assert [s.name for s in result] == ["郑玉琴办公室"]
+    assert "郑玉琴办公室内" in result[0].aliases
+
+
+async def test_a_completed_build_replays_without_any_model_call(
+    structured_store, monkeypatch
+):
+    """Caching chunk results is not enough on its own.
+
+    Merging is free, but adjudication is a further model call, and a second
+    adjudication can decide differently — an alias could reappear as its own
+    character and be inserted as a new row. A finished build therefore replays
+    its settled cast.
+    """
+    from novelvideo import structured_builders
+    from novelvideo.structured_extraction import (
+        CharacterAdjudication,
+    )
+
+    store, state_dir = structured_store
+    await _ingested(store, state_dir, NARRATED_MULTI)
+
+    extraction = FlakyAgent(
+        outputs={
+            "第一章": ChunkCharacterOutput(
+                characters=[_candidate("林默", quotes=["林默回到阔别十年的故乡。"])]
+            ),
+            "第二章": ChunkCharacterOutput(
+                characters=[_candidate("苏晴", quotes=["他在巷口遇见了苏晴。"])]
+            ),
+        }
+    )
+
+    class CountingAdjudicator:
+        def __init__(self):
+            self.calls = 0
+
+        async def run(self, prompt: str):
+            self.calls += 1
+            return SimpleNamespace(
+                output=CharacterAdjudication(groups=[])
+            )
+
+    adjudicator = CountingAdjudicator()
+    from novelvideo.structured_extraction import extract_characters_from_chunks
+
+    real = extract_characters_from_chunks
+
+    async def fake(chunks, **kwargs):
+        kwargs.pop("agent", None)
+        kwargs.pop("adjudication_agent", None)
+        return await real(chunks, agent=extraction, adjudication_agent=adjudicator, **kwargs)
+
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction.extract_characters_from_chunks", fake
+    )
+
+    await structured_builders.build_characters_structured(store)
+    assert extraction.calls, "the first build should have done real work"
+    assert adjudicator.calls == 1
+
+    extraction.calls.clear()
+    await structured_builders.build_characters_structured(store)
+
+    assert extraction.calls == [], "chunks were re-extracted"
+    assert adjudicator.calls == 1, "adjudication ran again on a finished build"
+
+
+async def test_replaying_a_build_cannot_split_an_alias_back_into_a_character(
+    structured_store, monkeypatch
+):
+    """A second, differently-deciding adjudication must not add a row.
+
+    Without a stored final result, an alias folded in on the first run could
+    come back as its own candidate, and add_characters_atomic — which only
+    checks primary names — would insert it alongside the character that already
+    lists it as an alias.
+    """
+    from novelvideo import structured_builders
+    from novelvideo.structured_extraction import (
+        CharacterAdjudication, SamePersonGroup, extract_characters_from_chunks,
+    )
+
+    store, state_dir = structured_store
+    await _ingested(store, state_dir, NARRATED_MULTI)
+
+    extraction = FlakyAgent(
+        outputs={
+            "第一章": ChunkCharacterOutput(
+                characters=[_candidate("林默", quotes=["林默回到阔别十年的故乡。"])]
+            ),
+            "第二章": ChunkCharacterOutput(
+                characters=[_candidate("苏晴", quotes=["他在巷口遇见了苏晴。"])]
+            ),
+        }
+    )
+
+    class DriftingAdjudicator:
+        """Merges on the first call, then changes its mind."""
+
+        def __init__(self):
+            self.calls = 0
+
+        async def run(self, prompt: str):
+            self.calls += 1
+            groups = (
+                [SamePersonGroup(canonical_name="林默", alias_names=["苏晴"])]
+                if self.calls == 1
+                else []
+            )
+            return SimpleNamespace(output=CharacterAdjudication(groups=groups))
+
+    real = extract_characters_from_chunks
+
+    async def fake(chunks, **kwargs):
+        kwargs.pop("agent", None)
+        kwargs.pop("adjudication_agent", None)
+        return await real(
+            chunks, agent=extraction, adjudication_agent=DriftingAdjudicator(), **kwargs
+        )
+
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction.extract_characters_from_chunks", fake
+    )
+
+    await structured_builders.build_characters_structured(store)
+    first = {c.name for c in await store.list_characters()}
+
+    await structured_builders.build_characters_structured(store)
+    second = {c.name for c in await store.list_characters()}
+
+    assert second == first, "a rebuild changed the cast for unchanged source"
+    assert "苏晴" not in second

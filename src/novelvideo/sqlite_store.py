@@ -352,13 +352,25 @@ CREATE TABLE IF NOT EXISTS entity_evidence (
 );
 CREATE INDEX IF NOT EXISTS idx_entity_evidence_entity
     ON entity_evidence(entity_type, entity_id);
+
+-- The final result of a run, after merging and adjudication. Chunk results are
+-- not sufficient on their own: adjudication is a further model call whose
+-- outcome can differ between runs, so without this an unchanged source could
+-- produce a different cast every rebuild.
+CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
+    run_id            TEXT NOT NULL,
+    artifact_type     TEXT NOT NULL,
+    result_json       TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, artifact_type)
+);
 """
 
 _PROJECT_STORE_SCHEMA_COMPONENT = "project_store"
 # MIGRATION CONTRACT: increment this whenever SQLITE_SCHEMA_SQL or any
 # _ensure_*_columns migration above changes. Existing databases skip the
 # initializer after this version has been recorded.
-_PROJECT_STORE_SCHEMA_VERSION = 2
+_PROJECT_STORE_SCHEMA_VERSION = 3
 
 
 def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
@@ -2515,6 +2527,39 @@ class SQLiteStore:
                SET status = ?, error = ?, completed_at = datetime('now')
                WHERE run_id = ?""",
             (status, str(error)[:2000], run_id),
+        )
+        await db.commit()
+
+    async def get_analysis_artifact(self, run_id: str, artifact_type: str) -> str:
+        """Return a stored final result for a run, or an empty string."""
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT result_json FROM story_analysis_artifacts
+               WHERE run_id = ? AND artifact_type = ?""",
+            (run_id, artifact_type),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["result_json"]) if row else ""
+
+    async def save_analysis_artifact(
+        self, run_id: str, artifact_type: str, result_json: str
+    ) -> None:
+        """Store a run's final result so a rebuild need not recompute it.
+
+        Chunk results alone are not enough to skip all work: merging is cheap
+        but adjudication is another model call, and re-running it can decide
+        differently, so an unchanged source could yield a different cast on
+        every rebuild.
+        """
+        db = await self._ensure_db()
+        await db.execute(
+            """INSERT INTO story_analysis_artifacts
+               (run_id, artifact_type, result_json, created_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(run_id, artifact_type) DO UPDATE SET
+                 result_json = excluded.result_json,
+                 created_at = excluded.created_at""",
+            (run_id, artifact_type, result_json),
         )
         await db.commit()
 

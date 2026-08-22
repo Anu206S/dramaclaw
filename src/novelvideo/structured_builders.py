@@ -19,6 +19,8 @@ from typing import Any, Callable, Optional
 
 from novelvideo.novel_source import require_imported_novel
 from novelvideo.project_config import load_project_config_file_from_state_dir
+import json
+
 from novelvideo.story_analysis import SourceChunk, chunk_source_text
 
 PROP_BUILD_DEFERRED_MESSAGE = "道具将在分集规划时按需生成"
@@ -42,9 +44,9 @@ async def build_characters_structured(
     user edits, a portrait, identities and voice bindings, so a rebuild must
     never overwrite one.
     """
-    from novelvideo.cognee.pipeline import NovelCharacter
     from novelvideo.structured_extraction import (
         ChunkCharacterOutput,
+        MergedCharacter,
         extract_characters_from_chunks,
     )
 
@@ -98,6 +100,33 @@ async def build_characters_structured(
         if cached:
             log(f"复用 {len(cached)} 个已完成片段，仅重算 {len(pending)} 个")
 
+    # A completed run replays its final cast rather than re-adjudicating. Chunk
+    # caching alone still costs one adjudication call per rebuild, and a second
+    # adjudication can decide differently — leaving an alias to reappear as its
+    # own character, which add_characters_atomic would then insert as a new row.
+    if run_id and not pending:
+        stored = await store.get_analysis_artifact(run_id, "characters")
+        if stored:
+            try:
+                payload = json.loads(stored)
+            except ValueError:
+                payload = None
+            if payload:
+                log(f"复用上次裁决结果：{len(payload)} 个角色，未调用模型")
+                merged = [
+                    MergedCharacter(
+                        name=item["name"],
+                        aliases=set(item.get("aliases") or []),
+                        gender=item.get("gender", ""),
+                        description=item.get("description", ""),
+                        evidence=list(item.get("evidence") or []),
+                    )
+                    for item in payload
+                ]
+                return await _publish_characters(
+                    store, merged, run_id, report, log
+                )
+
     async def persist_done(chunk: SourceChunk, output: ChunkCharacterOutput) -> None:
         if run_id:
             await store.mark_analysis_chunk_done(
@@ -114,6 +143,9 @@ async def build_characters_structured(
         on_log=log,
         cached_outcomes=cached,
         source_text=novel_text,
+        # Cast lists come from every chunk, including ones replayed from cache,
+        # so a resumed build protects the same characters a fresh one does.
+        roster={name for chunk in chunks for name in chunk.characters},
         on_chunk_done=persist_done,
         on_chunk_failed=persist_failed,
     )
@@ -136,6 +168,41 @@ async def build_characters_structured(
         report(1.0, "提取无结果")
         return []
     log(f"归一后得到 {len(merged)} 个角色候选")
+
+    if run_id:
+        await store.save_analysis_artifact(
+            run_id,
+            "characters",
+            json.dumps(
+                [
+                    {
+                        "name": item.name,
+                        "aliases": sorted(item.aliases),
+                        "gender": item.gender,
+                        "description": item.description,
+                        "evidence": item.evidence,
+                    }
+                    for item in merged
+                ],
+                ensure_ascii=False,
+            ),
+        )
+
+    return await _publish_characters(
+        store, merged, run_id, report, log, outcome
+    )
+
+
+async def _publish_characters(
+    store: Any,
+    merged: list,
+    run_id: str,
+    report: Callable[[float, str], None],
+    log: Callable[[str], None],
+    outcome: tuple[str, str] = ("completed", ""),
+) -> list[str]:
+    """Publish a settled cast, whether freshly built or replayed from cache."""
+    from novelvideo.cognee.pipeline import NovelCharacter
 
     report(0.8, "发布角色...")
     candidates = [
@@ -167,7 +234,10 @@ async def build_characters_structured(
     # Only now is the run genuinely finished. Marking it complete before
     # publishing would leave a run that claims success while its characters or
     # evidence never landed.
-    await finish(outcome)
+    if run_id:
+        await store.finish_analysis_run(
+            run_id, status=outcome[0], error=outcome[1]
+        )
 
     report(1.0, "角色提取完成")
     return added
