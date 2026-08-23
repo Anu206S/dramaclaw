@@ -170,3 +170,137 @@ async def test_legacy_keeps_the_method_and_its_cache(tmp_path):
         assert store.get_episode(3).title == "第3集"
     finally:
         await sqlite.close()
+
+
+# ── the mapping is one write, not seven ─────────────────────────────────────
+
+
+async def test_a_failed_publish_leaves_the_previous_mapping_intact(
+    structured_store, monkeypatch
+):
+    """It used to clear every episode's text and commit before detecting a
+    chapter, then commit again per delete, per upsert and per body. A cancelled
+    task could leave a project with every episode blank, or half of them mapped,
+    or metadata that did not match the text under it.
+    """
+    await structured_store.build_episodes_from_chapters()
+    await structured_store.patch_episode(2, identity_ids=["林默:default"])
+
+    real_upsert = structured_store._upsert_episodes
+
+    async def fail_midway(db, episodes):
+        await real_upsert(db, episodes[:1])
+        raise RuntimeError("worker killed")
+
+    monkeypatch.setattr(structured_store, "_upsert_episodes", fail_midway)
+    with pytest.raises(RuntimeError):
+        await structured_store.build_episodes_from_chapters(
+            novel_text="第一章 别的\n\n完全不同的正文。\n"
+        )
+
+    # Nothing of the failed run survives: same three episodes, same bodies, and
+    # the planning already done on episode 2 is untouched.
+    episodes = [
+        await structured_store.get_episode_from_graph(n) for n in (1, 2, 3)
+    ]
+    assert [episode.number for episode in episodes] == [1, 2, 3]
+    assert episodes[1].identity_ids == ["林默:default"]
+    assert "陈舟" in await structured_store.load_episode_content(2)
+
+
+async def test_a_remap_to_fewer_chapters_drops_the_extras(structured_store):
+    await structured_store.build_episodes_from_chapters()
+
+    await structured_store.build_episodes_from_chapters(
+        novel_text="第一章 归来\n\n林默回到阔别十年的故乡。\n"
+    )
+
+    assert await structured_store.get_episode_from_graph(1) is not None
+    assert await structured_store.get_episode_from_graph(3) is None
+
+
+async def test_the_body_lands_with_the_row_that_describes_it(structured_store):
+    """Text and metadata are written together, so they cannot disagree."""
+    await structured_store.build_episodes_from_chapters()
+    await structured_store.close()
+
+    reopened = await _sqlite_store(Path(structured_store.state_dir))
+    try:
+        for number, marker in ((1, "林默"), (2, "陈舟"), (3, "争执")):
+            episode = await reopened.get_episode_from_graph(number)
+            assert episode is not None
+            assert marker in await reopened.load_episode_content(number)
+    finally:
+        await reopened.close()
+
+
+# ── the project type is locked by the import, not by episodes ───────────────
+
+
+def test_the_template_lock_follows_the_imported_text(tmp_path, monkeypatch):
+    """Structured ingest creates no episodes, so an episode check left a window.
+
+    The analysis run is keyed on the spine template — the same novel chunked as
+    a screenplay and as narrated prose are different plans — so switching inside
+    that window silently orphans it. The next character build still runs, but
+    with no chunk persistence, no resume, no final artifact and no evidence.
+    """
+    import inspect
+
+    from novelvideo.api.routes import projects
+
+    source = inspect.getsource(projects.update_project)
+    assert "has_imported_novel(ctx.output_dir)" in source
+    assert "get_all_episodes()" not in source
+
+
+async def test_legacy_gets_the_same_atomic_publish(tmp_path, monkeypatch):
+    """The seven-write mapping was legacy's bug first.
+
+    CogneeStore delegates now, so the fix reaches existing projects too — but
+    only if the delegate really is the same code path, which is what this pins.
+    """
+    from novelvideo.cognee.store import CogneeStore
+
+    state_dir = _project(tmp_path, structured=False)
+    sqlite = await _sqlite_store(state_dir)
+    store = CogneeStore.__new__(CogneeStore)
+    store.project_name = "user/legacy"
+    store.dataset_name = "novelvideo_user/legacy"
+    store._db = None
+    store._characters = {}
+    store._episodes = {}
+    store._alias_index = {}
+    store.project_dir = str(state_dir)
+    store.state_dir = str(state_dir)
+    store.db_path = str(state_dir / "data.db")
+    store.sqlite_store = sqlite
+
+    try:
+        store.save_novel_content(CHAPTERED)
+        await store.build_episodes_from_chapters()
+        await sqlite.patch_episode(2, identity_ids=["林默:default"])
+
+        real_upsert = sqlite._upsert_episodes
+
+        async def fail_midway(db, episodes):
+            await real_upsert(db, episodes[:1])
+            raise RuntimeError("worker killed")
+
+        monkeypatch.setattr(sqlite, "_upsert_episodes", fail_midway)
+        with pytest.raises(RuntimeError):
+            await store.build_episodes_from_chapters(
+                novel_text="第一章 别的\n\n完全不同的正文。\n"
+            )
+
+        # Same three episodes, same bodies, planning intact — a legacy project
+        # is no longer left blank or half-mapped by a cancelled task.
+        assert [
+            (await sqlite.get_episode_from_graph(n)).number for n in (1, 2, 3)
+        ] == [1, 2, 3]
+        assert (await sqlite.get_episode_from_graph(2)).identity_ids == [
+            "林默:default"
+        ]
+        assert "陈舟" in await sqlite.load_episode_content(2)
+    finally:
+        await sqlite.close()
