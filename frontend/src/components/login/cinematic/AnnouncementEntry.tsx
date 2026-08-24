@@ -1,113 +1,191 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { useEffect, useState } from "react";
-import { createPortal } from "react-dom";
-import { AnimatePresence, motion } from "framer-motion";
-import { Megaphone, X } from "lucide-react";
+import { useId, useMemo, useState } from "react";
+import { Dialog } from "@base-ui/react/dialog";
+import { Bell, ChevronDown, Megaphone, X } from "lucide-react";
 import { Trans, useTranslation } from "react-i18next";
 import styles from "@/components/login/login.module.css";
+import { type Announcement, loadAnnouncements, useAnnouncementReadState } from "./announcements";
 
 /**
- * 登录页顶栏的公告入口：图标 + 常驻红点，点开是公告弹窗。
+ * 登录页顶栏的公告入口：图标 + 常驻红点，点开是公告中心。
  *
- * 红点不跟已读状态联动 —— 公告是拿来拦人的，看过一次就熄灭等于白挂。
- * 公告正文走 i18n（`loginCinematic.announcement.body`），换文案改翻译文件即可；
- * 译文里用 <time>…</time> 标时间窗、<hl>…</hl> 标需要强调的短句。
+ * 顶栏那颗红点不跟已读联动 —— 公告是拿来拦人的，看过一次就熄灭等于白挂。
+ * 弹窗里每条公告各有一枚未读点，那个才跟已读状态走（状态在 announcements.ts）。
+ *
+ * 弹窗用 Base UI 的 Dialog 原语而不是手搓 portal：焦点陷阱、关闭后焦点回到触发器、
+ * 背景滚动锁都由它负责。动效是 data-starting-style / data-ending-style 上的 CSS
+ * 过渡，所以 prefers-reduced-motion 能真的关掉它 —— framer-motion 的 JS 动画关不掉。
  */
 export function AnnouncementEntry() {
   const { t } = useTranslation();
-  const [open, setOpen] = useState(false);
+  const announcements = useMemo(() => loadAnnouncements(), []);
+  const ids = useMemo(() => announcements.map((item) => item.id), [announcements]);
+  const { isRead, markRead, markAllRead, unreadCount } = useAnnouncementReadState();
+  const [expandedId, setExpandedId] = useState<string | null>(null);
 
-  useEffect(() => {
-    if (!open) return;
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === "Escape") setOpen(false);
-    };
-    window.addEventListener("keydown", handleKeyDown);
-    return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [open]);
+  const unread = unreadCount(ids);
 
   return (
-    <div className={styles.announcement}>
-      <button
-        type="button"
-        className={styles.announcementTrigger}
-        aria-label={t("loginCinematic.announcement.open")}
-        aria-haspopup="dialog"
-        onClick={() => setOpen(true)}
-      >
-        <Megaphone aria-hidden="true" />
-        <span className={styles.announcementDot} aria-hidden="true" />
-      </button>
-      {createPortal(
-        <AnnouncementDialog open={open} onClose={() => setOpen(false)} />,
-        document.body,
-      )}
-    </div>
+    <Dialog.Root>
+      <div className={styles.announcement}>
+        <Dialog.Trigger
+          className={styles.announcementTrigger}
+          aria-label={t("loginCinematic.announcement.open")}
+        >
+          <Megaphone aria-hidden="true" />
+          <span className={styles.announcementDot} aria-hidden="true" />
+        </Dialog.Trigger>
+      </div>
+
+      <Dialog.Portal>
+        <Dialog.Backdrop className={styles.announcementOverlay} />
+        <Dialog.Popup className={styles.announcementDialog}>
+          <header className={styles.announcementHeader}>
+            <Megaphone aria-hidden="true" />
+            <Dialog.Title className={styles.announcementHeading}>
+              {t("loginCinematic.announcement.title")}
+            </Dialog.Title>
+            {unread > 0 ? (
+              <span className={styles.announcementCount}>
+                {t("loginCinematic.announcement.unread", { n: unread })}
+              </span>
+            ) : null}
+            <Dialog.Close
+              className={styles.announcementClose}
+              aria-label={t("loginCinematic.announcement.close")}
+            >
+              <X strokeWidth={1.8} aria-hidden="true" />
+            </Dialog.Close>
+          </header>
+
+          <div className={styles.announcementBody}>
+            {announcements.length === 0 ? (
+              <p className={styles.announcementEmpty}>{t("loginCinematic.announcement.empty")}</p>
+            ) : (
+              <ul className={styles.announcementList}>
+                {announcements.map((item) => (
+                  <AnnouncementCard
+                    key={item.id}
+                    announcement={item}
+                    read={isRead(item.id)}
+                    expanded={expandedId === item.id}
+                    onToggle={() => {
+                      setExpandedId((current) => (current === item.id ? null : item.id));
+                      markRead(item.id);
+                    }}
+                  />
+                ))}
+              </ul>
+            )}
+          </div>
+
+          <footer className={styles.announcementFooter}>
+            <button
+              type="button"
+              className={styles.announcementMarkAll}
+              disabled={unread === 0}
+              onClick={() => markAllRead(ids)}
+            >
+              {t("loginCinematic.announcement.markAllRead")}
+            </button>
+            <Dialog.Close className={styles.announcementConfirm}>
+              {t("loginCinematic.announcement.confirm")}
+            </Dialog.Close>
+          </footer>
+        </Dialog.Popup>
+      </Dialog.Portal>
+    </Dialog.Root>
   );
 }
 
-function AnnouncementDialog({ open, onClose }: { open: boolean; onClose: () => void }) {
-  const { t } = useTranslation();
+function AnnouncementCard({
+  announcement,
+  read,
+  expanded,
+  onToggle,
+}: {
+  announcement: Announcement;
+  read: boolean;
+  expanded: boolean;
+  onToggle: () => void;
+}) {
+  const { t, i18n } = useTranslation();
+  const bodyId = useId();
+
+  // 发布时间存的是 ISO，展示时按当前语言本地化，避免把「2026年8月24日」这种
+  // 中文写法硬编进数据里，英文界面就露馅。
+  const publishedLabel = useMemo(
+    () =>
+      new Intl.DateTimeFormat(i18n.language, {
+        year: "numeric",
+        month: "long",
+        day: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        hour12: false,
+      }).format(new Date(announcement.publishedAt)),
+    [announcement.publishedAt, i18n.language],
+  );
 
   return (
-    <AnimatePresence>
-      {open ? (
-        <motion.div
-          className={styles.announcementOverlay}
-          initial={{ opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={{ duration: 0.18, ease: "easeOut" }}
-          onClick={onClose}
+    <li className={styles.announcementItem}>
+      <span className={styles.announcementItemIcon}>
+        <Bell aria-hidden="true" />
+        {read ? null : <span className={styles.announcementItemDot} aria-hidden="true" />}
+      </span>
+
+      <div className={styles.announcementItemMain}>
+        <div className={styles.announcementItemTop}>
+          <h3 className={styles.announcementItemTitle}>
+            {t(`loginCinematic.announcement.items.${announcement.id}.title`)}
+          </h3>
+          {announcement.pinned ? (
+            <span className={styles.announcementPinned}>
+              {t("loginCinematic.announcement.pinned")}
+            </span>
+          ) : null}
+        </div>
+
+        <p
+          id={bodyId}
+          className={
+            expanded
+              ? `${styles.announcementItemBody} ${styles.announcementItemBodyOpen}`
+              : styles.announcementItemBody
+          }
         >
-          <motion.div
-            className={styles.announcementDialog}
-            role="dialog"
-            aria-modal="true"
-            aria-label={t("loginCinematic.announcement.title")}
-            initial={{ opacity: 0, scale: 0.98, y: 10 }}
-            animate={{ opacity: 1, scale: 1, y: 0 }}
-            exit={{ opacity: 0, scale: 0.98, y: 10 }}
-            transition={{ duration: 0.22, ease: [0.22, 1, 0.36, 1] }}
-            onClick={(event) => event.stopPropagation()}
-          >
-            <header className={styles.announcementHeader}>
-              <Megaphone aria-hidden="true" />
-              <h2 className={styles.announcementHeading}>
-                {t("loginCinematic.announcement.title")}
-              </h2>
-              <button
-                type="button"
-                className={styles.announcementClose}
-                aria-label={t("loginCinematic.announcement.close")}
-                onClick={onClose}
-              >
-                <X strokeWidth={1.8} aria-hidden="true" />
-              </button>
-            </header>
+          {/* 正文里的 <time>/<hl> 由译文自己标，高亮位置跟着语序走而不是写死下标。 */}
+          <Trans
+            i18nKey={`loginCinematic.announcement.items.${announcement.id}.body`}
+            components={{
+              time: <span className={styles.announcementTime} />,
+              hl: <span className={styles.announcementHighlight} />,
+            }}
+          />
+        </p>
 
-            <div className={styles.announcementBody}>
-              <p className={styles.announcementText}>
-                {/* 正文里的 <time>/<hl> 由译文自己标，高亮位置跟着语序走而不是写死下标。 */}
-                <Trans
-                  i18nKey="loginCinematic.announcement.body"
-                  components={{
-                    time: <span className={styles.announcementTime} />,
-                    hl: <span className={styles.announcementHighlight} />,
-                  }}
-                />
-              </p>
-            </div>
+        <time className={styles.announcementItemMeta} dateTime={announcement.publishedAt}>
+          {publishedLabel}
+        </time>
+      </div>
 
-            <footer className={styles.announcementFooter}>
-              <button type="button" className={styles.announcementConfirm} onClick={onClose}>
-                {t("loginCinematic.announcement.confirm")}
-              </button>
-            </footer>
-          </motion.div>
-        </motion.div>
-      ) : null}
-    </AnimatePresence>
+      <button
+        type="button"
+        className={styles.announcementItemToggle}
+        aria-expanded={expanded}
+        aria-controls={bodyId}
+        onClick={onToggle}
+      >
+        <ChevronDown aria-hidden="true" />
+        <span className={styles.announcementSrOnly}>
+          {t(
+            expanded
+              ? "loginCinematic.announcement.collapse"
+              : "loginCinematic.announcement.expand",
+          )}
+        </span>
+      </button>
+    </li>
   );
 }
