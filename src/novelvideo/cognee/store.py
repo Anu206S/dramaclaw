@@ -53,6 +53,7 @@ from novelvideo.utils.path_resolver import (  # noqa: F401
 )
 
 from novelvideo.models import (
+    BeatAssetRefRow,
     CharacterIdentity,
     NovelCharacter,
     NovelEpisode,
@@ -2235,6 +2236,10 @@ class CogneeStore:
         """列出所有视觉节拍。"""
         return await self.sqlite_store.list_visual_beats()
 
+    async def list_beat_asset_refs(self) -> List[BeatAssetRefRow]:
+        """每个 beat 的资产引用字段（只取六列，不构造 Beat 对象）。"""
+        return await self.sqlite_store.list_beat_asset_refs()
+
     async def get_character_from_graph(self, name: str) -> Optional[NovelCharacter]:
         """从 SQLite 获取角色（兼容旧接口名）。"""
         return await self.sqlite_store.get_character_from_graph(name)
@@ -2242,6 +2247,10 @@ class CogneeStore:
     async def get_episode_from_graph(self, number: int) -> Optional[NovelEpisode]:
         """从 SQLite 获取剧集（兼容旧接口名）。"""
         return await self.sqlite_store.get_episode_from_graph(number)
+
+    async def count_beats_by_episode(self) -> Dict[int, int]:
+        """每集的 Beat 数（一次分组查询，不构造 Beat 对象）。"""
+        return await self.sqlite_store.count_beats_by_episode()
 
     async def get_beats_for_episode(self, number: int) -> List[NovelVisualBeat]:
         """获取指定剧集的所有 Beat。"""

@@ -28,7 +28,8 @@ import {
   type AssetSortKey,
 } from "@/components/assets/asset-search-box";
 import {
-  useAssetReferenceIndex,
+  useAssetReferenceCounts,
+  useAssetReferences,
   type BeatReference,
   type SceneCoOccurrence,
 } from "@/lib/queries/asset-references";
@@ -1150,6 +1151,8 @@ function SceneGroupListItem({
             src={previewUrl}
             alt=""
             aria-hidden="true"
+            loading="lazy"
+            decoding="async"
             className="h-full w-full object-cover"
           />
         ) : (
@@ -1221,7 +1224,17 @@ export function ScenesPanel({
     (buildScenesCost.error instanceof BillingRuleNotConfiguredError
       ? t("common.billingRuleNotConfiguredShort")
       : null);
-  const refIndex = useAssetReferenceIndex(project);
+  // Counts feed every card's badge and the usage sort, so they cover the whole
+  // project. The beat list is only rendered inside the edit dialog, so it is
+  // fetched for that one scene instead of for all of them.
+  const refCounts = useAssetReferenceCounts(project);
+  const refDetail = useAssetReferences(
+    project,
+    useMemo(
+      () => (editing ? [{ type: "scene" as const, id: editing.name }] : []),
+      [editing],
+    ),
+  );
 
   const allItems = scenes.data?.data ?? [];
   const [searchQuery, setSearchQuery] = useState("");
@@ -1269,11 +1282,11 @@ export function ScenesPanel({
       (group) => group.baseName,
       (group) =>
         group.scenes.reduce(
-          (sum, scene) => sum + refIndex.countFor("scene", scene.name),
+          (sum, scene) => sum + refCounts.countFor("scene", scene.name),
           0,
         ),
     );
-  }, [allSceneGroups, searchQuery, sortKey, refIndex]);
+  }, [allSceneGroups, searchQuery, sortKey, refCounts]);
   useEffect(() => {
     if (scenes.isLoading) {
       return;
@@ -1516,7 +1529,7 @@ export function ScenesPanel({
                       group={group}
                       selected={selectedBaseName === group.baseName}
                       referenceCount={group.scenes.reduce(
-                        (sum, scene) => sum + refIndex.countFor("scene", scene.name),
+                        (sum, scene) => sum + refCounts.countFor("scene", scene.name),
                         0,
                       )}
                       onSelect={() => rememberSelectedBaseName(group.baseName)}
@@ -1597,7 +1610,7 @@ export function ScenesPanel({
                         project={project}
                         scene={scene}
                         imageSourceSelection={imageSourceSelection}
-                        referenceCount={refIndex.countFor("scene", scene.name)}
+                        referenceCount={refCounts.countFor("scene", scene.name)}
                         onEdit={() => {
                           setEditing(scene);
                           setDraftSeed(null);
@@ -1619,11 +1632,11 @@ export function ScenesPanel({
         draftSeed={draftSeed}
         project={project}
         references={
-          editing ? refIndex.referencesFor("scene", editing.name) : []
+          editing ? refDetail.referencesFor("scene", editing.name) : []
         }
         coOccurrence={
           editing
-            ? refIndex.coOccurrenceForScene(editing.name)
+            ? refDetail.coOccurrenceForScene(editing.name)
             : { identities: [], props: [] }
         }
         onOpenChange={(open) => {
