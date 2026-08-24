@@ -51,7 +51,7 @@ describe("AnnouncementEntry", () => {
     );
   });
 
-  it("renders the time window and the closing line as separate highlight spans", async () => {
+  it("renders the subject and the time window as separate highlight spans", async () => {
     render(<AnnouncementEntry />);
 
     fireEvent.click(screen.getByRole("button", { name: "查看公告" }));
@@ -59,8 +59,8 @@ describe("AnnouncementEntry", () => {
 
     // 高亮片段各自成元素，说明 <time>/<hl> 真的被 Trans 换成了带样式的 span，
     // 而不是当成纯文本原样打在正文里。
+    expect(screen.getByText("渠道版本").tagName).toBe("SPAN");
     expect(screen.getByText("18:00-19:00").tagName).toBe("SPAN");
-    expect(screen.getByText("敬请期待！").tagName).toBe("SPAN");
   });
 
   it("closes the dialog on Escape", async () => {
