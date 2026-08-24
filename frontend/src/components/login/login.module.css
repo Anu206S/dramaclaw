@@ -279,6 +279,10 @@
   display: flex;
   flex-direction: column;
   width: min(420px, calc(100vw - 48px));
+  /* 撑一个下限高度：只有一两条公告时不至于缩成一张小卡片，看着像个提示条而不是
+     公告中心。列表区 flex:1，多出来的空间留在下面，条目照旧顶对齐。
+     下限用 dvh 兜住，保证任何视口下都低于上面那条 max-height。 */
+  min-height: min(440px, 68dvh);
   max-height: min(76dvh, 620px);
   border: 1px solid rgba(255, 255, 255, 0.14);
   border-radius: 16px;
@@ -1617,6 +1621,7 @@
 
   .announcementDialog {
     width: min(420px, calc(100vw - 32px));
+    min-height: min(400px, 62dvh);
     max-height: min(82dvh, 620px);
   }
 
