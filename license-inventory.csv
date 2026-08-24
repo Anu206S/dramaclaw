@@ -723,6 +723,7 @@ frontend/src/components/login/cinematic/SixthShowcaseScreen.tsx,Elastic-2.0,2026
 frontend/src/components/login/cinematic/TenthTestimonialsScreen.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/components/login/cinematic/ThirdScreenVideo.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/components/login/cinematic/TwelfthFinalScreen.tsx,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+frontend/src/components/login/cinematic/announcements.ts,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/components/login/cinematic/eighth-control-screen.module.css,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/components/login/cinematic/eleventh-faq-screen.module.css,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 frontend/src/components/login/cinematic/fifth-screen-video.module.css,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
