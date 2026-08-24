@@ -218,6 +218,19 @@
   transition: color 160ms ease;
 }
 
+/* 图标只有 17px（移动端 16px），命中区域靠这层透明伪元素撑到 24×24 的最小目标
+   尺寸。不直接给按钮设宽高，是因为它在 .stageActions 里跟文字项并排，撑大盒子
+   会把顶栏的间距推歪。 */
+.announcementTrigger::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 24px;
+  height: 24px;
+  transform: translate(-50%, -50%);
+}
+
 .announcementTrigger svg {
   width: 17px;
   height: 17px;
@@ -296,8 +309,8 @@
   -webkit-appearance: none;
   display: grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 24px;
+  height: 24px;
   padding: 0;
   border: 0;
   border-radius: 4px;
