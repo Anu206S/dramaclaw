@@ -2306,3 +2306,328 @@ async def test_a_character_with_nothing_missing_is_left_untouched(
     )
 
     assert writes == []
+
+
+async def test_a_newly_discovered_character_cannot_become_a_second_narrator(
+    structured_store, monkeypatch
+):
+    """The insert lands before the repair path ever looks for a narrator."""
+    from novelvideo import structured_builders
+    from novelvideo.cognee.pipeline import NovelCharacter
+
+    store, _ = structured_store
+    await store.add_characters_atomic(
+        [NovelCharacter(name="郑玉琴", gender="female", is_main=True)],
+        skip_existing=False,
+    )
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction._create_character_appearance_agent",
+        lambda agent=None: FakeAppearanceAgent(
+            {"林某": _appearance("林某", is_main=True)}
+        ),
+    )
+    await structured_builders._publish_characters(
+        store, [_cast_member("林某")], "", lambda *_: None, lambda *_: None
+    )
+
+    narrators = [c.name for c in store.get_all_characters() if c.is_main]
+    assert narrators == ["郑玉琴"]
+
+
+async def test_a_stale_narrator_opinion_is_not_replayed_from_the_cache():
+    """is_main depends on the whole cast; a per-character key cannot invalidate it."""
+    from novelvideo.structured_extraction import enrich_character_appearances
+
+    cache = RecordingCache()
+    old = FakeAppearanceAgent({"郑家悦": _appearance("郑家悦", is_main=True)})
+    await enrich_character_appearances([_cast_member("郑家悦")], agent=old, cache=cache)
+
+    # The cast changed: someone else is the narrator now, and 郑家悦's own
+    # inputs are untouched, so her row is served straight from the cache.
+    new = FakeAppearanceAgent({"林某": _appearance("林某", is_main=True)})
+    result = await enrich_character_appearances(
+        [_cast_member("郑家悦"), _cast_member("林某")], agent=new, cache=cache
+    )
+
+    assert [name for name, item in result.items() if item.is_main] == ["林某"]
+
+
+async def test_the_build_still_seeds_a_narrator_when_the_project_has_none(
+    structured_store, monkeypatch
+):
+    """Refusing to fight an existing choice must not mean never making one."""
+    from novelvideo import structured_builders
+
+    store, _ = structured_store
+    monkeypatch.setattr(
+        "novelvideo.structured_extraction._create_character_appearance_agent",
+        lambda agent=None: FakeAppearanceAgent(
+            {"郑家悦": _appearance("郑家悦", is_main=True)}
+        ),
+    )
+    await structured_builders._publish_characters(
+        store, [_cast_member("郑家悦")], "", lambda *_: None, lambda *_: None
+    )
+
+    assert [c.name for c in store.get_all_characters() if c.is_main] == ["郑家悦"]
+
+
+async def test_a_retry_after_the_cache_landed_still_finds_its_narrator():
+    """Interrupted between the appearance rows and the characters, retry abstains."""
+    from novelvideo.structured_extraction import enrich_character_appearances
+
+    cache = RecordingCache()
+    cast = [_cast_member("郑家悦"), _cast_member("林某")]
+    agent = FakeAppearanceAgent(
+        {
+            "郑家悦": _appearance("郑家悦", is_main=True),
+            "林某": _appearance("林某"),
+        }
+    )
+    first = await enrich_character_appearances(cast, agent=agent, cache=cache)
+    assert [n for n, a in first.items() if a.is_main] == ["郑家悦"]
+
+    # The process died before _publish_characters ran: every appearance row is
+    # on disk, no character is. Every character now replays as an abstention.
+    replay = FakeAppearanceAgent({})
+    second = await enrich_character_appearances(cast, agent=replay, cache=cache)
+
+    assert replay.prompts == []
+    assert [n for n, a in second.items() if a.is_main] == ["郑家悦"]
+
+
+async def test_a_changed_cast_puts_the_narrator_question_back_to_the_model():
+    """The cast-level entry must not become the stale nomination it replaced."""
+    from novelvideo.structured_extraction import enrich_character_appearances
+
+    cache = RecordingCache()
+    await enrich_character_appearances(
+        [_cast_member("郑家悦")],
+        agent=FakeAppearanceAgent({"郑家悦": _appearance("郑家悦", is_main=True)}),
+        cache=cache,
+    )
+
+    # 林某 joins the cast and is nominated; 郑家悦 is served from her own row.
+    result = await enrich_character_appearances(
+        [_cast_member("郑家悦"), _cast_member("林某")],
+        agent=FakeAppearanceAgent({"林某": _appearance("林某", is_main=True)}),
+        cache=cache,
+    )
+
+    assert [n for n, a in result.items() if a.is_main] == ["林某"]
+
+
+class OrderedCache(RecordingCache):
+    """A cache that records the order writes arrive in, and can fail on one."""
+
+    def __init__(self, rows=None, fail_on=None):
+        super().__init__(rows)
+        self.fail_on = fail_on
+        self.writes: list[str] = []
+
+    async def save(self, artifact_type, results):
+        self.writes.append(artifact_type)
+        if artifact_type == self.fail_on:
+            raise RuntimeError("killed")
+        await super().save(artifact_type, results)
+
+
+async def test_a_batch_writes_its_nomination_before_the_rows_that_replay_it():
+    """The rows are what make a batch look finished; the answer is not in them."""
+    from novelvideo.structured_extraction import (
+        CHARACTER_APPEARANCE_CACHE_TYPE,
+        CHARACTER_NARRATOR_CACHE_TYPE,
+        enrich_character_appearances,
+    )
+
+    cache = OrderedCache()
+    await enrich_character_appearances(
+        [_cast_member("郑家悦")],
+        agent=FakeAppearanceAgent({"郑家悦": _appearance("郑家悦", is_main=True)}),
+        cache=cache,
+    )
+
+    first = cache.writes.index(CHARACTER_NARRATOR_CACHE_TYPE)
+    rows = cache.writes.index(CHARACTER_APPEARANCE_CACHE_TYPE)
+    assert first < rows
+
+
+async def test_a_crash_between_the_two_writes_leaves_the_batch_replayable():
+    """Killed after the nomination but before the rows, the retry asks again."""
+    from novelvideo.structured_extraction import (
+        CHARACTER_APPEARANCE_CACHE_TYPE,
+        enrich_character_appearances,
+    )
+
+    cache = OrderedCache(fail_on=CHARACTER_APPEARANCE_CACHE_TYPE)
+    dying = FakeAppearanceAgent({"郑家悦": _appearance("郑家悦", is_main=True)})
+    await enrich_character_appearances(
+        [_cast_member("郑家悦")], agent=dying, cache=cache
+    )
+
+    # Nothing about that character survived, so the retry pays for it again
+    # rather than replaying a row whose answer was never stored.
+    cache.fail_on = None
+    retry = FakeAppearanceAgent({"郑家悦": _appearance("郑家悦", is_main=True)})
+    result = await enrich_character_appearances(
+        [_cast_member("郑家悦")], agent=retry, cache=cache
+    )
+
+    assert retry.prompts != []
+    assert [n for n, a in result.items() if a.is_main] == ["郑家悦"]
+
+
+async def test_an_edited_description_retires_the_cast_decision_too():
+    """Names alone survive an edit that changes what the model was asked."""
+    from novelvideo.structured_extraction import (
+        character_appearance_cache_key,
+        narrator_cache_key,
+    )
+
+    before = character_appearance_cache_key(
+        _cast_member("郑家悦", description="遭受校园霸凌")
+    )
+    after = character_appearance_cache_key(
+        _cast_member("郑家悦", description="已经毕业工作")
+    )
+    assert narrator_cache_key([before]) != narrator_cache_key([after])
+
+
+async def test_a_cast_decision_is_not_replayed_across_edited_inputs():
+    """End to end: the fallback must not answer from inputs that are gone."""
+    from novelvideo.structured_extraction import enrich_character_appearances
+
+    cache = RecordingCache()
+    await enrich_character_appearances(
+        [_cast_member("郑家悦", description="遭受校园霸凌")],
+        agent=FakeAppearanceAgent({"郑家悦": _appearance("郑家悦", is_main=True)}),
+        cache=cache,
+    )
+
+    # Same cast, same order, different description — and this time the model
+    # nominates nobody. The old decision must not stand in for an answer.
+    result = await enrich_character_appearances(
+        [_cast_member("郑家悦", description="已经毕业工作")],
+        agent=FakeAppearanceAgent({"郑家悦": _appearance("郑家悦")}),
+        cache=cache,
+    )
+
+    assert [n for n, a in result.items() if a.is_main] == []
+
+class CrashBeforeSettlementCache(RecordingCache):
+    """Dies at exactly the point the review named.
+
+    Every appearance row is on disk — so every character replays as an
+    abstention — and the run has not yet stored the decision it settled on.
+    """
+
+    def __init__(self, expected_row_writes):
+        super().__init__()
+        self.expected_row_writes = expected_row_writes
+        self.row_writes = 0
+
+    async def save(self, artifact_type, results):
+        from novelvideo.structured_extraction import (
+            CHARACTER_APPEARANCE_CACHE_TYPE,
+            CHARACTER_NARRATOR_CACHE_TYPE,
+        )
+
+        if (
+            artifact_type == CHARACTER_NARRATOR_CACHE_TYPE
+            and self.row_writes >= self.expected_row_writes
+        ):
+            raise RuntimeError("killed before the settlement landed")
+        if artifact_type == CHARACTER_APPEARANCE_CACHE_TYPE:
+            self.row_writes += 1
+        await super().save(artifact_type, results)
+
+
+async def test_the_recovered_narrator_is_the_one_an_uninterrupted_run_would_pick(
+    monkeypatch,
+):
+    """Two batches may both nominate, and the last to write is not the winner."""
+    from novelvideo import structured_extraction
+    from novelvideo.structured_extraction import enrich_character_appearances
+
+    # One character per batch, run in sequence, so 林某's batch writes last.
+    monkeypatch.setattr(structured_extraction, "_APPEARANCE_BATCH_SIZE", 1)
+    cache = CrashBeforeSettlementCache(expected_row_writes=2)
+    cast = [_cast_member("郑家悦"), _cast_member("林某")]
+    agent = FakeAppearanceAgent(
+        {
+            "郑家悦": _appearance("郑家悦", is_main=True),
+            "林某": _appearance("林某", is_main=True),
+        }
+    )
+    try:
+        await enrich_character_appearances(
+            cast, agent=agent, cache=cache, concurrency=1
+        )
+    except RuntimeError:
+        pass
+
+    # Whatever survived, the retry can only answer off disk: every appearance
+    # is a cache hit and therefore abstains.
+    replay = FakeAppearanceAgent({})
+    recovered = await enrich_character_appearances(
+        cast, agent=replay, cache=cache, concurrency=1
+    )
+
+    assert replay.prompts == []
+    assert [n for n, a in recovered.items() if a.is_main] == ["郑家悦"]
+
+
+
+
+
+async def test_two_batches_nominating_do_not_overwrite_each_other():
+    """Separate keys, so the reduce happens on read rather than by race."""
+    from novelvideo.structured_extraction import (
+        CHARACTER_APPEARANCE_CACHE_VERSION,
+        character_appearance_cache_key,
+        narrator_cache_key,
+        narrator_vote_key,
+    )
+
+    assert CHARACTER_APPEARANCE_CACHE_VERSION >= 2
+    cast_key = narrator_cache_key(
+        [
+            character_appearance_cache_key(_cast_member("郑家悦")),
+            character_appearance_cache_key(_cast_member("林某")),
+        ]
+    )
+    assert narrator_vote_key(
+        cast_key, character_appearance_cache_key(_cast_member("郑家悦"))
+    ) != narrator_vote_key(
+        cast_key, character_appearance_cache_key(_cast_member("林某"))
+    )
+
+
+async def test_a_resumed_build_keeps_the_narrator_the_first_attempt_nominated(
+    monkeypatch,
+):
+    """A replayed character abstains in memory however loudly it once nominated."""
+    from novelvideo import structured_extraction
+    from novelvideo.structured_extraction import enrich_character_appearances
+
+    monkeypatch.setattr(structured_extraction, "_APPEARANCE_BATCH_SIZE", 1)
+    cache = RecordingCache()
+    cast = [_cast_member("郑家悦"), _cast_member("林某")]
+
+    # First attempt gets through 郑家悦 and stops before 林某 is answered.
+    stopped = FakeAppearanceAgent({"郑家悦": _appearance("郑家悦", is_main=True)})
+    first = await enrich_character_appearances(
+        cast, agent=stopped, cache=cache, concurrency=1
+    )
+    assert [n for n, a in first.items() if a.is_main] == ["郑家悦"]
+    assert "林某" not in first
+
+    # The retry replays 郑家悦 from cache — silently — and answers 林某 fresh,
+    # who nominates himself. Cast order still decides.
+    resumed = FakeAppearanceAgent({"林某": _appearance("林某", is_main=True)})
+    second = await enrich_character_appearances(
+        cast, agent=resumed, cache=cache, concurrency=1
+    )
+
+    assert set(second) == {"郑家悦", "林某"}
+    assert [n for n, a in second.items() if a.is_main] == ["郑家悦"]
