@@ -529,6 +529,8 @@ def save_newapi_provider_channels(
 
 
 def get_newapi_media_model_mappings() -> dict[str, dict[str, Any]]:
+    if not _uses_ce_gateway_settings():
+        return {}
     settings = get_model_gateway_settings()
     return _decode_media_model_mappings(
         settings.get("custom_newapi_media_model_mappings")
@@ -936,16 +938,21 @@ def save_media_relay_config(
 
 
 def get_model_gateway_settings() -> dict[str, str]:
-    data = _read_all()
+    data = _read_all() if _uses_ce_gateway_settings() else {}
     data.setdefault("model_gateway_mode", MODE_OFFICIAL)
     return data
 
 
 def get_effective_newapi_config(
     *,
+    explicit_config: EffectiveNewApiConfig | None = None,
     official_base_url: str | None = None,
     official_api_key: str | None = None,
 ) -> EffectiveNewApiConfig:
+    if explicit_config is not None:
+        if type(explicit_config) is not EffectiveNewApiConfig:
+            raise TypeError("explicit_config must be an EffectiveNewApiConfig")
+        return explicit_config
     if not _uses_ce_gateway_settings():
         return EffectiveNewApiConfig(
             mode=MODE_OFFICIAL,
@@ -1014,6 +1021,7 @@ def _bool_setting(value: Any, default: bool) -> bool:
 
 def get_effective_media_relay_config(
     *,
+    explicit_config: EffectiveMediaRelayConfig | None = None,
     env_provider: str | None = None,
     env_ttl_seconds: int | str | None = None,
     env_endpoint: str | None = None,
@@ -1025,6 +1033,10 @@ def get_effective_media_relay_config(
     env_cloudinary_api_secret: str | None = None,
     env_cloudinary_folder: str | None = None,
 ) -> EffectiveMediaRelayConfig:
+    if explicit_config is not None:
+        if type(explicit_config) is not EffectiveMediaRelayConfig:
+            raise TypeError("explicit_config must be an EffectiveMediaRelayConfig")
+        return explicit_config
     settings = get_model_gateway_settings() if _uses_ce_gateway_settings() else {}
     db_provider = str(settings.get("media_relay_provider", "")).strip().lower()
     db_endpoint = str(settings.get("oss_relay_endpoint", "")).strip()

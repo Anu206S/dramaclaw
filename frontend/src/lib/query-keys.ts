@@ -16,11 +16,15 @@ export const queryKeys = {
     featureKey?: string;
     model?: string;
   }) => ["credits", "transactions", filters] as const,
+  org: () => ["org"] as const,
+  orgMe: () => ["org", "me"] as const,
+  orgBranding: () => ["org", "branding"] as const,
   projects: () => ["projects"] as const,
   projectSummaries: () => ["projects", "summaries"] as const,
   project: (p: string) => ["projects", p] as const,
   projectGrants: (p: string) => ["projects", p, "grants"] as const,
-  userSearch: (q: string) => ["users", "search", q] as const,
+  userSearch: (project: string, q: string) =>
+    ["users", "search", project, q] as const,
   pipelineStatus: (p: string) => ["projects", p, "pipeline-status"] as const,
   characters: (p: string) => ["projects", p, "characters"] as const,
   character: (p: string, name: string) =>

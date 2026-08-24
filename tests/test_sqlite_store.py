@@ -219,6 +219,110 @@ async def test_build_scenes_from_graph_only_adds_missing_base_scenes(tmp_project
 
 
 @pytest.mark.asyncio
+async def test_build_scenes_from_graph_repairs_its_own_boilerplate(
+    tmp_project, monkeypatch
+):
+    """Legacy projects get the same repair as structured ones.
+
+    While the contract validator rejected valid single-line model output, every
+    scene built on this track stored generated boilerplate. Skipping existing
+    scenes on rebuild would leave those projects on it permanently, so a stored
+    prompt carrying the fallback fingerprint is replaced — and nothing else is.
+    """
+    from novelvideo.cognee import pipeline
+    from novelvideo.models import NovelScene
+
+    boilerplate = pipeline._ensure_directional_environment_prompt(
+        prompt="",
+        scene_name="主任办公室",
+        scene_type="interior",
+        time_of_day="",
+        context_lines=["▲张秉权坐在办公桌后翻看文件。"],
+    )
+    assert pipeline.SCENE_FALLBACK_FINGERPRINT in boilerplate
+
+    await tmp_project.sqlite_store.add_scene(
+        NovelScene(
+            name="主任办公室",
+            scene_type="interior",
+            environment_prompt=boilerplate,
+            spatial_layout_image="/generated/plate.png",
+            notes="人工备注",
+        )
+    )
+
+    real = (
+        "正面：主墙平整素雅，中央悬挂单位标识，下方为办公桌。"
+        "左侧：浅色实体墙连接前后，靠前设磨砂玻璃木门。"
+        "右侧：墙面延伸至后方，设大面积窗户与百叶帘。"
+        "背面：与主墙相对的墙面完整平直，设嵌入式资料柜。"
+    )
+
+    async def fake_extract_scenes_from_graph(**_kwargs):
+        return [
+            NovelScene(
+                name="主任办公室", scene_type="interior", environment_prompt=real
+            )
+        ]
+
+    monkeypatch.setattr(
+        pipeline, "extract_scenes_from_graph", fake_extract_scenes_from_graph
+    )
+    tmp_project.save_novel_content("剧本文本")
+
+    added = await tmp_project.build_scenes_from_graph()
+
+    assert added == []  # a repair is not an addition
+    scene = await tmp_project.sqlite_store.get_scene("主任办公室")
+    assert pipeline.SCENE_FALLBACK_FINGERPRINT not in scene.environment_prompt
+    assert "单位标识" in scene.environment_prompt
+    # Only the prompt moved; generated assets and human notes stay put.
+    assert scene.spatial_layout_image == "/generated/plate.png"
+    assert scene.notes == "人工备注"
+
+
+@pytest.mark.asyncio
+async def test_build_scenes_from_graph_keeps_boilerplate_over_invalid_output(
+    tmp_project, monkeypatch
+):
+    """A malformed rebuild must not overwrite storage with something worse."""
+    from novelvideo.cognee import pipeline
+    from novelvideo.models import NovelScene
+
+    boilerplate = pipeline._ensure_directional_environment_prompt(
+        prompt="",
+        scene_name="主任办公室",
+        scene_type="interior",
+        time_of_day="",
+        context_lines=["▲张秉权坐在办公桌后翻看文件。"],
+    )
+    await tmp_project.sqlite_store.add_scene(
+        NovelScene(
+            name="主任办公室",
+            scene_type="interior",
+            environment_prompt=boilerplate,
+        )
+    )
+
+    async def fake_extract_scenes_from_graph(**_kwargs):
+        return [
+            NovelScene(
+                name="主任办公室", scene_type="interior", environment_prompt="正面：a"
+            )
+        ]
+
+    monkeypatch.setattr(
+        pipeline, "extract_scenes_from_graph", fake_extract_scenes_from_graph
+    )
+    tmp_project.save_novel_content("剧本文本")
+
+    await tmp_project.build_scenes_from_graph()
+
+    scene = await tmp_project.sqlite_store.get_scene("主任办公室")
+    assert scene.environment_prompt == boilerplate
+
+
+@pytest.mark.asyncio
 async def test_graph_rebuild_waits_only_for_scene_graph_query(
     tmp_project,
     monkeypatch,

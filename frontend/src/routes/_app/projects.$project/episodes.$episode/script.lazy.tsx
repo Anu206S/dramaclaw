@@ -20,6 +20,7 @@ import { useCharacters } from "@/lib/queries/characters";
 import { useProject } from "@/lib/queries/projects";
 import { useGenerateRewrite, useGenerateScript } from "@/lib/queries/scripts";
 import { useTaskController } from "@/hooks/use-task-controller";
+import { useTaskActivity } from "@/task-center/use-task-activity";
 import { queryKeys } from "@/lib/query-keys";
 import {
   backendErrorToastMessage,
@@ -90,7 +91,14 @@ function ScriptTabContent() {
     project,
     epNum,
   );
-  const { data: charactersRes } = useCharacters(project);
+  const { data: charactersRes, isLoading: charactersLoading } =
+    useCharacters(project);
+  const characterBuildActivity = useTaskActivity(TASK_TYPES.BUILD_CHARACTERS, {
+    episode: 0,
+  });
+  const sceneBuildActivity = useTaskActivity(TASK_TYPES.BUILD_SCENES, {
+    episode: 0,
+  });
   const updateEpisode = useUpdateEpisode(project);
   const planIdentities = usePlanIdentities(project);
   const planIdentitiesCost = useGenerationCreditCost("feature", "mainline.identity_planner");
@@ -142,6 +150,18 @@ function ScriptTabContent() {
 
   const episodeData = episodeRes?.data;
   const characters: Character[] = charactersRes?.data ?? [];
+  const identityDisabledReason = characterBuildActivity.isActive
+    ? t("episode.script.identityCharactersBuilding")
+    : characterBuildActivity.isRestoring || charactersLoading
+      ? t("episode.script.identityCharactersLoading")
+      : characters.length === 0
+        ? t("episode.script.identityCharactersRequired")
+        : null;
+  const sceneDisabledReason = sceneBuildActivity.isActive
+    ? t("episode.script.sceneCatalogBuilding")
+    : sceneBuildActivity.isRestoring
+      ? t("episode.script.sceneCatalogLoading")
+      : null;
   const identityIds = episodeData?.identity_ids ?? [];
   const identityDefaultMap = episodeData?.identity_default_map ?? {};
   const rawContent = episodeData?.raw_content ?? "";
@@ -704,7 +724,9 @@ function ScriptTabContent() {
                 sceneMenu={sceneMenu}
                 propMenu={propMenu}
                 identityPending={identityPlanning}
+                identityDisabledReason={identityDisabledReason}
                 scenePending={planScenes.isPending || sceneTask.started}
+                sceneDisabledReason={sceneDisabledReason}
                 propPending={planProps.isPending || propTask.started}
                 sceneCostDisplay={planScenesCostDisplay}
                 scenePromotion={planScenesCost.data?.data.promotion}
@@ -811,6 +833,7 @@ function ScriptTabContent() {
         onChange={handleIdentityChange}
         onPlan={handlePlanIdentities}
         planPending={identityPlanning}
+        planDisabledReason={identityDisabledReason}
         planCostDisplay={planIdentitiesCostDisplay}
         planPromotion={planIdentitiesCost.data?.data.promotion}
       />

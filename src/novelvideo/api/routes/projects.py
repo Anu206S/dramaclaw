@@ -13,7 +13,6 @@ from fastapi.responses import JSONResponse
 
 from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
-    get_project_paths,
     make_sqlite_store_for_context,
     make_static_url_for_context,
     validate_project_name,
@@ -29,21 +28,19 @@ from novelvideo.api.schemas import (
     ProjectUpdate,
 )
 from novelvideo.config import ensure_project_dirs_at_paths
-from novelvideo.embedding_models import (
-    PROJECT_EMBEDDING_DIMENSION_KEY,
-    PROJECT_EMBEDDING_MODEL_KEY,
-    embedding_model_binding_for_new_project,
-)
+from novelvideo.knowledge_pipeline import KNOWLEDGE_PIPELINE_KEY, KNOWLEDGE_PIPELINE_STRUCTURED
+from novelvideo.novel_source import has_imported_novel
 from novelvideo.ports import get_project_access, get_project_registry
+from novelvideo.scene_prerequisites import scene_build_applies
 from novelvideo.ports.project import ProjectRecord
 from novelvideo.project_config import (
     default_aspect_ratio_for_spine_template,
-    load_effective_narration_style_for_voice,
-    load_narrator_reference_audio,
+    load_effective_narration_style_for_voice_from_state_dir,
+    load_narrator_reference_audio_from_state_dir,
     load_project_config_file_from_state_dir,
     load_project_config_from_state_dir,
     save_project_config_in_state_dir,
-    set_narrator_reference_audio,
+    set_narrator_reference_audio_in_state_dir,
 )
 from novelvideo.project_context import (
     ProjectContext,
@@ -97,10 +94,10 @@ def _project_updated_at(paths) -> str | None:
     return datetime.fromtimestamp(latest, tz=timezone.utc).isoformat()
 
 
-def _project_counts(username: str, project: str, status: str) -> tuple[int | None, int | None]:
+def _project_counts(paths, status: str) -> tuple[int | None, int | None]:
     if status == "deleted":
         return None, None
-    db_path = get_project_paths(username, project).data_db
+    db_path = paths.data_db
     if not db_path.exists():
         return None, None
     try:
@@ -112,7 +109,7 @@ def _project_counts(username: str, project: str, status: str) -> tuple[int | Non
         finally:
             conn.close()
     except sqlite3.Error:
-        logger.debug("project count failed: %s/%s", username, project, exc_info=True)
+        logger.debug("project count failed: %s", db_path, exc_info=True)
         return None, None
 
 
@@ -145,7 +142,7 @@ async def _summary_for_record(
     paths._runtime_dir_override = Path(record.runtime_dir)
     config = load_project_config_file_from_state_dir(record.state_dir)
     status = record.status or "active"
-    episode_count, beat_count = _project_counts(record.owner_username, record.name, status)
+    episode_count, beat_count = _project_counts(paths, status)
     return ProjectSummary(
         id=record.id,
         name=record.name,
@@ -213,13 +210,16 @@ def _narrator_voice_display_lines(
     }
 
 
-def _effective_narrator_voice_style(username: str, project: str) -> str:
-    return load_effective_narration_style_for_voice(username, project) or DEFAULT_NARRATION_STYLE
+def _effective_narrator_voice_style(ctx: ProjectContext) -> str:
+    return (
+        load_effective_narration_style_for_voice_from_state_dir(ctx.state_dir)
+        or DEFAULT_NARRATION_STYLE
+    )
 
 
 def _narrator_voice_payload(ctx: ProjectContext, store) -> dict:
-    style = _effective_narrator_voice_style(ctx.owner_username, ctx.project_name)
-    stored = load_narrator_reference_audio(ctx.owner_username, ctx.project_name)
+    style = _effective_narrator_voice_style(ctx)
+    stored = load_narrator_reference_audio_from_state_dir(ctx.state_dir)
     resolution = resolve_narrator_source(
         store=store,
         narration_style=style,
@@ -258,16 +258,15 @@ def _narrator_voice_payload(ctx: ProjectContext, store) -> dict:
     }
 
 
-def _ensure_third_person_narrator(username: str, project: str) -> None:
-    style = _effective_narrator_voice_style(username, project)
+def _ensure_third_person_narrator(ctx: ProjectContext) -> None:
+    style = _effective_narrator_voice_style(ctx)
     if style == "first_person":
         raise ValueError(NARRATOR_VOICE_MODE_EXPLANATION)
 
 
 def _persist_narrator_voice_content(
     *,
-    username: str,
-    project: str,
+    state_dir: str | Path,
     project_dir: Path,
     filename: str,
     content: bytes,
@@ -286,9 +285,8 @@ def _persist_narrator_voice_content(
                 existing.with_name(f"{existing.stem}_{int(time.time())}{existing.suffix}")
             )
     target.write_bytes(content)
-    set_narrator_reference_audio(
-        username,
-        project,
+    set_narrator_reference_audio_in_state_dir(
+        state_dir,
         relative_path=_project_relative_path(project_dir, target),
         sha256=voice_content_sha256(content),
     )
@@ -297,13 +295,12 @@ def _persist_narrator_voice_content(
 
 def _trim_narrator_voice_content(
     *,
-    username: str,
-    project: str,
+    state_dir: str | Path,
     project_dir: Path,
     start_seconds: float,
     duration_seconds: float,
 ) -> Path:
-    stored = load_narrator_reference_audio(username, project)
+    stored = load_narrator_reference_audio_from_state_dir(state_dir)
     source = Path(stored.get("path", ""))
     if not str(source):
         raise ValueError("请先上传解说声线")
@@ -334,9 +331,8 @@ def _trim_narrator_voice_content(
         if sibling.exists():
             sibling.replace(sibling.with_name(f"{sibling.stem}_{int(time.time())}{sibling.suffix}"))
     target.write_bytes(content)
-    set_narrator_reference_audio(
-        username,
-        project,
+    set_narrator_reference_audio_in_state_dir(
+        state_dir,
         relative_path=_project_relative_path(project_dir, target),
         sha256=voice_content_sha256(content),
     )
@@ -467,13 +463,16 @@ async def create_project(
             state_dir=record.state_dir,
             runtime_dir=record.runtime_dir,
         )
-        embedding_binding = embedding_model_binding_for_new_project()
+        # New projects use structured extraction: they read the source text
+        # directly and never build a graph, so they must not be bound to an
+        # embedding model. The binding is permanent once written, which is why
+        # this is a creation-time decision rather than something a later run can
+        # undo. Existing projects keep their binding and their track untouched.
         save_project_config_in_state_dir(
             record.state_dir,
             config={
                 "user": user["username"],
-                PROJECT_EMBEDDING_MODEL_KEY: embedding_binding.internal_model,
-                PROJECT_EMBEDDING_DIMENSION_KEY: embedding_binding.dimensions,
+                KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED,
             },
         )
     except Exception:
@@ -510,6 +509,13 @@ async def get_project(project: str, user: dict = Depends(get_api_user)):
             "home_node_id": ctx.home_node_id,
             "status": record.status if record is not None else "active",
             "purged_at": record.purged_at if record is not None else None,
+            # The question the UI actually asks, answered here rather than
+            # rebuilt from spine_template and the knowledge pipeline on the
+            # client — which would put the rule in two places and leak the
+            # track name into the API surface.
+            "scene_build_supported": scene_build_applies(
+                str(ctx.state_dir), str(config.get("spine_template") or "drama")
+            ),
         }
     )
     return {"ok": True, "data": data}
@@ -541,14 +547,15 @@ async def update_project(
     if body.spine_template is not None and body.spine_template != current_config.get(
         "spine_template", "drama"
     ):
-        store = await make_sqlite_store_for_context(ctx)
-        try:
-            imported = bool(store.get_all_episodes())
-        finally:
-            close = getattr(store, "close", None)
-            if close:
-                await close()
-        if imported:
+        # Locked by the imported text, not by episodes. Structured ingest
+        # records a chunk plan and writes novel.txt but creates no episodes, so
+        # an episode check leaves a window open between import and episode
+        # planning. Switching the template inside it silently invalidates the
+        # analysis run — it is keyed on the template, because the same novel
+        # chunked as a screenplay and as narrated prose are different plans —
+        # and the next character build finds none. It still runs, but with no
+        # chunk persistence, no resume, no final artifact and no evidence rows.
+        if has_imported_novel(ctx.output_dir):
             return JSONResponse(
                 status_code=400,
                 content={
@@ -618,11 +625,10 @@ async def upload_narrator_voice(
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     store = await make_sqlite_store_for_context(ctx)
     try:
-        _ensure_third_person_narrator(ctx.owner_username, ctx.project_name)
+        _ensure_third_person_narrator(ctx)
         content = await file.read()
         _persist_narrator_voice_content(
-            username=ctx.owner_username,
-            project=ctx.project_name,
+            state_dir=ctx.state_dir,
             project_dir=ctx.output_dir,
             filename=file.filename or "",
             content=content,
@@ -645,11 +651,10 @@ async def record_narrator_voice(
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     store = await make_sqlite_store_for_context(ctx)
     try:
-        _ensure_third_person_narrator(ctx.owner_username, ctx.project_name)
+        _ensure_third_person_narrator(ctx)
         content, extension = decode_recorded_audio_data_url(body.data_url)
         _persist_narrator_voice_content(
-            username=ctx.owner_username,
-            project=ctx.project_name,
+            state_dir=ctx.state_dir,
             project_dir=ctx.output_dir,
             filename=f"recorded{extension}",
             content=content,
@@ -672,7 +677,7 @@ async def copy_project_audio_as_narrator_voice(
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     store = await make_sqlite_store_for_context(ctx)
     try:
-        _ensure_third_person_narrator(ctx.owner_username, ctx.project_name)
+        _ensure_third_person_narrator(ctx)
         raw_path = Path(body.source_path)
         source_path = raw_path if raw_path.is_absolute() else ctx.output_dir / raw_path
         source_path = source_path.resolve()
@@ -680,8 +685,7 @@ async def copy_project_audio_as_narrator_voice(
         if not source_path.exists() or source_path.suffix.lower() not in VOICE_SAMPLE_EXTENSIONS:
             return {"ok": False, "error": "请选择项目内有效的音频文件"}
         _persist_narrator_voice_content(
-            username=ctx.owner_username,
-            project=ctx.project_name,
+            state_dir=ctx.state_dir,
             project_dir=ctx.output_dir,
             filename=source_path.name,
             content=source_path.read_bytes(),
@@ -704,10 +708,9 @@ async def trim_narrator_voice(
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     store = await make_sqlite_store_for_context(ctx)
     try:
-        _ensure_third_person_narrator(ctx.owner_username, ctx.project_name)
+        _ensure_third_person_narrator(ctx)
         _trim_narrator_voice_content(
-            username=ctx.owner_username,
-            project=ctx.project_name,
+            state_dir=ctx.state_dir,
             project_dir=ctx.output_dir,
             start_seconds=body.start_seconds,
             duration_seconds=body.duration_seconds,
@@ -728,14 +731,14 @@ async def delete_narrator_voice(
     """移除第三人称项目解说声线。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     store = await make_sqlite_store_for_context(ctx)
-    stored = load_narrator_reference_audio(ctx.owner_username, ctx.project_name)
+    stored = load_narrator_reference_audio_from_state_dir(ctx.state_dir)
     target = Path(stored.get("path", ""))
     if str(target):
         if not target.is_absolute():
             target = ctx.output_dir / target
         if target.exists():
             target.replace(target.with_name(f"{target.stem}_{int(time.time())}{target.suffix}"))
-    set_narrator_reference_audio(ctx.owner_username, ctx.project_name, relative_path="", sha256="")
+    set_narrator_reference_audio_in_state_dir(ctx.state_dir, relative_path="", sha256="")
     return {
         "ok": True,
         "data": _narrator_voice_payload(ctx, store),

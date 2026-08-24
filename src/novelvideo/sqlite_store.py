@@ -12,25 +12,34 @@ import functools
 import inspect
 import json
 import logging
+import os
 import sqlite3
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 
 import aiosqlite
 from rich.console import Console
 
 from novelvideo.models import (
+    build_prop_menu,
+    build_scene_menu,
     CharacterIdentity,
     NovelCharacter,
     NovelEpisode,
     NovelProp,
     NovelScene,
     NovelVisualBeat,
+    PropMenuItem,
+    SceneMenuItem,
     normalize_detected_identities,
     normalize_detected_props,
     sync_beat_asset_refs,
 )
-from novelvideo.novel_source import load_imported_novel_content
+from novelvideo.novel_source import (
+    load_imported_novel_content,
+    require_imported_novel,
+)
+from novelvideo.official_defaults import DEFAULT_COGNEE_LLM_MODEL
 from novelvideo.sqlite_pragmas import configure_sqlite_connection_async
 from novelvideo.sqlite_schema import ensure_sqlite_schema
 from novelvideo.utils.asset_names import (
@@ -295,13 +304,97 @@ CREATE TABLE IF NOT EXISTS seedance2_voice_audio_records (
 );
 CREATE INDEX IF NOT EXISTS idx_seedance2_voice_audio_speaker
     ON seedance2_voice_audio_records(episode_number, speaker);
+
+-- structured_v1 analysis bookkeeping.
+--
+-- A run is keyed by what it analysed (source_sha256) and how (schema_version),
+-- so re-importing identical text reuses completed chunks and only failed or
+-- stale ones are recomputed. Chunks store source offsets rather than a copy of
+-- the text: duplicating a whole novel per run would dwarf the rest of the
+-- project database.
+CREATE TABLE IF NOT EXISTS story_analysis_runs (
+    run_id            TEXT PRIMARY KEY,
+    pipeline_version  TEXT NOT NULL,
+    schema_version    INTEGER NOT NULL DEFAULT 1,
+    spine_template    TEXT NOT NULL DEFAULT '',
+    source_sha256     TEXT NOT NULL,
+    source_length     INTEGER NOT NULL DEFAULT 0,
+    status            TEXT NOT NULL DEFAULT 'pending',
+    error             TEXT NOT NULL DEFAULT '',
+    created_at        TEXT DEFAULT (datetime('now')),
+    completed_at      TEXT DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_story_analysis_runs_source
+    ON story_analysis_runs(source_sha256, schema_version);
+
+CREATE TABLE IF NOT EXISTS story_analysis_chunks (
+    run_id            TEXT NOT NULL,
+    chunk_id          TEXT NOT NULL,
+    chunk_index       INTEGER NOT NULL DEFAULT 0,
+    section_type      TEXT NOT NULL DEFAULT '',
+    section_label     TEXT NOT NULL DEFAULT '',
+    source_start      INTEGER NOT NULL DEFAULT 0,
+    source_end        INTEGER NOT NULL DEFAULT 0,
+    source_hash       TEXT NOT NULL DEFAULT '',
+    status            TEXT NOT NULL DEFAULT 'pending',
+    attempts          INTEGER NOT NULL DEFAULT 0,
+    error             TEXT NOT NULL DEFAULT '',
+    result_json       TEXT NOT NULL DEFAULT '{}',
+    PRIMARY KEY (run_id, chunk_id)
+);
+CREATE INDEX IF NOT EXISTS idx_story_analysis_chunks_status
+    ON story_analysis_chunks(run_id, status);
+
+-- Structured entities keep spans of real source text so they can be traced back
+-- to what produced them. Only characters record evidence today; entity_type
+-- exists so scenes and props can join later without a schema change.
+CREATE TABLE IF NOT EXISTS entity_evidence (
+    run_id            TEXT NOT NULL,
+    entity_type       TEXT NOT NULL,
+    entity_id         TEXT NOT NULL,
+    chunk_id          TEXT NOT NULL,
+    source_start      INTEGER NOT NULL,
+    source_end        INTEGER NOT NULL,
+    evidence_kind     TEXT NOT NULL DEFAULT '',
+    evidence_text     TEXT NOT NULL DEFAULT '',
+    PRIMARY KEY (run_id, entity_type, entity_id, chunk_id, source_start, source_end)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_evidence_entity
+    ON entity_evidence(entity_type, entity_id);
+
+-- The final result of a run, after merging and adjudication. Chunk results are
+-- not sufficient on their own: adjudication is a further model call whose
+-- outcome can differ between runs, so without this an unchanged source could
+-- produce a different cast every rebuild.
+CREATE TABLE IF NOT EXISTS story_analysis_artifacts (
+    run_id            TEXT NOT NULL,
+    artifact_type     TEXT NOT NULL,
+    result_json       TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT DEFAULT (datetime('now')),
+    PRIMARY KEY (run_id, artifact_type)
+);
+
+-- Per-item results, keyed by a hash of the exact model input rather than by
+-- run. A scene build is dozens of independent model calls; when one fails or
+-- the worker is killed, everything already produced is still valid, and the
+-- next run must not pay for it again. Deliberately not scoped to a run: the
+-- point is for a *new* run to reuse what an abandoned one finished.
+CREATE TABLE IF NOT EXISTS story_analysis_item_cache (
+    cache_key         TEXT PRIMARY KEY,
+    artifact_type     TEXT NOT NULL,
+    result_json       TEXT NOT NULL DEFAULT '{}',
+    created_at        TEXT DEFAULT (datetime('now'))
+);
+
+CREATE INDEX IF NOT EXISTS idx_item_cache_type
+    ON story_analysis_item_cache(artifact_type);
 """
 
 _PROJECT_STORE_SCHEMA_COMPONENT = "project_store"
 # MIGRATION CONTRACT: increment this whenever SQLITE_SCHEMA_SQL or any
 # _ensure_*_columns migration above changes. Existing databases skip the
 # initializer after this version has been recorded.
-_PROJECT_STORE_SCHEMA_VERSION = 1
+_PROJECT_STORE_SCHEMA_VERSION = 4
 
 
 def _table_columns(db: sqlite3.Connection, table: str) -> set[str]:
@@ -389,19 +482,22 @@ class SQLiteStore:
             self.project_dir = ensure_project_dirs(project_name)["base"]
 
         parts = project_name.split("/", 1)
-        if len(parts) == 2:
+        if state_dir:
+            resolved_state_dir = Path(state_dir)
+            if len(parts) == 2:
+                from novelvideo.utils.project_paths import ProjectPaths
+
+                paths = ProjectPaths(parts[0], parts[1])
+                if resolved_state_dir.resolve() == paths.state_dir.resolve():
+                    paths.bootstrap_from_legacy_output()
+        elif len(parts) == 2:
             from novelvideo.utils.project_paths import ProjectPaths
 
             paths = ProjectPaths(parts[0], parts[1])
             paths.bootstrap_from_legacy_output()
-            default_state_dir = paths.state_dir
+            resolved_state_dir = paths.state_dir
         else:
-            default_state_dir = Path(self.project_dir)
-
-        if state_dir:
-            resolved_state_dir = Path(state_dir)
-        else:
-            resolved_state_dir = default_state_dir
+            resolved_state_dir = Path(self.project_dir)
 
         resolved_state_dir.mkdir(parents=True, exist_ok=True)
         self.state_dir = str(resolved_state_dir)
@@ -739,6 +835,68 @@ class SQLiteStore:
         self._alias_index.update(updated_alias_index)
         for alias in character.aliases:
             self._alias_index[alias] = character.name
+
+    async def add_characters_atomic(
+        self, characters: list, *, skip_existing: bool = True
+    ) -> list[str]:
+        """Publish many characters in one transaction.
+
+        add_character() commits per row, so a failure partway through a build
+        leaves half a cast behind. Structured builds publish their whole result
+        at once instead: either every character lands or none does.
+
+        Existing characters are skipped by default. A character on disk may
+        already carry user edits, a portrait, identities and voice bindings, and
+        a rebuild must not overwrite any of that.
+        """
+        if not characters:
+            return []
+
+        db = await self._ensure_db()
+        existing = set(self._characters) if skip_existing else set()
+        pending = [
+            character
+            for character in characters
+            if not (skip_existing and character.name in existing)
+        ]
+        if not pending:
+            return []
+
+        try:
+            await db.execute("BEGIN")
+            for character in pending:
+                await db.execute(
+                    """INSERT INTO characters
+                       (name, aliases_json, role, is_main, gender, age_group,
+                        body_type, fish_voice_id, description, face_prompt,
+                        appearance_details, identities_json)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                       ON CONFLICT(name) DO NOTHING""",
+                    (
+                        character.name,
+                        json.dumps(character.aliases, ensure_ascii=False),
+                        character.role,
+                        1 if character.is_main else 0,
+                        character.gender,
+                        character.age_group,
+                        character.body_type,
+                        character.fish_voice_id,
+                        character.description,
+                        character.face_prompt,
+                        character.appearance_details,
+                        character.identities_json,
+                    ),
+                )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+        for character in pending:
+            self._characters[character.name] = character
+            for alias in character.aliases:
+                self._alias_index[alias] = character.name
+        return [character.name for character in pending]
 
     async def update_character(self, name: str, **updates) -> None:
         char = self.get_character(name)
@@ -1431,7 +1589,10 @@ class SQLiteStore:
                     ids = [new_id if x == old_id else x for x in ids]
                 else:
                     ids = [x for x in ids if x != old_id]
-                await self.update_episode(ep.number, identity_ids=ids)
+                # Column-level: renaming or deleting an identity can happen
+                # while planning is running, and a whole-row write here would
+                # discard whatever menu landed in between.
+                await self.patch_episode(ep.number, identity_ids=ids)
 
     async def update_character_identity(
         self,
@@ -1583,6 +1744,195 @@ class SQLiteStore:
             raise
         self._episodes.update({episode.number: episode for episode in episodes})
 
+    async def build_episodes_from_chapters(
+        self,
+        novel_text: str = None,
+        generate_metadata: bool = False,
+        on_progress: Optional[Callable[[float, str], None]] = None,
+        on_log: Optional[Callable[[str], None]] = None,
+    ) -> List[NovelEpisode]:
+        """从小说章节结构创建剧集（章节映射模式）。
+
+        Deterministic: chapter markers in the source text become episodes, one
+        per chapter. It reads the imported novel and writes SQLite and touches
+        no graph, which is why it lives here rather than on the Cognee facade —
+        structured projects open a SQLiteStore directly and could not reach it
+        there. CogneeStore delegates, so legacy behaviour is unchanged.
+        """
+        from novelvideo.cognee.chapter_detector import ChapterDetector
+
+        def report(progress: float, task: str):
+            if on_progress:
+                on_progress(progress, task)
+
+        def log(message: str):
+            if on_log:
+                on_log(message)
+            console.print(f"[dim]{message}[/dim]")
+
+        # 获取小说原文
+        if novel_text is None:
+            log("从文件加载原文...")
+            novel_text = require_imported_novel(self.project_dir)
+            log(f"原文加载完成: {len(novel_text)} 字符")
+
+        # Everything below computes; nothing is written until the publish at
+        # the end. This used to clear every episode's raw_content and commit
+        # before it had even detected a chapter, then commit again per delete,
+        # per upsert and per episode body — so a cancelled task or a killed
+        # worker could leave a project with every episode blank, or half its
+        # episodes mapped, or metadata that did not match the text under it.
+
+        # P1: 检测章节
+        report(0.1, "检测章节结构...")
+        log("检测章节结构...")
+        detector = ChapterDetector()
+        chapters = detector.detect(novel_text)
+
+        if not chapters:
+            raise ValueError("未检测到章节标记，请使用 AI 规划模式")
+
+        log(f"检测到 {len(chapters)} 个章节")
+
+        episodes = []
+        chapter_contents = {}  # 收集章节内容，最后统一写入
+        total = len(chapters)
+
+        for i, chapter in enumerate(chapters):
+            progress = 0.1 + (i / total) * 0.7
+            report(progress, f"处理第 {chapter.number} 章...")
+
+            # 收集章节内容（稍后写入，避免与 _delete_old_episodes 冲突）
+            chapter_contents[chapter.number] = chapter.content
+
+            if generate_metadata:
+                log(f"为第 {chapter.number} 章生成元数据...")
+                metadata = await self._generate_episode_metadata(chapter.number, chapter.content)
+            else:
+                summary = chapter.content[:200].strip()
+                if len(chapter.content) > 200:
+                    summary += "..."
+                metadata = {
+                    "title": f"第{chapter.number}集",
+                    "summary": summary,
+                    "conflict": "",
+                    "cliffhanger": "",
+                    "key_events": [],
+                    "characters": [],
+                }
+
+            episode = NovelEpisode(
+                number=chapter.number,
+                title=metadata.get("title", f"第{chapter.number}集"),
+                chapter_start=chapter.number,
+                chapter_end=chapter.number,
+                content_summary=metadata.get("summary", ""),
+                main_conflict=metadata.get("conflict", ""),
+                cliffhanger=metadata.get("cliffhanger", ""),
+                key_events=metadata.get("key_events", []),
+                character_names=metadata.get("characters", []),
+            )
+            episodes.append(episode)
+
+        # P2: 合并剧集（保留已有的已规划资产字段）
+        report(0.82, "合并剧集数据...")
+        log("合并剧集数据（保留身份、场景、道具和颜色）...")
+        new_numbers = {ep.number for ep in episodes}
+        for ep in episodes:
+            old = self._episodes.get(ep.number)
+            if old:
+                ep.identity_ids = old.identity_ids
+                ep.scene_menu = old.scene_menu
+                ep.prop_menu = old.prop_menu
+                ep.sketch_colors_json = old.sketch_colors_json
+            # The body travels on the row, so the text and the metadata
+            # describing it land in the same write and cannot disagree.
+            ep.raw_content = chapter_contents.get(ep.number, "")
+
+        removed = set(self._episodes.keys()) - new_numbers
+
+        # P3: 单事务发布
+        report(0.88, "保存到数据库...")
+        log("保存剧集到数据库...")
+        db = await self._ensure_db()
+        try:
+            if removed:
+                placeholders = ",".join("?" for _ in removed)
+                await db.execute(
+                    f"DELETE FROM episodes WHERE number IN ({placeholders})",
+                    sorted(removed),
+                )
+            await self._upsert_episodes(db, episodes)
+            await db.commit()
+        except BaseException:
+            await asyncio.shield(db.rollback())
+            raise
+        if removed:
+            log(f"已删除 {len(removed)} 个旧剧集")
+
+        # P4: 更新内存缓存，只在写入确实落盘之后
+        self._episodes.clear()
+        for ep in episodes:
+            self._episodes[ep.number] = ep
+
+        report(1.0, "章节映射完成")
+        log(f"章节映射完成: {len(episodes)} 集")
+
+        return episodes
+
+    async def _generate_episode_metadata(self, episode_num: int, content: str) -> dict:
+        """使用 LLM 生成剧集元数据。"""
+        try:
+            import litellm
+
+            from novelvideo.config import (
+                get_newapi_structured_output_litellm_kwargs,
+            )
+
+            truncated = content[:8000] if len(content) > 8000 else content
+
+            prompt = f"""请分析以下章节内容，提取关键信息。
+
+章节内容：
+{truncated}
+
+请用 JSON 格式返回以下信息：
+{{
+    "title": "一个吸引人的标题（10字以内）",
+    "summary": "内容摘要（50-100字）",
+    "conflict": "主要冲突或矛盾",
+    "cliffhanger": "结尾悬念（如果有）",
+    "key_events": ["关键事件1", "关键事件2"],
+    "characters": ["出场角色1", "出场角色2"]
+}}
+
+只返回 JSON，不要有其他内容。"""
+
+            response = await litellm.acompletion(
+                model=os.environ.get("LLM_MODEL", "").strip()
+                or DEFAULT_COGNEE_LLM_MODEL,
+                messages=[{"role": "user", "content": prompt}],
+                temperature=0.3,
+                response_format={"type": "json_object"},
+                **get_newapi_structured_output_litellm_kwargs(),
+            )
+
+            import json
+
+            result = json.loads(response.choices[0].message.content)
+            return result
+
+        except Exception as e:
+            console.print(f"[yellow]元数据生成失败: {e}，使用默认值[/yellow]")
+            return {
+                "title": f"第{episode_num}集",
+                "summary": content[:200] + "..." if len(content) > 200 else content,
+                "conflict": "",
+                "cliffhanger": "",
+                "key_events": [],
+                "characters": [],
+            }
+
     async def replace_episodes(self, episodes: List[NovelEpisode]) -> None:
         """Atomically replace every episode row and refresh the cache."""
 
@@ -1621,6 +1971,166 @@ class SQLiteStore:
             self._episodes[new_number] = episode
         await self.add_episodes([episode])
         console.print(f"[green]已更新剧集: 第{episode.number}集[/green]")
+
+    # Episode fields the column-level patch understands, and how each is
+    # serialised. ``number`` is deliberately absent: renaming an episode moves
+    # the primary key and the cache entry, which is a whole-row concern.
+    _PATCHABLE_EPISODE_FIELDS: dict[str, tuple[str, str]] = {
+        "scene_menu": ("scene_menu_json", "scene_menu"),
+        "prop_menu": ("prop_menu_json", "prop_menu"),
+        "identity_ids": ("identity_ids", "json_list"),
+        "character_names": ("character_names", "json_list"),
+        "key_events": ("key_events", "json_list"),
+        "event_ids": ("event_ids", "json_list"),
+        "identity_default_map": ("identity_default_map_json", "json_dict"),
+        "sketch_colors": ("sketch_colors_json", "json_dict"),
+        "title": ("title", "text"),
+        "content_summary": ("content_summary", "text"),
+        "main_conflict": ("main_conflict", "text"),
+        "cliffhanger": ("cliffhanger", "text"),
+        "beat_source_text": ("beat_source_text", "text"),
+        "raw_content": ("raw_content", "text"),
+        "adapted_content": ("adapted_content", "text"),
+        "chapter_start": ("chapter_start", "int"),
+        "chapter_end": ("chapter_end", "int"),
+    }
+
+    async def patch_episode(self, episode_number: int, **fields: Any) -> None:
+        """Update only the columns the caller named, atomically.
+
+        Anything that writes the whole episode row re-serialises columns it was
+        never asked to change, from whatever the caller happened to load
+        earlier. Scene, prop and identity planning run concurrently for one
+        episode, and a user can edit that episode while they run, so a
+        whole-row write loses whichever result landed in between — even when
+        the two writers touch entirely different fields. Re-reading first does
+        not close the window, because both can re-read before either commits.
+
+        Naming a field with no value at all is how a column is left alone, so an
+        empty list is a real update that empties it.
+
+        This does not replace add_episodes()/replace_episodes(), which still own
+        whole-row writes, nor renaming an episode, which moves the primary key.
+        The in-memory cache refresh below only makes this process read its own
+        write; correctness comes from the SQL, since the cache is not shared
+        across workers.
+        """
+        assignments: list[str] = []
+        params: list[Any] = []
+
+        for field, value in fields.items():
+            spec = self._PATCHABLE_EPISODE_FIELDS.get(field)
+            if spec is None:
+                raise ValueError(
+                    f"patch_episode cannot write {field!r}; add it to "
+                    "_PATCHABLE_EPISODE_FIELDS or use update_episode"
+                )
+            column, kind = spec
+            if kind == "scene_menu":
+                items = await self._normalize_scene_menu_items(value or [])
+                encoded = json.dumps(
+                    [item.model_dump() for item in items], ensure_ascii=False
+                )
+            elif kind == "prop_menu":
+                items = self._normalize_prop_menu_items(value or [])
+                encoded = json.dumps(
+                    [item.model_dump() for item in items], ensure_ascii=False
+                )
+            elif kind == "json_list":
+                encoded = json.dumps(list(value or []), ensure_ascii=False)
+            elif kind == "json_dict":
+                encoded = json.dumps(dict(value or {}), ensure_ascii=False)
+            elif kind == "int":
+                encoded = int(value or 0)
+            else:
+                encoded = str(value or "")
+            assignments.append(f"{column} = ?")
+            params.append(encoded)
+
+        if not assignments:
+            return
+
+        db = await self._ensure_db()
+        assignments.append("updated_at = datetime('now')")
+        params.append(int(episode_number))
+        cursor = await db.execute(
+            f"UPDATE episodes SET {', '.join(assignments)} WHERE number = ?",
+            params,
+        )
+        if not cursor.rowcount:
+            raise ValueError(f"剧集 {episode_number} 不存在")
+        await db.commit()
+
+        refreshed = await self.get_episode_from_graph(episode_number)
+        if refreshed is not None:
+            self._episodes[episode_number] = refreshed
+
+    # ── episode menu normalization ──────────────────────────────────────
+    #
+    # Canonical implementations, shared by the legacy whole-row update and the
+    # column-level patch. Both routes must produce byte-identical menus: the
+    # only difference between them is which columns get written.
+
+    async def _normalize_scene_menu_items(
+        self, scene_menu: Iterable[Any] | None
+    ) -> list[SceneMenuItem]:
+        """将 episode scene_menu 规范化为资产库标准 scene_id。"""
+        normalized_items = build_scene_menu(scene_menu=list(scene_menu or []))
+        canonical_items: list[SceneMenuItem] = []
+        all_scenes = await self.list_scenes()
+        for item in normalized_items:
+            scene_id = str(item.scene_id or "").strip()
+            if not scene_id:
+                continue
+            canonical_id = scene_id
+            lookup = self._normalize_alias_lookup(scene_id)
+            for candidate in all_scenes:
+                if self._normalize_alias_lookup(candidate.name) == lookup:
+                    canonical_id = candidate.name
+                    break
+                aliases = getattr(candidate, "aliases", []) or []
+                if any(self._normalize_alias_lookup(alias) == lookup for alias in aliases):
+                    canonical_id = candidate.name
+                    break
+            canonical_items.append(
+                SceneMenuItem(
+                    scene_id=canonical_id,
+                    base_scene_id=str(getattr(item, "base_scene_id", "") or "").strip(),
+                    variant_id=str(getattr(item, "variant_id", "") or "").strip(),
+                    time_of_day=str(getattr(item, "time_of_day", "") or "").strip(),
+                )
+            )
+        return build_scene_menu(scene_menu=canonical_items)
+
+    def _normalize_prop_menu_items(self, prop_menu: Iterable[Any] | None) -> list[PropMenuItem]:
+        """将 episode prop_menu 规范化为资产库标准 prop_id。"""
+        normalized_items = build_prop_menu(prop_menu=list(prop_menu or []))
+        canonical_items: list[PropMenuItem] = []
+        for item in normalized_items:
+            prop_id = str(item.prop_id or "").strip()
+            if not prop_id:
+                continue
+            cached = self.get_cached_prop(prop_id)
+            canonical_id = cached.name if cached else prop_id
+            canonical_items.append(
+                PropMenuItem(
+                    prop_id=canonical_id,
+                    prop_type=(getattr(cached, "prop_type", "") if cached else item.prop_type)
+                    or "object",
+                    visual_prompt=(
+                        getattr(cached, "visual_prompt", "")
+                        or getattr(cached, "description", "")
+                        or item.visual_prompt
+                    ),
+                    description=(
+                        getattr(cached, "visual_prompt", "")
+                        or getattr(cached, "description", "")
+                        or item.description
+                    ),
+                    owner_identity_id=item.owner_identity_id or getattr(cached, "owner", ""),
+                )
+            )
+        return build_prop_menu(prop_menu=canonical_items)
 
     async def delete_all_episodes(self) -> int:
         try:
@@ -2254,6 +2764,284 @@ class SQLiteStore:
         cursor = await db.execute("DELETE FROM scenes")
         await db.commit()
         return cursor.rowcount or 0
+
+    # ============================================================
+    # structured_v1 分析 run / chunk / 证据
+    # ============================================================
+
+    async def get_reusable_analysis_run(
+        self,
+        *,
+        source_sha256: str,
+        schema_version: int,
+        pipeline_version: str,
+        spine_template: str = "",
+    ) -> dict | None:
+        """Find a run that analysed identical text the same way.
+
+        Reuse is keyed on all four. Different source text or a changed
+        extraction contract must not inherit another run's chunk results, and
+        neither must a different spine template: the same novel chunked as a
+        screenplay and as narrated prose produces entirely different chunks.
+        """
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT * FROM story_analysis_runs
+               WHERE source_sha256 = ? AND schema_version = ?
+                 AND pipeline_version = ? AND spine_template = ?
+               ORDER BY created_at DESC LIMIT 1""",
+            (source_sha256, int(schema_version), pipeline_version, spine_template),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return dict(row) if row else None
+
+    async def start_analysis_run(
+        self,
+        *,
+        run_id: str,
+        pipeline_version: str,
+        schema_version: int,
+        spine_template: str,
+        source_sha256: str,
+        source_length: int,
+        chunks: list,
+    ) -> None:
+        """Record a run and its chunk plan in one transaction.
+
+        A half-written plan would let a resume believe chunks are missing rather
+        than pending, so the run row and every chunk land together.
+        """
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN")
+            await db.execute(
+                """INSERT OR REPLACE INTO story_analysis_runs
+                   (run_id, pipeline_version, schema_version, spine_template,
+                    source_sha256, source_length, status, error, completed_at)
+                   VALUES (?, ?, ?, ?, ?, ?, 'pending', '', '')""",
+                (
+                    run_id,
+                    pipeline_version,
+                    int(schema_version),
+                    spine_template,
+                    source_sha256,
+                    int(source_length),
+                ),
+            )
+            await db.execute(
+                "DELETE FROM story_analysis_chunks WHERE run_id = ?", (run_id,)
+            )
+            await db.executemany(
+                """INSERT INTO story_analysis_chunks
+                   (run_id, chunk_id, chunk_index, section_type, section_label,
+                    source_start, source_end, source_hash, status)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'pending')""",
+                [
+                    (
+                        run_id,
+                        chunk.chunk_id,
+                        int(chunk.chunk_index),
+                        chunk.section_type,
+                        chunk.section_label,
+                        int(chunk.source_start),
+                        int(chunk.source_end),
+                        chunk.source_hash,
+                    )
+                    for chunk in chunks
+                ],
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    async def list_analysis_chunks(
+        self, run_id: str, *, status: str | None = None
+    ) -> list[dict]:
+        db = await self._ensure_db()
+        sql = "SELECT * FROM story_analysis_chunks WHERE run_id = ?"
+        params: list = [run_id]
+        if status:
+            sql += " AND status = ?"
+            params.append(status)
+        sql += " ORDER BY chunk_index"
+        async with db.execute(sql, params) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
+
+    async def mark_analysis_chunk_done(
+        self, run_id: str, chunk_id: str, result_json: str
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            """UPDATE story_analysis_chunks
+               SET status = 'done', error = '', result_json = ?,
+                   attempts = attempts + 1
+               WHERE run_id = ? AND chunk_id = ?""",
+            (result_json, run_id, chunk_id),
+        )
+        await db.commit()
+
+    async def mark_analysis_chunk_failed(
+        self, run_id: str, chunk_id: str, error: str
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            """UPDATE story_analysis_chunks
+               SET status = 'failed', error = ?, attempts = attempts + 1
+               WHERE run_id = ? AND chunk_id = ?""",
+            (str(error)[:2000], run_id, chunk_id),
+        )
+        await db.commit()
+
+    async def finish_analysis_run(
+        self, run_id: str, *, status: str, error: str = ""
+    ) -> None:
+        db = await self._ensure_db()
+        await db.execute(
+            """UPDATE story_analysis_runs
+               SET status = ?, error = ?, completed_at = datetime('now')
+               WHERE run_id = ?""",
+            (status, str(error)[:2000], run_id),
+        )
+        await db.commit()
+
+    async def get_analysis_artifact(self, run_id: str, artifact_type: str) -> str:
+        """Return a stored final result for a run, or an empty string."""
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT result_json FROM story_analysis_artifacts
+               WHERE run_id = ? AND artifact_type = ?""",
+            (run_id, artifact_type),
+        ) as cursor:
+            row = await cursor.fetchone()
+        return str(row["result_json"]) if row else ""
+
+    async def save_analysis_artifact(
+        self, run_id: str, artifact_type: str, result_json: str
+    ) -> None:
+        """Store a run's final result so a rebuild need not recompute it.
+
+        Chunk results alone are not enough to skip all work: merging is cheap
+        but adjudication is another model call, and re-running it can decide
+        differently, so an unchanged source could yield a different cast on
+        every rebuild.
+        """
+        db = await self._ensure_db()
+        await db.execute(
+            """INSERT INTO story_analysis_artifacts
+               (run_id, artifact_type, result_json, created_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(run_id, artifact_type) DO UPDATE SET
+                 result_json = excluded.result_json,
+                 created_at = excluded.created_at""",
+            (run_id, artifact_type, result_json),
+        )
+        await db.commit()
+
+    async def get_analysis_item_cache(
+        self, artifact_type: str, cache_keys: list[str]
+    ) -> dict[str, str]:
+        """Return stored per-item results for the keys that have one.
+
+        Bulk, because a scene build asks about every candidate at once and one
+        round trip per scene would cost more than it saves.
+        """
+        keys = [str(key) for key in cache_keys if key]
+        if not keys:
+            return {}
+        db = await self._ensure_db()
+        found: dict[str, str] = {}
+        # SQLite caps host parameters per statement; chunk rather than risk it.
+        for start in range(0, len(keys), 400):
+            window = keys[start : start + 400]
+            placeholders = ",".join("?" for _ in window)
+            async with db.execute(
+                f"""SELECT cache_key, result_json FROM story_analysis_item_cache
+                    WHERE artifact_type = ? AND cache_key IN ({placeholders})""",
+                (artifact_type, *window),
+            ) as cursor:
+                rows = await cursor.fetchall()
+            for row in rows:
+                found[str(row["cache_key"])] = str(row["result_json"])
+        return found
+
+    async def save_analysis_item_cache(
+        self, artifact_type: str, results: dict[str, str]
+    ) -> None:
+        """Store per-item results keyed by a hash of the input that produced them.
+
+        The key already carries every input and a contract version, so a hit is
+        only ever a result for identical input under the current contract; there
+        is nothing to invalidate and no run to scope it to.
+        """
+        rows = [(key, artifact_type, value) for key, value in results.items() if key]
+        if not rows:
+            return
+        db = await self._ensure_db()
+        await db.executemany(
+            """INSERT INTO story_analysis_item_cache
+               (cache_key, artifact_type, result_json, created_at)
+               VALUES (?, ?, ?, datetime('now'))
+               ON CONFLICT(cache_key) DO UPDATE SET
+                 result_json = excluded.result_json,
+                 created_at = excluded.created_at""",
+            rows,
+        )
+        await db.commit()
+
+    async def replace_entity_evidence(
+        self, run_id: str, entity_type: str, entity_id: str, evidence: list[dict]
+    ) -> None:
+        """Rewrite one entity's evidence for a run.
+
+        Replacing rather than appending keeps a re-run of the same chunk from
+        accumulating duplicate spans for the same entity.
+        """
+        db = await self._ensure_db()
+        try:
+            await db.execute("BEGIN")
+            await db.execute(
+                """DELETE FROM entity_evidence
+                   WHERE run_id = ? AND entity_type = ? AND entity_id = ?""",
+                (run_id, entity_type, entity_id),
+            )
+            await db.executemany(
+                """INSERT OR REPLACE INTO entity_evidence
+                   (run_id, entity_type, entity_id, chunk_id, source_start,
+                    source_end, evidence_kind, evidence_text)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                [
+                    (
+                        run_id,
+                        entity_type,
+                        entity_id,
+                        str(item.get("chunk_id", "")),
+                        int(item.get("source_start", 0)),
+                        int(item.get("source_end", 0)),
+                        str(item.get("evidence_kind", "")),
+                        str(item.get("evidence_text", "")),
+                    )
+                    for item in evidence
+                ],
+            )
+            await db.commit()
+        except Exception:
+            await db.rollback()
+            raise
+
+    async def list_entity_evidence(
+        self, entity_type: str, entity_id: str
+    ) -> list[dict]:
+        db = await self._ensure_db()
+        async with db.execute(
+            """SELECT * FROM entity_evidence
+               WHERE entity_type = ? AND entity_id = ?
+               ORDER BY chunk_id, source_start""",
+            (entity_type, entity_id),
+        ) as cursor:
+            rows = await cursor.fetchall()
+        return [dict(row) for row in rows]
 
     async def delete_all_props(self) -> int:
         """删除所有道具。"""

@@ -42,6 +42,7 @@ import {
 import { deriveEpisodeStats, type EpisodeStats } from "@/lib/episode-stats";
 import { useStageTask } from "@/hooks/use-stage-task";
 import { useTaskController } from "@/hooks/use-task-controller";
+import { useTaskActivity } from "@/task-center/use-task-activity";
 import { TASK_TYPES } from "@/lib/task-types";
 import { queryKeys } from "@/lib/query-keys";
 import {
@@ -488,6 +489,7 @@ function EpisodePlanShortcut({
   promotion,
   pending,
   disabled = false,
+  disabledReason,
   onClick,
 }: {
   icon: React.ReactNode;
@@ -497,6 +499,7 @@ function EpisodePlanShortcut({
   promotion?: CreditPromotionDisplay | null;
   pending: boolean;
   disabled?: boolean;
+  disabledReason?: string | null;
   onClick: () => void;
 }) {
   return (
@@ -517,7 +520,7 @@ function EpisodePlanShortcut({
         onKeyDown={(event) => event.stopPropagation()}
         disabled={pending || disabled}
         aria-label={actionLabel}
-        title={actionLabel}
+        title={disabledReason || actionLabel}
         className="h-7 shrink-0 gap-1 rounded-[7px] bg-transparent px-2 text-[11px] font-normal text-foreground shadow-none transition-colors hover:bg-primary/12 hover:text-primary disabled:bg-transparent disabled:text-muted-foreground/50 [&_svg]:size-3"
       >
         {pending ? (
@@ -540,6 +543,8 @@ function EpisodeListItem({
   onSelect,
   identityCostDisplay,
   identityPromotion,
+  identityDisabledReason,
+  sceneDisabledReason,
   sceneCostDisplay,
   scenePromotion,
   propCostDisplay,
@@ -550,6 +555,8 @@ function EpisodeListItem({
   onSelect: () => void;
   identityCostDisplay?: string | null;
   identityPromotion?: CreditPromotionDisplay | null;
+  identityDisabledReason?: string | null;
+  sceneDisabledReason?: string | null;
   sceneCostDisplay?: string | null;
   scenePromotion?: CreditPromotionDisplay | null;
   propCostDisplay?: string | null;
@@ -649,10 +656,12 @@ function EpisodeListItem({
     identityCount > 0
       ? t("episode.list.identityCount", { count: identityCount })
       : t("episode.list.noIdentities");
+  const identitySummary = identityDisabledReason || identityLabel;
   const sceneLabel =
     sceneCount > 0
       ? t("episode.list.sceneCount", { count: sceneCount })
       : t("episode.list.noScenes");
+  const sceneSummary = sceneDisabledReason || sceneLabel;
   const propLabel =
     propCount > 0
       ? t("episode.list.propCount", { count: propCount })
@@ -755,28 +764,30 @@ function EpisodeListItem({
       <div className="grid gap-1.5 pt-1">
         <EpisodePlanShortcut
           icon={<Users className="size-3.5 shrink-0 text-sky-400" />}
-          summary={identityLabel}
+          summary={identitySummary}
           actionLabel={
             identityCount > 0
               ? t("episode.list.replanIdentities")
               : t("episode.list.planIdentities")
           }
           pending={identityPending}
-          disabled={identityPending}
+          disabled={identityPending || Boolean(identityDisabledReason)}
+          disabledReason={identityDisabledReason}
           costDisplay={identityCostDisplay}
           promotion={identityPromotion}
           onClick={handlePlanIdentities}
         />
         <EpisodePlanShortcut
           icon={<MapPinned className="size-3.5 shrink-0 text-emerald-400" />}
-          summary={sceneLabel}
+          summary={sceneSummary}
           actionLabel={
             sceneCount > 0
               ? t("episode.list.replanScenes")
               : t("episode.list.planScenes")
           }
           pending={scenePending}
-          disabled={scenePending}
+          disabled={scenePending || Boolean(sceneDisabledReason)}
+          disabledReason={sceneDisabledReason}
           costDisplay={sceneCostDisplay}
           promotion={scenePromotion}
           onClick={handlePlanScenes}
@@ -838,7 +849,14 @@ function EpisodesPage() {
     isLoading: pipelineLoading,
     isFetching: pipelineFetching,
   } = usePipelineStatus(project);
-  const { data: charactersRes } = useCharacters(project);
+  const { data: charactersRes, isLoading: charactersLoading } =
+    useCharacters(project);
+  const characterBuildActivity = useTaskActivity(TASK_TYPES.BUILD_CHARACTERS, {
+    episode: 0,
+  });
+  const sceneBuildActivity = useTaskActivity(TASK_TYPES.BUILD_SCENES, {
+    episode: 0,
+  });
 
   const episodes = episodesRes?.data ?? [];
   const isLoading = episodesLoading || pipelineLoading;
@@ -847,6 +865,18 @@ function EpisodesPage() {
     () => charactersRes?.data?.length ?? 0,
     [charactersRes],
   );
+  const identityDisabledReason = characterBuildActivity.isActive
+    ? t("episode.list.identityCharactersBuilding")
+    : characterBuildActivity.isRestoring || charactersLoading
+      ? t("episode.list.identityCharactersLoading")
+      : totalCharacters === 0
+        ? t("episode.list.identityCharactersRequired")
+        : null;
+  const sceneDisabledReason = sceneBuildActivity.isActive
+    ? t("episode.list.sceneCatalogBuilding")
+    : sceneBuildActivity.isRestoring
+      ? t("episode.list.sceneCatalogLoading")
+      : null;
   const pipelineEpisodes = useMemo(
     () => derivePipelineEpisodeStatuses(pipelineRes?.data),
     [pipelineRes?.data],
@@ -1083,6 +1113,8 @@ function EpisodesPage() {
                         onSelect={() => handleSelectEpisode(ep.number)}
                         identityCostDisplay={planIdentitiesCostDisplay}
                         identityPromotion={planIdentitiesCost.data?.data.promotion}
+                        identityDisabledReason={identityDisabledReason}
+                        sceneDisabledReason={sceneDisabledReason}
                         sceneCostDisplay={planScenesCostDisplay}
                         scenePromotion={planScenesCost.data?.data.promotion}
                         propCostDisplay={planPropsCostDisplay}

@@ -46,6 +46,7 @@ from novelvideo.shared.billing_errors import (
     BillingRuleNotConfiguredError,
     InsufficientCreditsError,
 )
+from novelvideo.stage_asset_tasks import resolve_scene_360_image_model
 from novelvideo.task_backend.limits import ProjectUserTaskLimitExceeded
 from novelvideo.task_state import get_task_manager
 
@@ -1177,6 +1178,15 @@ def test_freezone_ai_staging_prop_endpoint_returns_ai_prop(monkeypatch, tmp_path
         }
 
     monkeypatch.setattr(freezone_routes, "_run_ai_staging_prop", fake_run_ai_staging_prop)
+    # 该路由自 OI-54 S2 起在请求路径上解析出网身份，而这个裸 app 不经
+    # `ensure_bootstrap()`，端口注册表是空的（`get_authz_port()` 刻意没有
+    # `PortNotRegistered` 回落——回落就等于「端口没注册就跳过身份绑定」）。
+    # 用真的 CE 单机降级实现顶上：`LocalAuthz` 产 `kind="local"` → 非组织 →
+    # 什么都不绑，本测试既有断言一字不改。seam 照 `test_p0g4c_video_egress.py:803`。
+    import novelvideo.ports as ports
+    from novelvideo.ports.local import LocalAuthz
+
+    monkeypatch.setattr(ports, "get_authz_port", lambda: LocalAuthz())
     app = FastAPI()
     app.include_router(freezone_routes.router, prefix="/api/v1")
     app.dependency_overrides[freezone_routes.get_api_user] = lambda: {
@@ -2709,6 +2719,169 @@ async def test_put_canvas_lock_busy_returns_503(
 
 
 @pytest.mark.asyncio
+async def test_put_canvas_lease_lost_returns_503(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TCP-EU-C4 · 丢租约走的是同一个错误面（B2 §3.3.3）。
+
+    `CanvasLeaseLost` 继承 `CanvasLockBusy`，所以上面那条用例本来就会自动接住它。
+    照它的形状再写一条 lease 版本，是为了证明「路由零改动」不是巧合：
+    错误面契约（503 ＋ `canvas_lock_busy` ＋ `Retry-After: 1`）对两种失败逐字相同。
+    丢租约判 503 而不是 409：那是并发条件，不是 revision 条件 —— 客户端重试时
+    `_check_revision` 才**权威地**决定这次是 200 还是 409（B2 §3.3.3）。
+    """
+    from novelvideo.ports.canvas_mutex import CanvasLeaseLost
+
+    _patch_freezone_project(monkeypatch, tmp_path)
+
+    def fake_save_canvas(*_args, **_kwargs):
+        raise CanvasLeaseLost("default")
+
+    monkeypatch.setattr(freezone_routes.canvas_store, "save_canvas", fake_save_canvas)
+
+    with pytest.raises(freezone_routes.HTTPException) as exc:
+        await freezone_routes.put_canvas(
+            project="proj_freezone",
+            canvas_id="default",
+            body=CanvasPayload(nodes=[], edges=[]),
+            user={"username": "admin", "id": "owner_1"},
+        )
+
+    assert exc.value.status_code == 503
+    assert exc.value.headers == {"Retry-After": "1"}
+    assert exc.value.detail == {"code": "canvas_lock_busy", "canvas_id": "default"}
+
+
+def _write_canvas_edited_by(
+    tmp_path: Path,
+    canvas_id: str,
+    *,
+    updated_by: str,
+    age_seconds: float,
+) -> Path:
+    from datetime import datetime, timedelta, timezone
+
+    updated_at = (
+        datetime.now(timezone.utc) - timedelta(seconds=age_seconds)
+    ).strftime("%Y-%m-%dT%H:%M:%SZ")
+    path = _canvas_state_dir(tmp_path) / "freezone" / "canvases" / f"{canvas_id}.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(
+        json.dumps(
+            {
+                "schema_version": 2,
+                "canvas_id": canvas_id,
+                "revision": 3,
+                "nodes": [],
+                "edges": [],
+                "updated_by": updated_by,
+                "updated_at": updated_at,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return path
+
+
+@pytest.mark.asyncio
+async def test_get_canvas_reports_another_actor_editing(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """TCP-EU-C4 步 6 · O2「另一个会话正在编辑」（B2 §3.9 O2 / §6.4 步 6）。"""
+    _patch_freezone_project(monkeypatch, tmp_path)
+    _write_canvas_edited_by(tmp_path, "beat_1", updated_by="bob", age_seconds=2)
+
+    result = await freezone_routes.get_canvas(
+        project="proj_freezone",
+        canvas_id="beat_1",
+        user={"username": "admin", "id": "owner_1"},
+    )
+
+    assert result["editing_by"] == "bob"
+    # 契约不变（B2-6）：提示字段挂在 `data` 之外，画布载荷形状一个字节都没动。
+    assert "editing_by" not in result["data"]
+
+
+@pytest.mark.asyncio
+async def test_get_canvas_omits_editing_by_for_the_viewers_own_write(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _patch_freezone_project(monkeypatch, tmp_path)
+    _write_canvas_edited_by(tmp_path, "beat_1", updated_by="owner_1", age_seconds=2)
+
+    result = await freezone_routes.get_canvas(
+        project="proj_freezone",
+        canvas_id="beat_1",
+        user={"username": "admin", "id": "owner_1"},
+    )
+
+    assert "editing_by" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_canvas_editing_by_disappears_after_the_window(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from novelvideo.freezone import canvas_store as canvas_store_module
+
+    _patch_freezone_project(monkeypatch, tmp_path)
+    _write_canvas_edited_by(
+        tmp_path,
+        "beat_1",
+        updated_by="bob",
+        age_seconds=canvas_store_module.CANVAS_EDITING_HINT_WINDOW_SECONDS + 5,
+    )
+
+    result = await freezone_routes.get_canvas(
+        project="proj_freezone",
+        canvas_id="beat_1",
+        user={"username": "admin", "id": "owner_1"},
+    )
+
+    assert "editing_by" not in result
+
+
+@pytest.mark.asyncio
+async def test_get_canvas_editing_by_adds_no_round_trip(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """步 6 的硬要求：读路径**不许新增数据库往返**（B2 §6.4 步 6）。
+
+    判据落成「读路径一次都不碰画布互斥端口」—— 端口是这条路径上唯一可能通往
+    Postgres 的东西（EE 的实现走租约表，`TCP-P40`）。
+    """
+    from novelvideo.ports import registry as ports_registry
+
+    _patch_freezone_project(monkeypatch, tmp_path)
+    _write_canvas_edited_by(tmp_path, "beat_1", updated_by="bob", age_seconds=2)
+
+    class _ExplodingMutex:
+        def __getattr__(self, name):
+            raise AssertionError(f"read path must not touch the canvas mutex port: {name}")
+
+    previous = ports_registry._PORTS.get("canvas_write_mutex")
+    ports_registry.register_port("canvas_write_mutex", _ExplodingMutex())
+    try:
+        result = await freezone_routes.get_canvas(
+            project="proj_freezone",
+            canvas_id="beat_1",
+            user={"username": "admin", "id": "owner_1"},
+        )
+    finally:
+        if previous is None:
+            ports_registry._PORTS.pop("canvas_write_mutex", None)
+        else:
+            ports_registry.register_port("canvas_write_mutex", previous)
+
+    assert result["editing_by"] == "bob"
+
+
+@pytest.mark.asyncio
 async def test_get_canvas_does_not_fallback_to_output_canvas(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -3496,7 +3669,12 @@ async def test_freezone_celery_text_runner_records_project_node_history(
     ctx = _project_ctx(tmp_path)
     project_dir = ctx.output_dir
 
-    async def fake_translate_freezone_text(*, text: str, node_type: str):
+    # 普通任务不传组织身份；组织任务才由分发层注入 egress_context。
+    async def fake_translate_freezone_text(
+        *,
+        text: str,
+        node_type: str,
+    ):
         assert text == "你好"
         assert node_type == "text"
         return "hello", "zh", "en"
@@ -3549,6 +3727,7 @@ async def test_freezone_celery_text_generate_runner_records_project_node_history
     ctx = _project_ctx(tmp_path)
     project_dir = ctx.output_dir
 
+    # 普通任务不传组织身份；组织任务才由分发层注入 egress_context。
     async def fake_generate_freezone_text(*, prompt: str):
         assert prompt == "写一段雨夜重逢"
         return "DC-freezone-text-writer-LLM", "雨夜里，他们在旧站台重逢。"
@@ -4121,7 +4300,23 @@ async def test_scene_360_endpoint_keeps_image_size_below_the_cap(
             queue="node.node_a.world",
         )
 
+    async def fake_resolve_catalog_request(*_args, **_kwargs):
+        return (
+            {},
+            {},
+            {
+                "catalogId": "cat-77",
+                "providerId": "newapi",
+                "apiModel": "google/gemini-2.5-flash-image-preview",
+            },
+        )
+
     monkeypatch.setattr(freezone_routes, "_resolve_freezone_project", fake_resolve_freezone_project)
+    monkeypatch.setattr(
+        freezone_routes,
+        "_resolve_catalog_request",
+        fake_resolve_catalog_request,
+    )
     monkeypatch.setattr(
         freezone_routes,
         "get_task_backend",
@@ -4247,8 +4442,47 @@ async def test_scene_360_takes_model_and_billing_identity_from_the_catalog(
     )
 
     assert captured["payload"]["params"]["model"] == "real-pano-model"
+    assert captured["payload"]["scene_360_model_authority"] == {
+        "kind": "catalog",
+        "catalog_id": "cat-real",
+        "provider": "newapi",
+        "model": "real-pano-model",
+    }
     assert captured["payload"]["billing"]["catalog_id"] == "cat-real"
     assert captured["payload"]["billing"]["pricing_model"] == "real-pano-model"
+
+
+@pytest.mark.asyncio
+async def test_scene_360_rejects_client_model_without_catalog_authority_before_enqueue(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict = {}
+    _patch_scene_360_enqueue(monkeypatch, tmp_path, captured)
+
+    async def fake_resolve_catalog_request(*_args, **_kwargs):
+        return {}, {}, None
+
+    monkeypatch.setattr(
+        freezone_routes, "_resolve_catalog_request", fake_resolve_catalog_request
+    )
+
+    with pytest.raises(HTTPException) as exc_info:
+        await freezone_routes.freezone_scene_360(
+            project="proj_freezone",
+            body=freezone_routes.FreezoneScene360Request(
+                reference_url=(
+                    "/api/v1/projects/proj_freezone/media/assets/scenes/小区/master.png"
+                ),
+                model="attacker-controlled-model",
+                catalog_id="forged-catalog",
+            ),
+            user={"username": "admin"},
+        )
+
+    assert exc_info.value.status_code == 400
+    assert "scene 360 image model" in str(exc_info.value.detail)
+    assert not captured
 
 
 @pytest.mark.asyncio
@@ -5591,6 +5825,15 @@ async def test_skill_run_standalone_frame_from_context_queues_candidate_without_
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    from novelvideo.ports.registry import register_port
+    from novelvideo.task_backend.projection import build_projection
+
+    class InstalledProjector:
+        async def build(self, store, config, *, task_type):
+            assert store is None
+            return await build_projection(store, config, task_type=task_type)
+
+    register_port("task_projection", InstalledProjector())
     project_dir, _output_dir = _patch_freezone_project(monkeypatch, tmp_path)
     _write_canvas_with_node(
         tmp_path,
@@ -5664,6 +5907,11 @@ async def test_skill_run_standalone_frame_from_context_queues_candidate_without_
     assert captured["task_type"] == "mainline_frame_from_context"
     assert captured["episode"] == 0
     assert "beat_num" not in captured
+    assert captured["payload"]["projection"] == {
+        "projection_version": 1,
+        "task_type": "mainline_frame_from_context",
+        "fields": {},
+    }
     config = captured["payload"]["config"]
     assert config["standalone_beat_context"] is True
     assert config["selected_panel_indices"] == [0]
@@ -6763,6 +7011,10 @@ async def test_skill_run_scene_360_uses_reverse_master_and_scene_slot_target(
     assert captured["payload"]["step"] == "pano_from_master"
     assert captured["payload"]["params"]["provider"] == "newapi"
     assert captured["payload"]["params"]["model"] == NEWAPI_IMAGE_MODEL
+    assert resolve_scene_360_image_model(
+        provider=captured["payload"]["params"]["provider"],
+        model=captured["payload"]["params"]["model"],
+    ) == NEWAPI_IMAGE_MODEL
     assert captured["payload"]["params"]["image_size"] == "2K"
     assert captured["payload"]["params"]["update_manifest"] is False
     assert captured["payload"]["params"]["master_path"].endswith("/assets/scenes/小区/master.png")

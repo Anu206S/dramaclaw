@@ -7,12 +7,15 @@ from pathlib import Path
 from typing import Any
 
 from novelvideo.project_context import ProjectContext
+from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
 from novelvideo.task_state import get_task_manager
 
 
-def run_script_writer(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
+def run_script_writer(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any] | None:
     return asyncio.run(
         await_envelope_with_cancel_watch(
             _run_script_writer(envelope, ctx),
@@ -22,7 +25,9 @@ def run_script_writer(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str
     )
 
 
-def run_beat_video_prompt(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+def run_beat_video_prompt(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any]:
     return asyncio.run(
         await_envelope_with_cancel_watch(
             _run_beat_video_prompt(envelope, ctx),
@@ -32,7 +37,9 @@ def run_beat_video_prompt(envelope: dict[str, Any], ctx: ProjectContext) -> dict
     )
 
 
-async def _run_beat_video_prompt(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any]:
+async def _run_beat_video_prompt(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any]:
     from novelvideo.api.deps import make_sqlite_store_for_context
     from novelvideo.api.routes.scripts import _generate_and_save_beat_video_prompt
 
@@ -76,10 +83,19 @@ async def _run_beat_video_prompt(envelope: dict[str, Any], ctx: ProjectContext) 
         await store.close()
 
 
-async def _run_script_writer(envelope: dict[str, Any], ctx: ProjectContext) -> dict[str, Any] | None:
+async def _run_script_writer(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any] | None:
+    with model_gateway_scope_for_runner(envelope):
+        return await _run_script_writer_scoped(envelope, ctx)
+
+
+async def _run_script_writer_scoped(
+    envelope: dict[str, Any], ctx: ProjectContext
+) -> dict[str, Any] | None:
     from novelvideo.cognee import CogneeStore
     from novelvideo.generators.episode_optimizer import EpisodeOptimizer
-    from novelvideo.project_config import load_project_config
+    from novelvideo.project_config import load_project_config_from_state_dir
     from novelvideo.utils.path_resolver import PathResolver
     from novelvideo.workflows.script_writing import create_script_writing_workflow
 
@@ -101,10 +117,18 @@ async def _run_script_writer(envelope: dict[str, Any], ctx: ProjectContext) -> d
 
     update_progress(0.02, "开始生成脚本...")
 
-    store = CogneeStore(ctx.owner_project_label, output_dir=output_dir)
+    store = CogneeStore(
+        ctx.owner_project_label,
+        output_dir=output_dir,
+        state_dir=str(ctx.state_dir),
+    )
     await store.initialize()
     try:
-        project_config = load_project_config(ctx.owner_username, ctx.project_name)
+        project_config = load_project_config_from_state_dir(
+            ctx.state_dir,
+            username=ctx.owner_username,
+            project=ctx.project_name,
+        )
         merged_config = {**project_config, **config}
         workflow = create_script_writing_workflow(
             store,

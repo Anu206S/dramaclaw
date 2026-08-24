@@ -21,9 +21,24 @@ from novelvideo.novel_source import (
     novel_import_required_response,
     resolve_uploaded_novel_filename,
 )
+from novelvideo.identity_prerequisites import (
+    IdentityCharactersBuildingError,
+    IdentityPlanningPrerequisiteError,
+    identity_prerequisite_response,
+    require_identity_characters,
+)
+from novelvideo.knowledge_pipeline import (
+    KnowledgePipelineUnsupported,
+    is_structured_pipeline,
+)
 from novelvideo.ports import get_task_backend, get_usage_meter
 from novelvideo.project_config import load_project_config_file_from_state_dir
+from novelvideo.scene_prerequisites import (
+    SceneCatalogBuildingError,
+    scene_prerequisite_response,
+)
 from novelvideo.task_identity import project_task_state_key
+from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
 logger = logging.getLogger("novelvideo.api.episodes")
 
@@ -185,6 +200,12 @@ async def _enqueue_episode_asset_planner(
             asset_kind=asset_kind,
             user=user,
         )
+    if asset_kind == "scene":
+        build_task = get_task_manager().get_task_for_project(
+            resolved.ctx, "build_scenes", 0
+        )
+        if build_task is not None and build_task.status in ACTIVE_PROJECT_TASK_STATUSES:
+            return scene_prerequisite_response(SceneCatalogBuildingError())
     task_scope = _episode_asset_task_scope(asset_kind, episode_num)
     queued = await get_task_backend().enqueue_project_task(
         resolved.ctx,
@@ -264,6 +285,15 @@ async def plan_episodes(project: str, body: EpisodePlanRequest, user: dict = Dep
     if ctx is not None:
         if not has_imported_novel(resolved.project_dir):
             return novel_import_required_response()
+        # The AI planners read the Cognee graph, which structured_v1 projects do
+        # not have. Reject before enqueue so the user gets an answer instead of
+        # a task that is guaranteed to fail after reserving credit.
+        if is_structured_pipeline(state_dir) and body.planning_mode != "chapters":
+            return {
+                "ok": False,
+                "code": KnowledgePipelineUnsupported.error_code,
+                "error": "该项目只支持按章节/集号的确定性分集",
+            }
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             product_surface="mainline",
@@ -478,6 +508,24 @@ async def plan_episode_identities(
     logger.info("[%s] EP%d plan_episode_identities", project, episode_num)
     resolved = await resolve_project_scope(project, user, required_role="editor")
     if resolved.ctx is not None:
+        try:
+            build_task = get_task_manager().get_task_for_project(
+                resolved.ctx, "build_characters", 0
+            )
+            if (
+                build_task is not None
+                and build_task.status in ACTIVE_PROJECT_TASK_STATUSES
+            ):
+                raise IdentityCharactersBuildingError()
+
+            store = await make_sqlite_store_for_context(resolved.ctx)
+            try:
+                require_identity_characters(store.get_all_characters())
+            finally:
+                await store.close()
+        except IdentityPlanningPrerequisiteError as exc:
+            return identity_prerequisite_response(exc)
+
         queued = await get_task_backend().enqueue_project_task(
             resolved.ctx,
             product_surface="mainline",
@@ -511,6 +559,10 @@ async def plan_episode_identities(
         else await make_cognee_store(resolved.username, resolved.project_name)
     )
     await store.load_graph_state()
+    try:
+        require_identity_characters(store.get_all_characters())
+    except IdentityPlanningPrerequisiteError as exc:
+        return identity_prerequisite_response(exc)
     episodes = store.get_all_episodes()
 
     episode = None
@@ -621,7 +673,9 @@ async def update_episode(
     if not updates:
         return {"ok": True, "data": {"message": "No fields to update"}}
 
-    await store.update_episode(episode_num, **updates)
+    # Column-level: a user editing a title while planning runs must not roll
+    # back the menus that planning just wrote.
+    await store.patch_episode(episode_num, **updates)
 
     # 返回更新后的集信息
     ep = store.get_episode(episode_num)

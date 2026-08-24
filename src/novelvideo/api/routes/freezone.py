@@ -17,6 +17,7 @@ import os
 import re
 import shutil
 import uuid
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Annotated, Any, Awaitable, Callable, Literal, Optional
 from urllib.parse import quote, unquote, urlencode, urlsplit
@@ -85,6 +86,7 @@ from novelvideo.api.schemas import (
     ProjectionStatusRequest,
     PushRequest,
 )
+from novelvideo.api.task_start_errors import handle_task_start_runtime_error
 from novelvideo.config import (
     IMAGE_GENERATION_SELECTIONS,
     image_generation_selection_options,
@@ -100,10 +102,7 @@ from novelvideo.media_model_request_schema import (
     validate_media_model_params,
     validate_media_request_schema,
 )
-from novelvideo.shared.billing_errors import (
-    find_billing_rule_not_configured_error,
-    find_insufficient_credits_error,
-)
+from novelvideo.ports.authz import find_authz_error
 from novelvideo.freezone.audio_node import (
     create_user_audio_voice,
     freezone_audio_eleven_music_output_path,
@@ -290,8 +289,8 @@ from novelvideo.freezone.video_node import (
 )
 from novelvideo.models import CharacterIdentity, beat_scene_id
 from novelvideo.project_config import (
-    load_effective_narration_style_for_voice,
-    load_narrator_reference_audio,
+    load_effective_narration_style_for_voice_from_state_dir,
+    load_narrator_reference_audio_from_state_dir,
 )
 from novelvideo.project_context import (
     ProjectContext,
@@ -300,9 +299,6 @@ from novelvideo.project_context import (
 )
 from novelvideo.seedance2_i2v.voice_clone import resolve_character_voice
 from novelvideo.ports import get_task_backend
-from novelvideo.task_backend.limits import (
-    ProjectTaskLimitExceeded, ProjectUserTaskLimitExceeded,
-)
 from novelvideo.task_identity import (
     project_task_state_key,
     selection_scope,
@@ -337,13 +333,22 @@ async def _resolve_freezone_project(
     user: dict,
     *,
     required_role: str = "editor",
+    require_home_node: bool = True,
 ) -> tuple[ProjectContext, str, str, Path, str]:
+    """解析 freezone 项目上下文。
+
+    `require_home_node=False` 只给画布那 13 条路由用（B2 步 11，按 `TCP-P60` 收窄）。
+    这一道守卫是**全部 72 条 freezone 路由**共用的，删掉它等于连另外 58 条读写
+    `Path(ctx.output_dir)` 本地文件、既无租约也无共享存储交代的路由一起放开，
+    与 B2 §6.3「逐个撤、不批量撤」冲突；故默认值保持 `True`，逐个调用点撤。
+    """
     ctx = await resolve_project_context(
         user=user,
         project_id=project,
         required_role=required_role,
     )
-    require_project_home_node(ctx, operation="access freezone project files")
+    if require_home_node:
+        require_project_home_node(ctx, operation="access freezone project files")
     return ctx, ctx.owner_username, ctx.project_name, Path(ctx.output_dir), str(ctx.output_dir)
 
 
@@ -354,20 +359,8 @@ def _raise_project_context_required(task_type: str) -> None:
     )
 
 
-def _raise_if_task_limit_exception(exc: RuntimeError) -> None:
-    if isinstance(exc, (ProjectTaskLimitExceeded, ProjectUserTaskLimitExceeded)):
-        raise exc
-
-
 def _handle_task_start_runtime_error(message: str, exc: RuntimeError) -> None:
-    _raise_if_task_limit_exception(exc)
-    insufficient_credits = find_insufficient_credits_error(exc)
-    if insufficient_credits is not None:
-        raise insufficient_credits
-    billing_rule_not_configured = find_billing_rule_not_configured_error(exc)
-    if billing_rule_not_configured is not None:
-        raise billing_rule_not_configured
-    logger.warning("%s: %s", message, exc, exc_info=True)
+    handle_task_start_runtime_error(logger, message, exc)
 
 
 async def _start_or_enqueue_freezone_video_gen(
@@ -402,6 +395,13 @@ async def _start_or_enqueue_freezone_video_gen(
     from novelvideo.api.routes.model_credits import (
         freezone_video_generate_task_billing,
     )
+
+    if ctx is not None:
+        await _require_scoped_media_model(
+            "video",
+            catalog_id or model_id or backend,
+            requester_user_id=ctx.requester_user_id,
+        )
 
     # Catalog fields are optional for backward compatibility. Missing means
     # the legacy behavior (native audio supported); an explicit false is an
@@ -465,6 +465,16 @@ async def _start_or_enqueue_freezone_video_gen(
         effective_duration_seconds = max(int(duration_seconds), 1)
     else:
         raise HTTPException(400, "duration_seconds is required for this video mode")
+
+    # Duration probing above may await external media inspection. Recheck the
+    # authoritative organization scope after that asynchronous boundary so a
+    # model revoked in the meantime cannot be billed or enqueued.
+    if ctx is not None:
+        await _require_scoped_media_model(
+            "video",
+            catalog_id or model_id or backend,
+            requester_user_id=ctx.requester_user_id,
+        )
 
     billing = freezone_video_generate_task_billing(
         {
@@ -605,6 +615,12 @@ async def _start_or_enqueue_freezone_gen_job(
     model_params: dict[str, Any] | None = None,
     request_schema: dict[str, Any] | None = None,
 ) -> dict:
+    if ctx is not None:
+        await _require_scoped_media_model(
+            "image",
+            catalog_id or model_id or model or FREEZONE_DEFAULT_IMAGE_MODEL,
+            requester_user_id=ctx.requester_user_id,
+        )
     reference_paths = _resolve_url_list(project_dir, reference_urls)
     for path_text in reference_paths:
         if not Path(path_text).exists():
@@ -1211,6 +1227,92 @@ async def _mainline_single_beat_config(
     }
 
 
+def _installed_task_projector():
+    """Return the installed projector, or ``None`` when nothing is installed.
+
+    Answering this before any store is opened is what keeps the default inline
+    deployment on exactly its old code path.
+    """
+    from novelvideo.ports import get_task_projection
+    from novelvideo.ports.local.projection import NoOpTaskProjection
+
+    projector = get_task_projection()
+    if isinstance(projector, NoOpTaskProjection):
+        return None
+    return projector
+
+
+async def _build_task_projection(
+    projector,
+    *,
+    store,
+    username: str,
+    project_name: str,
+    episode: int,
+    task_type: str,
+    extra_config: Mapping[str, Any] | None = None,
+) -> dict | None:
+    """Resolve one task's project-state inputs into a frozen fragment.
+
+    ``extra_config`` carries the request-shaped inputs a task type needs in
+    order to know *which* rows to read -- the caller's own request body, not
+    project state.  Every mount point goes through this one function so the
+    invocation shape stays in a single place.
+    """
+    config: dict[str, Any] = {
+        "username": username,
+        "project_name": project_name,
+        "episode": int(episode),
+    }
+    if extra_config:
+        config.update(extra_config)
+    return await projector.build(store, config, task_type=task_type)
+
+
+async def _task_projection_payload(
+    *,
+    ctx: ProjectContext,
+    username: str,
+    project_name: str,
+    episode: int,
+    task_type: str,
+    extra_config: Mapping[str, Any] | None = None,
+) -> dict:
+    """Build the ``projection`` fragment to merge into an enqueue payload.
+
+    Returns an empty dict when no projector is installed, so a default inline
+    deployment enqueues exactly the payload it enqueued before this existed --
+    same keys, same bytes, and no extra store opened either.  A backend that
+    does not run the task in this process installs a projector and gets the
+    inputs carried along with the task instead.
+    """
+    projector = _installed_task_projector()
+    if projector is None:
+        return {}
+    # A projected task with an explicitly empty requirement set still needs a
+    # projection envelope off the home node: it certifies that the enqueue
+    # path audited the task as independent of project state.  Do not open the
+    # beat SQLite store merely to produce that empty envelope; standalone
+    # canvas tasks intentionally have no database dependency.
+    from novelvideo.task_backend.projection import PROJECTION_REQUIREMENTS
+
+    store = None
+    if PROJECTION_REQUIREMENTS.get(task_type) != frozenset():
+        store = await make_sqlite_store_for_context(ctx)
+    projection = await _build_task_projection(
+        projector,
+        store=store,
+        username=username,
+        project_name=project_name,
+        episode=episode,
+        task_type=task_type,
+        extra_config=extra_config,
+    )
+    if projection is None:
+        return {}
+    return {"projection": projection}
+
+
 async def _start_or_enqueue_mainline_sketch_from_context_job(
     *,
     ctx: ProjectContext,
@@ -1269,6 +1371,13 @@ async def _start_or_enqueue_mainline_sketch_from_context_job(
         **(task_display or {}),
     }
     if ctx is not None:
+        projection_payload = await _task_projection_payload(
+            ctx=ctx,
+            username=username,
+            project_name=project_name,
+            episode=int(episode),
+            task_type=task_type,
+        )
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             product_surface="freezone",
@@ -1287,6 +1396,7 @@ async def _start_or_enqueue_mainline_sketch_from_context_job(
                 "node_id": node_id or "",
                 "billing": {"feature_key": "mainline.sketch_regen"},
                 **display_payload,
+                **projection_payload,
             },
         )
         return _project_job_response(
@@ -1456,6 +1566,13 @@ async def _start_or_enqueue_mainline_frame_from_context_job(
         **(task_display or {}),
     }
     if ctx is not None:
+        projection_payload = await _task_projection_payload(
+            ctx=ctx,
+            username=username,
+            project_name=project_name,
+            episode=int(episode),
+            task_type=task_type,
+        )
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             product_surface="freezone",
@@ -1475,6 +1592,7 @@ async def _start_or_enqueue_mainline_frame_from_context_job(
                 "node_id": node_id or "",
                 "billing": {"feature_key": "mainline.render_regen"},
                 **display_payload,
+                **projection_payload,
             },
         )
         return _project_job_response(
@@ -1695,6 +1813,13 @@ async def _start_or_enqueue_standalone_frame_from_context_job(
         **(task_display or {}),
     }
     if ctx is not None:
+        projection_payload = await _task_projection_payload(
+            ctx=ctx,
+            username=username,
+            project_name=project_name,
+            episode=0,
+            task_type=task_type,
+        )
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             product_surface="freezone",
@@ -1711,6 +1836,7 @@ async def _start_or_enqueue_standalone_frame_from_context_job(
                 "canvas_id": canvas_id or "",
                 "node_id": node_id or "",
                 **display_payload,
+                **projection_payload,
             },
         )
         return _project_job_response(
@@ -1801,6 +1927,13 @@ async def _start_or_enqueue_mainline_director_control_sketch_job(
     if not source_path.exists() or not source_path.is_file():
         raise HTTPException(404, f"director combined file not found: {source_path}")
     job_id = _new_job_id()
+    projection_payload = await _task_projection_payload(
+        ctx=ctx,
+        username=ctx.owner_username,
+        project_name=ctx.project_name,
+        episode=int(episode),
+        task_type=task_type,
+    )
     queued = await get_task_backend().enqueue_project_task(
         ctx,
         product_surface="freezone",
@@ -1827,6 +1960,7 @@ async def _start_or_enqueue_mainline_director_control_sketch_job(
             "source_label": "导演合成图",
             "target_label": "当前草图候选",
             **(task_display or {}),
+            **projection_payload,
         },
     )
     return _project_job_response(
@@ -1915,6 +2049,7 @@ async def _start_or_enqueue_mainline_scene_360_candidate_job(
     canvas_id: str | None,
     node_id: str | None,
     catalog_id: str | None = None,
+    execution_catalog_id: str | None = None,
     task_display: dict[str, str] | None = None,
 ) -> dict:
     return await _start_or_enqueue_mainline_scene_360_task(
@@ -1930,6 +2065,7 @@ async def _start_or_enqueue_mainline_scene_360_candidate_job(
         canvas_id=canvas_id,
         node_id=node_id,
         catalog_id=catalog_id,
+        execution_catalog_id=execution_catalog_id,
         auto_commit=False,
         task_display=task_display,
     )
@@ -1949,11 +2085,17 @@ async def _start_or_enqueue_mainline_scene_360_task(
     canvas_id: str | None,
     node_id: str | None,
     catalog_id: str | None = None,
+    execution_catalog_id: str | None = None,
     auto_commit: bool = True,
     task_display: dict[str, str] | None = None,
 ) -> dict:
     task_type = "stage_asset"
     step = "pano_from_master"
+    await _require_scoped_media_model(
+        "image",
+        catalog_id or model or FREEZONE_DEFAULT_IMAGE_MODEL,
+        requester_user_id=ctx.requester_user_id,
+    )
     master_paths = _resolve_url_list(project_dir, [master_url])
     if not master_paths:
         raise HTTPException(400, "master_url is required")
@@ -1974,6 +2116,19 @@ async def _start_or_enqueue_mainline_scene_360_task(
         "newapi",
         model or FREEZONE_DEFAULT_IMAGE_MODEL,
     )
+    if not execution_catalog_id:
+        from novelvideo.stage_asset_tasks import (
+            Scene360ImageModelSelectionError,
+            resolve_scene_360_image_model,
+        )
+
+        try:
+            resolve_scene_360_image_model(
+                resolved_provider or "newapi",
+                resolved_model or model or FREEZONE_DEFAULT_IMAGE_MODEL,
+            )
+        except Scene360ImageModelSelectionError as exc:
+            raise HTTPException(400, str(exc)) from exc
     from novelvideo.api.routes.model_credits import freezone_image_task_billing
 
     billing = freezone_image_task_billing(
@@ -2017,6 +2172,20 @@ async def _start_or_enqueue_mainline_scene_360_task(
             "canvas_id": canvas_id or "",
             "node_id": node_id or "",
             "billing": billing,
+            **(
+                {
+                    "scene_360_model_authority": {
+                        "kind": "catalog",
+                        "catalog_id": execution_catalog_id,
+                        "provider": resolved_provider or "newapi",
+                        "model": resolved_model
+                        or model
+                        or FREEZONE_DEFAULT_IMAGE_MODEL,
+                    }
+                }
+                if execution_catalog_id
+                else {}
+            ),
             "task_family": "mainline_skill",
             "task_label": "生成 360 全景",
             "display_name": f"生成 360 全景 · {scene_id}",
@@ -2064,6 +2233,12 @@ async def _start_or_enqueue_freezone_edit_job(
     billing_feature_key: str = "",
     billing_operation: str = "",
 ) -> dict:
+    if ctx is not None:
+        await _require_scoped_media_model(
+            "image",
+            catalog_id or model_id or model or FREEZONE_DEFAULT_IMAGE_MODEL,
+            requester_user_id=ctx.requester_user_id,
+        )
     base_paths = _resolve_url_list(project_dir, [base_url])
     if not base_paths:
         raise HTTPException(400, "base_url is required")
@@ -2211,6 +2386,12 @@ async def _start_or_enqueue_freezone_edit_path(
     billing_operation: str,
 ) -> dict:
     task_type = "freezone_edit"
+    if ctx is not None:
+        await _require_scoped_media_model(
+            "image",
+            model or FREEZONE_DEFAULT_IMAGE_MODEL,
+            requester_user_id=ctx.requester_user_id,
+        )
     from novelvideo.api.routes.model_credits import freezone_image_task_billing
 
     billing = freezone_image_task_billing(
@@ -2279,6 +2460,12 @@ async def _start_or_enqueue_freezone_mask_edit_path(
     billing_operation: str,
 ) -> dict:
     task_type = "freezone_mask_edit"
+    if ctx is not None:
+        await _require_scoped_media_model(
+            "image",
+            model or FREEZONE_DEFAULT_IMAGE_MODEL,
+            requester_user_id=ctx.requester_user_id,
+        )
     from novelvideo.api.routes.model_credits import freezone_image_task_billing
 
     billing = freezone_image_task_billing(
@@ -4326,7 +4513,11 @@ async def freezone_gen(
         project, user
     )
     request_schema, model_params, catalog_entry = await _resolve_catalog_request(
-        "image", body.model_id or body.model, body.model_params, mode=body.gen_mode
+        "image",
+        body.model_id or body.model,
+        body.model_params,
+        mode=body.gen_mode,
+        requester_user_id=ctx.requester_user_id,
     )
     execution_provider, execution_model = _catalog_image_execution_selection(
         catalog_entry,
@@ -4530,6 +4721,7 @@ async def freezone_scene_360(
         body.catalog_id or body.model,
         None,
         mode="image_to_image",
+        requester_user_id=ctx.requester_user_id,
     )
     # 只取模型：这条老路由的 provider 是 scene_360_builder 那边按环境变量解析的
     # （`resolve_scene_360_image_provider`），不走网关那套 provider/model 组合，
@@ -4554,6 +4746,10 @@ async def freezone_scene_360(
         "quality": body.quality,
         # 计费身份以目录条目为准，不采信 body —— 它直接决定按哪条目录规则扣费。
         "catalog_id": _catalog_entry_id(catalog_entry) or body.catalog_id or None,
+        # Only an entry resolved by the server catalog may authorize a dynamic
+        # execution model. A client-supplied legacy catalog_id is billing data,
+        # not model authority.
+        "execution_catalog_id": _catalog_entry_id(catalog_entry) or None,
         "canvas_id": body.canvas_id or None,
         "node_id": body.node_id or None,
         "task_display": {
@@ -4583,17 +4779,40 @@ async def freezone_ai_staging_prop(
     request: dict[str, object] = Body(default_factory=dict),
     user: dict = Depends(get_api_user),
 ):
-    await _resolve_freezone_project(project, user, required_role="editor")
+    ctx, _username, _project_name, _project_dir, _output_dir = await _resolve_freezone_project(
+        project, user, required_role="editor"
+    )
     # Product requests always use the edition's effective NewAPI gateway.
     # Keep low-level overrides available to offline helpers, but never accept
     # credentials or an endpoint from an HTTP payload.
     request = dict(request)
     request.pop("api_key", None)
     request.pop("base_url", None)
-    try:
-        result = await _run_ai_staging_prop(request)
-    except RuntimeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+    # 出网侧的闸门（`task_backend/subprocesses.py:122-128`，经
+    # `staging_prop_ai.py:233`）读的是 ambient context，而 `_MODEL_GATEWAY_CONTEXT`
+    # 的生产 set 点全在 worker 侧、请求路径上一个都没有。于是这道闸门此前永远读到
+    # `None`、永远放行，组织用户的调用落在平台 `MODEL_API_KEY` 上（台账 EG-17）。
+    # 绑定能穿过 `_run_ai_staging_prop` 的 `asyncio.to_thread`，因为它复制
+    # contextvars（`model_gateway_runtime.py:52-54`）；`run_in_executor` 不会。
+    from novelvideo.api.egress_binding import request_egress_scope
+    from novelvideo.ports.authz import AuthzError
+    from novelvideo.task_backend.subprocesses import EgressBoundaryError
+
+    async with request_egress_scope(
+        requester_user_id=ctx.requester_user_id,
+        project_id=ctx.project_id,
+        task_type="freezone_ai_staging_prop",
+    ):
+        try:
+            result = await _run_ai_staging_prop(request)
+        except EgressBoundaryError as exc:
+            # `EgressBoundaryError` 也是 `RuntimeError` 子类，没有这一支时组织拒绝
+            # 会被下面压成裸 502 + 自由文本，前端拿不到机器码。同形先例见 :353-358。
+            # 这一支必须在 `except RuntimeError` **之前**，且 `AuthzError`（自身也是
+            # `RuntimeError` 子类）由 app 级 handler 渲染成契约化 4xx。
+            raise AuthzError(exc.code) from exc
+        except RuntimeError as exc:
+            raise HTTPException(status_code=502, detail=str(exc)) from exc
     if not result.get("ok"):
         raise HTTPException(
             status_code=502, detail=str(result.get("error") or "AI staging prop failed")
@@ -5105,6 +5324,7 @@ async def freezone_template_edit(
         body.catalog_id or body.model,
         None,
         mode="image_to_image",
+        requester_user_id=ctx.requester_user_id,
     )
     # provider 也一并取目录条目的：这条路由和 /freezone/edit 共用
     # `_start_or_enqueue_freezone_edit_job`，它会按 provider/model 走网关，
@@ -6424,7 +6644,25 @@ def _start_freezone_audio_speech_task(
                 current_task="calling_tts_provider",
                 logs=["正在调用 TTS 服务"],
             )
+            voice_ref_payload = body.voice_ref.model_dump() if body.voice_ref else None
             store = await make_sqlite_store(username, project)
+            # 同进程执行也走同一条投射路径，好让两个入口读到的项目态形状一致。
+            projector = _installed_task_projector()
+            projection = None
+            if projector is not None:
+                built = await _build_task_projection(
+                    projector,
+                    store=store,
+                    username=username,
+                    project_name=project,
+                    episode=int(body.target_episode or 0),
+                    task_type=task_type,
+                    extra_config={"voice_ref": voice_ref_payload},
+                )
+                if built is not None:
+                    from novelvideo.task_backend.projection import read_projection
+
+                    projection = read_projection({"projection": built})
             result = await generate_freezone_audio_speech(
                 store=store,
                 username=username,
@@ -6434,7 +6672,8 @@ def _start_freezone_audio_speech_task(
                 job_id=job_id,
                 text=body.text,
                 emotion_prompt=body.emotion_prompt,
-                voice_ref=body.voice_ref.model_dump() if body.voice_ref else None,
+                voice_ref=voice_ref_payload,
+                projection=projection,
             )
             rel = result.audio_path.relative_to(project_dir).as_posix()
             audio_url = project_static_url(project_id, rel, local_path=result.audio_path)
@@ -6689,8 +6928,8 @@ async def freezone_audio_references(
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user, required_role="viewer"
     )
-    narrator_descriptor = load_narrator_reference_audio(username, project_name)
-    narration_style = load_effective_narration_style_for_voice(username, project_name)
+    narrator_descriptor = load_narrator_reference_audio_from_state_dir(ctx.state_dir)
+    narration_style = load_effective_narration_style_for_voice_from_state_dir(ctx.state_dir)
     requester_username = ctx.requester_username or username
     user_voices = _attach_user_voice_media_urls(
         project,
@@ -7218,6 +7457,92 @@ async def _ee_media_model_catalog(media_type: str) -> list[dict[str, Any]] | Non
     return await catalog.list_models(media_type)
 
 
+async def _scoped_media_model_catalog(
+    media_type: str,
+    *,
+    requester_user_id: str,
+) -> list[dict[str, Any]] | None:
+    """Read the catalog for the authenticated user without accepting an org id.
+
+    CE supplies only the trusted user id resolved by ``ProjectContext``. EE owns
+    the user-to-organization decision and the effective visibility expression.
+    A registered control-plane catalog must support the scoped method; silently
+    falling back to the platform-wide list would turn an integration mismatch
+    into a tenant-isolation bypass.
+    """
+    from typing import cast
+
+    from novelvideo.ports.media_model_catalog import MediaModelCatalogPort
+    from novelvideo.ports.registry import PortNotRegistered, get_port
+
+    try:
+        catalog = cast(MediaModelCatalogPort, get_port("media_model_catalog"))
+    except PortNotRegistered:
+        return await _ee_media_model_catalog(media_type)
+
+    clean_user_id = str(requester_user_id or "").strip()
+    if not clean_user_id:
+        raise HTTPException(401, "无法确认当前用户身份")
+    try:
+        return await catalog.list_models_for_user(
+            media_type,
+            user_id=clean_user_id,
+        )
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 - cross-edition port boundary
+        code = str(getattr(exc, "code", "") or "")
+        if code == "MEDIA_MODEL_SCOPE_DENIED":
+            raise HTTPException(403, "当前账号无权使用媒体模型") from None
+        logger.exception("failed to resolve scoped media model catalog")
+        raise HTTPException(503, "媒体模型目录暂不可用，请稍后重试") from None
+
+
+def _media_model_unavailable(media_type: str, catalog: list[dict[str, Any]]) -> HTTPException:
+    media_label = "图片" if media_type == "image" else "视频"
+    detail = (
+        f"当前没有可用的{media_label}模型，请联系管理员或刷新后重试"
+        if not catalog
+        else "该媒体模型未对当前组织开放、已停用或不存在，请刷新后选择其他模型"
+    )
+    return HTTPException(409, detail)
+
+
+async def _require_scoped_media_model(
+    media_type: str,
+    requested: str | None,
+    *,
+    requester_user_id: str,
+) -> dict[str, Any] | None:
+    """Recheck model visibility immediately before billing and enqueueing."""
+    from novelvideo.ports.registry import PortNotRegistered, get_port
+
+    try:
+        get_port("media_model_catalog")
+    except PortNotRegistered:
+        # Community Edition owns its local model map and has no organization
+        # policy to enforce. Keep its existing submission behavior unchanged.
+        return None
+    catalog = await _scoped_media_model_catalog(
+        media_type,
+        requester_user_id=requester_user_id,
+    )
+    if catalog is None:
+        return None
+    clean_requested = str(requested or "").strip()
+    entry = next(
+        (
+            item
+            for item in catalog
+            if clean_requested in _catalog_entry_identifiers(item)
+        ),
+        None,
+    )
+    if entry is None:
+        raise _media_model_unavailable(media_type, catalog)
+    return entry
+
+
 def _static_media_model_catalog(media_type: str) -> list[dict[str, Any]]:
     from novelvideo.model_gateway_settings import get_official_media_model_catalog
 
@@ -7317,9 +7642,17 @@ async def _resolve_catalog_request(
     model_params: dict[str, Any] | None,
     *,
     mode: str | None = None,
+    requester_user_id: str | None = None,
 ) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any] | None]:
     requested = str(model or "").strip()
-    catalog = await _ee_media_model_catalog(media_type)
+    catalog = (
+        await _scoped_media_model_catalog(
+            media_type,
+            requester_user_id=requester_user_id,
+        )
+        if requester_user_id is not None
+        else await _ee_media_model_catalog(media_type)
+    )
     entry = next(
         (
             item
@@ -7332,13 +7665,7 @@ async def _resolve_catalog_request(
         # In EE the catalog is authoritative. Never fall back to CE's static
         # model map when no enabled model matches the submitted identifier.
         if catalog is not None and requested:
-            media_label = "图片" if media_type == "image" else "视频"
-            detail = (
-                f"当前没有可用的{media_label}模型，请联系管理员或刷新后重试"
-                if not catalog
-                else "该媒体模型已停用或不存在，请刷新页面后选择其他模型"
-            )
-            raise HTTPException(409, detail)
+            raise _media_model_unavailable(media_type, catalog)
         if model_params:
             raise HTTPException(
                 400, "model parameters require a configured media model"
@@ -7371,18 +7698,6 @@ async def _resolve_catalog_request(
     except MediaModelSchemaError as exc:
         raise HTTPException(400, str(exc)) from exc
     return schema, values, entry
-
-
-async def _catalog_video_capabilities(model: str | None) -> dict[str, Any] | None:
-    requested = str(model or "").strip()
-    return next(
-        (
-            item
-            for item in (await _ee_media_model_catalog("video")) or []
-            if requested in _catalog_entry_identifiers(item)
-        ),
-        None,
-    )
 
 
 def _catalog_mode_enabled(
@@ -7535,10 +7850,22 @@ def _catalog_duration_bounds(
     return _bound("minDuration"), _bound("maxDuration")
 
 
-async def _resolve_catalog_video_backend(model: str | None) -> str:
+async def _resolve_catalog_video_backend(
+    model: str | None,
+    *,
+    requester_user_id: str | None = None,
+) -> str:
     requested = str(model or "").strip()
     if requested:
-        for entry in (await _ee_media_model_catalog("video")) or []:
+        catalog = (
+            await _scoped_media_model_catalog(
+                "video",
+                requester_user_id=requester_user_id,
+            )
+            if requester_user_id is not None
+            else await _ee_media_model_catalog("video")
+        )
+        for entry in catalog or []:
             if requested in _catalog_entry_identifiers(entry):
                 return str(entry.get("apiModel") or requested)
     return resolve_freezone_video_backend(model)
@@ -7560,8 +7887,13 @@ async def freezone_video_models(
     user: dict = Depends(get_api_user),
 ):
     """视频处理：返回和 NovelVideo 视频模型下拉一致的可见模型。"""
-    await _resolve_freezone_project(project, user, required_role="viewer")
-    catalog = await _ee_media_model_catalog("video")
+    ctx, _username, _project_name, _project_dir, _output_dir = (
+        await _resolve_freezone_project(project, user, required_role="viewer")
+    )
+    catalog = await _scoped_media_model_catalog(
+        "video",
+        requester_user_id=ctx.requester_user_id,
+    )
     return {
         "ok": True,
         "data": get_freezone_video_model_options() if catalog is None else catalog,
@@ -7574,8 +7906,13 @@ async def freezone_image_models(
     user: dict = Depends(get_api_user),
 ):
     """图片处理：返回和 NovelVideo 图片模型下拉一致的可见模型。"""
-    await _resolve_freezone_project(project, user, required_role="viewer")
-    catalog = await _ee_media_model_catalog("image")
+    ctx, _username, _project_name, _project_dir, _output_dir = (
+        await _resolve_freezone_project(project, user, required_role="viewer")
+    )
+    catalog = await _scoped_media_model_catalog(
+        "image",
+        requester_user_id=ctx.requester_user_id,
+    )
     if catalog is not None:
         return {"ok": True, "data": catalog}
     options = image_generation_selection_options()
@@ -7634,94 +7971,118 @@ async def freezone_mark_detect(
         or ""
     )
     billing_project_id = str(getattr(ctx, "project_id", "") or project)
-    reservation = await usage_meter.reserve_feature_start_credits(
-        user_id=billing_user_id,
-        feature_key="freezone.image_mark_detect",
-        product_surface="freezone",
-        project_id=billing_project_id,
-        resource_kind="image",
-        task_type="freezone_image_mark_detect",
-        metadata=billing_context,
-        params={"operation": billing_context["selection"]},
-        require_price_rule=True,
-        require_positive_cost=True,
-    )
-    reservation_id = str(reservation.get("id") or "")
-    model_billing_metadata = {
-        "model_call_credit_policy": "feature_included",
-        "feature_key": "freezone.image_mark_detect",
-        "source": "sync_api",
-    }
-    if reservation_id:
-        model_billing_metadata.update(
-            {
-                "feature_credit_reservation_id": reservation_id,
-                "feature_credit_charge_id": reservation_id,
-                "feature_credit_cost": str(reservation.get("cost") or 0),
-            }
-        )
+    # 出网身份必须绑在**积分预留之前**。`request_egress_scope` 的入口会因组织侧
+    # 真实拒绝抛 AuthzError；开在预留之后，一次拒绝就留下一笔已扣未退的预留——
+    # 那正是本条目要修的「两侧不同步」病。作用域一直覆盖到 detect 与结算返回。
+    # 非组织身份（平台／个人／CE local／灰度未开）下它什么都不绑，路径不变。
+    from novelvideo.api.egress_binding import request_egress_scope
 
-    try:
-        usage_meter.set_llm_usage_context(
-            billing_user_id,
+    async with request_egress_scope(
+        requester_user_id=ctx.requester_user_id,
+        project_id=ctx.project_id,
+        task_type="freezone_image_mark_detect",
+    ):
+        reservation = await usage_meter.reserve_feature_start_credits(
+            user_id=billing_user_id,
+            feature_key="freezone.image_mark_detect",
+            product_surface="freezone",
             project_id=billing_project_id,
             resource_kind="image",
-            billing_metadata=model_billing_metadata,
+            task_type="freezone_image_mark_detect",
+            metadata=billing_context,
+            params={"operation": billing_context["selection"]},
+            require_price_rule=True,
+            require_positive_cost=True,
         )
-        result = await detect_freezone_mark(
-            image_path=Path(source_paths[0]),
-            point_x=body.point_x,
-            point_y=body.point_y,
-            box_x=body.box_x,
-            box_y=body.box_y,
-            box_width=body.box_width,
-            box_height=body.box_height,
-        )
-    except Exception as exc:
+        reservation_id = str(reservation.get("id") or "")
+        model_billing_metadata = {
+            "model_call_credit_policy": "feature_included",
+            "feature_key": "freezone.image_mark_detect",
+            "source": "sync_api",
+        }
+        if reservation_id:
+            model_billing_metadata.update(
+                {
+                    "feature_credit_reservation_id": reservation_id,
+                    "feature_credit_charge_id": reservation_id,
+                    "feature_credit_cost": str(reservation.get("cost") or 0),
+                }
+            )
+
+        try:
+            usage_meter.set_llm_usage_context(
+                billing_user_id,
+                project_id=billing_project_id,
+                resource_kind="image",
+                billing_metadata=model_billing_metadata,
+            )
+            result = await detect_freezone_mark(
+                image_path=Path(source_paths[0]),
+                point_x=body.point_x,
+                point_y=body.point_y,
+                box_x=body.box_x,
+                box_y=body.box_y,
+                box_width=body.box_width,
+                box_height=body.box_height,
+            )
+        except Exception as exc:
+            if reservation_id:
+                try:
+                    await usage_meter.settle_cancelled_feature_credit_reservation(
+                        reservation_id,
+                        metadata={**billing_context, "error": str(exc)},
+                    )
+                except Exception:
+                    logger.exception(
+                        "Failed to settle interrupted Freezone mark detection feature credit reservation"
+                    )
+            # 组织拒绝不得压成裸 5xx。两者都是 RuntimeError 子类，原来一起被吞成
+            # `HTTPException(500, ...)`，前端只拿到一句自由文本。照 `:353-358` 的
+            # 既有裁定办：上抛后由 `app.py:210-232` 的 handler 渲染契约信封，机器码
+            # 原样透传（表里没有的码按设计回落 403，`ports/authz.py:47`）。
+            # 放在退还逻辑之后：拒绝时预留照样被退。
+            from novelvideo.ports.authz import AuthzError
+            from novelvideo.task_backend.subprocesses import EgressBoundaryError
+
+            authz_denial = find_authz_error(exc)
+            if authz_denial is not None:
+                raise authz_denial from exc
+            if isinstance(exc, EgressBoundaryError):
+                raise AuthzError(exc.code) from exc
+            raise HTTPException(500, f"mark detect failed: {exc}") from exc
+        finally:
+            usage_meter.clear_llm_usage_context()
+
         if reservation_id:
             try:
-                await usage_meter.settle_cancelled_feature_credit_reservation(
+                await usage_meter.settle_feature_credit_reservation(
                     reservation_id,
-                    metadata={**billing_context, "error": str(exc)},
+                    action="confirm",
+                    metadata=billing_context,
                 )
             except Exception:
                 logger.exception(
-                    "Failed to settle interrupted Freezone mark detection feature credit reservation"
+                    "Freezone mark detection succeeded but credit confirmation remains pending"
                 )
-        raise HTTPException(500, f"mark detect failed: {exc}") from exc
-    finally:
-        usage_meter.clear_llm_usage_context()
 
-    if reservation_id:
-        try:
-            await usage_meter.settle_feature_credit_reservation(
-                reservation_id,
-                action="confirm",
-                metadata=billing_context,
-            )
-        except Exception:
-            logger.exception(
-                "Freezone mark detection succeeded but credit confirmation remains pending"
-            )
-
-    return {
-        "ok": True,
-        "data": {
-            "mark": {
-                "label": result["label"],
-                "source_url": body.source_url,
-                "point_x": body.point_x,
-                "point_y": body.point_y,
-                "box_x": body.box_x,
-                "box_y": body.box_y,
-                "box_width": body.box_width,
-                "box_height": body.box_height,
-                "note": result.get("note", ""),
+        return {
+            "ok": True,
+            "data": {
+                "mark": {
+                    "label": result["label"],
+                    "source_url": body.source_url,
+                    "point_x": body.point_x,
+                    "point_y": body.point_y,
+                    "box_x": body.box_x,
+                    "box_y": body.box_y,
+                    "box_width": body.box_width,
+                    "box_height": body.box_height,
+                    "note": result.get("note", ""),
+                },
+                "provider": result["provider"],
+                "model": result["model"],
             },
-            "provider": result["provider"],
-            "model": result["model"],
-        },
-    }
+        }
 
 
 @router.post(
@@ -8128,7 +8489,10 @@ async def freezone_video_gen(
     if body.camera_template_id and not get_video_camera_template(body.camera_template_id):
         raise HTTPException(400, f"unknown camera_template_id: {body.camera_template_id}")
     try:
-        backend = await _resolve_catalog_video_backend(body.model)
+        backend = await _resolve_catalog_video_backend(
+            body.model,
+            requester_user_id=ctx.requester_user_id,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -8137,6 +8501,7 @@ async def freezone_video_gen(
         body.model,
         body.model_params,
         mode=body.gen_mode,
+        requester_user_id=ctx.requester_user_id,
     )
     _require_catalog_video_mode(
         capabilities,
@@ -8223,7 +8588,10 @@ async def freezone_video_i2v(
     if body.camera_template_id and not get_video_camera_template(body.camera_template_id):
         raise HTTPException(400, f"unknown camera_template_id: {body.camera_template_id}")
     try:
-        backend = await _resolve_catalog_video_backend(body.model)
+        backend = await _resolve_catalog_video_backend(
+            body.model,
+            requester_user_id=ctx.requester_user_id,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -8234,6 +8602,7 @@ async def freezone_video_i2v(
         body.model,
         body.model_params,
         mode=requested_mode,
+        requester_user_id=ctx.requester_user_id,
     )
     _require_catalog_video_mode(capabilities, requested_mode)
 
@@ -8349,7 +8718,10 @@ async def freezone_video_keyframes(
     elif not (body.first_frame_url or body.last_frame_url):
         raise HTTPException(400, "firstLastFrame requires at least one keyframe")
     try:
-        backend = await _resolve_catalog_video_backend(body.model)
+        backend = await _resolve_catalog_video_backend(
+            body.model,
+            requester_user_id=ctx.requester_user_id,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
 
@@ -8363,6 +8735,7 @@ async def freezone_video_keyframes(
         body.model,
         body.model_params,
         mode=requested_mode,
+        requester_user_id=ctx.requester_user_id,
     )
     _require_catalog_video_mode(capabilities, requested_mode)
     reference_limits = _catalog_reference_limits(
@@ -8471,7 +8844,10 @@ async def freezone_video_omni_gen(
     if body.camera_template_id and not get_video_camera_template(body.camera_template_id):
         raise HTTPException(400, f"unknown camera_template_id: {body.camera_template_id}")
     try:
-        backend = await _resolve_catalog_video_backend(body.model)
+        backend = await _resolve_catalog_video_backend(
+            body.model,
+            requester_user_id=ctx.requester_user_id,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     request_schema, model_params, capabilities = await _resolve_catalog_request(
@@ -8479,6 +8855,7 @@ async def freezone_video_omni_gen(
         body.model,
         body.model_params,
         mode=body.gen_mode,
+        requester_user_id=ctx.requester_user_id,
     )
     mode_enabled = _catalog_mode_enabled(capabilities, "all_reference")
     if mode_enabled is False:
@@ -8620,7 +8997,10 @@ async def freezone_video_edit(
     if body.camera_template_id and not get_video_camera_template(body.camera_template_id):
         raise HTTPException(400, f"unknown camera_template_id: {body.camera_template_id}")
     try:
-        backend = await _resolve_catalog_video_backend(body.model)
+        backend = await _resolve_catalog_video_backend(
+            body.model,
+            requester_user_id=ctx.requester_user_id,
+        )
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from exc
     request_schema, model_params, capabilities = await _resolve_catalog_request(
@@ -8628,6 +9008,7 @@ async def freezone_video_edit(
         body.model,
         body.model_params,
         mode=body.gen_mode,
+        requester_user_id=ctx.requester_user_id,
     )
     mode_enabled = _catalog_mode_enabled(capabilities, "video_edit")
     if mode_enabled is False or (
@@ -8958,6 +9339,8 @@ async def freezone_audio_speech(
         raise HTTPException(400, "text must be <= 10000 characters")
     billable_chars = count_billable_text_chars(body.text)
 
+    voice_ref_payload = body.voice_ref.model_dump() if body.voice_ref else None
+
     try:
         job_id = _new_job_id()
         if ctx is not None:
@@ -8965,6 +9348,16 @@ async def freezone_audio_speech(
                 freezone_audio_task_billing,
             )
 
+            # 音色解析要读的项目态在这里定型：投递方就是存放该项目的那台机器，
+            # 执行方不必再回头读项目库。没装投射器时返回空片段，payload 逐字不变。
+            projection_payload = await _task_projection_payload(
+                ctx=ctx,
+                username=username,
+                project_name=project_name,
+                episode=int(body.target_episode or 0),
+                task_type="freezone_audio_speech",
+                extra_config={"voice_ref": voice_ref_payload},
+            )
             return await _enqueue_freezone_background_job(
                 ctx=ctx,
                 project_dir=project_dir,
@@ -8973,7 +9366,7 @@ async def freezone_audio_speech(
                 payload={
                     "text": body.text,
                     "emotion_prompt": body.emotion_prompt,
-                    "voice_ref": body.voice_ref.model_dump() if body.voice_ref else None,
+                    "voice_ref": voice_ref_payload,
                     "account_voice_username": account_voice_username,
                     "target_episode": body.target_episode,
                     "target_beat": body.target_beat,
@@ -8985,6 +9378,7 @@ async def freezone_audio_speech(
                             "pricing_quantity": billable_chars,
                         },
                     ),
+                    **projection_payload,
                 },
             )
         _start_freezone_audio_speech_task(
@@ -9197,6 +9591,7 @@ async def freezone_edit(
         body.model_id or body.model,
         body.model_params,
         mode=body.gen_mode,
+        requester_user_id=ctx.requester_user_id,
     )
     execution_provider, execution_model = _catalog_image_execution_selection(
         catalog_entry,
@@ -10871,7 +11266,9 @@ async def create_canvas_from_preset(
     不断生成副本。
     """
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project,
+        user,
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
 
@@ -11107,7 +11504,7 @@ async def create_canvas_from_preset(
         }
 
     try:
-        saved_canvas = canvas_store.save_canvas(
+        saved_canvas = await canvas_store.save_canvas_async(
             canvas_project_dir,
             canvas_id,
             base_revision=body.base_revision,
@@ -11184,7 +11581,9 @@ async def build_projection_from_preset(
     user: dict = Depends(get_api_user),
 ):
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project,
+        user,
+        require_home_node=False,
     )
     payload, _preset_key, facts_signature = await _build_projection_payload_for_request(
         ctx=ctx,
@@ -11219,7 +11618,9 @@ async def project_canvas_from_preset(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project,
+        user,
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
 
@@ -11297,7 +11698,7 @@ async def project_canvas_from_preset(
     projection_client_save_id = f"projection:{canvas_id}:{projection_stable_hash}"
 
     try:
-        saved_canvas = canvas_store.save_canvas(
+        saved_canvas = await canvas_store.save_canvas_async(
             canvas_project_dir,
             canvas_id,
             base_revision=body.base_revision,
@@ -11384,7 +11785,9 @@ async def remove_canvas_projection(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project,
+        user,
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
 
@@ -11435,7 +11838,7 @@ async def remove_canvas_projection(
     remove_client_save_id = f"projection-remove:{canvas_id}:{remove_stable_hash}"
 
     try:
-        saved_canvas = canvas_store.save_canvas(
+        saved_canvas = await canvas_store.save_canvas_async(
             canvas_project_dir,
             canvas_id,
             base_revision=body.base_revision,
@@ -11512,7 +11915,10 @@ async def projection_status(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project,
+        user,
+        required_role="viewer",
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     existing = canvas_store.read_canvas(canvas_project_dir, canvas_id)
@@ -11613,7 +12019,10 @@ async def projection_status(
 @router.get("/projects/{project}/freezone/canvases", tags=[TAG_FREEZONE_CANVAS])
 async def list_canvases(project: str, user: dict = Depends(get_api_user)):
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project,
+        user,
+        required_role="viewer",
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     try:
@@ -11632,7 +12041,10 @@ async def get_canvas(project: str, canvas_id: str, user: dict = Depends(get_api_
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project,
+        user,
+        required_role="viewer",
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     try:
@@ -11664,7 +12076,15 @@ async def get_canvas(project: str, canvas_id: str, user: dict = Depends(get_api_
         project_name=ctx.project_name,
         project_dir=project_dir,
     )
-    return {"ok": True, "data": migrated_payload or {"nodes": [], "edges": []}}
+    response = {"ok": True, "data": migrated_payload or {"nodes": [], "edges": []}}
+    # B2 §3.9 O2:最近有别人写过就带一句提示,零额外往返——判断只用刚读出来的
+    # 那份载荷。字段挂在 `data` 之外,画布契约(`CanvasPayload`)一个字节不变(B2-6)。
+    editing_by = canvas_store.canvas_editing_hint(
+        payload, viewer_id=_canvas_actor_id(user)
+    )
+    if editing_by:
+        response["editing_by"] = editing_by
+    return response
 
 
 @router.get(
@@ -11679,7 +12099,10 @@ async def list_canvas_history(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project,
+        user,
+        required_role="viewer",
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     try:
@@ -11703,7 +12126,9 @@ async def restore_canvas_history(
     history_id = str(body.get("history_id") or "").strip()
     base_revision = body.get("base_revision")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project,
+        user,
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
 
@@ -11778,6 +12203,7 @@ async def get_node_generation_history(
         project,
         user,
         required_role="viewer",
+        require_home_node=False,
     )
     try:
         records = read_generation_history(
@@ -11829,6 +12255,7 @@ async def get_canvas_generation_history(
         project,
         user,
         required_role="viewer",
+        require_home_node=False,
     )
     try:
         records = read_canvas_generation_history(
@@ -11867,7 +12294,9 @@ async def put_canvas(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project,
+        user,
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
 
@@ -11883,7 +12312,7 @@ async def put_canvas(
         return prepared
 
     try:
-        saved_canvas = canvas_store.save_canvas(
+        saved_canvas = await canvas_store.save_canvas_async(
             canvas_project_dir,
             canvas_id,
             base_revision=body.base_revision,
@@ -11935,7 +12364,9 @@ async def delete_canvas(project: str, canvas_id: str, user: dict = Depends(get_a
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project,
+        user,
+        require_home_node=False,
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     try:

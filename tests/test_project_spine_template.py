@@ -5,7 +5,6 @@ from types import SimpleNamespace
 import pytest
 
 from novelvideo.api.schemas import IngestStart, ProjectUpdate
-from novelvideo.models import NovelEpisode
 
 pytestmark = pytest.mark.m03
 
@@ -229,10 +228,59 @@ async def test_update_project_rejects_spine_template_change_after_import(
         lambda state_dir, config=None, **kwargs: saved.update(config or {}),
     )
 
-    async def make_imported_store(ctx):
-        return _EpisodeStore([NovelEpisode(number=1, title="第一集")])
+    # Imported means the source text is on disk, not that episodes exist.
+    # Structured ingest writes novel.txt and records a chunk plan but creates
+    # no episodes, so an episode check left the template switchable in between —
+    # and the analysis run, which is keyed on the template, was silently
+    # orphaned by the switch.
+    monkeypatch.setattr(projects, "has_imported_novel", lambda _output_dir: True)
 
-    monkeypatch.setattr(projects, "make_sqlite_store_for_context", make_imported_store)
+    response = await projects.update_project(
+        "demo",
+        ProjectUpdate(spine_template="narrated"),
+        {"username": "alice"},
+    )
+
+    assert isinstance(response, JSONResponse)
+    assert response.status_code == 400
+    assert saved["spine_template"] == "drama"
+
+
+@pytest.mark.asyncio
+async def test_update_project_rejects_the_switch_before_any_episode_exists(
+    monkeypatch, tmp_path
+):
+    """The window the old check left open.
+
+    Structured ingest creates no episodes, so between import and episode
+    planning the type could still be changed. Afterwards the character build
+    finds no analysis run for the new template: it still runs, but with no chunk
+    persistence, no resume, no final artifact and no evidence rows.
+    """
+    from fastapi.responses import JSONResponse
+
+    from novelvideo.api.routes import projects
+
+    saved = {"spine_template": "drama"}
+
+    monkeypatch.setattr(projects, "resolve_project_context", _ctx_resolver(tmp_path))
+    monkeypatch.setattr(projects, "require_project_home_node", lambda *a, **k: None)
+    monkeypatch.setattr(
+        projects,
+        "load_project_config_from_state_dir",
+        lambda state_dir, **_kwargs: {"visual_style": "chinese_period_drama", **saved},
+    )
+    monkeypatch.setattr(
+        projects,
+        "save_project_config_in_state_dir",
+        lambda state_dir, config=None, **kwargs: saved.update(config or {}),
+    )
+
+    async def make_empty_store(ctx):
+        return _EpisodeStore([])
+
+    monkeypatch.setattr(projects, "make_sqlite_store_for_context", make_empty_store)
+    monkeypatch.setattr(projects, "has_imported_novel", lambda _output_dir: True)
 
     response = await projects.update_project(
         "demo",
@@ -419,3 +467,67 @@ async def test_start_ingest_accepts_repairable_premium_drama(monkeypatch, tmp_pa
 
     assert response["ok"] is False
     assert "project context" in response["error"]
+
+
+@pytest.mark.asyncio
+async def test_project_config_reports_whether_a_scene_build_applies(
+    monkeypatch, tmp_path
+):
+    """The UI asks one question; answer it here rather than on the client.
+
+    Rebuilding the rule from spine_template plus the knowledge pipeline in the
+    frontend would put it in two places and leak the track name into the API.
+    """
+    import json
+
+    from novelvideo.api.routes import projects
+    from novelvideo.knowledge_pipeline import (
+        KNOWLEDGE_PIPELINE_KEY,
+        KNOWLEDGE_PIPELINE_STRUCTURED,
+    )
+
+    state_dir = tmp_path / "alice" / "demo"
+    state_dir.mkdir(parents=True)
+
+    async def _read(config: dict) -> bool:
+        (state_dir / "project_config.json").write_text(
+            json.dumps(config, ensure_ascii=False), encoding="utf-8"
+        )
+        ctx = SimpleNamespace(
+            project_id="project_123",
+            owner_username="alice",
+            project_name="demo",
+            effective_role="owner",
+            home_node_id="node",
+            output_dir=tmp_path,
+            state_dir=state_dir,
+            runtime_dir=tmp_path / "runtime",
+        )
+
+        async def _resolve(**_kwargs):
+            return ctx
+
+        monkeypatch.setattr(projects, "resolve_project_context", _resolve)
+        monkeypatch.setattr(projects, "require_project_home_node", lambda *a, **k: None)
+        monkeypatch.setattr(
+            projects,
+            "load_project_config_from_state_dir",
+            lambda _state_dir, **_kwargs: dict(config),
+        )
+
+        async def _registry_get(_project_id):
+            return None
+
+        monkeypatch.setattr(
+            projects,
+            "get_project_registry",
+            lambda: SimpleNamespace(get_project=_registry_get),
+        )
+        response = await projects.get_project("demo", {"username": "alice"})
+        return response["data"]["scene_build_supported"]
+
+    structured = {KNOWLEDGE_PIPELINE_KEY: KNOWLEDGE_PIPELINE_STRUCTURED}
+    assert await _read({**structured, "spine_template": "drama"}) is True
+    assert await _read({**structured, "spine_template": "narrated"}) is False
+    # Legacy keeps its build whatever the template.
+    assert await _read({"spine_template": "narrated"}) is True

@@ -111,6 +111,7 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
     generate: handleSubmit,
     effectivePrompt,
     isGenerating,
+    modelTaskAccess,
   } = useAudioGeneration(nodeId, data);
   const speechBillableChars = countBillableTextChars(effectivePrompt);
   const musicLengthMs =
@@ -188,7 +189,7 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
   );
 
   const handleTranslate = useCallback(async () => {
-    if (isGenerating || isTranslating) return;
+    if (modelTaskAccess.blocked || isGenerating || isTranslating) return;
     const trimmed = text.trim();
     if (trimmed.length === 0) return;
     const project = readUrl().project;
@@ -218,11 +219,12 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
     } finally {
       setIsTranslating(false);
     }
-  }, [isGenerating, handleTextChange, isTranslating, t, text]);
+  }, [handleTextChange, isGenerating, isTranslating, modelTaskAccess.blocked, t, text]);
 
   // 文本框为空但引用了非空文本时也允许提交（effectivePrompt 会回退到上游引用）。
   const submitDisabled =
-    isGenerating || billingRuleMissing || effectivePrompt.length === 0;
+    isGenerating || billingRuleMissing || modelTaskAccess.blocked ||
+    effectivePrompt.length === 0;
 
   return (
     <OperationPanelShell
@@ -329,9 +331,14 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
 
       <div className="flex shrink-0 items-center justify-end gap-2 px-3 pb-3 pt-1">
         <IconButton
-          title="翻译（中英文互译）"
+          title={modelTaskAccess.message ?? '翻译（中英文互译）'}
           onClick={handleTranslate}
-          disabled={isGenerating || isTranslating || text.trim().length === 0}
+          disabled={
+            modelTaskAccess.blocked
+            || isGenerating
+            || isTranslating
+            || text.trim().length === 0
+          }
           active={isTranslating}
         >
           {isTranslating ? (
@@ -367,7 +374,7 @@ export function AudioOperationsPanel({ nodeId, data }: AudioOperationsPanelProps
         <button
           type="button"
           disabled={submitDisabled}
-          title="生成"
+          title={modelTaskAccess.message ?? '生成'}
           onClick={handleSubmit}
           className={`${NODE_GENERATE_BUTTON_BASE_CLASS} ${
             submitDisabled

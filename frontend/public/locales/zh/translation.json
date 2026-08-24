@@ -205,6 +205,27 @@
       }
     }
   },
+  "organization": {
+    "unavailable": "当前版本不提供组织访问检查。",
+    "access": {
+      "title": "模型访问",
+      "loading": "正在加载模型访问状态",
+      "retry": "重试访问状态",
+      "back": "返回项目主页",
+      "available": "可以启动模型任务",
+      "unavailable": "当前不能启动模型任务",
+      "reasons": {
+        "MODEL_ACCESS_DENIED": "此账号的模型访问资格已禁用。",
+        "ORG_MEMBERSHIP_INACTIVE": "当前组织成员身份无效。",
+        "ORG_SUSPENDED": "当前组织已暂停。",
+        "ORG_CREDENTIAL_MISSING": "组织尚无可用的网关 Key。",
+        "ORG_CREDENTIAL_DISABLED": "组织网关 Key 当前不可用。",
+        "ORG_CREDENTIAL_GATEWAY_MISMATCH": "组织网关 Key 绑定的是另一个网关，请联系管理员重新绑定。",
+        "ORG_AUTHZ_STALE": "访问状态已变化，请刷新后重试。",
+        "generic": "模型访问当前不可用。"
+      }
+    }
+  },
   "notifications": {
     "title": "通知中心",
     "close": "关闭通知中心",
@@ -686,6 +707,7 @@
     "short": "积分",
     "openPanel": "打开积分面板",
     "personalAccount": "个人积分账户",
+    "orgAccount": "组织分配给你的额度",
     "details": "查看明细",
     "earned": "已获得",
     "spent": "已消费",
@@ -696,8 +718,16 @@
     "back": "返回",
     "centerTitle": "积分中心",
     "centerDescription": "查看统一积分余额、消费结算、退款和当前可用促销。",
+    "orgScopeBadge": "组织分配额度",
+    "orgCenterDescription": "查看组织为你分配的额度余额、消费结算与退款明细。",
+    "orgScopeNotice": "以下余额与明细来自组织「{{name}}」为你分配的组织额度，你的任务消耗从该额度扣除。",
+    "orgBalance": "可用余额",
+    "dormantPersonalBalance": "个人积分余额（此处不可用）",
+    "dormantPersonalHint": "这笔积分仍保留在你的个人账户中。当前账号按组织额度结算，不会动用个人积分。",
+    "lowBalanceNotice": "可用余额 {{balance}} 已低于组织设置的提醒阈值 {{threshold}}，请联系组织管理员追加额度。",
     "pendingAmount": "{{amount}} 积分正在预扣结算",
     "availablePromotions": "当前可用促销",
+    "orgPromotionBadge": "组织促销",
     "promotionDisclaimer": "最终优惠以具体功能、模型和业务区域的实时报价为准。",
     "endsAt": "{{time}} 结束",
     "longTerm": "长期有效",
@@ -1411,6 +1441,7 @@
       "derivedFrom": "派生自 {{base}}",
       "emptyTitle": "暂无场景数据",
       "emptyDescription": "新建场景，或从图谱自动提取项目场景。",
+      "emptyDescriptionPerEpisode": "解说剧的场景会在规划各集场景时自动创建，也可以手动添加。",
       "building": "构建场景中...",
       "buildingEmpty": {
         "title": "正在构建场景",
@@ -1455,6 +1486,13 @@
         "masterToPly": "正面→导演世界",
         "reverseToPly": "背面→导演世界",
         "panoToPly": "360→导演世界",
+        "singleFaceFeature": "场景单面转 SOG",
+        "panoFeature": "场景全景转 SOG",
+        "confirmTitle": "确认启动转换",
+        "confirmDescription": "{{feature}}，确认后将立即启动任务。",
+        "confirmAction": "确认并启动",
+        "costLoading": "正在获取当前组织价格",
+        "costUnavailable": "暂时无法获取价格，请稍后重试",
         "openWorld": "打开导演世界",
         "worldNotReady": "导演世界（片场未就绪）"
       },
@@ -1544,10 +1582,14 @@
     "billingRuleNotConfiguredShort": "需配置",
     "projectDefaultQueueFull": "当前项目默认队列已满",
     "projectQueueFull": "当前项目{{queue}}队列已满",
-    "projectDefaultQueueUserFull": "你在当前项目默认队列的任务已达个人上限",
-    "projectQueueUserFull": "你在当前项目{{queue}}队列的任务已达个人上限",
-    "projectDefaultQueueProjectFull": "当前项目默认队列已达团队上限",
-    "projectQueueProjectFull": "当前项目{{queue}}队列已达团队上限",
+    "userDefaultQueueFull": "你在当前默认队列的任务已达个人上限",
+    "userQueueFull": "你在当前{{queue}}队列的任务已达个人上限",
+    "organizationDefaultQueueFull": "当前组织默认队列已满",
+    "organizationQueueFull": "当前组织{{queue}}队列已满",
+    "platformDefaultQueueFull": "平台默认队列已满",
+    "platformQueueFull": "平台{{queue}}队列已满",
+    "nodeDefaultQueueFull": "当前节点默认队列已满",
+    "nodeQueueFull": "当前节点{{queue}}队列已满",
     "projectQueueKinds": {
       "video": "视频",
       "world": "世界",
@@ -2138,6 +2180,11 @@
       "noIdentities": "身份未规划",
       "planIdentities": "规划身份",
       "replanIdentities": "重新规划身份",
+      "identityCharactersRequired": "请先到角色页从知识图谱构建角色",
+      "identityCharactersBuilding": "角色正在构建，完成后可规划身份",
+      "identityCharactersLoading": "正在检查角色数据",
+      "sceneCatalogBuilding": "场景正在构建，完成后可规划场景",
+      "sceneCatalogLoading": "正在检查场景构建状态",
       "propInGlobal": "已在全局道具库",
       "propCheckingGlobal": "正在检查全局道具库",
       "promoteProp": "加入全局道具库",
@@ -2935,6 +2982,11 @@
       "noProps": "道具未规划",
       "planIdentities": "规划身份",
       "replanIdentities": "重新规划身份",
+      "identityCharactersRequired": "请先到角色页从知识图谱构建角色",
+      "identityCharactersBuilding": "角色正在构建，完成后可规划身份",
+      "identityCharactersLoading": "正在检查角色数据",
+      "sceneCatalogBuilding": "场景正在构建，完成后可规划场景",
+      "sceneCatalogLoading": "正在检查场景构建状态",
       "planScenes": "规划场景",
       "replanScenes": "重新规划场景",
       "planProps": "规划道具",
@@ -4748,5 +4800,17 @@
     "zoom": "缩放",
     "zoomIn": "放大",
     "zoomOut": "缩小"
+  },
+  "modelTaskAccess": {
+    "blocked": {
+      "MODEL_ACCESS_DENIED": "此账号的模型访问资格已禁用，请联系组织管理员。",
+      "ORG_MEMBERSHIP_INACTIVE": "组织成员身份已失效，请联系组织管理员。",
+      "ORG_SUSPENDED": "所属组织已暂停，暂时无法发起生成。",
+      "ORG_CREDENTIAL_MISSING": "组织尚无可用的网关 Key，请联系组织管理员绑定。",
+      "ORG_CREDENTIAL_DISABLED": "组织网关 Key 当前不可用，请联系组织管理员。",
+      "ORG_CREDENTIAL_GATEWAY_MISMATCH": "组织网关 Key 绑定的是另一个网关，请联系组织管理员重新绑定。",
+      "ORG_AUTHZ_STALE": "访问状态已变化，请刷新后重试。",
+      "generic": "当前无法发起生成，请刷新或联系组织管理员。"
+    }
   }
 }

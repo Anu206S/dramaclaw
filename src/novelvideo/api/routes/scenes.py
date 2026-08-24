@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import io
+import logging
 import shutil
 import tempfile
 import time
@@ -25,6 +26,7 @@ from novelvideo.api.schemas import (
     SceneReferenceGenerateRequest,
     SceneUpdate,
 )
+from novelvideo.api.task_start_errors import handle_task_start_runtime_error
 from novelvideo.api.viewer_manifests import (
     build_director_stage_manifest,
     build_pano_viewer_manifest,
@@ -40,7 +42,16 @@ from novelvideo.ports import get_task_backend
 from novelvideo.project_config import load_project_config_file
 from novelvideo.project_context import ProjectContext, resolve_project_context
 from novelvideo.sqlite_store import SQLiteStore
+from novelvideo.project_config import load_project_config_file_from_state_dir
+from novelvideo.scene_prerequisites import (
+    SceneBuildNotApplicableError,
+    ScenePlanningRunningError,
+    running_scene_planner,
+    scene_build_applies,
+    scene_prerequisite_response,
+)
 from novelvideo.task_identity import project_task_state_key
+from novelvideo.task_state import get_task_manager
 from novelvideo.task_scopes import scene_reference_asset_scope, stage_asset_scope
 from novelvideo.utils.asset_names import move_asset_dir, path_safe_asset_name
 from novelvideo.utils.derived_scenes import (
@@ -53,6 +64,7 @@ from novelvideo.utils.path_resolver import (
 )
 
 router = APIRouter()
+logger = logging.getLogger("novelvideo.api.scenes")
 
 _SCENE_TIME_TOKENS = {
     "清晨",
@@ -1038,6 +1050,20 @@ async def build_scenes(project: str, user: dict = Depends(get_api_user)):
     if ctx is not None:
         if not has_imported_novel(project_dir):
             return novel_import_required_response()
+        # Answered before the queue, not inside it. Enqueueing reserves a
+        # feature credit, and the runner's no-op result then confirms the
+        # charge — so a narrated project could pay for a build that made no
+        # model call and produced no scene.
+        config = load_project_config_file_from_state_dir(ctx.state_dir)
+        if not scene_build_applies(
+            str(ctx.state_dir), str(config.get("spine_template") or "drama")
+        ):
+            return scene_prerequisite_response(SceneBuildNotApplicableError())
+        # The other half of the exclusion. Both write the scenes table, so a
+        # build landing on top of a running planner leaves a catalogue whose
+        # contents depend on which writer got there first.
+        if running_scene_planner(get_task_manager().list_tasks_for_project(ctx)):
+            return scene_prerequisite_response(ScenePlanningRunningError())
         queued = await get_task_backend().enqueue_project_task(
             ctx,
             product_surface="mainline",
@@ -1431,6 +1457,11 @@ async def _start_3gs_single_face_task(
             params=params,
         )
     except RuntimeError as exc:
+        handle_task_start_runtime_error(
+            logger,
+            "failed to start single-face stage asset task",
+            exc,
+        )
         return {"ok": False, "error": str(exc)}
 
     return {
@@ -1516,6 +1547,11 @@ async def generate_scene_3gs_pano_ply(
             params=params,
         )
     except RuntimeError as exc:
+        handle_task_start_runtime_error(
+            logger,
+            "failed to start pano stage asset task",
+            exc,
+        )
         return {"ok": False, "error": str(exc)}
 
     return {
@@ -1549,13 +1585,9 @@ async def generate_scene_pano(
 
     params: dict[str, Any] = {
         "description": _scene_360_description(scene),
-        "style": body.style or _project_style(username, project_name),
-        "timeout_seconds": body.timeout_seconds,
+        "style": _project_style(username, project_name),
+        "timeout_seconds": 1800,
     }
-    for key in ("provider", "model", "image_size", "quality"):
-        value = getattr(body, key)
-        if value:
-            params[key] = value
 
     try:
         scope, queued = await _start_or_enqueue_scene_pano(
@@ -1566,6 +1598,11 @@ async def generate_scene_pano(
             params=params,
         )
     except RuntimeError as exc:
+        handle_task_start_runtime_error(
+            logger,
+            "failed to start scene pano generation task",
+            exc,
+        )
         return {"ok": False, "error": str(exc)}
 
     return {

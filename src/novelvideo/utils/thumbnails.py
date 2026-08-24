@@ -13,17 +13,18 @@ The cache is addressed purely by source path::
 
 so nothing about it leaks into a data schema. History records and canvas
 JSON keep storing the original URL; callers opt in per render by asking for
-a variant, and old data benefits without any backfill.
-Freshness is exact rather than heuristic: a generated variant is stamped
-with its source's mtime, so ``thumb.mtime == source.mtime`` means current
-and a regenerated source invalidates automatically without leaving stale
-files behind.
+a variant. Only newly appended history records proactively create one.
+Freshness uses write ordering: a generated variant is stamped with its source's
+mtime when the filesystem preserves ``os.utime``; object-store FUSE mounts may
+instead give it the later upload time. In both cases ``thumb.mtime >=
+source.mtime`` means current, while rewriting the source moves its mtime past
+the existing thumbnail and invalidates it.
 
 Building and serving are deliberately separate. ``fresh_thumbnail`` is what a
-request calls and it never builds; ``ensure_thumbnail`` builds and only ever
-runs in the background. A variant a request wants but does not have is queued
-and the original goes out instead, so a cold project costs exactly what it did
-before variants existed and warms itself up as it is used.
+request calls and it never builds or queues work; ``ensure_thumbnail`` builds
+and only ever runs in the background after a new history record is written (or
+from the explicit offline backfill tool). A missing variant falls back to the
+original without making an old project warm itself on read.
 
 Every failure path returns ``None`` so the caller falls back to the
 original. A slow node beats a broken one.
@@ -93,11 +94,14 @@ _MAX_SOURCE_PIXELS = 40_000_000
 _WEBP_QUALITY = 80
 _WEBP_METHOD = 4
 
-# Bound concurrent decodes so a burst of cold thumbnails (a history strip is
-# nine at once) cannot monopolise the machine. This is a process-wide ceiling
-# across every caller — HTTP, prewarm workers, offline backfill.
+# Bound concurrent decodes. This is a process-wide ceiling shared by the
+# serving process's single prewarm worker and the explicit offline backfill.
 DEFAULT_RENDER_CONCURRENCY = 4
 _render_slots = threading.Semaphore(DEFAULT_RENDER_CONCURRENCY)
+
+
+class _ThumbnailDeclined(Exception):
+    """The source deterministically should keep using its original bytes."""
 
 
 def set_render_concurrency(slots: int) -> None:
@@ -153,15 +157,43 @@ def is_thumbnailable(source: Path) -> bool:
     return source.suffix.lower() in _SUPPORTED_SUFFIXES
 
 
+def _declined_path(dest: Path) -> Path:
+    return dest.with_name(dest.name + ".declined")
+
+
+def _record_decline(dest: Path, source_mtime_ns: int) -> None:
+    marker = _declined_path(dest)
+    tmp = marker.with_name(f"{marker.name}.{os.getpid()}.{threading.get_ident()}.tmp")
+    try:
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        tmp.write_bytes(b"")
+        os.utime(tmp, ns=(source_mtime_ns, source_mtime_ns))
+        os.replace(tmp, marker)
+    except OSError:
+        try:
+            tmp.unlink(missing_ok=True)
+        except OSError:
+            pass
+        logger.debug("thumbnail decline marker skipped for %s", dest, exc_info=True)
+
+
+def _clear_decline(dest: Path) -> None:
+    try:
+        _declined_path(dest).unlink(missing_ok=True)
+    except OSError:
+        logger.debug("stale thumbnail decline marker kept for %s", dest, exc_info=True)
+
+
 def ensure_thumbnail(
     project_dir: Path, source: Path, variant: str | None
 ) -> Optional[Path]:
     """Return a current thumbnail for ``source``, building it if needed.
 
-    Returns ``None`` whenever the caller should serve the original instead:
-    unknown variant, unsupported or oversized source, animated image, or any
-    decode/encode failure. Blocking and CPU-bound — call it off the event
-    loop.
+    Returns ``None`` whenever the caller should serve the original instead.
+    Deterministic declines (oversized, animated, out of pixel budget, or already
+    within the requested size) leave a source-versioned marker so reads do not
+    redirect forever. Transient decode/write failures leave no marker and may be
+    retried. Blocking and CPU-bound — call it off the event loop.
     """
 
     name = normalize_variant(variant)
@@ -177,18 +209,30 @@ def ensure_thumbnail(
             return None
         stat = source.stat()
         if stat.st_size > _MAX_SOURCE_BYTES:
+            _record_decline(dest, stat.st_mtime_ns)
             return None
         source_mtime_ns = stat.st_mtime_ns
 
         if _is_current(dest, source_mtime_ns):
             return dest
+        if _is_current(_declined_path(dest), source_mtime_ns):
+            return None
         with _stripe_for(dest):
             # Re-check under the lock: whoever we queued behind may have just
             # written exactly the file we were about to render.
             if _is_current(dest, source_mtime_ns):
                 return dest
+            if _is_current(_declined_path(dest), source_mtime_ns):
+                return None
             with _render_slots:
-                return _render(source, dest, max_edge, source_mtime_ns)
+                try:
+                    rendered = _render(source, dest, max_edge, source_mtime_ns)
+                except _ThumbnailDeclined:
+                    _record_decline(dest, source_mtime_ns)
+                    return None
+                if rendered is not None:
+                    _clear_decline(dest)
+                return rendered
     except Exception:
         logger.debug("thumbnail skipped for %s (%s)", source, variant, exc_info=True)
         return None
@@ -207,10 +251,11 @@ def fresh_thumbnail(
     source over the ossfs mount just to hand back a smaller copy of it. That is
     a worse first visit than the one variants were introduced to fix.
 
-    So a miss falls back to the redirect and queues the build for next time: a
-    cold project behaves exactly as it did before variants existed, and warms
-    itself up as it is used. Variants can only ever be an improvement, which is
-    also what makes the offline backfill purely optional.
+    So a plain miss falls back to the redirect. New history records prewarm
+    their single display thumbnail at write time; a deterministic decline leaves
+    a marker that lets the request serve a stable original instead. Old data
+    remains untouched unless an operator deliberately runs the offline backfill
+    tool.
 
     Cheap enough to call on the event loop — two stats, fewer than the path
     resolution the caller already did to get here.
@@ -228,9 +273,29 @@ def fresh_thumbnail(
         return None
 
 
+def thumbnail_declined(project_dir: Path, source: Path, variant: str | None) -> bool:
+    """Whether prewarming permanently declined this variant of this source."""
+
+    name = normalize_variant(variant)
+    if name is None:
+        return False
+    try:
+        dest = thumbnail_path(project_dir, source, name)
+        if dest is None:
+            return False
+        return _is_current(_declined_path(dest), source.stat().st_mtime_ns)
+    except OSError:
+        return False
+
+
 def _is_current(dest: Path, source_mtime_ns: int) -> bool:
     try:
-        return dest.stat().st_mtime_ns == source_mtime_ns
+        # ossfs/geesefs may silently discard the source timestamp requested by
+        # os.utime and keep the variant's later upload time instead. A variant
+        # is written only after its source exists, so either equality (local
+        # disk) or a later destination timestamp (FUSE) is current. Rewriting
+        # the source moves it past the existing variant and makes this false.
+        return dest.stat().st_mtime_ns >= source_mtime_ns
     except OSError:
         return False
 
@@ -242,7 +307,7 @@ def _render(
 
     with Image.open(source) as opened:
         if getattr(opened, "is_animated", False):
-            return None
+            raise _ThumbnailDeclined
 
         # Everything from here to `thumbnail` is decided on the header alone.
         # `Image.open` is lazy, so `.size` is known before a single pixel is
@@ -251,19 +316,19 @@ def _render(
         # allocates the full bitmap.
         width, height = opened.size
         if width <= 0 or height <= 0:
-            return None
+            raise _ThumbnailDeclined
         if width * height > _MAX_SOURCE_PIXELS:
-            return None
+            raise _ThumbnailDeclined
         # Nothing to gain once the source already fits: `thumbnail` would be a
         # no-op and we would spend a decode and a write to hand back a
         # re-encoded copy that can come out *larger* than the original. The
         # history strip and the LOD shell ask for `thumb` unconditionally, so
         # small sources reach this constantly — which is exactly why the check
         # belongs above the decode rather than below it. `None` means "serve the
-        # original", which is right here. Orientation cannot change the verdict:
-        # a transpose swaps the two numbers and `max` is blind to that.
+        # original", which is recorded by the caller. Orientation cannot change
+        # the verdict: a transpose swaps the two numbers and `max` is blind to it.
         if max(width, height) <= max_edge:
-            return None
+            raise _ThumbnailDeclined
 
         # No-op for everything but JPEG, where it lets libjpeg decode at a
         # reduced scale — most of the win on the formats that support it.
@@ -293,9 +358,9 @@ def _render(
     tmp = dest.with_name(f"{dest.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     try:
         out.save(tmp, "WEBP", quality=_WEBP_QUALITY, method=_WEBP_METHOD)
-        # Stamp the source's mtime onto the variant; that equality *is* the
-        # freshness check, and it closes the race where the source is
-        # rewritten while we render.
+        # Preserve exact source freshness where supported. Object-store FUSE
+        # mounts may ignore this and retain their later upload timestamp;
+        # _is_current deliberately accepts either representation.
         os.utime(tmp, ns=(source_mtime_ns, source_mtime_ns))
         os.replace(tmp, dest)
     except Exception:
@@ -306,30 +371,24 @@ def _render(
 
 # --- background prewarm ---------------------------------------------------
 #
-# Two feeders. A generation runner knows a file's final bytes the moment it
-# writes them, and that is the cheapest moment to build its variants: the source
-# is still in the page cache and nobody is waiting on the result. The read path
-# feeds it too, because ``fresh_thumbnail`` deliberately refuses to build on a
-# miss -- the request is served from OSS and the build happens here instead.
+# A generation runner knows a file's final bytes when it writes the history
+# record, and that is the cheapest moment to build its thumbnail: the source is
+# still in the page cache and nobody is waiting on the result. Reads never feed
+# this queue.
 #
 # Nothing may ever pay for this, least of all a request handler, hence a bounded
 # queue that drops rather than blocks when saturated. A drop only means the next
 # visit is cold again.
 
-# These are the only renderers in a serving process now that the read path never
-# builds, and they share the process-wide decode budget regardless, so matching
-# it exactly is what keeps that budget reachable.
-_PREWARM_WORKERS = DEFAULT_RENDER_CONCURRENCY
+# One serving-process worker keeps thumbnail work from competing with normal
+# generation. Offline backfill controls its own concurrency separately.
+_PREWARM_WORKERS = 1
 _PREWARM_QUEUE_SIZE = 512
 
 _PrewarmJob = tuple[Path, Path, str]
 
-# The read path queues on every miss, so one paint of a cold canvas offers the
-# same job once per visible node -- and again on the next paint, since nothing
-# is current yet. Without this, a single canvas load would pack the queue with
-# copies of a handful of jobs and drop the genuinely distinct ones. Keyed on the
-# strings rather than resolved paths so queueing stays syscall-free; a dedup
-# missed that way only costs one redundant job.
+# Duplicate writes/retries can still offer the same job while it is in flight.
+# Keyed on strings rather than resolved paths so queueing stays syscall-free.
 _PrewarmKey = tuple[str, str, str]
 _prewarm_inflight: set[_PrewarmKey] = set()
 _prewarm_inflight_lock = threading.Lock()
