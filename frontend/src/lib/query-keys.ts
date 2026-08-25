@@ -16,6 +16,10 @@ export const queryKeys = {
     featureKey?: string;
     model?: string;
   }) => ["credits", "transactions", filters] as const,
+  creditTransactionsRoot: () => ["credits", "transactions"] as const,
+  rechargePackages: () => ["payments", "packages"] as const,
+  rechargeOrders: () => ["payments", "orders"] as const,
+  rechargeLinkPackages: (token: string) => ["payments", "recharge-link", token] as const,
   org: () => ["org"] as const,
   orgMe: () => ["org", "me"] as const,
   orgBranding: () => ["org", "branding"] as const,
