@@ -93,6 +93,7 @@ import {
   useClearSceneDirectorWorld,
   useSaveSceneDirectorWorld,
   useSceneDirectorStageManifest,
+  useSceneDetails,
   useScenePanoManifest,
   useScenes,
   useUpdateScene,
@@ -1083,6 +1084,15 @@ interface SceneGroup {
   scenes: SceneAsset[];
 }
 
+export function selectAuthoritativeSceneDetails(
+  summaryScenes: SceneAsset[],
+  details: SceneAsset[] | undefined,
+  detailSucceeded: boolean,
+): SceneAsset[] | null {
+  if (!detailSucceeded) return summaryScenes;
+  return details?.length ? details : null;
+}
+
 const SCENE_GROUP_SELECTION_STORAGE_KEY_PREFIX = "supertale-scene-group:";
 
 function sceneGroupSelectionStorageKey(project: string): string {
@@ -1120,6 +1130,12 @@ function SceneGroupListItem({
 }) {
   const { t } = useTranslation();
   const previewUrl = sceneGroupPreviewUrl(group);
+  const [failedPreviewUrl, setFailedPreviewUrl] = useState("");
+  useEffect(() => {
+    setFailedPreviewUrl("");
+  }, [previewUrl]);
+  const visiblePreviewUrl =
+    previewUrl && failedPreviewUrl !== previewUrl ? previewUrl : "";
   return (
     <button
       type="button"
@@ -1137,13 +1153,14 @@ function SceneGroupListItem({
       ].join(" ")}
     >
       <div className="relative flex size-12 shrink-0 items-center justify-center overflow-hidden rounded-[8px] border border-white/[0.08] bg-black/20">
-        {previewUrl ? (
+        {visiblePreviewUrl ? (
           <img
-            src={previewUrl}
+            src={visiblePreviewUrl}
             alt=""
             aria-hidden="true"
             loading="lazy"
             decoding="async"
+            onError={() => setFailedPreviewUrl(previewUrl)}
             className="h-full w-full object-cover"
           />
         ) : (
@@ -1286,8 +1303,27 @@ export function ScenesPanel({
     sceneGroups,
     selectedBaseName,
   ]);
-  const selectedGroup =
+  const selectedSummaryGroup =
     sceneGroups.find((group) => group.baseName === selectedBaseName) ?? null;
+  const selectedSceneNames = useMemo(
+    () => selectedSummaryGroup?.scenes.map((scene) => scene.name) ?? [],
+    [selectedSummaryGroup],
+  );
+  const selectedSceneDetails = useSceneDetails(project, selectedSceneNames);
+  const selectedSceneAssets = selectedSummaryGroup
+    ? selectAuthoritativeSceneDetails(
+        selectedSummaryGroup.scenes,
+        selectedSceneDetails.data?.data,
+        selectedSceneDetails.isSuccess,
+      )
+    : null;
+  const selectedGroup =
+    selectedSummaryGroup && selectedSceneAssets
+      ? {
+          baseName: selectedSummaryGroup.baseName,
+          scenes: selectedSceneAssets,
+        }
+      : null;
   const selectedBaseScene =
     selectedGroup?.scenes.find((scene) => scene.name === selectedGroup.baseName) ??
     selectedGroup?.scenes[0] ??
@@ -1373,8 +1409,13 @@ export function ScenesPanel({
         <HeaderRefreshButton
           label={t("common.refresh")}
           onRefresh={async () => {
-            const result = await scenes.refetch();
-            if (result.isError) {
+            const [listResult, detailResult] = await Promise.all([
+              scenes.refetch(),
+              selectedSceneNames.length
+                ? selectedSceneDetails.refetch()
+                : Promise.resolve(null),
+            ]);
+            if (listResult.isError || detailResult?.isError) {
               toast.error(t("common.error"));
               return false;
             }
@@ -1507,6 +1548,23 @@ export function ScenesPanel({
             {!selectedGroup ? (
               <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
                 {t("assets.common.noMatch")}
+              </div>
+            ) : selectedSceneDetails.isLoading ? (
+              <div className="flex h-full items-center justify-center text-sm text-muted-foreground">
+                <Loader2 className="mr-2 size-4 animate-spin" />
+                {t("common.loading")}
+              </div>
+            ) : selectedSceneDetails.isError ? (
+              <div className="flex h-full flex-col items-center justify-center gap-3 text-sm text-muted-foreground">
+                <span>{t("common.error")}</span>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => void selectedSceneDetails.refetch()}
+                >
+                  {t("common.refresh")}
+                </Button>
               </div>
             ) : (
               <div className="@container h-full overflow-y-auto px-4 py-3">
