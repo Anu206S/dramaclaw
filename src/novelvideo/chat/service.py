@@ -360,8 +360,9 @@ _FREEZONE_CANVAS_WRITE_OBJECT_RE = re.compile(
     r"node|canvas|workflow|edge|image|video|audio|compose)",
     re.IGNORECASE,
 )
-_FREEZONE_CANVAS_QUESTION_RE = re.compile(
-    r"(?:如何|怎么|为什么|为何|是否|能否|可不可以|是什么|what|why|how|can\s+i)",
+_FREEZONE_CANVAS_KNOWLEDGE_QUESTION_RE = re.compile(
+    r"(?:如何|怎么|为什么|为何|是什么|教程|方法|步骤|是否支持|支不支持|"
+    r"what|why|how|can\s+i)",
     re.IGNORECASE,
 )
 _FREEZONE_CANVAS_WRITE_TOOLS = frozenset(
@@ -393,12 +394,14 @@ def _freezone_canvas_write_requested(prompt: str | None) -> bool:
 
     raw_prompt = str(prompt or "")
     user_text = raw_prompt.split("[SUPERTALE_", 1)[0].strip()
-    if not user_text or _FREEZONE_CANVAS_QUESTION_RE.search(user_text):
+    if not user_text:
         return False
     has_action = bool(_FREEZONE_CANVAS_WRITE_ACTION_RE.search(user_text))
     has_canvas_object = bool(_FREEZONE_CANVAS_WRITE_OBJECT_RE.search(user_text))
     has_node_reference = "[SUPERTALE_CANVAS_NODE_REFERENCES]" in raw_prompt
     standalone_clear = bool(re.search(r"(?:清空|clear)", user_text, re.IGNORECASE))
+    if _FREEZONE_CANVAS_KNOWLEDGE_QUESTION_RE.search(user_text):
+        return False
     return has_action and (has_canvas_object or has_node_reference or standalone_clear)
 
 
@@ -1022,18 +1025,75 @@ def _skill_sources() -> list[tuple[str, Path]]:
 
 
 def _sync_project_skills(skills_dir: Path, *, agent_profile: str = "main") -> None:
+    skills_dir.mkdir(parents=True, exist_ok=True)
     profile = str(agent_profile or "main").strip() or "main"
     allowed = (
         {"freezone", "workflows", "dramaclaw-workflows"}
         if profile.startswith("freezone")
         else None
     )
-    for skill_name, src in _skill_sources():
-        if allowed is not None and skill_name not in allowed:
-            continue
+    manifest_path = skills_dir / ".dramaclaw-managed-skills.json"
+    previous_managed: set[str] = set()
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+        if isinstance(payload, dict) and isinstance(payload.get("skills"), dict):
+            previous_managed = {
+                str(name) for name in payload["skills"] if isinstance(name, str)
+            }
+    except (OSError, TypeError, ValueError, json.JSONDecodeError):
+        pass
+
+    sources = {
+        name: src
+        for name, src in _skill_sources()
+        if name and Path(name).name == name
+    }
+    managed_names = previous_managed | set(sources)
+    active: dict[str, str] = {}
+    for skill_name in sorted(managed_names):
         dst = skills_dir / skill_name
-        if not dst.exists():
+        src = sources.get(skill_name)
+        if src is None or (allowed is not None and skill_name not in allowed):
+            _remove_managed_skill_path(dst)
+            continue
+        source_digest = _skill_tree_digest(src)
+        destination_digest = _skill_tree_digest(dst) if dst.is_dir() else ""
+        if source_digest != destination_digest:
+            _remove_managed_skill_path(dst)
             shutil.copytree(src, dst)
+        active[skill_name] = source_digest
+
+    manifest_path.write_text(
+        json.dumps(
+            {"schema_version": 1, "profile": profile, "skills": active},
+            ensure_ascii=False,
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
+def _remove_managed_skill_path(path: Path) -> None:
+    if path.is_symlink() or path.is_file():
+        path.unlink(missing_ok=True)
+    elif path.is_dir():
+        shutil.rmtree(path)
+
+
+def _skill_tree_digest(root: Path) -> str:
+    if not root.is_dir():
+        return ""
+    digest = hashlib.sha256()
+    for path in sorted(root.rglob("*")):
+        if not path.is_file():
+            continue
+        digest.update(path.relative_to(root).as_posix().encode("utf-8"))
+        digest.update(b"\0")
+        digest.update(path.read_bytes())
+        digest.update(b"\0")
+    return digest.hexdigest()
 
 
 def _now_iso() -> str:

@@ -209,6 +209,7 @@ from novelvideo.freezone.recipe_runtime import (
 )
 from novelvideo.ports import get_usage_meter
 from novelvideo.ports.local.usage import NoOpUsageMeter
+from novelvideo.shared.billing_errors import find_billing_rule_not_configured_error
 from novelvideo.freezone.route_helpers import (
     accepted_job_response as _accepted_job_response,
 )

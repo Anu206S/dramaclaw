@@ -1170,6 +1170,9 @@ def test_codex_freezone_write_request_detection_ignores_injected_context_and_que
         is True
     )
     assert chat_service._freezone_canvas_write_requested("怎么创建图片节点？") is False
+    assert chat_service._freezone_canvas_write_requested("能否帮我创建一个短视频工作流？") is True
+    assert chat_service._freezone_canvas_write_requested("可不可以创建一个图片节点？") is True
+    assert chat_service._freezone_canvas_write_requested("你们是否支持创建图片节点？") is False
     assert (
         chat_service._freezone_canvas_write_requested(
             "生成下这个\n[SUPERTALE_CANVAS_NODE_REFERENCES] node_id: image-a"
@@ -1449,6 +1452,52 @@ def test_user_agent_workspace_is_not_project_workspace(monkeypatch, tmp_path):
     project_workspace = Path(tmp_path / "output" / "admin" / "project-a")
     assert not (project_workspace / ".claude").exists()
     assert not (project_workspace / ".codex").exists()
+
+
+def test_freezone_skill_sync_refreshes_managed_skills_and_preserves_user_skills(
+    monkeypatch, tmp_path
+):
+    source_root = tmp_path / "sources"
+    mainline_source = source_root / "dramaclaw"
+    workflow_source = source_root / "dramaclaw-workflows"
+    mainline_source.mkdir(parents=True)
+    workflow_source.mkdir(parents=True)
+    (mainline_source / "SKILL.md").write_text("# Mainline\n", encoding="utf-8")
+    (workflow_source / "SKILL.md").write_text("# Workflow v1\n", encoding="utf-8")
+    monkeypatch.setattr(
+        chat_service,
+        "_skill_sources",
+        lambda: [
+            ("dramaclaw", mainline_source),
+            ("dramaclaw-workflows", workflow_source),
+        ],
+    )
+
+    skills_dir = tmp_path / "workspace" / ".agents" / "skills"
+    stale_mainline = skills_dir / "dramaclaw"
+    stale_workflow = skills_dir / "dramaclaw-workflows"
+    user_skill = skills_dir / "my-private-skill"
+    stale_mainline.mkdir(parents=True)
+    stale_workflow.mkdir(parents=True)
+    user_skill.mkdir(parents=True)
+    (stale_mainline / "SKILL.md").write_text("# Stale mainline\n", encoding="utf-8")
+    (stale_workflow / "SKILL.md").write_text("# Workflow stale\n", encoding="utf-8")
+    (user_skill / "SKILL.md").write_text("# User-owned\n", encoding="utf-8")
+
+    chat_service._sync_project_skills(skills_dir, agent_profile="freezone:main")
+
+    assert not stale_mainline.exists()
+    assert (stale_workflow / "SKILL.md").read_text(encoding="utf-8") == "# Workflow v1\n"
+    assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "# User-owned\n"
+
+    (workflow_source / "SKILL.md").write_text("# Workflow v2\n", encoding="utf-8")
+    chat_service._sync_project_skills(skills_dir, agent_profile="freezone:main")
+
+    assert (stale_workflow / "SKILL.md").read_text(encoding="utf-8") == "# Workflow v2\n"
+    manifest = json.loads(
+        (skills_dir / ".dramaclaw-managed-skills.json").read_text(encoding="utf-8")
+    )
+    assert set(manifest["skills"]) == {"dramaclaw-workflows"}
 
 
 def test_dramaclaw_mcp_server_config_is_agent_neutral():

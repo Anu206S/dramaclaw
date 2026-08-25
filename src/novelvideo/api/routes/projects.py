@@ -30,11 +30,6 @@ from novelvideo.api.schemas import (
 )
 from novelvideo.config import ensure_project_dirs_at_paths
 from novelvideo.chat import service as chat_service
-from novelvideo.embedding_models import (
-    PROJECT_EMBEDDING_DIMENSION_KEY,
-    PROJECT_EMBEDDING_MODEL_KEY,
-    embedding_model_binding_for_new_project,
-)
 from novelvideo.knowledge_pipeline import KNOWLEDGE_PIPELINE_KEY, KNOWLEDGE_PIPELINE_STRUCTURED
 from novelvideo.novel_source import has_imported_novel
 from novelvideo.ports import get_project_access, get_project_registry

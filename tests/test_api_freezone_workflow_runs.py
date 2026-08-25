@@ -107,6 +107,32 @@ def test_agent_planning_quote_is_non_reserving_and_exact(
     assert seen["feature_key"] == "freezone.agent.creative_planning"
 
 
+def test_agent_planning_quote_falls_back_when_price_rule_is_missing(
+    workflow_run_client: TestClient,
+    monkeypatch,
+) -> None:
+    from novelvideo.api.routes import freezone
+    from novelvideo.shared.billing_errors import BillingRuleNotConfiguredError
+
+    class Meter:
+        async def require_feature_credit_balance(self, **_kwargs):
+            raise BillingRuleNotConfiguredError(
+                kind="feature",
+                key="freezone.agent.creative_planning",
+            )
+
+    monkeypatch.setattr(freezone, "get_usage_meter", lambda: Meter())
+    response = workflow_run_client.post(
+        "/api/v1/projects/proj_demo/freezone/agent-capability-quote",
+        json={"feature_key": "freezone.agent.creative_planning"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"]["configured"] is False
+    assert response.json()["data"]["exact"] is False
+    assert response.json()["data"]["required_credits"] is None
+
+
 def test_agent_planning_quote_is_disabled_in_ce(
     workflow_run_client: TestClient,
 ) -> None:

@@ -111,6 +111,30 @@ async def test_read_resource_accepts_codex_agent_root_relative_skill_path(
     assert content == "# Current workflow skill\n"
 
 
+@pytest.mark.asyncio
+async def test_read_resource_rejects_existing_file_from_another_workspace(
+    monkeypatch, tmp_path
+):
+    current_root = tmp_path / "current" / ".agents" / "skills"
+    current_skill = current_root / "dramaclaw-workflows" / "SKILL.md"
+    current_skill.parent.mkdir(parents=True)
+    current_skill.write_text("# Current workflow skill\n", encoding="utf-8")
+    foreign_skill = (
+        tmp_path
+        / "other-user"
+        / ".agents"
+        / "skills"
+        / "dramaclaw-workflows"
+        / "SKILL.md"
+    )
+    foreign_skill.parent.mkdir(parents=True)
+    foreign_skill.write_text("# Foreign private skill\n", encoding="utf-8")
+    monkeypatch.setenv("DRAMACLAW_SKILLS_DIR", str(current_root))
+
+    with pytest.raises(ValueError, match="different agent workspace"):
+        await dramaclaw_mcp.read_resource(foreign_skill.as_uri())
+
+
 def test_home_scope_only_discovers_project_collection_tools(monkeypatch):
     monkeypatch.delenv("DRAMACLAW_PROJECT_ID", raising=False)
 

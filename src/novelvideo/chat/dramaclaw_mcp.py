@@ -289,40 +289,50 @@ def _skill_resource_path(uri: str) -> Path:
         raise ValueError("only local skill resources are supported")
     if not raw_path:
         raise ValueError("skill resource path is required")
-    target = Path(raw_path).resolve()
-    parts = target.parts
-    skills_root: Path | None = None
+    raw_target = Path(raw_path).expanduser()
+    parts = raw_target.parts
+    relative: Path | None = None
     for index in range(len(parts) - 1):
         if parts[index] == ".agents" and parts[index + 1] == "skills":
-            skills_root = Path(*parts[: index + 2]).resolve()
+            relative = Path(*parts[index + 2 :])
             break
-    if skills_root is None:
+    if relative is None:
         raise ValueError("resource is outside the agent skills directory")
-    try:
-        relative = target.relative_to(skills_root)
-    except ValueError as exc:
-        raise ValueError("resource is outside the agent skills directory") from exc
-    if target.suffix.lower() != ".md":
+    if any(part in {"", ".", ".."} for part in relative.parts):
+        raise ValueError("resource is outside the agent skills directory")
+    if relative.suffix.lower() != ".md":
         raise ValueError("only Markdown skill resources are supported")
     relative_parts = relative.parts
     if len(relative_parts) < 2 or (
         relative_parts[-1] != "SKILL.md" and "references" not in relative_parts[1:-1]
     ):
         raise ValueError("resource is not a skill document")
-    if target.is_file():
-        return target
+    roots = _skill_resource_roots()
+    if raw_target.is_absolute() and raw_target.exists():
+        existing_target = raw_target.resolve()
+        if not any(
+            _path_is_within(existing_target, root)
+            for root in roots
+        ):
+            raise ValueError("resource belongs to a different agent workspace")
     # Persisted Codex threads can retain a file URI from an older workspace.
     # Resolve the same skill-relative path against the current thread's
     # explicitly scoped skills root; never search arbitrary host directories.
-    for root in _skill_resource_roots():
+    for root in roots:
         candidate = (root / relative).resolve()
-        try:
-            candidate.relative_to(root)
-        except ValueError:
+        if not _path_is_within(candidate, root):
             continue
         if candidate.is_file():
             return candidate
-    return target
+    raise ValueError("skill resource is unavailable")
+
+
+def _path_is_within(target: Path, root: Path) -> bool:
+    try:
+        target.relative_to(root)
+    except ValueError:
+        return False
+    return True
 
 
 def _skill_resource_roots() -> list[Path]:
