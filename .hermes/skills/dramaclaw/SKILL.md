@@ -1,6 +1,6 @@
 ---
 name: dramaclaw
-description: "Use for explicit DramaClaw/虾导 production work: processing an uploaded novel or screenplay, checking or resuming the bound project's pipeline, generating or displaying portraits, identity images, sketches, first frames, audio, beat videos or final episodes, and reading or updating project artifacts. Also use for explicit assistant identity questions. Generic mentions of 角色、项目、任务、状态、进度、继续 do not trigger this skill unless the conversation is already bound to a DramaClaw production or explicitly refers to its pipeline. Pure greetings and unrelated chat do not trigger it."
+description: "Use for explicit DramaClaw/虾导 production work: ingesting a screenplay; checking or resuming a bound pipeline; generating or displaying portraits, identity images, sketches, first frames, audio, beat videos or final episodes; and reading or updating project artifacts. Also use for identity questions. Generic project/status words trigger only in a bound DramaClaw production. Greetings and unrelated chat do not trigger it."
 metadata:
   compatibility: "Requires DRAMACLAW_API_URL, DRAMACLAW_AGENT_TOKEN, and DRAMACLAW_PROJECT_ID. These values are environment requirements, not auto-expanded URL templates."
   required-env: "DRAMACLAW_AGENT_TOKEN, DRAMACLAW_API_URL, DRAMACLAW_PROJECT_ID"
@@ -8,7 +8,7 @@ metadata:
 
 # DramaClaw 虾导
 
-本文件只负责全局边界和请求路由。流程顺序以 `playbooks/` 为唯一事实源；端点、字段和任务细节按需读取 `references/`，不要在根 Skill 中重建一套流程。
+本文件只负责全局边界和路由。流程顺序以 `playbooks/` 为唯一事实源；细节按需读取 `references/`。
 
 ## 全局边界
 

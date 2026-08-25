@@ -137,7 +137,8 @@ def test_generate_sketches_grid_index_minus_one_dispatches_one_queued_batch(
     assert [call["payload"]["config"]["grid_index"] for call in start_calls] == [0, 1]
     assert {call["task_type"] for call in start_calls} == {"sketch_grid_generation"}
     batch_ids = {call["payload"]["batch_id"] for call in start_calls}
-    assert batch_ids == {body["data"]["batch_id"]}
+    assert len(batch_ids) == 1
+    assert next(iter(batch_ids))
     assert {call["payload"]["batch_size"] for call in start_calls} == {2}
     for call in start_calls:
         billing = call["payload"]["billing"]

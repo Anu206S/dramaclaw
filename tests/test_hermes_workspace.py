@@ -1322,8 +1322,8 @@ def test_hermes_uses_settings_db_newapi_before_root_env(
     assert _dramaclaw_provider(parsed)["base_url"] == "http://custom-gateway/v1"
     assert _dramaclaw_provider(parsed)["key_env"] == "NEWAPI_API_KEY"
     assert "custom-key" not in (home / "config.yaml").read_text(encoding="utf-8")
-    assert "NEWAPI_API_KEY=custom-key" in env_text
-    assert "OPENAI_API_KEY=custom-key" in env_text
+    assert "NEWAPI_API_KEY" not in env_text
+    assert "OPENAI_API_KEY" not in env_text
     assert "root-key" not in env_text
 
 
@@ -1341,8 +1341,8 @@ def test_hermes_env_syncs_current_newapi_key_and_replaces_stale_openai_key(
     hw.ensure_user_hermes_workspace("admin", profile="freezone")
     env_text = (home / ".env").read_text(encoding="utf-8")
 
-    assert "NEWAPI_API_KEY=current-newapi-key" in env_text
-    assert "OPENAI_API_KEY=current-newapi-key" in env_text
+    assert "NEWAPI_API_KEY" not in env_text
+    assert "OPENAI_API_KEY" not in env_text
     assert "OPENAI_API_KEY=stale-test-key" not in env_text
     assert "UNRELATED_SECRET=keep-me" in env_text
 
@@ -1377,8 +1377,8 @@ def test_fresh_workspace_does_not_persist_newapi_key(
     assert "api_key" not in config["model"]
     assert _dramaclaw_provider(config)["key_env"] == "NEWAPI_API_KEY"
     assert "test-newapi-key" not in (home / "config.yaml").read_text(encoding="utf-8")
-    assert "NEWAPI_API_KEY=test-newapi-key" in env_text
-    assert "OPENAI_API_KEY=test-newapi-key" in env_text
+    assert "NEWAPI_API_KEY" not in env_text
+    assert "OPENAI_API_KEY" not in env_text
 
 
 def test_existing_inline_key_is_removed_automatically(
@@ -1434,7 +1434,7 @@ def test_existing_openai_env_is_synced_to_current_newapi_key(
     hw.ensure_user_hermes_workspace("admin")
     env_text = (home / ".env").read_text(encoding="utf-8")
 
-    assert "OPENAI_API_KEY=root-key" in env_text
+    assert "OPENAI_API_KEY" not in env_text
     assert "OPENAI_API_KEY=user-key" not in env_text
     assert "OPENAI_BASE_URL" not in env_text
     assert "OPENROUTER_API_KEY=plugin-key" in env_text

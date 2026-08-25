@@ -13,7 +13,7 @@ from novelvideo.official_defaults import (
     DEFAULT_TEXT_MODEL_BY_ENV,
     OFFICIAL_NEWAPI_BASE_URL,
 )
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_ce_effective, uses_local_ce_runtime
 
 # 加载环境变量（必须在任何其他导入之前）
 load_dotenv()
@@ -166,7 +166,7 @@ def get_effective_newapi_text_model_name(
 
     explicit_model = str(model_name_override or "").strip()
     env_model = _clean_env_value(model_env)
-    if not is_ce_effective():
+    if not uses_local_ce_runtime():
         # EE never binds a route to BrainClaw. The deployment environment owns
         # the choice: each task's model env selects the alias, and BrainClaw is
         # reached by pointing that env at the BrainClaw alias. Fixed EE task
@@ -346,12 +346,6 @@ def get_newapi_text_pydantic_model(
         default_model,
         model_name_override=model_name_override,
     )
-    api_key, base_url = get_newapi_runtime_credentials(
-        api_key_override=llm_config.api_key,
-        base_url_override=llm_config.base_url,
-        env_api_key="MODEL_API_KEY",
-        env_base_url="MODEL_BASE_URL",
-    )
     timeout_seconds = (
         float(timeout_seconds_override)
         if timeout_seconds_override is not None
@@ -368,9 +362,9 @@ def get_newapi_text_pydantic_model(
     default_headers = brainclaw_profile_headers(
         brainclaw_profile,
         profile_variant=brainclaw_profile_variant,
-        brainclaw_active=llm_config.is_brainclaw if is_ce_effective() else True,
+        brainclaw_active=llm_config.is_brainclaw if uses_local_ce_runtime() else True,
     )
-    if not is_ce_effective():
+    if not uses_local_ce_runtime():
         from novelvideo.model_gateway_runtime import (
             create_request_scoped_gateway_model,
         )
@@ -390,6 +384,12 @@ def get_newapi_text_pydantic_model(
             ),
         )
 
+    api_key, base_url = get_newapi_runtime_credentials(
+        api_key_override=llm_config.api_key,
+        base_url_override=llm_config.base_url,
+        env_api_key="MODEL_API_KEY",
+        env_base_url="MODEL_BASE_URL",
+    )
     if not api_key:
         raise ValueError("API key not set. Configure DramaClawAPI credentials.")
     return _newapi_text_openai_model(

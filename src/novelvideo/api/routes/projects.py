@@ -30,6 +30,9 @@ from novelvideo.api.schemas import (
 )
 from novelvideo.config import ensure_project_dirs_at_paths
 from novelvideo.chat import service as chat_service
+from novelvideo.embedding_models import (
+    embedding_model_binding_for_new_project as embedding_model_binding_for_new_project,
+)
 from novelvideo.knowledge_pipeline import KNOWLEDGE_PIPELINE_KEY, KNOWLEDGE_PIPELINE_STRUCTURED
 from novelvideo.novel_source import has_imported_novel
 from novelvideo.ports import get_project_access, get_project_registry
@@ -232,6 +235,13 @@ def _quarantine_project_dirs(
     仅在 ``record`` 的三类目录全部通过归属校验后才移动;任一目录不属于
     ``record.owner_username`` 时抛出,不移动任何目录。
     """
+    storage_dirs = (
+        Path(record.output_dir),
+        Path(record.state_dir),
+        Path(record.runtime_dir),
+    )
+    if not any(path.exists() for path in storage_dirs):
+        return []
     quarantined: list[tuple[Path, Path]] = []
     token = uuid.uuid4().hex
     try:

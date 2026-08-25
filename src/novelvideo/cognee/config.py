@@ -47,7 +47,7 @@ from novelvideo.shared.billing_errors import (
     find_insufficient_credits_stop,
 )
 from novelvideo.shared.env_guard import preserve_st_env
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import is_ce_effective, uses_local_ce_runtime
 
 # 抑制 cognee/litellm 内部的 Pydantic 序列化警告
 # （豆包等非 OpenAI provider 的 Message 字段数与 cognee 期望不同，不影响功能）
@@ -333,13 +333,33 @@ def _effective_newapi_gateway() -> tuple[str, str]:
 
         return get_newapi_runtime_credentials()
     except Exception:
-        if is_ce_effective():
+        if uses_local_ce_runtime():
             # CE credentials are never allowed to fall back to deployment env.
             return "", OFFICIAL_NEWAPI_BASE_URL
         return (
             os.getenv("NEWAPI_API_KEY", "").strip(),
             os.getenv("NEWAPI_BASE_URL", "").strip() or OFFICIAL_NEWAPI_BASE_URL,
         )
+
+
+def _effective_llm_gateway() -> tuple[str, str, bool]:
+    from novelvideo.model_gateway_settings import get_effective_llm_config
+
+    effective = get_effective_llm_config()
+    return effective.api_key, effective.base_url, effective.is_brainclaw
+
+
+def _get_llm_endpoint_env(provider: str) -> str:
+    if _uses_newapi_gateway(provider):
+        _api_key, base_url, _is_brainclaw = _effective_llm_gateway()
+        if base_url:
+            return base_url
+    return _get_scoped_env("COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT")
+
+
+def _resolve_llm_model(provider: str) -> str:
+    model = os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL
+    return _normalize_llm_model(provider, model)
 
 
 def _current_gateway_fingerprint() -> str:
@@ -362,7 +382,7 @@ def cognee_gateway_restart_required() -> bool:
 
 def _resolve_llm_api_key(llm_provider: str, llm_model: str) -> str:
     if _is_newapi_provider(llm_provider):
-        return _effective_newapi_gateway()[0]
+        return _effective_llm_gateway()[0]
     api_key = os.getenv("COGNEE_LLM_API_KEY", "")
     if api_key:
         return api_key
@@ -374,7 +394,7 @@ def _resolve_llm_api_key(llm_provider: str, llm_model: str) -> str:
         _get_scoped_env("COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT"),
     ):
         return os.getenv("OPENROUTER_API_KEY", "")
-    gateway_key, _gateway_base_url = _effective_newapi_gateway()
+    gateway_key, _gateway_base_url, _is_brainclaw = _effective_llm_gateway()
     return (
         gateway_key or os.getenv("OPENAI_API_KEY", "") or os.getenv("LLM_API_KEY", "")
     )
@@ -1171,7 +1191,7 @@ def _apply_embedding_runtime_defaults(llm_provider: str) -> None:
 
 def _apply_llm_env(provider: str, model: str, api_key: str) -> None:
     """应用 LLM 相关环境变量。"""
-    llm_endpoint = _get_endpoint_env(provider, "COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT")
+    llm_endpoint = _get_llm_endpoint_env(provider)
     llm_api_version = _get_scoped_env("COGNEE_LLM_API_VERSION", "LLM_API_VERSION")
     cognee_provider = _to_cognee_provider(provider)
 
@@ -1267,10 +1287,7 @@ def _apply_embedding_env(llm_provider: str, api_key: str) -> tuple[str, str, str
 
 
 llm_provider = _resolve_llm_provider()
-llm_model = _normalize_llm_model(
-    llm_provider,
-    os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL,
-)
+llm_model = _resolve_llm_model(llm_provider)
 _apply_embedding_runtime_defaults(llm_provider)
 
 api_key = _resolve_llm_api_key(llm_provider, llm_model)
@@ -1359,10 +1376,7 @@ def init_cognee() -> None:
             "CE 在设置页配置，EE 通过 NEWAPI_API_KEY 配置。"
         )
 
-    llm_model = _normalize_llm_model(
-        llm_provider,
-        os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL,
-    )
+    llm_model = _resolve_llm_model(llm_provider)
 
     _apply_llm_env(llm_provider, llm_model, api_key)
     (

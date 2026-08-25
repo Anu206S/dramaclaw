@@ -22,7 +22,14 @@ def workflow_run_client(monkeypatch, tmp_path):
         is_home_node=True,
     )
 
-    async def fake_resolve(project: str, user: dict, *, required_role: str = "editor"):
+    async def fake_resolve(
+        project: str,
+        user: dict,
+        *,
+        required_role: str = "editor",
+        require_home_node: bool = True,
+    ):
+        del require_home_node
         return ctx, "alice", "demo", tmp_path, str(tmp_path)
 
     monkeypatch.setattr(freezone, "_resolve_freezone_project", fake_resolve)

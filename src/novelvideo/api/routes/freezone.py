@@ -9794,9 +9794,15 @@ async def freezone_audio_speech(
                     "text": body.text,
                     "emotion_prompt": body.emotion_prompt,
                     "voice_ref": voice_ref_payload,
-                    "speech_mode": body.speech_mode,
-                    "preset_model": body.preset_model,
-                    "preset_voice": body.preset_voice,
+                    **(
+                        {
+                            "speech_mode": body.speech_mode,
+                            "preset_model": body.preset_model,
+                            "preset_voice": body.preset_voice,
+                        }
+                        if body.speech_mode == "preset"
+                        else {}
+                    ),
                     "account_voice_username": account_voice_username,
                     "target_episode": body.target_episode,
                     "target_beat": body.target_beat,
@@ -12481,7 +12487,7 @@ async def get_canvas_revision(project: str, canvas_id: str, user: dict = Depends
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project, user, required_role="viewer", require_home_node=False
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     try:
@@ -12592,7 +12598,7 @@ async def quote_freezone_agent_capability(
     if feature_key != CREATIVE_PLANNING_FEATURE_KEY:
         raise HTTPException(400, "unsupported agent capability quote")
     ctx, _username, _project_name, _project_dir, _output_dir = (
-        await _resolve_freezone_project(project, user)
+        await _resolve_freezone_project(project, user, require_home_node=False)
     )
     user_id = str(
         getattr(ctx, "requester_user_id", "")
@@ -12675,7 +12681,7 @@ async def create_canvas_workflow_draft(
     ):
         raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project, user, require_home_node=False
     )
     state_dir = _canvas_state_project_dir(ctx, project_dir)
     try:
@@ -12714,7 +12720,7 @@ async def get_canvas_workflow_draft(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project, user, required_role="viewer", require_home_node=False
     )
     try:
         draft, error = read_workflow_draft(
@@ -12752,7 +12758,7 @@ async def patch_canvas_workflow_draft(
     ):
         raise HTTPException(409, "agent planning credit confirmation is required")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project, user, require_home_node=False
     )
     try:
         expected_revision = int(body.get("expected_revision"))
@@ -12804,7 +12810,7 @@ async def claim_canvas_workflow_draft(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project, user, require_home_node=False
     )
     try:
         revision = int(body.get("revision"))
@@ -12915,7 +12921,7 @@ async def finish_canvas_workflow_draft(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project, user, require_home_node=False
     )
     try:
         draft = finish_workflow_draft_confirmation(
@@ -12981,7 +12987,7 @@ async def create_canvas_workflow_run(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project, user, require_home_node=False
     )
     try:
         run = create_workflow_run(
@@ -13018,7 +13024,7 @@ async def get_canvas_workflow_runs(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project, user, required_role="viewer", require_home_node=False
     )
     canvas_project_dir = _canvas_state_project_dir(ctx, project_dir)
     try:
@@ -13118,7 +13124,7 @@ async def get_canvas_workflow_run(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user, required_role="viewer"
+        project, user, required_role="viewer", require_home_node=False
     )
     try:
         run = read_workflow_run(
@@ -13147,7 +13153,7 @@ async def patch_canvas_workflow_run(
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
-        project, user
+        project, user, require_home_node=False
     )
     try:
         run = update_workflow_run(

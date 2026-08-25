@@ -64,13 +64,13 @@ def test_the_worker_environment_is_self_consistent_for_a_byo_deployment(byo_gate
         hermes_egress.PER_TURN_CREDENTIAL_MODE)
 
 
-def test_a_capability_is_not_required_to_take_a_turn(byo_gateway):
-    """A deployment with no capability key must not be forced to mint one."""
+def test_trusted_local_capability_is_available_without_signing_key(byo_gateway):
+    """A deployment without signing keys uses the trusted local issuer."""
     from novelvideo.chat.hermes_sdk import _issue_turn_capability
 
     capability = _issue_turn_capability(
         trajectory_id="tr-1", project_id="proj-1", turn_id="turn-1")
-    assert capability is None, "no key configured means no capability, not an error"
+    assert capability is not None
 
 
 def test_an_unconfigured_issuer_is_not_counted_as_a_failure(byo_gateway):

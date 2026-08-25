@@ -2272,7 +2272,6 @@ async def generate_sketches(
                 "task_type": "sketch_grid_generation",
                 "backend": queued_tasks[0]["backend"] if queued_tasks else "inline",
                 "data": {
-                    "batch_id": batch_id or None,
                     # 实投数，不是意图数（M8 不变量 17）。
                     "dispatched": len(queued_tasks),
                     "tasks": queued_tasks,

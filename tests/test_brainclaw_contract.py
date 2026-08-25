@@ -167,7 +167,9 @@ def test_advanced_mode_rejects_an_unmapped_fixed_task(monkeypatch, tmp_path):
 def test_ee_route_follows_env_even_when_the_relay_is_brainclaw(monkeypatch):
     """EE never binds a route to BrainClaw; the model env owns the choice."""
     monkeypatch.setenv("ST_EDITION", "ee")
-    monkeypatch.delenv("NEWAPI_BASE_URL", raising=False)
+    # Keep this deterministic even when importing ``novelvideo.config`` lazily
+    # loads a developer's local .env after the monkeypatch is applied.
+    monkeypatch.setenv("NEWAPI_BASE_URL", OFFICIAL_NEWAPI_BASE_URL)
     monkeypatch.setenv("EPISODE_SCENE_PLANNER_MODEL", "DC-ee-scene-planner")
 
     assert get_effective_llm_config().is_brainclaw is True

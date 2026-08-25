@@ -1038,7 +1038,9 @@ def _sync_project_skills(skills_dir: Path, *, agent_profile: str = "main") -> No
         payload = json.loads(manifest_path.read_text(encoding="utf-8"))
         if isinstance(payload, dict) and isinstance(payload.get("skills"), dict):
             previous_managed = {
-                str(name) for name in payload["skills"] if isinstance(name, str)
+                name
+                for name in payload["skills"]
+                if isinstance(name, str) and _is_safe_managed_skill_name(name)
             }
     except (OSError, TypeError, ValueError, json.JSONDecodeError):
         pass
@@ -1046,20 +1048,23 @@ def _sync_project_skills(skills_dir: Path, *, agent_profile: str = "main") -> No
     sources = {
         name: src
         for name, src in _skill_sources()
-        if name and Path(name).name == name
+        if _is_safe_managed_skill_name(name)
     }
     managed_names = previous_managed | set(sources)
     active: dict[str, str] = {}
     for skill_name in sorted(managed_names):
-        dst = skills_dir / skill_name
+        dst = _managed_skill_destination(skills_dir, skill_name)
+        if dst is None:
+            continue
         src = sources.get(skill_name)
         if src is None or (allowed is not None and skill_name not in allowed):
-            _remove_managed_skill_path(dst)
+            _remove_managed_skill_path(dst, root=skills_dir)
             continue
         source_digest = _skill_tree_digest(src)
         destination_digest = _skill_tree_digest(dst) if dst.is_dir() else ""
         if source_digest != destination_digest:
-            _remove_managed_skill_path(dst)
+            if not _remove_managed_skill_path(dst, root=skills_dir):
+                continue
             shutil.copytree(src, dst)
         active[skill_name] = source_digest
 
@@ -1075,11 +1080,48 @@ def _sync_project_skills(skills_dir: Path, *, agent_profile: str = "main") -> No
     )
 
 
-def _remove_managed_skill_path(path: Path) -> None:
+def _is_safe_managed_skill_name(name: object) -> bool:
+    if not isinstance(name, str) or not name or name != name.strip():
+        return False
+    candidate = Path(name)
+    return (
+        not candidate.is_absolute()
+        and candidate.name == name
+        and name not in {".", ".."}
+        and "/" not in name
+        and "\\" not in name
+    )
+
+
+def _managed_skill_destination(skills_dir: Path, skill_name: str) -> Path | None:
+    if not _is_safe_managed_skill_name(skill_name):
+        return None
+    root = skills_dir.resolve()
+    destination = skills_dir / skill_name
+    try:
+        resolved = destination.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return None
+    if resolved == root:
+        return None
+    return destination
+
+
+def _remove_managed_skill_path(path: Path, *, root: Path) -> bool:
+    root = root.resolve()
+    try:
+        resolved = path.resolve(strict=False)
+        resolved.relative_to(root)
+    except (OSError, RuntimeError, ValueError):
+        return False
+    if resolved == root:
+        return False
     if path.is_symlink() or path.is_file():
         path.unlink(missing_ok=True)
     elif path.is_dir():
         shutil.rmtree(path)
+    return True
 
 
 def _skill_tree_digest(root: Path) -> str:

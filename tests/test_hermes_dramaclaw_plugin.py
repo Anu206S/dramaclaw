@@ -735,7 +735,7 @@ def test_dramaclaw_freezone_mode_denies_mainline_writes(monkeypatch):
     assert "虾画画布" in denied["chat_error"]
 
 
-def test_dramaclaw_freezone_mode_allows_canvas_writes(monkeypatch):
+def test_dramaclaw_freezone_mode_denies_whole_canvas_writes(monkeypatch):
     plugin = _load_plugin_module()
     calls = []
 
@@ -764,9 +764,9 @@ def test_dramaclaw_freezone_mode_allows_canvas_writes(monkeypatch):
         }
     )
 
-    assert result["ok"] is True
-    assert calls[0]["method"] == "PUT"
-    assert calls[0]["path"] == "/api/v1/projects/demo/freezone/canvases/canvas_a"
+    assert result["ok"] is False
+    assert result["code"] == "freezone_mainline_write_denied"
+    assert calls == []
 
 
 def test_dramaclaw_plugin_controls_episode_auto_without_cancelling_tasks(monkeypatch):

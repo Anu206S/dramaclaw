@@ -45,6 +45,7 @@ from novelvideo.chat.hermes_egress import (
 from novelvideo.chat.hermes_workspace import (
     FREEZONE_HERMES_TOOL_DENY,
     effective_gateway_credentials,
+    effective_gateway_fingerprint,
     ensure_user_hermes_workspace,
     freezone_python_hook_dir,
 )
@@ -410,7 +411,12 @@ class HermesPool:
                         canvas_id=normalized_canvas_id,
                         reason="thread-closed",
                     )
-                elif slot.gateway_fingerprint != gateway_origin_fingerprint():
+                elif slot.gateway_fingerprint not in {
+                    gateway_origin_fingerprint(),
+                    # Backward compatibility for workers created before the
+                    # fingerprint stopped including the rotating API key.
+                    effective_gateway_fingerprint(),
+                }:
                     slot = await self._rotate_slot_locked(
                         slot,
                         model=model,

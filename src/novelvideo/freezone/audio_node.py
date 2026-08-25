@@ -772,7 +772,8 @@ async def _write_newapi_audio_speech(
             endpoint = _newapi_audio_endpoint(resolved_base_url)
             transport_started = True
             response = None
-            for attempt in range(3):
+            max_attempts = 1 if lease is not None else 3
+            for attempt in range(max_attempts):
                 try:
                     response = await client.post(
                         endpoint,
@@ -787,17 +788,17 @@ async def _write_newapi_audio_speech(
                 except httpx.HTTPStatusError as exc:
                     if (
                         exc.response.status_code in {408, 425, 429, 500, 502, 503, 504}
-                        and attempt < 2
+                        and attempt < max_attempts - 1
                     ):
                         await asyncio.sleep(2**attempt)
                         continue
                     raise
                 except (httpx.TransportError, httpx.TimeoutException) as exc:
-                    if attempt < 2:
+                    if attempt < max_attempts - 1:
                         await asyncio.sleep(2**attempt)
                         continue
                     raise RuntimeError(
-                        f"NewAPI audio request failed after 3 attempts: {exc}"
+                        f"NewAPI audio request failed after {max_attempts} attempts: {exc}"
                     ) from exc
             if response is None:
                 raise RuntimeError("NewAPI audio request failed without a response")
@@ -850,20 +851,20 @@ async def _write_newapi_audio_speech(
                     )
                 if result_url:
                     audio_response = None
-                    for attempt in range(3):
+                    for attempt in range(max_attempts):
                         try:
                             audio_response = await client.get(result_url)
                             audio_response.raise_for_status()
                             break
                         except (httpx.TransportError, httpx.TimeoutException):
-                            if attempt >= 2:
+                            if attempt >= max_attempts - 1:
                                 raise
                             await asyncio.sleep(2**attempt)
                         except httpx.HTTPStatusError as exc:
                             if (
                                 exc.response.status_code
                                 not in {408, 425, 429, 500, 502, 503, 504}
-                                or attempt >= 2
+                                or attempt >= max_attempts - 1
                             ):
                                 raise
                             await asyncio.sleep(2**attempt)

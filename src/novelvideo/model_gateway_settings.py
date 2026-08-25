@@ -30,7 +30,7 @@ from novelvideo.official_media_catalog_schema import (
     catalog_version as _catalog_version,
     validate_official_media_catalog as _validate_official_media_catalog,
 )
-from novelvideo.shared.runtime_env import is_ce_effective
+from novelvideo.shared.runtime_env import uses_local_ce_runtime
 from novelvideo.sqlite_pragmas import configure_sqlite_connection
 
 MODE_OFFICIAL = "official"
@@ -204,7 +204,7 @@ def _read_all() -> dict[str, str]:
 
 def _uses_ce_gateway_settings() -> bool:
     """Return whether this process owns the CE-local gateway settings database."""
-    return is_ce_effective()
+    return uses_local_ce_runtime()
 
 
 def _write_many(values: dict[str, str]) -> None:
@@ -1013,7 +1013,8 @@ def save_media_relay_config(
 def get_model_gateway_settings() -> dict[str, str]:
     data = _read_all() if _uses_ce_gateway_settings() else {}
     data.setdefault("model_gateway_mode", MODE_OFFICIAL)
-    data.setdefault("custom_llm_mode", CUSTOM_LLM_MODE_ADVANCED)
+    if _uses_ce_gateway_settings():
+        data.setdefault("custom_llm_mode", CUSTOM_LLM_MODE_ADVANCED)
     return data
 
 

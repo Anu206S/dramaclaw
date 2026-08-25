@@ -112,7 +112,8 @@ COMMON_REVERSE_ENV_ALLOWLIST: tuple[tuple[re.Pattern[str], str], ...] = (
             r"TTS|MIGRATE_LEGACY|ML_SHARP|KEEP_RAW|DOWNLOAD_VIA_OSS|STATIC_VIA_OSS|"
             r"DISABLE_RENDER_PLAN|GRID_MODE|JR_ERROR_LOG|VIDEO_RESOLUTION|"
             r"SCENE_SPATIAL_CONTRACT|BLOCK_WORLD_|"
-            r"OSS_|SUPERTALE_|DRAMACLAW_|HERMES_|CLAUDE_|CODEX_|SUPERPOWER_).*"
+            r"OSS_|SUPERTALE_|DRAMACLAW_|HERMES_|BRAINCLAW_|FREEZONE_USER|"
+            r"CLAUDE_|CODEX_|SUPERPOWER_).*"
         ),
         "Legacy/internal feature flag or integration env outside the current public template contract.",
     ),

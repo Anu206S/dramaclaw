@@ -1500,6 +1500,51 @@ def test_freezone_skill_sync_refreshes_managed_skills_and_preserves_user_skills(
     assert set(manifest["skills"]) == {"dramaclaw-workflows"}
 
 
+def test_managed_skill_sync_rejects_manifest_path_traversal_and_escape_symlink(
+    monkeypatch, tmp_path
+):
+    skills_dir = tmp_path / "workspace" / ".agents" / "skills"
+    skills_dir.mkdir(parents=True)
+    outside_dir = tmp_path / "outside-project"
+    outside_dir.mkdir()
+    (outside_dir / "keep.txt").write_text("keep\n", encoding="utf-8")
+    escape_link = skills_dir / "managed-escape"
+    escape_link.symlink_to(outside_dir, target_is_directory=True)
+    manifest = {
+        "schema_version": 1,
+        "skills": {
+            "../outside-project": "malicious",
+            str(outside_dir): "malicious",
+            "nested/escape": "malicious",
+            "nested\\escape": "malicious",
+            "managed-escape": "malicious",
+        },
+    }
+    (skills_dir / ".dramaclaw-managed-skills.json").write_text(
+        json.dumps(manifest), encoding="utf-8"
+    )
+    monkeypatch.setattr(chat_service, "_skill_sources", lambda: [])
+
+    chat_service._sync_project_skills(skills_dir, agent_profile="freezone:main")
+
+    assert (outside_dir / "keep.txt").read_text(encoding="utf-8") == "keep\n"
+    assert escape_link.is_symlink()
+    rewritten = json.loads(
+        (skills_dir / ".dramaclaw-managed-skills.json").read_text(encoding="utf-8")
+    )
+    assert rewritten["skills"] == {}
+
+
+def test_remove_managed_skill_path_defends_its_root_boundary(tmp_path):
+    skills_dir = tmp_path / "workspace" / ".agents" / "skills"
+    outside_dir = tmp_path / "outside-project"
+    skills_dir.mkdir(parents=True)
+    outside_dir.mkdir()
+
+    assert not chat_service._remove_managed_skill_path(outside_dir, root=skills_dir)
+    assert outside_dir.is_dir()
+
+
 def test_dramaclaw_mcp_server_config_is_agent_neutral():
     servers = chat_service._dramaclaw_mcp_servers()
 
