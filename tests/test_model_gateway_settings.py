@@ -33,6 +33,7 @@ from novelvideo.model_gateway_settings import (
     get_effective_media_relay_config,
     get_effective_newapi_config,
     get_ce_media_model_catalog,
+    get_newapi_embedding_model_config,
     get_official_media_model_catalog,
     get_newapi_media_model_mappings,
     get_newapi_provider_channels,
@@ -596,6 +597,61 @@ def test_legacy_pydantic_factory_uses_ee_deployment_gateway(monkeypatch, tmp_pat
     assert captured["model_name"] == "DC-legacy-agent-LLM"
     assert captured["api_key"] == "sk-ee-secret"
     assert captured["base_url"] == "https://ee-gateway.example/v1"
+
+
+def test_ee_media_model_mappings_do_not_open_ce_settings(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgresql://control-plane")
+    monkeypatch.setattr(
+        model_gateway_settings,
+        "_connect",
+        lambda: pytest.fail("EE must not open CE settings.db"),
+    )
+
+    assert get_newapi_media_model_mappings() == {}
+    assert not (tmp_path / "state").exists()
+
+
+def test_ee_platform_video_paths_do_not_call_ce_media_model_accessor(
+    monkeypatch,
+    tmp_path,
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgresql://control-plane")
+    monkeypatch.setenv("NEWAPI_API_KEY", "sk-ee-secret")
+    monkeypatch.setenv("NEWAPI_BASE_URL", "https://ee-gateway.example/v1")
+    monkeypatch.setattr(config, "NEWAPI_API_KEY", "sk-ee-secret")
+    monkeypatch.setattr(config, "NEWAPI_BASE_URL", "https://ee-gateway.example/v1")
+    monkeypatch.setattr(
+        model_gateway_settings,
+        "get_newapi_media_model_mappings",
+        lambda: pytest.fail("EE video paths must not call the CE accessor"),
+    )
+
+    generator = NewApiVideoGenerator(model="seedance-2.0")
+    options = newapi_video_backend_options()
+
+    assert generator.api_key == "sk-ee-secret"
+    assert generator.base_url == "https://ee-gateway.example/v1"
+    assert "newapi_seedance-2.0" in options
+
+
+def test_ee_model_gateway_settings_reader_does_not_open_sqlite(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgresql://control-plane")
+    monkeypatch.setattr(
+        model_gateway_settings,
+        "_connect",
+        lambda: pytest.fail("EE must not open CE settings.db"),
+    )
+
+    assert model_gateway_settings.get_model_gateway_settings() == {
+        "model_gateway_mode": MODE_OFFICIAL
+    }
+    assert not (tmp_path / "state").exists()
 
 
 def test_cognee_newapi_resolution_prefers_saved_gateway(monkeypatch, tmp_path):
@@ -1587,6 +1643,79 @@ def test_model_gateway_config_route_masks_effective_key(monkeypatch, tmp_path):
     assert "sk-official-secret" not in response.text
 
 
+def test_ee_model_gateway_config_skips_ce_provisioner_and_settings(
+    monkeypatch,
+    tmp_path,
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("ST_EDITION", "ee")
+    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgresql://control-plane")
+    monkeypatch.setenv("NEWAPI_BASE_URL", "https://ee-gateway.example/v1")
+    monkeypatch.setenv("NEWAPI_API_KEY", "sk-ee-secret")
+    monkeypatch.setattr(model_gateway.app_config, "NEWAPI_API_KEY", "sk-ee-secret")
+    monkeypatch.setattr(
+        model_gateway,
+        "build_provisioner_status",
+        lambda: pytest.fail("EE must not build CE provisioner status"),
+    )
+    monkeypatch.setattr(
+        model_gateway_settings,
+        "_connect",
+        lambda: pytest.fail("EE must not open CE settings.db"),
+    )
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+
+    response = TestClient(app).get("/model-gateway/config")
+
+    assert response.status_code == 200
+    data = response.json()["data"]
+    assert data["effective"]["baseUrl"] == "https://ee-gateway.example/v1"
+    assert data["provisioner"] == {
+        "enabled": False,
+        "adminBaseUrl": "",
+        "dbConfigured": False,
+        "database": {
+            "configured": False,
+            "available": False,
+            "source": "unavailable",
+        },
+        "adminUsername": "",
+        "relayTokenName": "",
+        "providers": {},
+        "providerChannels": [],
+        "mediaModels": {},
+        "embeddingModel": {},
+        "relayBaseUrl": "",
+    }
+    assert not (tmp_path / "state").exists()
+
+
+def test_ce_model_gateway_config_uses_provisioner_builder(monkeypatch, tmp_path):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    expected = {
+        "enabled": True,
+        "adminBaseUrl": "http://new-api:3000",
+        "dbConfigured": True,
+        "database": {"configured": True},
+        "adminUsername": "root",
+        "relayTokenName": "ce-runtime",
+        "providers": {"openrouter": {}},
+        "providerChannels": [],
+        "mediaModels": {},
+        "embeddingModel": {},
+        "relayBaseUrl": "http://new-api:3000/v1",
+    }
+    monkeypatch.setattr(model_gateway, "build_provisioner_status", lambda: expected)
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+
+    response = TestClient(app).get("/model-gateway/config")
+
+    assert response.status_code == 200
+    assert response.json()["data"]["provisioner"] == expected
+
+
 def test_model_gateway_config_excludes_closed_source_provider_presets(
     monkeypatch, tmp_path
 ):
@@ -2314,6 +2443,110 @@ def test_custom_newapi_provider_channels_route_persists_and_masks_keys(
     ]
     assert "sk-ali-upstream-secret" not in config_response.text
     assert "sk-deepseek-upstream-secret" not in config_response.text
+
+
+def test_custom_newapi_provider_channels_route_removes_final_channel(
+    monkeypatch,
+    tmp_path,
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    monkeypatch.setenv("NEWAPI_PROVISIONER_ENABLED", "true")
+
+    app = FastAPI()
+    app.include_router(model_gateway.router)
+    client = TestClient(app)
+
+    create_response = client.post(
+        "/model-gateway/custom/newapi/provider-channels",
+        json={
+            "channels": [
+                {
+                    "provider": "openrouter",
+                    "upstreamKey": "sk-openrouter-secret",
+                }
+            ]
+        },
+    )
+    assert create_response.status_code == 200
+    save_newapi_media_model_mappings(
+        {
+            "speech-preview": {
+                "provider": "openrouter",
+                "upstreamModel": "speech-upstream",
+                "mediaType": "audio",
+            }
+        }
+    )
+    save_newapi_embedding_model_config(
+        provider="openrouter",
+        upstream_model="embedding-upstream",
+        dimension=1024,
+    )
+
+    delete_response = client.post(
+        "/model-gateway/custom/newapi/provider-channels",
+        json={"channels": [], "preserveUnmentioned": False},
+    )
+    assert delete_response.status_code == 200
+    assert delete_response.json()["data"]["channels"] == []
+    assert delete_response.json()["data"]["mediaModels"] == {}
+    assert delete_response.json()["data"]["embeddingModel"] is None
+
+    config_response = client.get("/model-gateway/config")
+    assert config_response.status_code == 200
+    provisioner = config_response.json()["data"]["provisioner"]
+    assert provisioner["providerChannels"] == []
+    assert provisioner["mediaModels"] == {}
+    assert provisioner["embeddingModel"] == {}
+
+
+def test_provider_channel_replacement_only_cascades_removed_provider(
+    monkeypatch,
+    tmp_path,
+):
+    _isolate_settings_db(monkeypatch, tmp_path)
+    save_newapi_provider_channels(
+        [
+            {"provider": "openrouter", "upstreamKey": "sk-openrouter"},
+            {"provider": "fal", "upstreamKey": "sk-fal"},
+        ]
+    )
+    save_newapi_media_model_mappings(
+        {
+            "openrouter-image": {
+                "provider": "openrouter",
+                "upstreamModel": "openrouter/image",
+                "mediaType": "image",
+            },
+            "fal-video": {
+                "provider": "fal",
+                "upstreamModel": "fal/video",
+                "mediaType": "video",
+            },
+        }
+    )
+    save_newapi_embedding_model_config(
+        provider="openrouter",
+        upstream_model="openrouter/embedding",
+        dimension=1024,
+    )
+
+    save_newapi_provider_channels(
+        [{"provider": "fal", "upstreamKey": ""}],
+        preserve_unmentioned=False,
+    )
+
+    channels = get_newapi_provider_channels()
+    assert [channel["provider"] for channel in channels] == ["fal"]
+    assert channels[0]["upstreamKey"] == "sk-fal"
+    assert get_newapi_media_model_mappings() == {
+        "fal-video": {
+            "provider": "fal",
+            "upstreamModel": "fal/video",
+            "mediaType": "video",
+        }
+    }
+    assert get_newapi_embedding_model_config() == {}
 
 
 def test_comfyui_provider_channel_writes_workflows_to_newapi(

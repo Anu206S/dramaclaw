@@ -77,6 +77,7 @@ import {
 import { CreditCostInline } from '@/components/credit-cost-inline';
 import type { CreditPromotionDisplay } from '@/components/credits/credit-visual';
 import { useGenerationCreditCost } from '@/lib/queries/generation-credit-cost';
+import { useModelTaskAccess } from '@/lib/model-task-access';
 import {
   BillingRuleNotConfiguredError,
   backendErrorToastMessage,
@@ -168,6 +169,7 @@ export const TextAnnotationNode = memo(({
   height,
 }: TextAnnotationNodeProps) => {
   const { t } = useTranslation();
+  const modelTaskAccess = useModelTaskAccess();
   const reactFlow = useReactFlow();
   const setSelectedNode = useCanvasStore((state) => state.setSelectedNode);
   const isBoxSelecting = useIsBoxSelecting();
@@ -377,6 +379,7 @@ export const TextAnnotationNode = memo(({
   }, [enterEditMode, id, spawnAudioNode, spawnUploadNode, spawnVideoNode, updateNodeData]);
 
   const runImageToPrompt = useCallback(async () => {
+    if (modelTaskAccess.blocked) return;
     const projectId = readUrl().project;
     if (!projectId) {
       console.error('[text-node] no project in URL');
@@ -420,11 +423,11 @@ export const TextAnnotationNode = memo(({
       console.error('[text-node] reverse-prompt failed', error);
       updateNodeData(id, { isGenerating: false, generationStartedAt: null });
     }
-  }, [id, reversePromptInstruction, updateNodeData]);
+  }, [id, modelTaskAccess.blocked, reversePromptInstruction, updateNodeData]);
 
   const runTextGenerate = useCallback(async (promptOverride?: string) => {
     const prompt = (promptOverride ?? instruction).trim();
-    if (!prompt || textGenerateBillingRuleMissing) return;
+    if (modelTaskAccess.blocked || !prompt || textGenerateBillingRuleMissing) return;
     const projectId = readUrl().project;
     if (!projectId) {
       console.error('[text-node] text generation: no project in URL');
@@ -455,10 +458,10 @@ export const TextAnnotationNode = memo(({
       toast.error(backendErrorToastMessage(error, t));
       updateNodeData(id, { isGenerating: false, generationStartedAt: null });
     }
-  }, [id, instruction, t, textGenerateBillingRuleMissing, updateNodeData]);
+  }, [id, instruction, modelTaskAccess.blocked, t, textGenerateBillingRuleMissing, updateNodeData]);
 
   const runInstructionTranslate = useCallback(async () => {
-    if (isGenerating || isTranslating) return;
+    if (modelTaskAccess.blocked || isGenerating || isTranslating) return;
     const trimmed = instruction.trim();
     if (trimmed.length === 0) return;
     const projectId = readUrl().project;
@@ -482,10 +485,10 @@ export const TextAnnotationNode = memo(({
     } finally {
       setIsTranslating(false);
     }
-  }, [id, instruction, isGenerating, isTranslating, updateNodeData]);
+  }, [id, instruction, isGenerating, isTranslating, modelTaskAccess.blocked, updateNodeData]);
 
   const runContentTranslate = useCallback(async () => {
-    if (isGenerating || isTranslating) return;
+    if (modelTaskAccess.blocked || isGenerating || isTranslating) return;
     const trimmed = content.trim();
     if (trimmed.length === 0) return;
     const projectId = readUrl().project;
@@ -509,7 +512,7 @@ export const TextAnnotationNode = memo(({
     } finally {
       setIsTranslating(false);
     }
-  }, [content, id, isGenerating, isTranslating, updateNodeData]);
+  }, [content, id, isGenerating, isTranslating, modelTaskAccess.blocked, updateNodeData]);
 
   const runRecipeText = useCallback(async (): Promise<{ content: string }> => {
     updateNodeData(id, {
@@ -583,6 +586,7 @@ export const TextAnnotationNode = memo(({
   ]);
 
   const submitDisabled = isGenerating
+    || modelTaskAccess.blocked
     || (mode === 'writing' && (textGenerateBillingRuleMissing || instruction.trim().length === 0))
     || (
       mode === 'textToVideo'
@@ -649,7 +653,10 @@ export const TextAnnotationNode = memo(({
           promotion={textGenerateCost.data?.data.promotion}
           submitDisabled={submitDisabled}
           translateDisabled={
-            isGenerating || isTranslating || instruction.trim().length === 0
+            modelTaskAccess.blocked
+            || isGenerating
+            || isTranslating
+            || instruction.trim().length === 0
           }
           onGenerate={handleSubmit}
           onTranslate={runInstructionTranslate}
@@ -664,7 +671,10 @@ export const TextAnnotationNode = memo(({
           isTranslating={isTranslating}
           width={resolvedWidth}
           translateDisabled={
-            isGenerating || isTranslating || content.trim().length === 0
+            modelTaskAccess.blocked
+            || isGenerating
+            || isTranslating
+            || content.trim().length === 0
           }
           onTranslate={runContentTranslate}
         />
@@ -820,7 +830,10 @@ export const TextAnnotationNode = memo(({
                           void runInstructionTranslate();
                         }}
                         disabled={
-                          isGenerating || isTranslating || instruction.trim().length === 0
+                          modelTaskAccess.blocked
+                          || isGenerating
+                          || isTranslating
+                          || instruction.trim().length === 0
                         }
                         className={`${NODE_INLINE_ICON_BUTTON_CLASS} ${
                           isTranslating ? NODE_INLINE_ICON_BUTTON_ACTIVE_CLASS : ''

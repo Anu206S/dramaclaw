@@ -418,7 +418,25 @@ class AssetCompiler:
 
     def __init__(self, cognee_store: Any):
         self.cognee_store = cognee_store
+        # Reads that need no graph go straight to SQLite. Accepting either a
+        # CogneeStore or a SQLiteStore keeps legacy callers working while
+        # structured callers pass SQLiteStore directly.
+        self.store = getattr(cognee_store, "sqlite_store", cognee_store)
         self.spine_template = "drama"
+
+    async def _write_menus(self, episode_number: int, **menus: Any) -> None:
+        """Persist episode menus with a column-level write.
+
+        Scene, prop and identity planning run at once for the same episode. Any
+        whole-row write re-serialises the menus this planner loaded earlier, so
+        a menu written meanwhile is lost. Writing only the named columns removes
+        that race rather than narrowing it.
+
+        Both tracks take this route: the normalization behind it is the same
+        code the legacy whole-row write uses, so an existing project's menus
+        come out byte-identical.
+        """
+        await self.store.patch_episode(episode_number, **menus)
 
     async def compile_single_episode(
         self,
@@ -471,8 +489,8 @@ class AssetCompiler:
 
         report(0.9, "写入本集资产...")
         for scene in pending_scenes:
-            await self.cognee_store.sqlite_store.add_scene(scene)
-        await self.cognee_store.update_episode(
+            await self.store.add_scene(scene)
+        await self._write_menus(
             episode.number,
             scene_menu=scene_menu,
             prop_menu=prop_menu,
@@ -539,8 +557,8 @@ class AssetCompiler:
 
         report(0.85, "写入本集场景规划...")
         for scene in pending_scenes:
-            await self.cognee_store.sqlite_store.add_scene(scene)
-        await self.cognee_store.update_episode(episode.number, scene_menu=scene_menu)
+            await self.store.add_scene(scene)
+        await self._write_menus(episode.number, scene_menu=scene_menu)
 
         report(1.0, "完成")
         return scene_menu, len(pending_scenes)
@@ -610,7 +628,7 @@ class AssetCompiler:
         prop_menu = await self._compile_props(scene_blocks, episode, log)
 
         report(0.9, "写入本集道具规划...")
-        await self.cognee_store.update_episode(episode.number, prop_menu=prop_menu)
+        await self._write_menus(episode.number, prop_menu=prop_menu)
 
         report(1.0, "完成")
         return prop_menu
@@ -624,7 +642,7 @@ class AssetCompiler:
         source_text = str(source_text or "").strip()
         if not source_text:
             return []
-        existing_scenes = await self.cognee_store.sqlite_store.list_scenes()
+        existing_scenes = await self.store.list_scenes()
         base_scenes = [
             scene
             for scene in existing_scenes
@@ -714,7 +732,7 @@ class AssetCompiler:
             if decision.description and not str(scene.description or "").strip():
                 scene.description = decision.description
             scene.notes = f"由 AssetCompiler AI 校对创建 (ep{episode.number})"
-            await self.cognee_store.sqlite_store.add_scene(scene)
+            await self.store.add_scene(scene)
             created.append(scene.name)
             log(f"  AI补全基础场景: {scene.name}")
         return created
@@ -729,12 +747,12 @@ class AssetCompiler:
             str(name or "").strip() for name in (names or []) if str(name or "").strip()
         ]
         for name in candidates:
-            scene = await self.cognee_store.sqlite_store.get_scene(name)
+            scene = await self.store.get_scene(name)
             if scene:
                 return scene
 
         candidate_set = set(candidates)
-        all_scenes = await self.cognee_store.sqlite_store.list_scenes()
+        all_scenes = await self.store.list_scenes()
         for scene in all_scenes:
             if str(getattr(scene, "base_scene_id", "") or "").strip():
                 continue
@@ -765,7 +783,7 @@ class AssetCompiler:
         return scene_blocks
 
     async def _load_source_text(self, episode: Any) -> str:
-        return await load_episode_planning_content(self.cognee_store, episode)
+        return await load_episode_planning_content(self.store, episode)
 
     async def _compile_scenes(
         self,
@@ -812,7 +830,7 @@ class AssetCompiler:
                 time_plate = self._build_time_plate_scene(existing, scene_time, episode)
                 existing_time_plate = pending_scene_map.get(
                     time_plate.name
-                ) or await self.cognee_store.sqlite_store.get_scene(time_plate.name)
+                ) or await self.store.get_scene(time_plate.name)
                 if not existing_time_plate:
                     pending_scene_map[time_plate.name] = time_plate
                     pending_scenes.append(time_plate)
@@ -827,7 +845,7 @@ class AssetCompiler:
                 derived_scene = self._build_derived_scene(existing, requirement)
                 existing_derived = pending_scene_map.get(
                     derived_scene.name
-                ) or await self.cognee_store.sqlite_store.get_scene(derived_scene.name)
+                ) or await self.store.get_scene(derived_scene.name)
                 if not existing_derived:
                     pending_scene_map[derived_scene.name] = derived_scene
                     pending_scenes.append(derived_scene)
@@ -868,7 +886,7 @@ class AssetCompiler:
             if existing:
                 canonical_name = existing.name
                 if not str(getattr(existing, "environment_prompt", "") or "").strip():
-                    await self.cognee_store.sqlite_store.update_scene(
+                    await self.store.update_scene(
                         existing.name,
                         scene_type=scene.scene_type or existing.scene_type,
                         environment_prompt=scene.environment_prompt,
@@ -941,7 +959,7 @@ class AssetCompiler:
         episode: Any,
         log: Callable[[str], None],
     ) -> list[NarratedSceneRequirement]:
-        existing_scenes = await self.cognee_store.sqlite_store.list_scenes()
+        existing_scenes = await self.store.list_scenes()
         existing_scene_names = {
             str(getattr(scene, "name", "") or "").strip()
             for scene in existing_scenes
@@ -1010,7 +1028,7 @@ class AssetCompiler:
             scene.description = enriched.description
 
         if persist:
-            await self.cognee_store.sqlite_store.update_scene(
+            await self.store.update_scene(
                 scene.name,
                 scene_type=scene.scene_type,
                 environment_prompt=scene.environment_prompt,
@@ -1065,7 +1083,7 @@ class AssetCompiler:
     ) -> list[PropMenuItem]:
         prop_menu: list[PropMenuItem] = []
         seen_prop_ids: set[str] = set()
-        existing_props = await self.cognee_store.sqlite_store.list_props()
+        existing_props = await self.store.list_props()
         episode_selected_props: dict[str, str] = {}
 
         for block_index, block in enumerate(scene_blocks):
@@ -1455,11 +1473,11 @@ class AssetCompiler:
         return " ".join((value or "").replace("\u3000", " ").strip().lower().split())
 
     async def _find_matching_scene(self, name: str) -> Optional[NovelScene]:
-        scene = await self.cognee_store.sqlite_store.get_scene(name)
+        scene = await self.store.get_scene(name)
         if scene:
             return scene
 
-        all_scenes = await self.cognee_store.sqlite_store.list_scenes()
+        all_scenes = await self.store.list_scenes()
         base_candidates = [
             item
             for item in all_scenes
@@ -1627,12 +1645,12 @@ class AssetCompiler:
             return
 
     async def _find_matching_prop(self, name: str) -> Optional[NovelProp]:
-        prop = await self.cognee_store.sqlite_store.get_prop(name)
+        prop = await self.store.get_prop(name)
         if prop:
             return prop
 
         lookup = self._normalize_alias_lookup(name)
-        all_props = await self.cognee_store.sqlite_store.list_props()
+        all_props = await self.store.list_props()
         for item in all_props:
             if any(
                 self._normalize_alias_lookup(alias) == lookup for alias in item.aliases

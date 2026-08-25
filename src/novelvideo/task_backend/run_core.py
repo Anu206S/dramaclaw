@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 import logging
 import os
 import time
 from typing import Any, Mapping
+import uuid
 
 from novelvideo.egress_context import (
     TRUSTED_EGRESS_CONTEXT_KEY,
@@ -16,6 +18,12 @@ from novelvideo.egress_context import (
 from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
 from novelvideo.ports import get_usage_meter
 from novelvideo.ports.authz import AdmissionContext
+from novelvideo.ports.usage import (
+    FeatureCreditSettlementConflict,
+    FeatureSettlementResolution,
+    FeatureSettlementResolutionRejected,
+    VerifiedTaskSettlementIdentity,
+)
 from novelvideo.project_context import require_project_home_node
 from novelvideo.shared.billing_errors import (
     INSUFFICIENT_CREDITS_MESSAGE,
@@ -25,7 +33,10 @@ from novelvideo.shared.billing_errors import (
     is_insufficient_credits_error,
 )
 from novelvideo.task_backend.consumer import VerifiedTaskDelivery
-from novelvideo.task_backend.envelope import InvalidTaskEnvelope
+from novelvideo.task_backend.envelope import (
+    InvalidTaskEnvelope,
+    RunningTaskAuthorityIndeterminate,
+)
 from novelvideo.task_backend.cancel import (
     TaskCancelled,
     TaskTimedOut,
@@ -35,10 +46,20 @@ from novelvideo.task_backend.registry import (
     get_project_task_runner,
     project_task_requires_home_node,
 )
+from novelvideo.task_backend.projection import PROJECTION_REQUIREMENTS, read_projection
 from novelvideo.task_backend.subprocesses import project_task_subprocess_context
 from novelvideo.task_state import project_task_run_context
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass(frozen=True)
+class SettlementIntentResult:
+    """Whether the canonical usage adapter accepted a settlement intent."""
+
+    accepted: bool
+    retryable: bool
+
 
 _PROJECT_TASK_RESOURCE_KINDS = {
     "ingest_fast": "ingest",
@@ -203,6 +224,49 @@ def _clean_billing_metadata(value: Any) -> dict[str, Any]:
     return cleaned
 
 
+def _without_settlement_handles(metadata: Mapping[str, Any]) -> dict[str, Any]:
+    """Keep delivery metadata observable without trusting it to move money."""
+    return {
+        key: value
+        for key, value in metadata.items()
+        if key not in {"feature_credit_reservation_id", "feature_credit_charge_id"}
+    }
+
+
+async def _resolve_feature_reservation_id(
+    delivery: VerifiedTaskDelivery,
+    *,
+    task_type: str,
+    episode: int,
+    beat_num: Any,
+    scope: Any,
+) -> FeatureSettlementResolution:
+    payload = delivery.payload if type(delivery.payload) is dict else {}
+    billing = payload.get("billing")
+    signed_feature_key = (
+        str(billing.get("feature_key") or "").strip()
+        if type(billing) is dict and type(billing.get("feature_key")) is str
+        else ""
+    )
+    identity = VerifiedTaskSettlementIdentity(
+        root_task_id=delivery.admission.root_task_id,
+        project_id=delivery.project_id,
+        requester_user_id=delivery.requester_user_id,
+        task_type=task_type,
+        episode=episode,
+        beat_num=beat_num if type(beat_num) is int else None,
+        scope=scope if type(scope) is str else None,
+        feature_key=signed_feature_key,
+    )
+    resolution = await get_usage_meter().resolve_feature_credit_reservation(identity)
+    if resolution.outcome == "resolved":
+        resolution.trusted_billing_metadata()
+        return resolution
+    if resolution.outcome == "not_applicable":
+        return resolution
+    raise FeatureSettlementResolutionRejected(resolution.outcome)
+
+
 def _build_trusted_egress_context(
     delivery: VerifiedTaskDelivery,
     ctx: Any,
@@ -291,10 +355,23 @@ async def _confirm_feature_credit_reservation(
             action="confirm",
             metadata=metadata,
         )
+    except FeatureCreditSettlementConflict as exc:
+        logger.warning(
+            "feature_credit_settlement_conflict",
+            extra={
+                "settlement_action": "confirm",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "feature credit confirmation intent remains awaiting retry: %s",
-            exc,
+            "feature_credit_settlement_adapter_failure",
+            extra={
+                "settlement_action": "confirm",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
         )
 
 
@@ -311,10 +388,23 @@ async def _refund_feature_credit_reservation(
             action="refund",
             metadata=metadata,
         )
+    except FeatureCreditSettlementConflict as exc:
+        logger.warning(
+            "feature_credit_settlement_conflict",
+            extra={
+                "settlement_action": "refund",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
+        )
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "feature credit refund intent remains awaiting retry: %s",
-            exc,
+            "feature_credit_settlement_adapter_failure",
+            extra={
+                "settlement_action": "refund",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
         )
 
 
@@ -322,7 +412,7 @@ async def refund_undelivered_feature_credit_reservation(
     reservation_id: str,
     *,
     metadata: dict[str, Any] | None = None,
-) -> None:
+) -> SettlementIntentResult:
     """Refund a failed or cancelled task that delivered no usable result.
 
     Paid provider attempts are recorded independently for platform cost
@@ -334,17 +424,32 @@ async def refund_undelivered_feature_credit_reservation(
     through this one path rather than growing a second refund.
     """
     if not reservation_id:
-        return
+        return SettlementIntentResult(accepted=True, retryable=False)
     try:
         await get_usage_meter().settle_cancelled_feature_credit_reservation(
             reservation_id,
             metadata=metadata,
         )
+    except FeatureCreditSettlementConflict:
+        logger.warning(
+            "feature_credit_settlement_conflict",
+            extra={
+                "settlement_action": "refund",
+                "failure_kind": "settlement_action_conflict",
+            },
+        )
+        return SettlementIntentResult(accepted=False, retryable=False)
     except Exception as exc:  # noqa: BLE001
         logger.error(
-            "undelivered feature credit refund remains awaiting retry: %s",
-            exc,
+            "undelivered feature credit refund remains awaiting retry",
+            extra={
+                "failure_kind": "settlement_adapter_failure",
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
         )
+        return SettlementIntentResult(accepted=False, retryable=True)
+    return SettlementIntentResult(accepted=True, retryable=False)
 
 
 _refund_undelivered_feature_credit_reservation = (
@@ -447,7 +552,15 @@ def _project_task_timeout_seconds() -> int:
 def _project_task_failure_for_exception(
     exc: BaseException,
 ) -> tuple[str, dict[str, Any], bool]:
+    from novelvideo.identity_prerequisites import IdentityPlanningPrerequisiteError
     from novelvideo.novel_source import NovelImportRequiredError
+    from novelvideo.scene_prerequisites import ScenePlanningPrerequisiteError
+
+    if isinstance(exc, IdentityPlanningPrerequisiteError):
+        return str(exc), {"error_code": exc.error_code}, True
+
+    if isinstance(exc, ScenePlanningPrerequisiteError):
+        return str(exc), {"error_code": exc.error_code}, True
 
     if isinstance(exc, NovelImportRequiredError):
         return str(exc), {"error_code": exc.error_code}, True
@@ -480,7 +593,9 @@ def _project_task_failure_for_exception(
 
     billing_error = find_billing_error(exc)
     if billing_error is not None:
-        logger.warning("typed billing failure in project task: %s", billing_error, exc_info=exc)
+        logger.warning(
+            "typed billing failure in project task: %s", billing_error, exc_info=exc
+        )
         return (
             billing_error.user_message,
             billing_error_payload(billing_error),
@@ -582,12 +697,18 @@ def run_project_task_core_sync(
     # The registry is populated lazily, so make sure it is loaded before asking
     # it — an empty registry would read as "unregistered", not as "free".
     _ensure_builtin_runners_registered()
-    if project_task_requires_home_node(task_type):
+    requires_home_node = project_task_requires_home_node(task_type)
+    if requires_home_node:
         require_project_home_node(ctx, operation="run project task")
+    elif not ctx.is_home_node and task_type in PROJECTION_REQUIREMENTS:
+        projection = read_projection(delivery.payload)
+        if projection is None or projection.task_type != task_type:
+            # Projection is optional for the inline/home-node rollback path,
+            # but a foreign worker must never fall back to project-local state.
+            require_project_home_node(ctx, operation="run unprojected project task")
     episode = int(delivery.episode or 0)
     beat_num = delivery.beat_num
     scope = delivery.scope
-    billing_metadata = _clean_billing_metadata(delivery.billing_metadata)
     envelope = TrustedRunnerEnvelope(
         {
             "project_id": delivery.project_id,
@@ -601,10 +722,91 @@ def run_project_task_core_sync(
             TRUSTED_EGRESS_CONTEXT_KEY: trusted_egress_context,
         }
     )
-    if billing_metadata:
-        envelope["billing_metadata"] = billing_metadata
-    run_metadata = {**dict(metadata or {}), **billing_metadata}
-    feature_reservation_id = _feature_credit_reservation_id(run_metadata)
+    run_metadata = _without_settlement_handles(dict(metadata or {}))
+    try:
+        feature_settlement_resolution = asyncio.run(
+            _resolve_feature_reservation_id(
+                delivery,
+                task_type=task_type,
+                episode=episode,
+                beat_num=beat_num,
+                scope=scope,
+            )
+        )
+    except FeatureSettlementResolutionRejected as exc:
+        try:
+            manager.fail_task_for_project(
+                ctx,
+                task_type,
+                episode,
+                beat_num=beat_num,
+                scope=scope,
+                error=str(exc),
+                metadata={**run_metadata, "error_code": exc.code},
+                expected_task_id=run_task_id,
+            )
+        except Exception as terminalization_exc:  # noqa: BLE001
+            logger.error(
+                "feature_settlement_resolution_rejected_fast_path_failed",
+                extra={
+                    "safe_error_type": type(terminalization_exc).__name__,
+                    "error_id": uuid.uuid4().hex,
+                },
+            )
+        asyncio.run(
+            _emit_project_task_metrics(
+                ctx,
+                task_type,
+                episode=episode,
+                beat_num=beat_num,
+                scope=scope,
+                outcome="failed",
+            )
+        )
+        return {"failed": True, "error_code": exc.code}
+    except Exception as exc:  # noqa: BLE001
+        error_code = "FEATURE_SETTLEMENT_RESOLUTION_FAILED"
+        logger.error(
+            "feature_settlement_resolution_failed",
+            extra={
+                "safe_error_type": type(exc).__name__,
+                "error_id": uuid.uuid4().hex,
+            },
+        )
+        try:
+            manager.fail_task_for_project(
+                ctx,
+                task_type,
+                episode,
+                beat_num=beat_num,
+                scope=scope,
+                error="feature settlement resolution failed",
+                metadata={**run_metadata, "error_code": error_code},
+                expected_task_id=run_task_id,
+            )
+        except Exception as terminalization_exc:  # noqa: BLE001
+            logger.error(
+                "feature_settlement_resolution_fast_path_failed",
+                extra={
+                    "safe_error_type": type(terminalization_exc).__name__,
+                    "error_id": uuid.uuid4().hex,
+                },
+            )
+        asyncio.run(
+            _emit_project_task_metrics(
+                ctx,
+                task_type,
+                episode=episode,
+                beat_num=beat_num,
+                scope=scope,
+                outcome="failed",
+            )
+        )
+        return {"failed": True, "error_code": error_code}
+    feature_reservation_id = feature_settlement_resolution.reservation_id
+    trusted_billing_metadata = feature_settlement_resolution.trusted_billing_metadata()
+    if trusted_billing_metadata:
+        envelope["billing_metadata"] = trusted_billing_metadata
     timeout_seconds = _project_task_timeout_seconds()
     deadline_monotonic = (
         time.monotonic() + timeout_seconds if timeout_seconds > 0 else None
@@ -659,7 +861,7 @@ def run_project_task_core_sync(
             _set_project_task_metrics_context(
                 ctx,
                 task_type,
-                billing_metadata=billing_metadata,
+                billing_metadata=trusted_billing_metadata,
             )
             execution_started = manager.begin_task_execution_for_project(
                 ctx,
@@ -723,6 +925,57 @@ def run_project_task_core_sync(
                 with model_gateway_scope_for_runner(envelope):
                     result = runner(envelope, ctx)
             except BaseException as exc:
+                if isinstance(exc, RunningTaskAuthorityIndeterminate):
+                    logger.warning(
+                        "running_task_authz_outcome_indeterminate",
+                        extra={"failure_kind": exc.failure_kind},
+                    )
+                    if feature_reservation_id:
+                        try:
+                            asyncio.run(
+                                get_usage_meter().mark_feature_credit_settlement_for_review(
+                                    feature_reservation_id,
+                                    metadata={
+                                        "source": "task_authz_revalidation_indeterminate",
+                                        "error_code": exc.code,
+                                        "failure_kind": exc.failure_kind,
+                                    },
+                                )
+                            )
+                        except Exception:  # noqa: BLE001
+                            logger.error(
+                                "failed to persist post-start settlement review",
+                                extra={"failure_kind": exc.failure_kind},
+                            )
+                    failure_payload = {
+                        "error_code": exc.code,
+                        "failure_kind": exc.failure_kind,
+                    }
+                    logger.info(
+                        "task_refund_deferred_to_review",
+                        extra={"failure_kind": exc.failure_kind},
+                    )
+                    manager.fail_task_for_project(
+                        ctx,
+                        task_type,
+                        episode,
+                        beat_num=beat_num,
+                        scope=scope,
+                        error=str(exc),
+                        metadata={**run_metadata, **failure_payload},
+                        expected_task_id=run_task_id,
+                    )
+                    asyncio.run(
+                        _emit_project_task_metrics(
+                            ctx,
+                            task_type,
+                            episode=episode,
+                            beat_num=beat_num,
+                            scope=scope,
+                            outcome="failed",
+                        )
+                    )
+                    return {"failed": True, **failure_payload}
                 if isinstance(exc, TaskCancelled):
                     asyncio.run(
                         _refund_undelivered_feature_credit_reservation(

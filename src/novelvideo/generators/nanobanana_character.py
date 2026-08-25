@@ -214,6 +214,7 @@ class NanoBananaCharacterGenerator:
         ethnicity: str = "Chinese",
         prompt_only: bool = False,  # Dry Run 模式：只生成提示词，不调用 API
         project_dir: str = "",
+        state_dir: str = "",
         usage_task_type: str = "character_portrait",
         usage_scope: str = "",
         identity_name: str = "",
@@ -253,7 +254,11 @@ class NanoBananaCharacterGenerator:
                 client = genai.Client(api_key=self.api_key)
 
             # 获取风格预设
-            style_preset = get_style_preset(style, project_dir=project_dir)
+            style_preset = get_style_preset(
+                style,
+                project_dir=project_dir,
+                state_dir=state_dir or None,
+            )
             style_keywords = style_preset.get("style_instructions", "")
             negative_keywords = style_preset.get("avoid_instructions", "")
 
@@ -272,6 +277,7 @@ class NanoBananaCharacterGenerator:
                 project_dir=project_dir,
                 style_keywords=style_keywords,
                 negative_keywords=negative_keywords,
+                state_dir=state_dir,
                 ethnicity=ethnicity,
             )
 
@@ -399,6 +405,7 @@ class NanoBananaCharacterGenerator:
         ethnicity: str = "Chinese",
         prompt_only: bool = False,
         project_dir: str = "",
+        state_dir: str = "",
         usage_task_type: str = "character_portrait",
         usage_scope: str = "",
         identity_name: str = "",
@@ -414,6 +421,7 @@ class NanoBananaCharacterGenerator:
             ethnicity=ethnicity,
             prompt_only=prompt_only,
             project_dir=project_dir,
+            state_dir=state_dir,
             usage_task_type=usage_task_type,
             usage_scope=usage_scope,
             identity_name=identity_name,
@@ -430,6 +438,7 @@ class NanoBananaCharacterGenerator:
         ethnicity: str = "Chinese",
         dry_run: bool = False,
         project_dir: str = "",
+        state_dir: str = "",
         costume_image_path: str = "",
         usage_task_type: str = "identity_image",
         usage_scope: str = "",
@@ -472,7 +481,11 @@ class NanoBananaCharacterGenerator:
                 client = genai.Client(api_key=self.api_key)
 
             # 获取风格预设
-            style_preset = get_style_preset(style, project_dir=project_dir)
+            style_preset = get_style_preset(
+                style,
+                project_dir=project_dir,
+                state_dir=state_dir or None,
+            )
             style_keywords = style_preset.get("style_instructions", "")
             negative_keywords = style_preset.get("avoid_instructions", "")
 
@@ -494,6 +507,7 @@ class NanoBananaCharacterGenerator:
                 project_dir=project_dir,
                 style_keywords=style_keywords,
                 negative_keywords=negative_keywords,
+                state_dir=state_dir,
                 ethnicity=ethnicity,
                 has_costume_reference=has_costume_ref,
             )
@@ -656,6 +670,7 @@ class NanoBananaCharacterGenerator:
         output_dir: str = None,
         ethnicity: str = "Chinese",
         project_dir: str = "",
+        state_dir: str = "",
     ) -> CharacterReferenceResult:
         """生成 Face+Body 复合参考图（C1 优化）。
 
@@ -694,7 +709,11 @@ class NanoBananaCharacterGenerator:
                 client = genai.Client(api_key=self.api_key)
 
             # 获取风格预设
-            style_preset = get_style_preset(style, project_dir=project_dir)
+            style_preset = get_style_preset(
+                style,
+                project_dir=project_dir,
+                state_dir=state_dir or None,
+            )
             style_keywords = style_preset.get("style_instructions", "")
             negative_keywords = style_preset.get("avoid_instructions", "")
 
@@ -838,10 +857,16 @@ MUST AVOID:
         return f"[{character_name}_{name_hash}]"
 
     @classmethod
-    def _animation_medium_phrase(cls, style_name: Optional[str], project_dir: str = "") -> str:
+    def _animation_medium_phrase(
+        cls,
+        style_name: Optional[str],
+        project_dir: str = "",
+        state_dir: str = "",
+    ) -> str:
         _, subtype = StyleService.get_style_branch(
             style_name or IMAGE_DEFAULT_STYLE,
             project_dir=project_dir or None,
+            state_dir=state_dir or None,
         )
         if subtype == "3d":
             return "stylized 3D animated character rendering"
@@ -858,6 +883,7 @@ MUST AVOID:
         project_dir: str,
         style_keywords: str,
         negative_keywords: str,
+        state_dir: str = "",
         ethnicity: str = "Chinese",
     ) -> str:
         """构建 portrait 生成 Prompt。
@@ -876,9 +902,14 @@ MUST AVOID:
         family, _ = StyleService.get_style_branch(
             style_name or IMAGE_DEFAULT_STYLE,
             project_dir=project_dir or None,
+            state_dir=state_dir or None,
         )
         if family == "animation":
-            medium = self._animation_medium_phrase(style_name, project_dir=project_dir)
+            medium = self._animation_medium_phrase(
+                style_name,
+                project_dir=project_dir,
+                state_dir=state_dir,
+            )
             prompt = f"""Generate a face-only animated character identity portrait for production reference.
 
 CHARACTER: {character_tag} ({character_name})
@@ -979,6 +1010,7 @@ A second reference image is provided showing the target costume/clothing.
         project_dir: str,
         style_keywords: str,
         negative_keywords: str,
+        state_dir: str = "",
         ethnicity: str = "Chinese",
         has_costume_reference: bool = False,
     ) -> str:
@@ -1003,9 +1035,14 @@ A second reference image is provided showing the target costume/clothing.
         family, _ = StyleService.get_style_branch(
             style_name or IMAGE_DEFAULT_STYLE,
             project_dir=project_dir or None,
+            state_dir=state_dir or None,
         )
         if family == "animation":
-            medium = self._animation_medium_phrase(style_name, project_dir=project_dir)
+            medium = self._animation_medium_phrase(
+                style_name,
+                project_dir=project_dir,
+                state_dir=state_dir,
+            )
             prompt = f"""Animated character turnaround / identity sheet. Neutral presentation setup.
 PLAIN SOLID WHITE or LIGHT GRAY background ONLY — no environment, no scenery, no props. {style_keywords}
 

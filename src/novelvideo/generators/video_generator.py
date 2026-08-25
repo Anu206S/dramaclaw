@@ -7,6 +7,7 @@ import asyncio
 import hashlib
 import ipaddress
 import json
+import logging
 import math
 import os
 import random
@@ -25,7 +26,9 @@ import websockets
 from dotenv import load_dotenv
 
 from novelvideo.egress_context import ambient_egress_context
-from novelvideo.ports import get_usage_meter
+from novelvideo.authz_retry import retry_authz_read
+from novelvideo.ports import get_usage_meter, update_current_model_call_log
+from novelvideo.ports.authz import AuthzError, detach_authz_error
 from novelvideo.video_request_usage import (
     record_video_request,
     update_video_request_status,
@@ -41,13 +44,21 @@ from novelvideo.storage.media_relay import (
     upload_media_bytes,
 )
 from novelvideo.task_backend.cancel import TaskCancelled, TaskTimedOut
+from novelvideo.task_backend.envelope import RunningTaskAuthorityIndeterminate
 from novelvideo.task_backend.subprocesses import run_project_subprocess
+
+logger = logging.getLogger(__name__)
 
 # 确保加载 .env 环境变量
 load_dotenv()
 
 NEWAPI_VIDEO_HTTP_TIMEOUT_SECONDS = 1800.0
 NEWAPI_MEDIA_INPUT_MIN_TTL_SECONDS = 2 * 60 * 60
+_POST_ACCEPT_AUTHZ_MAX_RETRIES = 5
+_POST_ACCEPT_AUTHZ_RETRY_BASE_SECONDS = 2.0
+_POST_ACCEPT_AUTHZ_RETRY_CAP_SECONDS = 60.0
+_POST_ACCEPT_AUTHZ_RETRY_SLEEP = asyncio.sleep
+_POST_ACCEPT_AUTHZ_RETRY_RANDOM = random.random
 
 _VIDEO_EGRESS_ERROR_MESSAGES = {
     "TASK_ENVELOPE_INVALID": "trusted video egress context is invalid",
@@ -142,8 +153,6 @@ async def _refund_video_model_call(
     provider_request_id: str = "",
     provider_task_id: str = "",
 ) -> None:
-    if not reservation_id:
-        return
     try:
         metadata: dict[str, object] = {"source": source, "error": error[:200]}
         if provider_request_id:
@@ -1926,29 +1935,31 @@ class NewApiVideoGenerator(VideoGeneratorBase):
             self.base_url = ""
         else:
             from novelvideo.config import get_effective_newapi_gateway_config
+            from novelvideo.shared.runtime_env import is_ce_effective
 
             gateway = get_effective_newapi_gateway_config()
-            try:
-                from novelvideo.model_gateway_settings import (
-                    MODE_CUSTOM,
-                    MODE_HYBRID,
-                    get_ce_newapi_config_for_mode,
-                    get_effective_newapi_config,
-                    get_newapi_media_model_mappings,
-                )
+            if is_ce_effective():
+                try:
+                    from novelvideo.model_gateway_settings import (
+                        MODE_CUSTOM,
+                        MODE_HYBRID,
+                        get_ce_newapi_config_for_mode,
+                        get_effective_newapi_config,
+                        get_newapi_media_model_mappings,
+                    )
 
-                active_gateway = get_effective_newapi_config()
-                media_mapping = get_newapi_media_model_mappings().get(
-                    model or NEWAPI_VIDEO_MODEL,
-                    {},
-                )
-                if (
-                    active_gateway.mode == MODE_HYBRID
-                    and media_mapping.get("provider") == "comfyui"
-                ):
-                    gateway = get_ce_newapi_config_for_mode(MODE_CUSTOM)
-            except (RuntimeError, ImportError):
-                pass
+                    active_gateway = get_effective_newapi_config()
+                    media_mapping = get_newapi_media_model_mappings().get(
+                        model or NEWAPI_VIDEO_MODEL,
+                        {},
+                    )
+                    if (
+                        active_gateway.mode == MODE_HYBRID
+                        and media_mapping.get("provider") == "comfyui"
+                    ):
+                        gateway = get_ce_newapi_config_for_mode(MODE_CUSTOM)
+                except (RuntimeError, ImportError):
+                    pass
             self.api_key = api_key if api_key is not None else gateway.api_key
             self.base_url = (endpoint or gateway.base_url).rstrip("/")
         self.model = model or NEWAPI_VIDEO_MODEL
@@ -2762,11 +2773,21 @@ class NewApiVideoGenerator(VideoGeneratorBase):
         if context is None or not context.is_organization:
             return
         from novelvideo.ports import get_authz_port
-        from novelvideo.ports.authz import AuthzError
 
-        current = await get_authz_port().admit_model_task(
-            user_id=context.requester_user_id,
-            root_task_id=context.root_task_id,
+        async def read_current():
+            return await get_authz_port().admit_model_task(
+                user_id=context.requester_user_id,
+                root_task_id=context.root_task_id,
+            )
+
+        current = await retry_authz_read(
+            read_current,
+            max_retries=_POST_ACCEPT_AUTHZ_MAX_RETRIES,
+            base_delay=_POST_ACCEPT_AUTHZ_RETRY_BASE_SECONDS,
+            cap_delay=_POST_ACCEPT_AUTHZ_RETRY_CAP_SECONDS,
+            sleep=_POST_ACCEPT_AUTHZ_RETRY_SLEEP,
+            random=_POST_ACCEPT_AUTHZ_RETRY_RANDOM,
+            call_site="video_post_accept_revalidation",
         )
         if (
             current.requester_user_id != context.requester_user_id
@@ -2776,6 +2797,16 @@ class NewApiVideoGenerator(VideoGeneratorBase):
             or current.authz_version != context.authz_version
         ):
             raise AuthzError("ORG_AUTHZ_STALE")
+
+    @staticmethod
+    def _running_authority_error(
+        exc: AuthzError,
+    ) -> AuthzError | RunningTaskAuthorityIndeterminate:
+        if exc.code == "P0_GRAY_DISABLED":
+            return detach_authz_error(exc)
+        return RunningTaskAuthorityIndeterminate(
+            failure_kind=str(getattr(exc, "failure_kind", "drift"))
+        )
 
     @staticmethod
     async def _mark_operation_unknown(
@@ -3282,6 +3313,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 resolution=request_resolution,
                 duration_seconds=duration,
             )
+            await update_current_model_call_log(
+                request_payload=payload,
+            )
             submit_attempted = True
             if organization_request:
                 submitted = await self._post_json(
@@ -3293,6 +3327,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 submitted = await self._post_json(
                     f"{request_base_url}/video/generations", payload
                 )
+            await update_current_model_call_log(
+                response_payload=submitted,
+            )
             task_id = self._task_id_from_submit_response(submitted)
             provider_request_id = str(submitted.get("_newapi_request_id") or "").strip()
             if not task_id:
@@ -3340,8 +3377,17 @@ class NewApiVideoGenerator(VideoGeneratorBase):
 
             for poll_count in range(max_polls):
                 if organization_request:
+                    running_authority_error = None
                     try:
                         await self._revalidate_organization(egress_context)
+                    except AuthzError as exc:
+                        await self._mark_operation_unknown(
+                            operation_port,
+                            operation_claim,
+                            expected_version=operation_version,
+                        )
+                        operation_terminal = True
+                        running_authority_error = self._running_authority_error(exc)
                     except Exception as exc:
                         await self._mark_operation_unknown(
                             operation_port,
@@ -3354,6 +3400,8 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                             error=_safe_video_error_code(exc, "ORG_AUTHZ_STALE"),
                             task_id=task_id,
                         )
+                    if running_authority_error is not None:
+                        raise running_authority_error from None
                     polled = await self._get_json(
                         f"{request_base_url}/video/generations/{task_id}",
                         headers=request_headers,
@@ -3367,6 +3415,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 progress(0.2 + (poll_count / max(max_polls, 1)) * 0.7)
 
                 if status in {"completed", "succeeded", "success", "done"}:
+                    await update_current_model_call_log(
+                        response_payload=polled,
+                    )
                     progress(0.9)
                     video_url = self._resolve_result_url(self._extract_video_url(task))
                     if not video_url:
@@ -3402,8 +3453,17 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                             task_id=task_id,
                         )
                     if organization_request:
+                        running_authority_error = None
                         try:
                             await self._revalidate_organization(egress_context)
+                        except AuthzError as exc:
+                            await self._mark_operation_unknown(
+                                operation_port,
+                                operation_claim,
+                                expected_version=operation_version,
+                            )
+                            operation_terminal = True
+                            running_authority_error = self._running_authority_error(exc)
                         except Exception as exc:
                             await self._mark_operation_unknown(
                                 operation_port,
@@ -3416,6 +3476,8 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                                 error=_safe_video_error_code(exc, "ORG_AUTHZ_STALE"),
                                 task_id=task_id,
                             )
+                        if running_authority_error is not None:
+                            raise running_authority_error from None
                     log("视频生成完成，正在下载...")
                     video_content = await self._download_video(video_url, output_path)
                     provider_task_id = self._extract_provider_task_id(
@@ -3428,8 +3490,19 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                         last_frame_url = self._extract_returned_last_frame_url(task)
                         if last_frame_url:
                             if organization_request:
+                                running_authority_error = None
                                 try:
                                     await self._revalidate_organization(egress_context)
+                                except AuthzError as exc:
+                                    await self._mark_operation_unknown(
+                                        operation_port,
+                                        operation_claim,
+                                        expected_version=operation_version,
+                                    )
+                                    operation_terminal = True
+                                    running_authority_error = (
+                                        self._running_authority_error(exc)
+                                    )
                                 except Exception as exc:
                                     await self._mark_operation_unknown(
                                         operation_port,
@@ -3444,6 +3517,8 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                                         ),
                                         task_id=task_id,
                                     )
+                                if running_authority_error is not None:
+                                    raise running_authority_error from None
                             last_frame_output_path = (
                                 self._returned_last_frame_output_path(
                                     output_path,
@@ -3495,6 +3570,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                     "cancelled",
                     "expired",
                 }:
+                    await update_current_model_call_log(
+                        response_payload=polled,
+                    )
                     error = (
                         task.get("error")
                         or task.get("fail_reason")
@@ -3536,6 +3614,10 @@ class NewApiVideoGenerator(VideoGeneratorBase):
             update_request_status(
                 task_id, "failed", "Timeout waiting for DramaClawAPI video task"
             )
+            await update_current_model_call_log(
+                response_payload={"status": "timeout", "task_id": task_id},
+                error_message="video task polling timeout",
+            )
             if organization_request:
                 await self._mark_operation_unknown(
                     operation_port,
@@ -3555,9 +3637,40 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 error="Timeout waiting for DramaClawAPI video task",
                 task_id=task_id,
             )
+        except RunningTaskAuthorityIndeterminate as exc:
+            # Provider acceptance is already durable.  This branch must not
+            # resubmit the provider request or decide refund/confirm locally.
+            if reservation_id:
+                try:
+                    await get_usage_meter().mark_model_call_credit_settlement_for_review(
+                        reservation_id,
+                        metadata={
+                            "source": "video_post_accept_authz_indeterminate",
+                            "failure_kind": exc.failure_kind,
+                            "provider_request_id": provider_request_id,
+                            "provider_task_id": task_id or "",
+                        },
+                    )
+                except Exception as review_exc:  # noqa: BLE001
+                    logger.error(
+                        "model_call_settlement_review_enqueue_failed",
+                        extra={
+                            "safe_error_type": type(review_exc).__name__,
+                            "error_id": uuid.uuid4().hex,
+                        },
+                    )
+            raise
         except VideoEgressError:
             raise
         except NewApiVideoError as exc:
+            await update_current_model_call_log(
+                response_payload={
+                    "status_code": exc.status_code,
+                    "request_id": exc.request_id,
+                    "error_type": type(exc).__name__,
+                },
+                error_message=type(exc).__name__,
+            )
             safe_exception_error = (
                 _safe_video_error_code(exc, "EGRESS_OPERATION_UNKNOWN")
                 if organization_request
@@ -3612,6 +3725,9 @@ class NewApiVideoGenerator(VideoGeneratorBase):
                 task_id=task_id,
             )
         except Exception as exc:
+            await update_current_model_call_log(
+                error_message=type(exc).__name__,
+            )
             safe_exception_error = (
                 _safe_video_error_code(exc, "EGRESS_OPERATION_UNKNOWN")
                 if organization_request
@@ -4211,26 +4327,28 @@ def newapi_video_backend_options(
     *, include_seedance2_variants: bool = False
 ) -> dict[str, str]:
     from novelvideo.config import NEWAPI_VIDEO_MODELS
+    from novelvideo.shared.runtime_env import is_ce_effective
 
     models = [
         model
         for model in NEWAPI_VIDEO_MODELS
         if model not in NEWAPI_DISABLED_VIDEO_MODELS
     ]
-    try:
-        from novelvideo.model_gateway_settings import get_newapi_media_model_mappings
+    if is_ce_effective():
+        try:
+            from novelvideo.model_gateway_settings import get_newapi_media_model_mappings
 
-        for model, mapping in get_newapi_media_model_mappings().items():
-            media_type = str(mapping.get("mediaType") or "video").strip().lower()
-            if (
-                mapping.get("provider") == "comfyui"
-                and mapping.get("enabled") is not False
-                and media_type == "video"
-                and model not in models
-            ):
-                models.append(model)
-    except (RuntimeError, ImportError):
-        pass
+            for model, mapping in get_newapi_media_model_mappings().items():
+                media_type = str(mapping.get("mediaType") or "video").strip().lower()
+                if (
+                    mapping.get("provider") == "comfyui"
+                    and mapping.get("enabled") is not False
+                    and media_type == "video"
+                    and model not in models
+                ):
+                    models.append(model)
+        except (RuntimeError, ImportError):
+            pass
     if include_seedance2_variants:
         for model in NEWAPI_MAINLINE_SEEDANCE2_MODELS:
             if model not in models:

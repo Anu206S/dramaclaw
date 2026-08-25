@@ -5,10 +5,11 @@ import { useMemo } from "react";
 
 import type { PanoViewerManifest } from "@/features/viewer-kit/pano/panoManifest";
 import type { DirectorStageManifest } from "@/features/viewer-kit/three-d/directorManifest";
-import { api } from "@/lib/api";
+import { api, uploadApi } from "@/lib/api";
 import { jsonWithBackendError } from "@/lib/api-errors";
 import { p } from "@/lib/api-path";
 import { queryKeys } from "@/lib/query-keys";
+import { invalidateAssetReferences } from "@/lib/queries/asset-references";
 import type { ApiResponse, ErrorResponse, OkResponse, TaskResponse } from "@/types/api";
 import type { Beat } from "@/types/episode";
 import type { RejectedDispatch } from "@/types/render-plan";
@@ -270,7 +271,7 @@ export function useUploadBeatBackgroundAnchor(project: string, episode: number, 
     mutationFn: ({ file }: { file: File }) => {
       const form = new FormData();
       form.append("file", file, file.name);
-      return api
+      return uploadApi
         .post(
           p`api/v1/projects/${project}/episodes/${episode}/beats/${beatNum}/background-anchor/upload`,
           { body: form },
@@ -500,6 +501,9 @@ export function useAssignColors(project: string, episode: number) {
       qc.invalidateQueries({
         queryKey: queryKeys.episodeDetail(project, episode),
       });
+      // Colour binding is what writes detected_identities / detected_props,
+      // i.e. exactly the fields the asset usage counts are built from.
+      invalidateAssetReferences(qc, project);
     },
   });
 }
@@ -534,6 +538,7 @@ export function useDetectIdentities(project: string, episode: number) {
       if (!res.ok) return;
       qc.invalidateQueries({ queryKey: queryKeys.beats(project, episode) });
       qc.invalidateQueries({ queryKey: queryKeys.script(project, episode) });
+      invalidateAssetReferences(qc, project);
     },
   });
 }
@@ -555,7 +560,7 @@ export function useUploadBeatImage(
     mutationFn: ({ beatNum, file }: { beatNum: number; file: File }) => {
       const body = new FormData();
       body.append("file", file, file.name);
-      return api
+      return uploadApi
         .post(
           p`api/v1/projects/${project}/episodes/${episode}/beats/${beatNum}/${imageType}/upload`,
           { body },
@@ -704,7 +709,7 @@ export function useUploadGrid(project: string, episode: number) {
       body.append("grid_type", gridType);
       body.append("mode_key", modeKey);
       body.append("beat_numbers", beatNumbers.join(","));
-      return api
+      return uploadApi
         .post(
           p`api/v1/projects/${project}/episodes/${episode}/grids/${gridIndex}/upload`,
           { body },

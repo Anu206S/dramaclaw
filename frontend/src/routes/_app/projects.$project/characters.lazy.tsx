@@ -85,7 +85,8 @@ import { UsageCountBadge } from "@/components/assets/usage-count-badge";
 import { CopyAssetLinkButton } from "@/components/assets/copy-asset-link-button";
 import { AssetBeatReferences } from "@/components/assets/asset-beat-references";
 import {
-  useAssetReferenceIndex,
+  useAssetReferenceCounts,
+  useAssetReferences,
   type AssetRefType,
   type BeatReference,
 } from "@/lib/queries/asset-references";
@@ -2371,10 +2372,25 @@ function IdentitiesGridSection({
     project,
     character.name,
   );
-  const refIndex = useAssetReferenceIndex(project);
   const deepLink = useAssetsDeepLink();
   const createIdentity = useCreateIdentity(project, character.name);
   const identities = identitiesRes?.data ?? [];
+  // Unlike the scene/prop panels, every identity card renders its beat list
+  // inline rather than behind a dialog — so the detail slice has to cover all
+  // of them. It stays one small request: these are the selected character's
+  // identities, not the project's.
+  const refCounts = useAssetReferenceCounts(project);
+  const refDetail = useAssetReferences(
+    project,
+    useMemo(
+      () =>
+        identities.map((id) => ({
+          type: "identity" as const,
+          id: id.identity_id,
+        })),
+      [identities],
+    ),
+  );
   const gridRef = useAssetFocus(
     deepLink.type === "identity" ? deepLink.id : null,
     identities.length > 0,
@@ -2470,8 +2486,14 @@ function IdentitiesGridSection({
                 imageModel={imageModel}
                 ageLabel={ageLabel}
                 roleLabel={roleLabel}
-                referenceCount={refIndex.countFor("identity", id.identity_id)}
-                references={refIndex.referencesFor("identity", id.identity_id)}
+                referenceCount={refCounts.countFor(
+                  "identity",
+                  id.identity_id,
+                )}
+                references={refDetail.referencesFor(
+                  "identity",
+                  id.identity_id,
+                )}
                 onAttempt={onAttempt}
               />
             </div>
@@ -3364,7 +3386,10 @@ function CharactersPageContent() {
   );
 }
 
-function CharactersPage() {
+// 导出只为页面级网络合同测试（``characters-identities-contract.test.tsx``）：那条断言
+// 要的是"整页渲染出来一共发了哪些请求"，hook 单测覆盖不到组合层重新接回全角色
+// identities 扇出的情况。路由本身仍只用下面那个 ``Route``。
+export function CharactersPage() {
   const { project } = Route.useParams();
   // `TaskControllerProvider` wraps the page so `useTaskController` on
   // character-scoped tasks (e.g. character_portrait) can resolve a registry.

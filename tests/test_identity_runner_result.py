@@ -42,13 +42,15 @@ async def test_identity_runner_preserves_task_billing_context(monkeypatch):
     from novelvideo.task_backend.runners import identity
 
     progress_updates: list[dict] = []
-    closed_stores: list[object] = []
 
     class ForbiddenUsageMeter:
         async def set_project_llm_usage_context(self, **kwargs):
             raise AssertionError("identity runner must not overwrite task billing context")
 
     class FakeTaskManager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return None
+
         def update_progress_for_project(self, ctx, task_type, episode, **kwargs):
             progress_updates.append(
                 {"ctx": ctx, "task_type": task_type, "episode": episode, **kwargs}
@@ -63,9 +65,6 @@ async def test_identity_runner_preserves_task_billing_context(monkeypatch):
 
         async def load_graph_state(self):
             pass
-
-        async def close(self):
-            closed_stores.append(self)
 
     class FakeCogneeStore:
         def __init__(self, *args, **kwargs):
@@ -126,4 +125,57 @@ async def test_identity_runner_preserves_task_billing_context(monkeypatch):
     assert result["new_count"] == 1
     assert result["identities"][0]["identity_id"] == "hero_default"
     assert progress_updates
-    assert len(closed_stores) == 1
+
+
+@pytest.mark.asyncio
+async def test_identity_runner_rechecks_character_prerequisite(monkeypatch):
+    from novelvideo.identity_prerequisites import IdentityCharactersRequiredError
+    from novelvideo.task_backend.runners import identity
+
+    class FakeTaskManager:
+        def get_task_for_project(self, *_args, **_kwargs):
+            return None
+
+        def update_progress_for_project(self, *_args, **_kwargs):
+            pass
+
+    class FakeSQLiteStore:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def load_graph_state(self):
+            pass
+
+    class EmptyCogneeStore:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        async def initialize(self):
+            pass
+
+        async def load_graph_state(self):
+            pass
+
+        def get_all_characters(self):
+            return []
+
+        def get_episode(self, episode):
+            return SimpleNamespace(number=episode)
+
+    monkeypatch.setattr(identity, "get_task_manager", FakeTaskManager)
+    monkeypatch.setattr("novelvideo.sqlite_store.SQLiteStore", FakeSQLiteStore)
+    monkeypatch.setattr("novelvideo.cognee.CogneeStore", EmptyCogneeStore)
+
+    ctx = SimpleNamespace(
+        owner_project_label="alice/demo",
+        output_dir="/tmp/out",
+        state_dir="/tmp/state",
+    )
+    with pytest.raises(IdentityCharactersRequiredError):
+        await identity._run_identity_planner(
+            {"task_type": "identity_planner", "episode": 1},
+            ctx,
+        )

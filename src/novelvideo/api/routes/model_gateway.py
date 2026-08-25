@@ -32,6 +32,7 @@ from novelvideo.model_gateway_settings import (
     save_newapi_embedding_model_config,
     save_newapi_media_model_mappings,
     get_newapi_media_model_mappings,
+    get_newapi_embedding_model_config,
     save_newapi_provider_channels,
     get_newapi_provider_channel,
     get_newapi_provider_channels,
@@ -485,6 +486,28 @@ def _media_relay_status() -> dict[str, Any]:
     )
 
 
+def _provisioner_status() -> dict[str, Any]:
+    if is_ce_effective():
+        return build_provisioner_status()
+    return {
+        "enabled": False,
+        "adminBaseUrl": "",
+        "dbConfigured": False,
+        "database": {
+            "configured": False,
+            "available": False,
+            "source": "unavailable",
+        },
+        "adminUsername": "",
+        "relayTokenName": "",
+        "providers": {},
+        "providerChannels": [],
+        "mediaModels": {},
+        "embeddingModel": {},
+        "relayBaseUrl": "",
+    }
+
+
 @router.get("/config")
 async def get_model_gateway_config() -> dict[str, Any]:
     return {
@@ -494,7 +517,7 @@ async def get_model_gateway_config() -> dict[str, Any]:
                 official_base_url=app_config.OFFICIAL_NEWAPI_BASE_URL,
                 official_api_key=app_config.NEWAPI_API_KEY,
             ),
-            "provisioner": build_provisioner_status(),
+            "provisioner": _provisioner_status(),
             "mediaRelay": _media_relay_status(),
         },
     }
@@ -967,6 +990,8 @@ async def save_custom_newapi_provider_channels(
                         ),
                     }
             save_newapi_media_model_mappings(media_mappings)
+        media_models = get_newapi_media_model_mappings()
+        embedding_model = get_newapi_embedding_model_config()
     except PermissionError as exc:
         raise _permission_error(exc) from exc
     except ValueError as exc:
@@ -993,7 +1018,9 @@ async def save_custom_newapi_provider_channels(
                     "settings": channel.get("settings", {}),
                 }
                 for channel in saved
-            ]
+            ],
+            "mediaModels": media_models,
+            "embeddingModel": embedding_model or None,
         },
     }
 

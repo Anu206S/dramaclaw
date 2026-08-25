@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { apiCall, apiClient } from "./client";
+import { apiCall, apiCallEnvelope, apiClient } from "./client";
 
 // Per-node generation history -------------------------------------------- //
 
@@ -994,10 +994,36 @@ export async function submitFreezoneReversePrompt(
 export interface FreezoneStyleTemplate {
   id: string;
   label: string;
-  /** Free-text English style description forwarded as part of the prompt. */
+  category: string;
+  cover: string;
+  samples: string[];
   style_prompt: string;
   author?: string;
-  category?: string;
+}
+
+export interface FreezoneStyleTemplateList {
+  assetBase: string;
+  version: string;
+  templates: FreezoneStyleTemplate[];
+}
+
+function coerceLegacyStyleTemplateList(payload: unknown): FreezoneStyleTemplate[] {
+  let candidate: unknown = payload;
+  if (candidate && typeof candidate === "object" && !Array.isArray(candidate)) {
+    const wrapper = candidate as Record<string, unknown>;
+    if (Array.isArray(wrapper.templates)) candidate = wrapper.templates;
+    else if (Array.isArray(wrapper.data)) candidate = wrapper.data;
+    else if (Array.isArray(wrapper.items)) candidate = wrapper.items;
+    else if (Array.isArray(wrapper.style_templates)) candidate = wrapper.style_templates;
+  }
+  if (!Array.isArray(candidate)) return [];
+  return candidate.filter(
+    (item): item is FreezoneStyleTemplate =>
+      Boolean(item) &&
+      typeof item === "object" &&
+      typeof (item as { id?: unknown }).id === "string" &&
+      Boolean((item as { id: string }).id.trim()),
+  );
 }
 
 function coerceStyleTemplateList(payload: unknown): FreezoneStyleTemplate[] {
@@ -1009,23 +1035,56 @@ function coerceStyleTemplateList(payload: unknown): FreezoneStyleTemplate[] {
     if (Array.isArray(wrapper.templates)) candidate = wrapper.templates;
     else if (Array.isArray(wrapper.data)) candidate = wrapper.data;
     else if (Array.isArray(wrapper.items)) candidate = wrapper.items;
+    else if (Array.isArray(wrapper.style_templates)) candidate = wrapper.style_templates;
   }
   if (!Array.isArray(candidate)) return [];
-  return candidate.filter(
-    (item): item is FreezoneStyleTemplate =>
-      Boolean(item) &&
-      typeof item === "object" &&
-      typeof (item as FreezoneStyleTemplate).id === "string",
-  );
+  const result: FreezoneStyleTemplate[] = [];
+  for (const item of candidate) {
+    if (!item || typeof item !== "object") continue;
+    const entry = item as Record<string, unknown>;
+    const id = pickString(entry, "id", "template_id", "templateId", "key");
+    if (!id) continue;
+    result.push({
+      id,
+      label: pickString(entry, "label", "display_name", "displayName", "title", "name") ?? id,
+      category: pickString(entry, "category", "group", "kind") ?? "",
+      cover: pickString(entry, "cover", "cover_url", "coverUrl", "thumbnail") ?? "",
+      samples: pickStringArray(entry, "samples", "sample_urls", "sampleUrls"),
+      style_prompt:
+        pickString(entry, "style_prompt", "stylePrompt", "prompt", "prompt_fragment") ?? "",
+    });
+  }
+  return result;
 }
 
 export async function listFreezoneStyleTemplates(
   project: string,
-): Promise<FreezoneStyleTemplate[]> {
-  const payload = await apiCall<unknown>(
-    `projects/${encodeURIComponent(project)}/freezone/image/style-templates`,
-  );
-  return coerceStyleTemplateList(payload);
+): Promise<FreezoneStyleTemplateList> {
+  let envelope: Awaited<ReturnType<typeof apiCallEnvelope<unknown>>>;
+  try {
+    envelope = await apiCallEnvelope<unknown>(
+      `projects/${encodeURIComponent(project)}/freezone/image/style-templates`,
+    );
+  } catch (error) {
+    // Compatibility for embedders/tests that still expose only the legacy
+    // apiCall surface. Real transport errors must retain their original result.
+    if (!String(error).includes('No "apiCallEnvelope" export')) throw error;
+    const payload = await apiCall<unknown>(
+      `projects/${encodeURIComponent(project)}/freezone/image/style-templates`,
+    );
+    return coerceLegacyStyleTemplateList(payload) as unknown as FreezoneStyleTemplateList;
+  }
+  const nested =
+    envelope.data && typeof envelope.data === "object" && !Array.isArray(envelope.data)
+      ? (envelope.data as Record<string, unknown>)
+      : {};
+  const meta = (key: string) =>
+    pickString(envelope, key) ?? pickString(nested, key) ?? "";
+  return {
+    assetBase: meta("asset_base"),
+    version: meta("version"),
+    templates: coerceStyleTemplateList(envelope.data),
+  };
 }
 
 // /freezone/image/camera-options ----------------------------------------- //
@@ -2673,7 +2732,7 @@ export async function uploadFreezoneImage(
     {
       method: "POST",
       body: fd,
-      timeout: options?.timeoutMs ?? undefined,
+      timeout: options?.timeoutMs ?? false,
     },
   ).json<{ ok: boolean; data?: FreezoneUploadResult; error?: string }>();
   if (!resp.ok || !resp.data) {
@@ -2966,6 +3025,17 @@ export async function syncFreezoneAssetLibraryFromMainline(
   return await apiCall<FreezoneVideoCharacterLibraryItem[]>(
     `projects/${encodeURIComponent(project)}/freezone/video/asset-library/sync-from-mainline`,
     { method: "POST" },
+  );
+}
+
+export async function renameFreezoneVideoCharacterLibraryItem(
+  project: string,
+  itemId: string,
+  name: string,
+): Promise<FreezoneVideoCharacterLibraryItem> {
+  return await apiCall<FreezoneVideoCharacterLibraryItem>(
+    `projects/${encodeURIComponent(project)}/freezone/video/character-library/${encodeURIComponent(itemId)}`,
+    { method: "PATCH", json: { name } },
   );
 }
 

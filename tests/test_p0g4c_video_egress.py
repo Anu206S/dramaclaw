@@ -122,8 +122,16 @@ class _CredentialPort:
 
 
 class _UsageMeter:
+    reviews: list[tuple[str, dict]] = []
+
     async def mark_current_paid_execution_attempt(self, **_kwargs) -> None:
         return None
+
+    async def mark_model_call_credit_settlement_for_review(
+        self, reservation_id, *, metadata=None
+    ):
+        self.reviews.append((reservation_id, metadata or {}))
+        return {"status": "awaiting"}
 
 
 def _install_newapi_ports(monkeypatch, context, operation_port, events):
@@ -716,20 +724,19 @@ async def test_newapi_accepted_failures_become_unknown_without_provider_leak(
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "disabled_code", ["P0_GRAY_DISABLED", "ORG_MEMBERSHIP_INACTIVE"]
-)
-async def test_newapi_disabled_after_acceptance_stops_poll_and_becomes_unknown(
-    monkeypatch, tmp_path: Path, disabled_code: str
+async def test_newapi_authority_drift_after_acceptance_stops_poll_and_enters_review(
+    monkeypatch, tmp_path: Path
 ) -> None:
     from novelvideo.generators.video_generator import (
         NewApiVideoGenerator,
-        VideoGenStatus,
     )
+    from novelvideo.ports.authz import AuthzError
+    from novelvideo.task_backend.envelope import RunningTaskAuthorityIndeterminate
 
     context = _context()
     operation_port = _OperationPort()
     events: list[str] = []
+    _UsageMeter.reviews.clear()
     _install_newapi_ports(monkeypatch, context, operation_port, events)
     generator = NewApiVideoGenerator(
         model="seedance-1.0-pro-fast", egress_context=context
@@ -739,9 +746,10 @@ async def test_newapi_disabled_after_acceptance_stops_poll_and_becomes_unknown(
         return {"id": "provider-job-1"}
 
     async def disabled(_context):
-        error = RuntimeError("disabled detail canary")
-        error.code = disabled_code
-        raise error
+        try:
+            raise RuntimeError("postgres://user:secret-canary@internal")
+        except RuntimeError:
+            raise AuthzError("ORG_MEMBERSHIP_INACTIVE") from None
 
     async def forbidden(*_args, **_kwargs):
         raise AssertionError("poll/fetch must remain zero")
@@ -750,6 +758,74 @@ async def test_newapi_disabled_after_acceptance_stops_poll_and_becomes_unknown(
     monkeypatch.setattr(generator, "_revalidate_organization", disabled)
     monkeypatch.setattr(generator, "_get_json", forbidden)
     monkeypatch.setattr(generator, "_download_video", forbidden)
+
+    with pytest.raises(RunningTaskAuthorityIndeterminate) as captured:
+        await generator.generate(
+            image_path=None,
+            prompt="prompt",
+            output_path=str(tmp_path / "video.mp4"),
+            episode=1,
+            beat_num=2,
+            scope="beat",
+            task_type="single_video",
+            max_polls=1,
+        )
+
+    assert captured.value.failure_kind == "drift"
+    assert captured.value.__context__ is None
+    assert "secret-canary" not in repr(captured.value)
+    assert _UsageMeter.reviews == [
+        (
+            "reservation-1",
+            {
+                "source": "video_post_accept_authz_indeterminate",
+                "failure_kind": "drift",
+                "provider_request_id": "",
+                "provider_task_id": "provider-job-1",
+            },
+        )
+    ]
+    assert [name for name, _ in operation_port.events] == [
+        "claim",
+        "accepted",
+        "unknown",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_newapi_gray_disable_after_acceptance_uses_existing_failure_refund_path(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from novelvideo.generators.video_generator import (
+        NewApiVideoGenerator,
+        VideoGenStatus,
+    )
+    from novelvideo.ports.authz import AuthzError
+
+    context = _context()
+    operation_port = _OperationPort()
+    events: list[str] = []
+    _install_newapi_ports(monkeypatch, context, operation_port, events)
+    generator = NewApiVideoGenerator(
+        model="seedance-1.0-pro-fast", egress_context=context
+    )
+    refunds: list[str] = []
+
+    async def post(*_args, **_kwargs):
+        return {"id": "provider-job-1"}
+
+    async def disabled(_context):
+        raise AuthzError("P0_GRAY_DISABLED")
+
+    async def capture_refund(*_args, **kwargs):
+        refunds.append(str(kwargs.get("error") or ""))
+
+    monkeypatch.setattr(generator, "_post_json", post)
+    monkeypatch.setattr(generator, "_revalidate_organization", disabled)
+    monkeypatch.setattr(
+        "novelvideo.generators.video_generator._refund_video_model_call",
+        capture_refund,
+    )
 
     result = await generator.generate(
         image_path=None,
@@ -763,7 +839,51 @@ async def test_newapi_disabled_after_acceptance_stops_poll_and_becomes_unknown(
     )
 
     assert result.status is VideoGenStatus.FAILED
-    assert result.error == disabled_code
+    assert result.error == "P0_GRAY_DISABLED"
+    assert refunds == ["P0_GRAY_DISABLED"]
+    assert [name for name, _ in operation_port.events] == [
+        "claim",
+        "accepted",
+        "unknown",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_newapi_generic_post_accept_authz_failure_is_redacted(
+    monkeypatch, tmp_path: Path
+) -> None:
+    from novelvideo.generators.video_generator import NewApiVideoGenerator
+
+    context = _context()
+    operation_port = _OperationPort()
+    events: list[str] = []
+    _install_newapi_ports(monkeypatch, context, operation_port, events)
+    generator = NewApiVideoGenerator(
+        model="seedance-1.0-pro-fast", egress_context=context
+    )
+
+    async def post(*_args, **_kwargs):
+        return {"id": "provider-job-1"}
+
+    async def broken_authz(_context):
+        raise RuntimeError("postgres://user:secret-canary@internal")
+
+    monkeypatch.setattr(generator, "_post_json", post)
+    monkeypatch.setattr(generator, "_revalidate_organization", broken_authz)
+
+    result = await generator.generate(
+        image_path=None,
+        prompt="prompt",
+        output_path=str(tmp_path / "video.mp4"),
+        episode=1,
+        beat_num=2,
+        scope="beat",
+        task_type="single_video",
+        max_polls=1,
+    )
+
+    assert result.error == "ORG_AUTHZ_STALE"
+    assert "secret-canary" not in repr(result)
     assert [name for name, _ in operation_port.events] == [
         "claim",
         "accepted",
@@ -777,6 +897,7 @@ async def test_newapi_generate_supplied_context_is_revalidated_after_acceptance(
 ) -> None:
     import novelvideo.ports as ports
     from novelvideo.generators.video_generator import NewApiVideoGenerator
+    from novelvideo.ports.authz import AuthzError
 
     context = _context()
     operation_port = _OperationPort()
@@ -790,9 +911,7 @@ async def test_newapi_generate_supplied_context_is_revalidated_after_acceptance(
 
     class DisabledAuthz:
         async def admit_model_task(self, **_kwargs):
-            error = RuntimeError("disabled detail canary")
-            error.code = "P0_GRAY_DISABLED"
-            raise error
+            raise AuthzError("P0_GRAY_DISABLED")
 
     async def post(*_args, **_kwargs):
         return {"id": "provider-job-1"}
@@ -816,7 +935,6 @@ async def test_newapi_generate_supplied_context_is_revalidated_after_acceptance(
         task_type="single_video",
         max_polls=1,
     )
-
     assert result.error == "P0_GRAY_DISABLED"
     assert [name for name, _ in operation_port.events] == [
         "claim",
@@ -826,10 +944,67 @@ async def test_newapi_generate_supplied_context_is_revalidated_after_acceptance(
 
 
 @pytest.mark.asyncio
+async def test_newapi_post_accept_authz_recovers_without_resubmitting_provider(
+    monkeypatch, tmp_path: Path
+) -> None:
+    import novelvideo.ports as ports
+    import novelvideo.generators.video_generator as video_generator
+    from novelvideo.generators.video_generator import NewApiVideoGenerator
+    from novelvideo.ports.authz import AuthzServiceUnavailable
+
+    context = _context()
+    operation_port = _OperationPort()
+    events: list[str] = []
+    _install_newapi_ports(monkeypatch, context, operation_port, events)
+    generator = NewApiVideoGenerator(
+        model="seedance-1.0-pro-fast", egress_context=context
+    )
+    calls = {"authz": 0, "submit": 0, "poll": 0}
+
+    class Authz:
+        async def admit_model_task(self, **_kwargs):
+            calls["authz"] += 1
+            if calls["authz"] < 3:
+                raise AuthzServiceUnavailable()
+            return generator._admission_from_egress_context(context)
+
+    async def submit(*_args, **_kwargs):
+        calls["submit"] += 1
+        return {"id": "provider-job-1"}
+
+    async def poll(*_args, **_kwargs):
+        calls["poll"] += 1
+        return {"status": "failed", "error": "provider_failed"}
+
+    async def no_sleep(_delay):
+        return None
+
+    monkeypatch.setattr(ports, "get_authz_port", lambda: Authz())
+    monkeypatch.setattr(generator, "_post_json", submit)
+    monkeypatch.setattr(generator, "_get_json", poll)
+    monkeypatch.setattr(video_generator, "_POST_ACCEPT_AUTHZ_RETRY_SLEEP", no_sleep)
+    monkeypatch.setattr(video_generator, "_POST_ACCEPT_AUTHZ_RETRY_RANDOM", lambda: 0.5)
+
+    await generator.generate(
+        image_path=None,
+        prompt="prompt",
+        output_path=str(tmp_path / "video.mp4"),
+        episode=1,
+        beat_num=2,
+        scope="beat",
+        task_type="single_video",
+        max_polls=1,
+    )
+
+    assert calls == {"authz": 3, "submit": 1, "poll": 1}
+
+
+@pytest.mark.asyncio
 async def test_newapi_disable_between_poll_and_fetch_stops_fetch(
     monkeypatch, tmp_path: Path
 ) -> None:
     from novelvideo.generators.video_generator import NewApiVideoGenerator
+    from novelvideo.ports.authz import AuthzError
 
     context = _context()
     operation_port = _OperationPort()
@@ -850,9 +1025,7 @@ async def test_newapi_disable_between_poll_and_fetch_stops_fetch(
         nonlocal revalidations
         revalidations += 1
         if revalidations == 2:
-            error = RuntimeError("disabled detail canary")
-            error.code = "P0_GRAY_DISABLED"
-            raise error
+            raise AuthzError("P0_GRAY_DISABLED")
 
     async def forbidden_fetch(*_args, **_kwargs):
         raise AssertionError("fetch must remain zero after disable")
@@ -872,7 +1045,6 @@ async def test_newapi_disable_between_poll_and_fetch_stops_fetch(
         task_type="single_video",
         max_polls=1,
     )
-
     assert result.error == "P0_GRAY_DISABLED"
     assert revalidations == 2
     assert [name for name, _ in operation_port.events] == [
@@ -887,6 +1059,7 @@ async def test_newapi_disable_between_video_and_last_frame_fetch_stops_second_fe
     monkeypatch, tmp_path: Path
 ) -> None:
     from novelvideo.generators.video_generator import NewApiVideoGenerator
+    from novelvideo.ports.authz import AuthzError
 
     context = _context()
     operation_port = _OperationPort()
@@ -912,9 +1085,7 @@ async def test_newapi_disable_between_video_and_last_frame_fetch_stops_second_fe
         nonlocal revalidations
         revalidations += 1
         if revalidations == 3:
-            error = RuntimeError("disabled detail canary")
-            error.code = "P0_GRAY_DISABLED"
-            raise error
+            raise AuthzError("P0_GRAY_DISABLED")
 
     async def download(url, _output_path):
         fetched.append(url)
@@ -937,7 +1108,6 @@ async def test_newapi_disable_between_video_and_last_frame_fetch_stops_second_fe
         task_type="single_video",
         max_polls=1,
     )
-
     assert result.error == "P0_GRAY_DISABLED"
     assert revalidations == 3
     assert fetched == ["https://result.example/video.mp4"]

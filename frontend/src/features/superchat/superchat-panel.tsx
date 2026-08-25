@@ -90,7 +90,7 @@ import {
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
 import { resolveMediaUrl } from "@/lib/media-url";
-import { api } from "@/lib/api";
+import { api, uploadApi } from "@/lib/api";
 import { backendErrorToastMessage, jsonWithBackendError } from "@/lib/api-errors";
 import { dedupeGenerationErrors } from "@/features/canvas/application/generationErrorReport";
 import { p } from "@/lib/api-path";
@@ -8603,7 +8603,7 @@ async function uploadNovelForIngest(
   const formData = new FormData();
   formData.append("file", file.blob, file.filename);
   const response = await jsonWithBackendError<OkResponse<IngestUploadResult> | ErrorResponse>(
-    api.post(p`api/v1/projects/${project}/ingest/upload`, { body: formData }),
+    uploadApi.post(p`api/v1/projects/${project}/ingest/upload`, { body: formData }),
   );
   if (!response.ok) {
     const fc = (response as ErrorResponse & { format_check?: FormatCheck }).format_check;

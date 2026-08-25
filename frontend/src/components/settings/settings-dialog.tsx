@@ -88,6 +88,7 @@ import {
   type AliyunOssStorageConfig,
   type CloudinaryStorageConfig,
   type EmbeddingModelEntry,
+  type FeatureModelEntry,
   type FeatureModelSettings,
   type FeatureModelProvider,
   type MediaModelEntry,
@@ -1631,6 +1632,44 @@ const HYBRID_COMFYUI_WORKFLOWS = {
   },
 };
 
+type ChannelCapability =
+  | "text"
+  | "vision"
+  | "embedding"
+  | "rerank"
+  | "image"
+  | "video"
+  | "audio";
+
+const CUSTOM_PROVIDER_CHANNEL_TYPES: Readonly<Record<string, number>> = {
+  fal_ai: 61,
+  comfyui: 63,
+};
+
+function customProviderChannelType(provider: string): number | undefined {
+  return CUSTOM_PROVIDER_CHANNEL_TYPES[provider];
+}
+
+export function providersSupportingCapability(
+  configuredProviders: readonly FeatureModelProvider[],
+  channelTypeByProvider: ReadonlyMap<string, NewApiChannelType>,
+  capability: ChannelCapability,
+  currentProvider?: FeatureModelProvider,
+): FeatureModelProvider[] {
+  const supported = configuredProviders.filter((provider) => {
+    const channelType = channelTypeByProvider.get(provider);
+    return !channelType || channelType.capabilities.includes(capability);
+  });
+  if (
+    currentProvider &&
+    configuredProviders.includes(currentProvider) &&
+    !supported.includes(currentProvider)
+  ) {
+    return [currentProvider, ...supported];
+  }
+  return supported;
+}
+
 const RECOMMENDED_MEDIA_MODELS: Readonly<Record<string, QuickProfileModel>> = {
   "LingShan-G2": {
     channel: "openrouter",
@@ -1875,55 +1914,72 @@ function parseQuickModelProfile(value: string): QuickModelProfile {
   return profile;
 }
 
-function syncQuickProfileFromAdvancedSettings(
+export function syncQuickProfileFromAdvancedSettings(
   profile: QuickModelProfile,
   settings: FeatureModelSettings,
-): QuickModelProfile {
-  const channels = [...profile.channels];
-  const channelIdByProvider = new Map(
-    channels.map((channel) => [channel.provider, channel.id]),
-  );
-  const ensureChannel = (provider: FeatureModelProvider): string => {
-    const existing = channelIdByProvider.get(provider);
-    if (existing) return existing;
-    const id = provider;
-    channels.push({
-      id,
-      provider,
-      ...(provider === "comfyui" ? { type: 63 } : {}),
-      baseUrl: settings.providerChannels[provider]?.baseUrl ?? "",
-      priority: settings.providerChannels[provider]?.priority ?? 0,
-      settings: normalizeProviderChannelSettings(
-        provider,
-        settings.providerChannels[provider]?.settings ?? {},
-      ),
-    });
-    channelIdByProvider.set(provider, id);
-    return id;
-  };
+): QuickModelProfile | null {
+  const usableProviderChannels = Object.values(settings.providerChannels).filter((channel) => {
+    if (channel.provider !== "comfyui") return true;
+    if (!channel.baseUrl.trim()) return false;
+    const comfySettings = normalizeProviderChannelSettings("comfyui", channel.settings);
+    return (
+      Boolean(readComfyUIModelName(comfySettings)) &&
+      Object.keys(readComfyUIWorkflows(comfySettings)).length > 0
+    );
+  });
+  if (usableProviderChannels.length === 0) return null;
 
-  for (const channel of Object.values(settings.providerChannels)) {
-    const id = ensureChannel(channel.provider);
-    const target = channels.find((item) => item.id === id);
-    if (target) {
-      target.baseUrl = channel.baseUrl;
-      target.priority = channel.priority;
-      target.settings = channel.settings;
+  const previousChannelByProvider = new Map(
+    profile.channels.map((channel) => [channel.provider, channel]),
+  );
+  const usedChannelIds = new Set<string>();
+  const channels = usableProviderChannels.map((channel) => {
+    const previous = previousChannelByProvider.get(channel.provider);
+    let id = previous?.id || channel.provider;
+    for (let suffix = 2; usedChannelIds.has(id); suffix += 1) id = `${channel.provider}-${suffix}`;
+    usedChannelIds.add(id);
+    return {
+      id,
+      provider: channel.provider,
+      ...(previous?.type
+        ? { type: previous.type }
+        : customProviderChannelType(channel.provider)
+          ? { type: customProviderChannelType(channel.provider) }
+          : {}),
+      baseUrl: channel.baseUrl,
+      priority: channel.priority,
+      settings: normalizeProviderChannelSettings(channel.provider, channel.settings),
+    };
+  });
+  const channelIdByProvider = new Map(channels.map((channel) => [channel.provider, channel.id]));
+  const activeChannelIds = new Set(channels.map((channel) => channel.id));
+  const modelFromEntry = (entry: FeatureModelEntry | undefined): QuickProfileModel | null => {
+    const channel = entry && channelIdByProvider.get(entry.provider);
+    const model = entry?.model.trim() ?? "";
+    return channel && model ? { channel, model } : null;
+  };
+  const firstFeatureModel = (requiresVision: boolean) => {
+    for (const group of FEATURE_MODEL_GROUPS) {
+      for (const feature of group.features) {
+        if (Boolean(feature.requiresVision) !== requiresVision) continue;
+        const selected = modelFromEntry(settings.featureModels[feature.id]);
+        if (selected) return selected;
+      }
     }
-  }
+    return null;
+  };
+  const keepActiveModel = (item: QuickProfileModel) =>
+    activeChannelIds.has(item.channel) && item.model.trim() ? item : null;
+  const text = keepActiveModel(profile.featureModels.text) ?? firstFeatureModel(false);
+  const vision = keepActiveModel(profile.featureModels.vision) ?? firstFeatureModel(true);
+  if (!text || !vision) return null;
 
   const overrides: Record<string, QuickProfileModel> = {};
   for (const group of FEATURE_MODEL_GROUPS) {
     for (const feature of group.features) {
-      const entry = settings.featureModels[feature.id];
-      if (!entry?.model) continue;
-      const fallback = feature.requiresVision
-        ? profile.featureModels.vision
-        : profile.featureModels.text;
-      const selected = {
-        channel: ensureChannel(entry.provider),
-        model: entry.model,
-      };
+      const selected = modelFromEntry(settings.featureModels[feature.id]);
+      if (!selected) continue;
+      const fallback = feature.requiresVision ? vision : text;
       if (
         selected.channel !== fallback.channel ||
         selected.model !== fallback.model
@@ -1933,22 +1989,28 @@ function syncQuickProfileFromAdvancedSettings(
     }
   }
 
-  const embedding = settings.embeddingModel
+  const configuredEmbedding = settings.embeddingModel;
+  const embeddingChannel = configuredEmbedding
+    ? channelIdByProvider.get(configuredEmbedding.provider)
+    : undefined;
+  const embedding = embeddingChannel && configuredEmbedding?.upstreamModel.trim()
     ? {
-        channel: ensureChannel(settings.embeddingModel.provider),
-        model: settings.embeddingModel.upstreamModel,
-        dimension: settings.embeddingModel.dimension,
-        batchSize:
-          settings.embeddingModel.batchSize ?? profile.embedding.batchSize,
+        channel: embeddingChannel,
+        model: configuredEmbedding.upstreamModel.trim(),
+        dimension: configuredEmbedding.dimension,
+        batchSize: configuredEmbedding.batchSize ?? profile.embedding.batchSize,
       }
-    : profile.embedding;
-  const mediaModels =
-    Object.keys(settings.mediaModels).length > 0
-      ? Object.fromEntries(
-          Object.entries(settings.mediaModels).map(([model, entry]) => [
+    : null;
+  if (!embedding) return null;
+
+  const mediaModels = Object.fromEntries(
+    Object.entries(settings.mediaModels).flatMap(([model, entry]) => {
+      const channel = channelIdByProvider.get(entry.provider);
+      if (!channel) return [];
+      return [[
             model,
             {
-              channel: ensureChannel(entry.provider),
+              channel,
               model: entry.upstreamModel || model,
               ...(entry.mediaType ? { mediaType: entry.mediaType } : {}),
               ...(entry.label ? { label: entry.label } : {}),
@@ -1956,17 +2018,22 @@ function syncQuickProfileFromAdvancedSettings(
               sortOrder: entry.sortOrder ?? 100,
               config: entry.config ?? {},
             },
-          ]),
-        )
-      : profile.mediaModels;
+          ] as const];
+    }),
+  );
 
-  return {
+  const next: QuickModelProfile = {
     ...profile,
     channels,
-    featureModels: { ...profile.featureModels, overrides },
+    featureModels: { text, vision, overrides },
     embedding,
     mediaModels,
   };
+  try {
+    return parseQuickModelProfile(JSON.stringify(next));
+  } catch {
+    return null;
+  }
 }
 
 function QuickLocalNewApiSetup({

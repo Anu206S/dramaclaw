@@ -6,11 +6,13 @@ import asyncio
 from typing import Any
 
 from novelvideo.model_gateway_runtime import model_gateway_scope_for_runner
+from novelvideo.knowledge_pipeline import is_structured_pipeline
 from novelvideo.project_context import ProjectContext
+from novelvideo.scene_prerequisites import SceneCatalogBuildingError
 from novelvideo.ports import get_usage_meter
 from novelvideo.task_backend.cancel import await_envelope_with_cancel_watch
 from novelvideo.task_backend.registry import register_project_task_runner
-from novelvideo.task_state import get_task_manager
+from novelvideo.task_state import ACTIVE_PROJECT_TASK_STATUSES, get_task_manager
 
 _TASK_ASSET_KIND = {
     "episode_scene_planner": "scene",
@@ -70,6 +72,10 @@ async def _run_episode_asset_planner(
         raise ValueError("episode must be greater than 0")
 
     manager = get_task_manager()
+    if asset_kind == "scene":
+        build_task = manager.get_task_for_project(ctx, "build_scenes", 0)
+        if build_task is not None and build_task.status in ACTIVE_PROJECT_TASK_STATUSES:
+            raise SceneCatalogBuildingError()
     await get_usage_meter().set_project_llm_usage_context(
         username=ctx.owner_username,
         project_name=ctx.project_name,
@@ -105,14 +111,20 @@ async def _run_episode_asset_planner(
     await sqlite_store.initialize()
     await sqlite_store.load_graph_state()
 
-    cognee_store = CogneeStore(
-        ctx.owner_project_label,
-        output_dir=str(ctx.output_dir),
-        state_dir=str(ctx.state_dir),
-        sqlite_store=sqlite_store,
-    )
-    await cognee_store.initialize()
-    await cognee_store.load_graph_state()
+    # structured_v1 planning needs no graph, so it uses the SQLite store
+    # directly rather than wrapping it in the Cognee facade. Both planners
+    # accept either, so the rest of this runner is unchanged.
+    if is_structured_pipeline(ctx.state_dir):
+        cognee_store = sqlite_store
+    else:
+        cognee_store = CogneeStore(
+            ctx.owner_project_label,
+            output_dir=str(ctx.output_dir),
+            state_dir=str(ctx.state_dir),
+            sqlite_store=sqlite_store,
+        )
+        await cognee_store.initialize()
+        await cognee_store.load_graph_state()
 
     episode_obj = cognee_store.get_episode(episode)
     if episode_obj is None:

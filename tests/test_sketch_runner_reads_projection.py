@@ -50,7 +50,11 @@ def _projection(scenes: list[dict]) -> object:
 
 
 def _ctx():
-    return SimpleNamespace(owner_project_label="alice/demo", output_dir="/nonexistent")
+    return SimpleNamespace(
+        owner_project_label="alice/demo",
+        output_dir="/nonexistent",
+        state_dir="/state/_scopes/scope_123/alice/demo",
+    )
 
 
 async def _ensure(tmp_path, *, projection, director_ref_mode="off", beats=None):
@@ -143,13 +147,17 @@ async def test_without_a_projection_the_store_is_still_used(tmp_path, monkeypatc
     """The rollback: no projection in the payload, no change in behaviour."""
     from novelvideo.cognee import CogneeStore
 
-    opened: list[str] = []
+    opened: list[tuple[str, dict]] = []
+    closed: list[bool] = []
 
     def record(self, label, *args, **kwargs):
-        opened.append(label)
+        opened.append((label, kwargs))
 
     async def noop(self, *args, **kwargs):
         return None
+
+    async def close(self):
+        closed.append(True)
 
     async def one_scene(name):
         return SimpleNamespace(name="皇宫·大殿")
@@ -157,6 +165,7 @@ async def test_without_a_projection_the_store_is_still_used(tmp_path, monkeypatc
     monkeypatch.setattr(CogneeStore, "__init__", record)
     monkeypatch.setattr(CogneeStore, "initialize", noop)
     monkeypatch.setattr(CogneeStore, "load_graph_state", noop)
+    monkeypatch.setattr(CogneeStore, "close", close)
     monkeypatch.setattr(
         CogneeStore,
         "sqlite_store",
@@ -166,8 +175,47 @@ async def test_without_a_projection_the_store_is_still_used(tmp_path, monkeypatc
 
     stats = await _ensure(tmp_path, projection=None)
 
-    assert opened == ["alice/demo"]
+    assert opened == [
+        (
+            "alice/demo",
+            {
+                "output_dir": str(tmp_path),
+                "state_dir": "/state/_scopes/scope_123/alice/demo",
+            },
+        )
+    ]
     assert stats["requested"] == 1
+    assert closed == [True]
+
+
+@pytest.mark.asyncio
+async def test_store_is_closed_when_graph_state_loading_fails(tmp_path, monkeypatch) -> None:
+    """Opening the fallback store transfers cleanup responsibility immediately."""
+    from novelvideo.cognee import CogneeStore
+
+    closed: list[bool] = []
+
+    def record(self, *args, **kwargs):
+        pass
+
+    async def noop(self):
+        pass
+
+    async def fail(self):
+        raise RuntimeError("graph state unavailable")
+
+    async def close(self):
+        closed.append(True)
+
+    monkeypatch.setattr(CogneeStore, "__init__", record)
+    monkeypatch.setattr(CogneeStore, "initialize", noop)
+    monkeypatch.setattr(CogneeStore, "load_graph_state", fail)
+    monkeypatch.setattr(CogneeStore, "close", close)
+
+    with pytest.raises(RuntimeError, match="graph state unavailable"):
+        await _ensure(tmp_path, projection=None)
+
+    assert closed == [True]
 
 
 class _StopHere(Exception):

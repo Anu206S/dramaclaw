@@ -54,16 +54,13 @@ describe("locale translation files", () => {
     );
   });
 
-  it("defines the Freezone assistant placeholder text", () => {
-    const zh = JSON.parse(readFileSync("public/locales/zh/translation.json", "utf8"));
-    const en = JSON.parse(readFileSync("public/locales/en/translation.json", "utf8"));
+  it("defines organization, platform, and node queue limit toasts in Chinese", () => {
+    const content = readFileSync("public/locales/zh/translation.json", "utf8");
+    const translations = JSON.parse(content);
 
-    expect(zh.aiAssistant.freezonePlaceholder).toBe("想画什么、改哪里，直接告诉虾画");
-    expect(en.aiAssistant.freezonePlaceholder).toBe("Tell Xia Draw what to create or where to refine");
-    expect(zh.aiAssistant.freezoneWaitingResponse).toBe("等待虾画回复");
-    expect(zh.aiAssistant.freezoneWaitingResponses).toContain("虾画正在看画布");
-    expect(en.aiAssistant.freezoneWaitingResponse).toBe("Waiting for Xia Draw");
-    expect(en.aiAssistant.freezoneWaitingResponses).toContain("Xia Draw is reading the canvas");
+    expect(translations.common.organizationDefaultQueueFull).toBe("当前组织默认队列已满");
+    expect(translations.common.platformDefaultQueueFull).toBe("平台默认队列已满");
+    expect(translations.common.nodeDefaultQueueFull).toBe("当前节点默认队列已满");
   });
 
   it("defines project queue kind labels in Chinese", () => {
@@ -71,7 +68,6 @@ describe("locale translation files", () => {
     const translations = JSON.parse(content);
 
     expect(translations.common.projectQueueKinds).toMatchObject({
-      image: "图片",
       video: "视频",
       world: "世界",
       ffmpeg: "合成",

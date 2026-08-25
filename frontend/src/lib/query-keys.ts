@@ -18,6 +18,7 @@ export const queryKeys = {
   }) => ["credits", "transactions", filters] as const,
   org: () => ["org"] as const,
   orgMe: () => ["org", "me"] as const,
+  orgBranding: () => ["org", "branding"] as const,
   projects: () => ["projects"] as const,
   projectSummaries: () => ["projects", "summaries"] as const,
   project: (p: string) => ["projects", p] as const,
@@ -36,6 +37,11 @@ export const queryKeys = {
     ["projects", p, "characters", name, "asset-history", url] as const,
   identities: (p: string, name: string) =>
     ["projects", p, "characters", name, "identities"] as const,
+  assetReferences: (p: string) => ["projects", p, "asset-references"] as const,
+  // Nested under assetReferences so one prefix invalidation drops both the
+  // project-wide counts and every per-asset detail slice.
+  assetReferenceDetail: (p: string, signature: string) =>
+    ["projects", p, "asset-references", "detail", signature] as const,
   scenes: (p: string) => ["projects", p, "scenes"] as const,
   scenePlatePreview: (
     p: string,

@@ -1022,6 +1022,12 @@ class FreezoneVideoCharacterLibraryItemRequest(BaseModel):
     )
 
 
+class FreezoneAssetLibraryItemPatchRequest(BaseModel):
+    """改资产库条目。目前只支持改名——URL / 类目 / 保存位置都不在这条路由的职责里。"""
+
+    name: str = Field(description="资产的新名称，最长 60 字")
+
+
 class FreezoneAssetLibraryFolderRequest(BaseModel):
     """新建资产库文件夹请求。文件夹只管保存位置，和素材的类目标签互不影响。"""
 
@@ -2093,13 +2099,9 @@ class SceneUpdate(BaseModel):
 
 
 class ScenePanoGenerateRequest(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     source: Literal["master", "text"] = "master"
-    style: Optional[str] = None
-    provider: Optional[str] = None
-    model: Optional[str] = None
-    image_size: Optional[str] = None
-    quality: Optional[str] = None
-    timeout_seconds: int = 1800
 
 
 class SceneReferenceGenerateRequest(BaseModel):

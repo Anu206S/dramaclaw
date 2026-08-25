@@ -62,8 +62,6 @@ async def _refund_image_model_call(
     source: str,
     error: str,
 ) -> None:
-    if not reservation_id:
-        return
     try:
         await get_usage_meter().refund_model_call_credit_reservation(
             reservation_id,
@@ -977,6 +975,7 @@ class VolcengineImageGenerator:
         count: int = 3,
         style: str = None,
         project_dir: str = "",
+        state_dir: str = "",
     ) -> list[str]:
         """生成角色参考图。
 
@@ -995,7 +994,11 @@ class VolcengineImageGenerator:
         os.makedirs(output_dir, exist_ok=True)
 
         style = style or self.default_style
-        style_preset = get_style_preset(style, project_dir=project_dir)
+        style_preset = get_style_preset(
+            style,
+            project_dir=project_dir,
+            state_dir=state_dir or None,
+        )
         style_keywords = style_preset.get("style_instructions", "")
         negative_prompt = style_preset.get("avoid_instructions", "")
 
@@ -1155,6 +1158,7 @@ async def generate_character_reference_unified(
     prompt_only: bool = False,  # Dry Run 模式：只生成提示词，不调用 API
     model: str = None,  # 模型选择：nanobanana 或 seedream，默认从配置读取
     project_dir: str = "",  # 项目根目录，用于定位 prompts 目录
+    state_dir: str = "",  # 项目状态目录，用于读取 scoped project config
     usage_task_type: str = "character_portrait",
     usage_scope: str = "",
     identity_name: str = "",
@@ -1220,6 +1224,7 @@ async def generate_character_reference_unified(
                 ethnicity=ethnicity,
                 prompt_only=prompt_only,
                 project_dir=project_dir,
+                state_dir=state_dir,
                 usage_task_type=usage_task_type,
                 usage_scope=usage_scope,
                 identity_name=identity_name,
@@ -1259,6 +1264,7 @@ async def generate_character_reference_unified(
                 ethnicity=ethnicity,
                 prompt_only=prompt_only,
                 project_dir=project_dir,
+                state_dir=state_dir,
                 usage_task_type=usage_task_type,
                 usage_scope=usage_scope,
                 identity_name=identity_name,
@@ -1290,6 +1296,7 @@ async def generate_character_reference_unified(
                 count=count,
                 style=style,
                 project_dir=project_dir,
+                state_dir=state_dir,
             )
         except ValueError as e:
             print(f"[Character] Seedream 配置错误: {e}，使用 Mock")
@@ -1326,6 +1333,7 @@ async def generate_identity_image_unified(
     dry_run: bool = False,
     model: str = None,  # 模型选择：nanobanana 或 seedream，默认从配置读取
     project_dir: str = "",  # 项目根目录，用于定位 prompts 目录
+    state_dir: str = "",  # 项目状态目录，用于读取 scoped project config
     costume_image_path: str = "",  # 服装参考图路径
     usage_task_type: str = "identity_image",
     usage_scope: str = "",
@@ -1380,6 +1388,7 @@ async def generate_identity_image_unified(
                 style=style,
                 dry_run=dry_run,
                 project_dir=project_dir,
+                state_dir=state_dir,
                 costume_image_path=costume_image_path,
                 usage_task_type=usage_task_type,
                 usage_scope=usage_scope,
@@ -1423,6 +1432,7 @@ async def generate_identity_image_unified(
                 style=style,
                 dry_run=dry_run,
                 project_dir=project_dir,
+                state_dir=state_dir,
                 costume_image_path=costume_image_path,
                 usage_task_type=usage_task_type,
                 usage_scope=usage_scope,
@@ -1460,6 +1470,7 @@ async def generate_identity_image_unified(
         style=style,
         model=model,
         project_dir=project_dir,
+        state_dir=state_dir,
         usage_task_type=usage_task_type,
         usage_scope=usage_scope,
         identity_name=identity_name,

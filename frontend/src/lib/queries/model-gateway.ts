@@ -540,7 +540,11 @@ export function useSaveProviderChannels() {
           throwHttpErrors: false,
         })
         .json<
-          | OkResponse<{ channels: SavedProviderChannelConfig[] }>
+          | OkResponse<{
+              channels: SavedProviderChannelConfig[];
+              mediaModels: Record<string, SavedMediaModelConfig>;
+              embeddingModel: SavedEmbeddingModelConfig | null;
+            }>
           | ErrorResponse
           | FastApiErrorResponse
         >(),
@@ -559,6 +563,9 @@ export function useSaveProviderChannels() {
                       ? {
                           ...current.data.provisioner,
                           providerChannels: response.data.channels,
+                          mediaModels: response.data.mediaModels,
+                          embeddingModel:
+                            response.data.embeddingModel ?? undefined,
                         }
                       : current.data.provisioner,
                   },
