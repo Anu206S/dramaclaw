@@ -1095,6 +1095,7 @@ async def test_freezone_image_reverse_prompt_enqueues_feature_billing(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Path,
 ) -> None:
+    monkeypatch.setenv("ST_EDITION", "ee")
     monkeypatch.setenv("FREEZONE_VISION_MODEL", "freezone-vision-model")
     project_dir, _output_dir = _patch_freezone_project(monkeypatch, tmp_path)
     source = project_dir / "freezone" / "_uploads" / "source.png"

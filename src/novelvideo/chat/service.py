@@ -4589,7 +4589,6 @@ def _build_codex_env(
     env["CODEX_HOME"] = str(codex_home)
     from novelvideo.task_backend.subprocesses import build_model_child_env
 
-    _api_key, base_url = _codex_turn_gateway_credentials(authorization)
     child_env = build_model_child_env(
         env,
         egress_context=egress_context,
@@ -4597,6 +4596,10 @@ def _build_codex_env(
             authorization.credential if authorization is not None else None
         ),
     )
+    # Validate the request egress boundary before looking up a usable model
+    # credential. An organization denial must remain fail-closed even when the
+    # local platform key is absent or still being configured.
+    _api_key, base_url = _codex_turn_gateway_credentials(authorization)
     # The App Server is shared across projects and organizations. No usable
     # model credential may survive into its process environment; authentication
     # is supplied in the thread configuration for one turn only.
