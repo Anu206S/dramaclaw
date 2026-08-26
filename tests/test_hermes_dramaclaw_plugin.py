@@ -41,10 +41,6 @@ import importlib.util
 import sys
 import types
 
-sys.path = [entry for entry in sys.path if 'dramaclaw-ce' not in entry]
-for name in tuple(sys.modules):
-    if name == 'novelvideo' or name.startswith('novelvideo.'):
-        del sys.modules[name]
 tools_module = types.ModuleType('tools')
 registry_module = types.ModuleType('tools.registry')
 registry_module.tool_error = lambda value: value
@@ -67,10 +63,11 @@ assert not any(name == 'novelvideo' or name.startswith('novelvideo.') for name i
         "PYTHONPATH": "",
     }
 
-    subprocess.run(
+    completed = subprocess.run(
         [
             sys.executable,
             "-I",
+            "-S",
             "-c",
             script,
             str(isolated_plugins / "dramaclaw" / "__init__.py"),
@@ -78,10 +75,11 @@ assert not any(name == 'novelvideo' or name.startswith('novelvideo.') for name i
         ],
         cwd=isolated_root,
         env=env,
-        check=True,
+        check=False,
         capture_output=True,
         text=True,
     )
+    assert completed.returncode == 0, completed.stderr or completed.stdout
 
 
 def test_dramaclaw_plugin_adds_chat_error_without_replacing_task_error():

@@ -5,9 +5,19 @@
   "license": "Elastic-2.0",
   "requires": {
     "dramaclaw_ce": {
-      "compatibility": "source_revision",
-      "contains_commit": "37add44aa3582a32132137744781a9d3d18df5a6",
+      "compatibility": "capability_contract",
+      "contract_file": "src/novelvideo/chat/agent_kit_contract.json",
+      "contract_schema": "dramaclaw.agent-kit-contract.v1",
+      "minimum_contract_version": 1,
+      "required_capabilities": [
+        "agent-token-file-rotation.v1",
+        "dramaclaw-mcp-progressive-tools.v1",
+        "freezone-canvas-approval-bridge.v1",
+        "local-agent-trust.v1",
+        "workflow-mcp-read-compile.v1"
+      ],
       "required_files": [
+        "src/novelvideo/chat/agent_kit_contract.json",
         "src/novelvideo/chat/dramaclaw_mcp.py",
         "src/novelvideo/chat/workflow_mcp.py",
         ".hermes/plugins/dramaclaw/__init__.py",

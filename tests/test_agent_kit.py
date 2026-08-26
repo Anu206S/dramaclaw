@@ -55,19 +55,17 @@ def test_manifest_and_skill_are_publishable() -> None:
     manifest = json.loads((KIT_ROOT / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "dramaclaw.agent-kit.v1"
     ce_requirement = manifest["requires"]["dramaclaw_ce"]
-    assert ce_requirement["compatibility"] == "source_revision"
-    revision = ce_requirement["contains_commit"]
+    assert ce_requirement["compatibility"] == "capability_contract"
     required_files = ce_requirement["required_files"]
-    assert revision
     assert "src/novelvideo/chat/workflow_mcp.py" in required_files
     for path in required_files:
-        subprocess.run(
-            ["git", "-C", str(CE_ROOT), "cat-file", "-e", f"{revision}:{path}"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
         assert (CE_ROOT / path).is_file()
+    contract = json.loads(
+        (CE_ROOT / ce_requirement["contract_file"]).read_text(encoding="utf-8")
+    )
+    assert contract["schema_version"] == ce_requirement["contract_schema"]
+    assert contract["contract_version"] >= ce_requirement["minimum_contract_version"]
+    assert set(ce_requirement["required_capabilities"]) <= set(contract["capabilities"])
     assert set(manifest["mcp_servers"]) == {"dramaclaw", "dramaclaw-workflows"}
     assert (KIT_ROOT / manifest["skills"][0] / "SKILL.md").is_file()
     assert (KIT_ROOT / "LICENSES" / "Elastic-2.0.txt").is_file()
@@ -135,6 +133,36 @@ def test_doctor_passes_without_mutating_local_api() -> None:
         text=True,
         env={**os.environ, "PYTHONDONTWRITEBYTECODE": "1"},
     )
+    assert json.loads(result.stdout)["ok"] is True
+
+
+def test_doctor_accepts_source_archive_without_git_history(tmp_path) -> None:
+    doctor = _load_script("doctor")
+    requirement = doctor._ce_source_requirement()
+    required_files = set(doctor.REQUIRED) | set(requirement["required_files"])
+    for relative_path in required_files:
+        target = tmp_path / relative_path
+        target.parent.mkdir(parents=True, exist_ok=True)
+        source = CE_ROOT / relative_path
+        target.write_bytes(source.read_bytes())
+    archive_python = tmp_path / ".venv" / "bin" / "python"
+    archive_python.parent.mkdir(parents=True)
+    archive_python.write_text("", encoding="utf-8")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(SCRIPTS / "doctor.py"),
+            "--ce-dir",
+            str(tmp_path),
+            "--skip-api",
+        ],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+
+    assert not (tmp_path / ".git").exists()
     assert json.loads(result.stdout)["ok"] is True
 
 

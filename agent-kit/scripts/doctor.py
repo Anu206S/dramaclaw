@@ -5,7 +5,6 @@ from __future__ import annotations
 
 import argparse
 import json
-import subprocess
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -29,16 +28,35 @@ def _ce_source_requirement() -> dict[str, object]:
     return requirement
 
 
-def _checkout_contains_revision(ce_root: Path, revision: str) -> bool:
-    if not revision or not (ce_root / ".git").exists():
-        return False
-    completed = subprocess.run(
-        ["git", "-C", str(ce_root), "merge-base", "--is-ancestor", revision, "HEAD"],
-        check=False,
-        capture_output=True,
-        text=True,
-    )
-    return completed.returncode == 0
+def _validate_capability_contract(
+    ce_root: Path,
+    requirement: dict[str, object],
+) -> None:
+    contract_name = str(requirement.get("contract_file") or "").strip()
+    if not contract_name:
+        raise SystemExit("Agent Kit manifest has no DramaClaw CE contract_file")
+    try:
+        contract = json.loads((ce_root / contract_name).read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise SystemExit(f"DramaClaw CE capability contract is unreadable: {exc}") from exc
+    expected_schema = str(requirement.get("contract_schema") or "").strip()
+    if contract.get("schema_version") != expected_schema:
+        raise SystemExit("DramaClaw CE capability contract schema is incompatible")
+    try:
+        actual_version = int(contract.get("contract_version"))
+        minimum_version = int(requirement.get("minimum_contract_version"))
+    except (TypeError, ValueError) as exc:
+        raise SystemExit("DramaClaw CE capability contract version is invalid") from exc
+    if actual_version < minimum_version:
+        raise SystemExit("DramaClaw CE capability contract version is too old")
+    actual_capabilities = set(contract.get("capabilities") or [])
+    required_capabilities = set(requirement.get("required_capabilities") or [])
+    missing_capabilities = sorted(required_capabilities - actual_capabilities)
+    if missing_capabilities:
+        raise SystemExit(
+            "DramaClaw CE capability contract is missing:\n- "
+            + "\n- ".join(missing_capabilities)
+        )
 
 
 def main() -> None:
@@ -71,12 +89,7 @@ def main() -> None:
         missing.append("agent-kit/skills/dramaclaw-workflows/SKILL.md")
     if missing:
         raise SystemExit("Missing required files:\n- " + "\n- ".join(missing))
-    revision = str(requirement.get("contains_commit") or "").strip()
-    if not _checkout_contains_revision(ce_root, revision):
-        raise SystemExit(
-            "DramaClaw CE checkout does not contain the Agent Kit compatibility "
-            f"revision: {revision or 'missing'}"
-        )
+    _validate_capability_contract(ce_root, requirement)
 
     health: dict[str, object] = {"checked": False}
     if not args.skip_api:
