@@ -1,6 +1,6 @@
 # DramaClaw Agent Kit
 
-面向本机开源 `dramaclaw-ce` 的跨 Agent Skill + MCP 发布包。它让 Codex、Claude Code、
+面向本机源码可得 `dramaclaw-ce` 的跨 Agent Skill + MCP 发布包。它让 Codex、Claude Code、
 OpenClaw、Hermes、WorkBuddy 及其他支持标准 stdio MCP 的 Agent 复用同一套 Workflow
 Skill、Recipe 编译器、业务审批和 Freezone 画布写入链路。
 
