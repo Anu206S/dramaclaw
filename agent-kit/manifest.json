@@ -1,0 +1,32 @@
+{
+  "schema_version": "dramaclaw.agent-kit.v1",
+  "name": "dramaclaw-agent-kit",
+  "version": "0.1.0",
+  "license": "Elastic-2.0",
+  "requires": {
+    "dramaclaw_ce": ">=1.3.2",
+    "python": ">=3.11,<3.13",
+    "mcp_transport": "stdio"
+  },
+  "skills": [
+    "skills/dramaclaw-workflows"
+  ],
+  "mcp_servers": {
+    "dramaclaw-workflows": {
+      "launcher_mode": "workflows",
+      "access": "read_compile"
+    },
+    "dramaclaw": {
+      "launcher_mode": "tools",
+      "access": "authorized_local_write"
+    }
+  },
+  "supported_hosts": [
+    "codex",
+    "claude-code",
+    "hermes",
+    "openclaw",
+    "workbuddy",
+    "generic-mcp"
+  ]
+}
