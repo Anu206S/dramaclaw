@@ -130,6 +130,10 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
       }
       return {};
     }
+    if (!isMusic && data.voiceAvailable === false) {
+      updateNodeData(nodeId, { generationError: '请先配置或选择声线' });
+      return {};
+    }
     const fallbackPrompt = effectivePrompt;
     if (fallbackPrompt.length === 0) return {};
     const project = readUrl().project;
@@ -218,6 +222,7 @@ export function useAudioGeneration(nodeId: string, data: AudioNodeData) {
     data.musicLengthMs,
     data.forceInstrumental,
     data.respectSectionsDurations,
+    data.voiceAvailable,
     data.voiceRef,
     data.presetModel,
     data.presetVoice,
