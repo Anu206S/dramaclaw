@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from dataclasses import replace
 from pathlib import Path
 
@@ -102,6 +103,48 @@ def test_store_lease_claim_is_atomic_and_expired_lease_can_be_reclaimed(tmp_path
     assert store.claim_lease(run.run_id, "worker-b", lease_seconds=10, now=111) is True
     assert store.owns_lease(run.run_id, "worker-a", now=111) is False
     assert store.owns_lease(run.run_id, "worker-b", now=111) is True
+
+
+@pytest.mark.asyncio
+async def test_stale_owner_cannot_overwrite_pause_or_release_new_owner(
+    tmp_path: Path,
+) -> None:
+    store = DirectorAutoStore(tmp_path / "director-auto.db")
+    original = run_record(tmp_path)
+    store.upsert(original)
+    base = time.time()
+
+    assert store.claim_lease(original.run_id, "worker-a", lease_seconds=10, now=base)
+    assert store.claim_lease(
+        original.run_id,
+        "worker-b",
+        lease_seconds=120,
+        now=base + 11,
+    )
+    owned_by_b = replace(original, handled_task_ids=("handled-by-b",))
+    assert store.update_if_owned(owned_by_b, "worker-b", now=base + 12)
+
+    stale_snapshot = replace(original, handled_task_ids=("stale-a",))
+    assert not store.update_if_owned(stale_snapshot, "worker-a", now=base + 12)
+    assert not store.release_lease(original.run_id, "worker-a")
+    assert store.owns_lease(original.run_id, "worker-b", now=base + 12)
+
+    stale = DirectorAutoCoordinator(DirectorAutoStore(store.db_path))
+    stale.owner_token = "worker-a"
+    assert (
+        await stale._pause_owned(
+            run_id=original.run_id,
+            username=original.username,
+            project_id=original.project_id,
+            reason="stale worker timeout",
+        )
+        is None
+    )
+    saved = store.get(original.username, original.project_id)
+    assert saved is not None
+    assert saved.status == "running"
+    assert saved.handled_task_ids == ("handled-by-b",)
+    assert store.owns_lease(original.run_id, "worker-b", now=base + 12)
 
 
 @pytest.mark.asyncio

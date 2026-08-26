@@ -1,11 +1,10 @@
-"""Linux 沙箱"装了 binary 还得能真建起来"的运行时/启动门行为。
+"""Linux 沙箱“装了 binary 还得能真建起来”的运行时降级行为。
 
 #346 P1①:CE 镜像现按 TARGETARCH 装 codex-linux-sandbox + bubblewrap。但"binary 在"
 不等于"沙箱能建"——宿主内核缺 unprivileged user namespaces 时 bwrap 运行时才失败。
-本测试钉住两处执行:
+本测试钉住运行时执行边界：
 - ``_wrap_linux`` 的一次性探针:binary 缺 / binary 在但探针失败,都走同一套
   ``_fallback_or_raise`` 决策(EE 拒绝、CE 单租户 opt-in 降级)。
-- 启动门 ``deploy/hermes_sandbox_selfcheck.py`` 的退出码语义(0=放行 / 非0=拒绝启动)。
 
 平台无关:直接调 ``_wrap_linux`` 并 monkeypatch 探针,不依赖真跑 Linux 沙箱。
 """

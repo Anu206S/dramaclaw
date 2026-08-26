@@ -1003,6 +1003,9 @@ async def test_codex_stream_passes_conversation_scope_to_thread_builder(
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     captured: dict[str, object] = {}
     revoked: list[str] = []
+    history_sentinel = "CHATDB_HISTORY_MUST_NOT_REACH_CODEX"
+    if store_scope is not None:
+        chat_store.append_message("admin", store_scope, "assistant", history_sentinel)
 
     class FakeAuthPort:
         async def revoke_agent_session(self, token):
@@ -1110,6 +1113,7 @@ async def test_codex_stream_passes_conversation_scope_to_thread_builder(
     assert captured["agent_profile"] == expected_profile
     assert captured["tool_mode"] == tool_mode
     assert captured["canvas_id"] == expected_canvas
+    assert history_sentinel not in str(captured["prompt"])
     assert not Path(captured["agent_token_file"]).exists()
     assert revoked == ["agent-token"]
     if tool_mode == "freezone_canvas":
@@ -3376,9 +3380,13 @@ async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_
         agent_id="agent-2",
     )
     events = []
+    prompts: list[str] = []
+    history_sentinel = "CHATDB_HISTORY_MUST_NOT_REACH_HERMES"
+    chat_store.append_message("admin", scope, "assistant", history_sentinel)
 
     class FakeThread:
-        async def stream(self, _prompt, *, current_project=None, **_kwargs):
+        async def stream(self, prompt, *, current_project=None, **_kwargs):
+            prompts.append(prompt)
             yield backend_sdk.ChatBackendEvent(
                 type="thread_started", thread_id="thread-a", turn_id="turn-a"
             )
@@ -3410,8 +3418,11 @@ async def test_freezone_hermes_assistant_message_keeps_turn_id(monkeypatch, tmp_
     )
 
     assert result["turn_id"] == "turn-a"
+    assert prompts and history_sentinel not in prompts[0]
     messages = chat_store.list_messages("admin", scope)
-    assistant = [message for message in messages if message["role"] == "assistant"][0]
+    assistant = next(
+        message for message in messages if message.get("turn_id") == "turn-a"
+    )
     assert assistant["turn_id"] == "turn-a"
 
 

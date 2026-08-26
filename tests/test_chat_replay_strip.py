@@ -137,6 +137,31 @@ def test_keeps_short_reply_that_matches_start_of_previous_assistant_text():
     )
 
 
+def test_hermes_replay_history_is_bounded_to_latest_message_and_character_budget():
+    contents = ["old", "latest" + "x" * chat_service._HERMES_REPLAY_HISTORY_MAX_CHARS]
+
+    bounded = chat_service._bounded_replay_history(contents)
+
+    assert len(bounded) == 1
+    assert bounded[0].startswith("latest")
+    assert len(bounded[0]) == chat_service._HERMES_REPLAY_HISTORY_MAX_CHARS
+
+
+def test_replay_strip_accepts_precomputed_prefix_candidates():
+    previous = ["上一轮回复"]
+    candidates = chat_service._assistant_prefix_candidates(previous)
+
+    assert (
+        chat_service._strip_replayed_chat_response(
+            "上一轮回复这是本轮回复",
+            previous,
+            "继续",
+            assistant_prefix_candidates=candidates,
+        )
+        == "这是本轮回复"
+    )
+
+
 def test_hides_internal_skill_tool_events_from_chat_cards():
     assert chat_service._is_hidden_chat_tool_event(
         "skill",

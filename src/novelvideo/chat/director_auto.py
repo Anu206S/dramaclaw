@@ -329,26 +329,72 @@ class DirectorAutoStore:
             ).fetchone()
         return row is not None
 
-    def release_lease(self, run_id: str, owner_token: str = "") -> None:
+    def update_if_owned(
+        self,
+        run: DirectorAutoRun,
+        owner_token: str,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        """Persist a worker transition only while its lease is still current."""
+
+        current = datetime.now(timezone.utc).timestamp() if now is None else float(now)
         with self._connect() as conn:
-            if owner_token:
-                conn.execute(
-                    """
-                    UPDATE director_auto_runs
-                    SET owner_token='', lease_expires_at=0
-                    WHERE run_id=? AND owner_token=?
-                    """,
-                    (run_id, owner_token),
-                )
-            else:
-                conn.execute(
-                    """
-                    UPDATE director_auto_runs
-                    SET owner_token='', lease_expires_at=0
-                    WHERE run_id=?
-                    """,
-                    (run_id,),
-                )
+            cursor = conn.execute(
+                """
+                UPDATE director_auto_runs
+                SET episode=?, status=?, activated_at=?, updated_at=?, context_json=?,
+                    baseline_task_ids_json=?, handled_task_ids_json=?,
+                    recovery_keys_json=?, voice_policy=?, last_error=?
+                WHERE run_id=? AND status='running' AND owner_token=?
+                  AND lease_expires_at>?
+                """,
+                (
+                    run.episode,
+                    run.status,
+                    run.activated_at,
+                    run.updated_at,
+                    run.context_json,
+                    json.dumps(list(run.baseline_task_ids)),
+                    json.dumps(list(run.handled_task_ids)),
+                    json.dumps(list(run.recovery_keys)),
+                    run.voice_policy,
+                    run.last_error,
+                    run.run_id,
+                    owner_token,
+                    current,
+                ),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
+    def release_lease(self, run_id: str, owner_token: str) -> bool:
+        """Release only the caller's lease; stale workers cannot release a new owner."""
+
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE director_auto_runs
+                SET owner_token='', lease_expires_at=0
+                WHERE run_id=? AND owner_token=?
+                """,
+                (run_id, owner_token),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
+    def force_release_lease(self, run_id: str) -> None:
+        """User/control-plane path for intentionally stopping any current owner."""
+
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE director_auto_runs
+                SET owner_token='', lease_expires_at=0
+                WHERE run_id=?
+                """,
+                (run_id,),
+            )
             conn.commit()
 
 
@@ -489,7 +535,7 @@ class DirectorAutoCoordinator:
             }
         )
         await asyncio.to_thread(self.store.upsert, updated)
-        await asyncio.to_thread(self.store.release_lease, run.run_id)
+        await asyncio.to_thread(self.store.force_release_lease, run.run_id)
         await self._broadcast_status(updated, terminal_task_id=terminal_task_id)
         worker = self._workers.pop(run.run_id, None)
         if worker is not None and worker is not asyncio.current_task():
@@ -521,7 +567,7 @@ class DirectorAutoCoordinator:
             }
         )
         await asyncio.to_thread(self.store.upsert, updated)
-        await asyncio.to_thread(self.store.release_lease, run.run_id)
+        await asyncio.to_thread(self.store.force_release_lease, run.run_id)
         await self._broadcast_status(updated)
         worker = self._workers.pop(run.run_id, None)
         if worker is not None and worker is not asyncio.current_task():
@@ -640,6 +686,48 @@ class DirectorAutoCoordinator:
             self.owner_token,
         )
 
+    async def _update_owned(self, run: DirectorAutoRun) -> bool:
+        return await asyncio.to_thread(
+            self.store.update_if_owned,
+            run,
+            self.owner_token,
+        )
+
+    async def _pause_owned(
+        self,
+        *,
+        run_id: str,
+        username: str,
+        project_id: str,
+        reason: str = "",
+        terminal_task_id: str | None = None,
+    ) -> DirectorAutoRun | None:
+        """Pause from a worker only if this coordinator still owns the run."""
+
+        run = await asyncio.to_thread(self.store.get, username, project_id)
+        if run is None or run.run_id != run_id:
+            return None
+        updated = DirectorAutoRun(
+            **{
+                **asdict(run),
+                "status": "paused",
+                "updated_at": _utc_now(),
+                "last_error": reason,
+            }
+        )
+        if not await self._update_owned(updated):
+            return None
+        await asyncio.to_thread(
+            self.store.release_lease,
+            run.run_id,
+            self.owner_token,
+        )
+        await self._broadcast_status(updated, terminal_task_id=terminal_task_id)
+        worker = self._workers.pop(run.run_id, None)
+        if worker is not None and worker is not asyncio.current_task():
+            worker.cancel()
+        return updated
+
     async def _broadcast_status(
         self,
         run: DirectorAutoRun,
@@ -701,7 +789,8 @@ class DirectorAutoCoordinator:
                 required_role="editor",
             )
         except Exception as exc:  # noqa: BLE001
-            await self.pause(
+            await self._pause_owned(
+                run_id=run.run_id,
                 username=run.username,
                 project_id=run.project_id,
                 reason=f"项目权限校验失败：{exc}",
@@ -718,7 +807,8 @@ class DirectorAutoCoordinator:
                 return False
             await asyncio.sleep(0.5)
         else:
-            await self.pause(
+            await self._pause_owned(
+                run_id=run.run_id,
                 username=run.username,
                 project_id=run.project_id,
                 reason="等待虾导空闲超时",
@@ -795,7 +885,12 @@ class DirectorAutoCoordinator:
             return saw_write
         except Exception as exc:  # noqa: BLE001
             logger.exception("director auto continuation failed project=%s", run.project_id)
-            await self.pause(username=run.username, project_id=run.project_id, reason=str(exc))
+            await self._pause_owned(
+                run_id=run.run_id,
+                username=run.username,
+                project_id=run.project_id,
+                reason=str(exc),
+            )
             await self._notify(run, "本集自动已暂停：虾导继续执行失败，请检查服务状态后重试。")
             return False
 
@@ -835,7 +930,8 @@ class DirectorAutoCoordinator:
                         "handled_task_ids": tuple(sorted(handled)),
                     }
                 )
-                await asyncio.to_thread(self.store.upsert, updated)
+                if not await self._update_owned(updated):
+                    return
                 failures = [task for task in terminal if task.status != "completed"]
                 if failures:
                     failed = failures[0]
@@ -858,7 +954,8 @@ class DirectorAutoCoordinator:
                                 ),
                             }
                         )
-                        await asyncio.to_thread(self.store.upsert, recovering)
+                        if not await self._update_owned(recovering):
+                            return
                         await self._notify(
                             recovering,
                             f"检测到{_task_label(failed)}缺少前置肖像，正在自动补生成「{character}」肖像。",
@@ -880,7 +977,8 @@ class DirectorAutoCoordinator:
                         latest = await asyncio.to_thread(self.store.get, username, project_id)
                         if latest is None or latest.status != "running":
                             return
-                        await self.pause(
+                        await self._pause_owned(
+                            run_id=run_id,
                             username=username,
                             project_id=project_id,
                             reason=f"无法自动补生成「{character}」肖像",
@@ -891,7 +989,8 @@ class DirectorAutoCoordinator:
                             f"本集自动已暂停：未能启动「{character}」肖像生成，请检查角色肖像配置。",
                         )
                         return
-                    await self.pause(
+                    await self._pause_owned(
+                        run_id=run_id,
                         username=username,
                         project_id=project_id,
                         reason=reason,
@@ -917,7 +1016,8 @@ class DirectorAutoCoordinator:
                     completed = DirectorAutoRun(
                         **{**asdict(updated), "status": "completed", "updated_at": _utc_now()}
                     )
-                    await asyncio.to_thread(self.store.upsert, completed)
+                    if not await self._update_owned(completed):
+                        return
                     await self._broadcast_status(completed)
                     return
                 await self._notify(updated, f"{summary}本集自动正在继续下一步。")
@@ -934,7 +1034,8 @@ class DirectorAutoCoordinator:
                     await asyncio.sleep(POLL_SECONDS)
                     continue
                 if taskless_continuations >= 3:
-                    await self.pause(
+                    await self._pause_owned(
+                        run_id=run_id,
                         username=username,
                         project_id=project_id,
                         reason="自动续跑未产生新的任务",
@@ -949,7 +1050,8 @@ class DirectorAutoCoordinator:
                     latest = await asyncio.to_thread(self.store.get, username, project_id)
                     if latest is None or latest.status != "running":
                         return
-                    await self.pause(
+                    await self._pause_owned(
+                        run_id=run_id,
                         username=username,
                         project_id=project_id,
                         reason="自动续跑未产生写任务",

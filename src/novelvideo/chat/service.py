@@ -76,6 +76,8 @@ _CHAT_RUN_LOCK_TTL_SECONDS = 10 * 60
 _CHAT_RUN_LOCK_MAX_SECONDS = 60 * 60
 _CHAT_RUN_LOCK_HEARTBEAT_SECONDS = 30.0
 _CHAT_RUN_LOCK_BIRTH_GRACE_SECONDS = 5.0
+_HERMES_REPLAY_HISTORY_MESSAGES = 1
+_HERMES_REPLAY_HISTORY_MAX_CHARS = 64_000
 _CODEX_MODEL_PROVIDER = "dramaclaw_gateway"
 _DEFAULT_CODEX_MODEL = "DC-codex-agent-LLM"
 _CODEX_GATEWAY_BASE_URL_ENV = "DRAMACLAW_CODEX_GATEWAY_BASE_URL"
@@ -1770,6 +1772,16 @@ def _assistant_prefix_candidates(previous_assistant: object) -> list[str]:
     return [prefix] if prefix else []
 
 
+def _bounded_replay_history(contents: list[str]) -> list[str]:
+    """Keep only a small display-dedup window; this history never becomes agent context."""
+
+    bounded = [
+        str(content or "")
+        for content in contents[-_HERMES_REPLAY_HISTORY_MESSAGES:]
+    ]
+    return [content[:_HERMES_REPLAY_HISTORY_MAX_CHARS] for content in bounded if content]
+
+
 def _is_truncated_assistant_replay(content: str, candidates: list[str]) -> bool:
     """Detect a sufficiently long strict prefix of previously emitted assistant text."""
     compact_content = "".join(str(content or "").split())
@@ -1789,16 +1801,21 @@ def _strip_replayed_assistant_prefix(
     previous_assistant: object,
     *,
     suppress_partial_replay: bool = False,
+    candidates: list[str] | None = None,
 ) -> str:
     """Hermes ACP can replay prior assistant text at the start of a new turn."""
     text = str(content or "")
     original_text = text
-    candidates = _assistant_prefix_candidates(previous_assistant)
-    if _is_truncated_assistant_replay(text, candidates):
+    prefixes = (
+        candidates
+        if candidates is not None
+        else _assistant_prefix_candidates(previous_assistant)
+    )
+    if _is_truncated_assistant_replay(text, prefixes):
         return ""
-    while text and candidates:
+    while text and prefixes:
         original = text
-        for prefix in candidates:
+        for prefix in prefixes:
             if text.startswith(prefix):
                 text = text[len(prefix) :].lstrip()
                 break
@@ -1892,6 +1909,7 @@ def _strip_replayed_chat_response(
     current_prompt: object,
     *,
     suppress_partial_replay: bool = False,
+    assistant_prefix_candidates: list[str] | None = None,
 ) -> str:
     text = _strip_replayed_turn_transcript(
         content,
@@ -1902,6 +1920,7 @@ def _strip_replayed_chat_response(
         text,
         previous_assistant,
         suppress_partial_replay=suppress_partial_replay,
+        candidates=assistant_prefix_candidates,
     )
 
 
@@ -3598,16 +3617,23 @@ def _assistant_history_contents(
     project_dir: str | Path | None = None,
     project_state_dir: str | Path | None = None,
 ) -> list[str]:
-    return [
-        str(message.get("content") or "")
-        for message in list_messages(
-            username,
-            project,
-            project_dir=project_dir,
-            project_state_dir=project_state_dir,
-        )
-        if message.get("role") == "assistant"
-    ]
+    conn = _connect(_chat_db_path(username, project, project_dir, project_state_dir))
+    try:
+        rows = conn.execute(
+            """
+            SELECT content
+              FROM chat_messages
+             WHERE role = 'assistant'
+             ORDER BY id DESC
+             LIMIT ?
+            """,
+            (_HERMES_REPLAY_HISTORY_MESSAGES,),
+        ).fetchall()
+    finally:
+        conn.close()
+    return _bounded_replay_history(
+        [str(row["content"] or "") for row in reversed(rows)]
+    )
 
 
 def _trace_history_contents(
@@ -3619,38 +3645,44 @@ def _trace_history_contents(
 ) -> list[str]:
     conn = _connect(_chat_db_path(username, project, project_dir, project_state_dir))
     try:
-        rows = conn.execute("""
+        rows = conn.execute(
+            """
             SELECT content
               FROM chat_messages
              WHERE role = 'trace'
-             ORDER BY id ASC
-            """).fetchall()
+             ORDER BY id DESC
+             LIMIT ?
+            """,
+            (_HERMES_REPLAY_HISTORY_MESSAGES,),
+        ).fetchall()
     finally:
         conn.close()
-    return [str(row["content"] or "") for row in rows]
+    return _bounded_replay_history(
+        [str(row["content"] or "") for row in reversed(rows)]
+    )
 
 
 def _store_history_contents(username: str, store_scope: Any, role: str) -> list[str]:
     try:
         from novelvideo.chat.store import chat_store
 
-        if role == "trace":
-            conn = chat_store.connect(username, store_scope)
-            try:
-                rows = conn.execute("""
-                    SELECT content
-                      FROM chat_messages
-                     WHERE role = 'trace'
-                     ORDER BY id ASC
-                    """).fetchall()
-            finally:
-                conn.close()
-            return [str(row["content"] or "") for row in rows]
-        return [
-            str(message.get("content") or "")
-            for message in chat_store.list_messages(username, store_scope, limit=200)
-            if message.get("role") == role
-        ]
+        conn = chat_store.connect(username, store_scope)
+        try:
+            rows = conn.execute(
+                """
+                SELECT content
+                  FROM chat_messages
+                 WHERE role = ?
+                 ORDER BY id DESC
+                 LIMIT ?
+                """,
+                (role, _HERMES_REPLAY_HISTORY_MESSAGES),
+            ).fetchall()
+        finally:
+            conn.close()
+        return _bounded_replay_history(
+            [str(row["content"] or "") for row in reversed(rows)]
+        )
     except Exception:
         return []
 
@@ -5451,6 +5483,8 @@ async def _stream_assistant_reply_hermes(
             else []
         )
     )
+    assistant_prefix_candidates = _assistant_prefix_candidates(previous_assistant)
+    trace_prefix_candidates = _assistant_prefix_candidates(previous_trace)
     assistant_text = ""
     tool_text = ""
     tool_ui_specs: list[dict[str, Any]] = []
@@ -5659,7 +5693,10 @@ async def _stream_assistant_reply_hermes(
         if persisted_message is not None:
             return persisted_message
         final_text = _strip_replayed_chat_response(
-            assistant_text, previous_assistant, prompt
+            assistant_text,
+            previous_assistant,
+            prompt,
+            assistant_prefix_candidates=assistant_prefix_candidates,
         ).strip()
         if _allows_mainline_media_ui_specs(tool_mode):
             all_tool_ui_specs = _dedupe_tool_ui_specs(
@@ -5676,7 +5713,11 @@ async def _stream_assistant_reply_hermes(
         if not final_text:
             return None
         final_text = _normalize_json_render_reply(final_text)
-        final_tool_text = _strip_replayed_assistant_prefix(tool_text, previous_trace)
+        final_tool_text = _strip_replayed_assistant_prefix(
+            tool_text,
+            previous_trace,
+            candidates=trace_prefix_candidates,
+        )
         if final_tool_text.strip():
             if store_scope is not None:
                 from novelvideo.chat.store import chat_store
@@ -5760,6 +5801,7 @@ async def _stream_assistant_reply_hermes(
                     previous_assistant,
                     prompt,
                     suppress_partial_replay=True,
+                    assistant_prefix_candidates=assistant_prefix_candidates,
                 )
                 streamed_text = _strip_freezone_tool_lifecycle_failure_text(
                     streamed_text,
@@ -5895,7 +5937,9 @@ async def _stream_assistant_reply_hermes(
                 event_tool_text = str(event.text or "")
                 tool_text += event_tool_text + "\n"
                 display_tool_text = _strip_replayed_assistant_prefix(
-                    event_tool_text, previous_trace
+                    event_tool_text,
+                    previous_trace,
+                    candidates=trace_prefix_candidates,
                 )
                 if display_tool_text.strip():
                     await _emit_chat_event_best_effort(
