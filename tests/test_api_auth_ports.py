@@ -72,6 +72,13 @@ async def test_local_agent_trust_accepts_direct_loopback_request(monkeypatch) ->
         ("127.0.0.1", {"host": "127.0.0.1:8780", "x-forwarded-host": "example.com"}),
         ("127.0.0.1", {"host": "127.0.0.1:8780", "x-forwarded-for": "203.0.113.10"}),
         ("127.0.0.1", {"host": "127.0.0.1:8780", "x-forwarded-proto": "https"}),
+        (
+            "127.0.0.1",
+            {
+                "host": "127.0.0.1:8780",
+                "forwarded": "for=203.0.113.10;proto=https",
+            },
+        ),
     ],
 )
 def test_local_agent_trust_rejects_remote_or_proxied_requests(

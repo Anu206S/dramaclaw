@@ -138,6 +138,28 @@ async def test_cancel_does_not_force_release_while_interrupt_is_settling(monkeyp
     assert releases == []
 
 
+@pytest.mark.anyio
+async def test_cancel_stays_best_effort_when_backend_resolution_fails(monkeypatch) -> None:
+    releases = []
+
+    def fail_backend_resolution():
+        raise RuntimeError("configured backend is unavailable")
+
+    monkeypatch.setattr(
+        chat_route.chat_service, "get_chat_backend_name", fail_backend_resolution
+    )
+    monkeypatch.setattr(
+        chat_route.chat_service,
+        "force_release_chat_run_lock",
+        lambda *args: releases.append(args),
+    )
+
+    result = await chat_route.cancel_chat_turn({"username": "alice"})
+
+    assert result == {"ok": True, "data": {"cancelled": False}}
+    assert releases == []
+
+
 def test_scope_from_model_preserves_freezone_canvas_scope() -> None:
     scope = chat_route._scope_from_model(
         chat_route.ChatScopePayload(

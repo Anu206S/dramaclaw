@@ -107,7 +107,6 @@ agent-kit/skills/dramaclaw-workflows/SKILL.md,Elastic-2.0,2026 SuperTale contrib
 agent-kit/skills/dramaclaw-workflows/references/custom-topology.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 agent-kit/skills/dramaclaw-workflows/references/error-recovery.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 agent-kit/skills/dramaclaw-workflows/references/integration.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
-agent-kit/tests/test_agent_kit.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 assets/architecture.excalidraw,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 assets/architecture.png,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 assets/hero.png,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1730,6 +1729,7 @@ src/novelvideo/brainclaw_control_context_transport.py,Elastic-2.0,2026 SuperTale
 src/novelvideo/brainclaw_outcome_runtime.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/agent_mcp.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/chat/agent_token.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/backend_sdk.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/codex_app_server.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/director_auto.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -2202,6 +2202,7 @@ tests/sandbox_smoke.sh,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggreg
 tests/support/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/support/egress_ledger.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_acceptance_run_script.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_agent_kit.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_ai_identity_detector.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_api_assets.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_api_audio_indextts2_cutover.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation

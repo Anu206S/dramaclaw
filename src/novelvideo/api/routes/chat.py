@@ -99,9 +99,10 @@ async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]
     without stopping the shared home-node runtime.
     """
     username = str(user["username"])
-    backend_name = chat_service.get_chat_backend_name()
+    backend_name: str | None = None
     safe_to_recover_home_lock = False
     try:
+        backend_name = chat_service.get_chat_backend_name()
         if backend_name == "codex":
             cancelled = await chat_service.interrupt_active_codex_turns(username)
         else:
@@ -114,7 +115,7 @@ async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]
         # Preserve staging's Hermes recovery behavior when close_user itself
         # fails. Codex interrupt failures leave the active-turn state unknown,
         # so releasing its lock here could race a turn that is still settling.
-        safe_to_recover_home_lock = backend_name != "codex"
+        safe_to_recover_home_lock = backend_name == "hermes"
     if safe_to_recover_home_lock:
         try:
             # No backend turn remains to own the lock. Preserve staging's

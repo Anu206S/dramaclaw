@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from io import BytesIO
 import json
 
 import pytest
@@ -20,6 +21,41 @@ def test_plugin_reads_turn_token_file_lazily(monkeypatch, tmp_path):
     assert dramaclaw_mcp.PLUGIN._request_headers("test")["Authorization"] == (
         "Bearer second-token"
     )
+
+
+def test_freezone_handler_reads_rotating_turn_token_file(monkeypatch, tmp_path):
+    token_file = tmp_path / "turn.token"
+    token_file.write_text("first-token", encoding="utf-8")
+    monkeypatch.setenv("DRAMACLAW_API_URL", "http://127.0.0.1:8780")
+    monkeypatch.setenv("DRAMACLAW_AGENT_TOKEN_FILE", str(token_file))
+    monkeypatch.delenv("DRAMACLAW_AGENT_TOKEN", raising=False)
+    monkeypatch.delenv("DRAMACLAW_LOCAL_AGENT_TRUST", raising=False)
+    freezone_plugin = dramaclaw_mcp.PLUGINS[1]
+    seen_authorization = []
+
+    class FakeResponse:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self):
+            return BytesIO(b'{"ok": true, "data": []}').read()
+
+    def fake_urlopen(request, **_kwargs):
+        seen_authorization.append(request.get_header("Authorization"))
+        return FakeResponse()
+
+    monkeypatch.setattr(freezone_plugin, "urlopen", fake_urlopen)
+
+    freezone_plugin._handle_list_agent_catalog({"kind": "skills"})
+    token_file.write_text("second-token", encoding="utf-8")
+    freezone_plugin._handle_list_agent_catalog({"kind": "skills"})
+
+    assert seen_authorization == ["Bearer first-token", "Bearer second-token"]
 
 
 @pytest.mark.asyncio

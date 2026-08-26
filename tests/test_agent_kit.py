@@ -13,8 +13,8 @@ from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
 
-KIT_ROOT = Path(__file__).resolve().parents[1]
-CE_ROOT = KIT_ROOT.parent
+CE_ROOT = Path(__file__).resolve().parents[1]
+KIT_ROOT = CE_ROOT / "agent-kit"
 SCRIPTS = KIT_ROOT / "scripts"
 
 
@@ -54,6 +54,7 @@ def _render(host: str) -> str:
 def test_manifest_and_skill_are_publishable() -> None:
     manifest = json.loads((KIT_ROOT / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "dramaclaw.agent-kit.v1"
+    assert manifest["requires"]["dramaclaw_ce"] == ">=2.0.0"
     assert set(manifest["mcp_servers"]) == {"dramaclaw", "dramaclaw-workflows"}
     assert (KIT_ROOT / manifest["skills"][0] / "SKILL.md").is_file()
     assert (KIT_ROOT / "LICENSES" / "Elastic-2.0.txt").is_file()

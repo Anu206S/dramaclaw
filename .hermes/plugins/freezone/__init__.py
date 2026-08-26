@@ -19,6 +19,7 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
+from novelvideo.chat.agent_token import agent_token_configured, current_agent_token
 from tools.registry import tool_error, tool_result
 
 
@@ -165,7 +166,7 @@ def _skill_studio_agent_instruction(next_step: str, progress: str, notes: list[s
 def _available() -> bool:
     return bool(
         os.environ.get("DRAMACLAW_API_URL")
-        and (os.environ.get("DRAMACLAW_AGENT_TOKEN") or _local_agent_trust_enabled())
+        and (agent_token_configured() or _local_agent_trust_enabled())
     )
 
 
@@ -177,7 +178,7 @@ def _base_url() -> str:
 
 
 def _token() -> str:
-    value = os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
+    value = current_agent_token()
     if not value:
         raise ValueError("Freezone agent token is not configured")
     return value
@@ -200,7 +201,7 @@ def _request_headers(user_agent: str) -> dict[str, str]:
         "Accept": "application/json",
         "User-Agent": user_agent,
     }
-    token = os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
+    token = current_agent_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     elif not _local_agent_trust_enabled():
