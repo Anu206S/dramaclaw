@@ -91,6 +91,29 @@ async def test_hermes_cancel_recovers_stranded_home_lock(monkeypatch, tmp_path) 
 
 
 @pytest.mark.anyio
+async def test_hermes_cancel_error_recovers_stranded_home_lock(
+    monkeypatch, tmp_path
+) -> None:
+    from novelvideo.chat import hermes_pool
+    from novelvideo.chat import service as chat_service
+
+    class FailingHermesPool:
+        async def close_user(self, _username):
+            raise RuntimeError("worker registry unavailable")
+
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(chat_service, "get_chat_backend_name", lambda: "hermes")
+    monkeypatch.setattr(hermes_pool, "pool", FailingHermesPool())
+    chat_service._acquire_chat_run_lock("alice", "")
+
+    result = await chat_route.cancel_chat_turn({"username": "alice"})
+
+    assert result == {"ok": True, "data": {"cancelled": False}}
+    next_lock = chat_service._acquire_chat_run_lock("alice", "")
+    chat_service._release_chat_run_lock("alice", "", next_lock)
+
+
+@pytest.mark.anyio
 async def test_cancel_does_not_force_release_while_interrupt_is_settling(monkeypatch) -> None:
     releases = []
 
@@ -1380,3 +1403,62 @@ async def test_freezone_assistant_uses_its_own_product_surface(monkeypatch) -> N
 
     assert available is True
     assert seen["user_id"] == "project-user"
+
+
+@pytest.mark.anyio
+async def test_project_prewarm_ignores_unavailable_assistant_surface(
+    monkeypatch,
+) -> None:
+    calls = []
+
+    async def fail_if_surface_checked(**_kwargs):
+        raise AssertionError("main project prewarm must not query Product Surface")
+
+    async def capture_prewarm(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(
+        chat_route, "_assistant_surface_available", fail_if_surface_checked
+    )
+    monkeypatch.setattr(
+        chat_route.chat_service, "prewarm_chat_backend", capture_prewarm
+    )
+
+    warmed = await chat_route._prewarm_chat_scope_if_available(
+        user={"id": "usr_1", "username": "alice"},
+        username="alice",
+        scope=ChatScope(kind="project", id="project-a", surface="director"),
+    )
+
+    assert warmed is True
+    assert calls == [(("alice",), {"project": "project-a", "surface": None, "agent_id": None})]
+
+
+@pytest.mark.anyio
+async def test_freezone_prewarm_skips_unavailable_surface(monkeypatch) -> None:
+    calls = []
+
+    async def unavailable(**_kwargs):
+        return False
+
+    async def capture_prewarm(*args, **kwargs):
+        calls.append((args, kwargs))
+
+    monkeypatch.setattr(chat_route, "_assistant_surface_available", unavailable)
+    monkeypatch.setattr(
+        chat_route.chat_service, "prewarm_chat_backend", capture_prewarm
+    )
+
+    warmed = await chat_route._prewarm_chat_scope_if_available(
+        user={"id": "usr_1", "username": "alice"},
+        username="alice",
+        scope=ChatScope(
+            kind="project",
+            id="project-a",
+            surface="freezone",
+            agent_id="agent-1",
+        ),
+    )
+
+    assert warmed is False
+    assert calls == []

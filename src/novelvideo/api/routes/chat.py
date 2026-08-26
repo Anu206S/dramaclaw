@@ -99,9 +99,10 @@ async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]
     without stopping the shared home-node runtime.
     """
     username = str(user["username"])
+    backend_name = chat_service.get_chat_backend_name()
     safe_to_recover_home_lock = False
     try:
-        if chat_service.get_chat_backend_name() == "codex":
+        if backend_name == "codex":
             cancelled = await chat_service.interrupt_active_codex_turns(username)
         else:
             from novelvideo.chat.hermes_pool import pool as hermes_pool
@@ -110,6 +111,10 @@ async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]
         safe_to_recover_home_lock = not bool(cancelled)
     except Exception:
         cancelled = False
+        # Preserve staging's Hermes recovery behavior when close_user itself
+        # fails. Codex interrupt failures leave the active-turn state unknown,
+        # so releasing its lock here could race a turn that is still settling.
+        safe_to_recover_home_lock = backend_name != "codex"
     if safe_to_recover_home_lock:
         try:
             # No backend turn remains to own the lock. Preserve staging's
@@ -1784,6 +1789,28 @@ async def _assistant_surface_available(
 ) -> bool:
     access = await _assistant_surface_access(user=user, scope=scope)
     return bool(access and access.get("available") is True)
+
+
+async def _prewarm_chat_scope_if_available(
+    *,
+    user: dict[str, Any],
+    username: str,
+    scope: ChatScope,
+) -> bool:
+    # Product Surface only controls the new Freezone assistant. Existing
+    # Home/Project scopes retain staging's unconditional prewarm behavior.
+    if _is_freezone_scope(scope) and not await _assistant_surface_available(
+        user=user,
+        scope=scope,
+    ):
+        return False
+    await chat_service.prewarm_chat_backend(
+        username,
+        project=scope.id if scope.kind in {"project", "freezone"} else None,
+        surface="freezone" if _is_freezone_scope(scope) else None,
+        agent_id=scope.agent_id if _is_freezone_scope(scope) else None,
+    )
+    return True
 
 
 async def _require_ai_assistant_access(
@@ -3705,12 +3732,11 @@ async def chat_ws(websocket: WebSocket) -> None:
     # Do not pre-warm the default home scope on connect. The React client often
     # immediately sends scope.set for the active project; warming home first
     # creates a worker that is then rotated and logs a noisy initialize timeout.
-    if _should_prewarm_on_ws_connect(
-        current_scope
-    ) and await _assistant_surface_available(user=user, scope=current_scope):
-        await chat_service.prewarm_chat_backend(
-            username,
-            project=current_scope.id if current_scope.kind == "project" else None,
+    if _should_prewarm_on_ws_connect(current_scope):
+        await _prewarm_chat_scope_if_available(
+            user=user,
+            username=username,
+            scope=current_scope,
         )
 
     try:
@@ -3751,23 +3777,11 @@ async def chat_ws(websocket: WebSocket) -> None:
                 await _sync_running_agent_scope(username, current_scope)
                 # Switching project rotates the worker; warm the new scope now so
                 # the first message in the project doesn't cold-start.
-                if await _assistant_surface_available(user=user, scope=current_scope):
-                    await chat_service.prewarm_chat_backend(
-                        username,
-                        project=(
-                            current_scope.id
-                            if current_scope.kind in {"project", "freezone"}
-                            else None
-                        ),
-                        surface=(
-                            "freezone" if _is_freezone_scope(current_scope) else None
-                        ),
-                        agent_id=(
-                            current_scope.agent_id
-                            if _is_freezone_scope(current_scope)
-                            else None
-                        ),
-                    )
+                await _prewarm_chat_scope_if_available(
+                    user=user,
+                    username=username,
+                    scope=current_scope,
+                )
                 continue
 
             if event_type == "canvas.command.result":
