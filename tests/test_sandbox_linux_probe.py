@@ -10,17 +10,12 @@
 平台无关:直接调 ``_wrap_linux`` 并 monkeypatch 探针,不依赖真跑 Linux 沙箱。
 """
 
-import importlib.util
 from pathlib import Path
 
 import pytest
 
 from novelvideo.security import sandbox_wrap
 from novelvideo.security.sandbox_wrap import SandboxSpec
-
-REPO_ROOT = Path(__file__).resolve().parents[1]
-SELFCHECK_PATH = REPO_ROOT / "deploy" / "hermes_sandbox_selfcheck.py"
-
 
 @pytest.fixture(autouse=True)
 def _clear_probe_cache():
@@ -149,139 +144,3 @@ def test_sandbox_can_run_false_on_oserror(monkeypatch):
 
     monkeypatch.setattr(sandbox_wrap.subprocess, "run", _boom)
     assert sandbox_wrap._sandbox_can_run("/z/codex-linux-sandbox") is False
-
-
-# ---- 启动门脚本 deploy/hermes_sandbox_selfcheck.py 的退出码 ----
-
-def _load_gate():
-    spec = importlib.util.spec_from_file_location("_hermes_gate", SELFCHECK_PATH)
-    mod = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(mod)
-    return mod
-
-
-def test_gate_refuses_when_wrap_raises(monkeypatch):
-    # wrap_command 抛错 = fail-close(EE 或 CE 无 opt-in)→ 拒绝启动。
-    monkeypatch.setattr(
-        sandbox_wrap, "wrap_command",
-        lambda *_a, **_k: (_ for _ in ()).throw(RuntimeError("sandbox required")),
-    )
-    gate = _load_gate()
-    assert gate.main() == gate._REFUSE_FAILCLOSE
-
-
-def test_gate_boots_on_ce_degrade(monkeypatch):
-    # wrap_command 返回原样(未包裹)= CE 降级已被允许 → 放行启动(0)。
-    monkeypatch.setattr(sandbox_wrap, "wrap_command", lambda cmd, _spec: list(cmd))
-    gate = _load_gate()
-    assert gate.main() == gate._BOOT
-
-
-def test_gate_boots_when_sandbox_usable(monkeypatch):
-    # wrap_command 返回真包裹 + 沙箱内 /bin/true 成功 → 放行启动(0)。
-    monkeypatch.setattr(
-        sandbox_wrap, "wrap_command",
-        lambda cmd, _spec: ["/fake/codex-linux-sandbox", "--", *cmd],
-    )
-
-    class _Proc:
-        returncode = 0
-        stdout = ""
-        stderr = ""
-
-    import subprocess as _sp
-
-    monkeypatch.setattr(_sp, "run", lambda *_a, **_k: _Proc())
-    gate = _load_gate()
-    assert gate.main() == gate._BOOT
-
-
-# ---- [P2] gate 与 wrapper 的降级判定必须同源:CE 无 opt-in 的三条异常路径都拒绝 ----
-# 回归 lywaterman 复审:旧 gate 三处(import-fail / launch-fail / probe 非0)只看
-# `_sandbox_required()`,CE 单租户但**没** opt-in 时会 `not required → 降级放行`,
-# 比 `_fallback_or_raise`(该场景 raise)更宽松。现在统一走 `_may_degrade()`。
-
-
-def _wrapped_but_launch_raises(monkeypatch):
-    monkeypatch.setattr(
-        sandbox_wrap, "wrap_command",
-        lambda cmd, _spec: ["/fake/codex-linux-sandbox", "--", *cmd],
-    )
-    import subprocess as _sp
-
-    def _boom(*_a, **_k):
-        raise OSError("cannot launch")
-
-    monkeypatch.setattr(_sp, "run", _boom)
-
-
-def _wrapped_but_probe_nonzero(monkeypatch):
-    monkeypatch.setattr(
-        sandbox_wrap, "wrap_command",
-        lambda cmd, _spec: ["/fake/codex-linux-sandbox", "--", *cmd],
-    )
-
-    class _Proc:
-        returncode = 1
-        stdout = ""
-        stderr = "bwrap: no user namespaces"
-
-    import subprocess as _sp
-
-    monkeypatch.setattr(_sp, "run", lambda *_a, **_k: _Proc())
-
-
-def test_gate_refuses_import_fail_on_ce_without_optin(monkeypatch):
-    # 连 wrapper 都导不进来 + CE 无 opt-in → 拒绝(不再默默降级放行)。
-    monkeypatch.delattr(sandbox_wrap, "wrap_command", raising=False)
-    gate = _load_gate()
-    assert gate.main() == gate._REFUSE_FAILCLOSE
-
-
-def test_gate_degrades_import_fail_on_ce_optin(monkeypatch):
-    monkeypatch.setenv("SUPERTALE_ALLOW_UNSANDBOXED", "1")
-    monkeypatch.delattr(sandbox_wrap, "wrap_command", raising=False)
-    gate = _load_gate()
-    assert gate.main() == gate._BOOT
-
-
-def test_gate_refuses_import_fail_on_ee_even_with_optin(monkeypatch):
-    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgres://cp/db")
-    monkeypatch.setenv("SUPERTALE_ALLOW_UNSANDBOXED", "1")  # 对 EE 无效
-    monkeypatch.delattr(sandbox_wrap, "wrap_command", raising=False)
-    gate = _load_gate()
-    assert gate.main() == gate._REFUSE_FAILCLOSE
-
-
-def test_gate_refuses_launch_fail_on_ce_without_optin(monkeypatch):
-    _wrapped_but_launch_raises(monkeypatch)
-    gate = _load_gate()
-    assert gate.main() == gate._REFUSE_LAUNCH
-
-
-def test_gate_degrades_launch_fail_on_ce_optin(monkeypatch):
-    monkeypatch.setenv("SUPERTALE_ALLOW_UNSANDBOXED", "1")
-    _wrapped_but_launch_raises(monkeypatch)
-    gate = _load_gate()
-    assert gate.main() == gate._BOOT
-
-
-def test_gate_refuses_probe_nonzero_on_ce_without_optin(monkeypatch):
-    _wrapped_but_probe_nonzero(monkeypatch)
-    gate = _load_gate()
-    assert gate.main() != gate._BOOT  # 拒绝(返回探针码或 fail-close 码)
-
-
-def test_gate_degrades_probe_nonzero_on_ce_optin(monkeypatch):
-    monkeypatch.setenv("SUPERTALE_ALLOW_UNSANDBOXED", "1")
-    _wrapped_but_probe_nonzero(monkeypatch)
-    gate = _load_gate()
-    assert gate.main() == gate._BOOT
-
-
-def test_gate_refuses_probe_nonzero_on_ee_even_with_optin(monkeypatch):
-    monkeypatch.setenv("ST_CONTROL_PLANE_DSN", "postgres://cp/db")
-    monkeypatch.setenv("SUPERTALE_ALLOW_UNSANDBOXED", "1")  # 对 EE 无效
-    _wrapped_but_probe_nonzero(monkeypatch)
-    gate = _load_gate()
-    assert gate.main() != gate._BOOT

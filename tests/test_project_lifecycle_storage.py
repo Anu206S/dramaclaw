@@ -279,6 +279,27 @@ def test_validator_rejects_symlinked_project_dir(monkeypatch, tmp_path):
         assert_owned_project_storage(**args)
 
 
+def test_quarantine_rejects_nonexistent_path_outside_owner_roots(monkeypatch, tmp_path):
+    from novelvideo.api.routes import projects
+    from novelvideo.security import ProjectStorageOwnershipError
+
+    _patch_roots(monkeypatch, tmp_path)
+    record = replace(
+        _record(tmp_path),
+        state_dir=str(tmp_path / "outside" / "alice" / "demo"),
+    )
+    assert not projects.Path(record.state_dir).exists()
+
+    with pytest.raises(ProjectStorageOwnershipError):
+        projects._quarantine_project_dirs(
+            record,
+            project_id=record.id,
+            reason="orphaned",
+        )
+
+    assert not projects.Path(record.state_dir).exists()
+
+
 def test_validator_rejects_nested_dirs(monkeypatch, tmp_path):
     from novelvideo.security import (
         ProjectStorageOwnershipError,

@@ -687,8 +687,8 @@ def test_cognee_provider_env_cannot_bypass_newapi(monkeypatch):
     monkeypatch.setenv("COGNEE_LLM_API_KEY", "direct-secret")
     monkeypatch.setattr(
         cognee_config,
-        "_effective_llm_gateway",
-        lambda: ("gateway-secret", "https://gateway.example/v1", False),
+        "_effective_newapi_gateway",
+        lambda: ("gateway-secret", "https://gateway.example/v1"),
     )
 
     assert cognee_config._resolve_llm_provider() == "newapi"

@@ -72,7 +72,7 @@ def test_mixed_mode_routes_llm_to_relayclaw_without_changing_media(
     assert media.api_key == "sk-custom-media-secret"
 
 
-def test_cognee_fixed_llm_and_custom_embedding_use_separate_gateways(
+def test_cognee_legacy_llm_and_embedding_ignore_brainclaw_selector(
     monkeypatch, tmp_path
 ):
     _isolate_settings_db(monkeypatch, tmp_path)
@@ -81,17 +81,25 @@ def test_cognee_fixed_llm_and_custom_embedding_use_separate_gateways(
 
     from novelvideo.cognee import config as cognee_config
 
-    assert cognee_config._effective_llm_gateway() == (
-        "sk-relay-secret",
-        OFFICIAL_NEWAPI_BASE_URL,
-        True,
+    assert cognee_config._effective_newapi_gateway() == (
+        "sk-custom-media-secret",
+        "http://local-newapi:3000/v1",
     )
-    assert cognee_config._get_llm_endpoint_env("newapi") == OFFICIAL_NEWAPI_BASE_URL
+    assert (
+        cognee_config._get_endpoint_env(
+            "newapi", "COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT"
+        )
+        == "http://local-newapi:3000/v1"
+    )
     assert (
         cognee_config._get_endpoint_env(
             "newapi", "COGNEE_EMBEDDING_ENDPOINT", "EMBEDDING_ENDPOINT"
         )
         == "http://local-newapi:3000/v1"
+    )
+    assert (
+        cognee_config._resolve_llm_api_key("newapi", "DC-cognee-LLM")
+        == "sk-custom-media-secret"
     )
     assert cognee_config._resolve_llm_model("newapi") == "openai/DC-cognee-LLM"
 

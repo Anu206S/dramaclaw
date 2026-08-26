@@ -100,12 +100,8 @@ class EventExtractor:
 5. 每章通常有 3-8 个事件"""
 
         try:
-            from novelvideo.brainclaw_contract import BrainClawProfile
-
             agent = Agent(
-                get_pydantic_model(
-                    brainclaw_profile=BrainClawProfile.EPISODE_EVENT_SEGMENTATION
-                ),
+                get_pydantic_model(),
                 model_settings=get_newapi_structured_output_model_settings(),
                 output_type=ExtractedEventList,
             )

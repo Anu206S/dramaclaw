@@ -91,6 +91,50 @@ def test_store_round_trips_durable_run(tmp_path: Path) -> None:
     assert store.active() == [run]
 
 
+def test_store_lease_claim_is_atomic_and_expired_lease_can_be_reclaimed(tmp_path: Path) -> None:
+    store = DirectorAutoStore(tmp_path / "director-auto.db")
+    run = run_record(tmp_path)
+    store.upsert(run)
+
+    assert store.claim_lease(run.run_id, "worker-a", lease_seconds=10, now=100) is True
+    assert store.claim_lease(run.run_id, "worker-b", lease_seconds=10, now=101) is False
+    assert store.owns_lease(run.run_id, "worker-a", now=101) is True
+    assert store.claim_lease(run.run_id, "worker-b", lease_seconds=10, now=111) is True
+    assert store.owns_lease(run.run_id, "worker-a", now=111) is False
+    assert store.owns_lease(run.run_id, "worker-b", now=111) is True
+
+
+@pytest.mark.asyncio
+async def test_two_coordinators_only_one_process_continues_the_same_run(
+    tmp_path: Path,
+) -> None:
+    entered: list[str] = []
+    release = asyncio.Event()
+
+    class RecordingCoordinator(DirectorAutoCoordinator):
+        async def _run(self, run_id, _username, _project_id):
+            entered.append(self.owner_token)
+            await release.wait()
+
+    db_path = tmp_path / "director-auto.db"
+    store_a = DirectorAutoStore(db_path)
+    store_a.upsert(run_record(tmp_path))
+    first = RecordingCoordinator(store_a)
+    second = RecordingCoordinator(DirectorAutoStore(db_path))
+    run = store_a.get("alice", "project-1")
+    assert run is not None
+
+    first._ensure_worker(run)
+    second._ensure_worker(run)
+    await asyncio.sleep(0.05)
+
+    assert len(entered) == 1
+    assert entered[0] in {first.owner_token, second.owner_token}
+    release.set()
+    await first.shutdown()
+    await second.shutdown()
+
+
 @pytest.mark.asyncio
 async def test_agent_continuation_is_pinned_to_the_auto_run_episode(
     monkeypatch: pytest.MonkeyPatch,

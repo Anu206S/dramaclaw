@@ -46,8 +46,7 @@ ENV ST_EDITION=ce \
     UV_LINK_MODE=copy \
     UV_PROJECT_ENVIRONMENT=/app/.venv \
     HERMES_CLI_PATH=/usr/local/bin/hermes \
-    CODEX_BIN=/usr/local/bin/codex-dramaclaw \
-    HOME=/home/dramaclaw
+    CODEX_BIN=/usr/local/bin/codex-dramaclaw
 
 COPY --from=codex-builder /opt/codex-src/codex-rs/target/release/codex /usr/local/bin/codex-dramaclaw
 COPY --from=codex-builder /opt/codex-runtime.sha /opt/codex-runtime.sha
@@ -61,12 +60,11 @@ RUN apt-get update \
     && rm -rf /var/lib/apt/lists/*
 
 WORKDIR /app
-RUN groupadd --system --gid 10001 dramaclaw \
-    && useradd --system --uid 10001 --gid 10001 --create-home --home-dir /home/dramaclaw dramaclaw
 COPY pyproject.toml uv.lock README.md ./
 # license 正文按 REUSE 惯例只存于 LICENSES/(pyproject license-files 指向它),
 # hatchling 构建 wheel 时需要这份文件在上下文中。
-COPY LICENSES NOTICE ./
+COPY LICENSES ./LICENSES
+COPY NOTICE ./NOTICE
 COPY src ./src
 COPY .hermes ./.hermes
 COPY deploy ./deploy
@@ -76,16 +74,15 @@ COPY deploy ./deploy
 # up (`shutil.which` / /usr/local/bin). TARGETARCH is amd64|arm64 (BuildKit),
 # matching deploy/sandbox/linux-{amd64,arm64}/. The `--help` smoke only proves
 # the ELF loads (loader/arch OK); it creates no sandbox, so it does not need
-# host user namespaces — the real runtime probe lives in the startup self-check
-# (deploy/hermes_sandbox_selfcheck.py) and in _wrap_linux's cached probe.
+# host user namespaces; the worker performs its cached functional probe before
+# wrapping a Hermes command.
 ARG TARGETARCH
 RUN set -eux; \
     sbx="deploy/sandbox/linux-${TARGETARCH}/codex-linux-sandbox"; \
     test -x "$sbx" || { echo "no vendored codex-linux-sandbox for TARGETARCH='${TARGETARCH}'" >&2; exit 1; }; \
     install -m 0755 "$sbx" /usr/local/bin/codex-linux-sandbox; \
     command -v bwrap; \
-    codex-linux-sandbox --help >/dev/null; \
-    chmod 0755 deploy/docker-entrypoint.sh
+    codex-linux-sandbox --help >/dev/null
 
 # 资产完整性兜底(等价原 wheel 检查):login 媒体须随 src 带入(.dockerignore 已 ! 放行)。
 RUN test -f src/novelvideo/assets/login_bgm.mp3 \
@@ -152,23 +149,11 @@ RUN set -eux; \
     python3 deploy/patch_hermes_acp_toolsets.py; \
     hermes --version; \
     python3 deploy/verify_hermes_fork.py; \
-    chown -R dramaclaw:dramaclaw /data /home/dramaclaw; \
     apt-get purge -y git; apt-get autoremove -y
 
 ENV PATH="/app/.venv/bin:/usr/local/bin:$PATH"
 
-# Hermes and the API never need root at runtime. Compose may still override
-# the user explicitly, but the image itself is safe-by-default.
-USER dramaclaw:dramaclaw
-
 EXPOSE 8780
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 CMD python -c "import sys, urllib.request; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8780/api/v1/config', timeout=2).status == 200 else 1)"
 
-# The entrypoint runs the Hermes sandbox startup gate (as the runtime user, so
-# it exercises the exact path a real worker takes) before exec-ing the API:
-#   - sandbox usable            → boot normally (Hermes runs isolated);
-#   - EE/production + unusable   → refuse to boot (fail-close);
-#   - CE single-tenant + unusable→ loud warning, boot UNSANDBOXED (degrade).
-# CMD is exec-form so it arrives as "$@" to the entrypoint's final `exec`.
-ENTRYPOINT ["/app/deploy/docker-entrypoint.sh"]
 CMD ["novelvideo", "api", "--host", "0.0.0.0", "--port", "8780"]

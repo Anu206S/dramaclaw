@@ -53,3 +53,16 @@ def test_container_builds_only_the_pinned_redacted_codex_runtime() -> None:
     assert "CODEX_BIN=/usr/local/bin/codex-dramaclaw" in dockerfile
     assert "--no-install-package openai-codex-cli-bin" in dockerfile
     assert "apt-get install -y --no-install-recommends git" in dockerfile
+    assert "COPY LICENSES ./LICENSES" in dockerfile
+    assert "COPY NOTICE ./NOTICE" in dockerfile
+    assert "COPY LICENSES NOTICE ./" not in dockerfile
+    assert "USER dramaclaw:dramaclaw" not in dockerfile
+
+
+def test_compose_upgrade_keeps_existing_volume_runtime_permissions() -> None:
+    for relative_path in COMPOSE_FILES:
+        api = yaml.safe_load((REPOSITORY_ROOT / relative_path).read_text())["services"]["api"]
+
+        assert "user" not in api
+        assert "read_only" not in api
+        assert "cap_drop" not in api

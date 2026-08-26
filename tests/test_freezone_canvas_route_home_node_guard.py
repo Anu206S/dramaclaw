@@ -1,4 +1,4 @@
-"""B2 步 11 · 只撤画布 24 条路由的 home node 守卫，别的 76 条一行不动。
+"""只允许具备共享存储语义的画布路由撤掉 home node 守卫。
 
 方案文档（`B2-canvas-placement-free.md` §6.4 步 11）的原话是「撤掉
 `api/routes/freezone.py:326` 的 home node 守卫」。**照字面删是错的**，
@@ -13,20 +13,21 @@
 
 故落地形态是给 `_resolve_freezone_project` 加一个**带默认值 `True` 的关键字参数**
 `require_home_node`（形制照它自己签名里已有的 `*, required_role: str = "editor"`），
-只在 24 条画布路由的调用点显式传 `False`。
+只在明确白名单中的 placement-free 画布路由调用点显式传 `False`。仍写入项目本地
+SQLite 的 workflow draft/run 路由不在白名单中，必须保留默认 Home Node 守卫。
 
 四条用例分工：
 
 1. `test_default_still_rejects_a_non_home_node_project` —— 不传新参数时行为逐字不变
    （错误体照 `tests/test_project_context.py:35` 的既有断言口径）。
 2. `test_canvas_read_route_passes_the_home_node_guard` /
-   `test_canvas_write_route_passes_the_home_node_guard` —— 24 条里挑读写各一条，
+   `test_canvas_write_route_passes_the_home_node_guard` —— 白名单里挑读写各一条，
    在非 home node 上**过得了这道守卫**。只断言这一件：真正落盘还依赖共享存储，
    那是 `dispatch-and-branching.md` §11 第 4 行的交接项，不在本 EU 内。
 3. `test_non_canvas_freezone_routes_are_still_blocked_on_a_non_home_node` ——
    另外 76 条挑 3 条，**仍然被拦**且错误体逐字相同。
-4. `test_only_canvas_routes_opt_out_of_the_home_node_guard` —— AST 静态护栏（双向）：
-   传 `require_home_node=False` 的调用点必须都在画布路由里，且 24 条画布路由必须全传了。
+4. `test_only_placement_free_canvas_routes_opt_out_of_the_home_node_guard` —— AST 静态护栏
+   （双向）：传 `require_home_node=False` 的调用点必须且只能位于明确白名单。
    形制照同目录 `tests/test_freezone_canvas_route_to_thread.py:180` 的 AST 不变量。
 """
 
@@ -157,6 +158,22 @@ async def test_canvas_write_route_passes_the_home_node_guard(
         raise
 
 
+async def test_workflow_run_route_remains_home_node_bound(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    ctx = _patch_remote_project(monkeypatch, tmp_path)
+
+    with pytest.raises(HTTPException) as excinfo:
+        await freezone_routes.get_canvas_workflow_run(
+            project="proj_freezone",
+            canvas_id="default",
+            run_id="run-1",
+            user=USER,
+        )
+
+    _assert_home_node_rejection(excinfo.value, ctx)
+
+
 @pytest.mark.parametrize(
     "handler_name",
     [
@@ -211,12 +228,27 @@ def _opts_out_of_the_guard(call: ast.Call) -> bool:
     )
 
 
-def test_only_canvas_routes_opt_out_of_the_home_node_guard() -> None:
-    """双向棘轮：opt-out 只许出现在画布路由里，且 24 条必须全部 opt-out。
+PLACEMENT_FREE_CANVAS_ROUTES = {
+    "create_canvas_from_preset",
+    "build_projection_from_preset",
+    "project_canvas_from_preset",
+    "remove_canvas_projection",
+    "projection_status",
+    "list_canvases",
+    "get_canvas_revision",
+    "get_canvas",
+    "list_canvas_history",
+    "quote_freezone_agent_capability",
+    "restore_canvas_history",
+    "get_node_generation_history",
+    "get_canvas_generation_history",
+    "put_canvas",
+    "delete_canvas",
+}
 
-    这条防的是「以后有人顺手多传一个 `require_home_node=False`」——
-    `TCP-P60` 的整个论证建立在「撤除面恰好是那 24 条」上。
-    """
+
+def test_only_placement_free_canvas_routes_opt_out_of_the_home_node_guard() -> None:
+    """双向棘轮：opt-out 只许出现在明确的 placement-free 白名单中。"""
 
     tree = ast.parse(ROUTES_SOURCE.read_text(encoding="utf-8"), filename=str(ROUTES_SOURCE))
 
@@ -259,13 +291,25 @@ def test_only_canvas_routes_opt_out_of_the_home_node_guard() -> None:
     assert router_decorators == 100
     assert len(canvas_routes) == 24
 
-    # 正向：24 条画布路由必须全部、且每一处调用都 opt-out。
+    assert set(canvas_routes) >= PLACEMENT_FREE_CANVAS_ROUTES
+
+    # 正向：白名单路由必须全部、且每一处调用都 opt-out。
     missing = {
         name: [call.lineno for call in calls if not _opts_out_of_the_guard(call)]
         for name, calls in canvas_routes.items()
+        if name in PLACEMENT_FREE_CANVAS_ROUTES
         if not calls or not all(_opts_out_of_the_guard(call) for call in calls)
     }
     assert missing == {}
+
+    # 仍落项目本地 SQLite 的画布路由不得 opt-out。
+    unexpected = {
+        name: [call.lineno for call in calls if _opts_out_of_the_guard(call)]
+        for name, calls in canvas_routes.items()
+        if name not in PLACEMENT_FREE_CANVAS_ROUTES
+        if any(_opts_out_of_the_guard(call) for call in calls)
+    }
+    assert unexpected == {}
 
     # 反向：全文件的 opt-out 一个都不许落在画布路由之外（含模块级 helper）。
     assert {call.lineno for call in all_opt_outs} == {

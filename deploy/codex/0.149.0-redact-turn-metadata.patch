@@ -181,7 +181,7 @@ index f26d41955e..ada76da255 100644
 +            let client = ApiResponsesClient::new(transport, client_setup.api_provider, api_auth)
 +                .with_telemetry(Some(request_telemetry), Some(sse_telemetry));
              let stream_result = client.stream_request(request, options).await;
- 
+
              match stream_result {
 @@ -1601,9 +1611,10 @@ impl ModelClientSession {
          let mut pending_retry = PendingUnauthorizedRetry::default();
@@ -219,7 +219,7 @@ index 58f2f5f72e..4feec68849 100644
 @@ -873,6 +874,31 @@ fn auth_request_telemetry_context_tracks_attached_auth_and_retry_phase() {
      assert_eq!(auth_context.recovery_phase, Some("refresh_token"));
  }
- 
+
 +#[test]
 +fn turn_scoped_responses_auth_replaces_the_provider_placeholder() {
 +    let default_auth = Arc::new(BearerAuthProvider::new("placeholder".to_string()))
@@ -260,7 +260,7 @@ index 64264c2599..a8f87701f2 100644
 +pub(crate) const DRAMACLAW_CONTROL_CONTEXT_CAPABILITY: &str =
 +    "dramaclaw_control_context_capability";
 +pub(crate) const X_DRAMACLAW_CONTROL_CAPABILITY_HEADER: &str = "x-dramaclaw-control-capability";
- 
+
  pub(crate) const FORKED_FROM_THREAD_ID_KEY: &str = "forked_from_thread_id";
  pub(crate) const PARENT_THREAD_ID_KEY: &str = "parent_thread_id";
 @@ -226,6 +230,8 @@ pub struct CodexResponsesMetadata {
@@ -270,7 +270,7 @@ index 64264c2599..a8f87701f2 100644
 +    pub(crate) per_turn_bearer_token: Option<String>,
 +    pub(crate) per_turn_control_capability: Option<String>,
  }
- 
+
  impl CodexResponsesMetadata {
 @@ -260,9 +266,15 @@ impl CodexResponsesMetadata {
              tool_namespaces_info: None,
@@ -280,7 +280,7 @@ index 64264c2599..a8f87701f2 100644
 +            per_turn_control_capability: None,
          }
      }
- 
+
 +    pub(crate) fn per_turn_bearer_token(&self) -> Option<&str> {
 +        self.per_turn_bearer_token.as_deref()
 +    }
@@ -301,7 +301,7 @@ index 64264c2599..a8f87701f2 100644
 +        }
          headers
      }
- 
+
 diff --git a/codex-rs/core/src/turn_metadata.rs b/codex-rs/core/src/turn_metadata.rs
 index 81d4912327..72f1ffb0ef 100644
 --- a/codex-rs/core/src/turn_metadata.rs
@@ -352,7 +352,7 @@ index 8ede6e492d..26a7eb2c85 100644
 @@ -651,6 +653,56 @@ fn turn_metadata_state_ignores_client_reserved_metadata_before_start() {
      assert_eq!(json[NODE_REPL_DISABLED_KEY].as_bool(), Some(false));
  }
- 
+
 +#[test]
 +fn turn_metadata_extracts_dramaclaw_gateway_key_without_serializing_it() {
 +    let temp_dir = TempDir::new().expect("temp dir");

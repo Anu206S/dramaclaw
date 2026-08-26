@@ -235,13 +235,6 @@ def _quarantine_project_dirs(
     仅在 ``record`` 的三类目录全部通过归属校验后才移动;任一目录不属于
     ``record.owner_username`` 时抛出,不移动任何目录。
     """
-    storage_dirs = (
-        Path(record.output_dir),
-        Path(record.state_dir),
-        Path(record.runtime_dir),
-    )
-    if not any(path.exists() for path in storage_dirs):
-        return []
     quarantined: list[tuple[Path, Path]] = []
     token = uuid.uuid4().hex
     try:

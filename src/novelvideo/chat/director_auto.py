@@ -62,6 +62,8 @@ ACTIVE_STATUSES = frozenset({"submitting", "queued", "pending", "running"})
 TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled"})
 POLL_SECONDS = 1.5
 INITIAL_GRACE_SECONDS = 5.0
+LEASE_SECONDS = 45.0
+HEARTBEAT_SECONDS = 10.0
 _MISSING_CHARACTER_PORTRAIT_RE = re.compile(
     r"请先为角色[「“\"](?P<character>.+?)[」”\"]生成\s*Portrait（面部特写）"
 )
@@ -147,6 +149,8 @@ class DirectorAutoStore:
               recovery_keys_json TEXT NOT NULL DEFAULT '[]',
               voice_policy TEXT NOT NULL DEFAULT '',
               last_error TEXT NOT NULL DEFAULT '',
+              owner_token TEXT NOT NULL DEFAULT '',
+              lease_expires_at REAL NOT NULL DEFAULT 0,
               UNIQUE(username, project_id)
             )
             """
@@ -164,6 +168,16 @@ class DirectorAutoStore:
             conn.execute(
                 "ALTER TABLE director_auto_runs "
                 "ADD COLUMN voice_policy TEXT NOT NULL DEFAULT ''"
+            )
+        if "owner_token" not in columns:
+            conn.execute(
+                "ALTER TABLE director_auto_runs "
+                "ADD COLUMN owner_token TEXT NOT NULL DEFAULT ''"
+            )
+        if "lease_expires_at" not in columns:
+            conn.execute(
+                "ALTER TABLE director_auto_runs "
+                "ADD COLUMN lease_expires_at REAL NOT NULL DEFAULT 0"
             )
         conn.commit()
         return conn
@@ -208,7 +222,15 @@ class DirectorAutoStore:
                   handled_task_ids_json=excluded.handled_task_ids_json,
                   recovery_keys_json=excluded.recovery_keys_json,
                   voice_policy=excluded.voice_policy,
-                  last_error=excluded.last_error
+                  last_error=excluded.last_error,
+                  owner_token=CASE
+                    WHEN director_auto_runs.run_id != excluded.run_id THEN ''
+                    ELSE director_auto_runs.owner_token
+                  END,
+                  lease_expires_at=CASE
+                    WHEN director_auto_runs.run_id != excluded.run_id THEN 0
+                    ELSE director_auto_runs.lease_expires_at
+                  END
                 """,
                 (
                     run.run_id,
@@ -241,6 +263,93 @@ class DirectorAutoStore:
                 "SELECT * FROM director_auto_runs WHERE status='running'"
             ).fetchall()
         return [run for row in rows if (run := self._row(row)) is not None]
+
+    def claim_lease(
+        self,
+        run_id: str,
+        owner_token: str,
+        *,
+        lease_seconds: float = LEASE_SECONDS,
+        now: float | None = None,
+    ) -> bool:
+        """Atomically claim one running coordinator lease across API processes."""
+
+        current = datetime.now(timezone.utc).timestamp() if now is None else float(now)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE director_auto_runs
+                SET owner_token=?, lease_expires_at=?
+                WHERE run_id=? AND status='running'
+                  AND (owner_token='' OR owner_token=? OR lease_expires_at<=?)
+                """,
+                (owner_token, current + lease_seconds, run_id, owner_token, current),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
+    def renew_lease(
+        self,
+        run_id: str,
+        owner_token: str,
+        *,
+        lease_seconds: float = LEASE_SECONDS,
+        now: float | None = None,
+    ) -> bool:
+        current = datetime.now(timezone.utc).timestamp() if now is None else float(now)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE director_auto_runs
+                SET lease_expires_at=?
+                WHERE run_id=? AND status='running' AND owner_token=?
+                  AND lease_expires_at>?
+                """,
+                (current + lease_seconds, run_id, owner_token, current),
+            )
+            conn.commit()
+            return cursor.rowcount == 1
+
+    def owns_lease(
+        self,
+        run_id: str,
+        owner_token: str,
+        *,
+        now: float | None = None,
+    ) -> bool:
+        current = datetime.now(timezone.utc).timestamp() if now is None else float(now)
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM director_auto_runs
+                WHERE run_id=? AND status='running' AND owner_token=?
+                  AND lease_expires_at>?
+                """,
+                (run_id, owner_token, current),
+            ).fetchone()
+        return row is not None
+
+    def release_lease(self, run_id: str, owner_token: str = "") -> None:
+        with self._connect() as conn:
+            if owner_token:
+                conn.execute(
+                    """
+                    UPDATE director_auto_runs
+                    SET owner_token='', lease_expires_at=0
+                    WHERE run_id=? AND owner_token=?
+                    """,
+                    (run_id, owner_token),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE director_auto_runs
+                    SET owner_token='', lease_expires_at=0
+                    WHERE run_id=?
+                    """,
+                    (run_id,),
+                )
+            conn.commit()
 
 
 def _relevant_tasks(run: DirectorAutoRun, tasks: Iterable[TaskState]) -> list[TaskState]:
@@ -324,6 +433,7 @@ def _missing_character_portrait(task: TaskState) -> str | None:
 class DirectorAutoCoordinator:
     def __init__(self, store: DirectorAutoStore | None = None) -> None:
         self.store = store or DirectorAutoStore()
+        self.owner_token = uuid.uuid4().hex
         self._workers: dict[str, asyncio.Task[None]] = {}
         self._stopping = False
 
@@ -379,6 +489,7 @@ class DirectorAutoCoordinator:
             }
         )
         await asyncio.to_thread(self.store.upsert, updated)
+        await asyncio.to_thread(self.store.release_lease, run.run_id)
         await self._broadcast_status(updated, terminal_task_id=terminal_task_id)
         worker = self._workers.pop(run.run_id, None)
         if worker is not None and worker is not asyncio.current_task():
@@ -410,6 +521,7 @@ class DirectorAutoCoordinator:
             }
         )
         await asyncio.to_thread(self.store.upsert, updated)
+        await asyncio.to_thread(self.store.release_lease, run.run_id)
         await self._broadcast_status(updated)
         worker = self._workers.pop(run.run_id, None)
         if worker is not None and worker is not asyncio.current_task():
@@ -466,11 +578,67 @@ class DirectorAutoCoordinator:
         if existing is not None and not existing.done():
             return
         worker = asyncio.create_task(
-            self._run(run.run_id, run.username, run.project_id),
+            self._run_with_lease(run.run_id, run.username, run.project_id),
             name=f"director-auto:{run.project_id}:{run.episode}",
         )
         self._workers[run.run_id] = worker
         worker.add_done_callback(lambda _done, run_id=run.run_id: self._workers.pop(run_id, None))
+
+    async def _run_with_lease(self, run_id: str, username: str, project_id: str) -> None:
+        while not self._stopping:
+            claimed = await asyncio.to_thread(
+                self.store.claim_lease,
+                run_id,
+                self.owner_token,
+            )
+            if claimed:
+                break
+            run = await asyncio.to_thread(self.store.get, username, project_id)
+            if run is None or run.run_id != run_id or run.status != "running":
+                return
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+        else:
+            return
+        parent = asyncio.current_task()
+        heartbeat = asyncio.create_task(
+            self._lease_heartbeat(run_id, parent),
+            name=f"director-auto-heartbeat:{project_id}",
+        )
+        try:
+            await self._run(run_id, username, project_id)
+        finally:
+            heartbeat.cancel()
+            await asyncio.gather(heartbeat, return_exceptions=True)
+            await asyncio.to_thread(
+                self.store.release_lease,
+                run_id,
+                self.owner_token,
+            )
+
+    async def _lease_heartbeat(
+        self,
+        run_id: str,
+        parent: asyncio.Task[None] | None,
+    ) -> None:
+        while not self._stopping:
+            await asyncio.sleep(HEARTBEAT_SECONDS)
+            renewed = await asyncio.to_thread(
+                self.store.renew_lease,
+                run_id,
+                self.owner_token,
+            )
+            if renewed:
+                continue
+            if parent is not None and not parent.done():
+                parent.cancel()
+            return
+
+    async def _owns_run(self, run_id: str) -> bool:
+        return await asyncio.to_thread(
+            self.store.owns_lease,
+            run_id,
+            self.owner_token,
+        )
 
     async def _broadcast_status(
         self,
@@ -634,6 +802,8 @@ class DirectorAutoCoordinator:
     async def _run(self, run_id: str, username: str, project_id: str) -> None:
         taskless_continuations = 0
         while not self._stopping:
+            if not await self._owns_run(run_id):
+                return
             run = await asyncio.to_thread(self.store.get, username, project_id)
             if run is None or run.run_id != run_id or run.status != "running":
                 return
@@ -655,6 +825,8 @@ class DirectorAutoCoordinator:
                 if task.status in TERMINAL_STATUSES
             ]
             if terminal:
+                if not await self._owns_run(run_id):
+                    return
                 handled.update(task.task_id for task in terminal)
                 updated = DirectorAutoRun(
                     **{
@@ -675,6 +847,8 @@ class DirectorAutoCoordinator:
                         and character
                         and recovery_key not in set(updated.recovery_keys)
                     ):
+                        if not await self._owns_run(run_id):
+                            return
                         recovering = DirectorAutoRun(
                             **{
                                 **asdict(updated),
@@ -689,6 +863,8 @@ class DirectorAutoCoordinator:
                             recovering,
                             f"检测到{_task_label(failed)}缺少前置肖像，正在自动补生成「{character}」肖像。",
                         )
+                        if not await self._owns_run(run_id):
+                            return
                         wrote = await self._agent_continue(
                             recovering,
                             instruction=(
@@ -733,7 +909,11 @@ class DirectorAutoCoordinator:
                     summary = f"✅ 本批 {len(terminal)} 个任务已完成。"
                 if compose is not None:
                     await self._notify(updated, f"{summary}正在展示第 {run.episode} 集成片。")
+                    if not await self._owns_run(run_id):
+                        return
                     await self._agent_continue(updated, final_delivery=True)
+                    if not await self._owns_run(run_id):
+                        return
                     completed = DirectorAutoRun(
                         **{**asdict(updated), "status": "completed", "updated_at": _utc_now()}
                     )
@@ -741,6 +921,8 @@ class DirectorAutoCoordinator:
                     await self._broadcast_status(completed)
                     return
                 await self._notify(updated, f"{summary}本集自动正在继续下一步。")
+                if not await self._owns_run(run_id):
+                    return
                 await self._agent_continue(updated)
                 taskless_continuations = 0
                 await asyncio.sleep(POLL_SECONDS)
@@ -760,6 +942,8 @@ class DirectorAutoCoordinator:
                     await self._notify(run, "本集自动已暂停：当前步骤没有产生新的生成任务，请检查前置条件。")
                     return
                 taskless_continuations += 1
+                if not await self._owns_run(run_id):
+                    return
                 wrote = await self._agent_continue(run)
                 if not wrote:
                     latest = await asyncio.to_thread(self.store.get, username, project_id)

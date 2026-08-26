@@ -342,21 +342,6 @@ def _effective_newapi_gateway() -> tuple[str, str]:
         )
 
 
-def _effective_llm_gateway() -> tuple[str, str, bool]:
-    from novelvideo.model_gateway_settings import get_effective_llm_config
-
-    effective = get_effective_llm_config()
-    return effective.api_key, effective.base_url, effective.is_brainclaw
-
-
-def _get_llm_endpoint_env(provider: str) -> str:
-    if _uses_newapi_gateway(provider):
-        _api_key, base_url, _is_brainclaw = _effective_llm_gateway()
-        if base_url:
-            return base_url
-    return _get_scoped_env("COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT")
-
-
 def _resolve_llm_model(provider: str) -> str:
     model = os.getenv("COGNEE_LLM_MODEL", "").strip() or DEFAULT_COGNEE_LLM_MODEL
     return _normalize_llm_model(provider, model)
@@ -382,7 +367,7 @@ def cognee_gateway_restart_required() -> bool:
 
 def _resolve_llm_api_key(llm_provider: str, llm_model: str) -> str:
     if _is_newapi_provider(llm_provider):
-        return _effective_llm_gateway()[0]
+        return _effective_newapi_gateway()[0]
     api_key = os.getenv("COGNEE_LLM_API_KEY", "")
     if api_key:
         return api_key
@@ -394,7 +379,7 @@ def _resolve_llm_api_key(llm_provider: str, llm_model: str) -> str:
         _get_scoped_env("COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT"),
     ):
         return os.getenv("OPENROUTER_API_KEY", "")
-    gateway_key, _gateway_base_url, _is_brainclaw = _effective_llm_gateway()
+    gateway_key, _gateway_base_url = _effective_newapi_gateway()
     return (
         gateway_key or os.getenv("OPENAI_API_KEY", "") or os.getenv("LLM_API_KEY", "")
     )
@@ -1191,7 +1176,7 @@ def _apply_embedding_runtime_defaults(llm_provider: str) -> None:
 
 def _apply_llm_env(provider: str, model: str, api_key: str) -> None:
     """应用 LLM 相关环境变量。"""
-    llm_endpoint = _get_llm_endpoint_env(provider)
+    llm_endpoint = _get_endpoint_env(provider, "COGNEE_LLM_ENDPOINT", "LLM_ENDPOINT")
     llm_api_version = _get_scoped_env("COGNEE_LLM_API_VERSION", "LLM_API_VERSION")
     cognee_provider = _to_cognee_provider(provider)
 
