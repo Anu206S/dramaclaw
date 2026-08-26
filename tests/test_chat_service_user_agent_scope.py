@@ -714,6 +714,37 @@ async def test_fallback_display_groups_all_final_videos_into_one_spec(monkeypatc
     ]
 
 
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    ("tool_name", "asset_path"),
+    [
+        ("dramaclaw_get_scene_images", "scenes"),
+        ("dramaclaw_get_character_media", "characters"),
+    ],
+)
+async def test_asset_display_tools_request_authoritative_media_details(
+    monkeypatch, tool_name, asset_path
+):
+    seen_paths = []
+
+    def fake_backend_api_get(path, token):
+        seen_paths.append(path)
+        return {"ok": True, "data": []}
+
+    monkeypatch.setattr(chat_service, "_backend_api_get", fake_backend_api_get)
+
+    await chat_service._fallback_display_tool_ui_specs(
+        "admin",
+        "project-a",
+        tool_name,
+        {},
+        token="token",
+    )
+
+    assert seen_paths == [f"/api/v1/projects/project-a/{asset_path}?summary=false"]
+
+
 def test_codex_sessions_are_project_scoped_and_backend_independent(
     monkeypatch, tmp_path
 ):

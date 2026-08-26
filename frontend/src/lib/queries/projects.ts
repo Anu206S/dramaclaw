@@ -185,6 +185,8 @@ export interface ProjectGrant {
   principal_username?: string | null;
   role: Exclude<ProjectRole, "owner">;
   created_at?: string | null;
+  effective?: boolean;
+  inactive_reason?: "principal_access_changed" | null;
 }
 
 export interface UserSearchResult {
@@ -231,10 +233,14 @@ export function useAddProjectGrant(project: string) {
           json: { principal_type: "user", ...payload },
         })
         .json<OkResponse<ProjectGrant>>(),
-    onSuccess: () => {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projectGrants(project) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projectSummaries() });
-    },
+    // 成员数只有前端在数，数的就是这份名单。这里把刷新 await 掉：不然 mutation
+    // 先结束、refetch 还在路上，那个窗口里 isLoading 仍是 false、data 还是加人
+    // 之前的旧数量，下一次添加就可能真的越过上限。
+    onSuccess: () =>
+      Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.projectGrants(project) }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.projectSummaries() }),
+      ]),
   });
 }
 
