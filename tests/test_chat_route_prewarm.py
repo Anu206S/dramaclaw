@@ -49,6 +49,72 @@ def test_ws_connect_can_prewarm_non_home_scope() -> None:
     )
 
 
+@pytest.mark.anyio
+async def test_codex_cancel_recovers_stranded_home_lock(monkeypatch, tmp_path) -> None:
+    from novelvideo.chat import service as chat_service
+
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(chat_service, "get_chat_backend_name", lambda: "codex")
+
+    async def no_active_turn(_username):
+        return False
+
+    monkeypatch.setattr(chat_service, "interrupt_active_codex_turns", no_active_turn)
+    chat_service._acquire_chat_run_lock("alice", "")
+
+    result = await chat_route.cancel_chat_turn({"username": "alice"})
+
+    assert result == {"ok": True, "data": {"cancelled": False}}
+    next_lock = chat_service._acquire_chat_run_lock("alice", "")
+    chat_service._release_chat_run_lock("alice", "", next_lock)
+
+
+@pytest.mark.anyio
+async def test_hermes_cancel_recovers_stranded_home_lock(monkeypatch, tmp_path) -> None:
+    from novelvideo.chat import hermes_pool
+    from novelvideo.chat import service as chat_service
+
+    class IdleHermesPool:
+        async def close_user(self, _username):
+            return False
+
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setattr(chat_service, "get_chat_backend_name", lambda: "hermes")
+    monkeypatch.setattr(hermes_pool, "pool", IdleHermesPool())
+    chat_service._acquire_chat_run_lock("alice", "")
+
+    result = await chat_route.cancel_chat_turn({"username": "alice"})
+
+    assert result == {"ok": True, "data": {"cancelled": False}}
+    next_lock = chat_service._acquire_chat_run_lock("alice", "")
+    chat_service._release_chat_run_lock("alice", "", next_lock)
+
+
+@pytest.mark.anyio
+async def test_cancel_does_not_force_release_while_interrupt_is_settling(monkeypatch) -> None:
+    releases = []
+
+    async def active_turn_cancelled(_username):
+        return True
+
+    monkeypatch.setattr(chat_route.chat_service, "get_chat_backend_name", lambda: "codex")
+    monkeypatch.setattr(
+        chat_route.chat_service,
+        "interrupt_active_codex_turns",
+        active_turn_cancelled,
+    )
+    monkeypatch.setattr(
+        chat_route.chat_service,
+        "force_release_chat_run_lock",
+        lambda *args: releases.append(args),
+    )
+
+    result = await chat_route.cancel_chat_turn({"username": "alice"})
+
+    assert result == {"ok": True, "data": {"cancelled": True}}
+    assert releases == []
+
+
 def test_scope_from_model_preserves_freezone_canvas_scope() -> None:
     scope = chat_route._scope_from_model(
         chat_route.ChatScopePayload(
@@ -1190,40 +1256,52 @@ async def test_resolve_clarification_tool_result_persists_submitted_ui_event(
 
 
 @pytest.mark.anyio
-async def test_ai_assistant_access_check_uses_chat_feature_key(monkeypatch) -> None:
+@pytest.mark.parametrize(
+    "scope",
+    [ChatScope(kind="home"), ChatScope(kind="project", id="project-a")],
+)
+async def test_mainline_assistant_keeps_staging_credit_only_access(
+    monkeypatch,
+    scope,
+) -> None:
     seen = {}
-
-    class FakeProductSurfaceAccess:
-        async def get_effective_access(self, user_id):
-            assert user_id == "usr_1"
-            return [{"surface_code": "assistant", "available": True}]
 
     class FakeUsageMeter:
         async def require_feature_credit_balance(self, **kwargs):
             seen.update(kwargs)
             return {"allowed": True}
 
+    async def fake_requester_user_id(_user, _scope):
+        return "usr_1"
+
     monkeypatch.setattr(
         chat_route,
         "get_product_surface_access",
-        lambda: FakeProductSurfaceAccess(),
+        lambda: (_ for _ in ()).throw(
+            AssertionError("mainline chat must not query Product Surface access")
+        ),
     )
     monkeypatch.setattr(chat_route, "get_usage_meter", lambda: FakeUsageMeter())
+    monkeypatch.setattr(
+        chat_route,
+        "_requester_user_id_for_chat",
+        fake_requester_user_id,
+    )
 
     await chat_route._require_ai_assistant_access(
         user={"id": "usr_1", "username": "alice"},
-        scope=ChatScope(kind="home"),
+        scope=scope,
     )
 
     assert seen["user_id"] == "usr_1"
     assert seen["feature_key"] == "assistant.chat"
-    assert seen["project_id"] == ""
+    assert seen["project_id"] == ("project-a" if scope.kind == "project" else "")
     assert seen["resource_kind"] == "chat"
-    assert seen["metadata"]["scope"] == {"kind": "home", "id": None}
+    assert seen["metadata"]["scope"] == scope.to_dict()
 
 
 @pytest.mark.anyio
-async def test_ai_assistant_access_check_rejects_hidden_surface_before_credit_check(
+async def test_freezone_assistant_rejects_hidden_surface_before_credit_check(
     monkeypatch,
 ) -> None:
     credit_checked = False
@@ -1233,7 +1311,7 @@ async def test_ai_assistant_access_check_rejects_hidden_surface_before_credit_ch
             assert user_id == "usr_1"
             return [
                 {
-                    "surface_code": "assistant",
+                    "surface_code": "freezone_assistant",
                     "available": False,
                     "unavailable_message": "虾导功能暂未开放",
                 }
@@ -1250,11 +1328,19 @@ async def test_ai_assistant_access_check_rejects_hidden_surface_before_credit_ch
         lambda: FakeProductSurfaceAccess(),
     )
     monkeypatch.setattr(chat_route, "get_usage_meter", lambda: FakeUsageMeter())
+    async def fake_requester_user_id(_user, _scope):
+        return "usr_1"
+
+    monkeypatch.setattr(
+        chat_route,
+        "_requester_user_id_for_chat",
+        fake_requester_user_id,
+    )
 
     with pytest.raises(chat_route.HTTPException) as exc_info:
         await chat_route._require_ai_assistant_access(
             user={"id": "usr_1", "username": "alice"},
-            scope=ChatScope(kind="home"),
+            scope=ChatScope(kind="freezone", id="project-a"),
         )
 
     assert exc_info.value.status_code == 403

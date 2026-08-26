@@ -271,13 +271,6 @@ def harness(monkeypatch, tmp_path):
     )
     monkeypatch.setattr(chat_routes, "get_usage_meter", lambda: meter)
 
-    async def allow_assistant_access(**_kwargs):
-        return None
-
-    monkeypatch.setattr(
-        chat_routes, "_require_ai_assistant_access", allow_assistant_access
-    )
-
     # --- fake hermes worker -------------------------------------------------
     spawned_envs: list[dict[str, str]] = []
     threads: list[_FakeThread] = []

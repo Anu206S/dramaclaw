@@ -99,6 +99,7 @@ async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]
     without stopping the shared home-node runtime.
     """
     username = str(user["username"])
+    safe_to_recover_home_lock = False
     try:
         if chat_service.get_chat_backend_name() == "codex":
             cancelled = await chat_service.interrupt_active_codex_turns(username)
@@ -106,8 +107,17 @@ async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]
             from novelvideo.chat.hermes_pool import pool as hermes_pool
 
             cancelled = await hermes_pool.close_user(username)
+        safe_to_recover_home_lock = not bool(cancelled)
     except Exception:
         cancelled = False
+    if safe_to_recover_home_lock:
+        try:
+            # No backend turn remains to own the lock. Preserve staging's
+            # explicit recovery path for a stranded Home lock without racing
+            # an interrupt that is still settling in its stream finally block.
+            chat_service.force_release_chat_run_lock(username, "")
+        except Exception:
+            pass
     return {"ok": True, "data": {"cancelled": cancelled}}
 
 
@@ -1781,10 +1791,16 @@ async def _require_ai_assistant_access(
     user: dict[str, Any],
     scope: ChatScope,
 ) -> None:
-    access = await _assistant_surface_access(user=user, scope=scope)
-    if not access or access.get("available") is not True:
-        message = str((access or {}).get("unavailable_message") or "虾导功能暂未开放")
-        raise HTTPException(status_code=403, detail=message)
+    # Product Surface is an authorization boundary only for the newly added
+    # Freezone assistant. Existing Home/Project Director chat keeps staging's
+    # credit-only admission semantics.
+    if _is_freezone_scope(scope):
+        access = await _assistant_surface_access(user=user, scope=scope)
+        if not access or access.get("available") is not True:
+            message = str(
+                (access or {}).get("unavailable_message") or "虾画功能暂未开放"
+            )
+            raise HTTPException(status_code=403, detail=message)
     user_id = await _requester_user_id_for_chat(user, scope)
     await get_usage_meter().require_feature_credit_balance(
         user_id=user_id,
