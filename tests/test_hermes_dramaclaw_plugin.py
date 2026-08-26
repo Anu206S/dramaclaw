@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 import importlib.util
+import os
+import shutil
+import subprocess
 import sys
 import types
 from pathlib import Path
@@ -21,6 +24,64 @@ def _load_plugin_module():
     assert spec.loader is not None
     spec.loader.exec_module(module)
     return module
+
+
+def test_plugins_load_without_novelvideo_on_python_path(tmp_path):
+    repo_root = Path(__file__).resolve().parents[1]
+    isolated_root = tmp_path / "checkout"
+    isolated_plugins = isolated_root / ".hermes" / "plugins"
+    for name in ("dramaclaw", "freezone"):
+        shutil.copytree(
+            repo_root / ".hermes" / "plugins" / name,
+            isolated_plugins / name,
+        )
+
+    script = """
+import importlib.util
+import sys
+import types
+
+sys.path = [entry for entry in sys.path if 'dramaclaw-ce' not in entry]
+for name in tuple(sys.modules):
+    if name == 'novelvideo' or name.startswith('novelvideo.'):
+        del sys.modules[name]
+tools_module = types.ModuleType('tools')
+registry_module = types.ModuleType('tools.registry')
+registry_module.tool_error = lambda value: value
+registry_module.tool_result = lambda value: value
+tools_module.registry = registry_module
+sys.modules['tools'] = tools_module
+sys.modules['tools.registry'] = registry_module
+for index, path in enumerate(sys.argv[1:]):
+    spec = importlib.util.spec_from_file_location(f'isolated_plugin_{index}', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    assert module._current_agent_token() == 'isolated-token'
+assert not any(name == 'novelvideo' or name.startswith('novelvideo.') for name in sys.modules)
+"""
+    token_file = tmp_path / "turn.token"
+    token_file.write_text("isolated-token", encoding="utf-8")
+    env = {
+        **os.environ,
+        "DRAMACLAW_AGENT_TOKEN_FILE": str(token_file),
+        "PYTHONPATH": "",
+    }
+
+    subprocess.run(
+        [
+            sys.executable,
+            "-I",
+            "-c",
+            script,
+            str(isolated_plugins / "dramaclaw" / "__init__.py"),
+            str(isolated_plugins / "freezone" / "__init__.py"),
+        ],
+        cwd=isolated_root,
+        env=env,
+        check=True,
+        capture_output=True,
+        text=True,
+    )
 
 
 def test_dramaclaw_plugin_adds_chat_error_without_replacing_task_error():

@@ -18,7 +18,6 @@ from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 from uuid import uuid4
 
-from novelvideo.chat.agent_token import agent_token_configured, current_agent_token
 from tools.registry import tool_error, tool_result
 
 TOOLSET = "dramaclaw"
@@ -86,6 +85,25 @@ FREEZONE_DENIED_MAINLINE_WRITE_TOOLS = {
     "dramaclaw_delete_freezone_canvas",
     "dramaclaw_create_freezone_canvas_from_preset",
 }
+
+
+def _agent_token_configured() -> bool:
+    return bool(
+        os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
+        or os.environ.get("DRAMACLAW_AGENT_TOKEN_FILE", "").strip()
+    )
+
+
+def _current_agent_token() -> str:
+    """Read a turn token lazily without depending on the CE application venv."""
+
+    token_file = os.environ.get("DRAMACLAW_AGENT_TOKEN_FILE", "").strip()
+    if token_file:
+        try:
+            return Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
 
 
 def _has_text_content_filter(value: Any) -> bool:
@@ -306,7 +324,7 @@ def _available() -> bool:
     return bool(
         os.environ.get("DRAMACLAW_API_URL")
         and (
-            agent_token_configured()
+            _agent_token_configured()
             or _local_agent_trust_enabled()
             or _ce_owner_mode()
         )
@@ -321,7 +339,7 @@ def _base_url() -> str:
 
 
 def _token() -> str:
-    value = current_agent_token()
+    value = _current_agent_token()
     if not value:
         raise ValueError("DRAMACLAW_AGENT_TOKEN is not set")
     return value
@@ -367,7 +385,7 @@ def _request_headers(user_agent: str) -> dict[str, str]:
         "Accept": "application/json",
         "User-Agent": user_agent,
     }
-    token = current_agent_token()
+    token = _current_agent_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     elif _ce_owner_mode():

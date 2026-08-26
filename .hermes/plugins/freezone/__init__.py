@@ -19,7 +19,6 @@ from urllib.error import HTTPError, URLError
 from urllib.parse import quote, urlencode, urlparse
 from urllib.request import Request, urlopen
 
-from novelvideo.chat.agent_token import agent_token_configured, current_agent_token
 from tools.registry import tool_error, tool_result
 
 
@@ -150,6 +149,25 @@ _SKILL_STUDIO_REAL_TOOL_CALL_INSTRUCTION = (
 )
 
 
+def _agent_token_configured() -> bool:
+    return bool(
+        os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
+        or os.environ.get("DRAMACLAW_AGENT_TOKEN_FILE", "").strip()
+    )
+
+
+def _current_agent_token() -> str:
+    """Read a turn token lazily without depending on the CE application venv."""
+
+    token_file = os.environ.get("DRAMACLAW_AGENT_TOKEN_FILE", "").strip()
+    if token_file:
+        try:
+            return Path(token_file).read_text(encoding="utf-8").strip()
+        except OSError:
+            return ""
+    return os.environ.get("DRAMACLAW_AGENT_TOKEN", "").strip()
+
+
 def _skill_studio_agent_instruction(next_step: str, progress: str, notes: list[str] | None = None) -> str:
     parts = [
         f"下一步必须调用 {next_step}",
@@ -166,7 +184,7 @@ def _skill_studio_agent_instruction(next_step: str, progress: str, notes: list[s
 def _available() -> bool:
     return bool(
         os.environ.get("DRAMACLAW_API_URL")
-        and (agent_token_configured() or _local_agent_trust_enabled())
+        and (_agent_token_configured() or _local_agent_trust_enabled())
     )
 
 
@@ -178,7 +196,7 @@ def _base_url() -> str:
 
 
 def _token() -> str:
-    value = current_agent_token()
+    value = _current_agent_token()
     if not value:
         raise ValueError("Freezone agent token is not configured")
     return value
@@ -201,7 +219,7 @@ def _request_headers(user_agent: str) -> dict[str, str]:
         "Accept": "application/json",
         "User-Agent": user_agent,
     }
-    token = current_agent_token()
+    token = _current_agent_token()
     if token:
         headers["Authorization"] = f"Bearer {token}"
     elif not _local_agent_trust_enabled():

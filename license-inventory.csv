@@ -1729,7 +1729,6 @@ src/novelvideo/brainclaw_control_context_transport.py,Elastic-2.0,2026 SuperTale
 src/novelvideo/brainclaw_outcome_runtime.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/agent_mcp.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
-src/novelvideo/chat/agent_token.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/backend_sdk.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/codex_app_server.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/chat/director_auto.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
