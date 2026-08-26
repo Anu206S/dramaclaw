@@ -277,7 +277,7 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
         }
         commands.append(command)
 
-    groups = _groups(payload.get("groups"), payload.get("layout"))
+    groups = _groups(payload.get("groups") or payload.get("group"), payload.get("layout"))
     group_client_node_ids: list[list[str]] = []
     if groups:
         for group in groups:
@@ -472,6 +472,22 @@ def _node_data(
     prompt = node.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
         result.setdefault("prompt", prompt.strip())
+    if node_type == "textAnnotationNode":
+        # Workflow plans authored by different agent hosts commonly use either
+        # ``text`` or ``content`` for a plain text node. The canvas command
+        # contract is intentionally narrower and requires ``data.content``.
+        # Normalize at the portable workflow boundary so every host emits the
+        # same valid canvas command without loosening the canvas schema.
+        content = result.get("content")
+        if not isinstance(content, str) or not content.strip():
+            for candidate in (
+                result.get("text"),
+                node.get("content"),
+                node.get("text"),
+            ):
+                if isinstance(candidate, str) and candidate.strip():
+                    result["content"] = candidate.strip()
+                    break
     _normalize_model_alias(result, node_type)
     if node_type == "audioNode":
         result.setdefault("audioKind", "speech")
@@ -593,6 +609,8 @@ def _groups(raw_groups: Any, layout: Any) -> list[dict[str, Any]]:
     groups = raw_groups
     if not isinstance(groups, list) and isinstance(layout, dict):
         groups = layout.get("groups")
+    if isinstance(groups, dict):
+        groups = [groups]
     result: list[dict[str, Any]] = []
     if not isinstance(groups, list):
         return result

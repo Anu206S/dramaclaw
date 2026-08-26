@@ -100,8 +100,10 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
                     {
                         "id": "prompt",
                         "node_type": "textAnnotationNode",
-                        "title": "测试提示词",
-                        "content": "夜晚的未来城市",
+                        "data": {
+                            "title": "测试提示词",
+                            "text": "夜晚的未来城市",
+                        },
                     },
                     {
                         "id": "frame",
@@ -115,6 +117,10 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
                     {"source": "prompt", "target": "frame", "link_type": "prompt_for"},
                     {"source": "frame", "target": "video", "link_type": "media_input_for"},
                 ],
+                "group": {
+                    "label": "文生视频测试工作流",
+                    "node_ids": ["prompt", "frame", "video"],
+                },
             }
         }
     )
@@ -133,3 +139,5 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
     ]
     assert result["commands"][0]["data"]["title"] == "测试提示词"
     assert result["commands"][1]["data"]["prompt"] == "霓虹灯下的未来城市首帧"
+    assert result["commands"][0]["data"]["content"] == "夜晚的未来城市"
+    assert result["commands"][5]["label"] == "文生视频测试工作流"

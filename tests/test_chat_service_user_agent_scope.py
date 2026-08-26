@@ -1224,12 +1224,49 @@ def test_codex_freezone_write_request_detection_ignores_injected_context_and_que
     )
 
 
+def test_codex_freezone_instructions_forbid_invented_resource_uris():
+    instructions = chat_service._CODEX_FREEZONE_DEVELOPER_INSTRUCTIONS
+
+    assert "never invent a project:// Skill URI" in instructions
+    assert "never request a canvas:// resource" in instructions
+    assert "freezone_get_canvas_ontology" in instructions
+
+
+def test_codex_freezone_write_result_error_preserves_canvas_validation_reason():
+    event = SimpleNamespace(
+        name="dramaclaw.freezone_create_workflow_graph",
+        output={
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "ok": False,
+                            "status": "invalid_command_schema",
+                            "error": (
+                                "commands[0] create_node requires "
+                                "textAnnotationNode content in data"
+                            ),
+                        }
+                    ),
+                }
+            ]
+        },
+        structured=None,
+        error=None,
+    )
+
+    assert chat_service._codex_freezone_write_result_error(event) == (
+        "commands[0] create_node requires textAnnotationNode content in data"
+    )
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("with_successful_tool", [False, True])
+@pytest.mark.parametrize("tool_outcome", ["missing", "success", "failure"])
 async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
     monkeypatch,
     tmp_path,
-    with_successful_tool,
+    tool_outcome,
 ):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("NOVELVIDEO_RUNTIME_DIR", str(tmp_path / "runtime"))
@@ -1253,7 +1290,16 @@ async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
                 thread_id="codex-thread",
                 turn_id="codex-turn",
             )
-            if with_successful_tool:
+            if tool_outcome != "missing":
+                result_payload = (
+                    {"ok": True, "canvas_apply_status": "applied"}
+                    if tool_outcome == "success"
+                    else {
+                        "ok": False,
+                        "status": "invalid_command_schema",
+                        "error": "文本节点缺少 content 字段",
+                    }
+                )
                 yield SimpleNamespace(
                     type="tool_updated",
                     text="[mcp:completed] dramaclaw.freezone_emit_canvas_command",
@@ -1265,9 +1311,7 @@ async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
                         "content": [
                             {
                                 "type": "text",
-                                "text": json.dumps(
-                                    {"ok": True, "canvas_apply_status": "applied"}
-                                ),
+                                "text": json.dumps(result_payload),
                             }
                         ]
                     },
@@ -1320,9 +1364,12 @@ async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
     assistant_deltas = [
         event["text"] for event in events if event["type"] == "assistant_delta"
     ]
-    if with_successful_tool:
+    if tool_outcome == "success":
         assert result["content"] == "好的，已创建一个图片节点。"
         assert assistant_deltas == ["好的，已创建一个图片节点。"]
+    elif tool_outcome == "failure":
+        assert result["content"] == "画布操作未完成：文本节点缺少 content 字段"
+        assert assistant_deltas == [result["content"]]
     else:
         assert "已创建" not in result["content"]
         assert result["content"] == "画布操作未完成：本轮没有执行画布写入，请重试。"

@@ -9,6 +9,11 @@ Build one coherent workflow transaction, not a sequence of standalone canvas edi
 
 ## Required behavior
 
+- Read this Skill and its references only through the exact locator advertised by the current host.
+  Never invent `project://` paths. Use a canvas summary already supplied by the host; if current
+  canvas data must be refreshed, call `freezone_get_canvas_ontology` instead of inventing a
+  `canvas://` resource. MCP clients must use only resource URIs returned by `resources/list` or
+  `resources/templates/list`.
 - Use the portable `dramaclaw-workflows` MCP server for catalog discovery and deterministic
   compilation when it is available. Use the authorized DramaClaw MCP server for draft persistence,
   approval, canvas commit, and execution. Tool names are host-neutral; call them through the MCP

@@ -101,7 +101,12 @@ _CODEX_FREEZONE_DEVELOPER_INSTRUCTIONS = (
     "Freezone tools are exposed directly with names such as freezone_emit_canvas_command; "
     "do not look for the progressive dramaclaw_tool_search/describe/call bridge in this mode. "
     "For any workflow, several connected nodes, grouped stages, storyboard, or media pipeline, "
-    "load and follow the project Agent Skill named dramaclaw-workflows. Use the high-level "
+    "load and follow the project Agent Skill named dramaclaw-workflows. Read that Skill only from "
+    "the exact file URI advertised in the available Skills or dramaclaw resources; never invent a "
+    "project:// Skill URI. The current canvas summary is already injected in "
+    "SUPERTALE_CANVAS_ONTOLOGY_SUMMARY: use it directly, never request a canvas:// resource, and call "
+    "freezone_get_canvas_ontology only when a fresher or more detailed view is actually required. "
+    "Use the high-level "
     "workflow draft/graph tools; never use freezone_emit_canvas_command for a workflow and never "
     "fall back to repeated single-node or single-edge tools after an error. "
     "For a normal workflow request, follow that Skill's discovery, draft, preview, and confirmation "
@@ -120,7 +125,7 @@ _CODEX_FREEZONE_DEVELOPER_INSTRUCTIONS = (
 # browser-bridge contract changes so canvas turns cannot silently resume a
 # thread that predates the required concrete write tools. Mainline thread keys
 # intentionally remain unchanged.
-_CODEX_FREEZONE_THREAD_PROTOCOL_VERSION = "canvas-workflows-v4"
+_CODEX_FREEZONE_THREAD_PROTOCOL_VERSION = "canvas-workflows-v5"
 
 
 def _codex_developer_instructions(tool_mode: str | None) -> str:
@@ -462,6 +467,38 @@ def _codex_freezone_write_result_succeeded(event: Any) -> bool:
             if apply_status in {"applied", "accepted", "direct_applied"}:
                 return True
     return False
+
+
+def _codex_freezone_write_result_error(event: Any) -> str:
+    """Extract the business error returned by a completed Freezone write tool."""
+
+    if _codex_freezone_tool_name(event) not in _FREEZONE_CANVAS_WRITE_TOOLS:
+        return ""
+    values = [
+        getattr(event, "structured", None),
+        getattr(event, "output", None),
+        getattr(event, "error", None),
+    ]
+    for value in values:
+        for payload in _json_objects_from_codex_tool_value(value):
+            if payload.get("ok") is not False:
+                continue
+            for key in ("user_message", "error"):
+                message = payload.get(key)
+                if isinstance(message, str) and message.strip():
+                    return message.strip()[:1000]
+            errors = payload.get("errors")
+            if isinstance(errors, list):
+                messages = [str(item).strip() for item in errors if str(item).strip()]
+                if messages:
+                    return "；".join(messages[:3])[:1000]
+            message = payload.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:1000]
+    raw_error = getattr(event, "error", None)
+    if isinstance(raw_error, str) and raw_error.strip():
+        return raw_error.strip()[:1000]
+    return ""
 
 
 _FREEZONE_SKILL_STUDIO_TRIGGER_RE = re.compile(
@@ -6226,6 +6263,7 @@ async def _stream_assistant_reply_codex(
     ).strip() == "freezone_canvas" and _freezone_canvas_write_requested(prompt)
     canvas_write_attempted = False
     canvas_write_succeeded = False
+    canvas_write_failure = ""
     authorization = await authorize_hermes_launch(
         egress_context=egress_context,
         username=username,
@@ -6411,6 +6449,10 @@ async def _stream_assistant_reply_codex(
                         and _codex_freezone_write_result_succeeded(event)
                     ):
                         canvas_write_succeeded = True
+                    elif event.type == "tool_updated":
+                        failure = _codex_freezone_write_result_error(event)
+                        if failure:
+                            canvas_write_failure = failure
                 event_tool_text = str(event.text or "")
                 if event_tool_text:
                     tool_text += event_tool_text
@@ -6491,7 +6533,8 @@ async def _stream_assistant_reply_codex(
 
     if requires_canvas_write_receipt and not canvas_write_succeeded:
         assistant_text = "画布操作未完成：" + (
-            "没有收到成功的画布写入回执，请重试。"
+            canvas_write_failure
+            or "没有收到成功的画布写入回执，请重试。"
             if canvas_write_attempted
             else "本轮没有执行画布写入，请重试。"
         )
