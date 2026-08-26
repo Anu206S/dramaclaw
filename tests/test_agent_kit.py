@@ -54,7 +54,20 @@ def _render(host: str) -> str:
 def test_manifest_and_skill_are_publishable() -> None:
     manifest = json.loads((KIT_ROOT / "manifest.json").read_text(encoding="utf-8"))
     assert manifest["schema_version"] == "dramaclaw.agent-kit.v1"
-    assert manifest["requires"]["dramaclaw_ce"] == ">=2.0.0"
+    ce_requirement = manifest["requires"]["dramaclaw_ce"]
+    assert ce_requirement["compatibility"] == "source_revision"
+    revision = ce_requirement["contains_commit"]
+    required_files = ce_requirement["required_files"]
+    assert revision
+    assert "src/novelvideo/chat/workflow_mcp.py" in required_files
+    for path in required_files:
+        subprocess.run(
+            ["git", "-C", str(CE_ROOT), "cat-file", "-e", f"{revision}:{path}"],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        assert (CE_ROOT / path).is_file()
     assert set(manifest["mcp_servers"]) == {"dramaclaw", "dramaclaw-workflows"}
     assert (KIT_ROOT / manifest["skills"][0] / "SKILL.md").is_file()
     assert (KIT_ROOT / "LICENSES" / "Elastic-2.0.txt").is_file()

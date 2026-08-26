@@ -4,7 +4,16 @@
   "version": "0.1.0",
   "license": "Elastic-2.0",
   "requires": {
-    "dramaclaw_ce": ">=2.0.0",
+    "dramaclaw_ce": {
+      "compatibility": "source_revision",
+      "contains_commit": "37add44aa3582a32132137744781a9d3d18df5a6",
+      "required_files": [
+        "src/novelvideo/chat/dramaclaw_mcp.py",
+        "src/novelvideo/chat/workflow_mcp.py",
+        ".hermes/plugins/dramaclaw/__init__.py",
+        ".hermes/plugins/freezone/__init__.py"
+      ]
+    },
     "python": ">=3.11,<3.13",
     "mcp_transport": "stdio"
   },

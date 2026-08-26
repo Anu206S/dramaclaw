@@ -26,7 +26,9 @@ Skill、Recipe 编译器、业务审批和 Freezone 画布写入链路。
 
 ## 前置条件
 
-1. 本机已有完整 `dramaclaw-ce` checkout，并执行过 `uv sync`。
+1. 本机已有包含 `manifest.json` 中 `contains_commit` 的完整 `dramaclaw-ce` 源码 checkout，
+   并执行过 `uv sync`。当前没有正式发布 tag 包含所需 Workflow MCP，因此本版 Agent Kit
+   不声明 semver 兼容范围；正式版本发布后再切换为 release 下界。
 2. API 只监听回环地址：
 
    ```bash
