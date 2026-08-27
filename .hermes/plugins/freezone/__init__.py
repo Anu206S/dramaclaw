@@ -4662,6 +4662,187 @@ _SCOPE_PROPS = {
     "canvas_id": {"type": "string", "description": "Defaults to the current canvas context."},
 }
 
+_WORKFLOW_CATALOG_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Catalog identity for this node. Executable nodes must name a Recipe allowed by "
+        "the plan's single Skill."
+    ),
+    "properties": {
+        "skillId": {"type": "string", "minLength": 1},
+        "skillVersion": {
+            "description": "Optional catalog Skill version, as a string or integer.",
+            "oneOf": [{"type": "string"}, {"type": "integer"}],
+        },
+        "recipeId": {"type": "string", "minLength": 1},
+        "recipeVersion": {
+            "description": "Optional catalog Recipe version, as a string or integer.",
+            "oneOf": [{"type": "string"}, {"type": "integer"}],
+        },
+        "recipePipeline": {
+            "type": "array",
+            "description": "Optional ordered follow-up Recipes from the same Skill.",
+            "items": {
+                "oneOf": [
+                    {"type": "string", "minLength": 1},
+                    {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "minLength": 1},
+                            "version": {
+                                "oneOf": [
+                                    {"type": "string"},
+                                    {"type": "integer"},
+                                ]
+                            },
+                        },
+                        "required": ["id"],
+                    },
+                ]
+            },
+        },
+    },
+}
+
+_WORKFLOW_NODE_PROPERTIES = {
+    "id": {"type": "string", "minLength": 1, "maxLength": 128},
+    "title": {"type": "string"},
+    "stage": {"type": "string"},
+    "content": {"type": "string"},
+    "prompt": {"type": "string"},
+    "data": {
+        "type": "object",
+        "properties": {"workflowCatalog": _WORKFLOW_CATALOG_SCHEMA},
+    },
+}
+
+_RECIPE_BACKED_WORKFLOW_NODE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **_WORKFLOW_NODE_PROPERTIES,
+        "node_type": {
+            "type": "string",
+            "enum": [
+                "textAnnotationNode",
+                "scriptNode",
+                "beatContextNode",
+                "imageGenNode",
+                "videoNode",
+                "audioNode",
+            ],
+        },
+        "data": {
+            "type": "object",
+            "properties": {
+                "workflowCatalog": {
+                    **_WORKFLOW_CATALOG_SCHEMA,
+                    "required": ["recipeId"],
+                }
+            },
+            "required": ["workflowCatalog"],
+        },
+    },
+    "required": ["id", "node_type", "data"],
+}
+
+_RESOURCE_TEXT_WORKFLOW_NODE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **_WORKFLOW_NODE_PROPERTIES,
+        "node_type": {"type": "string", "enum": ["textAnnotationNode"]},
+        "stage": {"type": "string", "enum": ["input", "resource", "asset"]},
+    },
+    "required": ["id", "node_type", "stage"],
+}
+
+_COMPOSE_WORKFLOW_NODE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        **_WORKFLOW_NODE_PROPERTIES,
+        "node_type": {"type": "string", "enum": ["videoComposeNode"]},
+    },
+    "required": ["id", "node_type"],
+}
+
+_WORKFLOW_PLAN_OBJECT_SCHEMA = {
+    "type": "object",
+    "description": (
+        "Complete freezone_workflow_plan.v1 object. Send this as a JSON object, never as a "
+        "JSON-encoded string. It must reference exactly one valid Skill and explicit Recipes "
+        "for executable nodes."
+    ),
+    "properties": {
+        "schema_version": {
+            "type": "string",
+            "enum": ["freezone_workflow_plan.v1"],
+        },
+        "workflow_type": {"type": "string"},
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "inputs": {"type": "object"},
+        "skill": {
+            "type": "object",
+            "properties": {
+                "id": {"type": "string", "minLength": 1},
+                "version": {
+                    "description": "Optional catalog version, as a string or integer.",
+                },
+            },
+            "required": ["id"],
+        },
+        "nodes": {
+            "type": "array",
+            "minItems": 1,
+            "maxItems": 200,
+            "items": {
+                "anyOf": [
+                    _RECIPE_BACKED_WORKFLOW_NODE_SCHEMA,
+                    _RESOURCE_TEXT_WORKFLOW_NODE_SCHEMA,
+                    _COMPOSE_WORKFLOW_NODE_SCHEMA,
+                ]
+            },
+        },
+        "edges": {
+            "type": "array",
+            "description": (
+                "Dependency edges for one connected workflow graph. Multi-node plans must not "
+                "leave any node isolated."
+            ),
+            "maxItems": 400,
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string", "minLength": 1},
+                    "target": {"type": "string", "minLength": 1},
+                    "link_type": {
+                        "type": "string",
+                        "enum": [
+                            "context_for",
+                            "prompt_for",
+                            "dependency_for",
+                            "media_input_for",
+                            "derived_from",
+                            "composition_input_for",
+                        ],
+                    },
+                },
+                "required": ["source", "target", "link_type"],
+            },
+        },
+        "layout": {"type": "object"},
+    },
+    "required": ["schema_version", "skill", "nodes", "edges"],
+    "anyOf": [
+        {"properties": {"nodes": {"maxItems": 1}}},
+        {
+            "properties": {
+                "nodes": {"minItems": 2},
+                "edges": {"minItems": 1},
+            }
+        },
+    ],
+}
+
 _WORKFLOW_INTENT_OBJECT_SCHEMA = {
     "type": "object",
     "description": "Compact dynamic workflow decision. Do not send a full nodes/edges plan.",
@@ -6143,10 +6324,7 @@ TOOLS = (
             "Create one agent-authored dynamic Freezone WorkflowPlan in one frontend approval. A complete plan is required and strictly validated; fixed workflow_type/count/items template creation is disabled.",
             {
                 **_SCOPE_PROPS,
-                "plan": {
-                    "type": "object",
-                    "description": "Required complete freezone_workflow_plan.v1. It must reference exactly one valid Skill and explicit Recipes for executable nodes.",
-                },
+                "plan": _WORKFLOW_PLAN_OBJECT_SCHEMA,
                 "run_after_create": {
                     "type": "boolean",
                     "description": (
