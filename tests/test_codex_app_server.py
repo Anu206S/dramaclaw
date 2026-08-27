@@ -1,5 +1,6 @@
 from pathlib import Path
 from contextlib import contextmanager
+import os
 import sqlite3
 import threading
 from types import SimpleNamespace
@@ -101,9 +102,34 @@ def test_control_socket_path_is_short_and_stable(monkeypatch, tmp_path):
     repeated = codex_app_server._control_paths(long_home)
 
     assert (socket_path, lock_path, signature_path) == repeated
-    assert socket_path.parent == control_dir
-    assert socket_path.suffix == ".sock"
-    assert len(socket_path.name) < 32
+    assert socket_path.parent.parent == control_dir
+    assert socket_path.name == "app-server.sock"
+    assert lock_path.name == "node-runtime.lock"
+    assert signature_path.name == "app-server.signature"
+    assert socket_path.parent.stat().st_mode & 0o777 == 0o700
+
+
+def test_control_files_use_system_tmp_while_logs_use_runtime(monkeypatch, tmp_path):
+    runtime_root = tmp_path / "runtime"
+    codex_home = tmp_path / "state" / ".codex-app-server"
+    monkeypatch.setenv("NOVELVIDEO_RUNTIME_DIR", str(runtime_root))
+
+    socket_path, lock_path, signature_path = codex_app_server._control_paths(
+        codex_home
+    )
+    log_path = codex_app_server._app_server_log_path(codex_home)
+
+    expected_control_root = Path("/tmp") / f"claymore-{os.getuid()}"
+    assert socket_path.parent.parent == expected_control_root
+    assert lock_path.parent == socket_path.parent
+    assert signature_path.parent == socket_path.parent
+    assert log_path.parent == runtime_root / "codex" / "logs"
+    assert not str(socket_path).startswith(str(codex_home))
+    assert not str(log_path).startswith(str(codex_home))
+    assert expected_control_root.stat().st_mode & 0o777 == 0o700
+    assert socket_path.parent.stat().st_mode & 0o777 == 0o700
+    assert len(os.fsencode(str(socket_path))) < 100
+    assert (runtime_root / "codex" / "logs").stat().st_mode & 0o777 == 0o700
 
 
 def test_control_socket_identity_changes_with_codex_home(monkeypatch, tmp_path):

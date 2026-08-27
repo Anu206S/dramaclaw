@@ -72,13 +72,14 @@ def _deny_unexpected_approval(method: str, _params: dict | None) -> dict:
 
 
 def _control_dir() -> Path:
-    """Return a short, private directory for the home-node control socket."""
+    """Return the short, private system root for node-local IPC files."""
 
     # macOS limits Unix-domain socket paths to roughly 104 bytes. CODEX_HOME is
-    # intentionally below the configured state root and can easily exceed that
-    # in a local checkout, so the transport endpoint cannot live below it.
+    # intentionally below the configured state root and can easily exceed that.
+    # These files are operating-system IPC state, not DramaClaw runtime data, so
+    # keep them under a fixed short path instead of following TMPDIR/runtime.
     uid = os.getuid() if hasattr(os, "getuid") else os.getpid()
-    path = Path("/tmp") / f"dramaclaw-codex-{uid}"
+    path = Path("/tmp") / f"claymore-{uid}"
     path.mkdir(mode=0o700, parents=True, exist_ok=True)
     mode = path.lstat().st_mode
     if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
@@ -87,16 +88,41 @@ def _control_dir() -> Path:
     return path
 
 
+def _runtime_root() -> Path:
+    configured = str(os.environ.get("NOVELVIDEO_RUNTIME_DIR", "") or "").strip()
+    if configured:
+        return Path(configured).expanduser().resolve()
+    data_root = str(os.environ.get("NOVELVIDEO_DATA_ROOT", "") or "").strip()
+    if data_root:
+        return (Path(data_root).expanduser() / "runtime").resolve()
+    return Path(__file__).resolve().parents[3] / "runtime"
+
+
 def _control_paths(codex_home: Path) -> tuple[Path, Path, Path]:
     identity = hashlib.sha256(str(codex_home.resolve()).encode("utf-8")).hexdigest()[
-        :20
+        :16
     ]
-    control_dir = _control_dir()
+    control_dir = _control_dir() / identity
+    control_dir.mkdir(mode=0o700, exist_ok=True)
+    mode = control_dir.lstat().st_mode
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise RuntimeError(f"Unsafe Codex App Server node directory: {control_dir}")
+    control_dir.chmod(0o700)
     return (
-        control_dir / f"{identity}.sock",
-        control_dir / f"{identity}.lock",
-        control_dir / f"{identity}.signature",
+        control_dir / "app-server.sock",
+        control_dir / "node-runtime.lock",
+        control_dir / "app-server.signature",
     )
+
+
+def _app_server_log_path(codex_home: Path) -> Path:
+    identity = hashlib.sha256(str(codex_home.resolve()).encode("utf-8")).hexdigest()[
+        :16
+    ]
+    log_dir = _runtime_root() / "codex" / "logs"
+    log_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    log_dir.chmod(0o700)
+    return log_dir / f"app-server-{identity}.log"
 
 
 def _signature_digest(signature: tuple[object, ...]) -> str:
@@ -260,7 +286,9 @@ class _SharedCodexRuntime:
                 # to start Codex become ambient authority for every later project.
                 process_env = _node_process_env(env)
                 process_env["CODEX_HOME"] = str(codex_home)
-                log_path = codex_home / "app-server.log"
+                log_path = _app_server_log_path(codex_home)
+                log_path.touch(mode=0o600, exist_ok=True)
+                log_path.chmod(0o600)
                 with log_path.open("ab") as log_file:
                     self._process = subprocess.Popen(
                         command,

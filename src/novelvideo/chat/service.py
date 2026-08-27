@@ -12,6 +12,7 @@ import os
 import re
 import shutil
 import sqlite3
+import stat
 import sys
 import threading
 import uuid
@@ -291,6 +292,16 @@ def _state_root() -> Path:
     if configured:
         return Path(configured).expanduser()
     return _repo_root() / "state"
+
+
+def _runtime_root() -> Path:
+    configured = os.environ.get("NOVELVIDEO_RUNTIME_DIR", "").strip()
+    if configured:
+        return Path(configured).expanduser()
+    data_root = os.environ.get("NOVELVIDEO_DATA_ROOT", "").strip()
+    if data_root:
+        return Path(data_root).expanduser() / "runtime"
+    return _repo_root() / "runtime"
 
 
 def _codex_node_home() -> Path:
@@ -4244,7 +4255,11 @@ def _write_codex_turn_token(
 ) -> Path:
     """Atomically create one credential file owned by exactly one Codex turn."""
 
-    token_root.mkdir(parents=True, exist_ok=True)
+    token_root.mkdir(mode=0o700, parents=True, exist_ok=True)
+    mode = token_root.lstat().st_mode
+    if stat.S_ISLNK(mode) or not stat.S_ISDIR(mode):
+        raise RuntimeError(f"Unsafe Codex turn-token directory: {token_root}")
+    token_root.chmod(0o700)
     scope_digest = hashlib.sha256(scope_key.encode("utf-8")).hexdigest()
     normalized_turn_id = str(business_turn_id or "").strip() or "turn"
     turn_slug = re.sub(r"[^A-Za-z0-9._-]+", "-", normalized_turn_id).strip("-._")
@@ -6258,23 +6273,10 @@ async def _stream_assistant_reply_codex(
             agent_kind="codex",
             ttl_seconds=CODEX_AGENT_SESSION_TTL_SECONDS,
         )
-        token_root = (
-            (
-                Path(project_state_dir)
-                if project_state_dir is not None
-                else (
-                    _project_state_dir(username, project)
-                    if project
-                    else _user_state_dir(username)
-                )
-            )
-            / "agents"
-            / "codex"
-            / "turn_tokens"
-        )
+        token_root = _runtime_root() / "codex" / "turn_tokens"
         token_file = _write_codex_turn_token(
             token_root,
-            scope_key=codex_scope_key,
+            scope_key=f"{username}\0{codex_scope_key}",
             business_turn_id=business_turn_id,
             token=agent_token,
         )

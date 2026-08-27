@@ -1032,6 +1032,7 @@ async def test_codex_stream_passes_conversation_scope_to_thread_builder(
     expected_canvas,
 ):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_RUNTIME_DIR", str(tmp_path / "runtime"))
     captured: dict[str, object] = {}
     revoked: list[str] = []
     history_sentinel = "CHATDB_HISTORY_MUST_NOT_REACH_CODEX"
@@ -1231,6 +1232,7 @@ async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
     with_successful_tool,
 ):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    monkeypatch.setenv("NOVELVIDEO_RUNTIME_DIR", str(tmp_path / "runtime"))
     events = []
     revoked = []
 
@@ -1334,6 +1336,8 @@ async def test_codex_prompt_construction_failure_cleans_turn_credentials(
     tmp_path,
 ):
     project_state = tmp_path / "state" / "admin" / "project-a"
+    runtime_root = tmp_path / "runtime"
+    monkeypatch.setenv("NOVELVIDEO_RUNTIME_DIR", str(runtime_root))
     captured: dict[str, Path] = {}
     revoked: list[str] = []
     finished: list[str] = []
@@ -1393,7 +1397,10 @@ async def test_codex_prompt_construction_failure_cleans_turn_credentials(
     assert not captured["token_file"].exists()
     assert revoked == ["agent-token"]
     assert finished == ["failed"]
-    assert list((project_state / "agents" / "codex" / "turn_tokens").iterdir()) == []
+    token_root = runtime_root / "codex" / "turn_tokens"
+    assert list(token_root.iterdir()) == []
+    assert token_root.stat().st_mode & 0o777 == 0o700
+    assert not (project_state / "agents" / "codex" / "turn_tokens").exists()
 
 
 @pytest.mark.asyncio
