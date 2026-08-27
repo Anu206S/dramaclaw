@@ -7,30 +7,20 @@ import json
 import re
 from typing import Any
 
+from novelvideo.freezone.workflow_schema import (
+    LINK_TYPE_VALUES as PORTABLE_LINK_TYPE_VALUES,
+    NODE_TYPE_VALUES,
+)
+
 CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1"
 
-ALLOWED_NODE_TYPES = {
-    "textAnnotationNode",
-    "scriptNode",
-    "beatContextNode",
-    "imageGenNode",
-    "videoNode",
-    "audioNode",
-    "videoComposeNode",
-}
+ALLOWED_NODE_TYPES = set(NODE_TYPE_VALUES)
 
 DEFAULT_NODE_TYPE = "textAnnotationNode"
 
 TEXTUAL_NODE_TYPES = {"textAnnotationNode", "scriptNode", "beatContextNode"}
 
-LINK_TYPE_VALUES = {
-    "context_for",
-    "prompt_for",
-    "dependency_for",
-    "media_input_for",
-    "derived_from",
-    "composition_input_for",
-}
+LINK_TYPE_VALUES = set(PORTABLE_LINK_TYPE_VALUES)
 
 LINK_OBJECT_TYPE_BY_NODE_TYPE = {
     "textAnnotationNode": "TextNode",
@@ -320,10 +310,12 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
             "focus": True,
         }
     )
-    run_after_create = _bool_value(
-        args.get("run_after_create") or args.get("runAfterCreate"),
-        False,
+    raw_run_after_create = (
+        args.get("run_after_create")
+        if "run_after_create" in args
+        else args.get("runAfterCreate")
     )
+    run_after_create = _bool_value(raw_run_after_create, False)
     if run_after_create:
         commands.append(
             {
@@ -471,7 +463,9 @@ def _node_data(
         result.setdefault("description", description.strip())
     prompt = node.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
-        result.setdefault("prompt", prompt.strip())
+        current_prompt = result.get("prompt")
+        if not isinstance(current_prompt, str) or not current_prompt.strip():
+            result["prompt"] = prompt.strip()
     if node_type == "textAnnotationNode":
         # Workflow plans authored by different agent hosts commonly use either
         # ``text`` or ``content`` for a plain text node. The canvas command

@@ -76,6 +76,7 @@ from novelvideo.shared.billing_errors import (
     find_insufficient_credits_error,
     insufficient_credits_payload,
 )
+from novelvideo.utils.error_redaction import safe_exception_message
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -87,6 +88,33 @@ EMPTY_AGENT_REPLY_MESSAGE = "这轮操作没有收到虾导的有效回复，请
 # `chat/hermes_egress.py:131` 的 `capability="agent.hermes.text"`，与 EG-07 对齐；
 # 绑定侧与账本侧必须是同一个字符串，不另取。
 HERMES_TEXT_EGRESS_TASK_TYPE = "agent.hermes.text"
+
+_REASONING_REQUIRED_ERROR_MESSAGE = (
+    "模型请求失败：当前上游模型要求启用推理，但模型网关仍将本次请求识别为关闭推理。"
+    "请检查 NewAPI 的模型映射和推理参数配置后重试。"
+)
+
+
+def _user_facing_chat_error(exc: BaseException) -> str:
+    """Turn provider/runtime failures into stable, safe chat copy."""
+
+    raw = safe_exception_message(exc).strip()
+    lowered = raw.lower()
+    if "reasoning is mandatory" in lowered and "cannot be disabled" in lowered:
+        return _REASONING_REQUIRED_ERROR_MESSAGE
+    if "timed out" in lowered or "timeout" in lowered or "响应超时" in raw:
+        return "模型响应超时：上游服务未在规定时间内返回结果，请稍后重试。"
+    if "connection refused" in lowered or "connection error" in lowered:
+        return "模型连接失败：当前无法连接上游模型服务，请检查服务状态后重试。"
+
+    # The websocket used to expose this text directly in a transient red banner.
+    # Keep the useful cause, but remove local paths/secrets and cap provider dumps.
+    safe = chat_service._redact_local_filesystem_paths(raw).strip()  # type: ignore[attr-defined]
+    if not safe:
+        return "本轮处理失败：服务未返回可识别的错误原因，请稍后重试。"
+    if len(safe) > 800:
+        safe = f"{safe[:800].rstrip()}…"
+    return safe
 
 
 @router.post("/chat/cancel")
@@ -541,6 +569,59 @@ def _chat_store_scope_for_project_context(
             else None
         ),
     )
+
+
+async def _persist_chat_turn_error(
+    *,
+    user: dict[str, Any],
+    username: str,
+    scope: ChatScope,
+    turn_id: str,
+    reason: str,
+) -> dict[str, Any] | None:
+    """Persist a terminal turn error so history reconciliation cannot erase it."""
+
+    content = f"本轮处理失败：{reason}\n\n请根据错误提示处理后重试。"
+    try:
+        project_ctx = (
+            await _project_context_for_scope(user, scope)
+            if scope.kind in {"project", "freezone"}
+            else None
+        )
+        storage_scope = _chat_store_scope_for_project_context(scope, project_ctx)
+        if (
+            scope.kind == "project"
+            and not _is_freezone_scope(scope)
+            and project_ctx is not None
+        ):
+            storage_scope = replace(
+                scope,
+                id=project_ctx.project_name,
+                state_dir=str(project_ctx.state_dir),
+            )
+
+        for existing in reversed(chat_store.list_messages(username, storage_scope)):
+            if (
+                str(existing.get("turn_id") or "") == turn_id
+                and existing.get("chat_error") is True
+            ):
+                return existing
+        return chat_store.append_message(
+            username,
+            storage_scope,
+            "assistant",
+            content,
+            turn_id=turn_id,
+            metadata={"chat_error": True},
+        )
+    except Exception:  # noqa: BLE001
+        logger.exception(
+            "failed to persist chat turn error username=%s turn_id=%s scope=%s",
+            username,
+            turn_id,
+            scope.to_dict(),
+        )
+        return None
 
 
 def _canvas_bridge_profile_for_scope(scope: ChatScope) -> str:
@@ -3985,8 +4066,27 @@ async def chat_ws(websocket: WebSocket) -> None:
                     ),
                     message,
                 )
+                user_message = _user_facing_chat_error(exc)
+                persisted_error = await _persist_chat_turn_error(
+                    user=user,
+                    username=username,
+                    scope=scope,
+                    turn_id=turn_id,
+                    reason=user_message,
+                )
+                if persisted_error is not None:
+                    await _send_json_best_effort(
+                        websocket,
+                        {
+                            "type": "assistant.message",
+                            "scope": scope.to_dict(),
+                            "turn_id": turn_id,
+                            "message": persisted_error,
+                        },
+                    )
                 await _send_json_best_effort(
-                    websocket, {"type": "error", "turn_id": turn_id, "message": message}
+                    websocket,
+                    {"type": "error", "turn_id": turn_id, "message": user_message},
                 )
     except WebSocketDisconnect:
         logger.info("chat websocket disconnected username=%s", username)

@@ -114,6 +114,32 @@ def test_standard_ecommerce_image_planner_omits_audio_video_and_compose(monkeypa
     assert "videoComposeNode" not in node_types
 
 
+def test_social_content_campaign_builtin_skill_is_loadable(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    package = catalog.get_workflow_skill(
+        {
+            "skill_id": "social-content-campaign",
+            "user_goal": "制作小红书配图",
+            "compact": True,
+        }
+    )
+
+    assert package["ok"] is True
+    assert package["input_contract"]["resolved"]["aspect_ratio"] == "3:4"
+    assert {
+        recipe["id"] for recipe in package["available_recipes"]
+    } == {
+        "social-copywriting",
+        "social-content-image",
+        "social-xiaohongshu-image",
+        "social-douyin-cover",
+        "social-weibo-wechat-image",
+        "social-ig-post",
+    }
+
+
 def test_standard_video_planner_distributes_target_duration_across_clips(monkeypatch):
     catalog = _load_catalog_module()
     _install_real_builtin_catalog(monkeypatch, catalog)
@@ -585,6 +611,50 @@ def test_dynamic_item_supports_ordered_recipe_pipeline(monkeypatch):
     ]
 
 
+def test_compiler_propagates_portable_image_generation_inputs(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-product",
+            "user_goal": "生成商品主图",
+            "inputs": {
+                "image_model": "image-model",
+                "image_aspect_ratio": "16:9",
+                "image_resolution": "2K",
+                "image_quality": "medium",
+                "image_count": 2,
+            },
+            "items": [
+                {
+                    "id": "hero",
+                    "title": "商品主图",
+                    "recipe_id": "general-image",
+                }
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is True
+    image = next(
+        node
+        for node in compiled["plan"]["nodes"]
+        if node["node_type"] == "imageGenNode"
+    )
+    assert {
+        key: image["data"].get(key)
+        for key in ("model", "aspectRatio", "size", "quality", "count")
+    } == {
+        "model": "image-model",
+        "aspectRatio": "16:9",
+        "size": "2K",
+        "quality": "medium",
+        "count": 2,
+    }
+
+
 def test_dynamic_item_auto_connects_unique_generated_source_anchor(monkeypatch):
     catalog = _load_catalog_module()
     _install_minimal_builtin_catalog(monkeypatch, catalog)
@@ -967,6 +1037,110 @@ def test_compiler_uses_execution_only_edge_between_generated_video_steps(monkeyp
     }
 
 
+def test_compiler_propagates_portable_video_generation_inputs(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "生成教程视频",
+            "inputs": {
+                "video_model": "video-model",
+                "video_aspect_ratio": "9:16",
+                "video_resolution": "1080P",
+                "video_duration_seconds": 10,
+                "video_generate_audio": True,
+                "video_count": 2,
+            },
+            "items": [
+                {
+                    "id": "clip",
+                    "title": "教程镜头",
+                    "recipe_id": "general-video",
+                }
+            ],
+        }
+    )
+
+    assert compiled["ok"] is True
+    video = next(
+        node
+        for node in compiled["plan"]["nodes"]
+        if node["node_type"] == "videoNode"
+    )
+    assert {
+        key: video["data"].get(key)
+        for key in (
+            "model",
+            "aspectRatio",
+            "quality",
+            "durationSec",
+            "generateAudio",
+            "count",
+        )
+    } == {
+        "model": "video-model",
+        "aspectRatio": "9:16",
+        "quality": "1080P",
+        "durationSec": 10,
+        "generateAudio": True,
+        "count": 2,
+    }
+
+
+def test_validator_checks_singular_group_alias_references():
+    result = validate_workflow_plan(
+        {
+            "schema_version": "freezone_workflow_plan.v1",
+            "skill": {"id": "ecommerce-product"},
+            "nodes": [
+                {
+                    "id": "prompt",
+                    "node_type": "textAnnotationNode",
+                    "stage": "input",
+                }
+            ],
+            "edges": [],
+            "group": {"label": "测试工作流", "nodes": ["prompt", "missing"]},
+        },
+        skills_by_id={"ecommerce-product": _MINIMAL_ECOMMERCE_SKILL},
+        recipes_by_id={recipe["id"]: recipe for recipe in _MINIMAL_ECOMMERCE_RECIPES},
+    )
+
+    assert result["ok"] is False
+    assert any(
+        issue["path"] == "group[0].node_ids[1]" and "missing" in issue["message"]
+        for issue in result["errors"]
+    )
+
+
+def test_validator_rejects_execution_policy_inside_plan():
+    result = validate_workflow_plan(
+        {
+            "schema_version": "freezone_workflow_plan.v1",
+            "skill": {"id": "ecommerce-product"},
+            "nodes": [
+                {
+                    "id": "prompt",
+                    "node_type": "textAnnotationNode",
+                    "stage": "input",
+                }
+            ],
+            "edges": [],
+            "run_after_create": False,
+        },
+        skills_by_id={"ecommerce-product": _MINIMAL_ECOMMERCE_SKILL},
+        recipes_by_id={recipe["id"]: recipe for recipe in _MINIMAL_ECOMMERCE_RECIPES},
+    )
+
+    assert result["ok"] is False
+    assert any(
+        issue["path"] == "run_after_create" and "beside plan" in issue["message"]
+        for issue in result["errors"]
+    )
+
+
 def test_compiler_keeps_explicit_video_reference_as_media_input(monkeypatch):
     catalog = _load_catalog_module()
     monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
@@ -998,6 +1172,44 @@ def test_compiler_keeps_explicit_video_reference_as_media_input(monkeypatch):
         "motion_reference",
         "clip",
         "media_input_for",
+    ) in {
+        (edge["source"], edge["target"], edge["link_type"])
+        for edge in compiled["plan"]["edges"]
+    }
+
+
+def test_compiler_maps_explicit_text_reference_to_prompt_input(monkeypatch):
+    catalog = _load_catalog_module()
+    monkeypatch.setattr(catalog, "list_user_agent_config_items", None)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "video-tutorial",
+            "user_goal": "根据文字提示生成首帧",
+            "items": [
+                {
+                    "id": "prompt",
+                    "title": "画面提示词",
+                    "prompt": "雨夜未来城市，霓虹灯倒映在路面",
+                    "recipe_id": "general-text",
+                },
+                {
+                    "id": "frame",
+                    "title": "城市首帧",
+                    "prompt": "生成城市首帧",
+                    "recipe_id": "general-image",
+                    "reference_inputs": ["prompt"],
+                },
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is True, compiled
+    assert (
+        "prompt",
+        "frame",
+        "prompt_for",
     ) in {
         (edge["source"], edge["target"], edge["link_type"])
         for edge in compiled["plan"]["edges"]

@@ -612,6 +612,32 @@ async def test_codex_stream_times_out_before_first_runtime_progress(
     assert events[-1].text == "Codex App Server 响应超时，请重试。"
 
 
+def test_codex_first_progress_timeout_accepts_positive_environment_override(
+    monkeypatch,
+):
+    monkeypatch.setenv("DRAMACLAW_CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS", "420")
+    assert (
+        backend_sdk._positive_timeout_from_env(
+            "DRAMACLAW_CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS", 300.0
+        )
+        == 420.0
+    )
+
+
+@pytest.mark.parametrize("value", ["", "invalid", "0", "-1"])
+def test_codex_first_progress_timeout_rejects_invalid_environment_override(
+    monkeypatch,
+    value,
+):
+    monkeypatch.setenv("DRAMACLAW_CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS", value)
+    assert (
+        backend_sdk._positive_timeout_from_env(
+            "DRAMACLAW_CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS", 300.0
+        )
+        == 300.0
+    )
+
+
 @pytest.mark.asyncio
 async def test_codex_stream_times_out_after_runtime_becomes_idle(monkeypatch, tmp_path):
     from openai_codex.generated import v2_all as v2

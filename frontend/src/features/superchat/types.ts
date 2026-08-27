@@ -11,6 +11,7 @@ export type ClientFrame =
       surface?: "freezone";
       context?: {
         freezone_canvas_id?: string | null;
+        canvas_command_execution_mode?: "manual_confirm" | "auto_execute";
       };
     }
   | {

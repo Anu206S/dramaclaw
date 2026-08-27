@@ -48,6 +48,7 @@ import {
 } from "@/lib/localStorageQuota";
 
 const SETTINGS_KEY = "superchat:settings";
+const CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY = "freezone.canvasCommandExecutionMode";
 const EXECUTABLE_HIDDEN_TOOL_NAMES = FREEZONE_CANVAS_WRITE_TOOL_NAME_SET;
 const INTERNAL_HIDDEN_TOOL_STATUS_NAMES = new Set<string>([
   "freezone_get_audio_voice_options",
@@ -125,6 +126,16 @@ function loadSettings(): SuperChatSettings {
     };
   }
 }
+
+function freezoneCanvasCommandExecutionMode(): "manual_confirm" | "auto_execute" {
+  if (typeof window === "undefined") return "manual_confirm";
+  return window.localStorage.getItem(CANVAS_COMMAND_EXECUTION_MODE_STORAGE_KEY) === "auto_execute"
+    ? "auto_execute"
+    : "manual_confirm";
+}
+
+export const freezoneCanvasCommandExecutionModeForTest =
+  freezoneCanvasCommandExecutionMode;
 
 function resolveChatWsUrl(): string {
   const explicit = import.meta.env.VITE_SUPERCHAT_WS_URL;
@@ -2964,7 +2975,10 @@ export function useSuperChat({
       surface: surface === "freezone" ? "freezone" : undefined,
       context:
         surface === "freezone" && normalizedFreezoneCanvasId
-          ? { freezone_canvas_id: normalizedFreezoneCanvasId }
+          ? {
+              freezone_canvas_id: normalizedFreezoneCanvasId,
+              canvas_command_execution_mode: freezoneCanvasCommandExecutionMode(),
+            }
           : undefined,
     });
     return true;

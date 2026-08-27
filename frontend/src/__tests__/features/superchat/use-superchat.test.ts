@@ -10,6 +10,7 @@ import {
   canvasContextToolResultFrameForTest,
   dedupeMessagesByIdForTest,
   dispatchCanvasCommandFrameForTest,
+  freezoneCanvasCommandExecutionModeForTest,
   mergeHistorySnapshot,
   normalizeMessageForScopeForTest,
   removeSkillStudioStatusForTurnForTest,
@@ -43,10 +44,17 @@ import {
   buildAssistantInteractionFlowItemsForTest,
   collapseRepeatedCanvasStatusFlowItemsForTest,
   collapseRepeatedCanvasStatusPartsForTest,
+  amendCanvasApprovalWithAudioParamsForTest,
   amendCanvasApprovalWithImageParamsForTest,
   amendCanvasApprovalWithHumanReviewForTest,
   amendCanvasApprovalWithVideoParamsForTest,
+  audioApprovalInitialParamsForTest,
   canvasApprovalRequiresHumanReviewConfirmationForTest,
+  imageApprovalInitialParamsForTest,
+  imageApprovalParamGroupsForTest,
+  textApprovalInitialParamsForTest,
+  videoApprovalInitialParamsForTest,
+  videoApprovalParamGroupsForTest,
   buildSkillStudioCatalogSaveItemsForTest,
   buildSkillStudioDraftCancelToolResultForTest,
   buildSkillStudioDraftRevisionToolResultForTest,
@@ -3067,6 +3075,196 @@ describe("Canvas command approval image params", () => {
       { type: "run_node_action", node_id: "image-a", action: "generate_image" },
     ]);
   });
+
+  it("discovers media and text targets from a not-yet-created workflow", () => {
+    const approval = {
+      id: "approval-workflow-settings",
+      key: "approval-workflow-settings",
+      messageId: "assistant-workflow-settings",
+      receivedAt: 1,
+      commandCount: 7,
+      plans: [],
+      envelopes: [{
+        schema_version: "canvas_chat_commands.v1" as const,
+        commands: [
+          {
+            type: "create_node" as const,
+            client_id: "text-a",
+            node_type: "textAnnotationNode" as const,
+            data: { workflowCatalog: { recipeId: "story-copy", recipeLabel: "故事文案" } },
+          },
+          {
+            type: "create_node" as const,
+            client_id: "image-source",
+            node_type: "imageGenNode" as const,
+            data: { imageUrl: "/static/source.png" },
+          },
+          {
+            type: "create_node" as const,
+            client_id: "image-a",
+            node_type: "imageGenNode" as const,
+            data: { model: "image-model", aspectRatio: "9:16", size: "2K" },
+          },
+          {
+            type: "create_node" as const,
+            client_id: "video-a",
+            node_type: "videoNode" as const,
+            data: { model: "video-model", durationSec: 10, quality: "720P" },
+          },
+          {
+            type: "create_node" as const,
+            client_id: "speech-a",
+            node_type: "audioNode" as const,
+            data: { audioKind: "speech", speechMode: "preset" },
+          },
+          {
+            type: "create_node" as const,
+            client_id: "music-a",
+            node_type: "audioNode" as const,
+            data: { audioKind: "music", musicLengthMs: 60000 },
+          },
+          {
+            type: "run_workflow" as const,
+            node_ids: ["text-a", "image-a", "video-a", "speech-a", "music-a"],
+            scope: "selection" as const,
+          },
+        ],
+      }],
+    };
+
+    expect(imageApprovalInitialParamsForTest(approval as never, [], "fallback-image")).toMatchObject({
+      nodeId: "image-a",
+      nodeIds: ["image-a"],
+      model: "image-model",
+      aspectRatio: "9:16",
+    });
+    expect(videoApprovalInitialParamsForTest(
+      approval as never,
+      [],
+      [],
+      [{ id: "video-model", minDuration: 5, maxDuration: 15 }],
+      "fallback-video",
+    )).toMatchObject({
+      nodeId: "video-a",
+      nodeIds: ["video-a"],
+      model: "video-model",
+      durationSec: 10,
+    });
+    expect(textApprovalInitialParamsForTest(approval as never, [])).toEqual({
+      nodeIds: ["text-a"],
+      recipeLabel: "故事文案",
+    });
+    expect(audioApprovalInitialParamsForTest(approval as never, [])).toEqual([
+      expect.objectContaining({ nodeIds: ["speech-a"], audioKind: "speech" }),
+      expect.objectContaining({ nodeIds: ["music-a"], audioKind: "music", musicLengthSec: 60 }),
+    ]);
+  });
+
+  it("writes batch image settings immediately before the single workflow run", () => {
+    const approval = {
+      id: "approval-batch-image",
+      key: "approval-batch-image",
+      messageId: "assistant-batch-image",
+      receivedAt: 1,
+      commandCount: 1,
+      plans: [],
+      envelopes: [{
+        schema_version: "canvas_chat_commands.v1" as const,
+        commands: [{ type: "run_workflow" as const, scope: "canvas" as const }],
+      }],
+    };
+    const amended = amendCanvasApprovalWithImageParamsForTest(approval as never, {
+      nodeId: "image-a",
+      nodeIds: ["image-a", "image-b"],
+      model: "image-model",
+      aspectRatio: "16:9",
+      size: "2K",
+      quality: "medium",
+      count: 1,
+    });
+    expect(amended.envelopes[0].commands.map((command) => command.type)).toEqual([
+      "update_node_data",
+      "update_node_data",
+      "run_workflow",
+    ]);
+    expect(amended.envelopes[0].commands[2]).toEqual({
+      type: "run_workflow",
+      scope: "canvas",
+    });
+  });
+
+  it("keeps intentionally different image and video settings in separate rows", () => {
+    const approval = {
+      id: "approval-distinct-settings",
+      key: "approval-distinct-settings",
+      messageId: "assistant-distinct-settings",
+      receivedAt: 1,
+      commandCount: 5,
+      plans: [],
+      envelopes: [{
+        schema_version: "canvas_chat_commands.v1" as const,
+        commands: [
+          { type: "create_node" as const, client_id: "image-a", node_type: "imageGenNode" as const, data: { aspectRatio: "16:9" } },
+          { type: "create_node" as const, client_id: "image-b", node_type: "imageGenNode" as const, data: { aspectRatio: "9:16" } },
+          { type: "create_node" as const, client_id: "video-a", node_type: "videoNode" as const, data: { durationSec: 5 } },
+          { type: "create_node" as const, client_id: "video-b", node_type: "videoNode" as const, data: { durationSec: 10 } },
+          { type: "run_workflow" as const, scope: "canvas" as const },
+        ],
+      }],
+    };
+
+    expect(imageApprovalParamGroupsForTest(approval as never, [], "image-model")).toHaveLength(2);
+    expect(videoApprovalParamGroupsForTest(
+      approval as never,
+      [],
+      [],
+      [{ id: "video-model", minDuration: 5, maxDuration: 15 }],
+      "video-model",
+    )).toHaveLength(2);
+  });
+});
+
+describe("Canvas command approval audio params", () => {
+  it("writes music settings before the workflow run", () => {
+    const approval = {
+      id: "approval-music",
+      key: "approval-music",
+      messageId: "assistant-music",
+      receivedAt: 1,
+      commandCount: 1,
+      plans: [],
+      envelopes: [{
+        schema_version: "canvas_chat_commands.v1" as const,
+        commands: [{ type: "run_workflow" as const, scope: "canvas" as const }],
+      }],
+    };
+    const amended = amendCanvasApprovalWithAudioParamsForTest(approval as never, {
+      nodeId: "music-a",
+      nodeIds: ["music-a"],
+      audioKind: "music",
+      speechMode: "preset",
+      presetVoice: "Serena",
+      voiceLabel: "项目默认声线",
+      emotionPrompt: "",
+      musicLengthSec: 60,
+      forceInstrumental: true,
+      respectSectionsDurations: true,
+    });
+    expect(amended.envelopes[0].commands).toEqual([
+      {
+        type: "update_node_data",
+        node_id: "music-a",
+        data: {
+          audioKind: "music",
+          model: "suno_music",
+          musicLengthMs: 60000,
+          forceInstrumental: true,
+          respectSectionsDurations: true,
+        },
+      },
+      { type: "run_workflow", scope: "canvas" },
+    ]);
+  });
 });
 
 describe("Canvas command approval video params", () => {
@@ -3596,6 +3794,7 @@ describe("useSuperChat websocket lifecycle", () => {
   afterEach(() => {
     vi.useRealTimers();
     vi.restoreAllMocks();
+    localStorage.removeItem("freezone.canvasCommandExecutionMode");
     Object.defineProperty(globalThis, "WebSocket", {
       value: OriginalWebSocket,
       writable: true,
@@ -3646,6 +3845,7 @@ describe("useSuperChat websocket lifecycle", () => {
   });
 
   it("sends original user text separately from augmented transport text", async () => {
+    localStorage.setItem("freezone.canvasCommandExecutionMode", "auto_execute");
     const sentFrames: string[] = [];
     class TestWebSocket {
       static OPEN = 1;
@@ -3714,7 +3914,15 @@ describe("useSuperChat websocket lifecycle", () => {
     expect(chatFrame).toEqual(expect.objectContaining({
       text: expect.stringContaining("node_type: skillNode"),
       user_text: "查看下当前节点详情然后返回ok",
+      context: {
+        freezone_canvas_id: "canvas-a",
+        canvas_command_execution_mode: "auto_execute",
+      },
     }));
+  });
+
+  it("defaults freezone canvas execution context to manual confirmation", () => {
+    expect(freezoneCanvasCommandExecutionModeForTest()).toBe("manual_confirm");
   });
 
   it("reconciles a partial stream from the final message carried by chat.done", async () => {

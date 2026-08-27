@@ -45,6 +45,19 @@
       "required": false,
       "default": 3,
       "options": []
+    },
+    {
+      "id": "aspect_ratio",
+      "label": "图片比例",
+      "type": "single_select",
+      "required": false,
+      "default": "3:4",
+      "options": [
+        "3:4",
+        "1:1",
+        "16:9",
+        "9:16"
+      ]
     }
   ],
   "allowed_recipe_ids": [
@@ -63,10 +76,7 @@
       "同一套内容必须保持品牌、商品和核心卖点一致",
       "每个平台只使用与其交付格式匹配的 Recipe",
       "创建画布节点前先生成并确认动态计划"
-    ],
-    "default_aspect_ratios": {
-      "image": "3:4"
-    }
+    ]
   },
   "evaluation": {
     "rating_bands": [

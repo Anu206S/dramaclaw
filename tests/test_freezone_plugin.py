@@ -490,6 +490,129 @@ def test_freezone_run_workflow_command_passes_write_shape_validation():
     assert error is None
 
 
+def test_external_generation_preflight_blocks_missing_downstream_parameters(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_EXTERNAL_MCP", "1")
+    monkeypatch.setattr(
+        plugin,
+        "_request",
+        lambda *_args, **_kwargs: {
+            "ok": True,
+            "data": {
+                "nodes": [
+                    {"id": "brief", "type": "textAnnotationNode", "data": {}},
+                    {
+                        "id": "image",
+                        "type": "imageGenNode",
+                        "data": {"displayName": "首帧", "aspectRatio": "16:9"},
+                    },
+                ],
+                "edges": [{"source": "brief", "target": "image"}],
+            },
+        },
+    )
+
+    result = plugin._external_generation_parameter_preflight(
+        "project-a",
+        "canvas-a",
+        [
+            {
+                "type": "run_workflow",
+                "node_ids": ["brief"],
+                "direction": "downstream",
+            }
+        ],
+    )
+
+    assert result is not None
+    assert result["status"] == "clarification_required"
+    assert result["code"] == "generation_parameters_required"
+    assert result["media_types"] == ["image"]
+    assert result["missing_parameters"] == [
+        {
+            "node_id": "image",
+            "node_type": "imageGenNode",
+            "display_name": "首帧",
+            "fields": ["model", "size", "quality", "count"],
+        }
+    ]
+    assert result["clarification"]["allow_skip"] is False
+
+
+def test_external_generation_preflight_accepts_confirmed_image_and_video_parameters(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_EXTERNAL_MCP", "1")
+    monkeypatch.setattr(
+        plugin,
+        "_request",
+        lambda *_args, **_kwargs: {"ok": True, "data": {"nodes": [], "edges": []}},
+    )
+    commands = [
+        {
+            "type": "create_node",
+            "client_id": "image",
+            "node_type": "imageGenNode",
+            "data": {
+                "model": "image-model",
+                "aspectRatio": "16:9",
+                "size": "2K",
+                "quality": "medium",
+                "count": 1,
+            },
+        },
+        {
+            "type": "create_node",
+            "client_id": "video",
+            "node_type": "videoNode",
+            "data": {
+                "model": "video-model",
+                "aspectRatio": "16:9",
+                "quality": "720P",
+                "durationSec": 5,
+                "generateAudio": False,
+                "count": 1,
+            },
+        },
+        {
+            "type": "run_workflow",
+            "node_ids": ["image", "video"],
+            "scope": "selection",
+        },
+    ]
+
+    assert (
+        plugin._external_generation_parameter_preflight(
+            "project-a", "canvas-a", commands
+        )
+        is None
+    )
+
+
+def test_hermes_generation_path_does_not_enable_external_parameter_preflight(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    monkeypatch.delenv("DRAMACLAW_EXTERNAL_MCP", raising=False)
+    monkeypatch.setattr(
+        plugin,
+        "_request",
+        lambda *_args, **_kwargs: pytest.fail("Hermes preflight must not read canvas"),
+    )
+
+    assert (
+        plugin._external_generation_parameter_preflight(
+            "project-a",
+            "canvas-a",
+            [{"type": "run_workflow", "scope": "canvas"}],
+        )
+        is None
+    )
+
+
 def test_dynamic_workflow_plan_is_rejected_before_canvas_bridge():
     plugin = _load_plugin_module()
     handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
@@ -544,6 +667,102 @@ def test_handwritten_workflow_batch_cannot_bypass_dynamic_plan():
 
     assert result["ok"] is False
     assert result["status"] == "wrong_tool_dynamic_workflow"
+
+
+def test_external_canvas_write_uses_frontend_default_for_recommended_model(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    monkeypatch.setenv("DRAMACLAW_EXTERNAL_MCP", "1")
+    commands = [
+        {
+            "type": "create_node",
+            "node_type": "imageGenNode",
+            "data": {
+                "model": "recommended",
+                "aspectRatio": "9:16",
+                "size": "high",
+                "quality": "high",
+                "count": 1,
+            },
+        }
+    ]
+    captured = {}
+
+    monkeypatch.setattr(
+        plugin,
+        "_resolve_canvas_scope_for_write",
+        lambda project, canvas: (project, canvas, None),
+    )
+    monkeypatch.setattr(plugin, "_validate_write_commands_shape", lambda *_args: None)
+    monkeypatch.setattr(
+        plugin,
+        "_external_generation_parameter_preflight",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(plugin, "_mcp_direct_canvas_apply_enabled", lambda: False)
+
+    def fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return "dispatched"
+
+    monkeypatch.setattr(
+        plugin,
+        "_dispatch_mcp_approved_frontend_commands",
+        fake_dispatch,
+    )
+
+    result = plugin._emit_canvas_commands(
+        "project-a",
+        "canvas-a",
+        commands,
+        allow_dynamic_workflow_batch=True,
+    )
+
+    assert result == "dispatched"
+    assert "model" not in captured["commands"][0]["data"]
+
+
+def test_hermes_canvas_write_preserves_recommended_model(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.delenv("DRAMACLAW_EXTERNAL_MCP", raising=False)
+    commands = [
+        {
+            "type": "create_node",
+            "node_type": "imageGenNode",
+            "data": {"model": "recommended"},
+        }
+    ]
+    captured = {}
+
+    monkeypatch.setattr(
+        plugin,
+        "_resolve_canvas_scope_for_write",
+        lambda project, canvas: (project, canvas, None),
+    )
+    monkeypatch.setattr(plugin, "_validate_write_commands_shape", lambda *_args: None)
+    monkeypatch.setattr(
+        plugin,
+        "_external_generation_parameter_preflight",
+        lambda *_args: None,
+    )
+    monkeypatch.setattr(plugin, "_mcp_direct_canvas_apply_enabled", lambda: False)
+
+    def fake_dispatch(**kwargs):
+        captured.update(kwargs)
+        return "dispatched"
+
+    monkeypatch.setattr(plugin, "_dispatch_frontend_canvas_commands", fake_dispatch)
+
+    result = plugin._emit_canvas_commands(
+        "project-a",
+        "canvas-a",
+        commands,
+        allow_dynamic_workflow_batch=True,
+    )
+
+    assert result == "dispatched"
+    assert captured["commands"][0]["data"]["model"] == "recommended"
 
 
 def test_dynamic_workflow_creation_reaches_canvas_bridge(monkeypatch):
@@ -1625,6 +1844,76 @@ def test_freezone_plugin_clarification_tool_waits_for_frontend_result(monkeypatc
     assert pending_events[0]["event"]["type"] == "assistant.clarification.request"
     assert pending_events[0]["event"]["clarification_id"] == "clarify_01"
     assert pending_events[0]["event"]["questions"][0]["mode"] == "multiple"
+
+
+def test_external_generation_clarification_rejects_bundled_settings(monkeypatch):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    monkeypatch.setenv("DRAMACLAW_EXTERNAL_MCP", "1")
+    emitted = []
+    monkeypatch.setattr(
+        plugin,
+        "_emit_clarification_event",
+        lambda *_args, **_kwargs: emitted.append(True),
+    )
+
+    result = handlers["freezone_request_user_clarification"](
+        {
+            "title": "确认视频生成选项",
+            "questions": [
+                {
+                    "id": "video_settings",
+                    "title": "视频设置",
+                    "options": [
+                        {
+                            "id": "recommended",
+                            "label": "推荐设置",
+                            "description": "9:16、高清、5 秒并生成环境音",
+                        }
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert result["ok"] is False
+    assert result["code"] == "generation_parameter_questions_invalid"
+    assert "video_resolution" in result["required_question_ids"]["video"]
+    assert "480P" in result["agent_instruction"]
+    assert emitted == []
+
+
+def test_external_generation_clarification_accepts_separate_resolution_question(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    handlers = {name: handler for name, _schema, handler in plugin.TOOLS}
+    monkeypatch.setenv("DRAMACLAW_EXTERNAL_MCP", "1")
+    captured = {}
+
+    def fake_emit(project, canvas, event):
+        captured.update({"project": project, "canvas": canvas, "event": event})
+        return "shown"
+
+    monkeypatch.setattr(plugin, "_emit_clarification_event", fake_emit)
+    result = handlers["freezone_request_user_clarification"](
+        {
+            "title": "确认视频清晰度",
+            "questions": [
+                {
+                    "id": "video_resolution",
+                    "title": "视频清晰度",
+                    "options": [
+                        {"id": "480P", "label": "480P"},
+                        {"id": "720P", "label": "720P"},
+                    ],
+                }
+            ],
+        }
+    )
+
+    assert result == "shown"
+    assert captured["event"]["questions"][0]["options"][0]["id"] == "480P"
 
 
 def test_freezone_plugin_clarification_tool_generates_missing_id(monkeypatch):
@@ -3417,6 +3706,7 @@ def test_freezone_canvas_command_slim_result_reports_background_acceptance():
     assert summary["canvas_apply_status"] == "accepted"
     assert "workflow was accepted" in summary["agent_instruction"]
     assert "continuing on the canvas" in summary["agent_instruction"]
+    assert "do not call freezone_run_workflow again" in summary["agent_instruction"]
     assert "Do not claim generation is complete" in summary["agent_instruction"]
 
 

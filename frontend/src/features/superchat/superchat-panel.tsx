@@ -175,11 +175,12 @@ import type {
 import {
   applyCanvasChatCommandsAsync,
   canvasCommandEnvelopesRunInBackground,
+  directGenerationTargetsForPreflight,
   FREEZONE_CANVAS_COMMAND_APPROVAL_EVENT,
   FREEZONE_CANVAS_COMMAND_RESULT_EVENT,
   subscribeCanvasCommandApprovals,
   waitForImmediateCanvasCommandResult,
-  workflowVideoNodeIdsForPreflight,
+  workflowGenerationTargetsForPreflight,
 } from "@/features/freezone/canvasChatCommands";
 import { FREEZONE_CANVAS_WRITE_TOOL_NAME_SET } from "@/features/freezone/canvasCommandTools";
 import { flushFreezoneCanvasRuntime } from "@/features/freezone/canvasSyncRuntime";
@@ -2366,28 +2367,114 @@ function CanvasCommandPlanList({ plans }: { plans: CanvasCommandPlan[] | undefin
   );
 }
 
-function imageGenerateCommandNodeIds(envelopes: CanvasChatCommandEnvelope[]): string[] {
-  const nodeIds: string[] = [];
+const APPROVAL_GENERATION_ACTION_BY_NODE_TYPE: Partial<Record<CanvasNodeType, string>> = {
+  imageGenNode: "generate_image",
+  videoNode: "generate_video",
+  audioNode: "generate_audio",
+  textAnnotationNode: "generate_text",
+};
+
+function generationCommandNodeIds(
+  envelopes: CanvasChatCommandEnvelope[],
+  expectedAction: string,
+): string[] {
+  const nodeIds = new Set<string>();
+  const createNodeNeedsAction = (
+    command: Extract<CanvasChatCommand, { type: "create_node" }>,
+  ): boolean => {
+    const data = command.data as Record<string, unknown> | undefined;
+    if (expectedAction === "generate_image") return !data?.imageUrl && !data?.image_url;
+    if (expectedAction === "generate_video") return !data?.videoUrl && !data?.video_url;
+    if (expectedAction === "generate_audio") return !data?.audioUrl && !data?.audio_url;
+    if (expectedAction === "generate_text") {
+      const catalog = data?.workflowCatalog;
+      return Boolean(
+        catalog
+        && typeof catalog === "object"
+        && typeof (catalog as Record<string, unknown>).recipeId === "string"
+        && String((catalog as Record<string, unknown>).recipeId).trim(),
+      );
+    }
+    return false;
+  };
   for (const envelope of envelopes) {
+    const hasWorkflowRun = envelope.commands.some((command) => command.type === "run_workflow");
     for (const command of envelope.commands) {
-      if (command.type === "run_node_action" && command.action === "generate_image") {
-        nodeIds.push(command.node_id);
+      if (command.type === "run_node_action") {
+        if (command.action === expectedAction) nodeIds.add(command.node_id);
+        try {
+          directGenerationTargetsForPreflight(command.node_id, command.action)
+            .filter((target) => target.action === expectedAction)
+            .forEach((target) => nodeIds.add(target.nodeId));
+        } catch {
+          // A node created in this approval does not exist in the store yet.
+        }
+      }
+      if (
+        hasWorkflowRun
+        && command.type === "create_node"
+        && command.client_id
+        && APPROVAL_GENERATION_ACTION_BY_NODE_TYPE[command.node_type] === expectedAction
+        && createNodeNeedsAction(command)
+      ) {
+        nodeIds.add(command.client_id);
+      }
+      if (command.type === "run_workflow") {
+        try {
+          workflowGenerationTargetsForPreflight(command)
+            .filter((target) => target.action === expectedAction)
+            .forEach((target) => nodeIds.add(target.nodeId));
+        } catch {
+          // Newly created workflow nodes are resolved from create_node above.
+        }
       }
     }
   }
-  return nodeIds;
+  return [...nodeIds];
+}
+
+function imageGenerateCommandNodeIds(envelopes: CanvasChatCommandEnvelope[]): string[] {
+  return generationCommandNodeIds(envelopes, "generate_image");
 }
 
 function videoGenerateCommandNodeIds(envelopes: CanvasChatCommandEnvelope[]): string[] {
-  const nodeIds: string[] = [];
-  for (const envelope of envelopes) {
-    for (const command of envelope.commands) {
-      if (command.type === "run_node_action" && command.action === "generate_video") {
-        nodeIds.push(command.node_id);
-      }
-    }
+  return generationCommandNodeIds(envelopes, "generate_video");
+}
+
+function imageApprovalParamGroups(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  fallbackModel: string,
+): CanvasApprovalImageParams[] {
+  const nodeIds = imageGenerateCommandNodeIds(approval.envelopes);
+  const textValue = (value: unknown, fallback: string) =>
+    typeof value === "string" && value.trim() ? value.trim() : fallback;
+  const groups = new Map<string, CanvasApprovalImageParams>();
+  for (const nodeId of nodeIds) {
+    const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
+    const params: CanvasApprovalImageParams = {
+      nodeId,
+      nodeIds: [nodeId],
+      model: textValue(nodeData?.model, fallbackModel),
+      aspectRatio: textValue(nodeData?.aspectRatio, "16:9"),
+      size: textValue(nodeData?.size, "2K"),
+      quality: textValue(nodeData?.quality, "medium"),
+      count: typeof nodeData?.count === "number" && CANVAS_APPROVAL_IMAGE_COUNT_OPTIONS.includes(nodeData.count as 1 | 2 | 4)
+        ? nodeData.count
+        : 1,
+    };
+    const signature = JSON.stringify({
+      model: params.model,
+      aspectRatio: params.aspectRatio,
+      size: params.size,
+      quality: params.quality,
+      count: params.count,
+    });
+    const existing = groups.get(signature);
+    if (existing) existing.nodeIds = [...(existing.nodeIds ?? []), nodeId];
+    else groups.set(signature, params);
   }
-  return nodeIds;
+  return [...groups.values()];
 }
 
 function imageApprovalInitialParams(
@@ -2395,23 +2482,7 @@ function imageApprovalInitialParams(
   canvasNodes: CanvasNode[],
   fallbackModel: string,
 ): CanvasApprovalImageParams | null {
-  const nodeIds = imageGenerateCommandNodeIds(approval.envelopes);
-  if (nodeIds.length !== 1) return null;
-  const nodeId = nodeIds[0];
-  const nodeData = canvasNodes.find((node) => node.id === nodeId)?.data as Record<string, unknown> | undefined;
-  const textValue = (value: unknown, fallback: string) =>
-    typeof value === "string" && value.trim() ? value.trim() : fallback;
-  const countValue = typeof nodeData?.count === "number" && CANVAS_APPROVAL_IMAGE_COUNT_OPTIONS.includes(nodeData.count as 1 | 2 | 4)
-    ? nodeData.count
-    : 1;
-  return {
-    nodeId,
-    model: textValue(nodeData?.model, fallbackModel),
-    aspectRatio: textValue(nodeData?.aspectRatio, "16:9"),
-    size: textValue(nodeData?.size, "2K"),
-    quality: textValue(nodeData?.quality, "medium"),
-    count: countValue,
-  };
+  return imageApprovalParamGroups(approval, canvasNodes, fallbackModel)[0] ?? null;
 }
 
 function resolutionToVideoQuality(value: string): VideoGenQuality | null {
@@ -2570,6 +2641,67 @@ function isSeedance20ApprovalModel(model: string): boolean {
   return /(?:seedance2|omniflash)/i.test(model.replace(/[\s._-]/g, ""));
 }
 
+function videoApprovalParamGroups(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+  canvasEdges: CanvasEdge[],
+  models: Array<{
+    id: string;
+    label?: string;
+    resolutionOptions?: string[];
+    minDuration?: number | null;
+    maxDuration?: number | null;
+  }>,
+  fallbackModel: string,
+): CanvasApprovalVideoParams[] {
+  const nodeIds = videoGenerateCommandNodeIds(approval.envelopes);
+  const textValue = (value: unknown, fallback: string) =>
+    typeof value === "string" && value.trim() ? value.trim() : fallback;
+  const groups = new Map<string, CanvasApprovalVideoParams>();
+  for (const nodeId of nodeIds) {
+    const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
+    if (nodeData.isUpscaleNode === true) continue;
+    const rawModel = textValue(nodeData?.model, fallbackModel);
+    const selectedModel = models.find((item) => item.id === rawModel) ?? models[0];
+    const model = selectedModel?.id ?? rawModel;
+    const qualityOptions = videoQualityOptionsForApproval(selectedModel);
+    const durationBounds = videoDurationBoundsForApproval(selectedModel);
+    const aspectRatio = textValue(nodeData?.aspectRatio, "16:9");
+    const requiresHumanReviewConfirmation = (
+      isSeedance20ApprovalModel(model)
+      && approvalVideoHasImageInput(approval, canvasNodes, canvasEdges, nodeId, nodeData)
+      && nodeData.humanReview !== true
+    );
+    const params: CanvasApprovalVideoParams = {
+      nodeId,
+      nodeIds: [nodeId],
+      model,
+      aspectRatio: (VIDEO_GENERATION_ASPECT_RATIOS as readonly string[]).includes(aspectRatio)
+        ? aspectRatio
+        : "16:9",
+      quality: normalizeVideoQualityForApproval(nodeData?.quality, qualityOptions),
+      durationSec: clampVideoDurationForApproval(nodeData?.durationSec, durationBounds),
+      generateAudio: Boolean(nodeData?.generateAudio),
+      humanReview: requiresHumanReviewConfirmation || Boolean(nodeData?.humanReview),
+      requiresHumanReviewConfirmation,
+      count: isCanvasApprovalVideoCount(nodeData?.count) ? nodeData.count : 1,
+    };
+    const signature = JSON.stringify({
+      model: params.model,
+      aspectRatio: params.aspectRatio,
+      quality: params.quality,
+      durationSec: params.durationSec,
+      generateAudio: params.generateAudio,
+      humanReview: params.humanReview,
+      count: params.count,
+    });
+    const existing = groups.get(signature);
+    if (existing) existing.nodeIds = [...(existing.nodeIds ?? []), nodeId];
+    else groups.set(signature, params);
+  }
+  return [...groups.values()];
+}
+
 function videoApprovalInitialParams(
   approval: PendingCanvasCommandApproval,
   canvasNodes: CanvasNode[],
@@ -2583,41 +2715,77 @@ function videoApprovalInitialParams(
   }>,
   fallbackModel: string,
 ): CanvasApprovalVideoParams | null {
-  const nodeIds = videoGenerateCommandNodeIds(approval.envelopes);
-  if (nodeIds.length !== 1) return null;
-  const nodeId = nodeIds[0];
-  const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
-  if (nodeData.isUpscaleNode === true) return null;
-  const textValue = (value: unknown, fallback: string) =>
-    typeof value === "string" && value.trim() ? value.trim() : fallback;
-  const rawModel = textValue(nodeData?.model, fallbackModel);
-  const selectedModel = models.find((item) => item.id === rawModel) ?? models[0];
-  const model = selectedModel?.id ?? rawModel;
-  const qualityOptions = videoQualityOptionsForApproval(selectedModel);
-  const durationBounds = videoDurationBoundsForApproval(selectedModel);
-  const aspectRatio = textValue(nodeData?.aspectRatio, "16:9");
-  const normalizedAspectRatio = (VIDEO_GENERATION_ASPECT_RATIOS as readonly string[]).includes(aspectRatio)
-    ? aspectRatio
-    : "16:9";
-  const countValue = isCanvasApprovalVideoCount(nodeData?.count)
-    ? nodeData.count
-    : 1;
-  const requiresHumanReviewConfirmation = (
-    isSeedance20ApprovalModel(model)
-    && approvalVideoHasImageInput(approval, canvasNodes, canvasEdges, nodeId, nodeData)
-    && nodeData.humanReview !== true
-  );
+  return videoApprovalParamGroups(
+    approval,
+    canvasNodes,
+    canvasEdges,
+    models,
+    fallbackModel,
+  )[0] ?? null;
+}
+
+function textApprovalInitialParams(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+): CanvasApprovalTextParams | null {
+  const nodeIds = generationCommandNodeIds(approval.envelopes, "generate_text");
+  if (nodeIds.length === 0) return null;
+  const nodeData = approvalNodeData(approval, canvasNodes, nodeIds[0]);
+  const catalog = nodeData.workflowCatalog && typeof nodeData.workflowCatalog === "object"
+    ? nodeData.workflowCatalog as Record<string, unknown>
+    : null;
   return {
-    nodeId,
-    model,
-    aspectRatio: normalizedAspectRatio,
-    quality: normalizeVideoQualityForApproval(nodeData?.quality, qualityOptions),
-    durationSec: clampVideoDurationForApproval(nodeData?.durationSec, durationBounds),
-    generateAudio: Boolean(nodeData?.generateAudio),
-    humanReview: requiresHumanReviewConfirmation || Boolean(nodeData?.humanReview),
-    requiresHumanReviewConfirmation,
-    count: countValue,
+    nodeIds,
+    recipeLabel: typeof catalog?.recipeLabel === "string" && catalog.recipeLabel.trim()
+      ? catalog.recipeLabel.trim()
+      : typeof catalog?.recipeId === "string" && catalog.recipeId.trim()
+        ? catalog.recipeId.trim()
+        : "工作流文案 Recipe",
   };
+}
+
+function audioApprovalInitialParams(
+  approval: PendingCanvasCommandApproval,
+  canvasNodes: CanvasNode[],
+): CanvasApprovalAudioParams[] {
+  const nodeIds = generationCommandNodeIds(approval.envelopes, "generate_audio");
+  const groups = new Map<string, CanvasApprovalAudioParams>();
+  for (const nodeId of nodeIds) {
+    const nodeData = approvalNodeData(approval, canvasNodes, nodeId);
+    const audioKind = nodeData.audioKind === "music" ? "music" : "speech";
+    const params: CanvasApprovalAudioParams = {
+      nodeId,
+      nodeIds: [nodeId],
+      audioKind,
+      speechMode: nodeData.speechMode === "clone" ? "clone" : "preset",
+      presetVoice: typeof nodeData.presetVoice === "string" && nodeData.presetVoice.trim()
+        ? nodeData.presetVoice.trim()
+        : "Serena",
+      voiceLabel: typeof nodeData.voiceLabel === "string" && nodeData.voiceLabel.trim()
+        ? nodeData.voiceLabel.trim()
+        : "项目默认声线",
+      emotionPrompt: typeof nodeData.emotionPrompt === "string" ? nodeData.emotionPrompt : "",
+      musicLengthSec: Math.max(3, Math.round(
+        typeof nodeData.musicLengthMs === "number" ? nodeData.musicLengthMs / 1000 : 30,
+      )),
+      forceInstrumental: nodeData.forceInstrumental !== false,
+      respectSectionsDurations: nodeData.respectSectionsDurations !== false,
+    };
+    const signature = JSON.stringify({
+      audioKind: params.audioKind,
+      speechMode: params.speechMode,
+      presetVoice: params.presetVoice,
+      voiceLabel: params.voiceLabel,
+      emotionPrompt: params.emotionPrompt,
+      musicLengthSec: params.musicLengthSec,
+      forceInstrumental: params.forceInstrumental,
+      respectSectionsDurations: params.respectSectionsDurations,
+    });
+    const existing = groups.get(signature);
+    if (existing) existing.nodeIds = [...(existing.nodeIds ?? []), nodeId];
+    else groups.set(signature, params);
+  }
+  return [...groups.values()];
 }
 
 function videoUpscaleApprovalInitialParams(
@@ -2639,27 +2807,7 @@ function videoUpscaleApprovalInitialParams(
 function canvasApprovalVideoCandidateNodeIds(
   approval: PendingCanvasCommandApproval,
 ): string[] {
-  const nodeIds = new Set(videoGenerateCommandNodeIds(approval.envelopes));
-  for (const envelope of approval.envelopes) {
-    const runWorkflowCommands = envelope.commands.filter(
-      (command): command is Extract<CanvasChatCommand, { type: "run_workflow" }> =>
-        command.type === "run_workflow",
-    );
-    if (runWorkflowCommands.length === 0) continue;
-    for (const command of envelope.commands) {
-      if (command.type === "create_node" && command.client_id && command.node_type === "videoNode") {
-        nodeIds.add(command.client_id);
-      }
-    }
-    for (const command of runWorkflowCommands) {
-      try {
-        workflowVideoNodeIdsForPreflight(command).forEach((nodeId) => nodeIds.add(nodeId));
-      } catch {
-        // Newly created workflow nodes do not exist in the canvas store yet.
-      }
-    }
-  }
-  return [...nodeIds];
+  return videoGenerateCommandNodeIds(approval.envelopes);
 }
 
 function canvasApprovalHumanReviewNodeIds(
@@ -2686,12 +2834,42 @@ function canvasApprovalRequiresHumanReviewConfirmation(
   return canvasApprovalHumanReviewNodeIds(approval, canvasNodes, canvasEdges).length > 0;
 }
 
+function amendCanvasApprovalWithGenerationData(
+  approval: PendingCanvasCommandApproval,
+  nodeIds: string[],
+  action: string,
+  data: Record<string, unknown>,
+): PendingCanvasCommandApproval {
+  const remaining = new Set(nodeIds);
+  if (remaining.size === 0) return approval;
+  return {
+    ...approval,
+    envelopes: approval.envelopes.map((envelope) => ({
+      ...envelope,
+      commands: envelope.commands.flatMap((command) => {
+        const isExecutionCommand = command.type === "run_workflow" || (
+          command.type === "run_node_action" && command.action === action
+        );
+        if (!isExecutionCommand || remaining.size === 0) return [command];
+        const updates = [...remaining].map((nodeId) => {
+          remaining.delete(nodeId);
+          return {
+            type: "update_node_data" as const,
+            node_id: nodeId,
+            data: { ...data },
+          };
+        });
+        return [...updates, command];
+      }),
+    })),
+  };
+}
+
 function amendCanvasApprovalWithImageParams(
   approval: PendingCanvasCommandApproval,
   params: CanvasApprovalImageParams | null,
 ): PendingCanvasCommandApproval {
   if (!params) return approval;
-  let inserted = false;
   const imageData = {
     model: params.model,
     aspectRatio: params.aspectRatio,
@@ -2699,31 +2877,12 @@ function amendCanvasApprovalWithImageParams(
     quality: params.quality,
     count: params.count,
   };
-  return {
-    ...approval,
-    envelopes: approval.envelopes.map((envelope) => ({
-      ...envelope,
-      commands: envelope.commands.flatMap((command) => {
-        if (
-          inserted ||
-          command.type !== "run_node_action" ||
-          command.action !== "generate_image" ||
-          command.node_id !== params.nodeId
-        ) {
-          return [command];
-        }
-        inserted = true;
-        return [
-          {
-            type: "update_node_data" as const,
-            node_id: params.nodeId,
-            data: imageData,
-          },
-          command,
-        ];
-      }),
-    })),
-  };
+  return amendCanvasApprovalWithGenerationData(
+    approval,
+    params.nodeIds ?? [params.nodeId],
+    "generate_image",
+    imageData,
+  );
 }
 
 function amendCanvasApprovalWithVideoParams(
@@ -2731,7 +2890,6 @@ function amendCanvasApprovalWithVideoParams(
   params: CanvasApprovalVideoParams | null,
 ): PendingCanvasCommandApproval {
   if (!params) return approval;
-  let inserted = false;
   const videoData = {
     model: params.model,
     aspectRatio: params.aspectRatio,
@@ -2741,31 +2899,40 @@ function amendCanvasApprovalWithVideoParams(
     humanReview: params.humanReview,
     count: params.count,
   };
-  return {
-    ...approval,
-    envelopes: approval.envelopes.map((envelope) => ({
-      ...envelope,
-      commands: envelope.commands.flatMap((command) => {
-        if (
-          inserted ||
-          command.type !== "run_node_action" ||
-          command.action !== "generate_video" ||
-          command.node_id !== params.nodeId
-        ) {
-          return [command];
-        }
-        inserted = true;
-        return [
-          {
-            type: "update_node_data" as const,
-            node_id: params.nodeId,
-            data: videoData,
-          },
-          command,
-        ];
-      }),
-    })),
-  };
+  return amendCanvasApprovalWithGenerationData(
+    approval,
+    params.nodeIds ?? [params.nodeId],
+    "generate_video",
+    videoData,
+  );
+}
+
+function amendCanvasApprovalWithAudioParams(
+  approval: PendingCanvasCommandApproval,
+  params: CanvasApprovalAudioParams | null,
+): PendingCanvasCommandApproval {
+  if (!params) return approval;
+  const audioData = params.audioKind === "music"
+    ? {
+      audioKind: "music",
+      model: "suno_music",
+      musicLengthMs: params.musicLengthSec * 1000,
+      forceInstrumental: params.forceInstrumental,
+      respectSectionsDurations: params.respectSectionsDurations,
+    }
+    : {
+      audioKind: "speech",
+      speechMode: params.speechMode,
+      presetModel: "edge-tts",
+      presetVoice: params.presetVoice,
+      emotionPrompt: params.emotionPrompt,
+    };
+  return amendCanvasApprovalWithGenerationData(
+    approval,
+    params.nodeIds ?? [params.nodeId],
+    "generate_audio",
+    audioData,
+  );
 }
 
 function amendCanvasApprovalWithVideoUpscaleParams(
@@ -2838,6 +3005,13 @@ function amendCanvasApprovalWithHumanReview(
 
 export const amendCanvasApprovalWithImageParamsForTest = amendCanvasApprovalWithImageParams;
 export const amendCanvasApprovalWithVideoParamsForTest = amendCanvasApprovalWithVideoParams;
+export const amendCanvasApprovalWithAudioParamsForTest = amendCanvasApprovalWithAudioParams;
+export const imageApprovalInitialParamsForTest = imageApprovalInitialParams;
+export const videoApprovalInitialParamsForTest = videoApprovalInitialParams;
+export const imageApprovalParamGroupsForTest = imageApprovalParamGroups;
+export const videoApprovalParamGroupsForTest = videoApprovalParamGroups;
+export const textApprovalInitialParamsForTest = textApprovalInitialParams;
+export const audioApprovalInitialParamsForTest = audioApprovalInitialParams;
 export const amendCanvasApprovalWithHumanReviewForTest = amendCanvasApprovalWithHumanReview;
 export const canvasApprovalRequiresHumanReviewConfirmationForTest =
   canvasApprovalRequiresHumanReviewConfirmation;
@@ -3071,11 +3245,11 @@ function CanvasCommandApprovalCard({
   const fallbackImageModel = imageModels.models[0]?.id ?? "";
   const fallbackVideoModel = videoModels.models[0]?.id ?? "";
   const initialImageParams = useMemo(
-    () => imageApprovalInitialParams(approval, canvasNodes, fallbackImageModel),
+    () => imageApprovalParamGroups(approval, canvasNodes, fallbackImageModel),
     [approval, canvasNodes, fallbackImageModel],
   );
   const initialVideoParams = useMemo(
-    () => videoApprovalInitialParams(
+    () => videoApprovalParamGroups(
       approval,
       canvasNodes,
       canvasEdges,
@@ -3088,8 +3262,8 @@ function CanvasCommandApprovalCard({
     () => videoUpscaleApprovalInitialParams(approval, canvasNodes),
     [approval, canvasNodes],
   );
-  const [imageParams, setImageParams] = useState<CanvasApprovalImageParams | null>(() => initialImageParams);
-  const [videoParams, setVideoParams] = useState<CanvasApprovalVideoParams | null>(() => initialVideoParams);
+  const [imageParams, setImageParams] = useState<CanvasApprovalImageParams[]>(() => initialImageParams);
+  const [videoParams, setVideoParams] = useState<CanvasApprovalVideoParams[]>(() => initialVideoParams);
   const [videoUpscaleParams, setVideoUpscaleParams] = useState<CanvasApprovalVideoUpscaleParams | null>(
     () => initialVideoUpscaleParams,
   );
@@ -3133,8 +3307,14 @@ function CanvasCommandApprovalCard({
   }, [approval, isExecuting, onCancel]);
 
   const amendedApproval = useMemo(() => {
-    const withImageParams = amendCanvasApprovalWithImageParams(approval, imageParams);
-    const withVideoParams = amendCanvasApprovalWithVideoParams(withImageParams, videoParams);
+    const withImageParams = imageParams.reduce(
+      (current, params) => amendCanvasApprovalWithImageParams(current, params),
+      approval,
+    );
+    const withVideoParams = videoParams.reduce(
+      (current, params) => amendCanvasApprovalWithVideoParams(current, params),
+      withImageParams,
+    );
     const withVideoUpscaleParams = amendCanvasApprovalWithVideoUpscaleParams(
       withVideoParams,
       videoUpscaleParams,
@@ -3145,39 +3325,29 @@ function CanvasCommandApprovalCard({
       humanReviewEnabled,
     );
   }, [approval, humanReviewEnabled, humanReviewNodeIds, imageParams, videoParams, videoUpscaleParams]);
-  const imageModelOptions = useMemo(() => {
+  const imageModelOptionsFor = useCallback((params: CanvasApprovalImageParams) => {
     const options = imageModels.models.map((model) => ({ value: model.id, label: model.label ?? model.id }));
-    if (imageParams?.model && !options.some((option) => option.value === imageParams.model)) {
-      return [{ value: imageParams.model, label: imageParams.model }, ...options];
+    if (params.model && !options.some((option) => option.value === params.model)) {
+      return [{ value: params.model, label: params.model }, ...options];
     }
     return options;
-  }, [imageModels.models, imageParams?.model]);
-  const updateImageParams = useCallback((patch: Partial<CanvasApprovalImageParams>) => {
-    setImageParams((current) => current ? { ...current, ...patch } : current);
+  }, [imageModels.models]);
+  const updateImageParams = useCallback((index: number, patch: Partial<CanvasApprovalImageParams>) => {
+    setImageParams((current) => current.map((params, paramsIndex) => (
+      paramsIndex === index ? { ...params, ...patch } : params
+    )));
   }, []);
-  const selectedVideoModel = useMemo(
-    () => videoModels.models.find((model) => model.id === videoParams?.model) ?? videoModels.models[0],
-    [videoModels.models, videoParams?.model],
-  );
-  const videoQualityOptions = useMemo(
-    () => videoQualityOptionsForApproval(selectedVideoModel),
-    [selectedVideoModel],
-  );
-  const videoDurationBounds = useMemo(
-    () => videoDurationBoundsForApproval(selectedVideoModel),
-    [selectedVideoModel],
-  );
-  const videoModelOptions = useMemo(() => {
+  const videoModelOptionsFor = useCallback((params: CanvasApprovalVideoParams) => {
     const options = videoModels.models.map((model) => ({ value: model.id, label: model.label ?? model.id }));
-    if (videoParams?.model && !options.some((option) => option.value === videoParams.model)) {
-      return [{ value: videoParams.model, label: videoParams.model }, ...options];
+    if (params.model && !options.some((option) => option.value === params.model)) {
+      return [{ value: params.model, label: params.model }, ...options];
     }
     return options;
-  }, [videoModels.models, videoParams?.model]);
-  const updateVideoParams = useCallback((patch: Partial<CanvasApprovalVideoParams>) => {
-    setVideoParams((current) => {
-      if (!current) return current;
-      const next = { ...current, ...patch };
+  }, [videoModels.models]);
+  const updateVideoParams = useCallback((index: number, patch: Partial<CanvasApprovalVideoParams>) => {
+    setVideoParams((current) => current.map((params, paramsIndex) => {
+      if (paramsIndex !== index) return params;
+      const next = { ...params, ...patch };
       const model = videoModels.models.find((item) => item.id === next.model) ?? videoModels.models[0];
       const qualityOptions = videoQualityOptionsForApproval(model);
       const durationBounds = videoDurationBoundsForApproval(model);
@@ -3186,7 +3356,7 @@ function CanvasCommandApprovalCard({
         quality: normalizeVideoQualityForApproval(next.quality, qualityOptions),
         durationSec: clampVideoDurationForApproval(next.durationSec, durationBounds),
       };
-    });
+    }));
   }, [videoModels.models]);
   const updateVideoUpscaleParams = useCallback((patch: Partial<CanvasApprovalVideoUpscaleParams>) => {
     setVideoUpscaleParams((current) => {
@@ -3199,7 +3369,6 @@ function CanvasCommandApprovalCard({
       };
     });
   }, []);
-
   return (
     <div className="mt-3 w-full min-w-0 overflow-hidden rounded-xl border border-amber-400/25 bg-background/95 text-xs text-muted-foreground shadow-lg backdrop-blur-sm">
       <div className="flex items-start gap-2 border-b border-amber-400/15 px-3 py-2">
@@ -3211,6 +3380,13 @@ function CanvasCommandApprovalCard({
         <Badge variant="outline" className="rounded-md uppercase">{isExecuting ? "执行中" : "确认"}</Badge>
       </div>
       <CanvasCommandPlanList plans={approval.plans} />
+      {(imageParams.length > 0 || videoParams.length > 0) && (
+        <div className="flex items-center gap-2 border-t border-amber-400/10 bg-white/[0.025] px-3 py-1.5 text-[11px] font-medium text-foreground/90">
+          <SlidersHorizontal className="size-3.5 text-muted-foreground" />
+          生成设置
+          <span className="ml-auto text-[10px] font-normal text-muted-foreground">确认后统一写入节点</span>
+        </div>
+      )}
       {humanReviewNodeIds.length > 0 && (
         <div className="flex items-center justify-between gap-3 border-t border-amber-400/10 bg-amber-400/10 px-3 py-2">
           <div className="min-w-0">
@@ -3240,23 +3416,27 @@ function CanvasCommandApprovalCard({
           </button>
         </div>
       )}
-      {imageParams && (
-        <div className="border-t border-amber-400/10 px-3 py-1.5">
+      {imageParams.map((imageParam, imageParamIndex) => (
+        <div key={`${imageParam.nodeId}:${imageParam.model}`} className="border-t border-amber-400/10 px-3 py-1.5">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-foreground">
+              <Image className="size-3" />图片
+              {(imageParam.nodeIds?.length ?? 1) > 1 ? ` ×${imageParam.nodeIds?.length}` : ""}
+            </span>
+            <span className="h-4 w-px bg-white/[0.12]" />
             <CanvasApprovalImageParamSelect
               ariaLabel="图片模型"
               disabled={isExecuting}
-              icon={<Image className="size-3" />}
-              value={imageParams.model}
-              onChange={(value) => updateImageParams({ model: value })}
-              options={imageModelOptions}
+              value={imageParam.model}
+              onChange={(value) => updateImageParams(imageParamIndex, { model: value })}
+              options={imageModelOptionsFor(imageParam)}
             />
             <span className="h-4 w-px bg-white/[0.12]" />
             <CanvasApprovalImageParamSelect
               ariaLabel="图片比例"
               disabled={isExecuting}
-              value={imageParams.aspectRatio}
-              onChange={(value) => updateImageParams({ aspectRatio: value })}
+              value={imageParam.aspectRatio}
+              onChange={(value) => updateImageParams(imageParamIndex, { aspectRatio: value })}
               options={CANVAS_APPROVAL_IMAGE_ASPECT_RATIO_OPTIONS.map((option) => ({
                 value: option,
                 label: option === "auto" ? "自动比例" : option,
@@ -3266,58 +3446,69 @@ function CanvasCommandApprovalCard({
             <CanvasApprovalImageParamSelect
               ariaLabel="图片分辨率"
               disabled={isExecuting}
-              value={imageParams.size}
-              onChange={(value) => updateImageParams({ size: value })}
+              value={imageParam.size}
+              onChange={(value) => updateImageParams(imageParamIndex, { size: value })}
               options={CANVAS_APPROVAL_IMAGE_SIZE_OPTIONS.map((option) => ({ value: option, label: option }))}
             />
             <span className="h-4 w-px bg-white/[0.12]" />
             <CanvasApprovalImageParamSelect
               ariaLabel="图片画质"
               disabled={isExecuting}
-              value={imageParams.quality}
-              onChange={(value) => updateImageParams({ quality: value })}
+              value={imageParam.quality}
+              onChange={(value) => updateImageParams(imageParamIndex, { quality: value })}
               options={CANVAS_APPROVAL_IMAGE_QUALITY_OPTIONS.map((option) => ({ value: option, label: option }))}
             />
             <span className="h-4 w-px bg-white/[0.12]" />
             <CanvasApprovalImageParamSelect
               ariaLabel="图片数量"
               disabled={isExecuting}
-              value={String(imageParams.count)}
-              onChange={(value) => updateImageParams({ count: Number(value) })}
+              value={String(imageParam.count)}
+              onChange={(value) => updateImageParams(imageParamIndex, { count: Number(value) })}
               options={CANVAS_APPROVAL_IMAGE_COUNT_OPTIONS.map((option) => ({ value: String(option), label: `${option} 张` }))}
             />
           </div>
         </div>
-      )}
-      {videoParams && (
-        <div className="border-t border-amber-400/10 px-3 py-1">
+      ))}
+      {videoParams.map((videoParam, videoParamIndex) => {
+        const selectedVideoModel = videoModels.models.find((model) => model.id === videoParam.model)
+          ?? videoModels.models[0];
+        const videoQualityOptions = videoQualityOptionsForApproval(selectedVideoModel);
+        const videoDurationBounds = videoDurationBoundsForApproval(selectedVideoModel);
+        return (
+        <div key={`${videoParam.nodeId}:${videoParam.model}`} className="border-t border-amber-400/10 px-3 py-1">
           <div className="flex min-w-0 flex-wrap items-center gap-x-1.5 gap-y-0.5">
+            <span className="inline-flex items-center gap-1 text-[11px] font-medium text-foreground">
+              <Play className="size-3" />视频
+              {(videoParam.nodeIds?.length ?? 1) > 1 ? ` ×${videoParam.nodeIds?.length}` : ""}
+            </span>
+            <span className="h-3.5 w-px bg-white/[0.12]" />
             <CanvasApprovalImageParamSelect
               ariaLabel="视频模型"
               disabled={isExecuting}
-              value={videoParams.model}
-              onChange={(value) => updateVideoParams({ model: value })}
-              options={videoModelOptions}
+              value={videoParam.model}
+              onChange={(value) => updateVideoParams(videoParamIndex, { model: value })}
+              options={videoModelOptionsFor(videoParam)}
             />
             <span className="h-3.5 w-px bg-white/[0.12]" />
             <CanvasApprovalVideoConfigChip
               disabled={isExecuting}
               durationBounds={videoDurationBounds}
-              onChange={updateVideoParams}
-              params={videoParams}
+              onChange={(patch) => updateVideoParams(videoParamIndex, patch)}
+              params={videoParam}
               qualityOptions={videoQualityOptions}
             />
             <span className="h-3.5 w-px bg-white/[0.12]" />
             <CanvasApprovalImageParamSelect
               ariaLabel="视频数量"
               disabled={isExecuting}
-              value={String(videoParams.count)}
-              onChange={(value) => updateVideoParams({ count: Number(value) as 1 | 2 | 4 })}
+              value={String(videoParam.count)}
+              onChange={(value) => updateVideoParams(videoParamIndex, { count: Number(value) as 1 | 2 | 4 })}
               options={CANVAS_APPROVAL_VIDEO_COUNT_OPTIONS.map((option) => ({ value: String(option), label: `${option} 个` }))}
             />
           </div>
         </div>
-      )}
+        );
+      })}
       {videoUpscaleParams && (
         <div className="border-t border-amber-400/10 px-3 py-1.5">
           <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
@@ -9770,6 +9961,7 @@ type PendingCanvasCommandApproval = {
 
 type CanvasApprovalImageParams = {
   nodeId: string;
+  nodeIds?: string[];
   model: string;
   aspectRatio: string;
   size: string;
@@ -9779,6 +9971,7 @@ type CanvasApprovalImageParams = {
 
 type CanvasApprovalVideoParams = {
   nodeId: string;
+  nodeIds?: string[];
   model: string;
   aspectRatio: string;
   quality: VideoGenQuality;
@@ -9793,6 +9986,24 @@ type CanvasApprovalVideoUpscaleParams = {
   nodeId: string;
   resolution: FreezoneVideoUpscaleResolution;
   denoise: FreezoneVideoUpscaleDenoise;
+};
+
+type CanvasApprovalTextParams = {
+  nodeIds: string[];
+  recipeLabel: string;
+};
+
+type CanvasApprovalAudioParams = {
+  nodeId: string;
+  nodeIds?: string[];
+  audioKind: "speech" | "music";
+  speechMode: "preset" | "clone";
+  presetVoice: string;
+  voiceLabel: string;
+  emotionPrompt: string;
+  musicLengthSec: number;
+  forceInstrumental: boolean;
+  respectSectionsDurations: boolean;
 };
 
 type CanvasCommandApprovalCancelReason = "user" | "timeout";
