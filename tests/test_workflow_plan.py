@@ -1324,6 +1324,34 @@ def test_dynamic_workflow_plan_validates_skill_inputs(monkeypatch):
     assert valid["recommended_run_after_create"] is False
 
 
+def test_strict_workflow_plan_rejects_disconnected_multi_node_graph():
+    plan = _dynamic_plan(image_count=2)
+    plan["edges"] = []
+
+    result = validate_workflow_plan(plan)
+
+    assert result["ok"] is False
+    assert result["errors"] == [
+        {
+            "path": "edges",
+            "message": "multi-node workflow must declare dependency edges",
+        }
+    ]
+
+    partially_connected = _dynamic_plan(image_count=2)
+    partially_connected["edges"] = partially_connected["edges"][:1]
+
+    partial_result = validate_workflow_plan(partially_connected)
+
+    assert partial_result["ok"] is False
+    assert partial_result["errors"] == [
+        {
+            "path": "edges",
+            "message": "workflow graph contains disconnected nodes: product_image_2",
+        }
+    ]
+
+
 def test_strict_workflow_plan_rejects_unknown_node_bad_edge_and_cycle():
     plan = _dynamic_plan()
     plan["nodes"].append({"id": "invalid", "node_type": "inventedImageNode"})

@@ -171,7 +171,12 @@ def validate_workflow_plan(
         edges = []
     elif len(edges) > MAX_WORKFLOW_EDGES:
         errors.append(_issue("edges", f"must contain at most {MAX_WORKFLOW_EDGES} edges"))
+    elif len(node_types) > 1 and not edges:
+        errors.append(_issue("edges", "multi-node workflow must declare dependency edges"))
     adjacency: dict[str, list[str]] = {node_id: [] for node_id in node_types}
+    undirected_adjacency: dict[str, set[str]] = {
+        node_id: set() for node_id in node_types
+    }
     incoming_edges: dict[str, list[dict[str, Any]]] = {
         node_id: [] for node_id in node_types
     }
@@ -205,6 +210,9 @@ def validate_workflow_plan(
                         f"{link_type} is incompatible with {node_types[source]} -> {node_types[target]}",
                     )
                 )
+            else:
+                undirected_adjacency[source].add(target)
+                undirected_adjacency[target].add(source)
             adjacency[source].append(target)
             if (
                 link_type in {"media_input_for", "derived_from"}
@@ -301,6 +309,25 @@ def validate_workflow_plan(
                 _issue(
                     f"edges[{index}]",
                     "all videoComposeNode inputs must use composition_input_for",
+                )
+            )
+
+    if len(node_types) > 1 and edges:
+        first_node = next(iter(node_types))
+        connected = {first_node}
+        pending = [first_node]
+        while pending:
+            current = pending.pop()
+            for neighbor in undirected_adjacency[current] - connected:
+                connected.add(neighbor)
+                pending.append(neighbor)
+        disconnected = sorted(set(node_types) - connected)
+        if disconnected:
+            errors.append(
+                _issue(
+                    "edges",
+                    "workflow graph contains disconnected nodes: "
+                    + ", ".join(disconnected),
                 )
             )
 

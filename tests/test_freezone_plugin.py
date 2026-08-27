@@ -215,6 +215,13 @@ def _install_workflow_draft_api(monkeypatch, plugin, project_dir: Path) -> None:
 
 
 def test_freezone_plugin_registers_canvas_command_tools():
+    from novelvideo.freezone.workflow_plan import (
+        ALLOWED_LINK_TYPES,
+        ALLOWED_NODE_TYPES,
+        MAX_WORKFLOW_EDGES,
+        MAX_WORKFLOW_NODES,
+    )
+
     plugin = _load_plugin_module()
 
     names = {name for name, _schema, _handler in plugin.TOOLS}
@@ -251,6 +258,45 @@ def test_freezone_plugin_registers_canvas_command_tools():
     assert create_schema["required"] == ["plan"]
     assert "workflow_type" not in create_schema["properties"]
     assert "items" not in create_schema["properties"]
+    plan_schema = create_schema["properties"]["plan"]
+    assert plan_schema["type"] == "object"
+    assert plan_schema["required"] == ["schema_version", "skill", "nodes", "edges"]
+    assert plan_schema["properties"]["schema_version"]["enum"] == [
+        "freezone_workflow_plan.v1"
+    ]
+    assert plan_schema["properties"]["nodes"]["maxItems"] == MAX_WORKFLOW_NODES
+    node_variants = plan_schema["properties"]["nodes"]["items"]["anyOf"]
+    assert set(
+        node_type
+        for variant in node_variants
+        for node_type in variant["properties"]["node_type"]["enum"]
+    ) == ALLOWED_NODE_TYPES
+    recipe_variant = node_variants[0]
+    workflow_catalog = recipe_variant["properties"]["data"]["properties"][
+        "workflowCatalog"
+    ]
+    assert recipe_variant["required"] == ["id", "node_type", "data"]
+    assert workflow_catalog["required"] == ["recipeId"]
+    assert set(workflow_catalog["properties"]) >= {
+        "skillId",
+        "skillVersion",
+        "recipeId",
+        "recipeVersion",
+        "recipePipeline",
+    }
+    assert recipe_variant["properties"]["prompt"] == {"type": "string"}
+    assert plan_schema["properties"]["edges"]["items"]["required"] == [
+        "source",
+        "target",
+        "link_type",
+    ]
+    assert plan_schema["properties"]["edges"]["maxItems"] == MAX_WORKFLOW_EDGES
+    assert set(
+        plan_schema["properties"]["edges"]["items"]["properties"]["link_type"][
+            "enum"
+        ]
+    ) == ALLOWED_LINK_TYPES
+    assert plan_schema["properties"] != {}
     intent_schema = schemas["freezone_create_workflow_from_intent"]["parameters"]
     assert intent_schema["required"] == ["intent"]
     assert intent_schema["properties"]["intent"]["required"] == [
@@ -270,6 +316,74 @@ def test_freezone_plugin_registers_canvas_command_tools():
         "expected_revision",
         "changes",
     ]
+
+
+def test_workflow_graph_schema_rejects_missing_skill_and_executable_recipe():
+    from jsonschema import Draft202012Validator
+
+    plugin = _load_plugin_module()
+    schema = next(
+        schema
+        for name, schema, _handler in plugin.TOOLS
+        if name == "freezone_create_workflow_graph"
+    )["parameters"]["properties"]["plan"]
+    Draft202012Validator.check_schema(schema)
+    validator = Draft202012Validator(schema)
+    valid_plan = {
+        "schema_version": "freezone_workflow_plan.v1",
+        "skill": {"id": "ecommerce-product", "version": "1"},
+        "nodes": [
+            {
+                "id": "image-1",
+                "node_type": "imageGenNode",
+                "data": {
+                    "workflowCatalog": {
+                        "skillId": "ecommerce-product",
+                        "skillVersion": "1",
+                        "recipeId": "ecommerce-ad-image",
+                        "recipeVersion": "1",
+                        "recipePipeline": [
+                            {"id": "image-review", "version": "1"}
+                        ],
+                    }
+                },
+            }
+        ],
+        "edges": [],
+    }
+
+    assert validator.is_valid(valid_plan)
+    assert not validator.is_valid(
+        {key: value for key, value in valid_plan.items() if key != "skill"}
+    )
+    missing_recipe = copy.deepcopy(valid_plan)
+    missing_recipe["nodes"][0]["data"]["workflowCatalog"].pop("recipeId")
+    assert not validator.is_valid(missing_recipe)
+
+    disconnected_plan = copy.deepcopy(valid_plan)
+    second_node = copy.deepcopy(disconnected_plan["nodes"][0])
+    second_node["id"] = "image-2"
+    disconnected_plan["nodes"].append(second_node)
+    assert not validator.is_valid(disconnected_plan)
+    disconnected_plan["edges"] = [
+        {
+            "source": "image-1",
+            "target": "image-2",
+            "link_type": "dependency_for",
+        }
+    ]
+    assert validator.is_valid(disconnected_plan)
+
+    resource_plan = copy.deepcopy(valid_plan)
+    resource_plan["nodes"] = [
+        {
+            "id": "brief",
+            "node_type": "textAnnotationNode",
+            "stage": "input",
+            "data": {"content": "The user-provided brief."},
+        }
+    ]
+    assert validator.is_valid(resource_plan)
 
 
 def test_validation_payload_uses_only_the_declared_commands_contract():

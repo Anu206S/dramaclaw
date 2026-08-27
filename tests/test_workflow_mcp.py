@@ -103,7 +103,12 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
                         "title": "测试提示词",
                         "content": "夜晚的未来城市",
                     },
-                    {"id": "frame", "node_type": "imageGenNode", "title": "测试首帧"},
+                    {
+                        "id": "frame",
+                        "node_type": "imageGenNode",
+                        "title": "测试首帧",
+                        "prompt": "霓虹灯下的未来城市首帧",
+                    },
                     {"id": "video", "node_type": "videoNode", "title": "测试视频"},
                 ],
                 "edges": [
@@ -127,3 +132,4 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
         "select_nodes",
     ]
     assert result["commands"][0]["data"]["title"] == "测试提示词"
+    assert result["commands"][1]["data"]["prompt"] == "霓虹灯下的未来城市首帧"

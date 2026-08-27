@@ -469,6 +469,9 @@ def _node_data(
         result.setdefault("content", description.strip())
         result.setdefault("prompt", description.strip())
         result.setdefault("description", description.strip())
+    prompt = node.get("prompt")
+    if isinstance(prompt, str) and prompt.strip():
+        result.setdefault("prompt", prompt.strip())
     _normalize_model_alias(result, node_type)
     if node_type == "audioNode":
         result.setdefault("audioKind", "speech")
