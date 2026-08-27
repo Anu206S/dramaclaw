@@ -132,6 +132,7 @@ import {
 } from "@/features/freezone/canvasChatCommands";
 import {
   addFreezoneCanvasAgent,
+  DEFAULT_FREEZONE_AGENT_ID,
   loadFreezoneCanvasAgentsWithSource,
   mergeFreezoneCanvasAgentsFromServer,
   readFreezoneAgentIdFromUrl,
@@ -191,6 +192,9 @@ const FREEZONE_CHAT_WIDTH_MAX = 760;
 const FREEZONE_AGENT_HISTORY_WIDTH_DEFAULT = 220;
 const FREEZONE_AGENT_HISTORY_WIDTH_MIN = 180;
 const FREEZONE_AGENT_HISTORY_WIDTH_MAX = 360;
+// Keep the multi-session implementation available for a future product mode,
+// but Freezone currently defines one Agent session per canvas.
+const FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED = false;
 /**
  * 抽屉最多能挤到只剩这么宽的左侧内容。
  * - 工作流（浮层）：画布可以任意窄，360 只是别让它彻底消失。
@@ -2218,7 +2222,9 @@ function FreezoneChatDock({
   const [agentState, setAgentState] = useState<FreezoneCanvasAgentState>(() => {
     const loaded = loadFreezoneCanvasAgentsWithSource(projectId, canvasId);
     localAgentSelectionRef.current = loaded.hadStoredState;
-    return loaded.state;
+    return FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED
+      ? loaded.state
+      : selectFreezoneCanvasAgent(projectId, canvasId, DEFAULT_FREEZONE_AGENT_ID);
   });
   const [busyAgentIds, setBusyAgentIds] = useState<Set<string>>(() => new Set());
   const activeAgentId = agentState.activeAgentId;
@@ -2226,20 +2232,29 @@ function FreezoneChatDock({
   useEffect(() => {
     const loaded = loadFreezoneCanvasAgentsWithSource(projectId, canvasId);
     localAgentSelectionRef.current = loaded.hadStoredState;
-    setAgentState(loaded.state);
+    setAgentState(
+      FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED
+        ? loaded.state
+        : selectFreezoneCanvasAgent(projectId, canvasId, DEFAULT_FREEZONE_AGENT_ID),
+    );
   }, [canvasId, projectId]);
 
   useEffect(() => {
     let cancelled = false;
     const hadLocalSelection = localAgentSelectionRef.current;
-    const explicitAgentId = readFreezoneAgentIdFromUrl();
+    const explicitAgentId = FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED
+      ? readFreezoneAgentIdFromUrl()
+      : null;
     void listServerFreezoneCanvasAgents(projectId, canvasId)
       .then((serverAgents) => {
         if (cancelled || serverAgents.length === 0) return;
         setAgentState(
           mergeFreezoneCanvasAgentsFromServer(projectId, canvasId, serverAgents, {
             explicitAgentId,
-            preferServerActive: !hadLocalSelection && !explicitAgentId,
+            preferServerActive:
+              FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED
+              && !hadLocalSelection
+              && !explicitAgentId,
           }),
         );
       })
@@ -2425,32 +2440,36 @@ function FreezoneChatDock({
 
   const agentHeaderActions = (
     <>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        onClick={handleHeaderAddAgent}
-        aria-label="新建 Agent"
-        title="新建 Agent"
-        className="text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
-      >
-        <Plus className="size-4" />
-      </Button>
-      <Button
-        type="button"
-        variant="ghost"
-        size="icon-sm"
-        onClick={() => setAgentHistoryOpen((value) => !value)}
-        aria-pressed={agentHistoryOpen}
-        aria-label={agentHistoryOpen ? "收起历史 Agent" : "打开历史 Agent"}
-        title={agentHistoryOpen ? "收起历史 Agent" : "打开历史 Agent"}
-        className={cn(
-          "text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
-          agentHistoryOpen && "bg-white/[0.08] text-foreground",
-        )}
-      >
-        {agentHistoryOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
-      </Button>
+      {FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={handleHeaderAddAgent}
+          aria-label="新建 Agent"
+          title="新建 Agent"
+          className="text-muted-foreground hover:bg-white/[0.08] hover:text-foreground"
+        >
+          <Plus className="size-4" />
+        </Button>
+      )}
+      {FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED && (
+        <Button
+          type="button"
+          variant="ghost"
+          size="icon-sm"
+          onClick={() => setAgentHistoryOpen((value) => !value)}
+          aria-pressed={agentHistoryOpen}
+          aria-label={agentHistoryOpen ? "收起历史 Agent" : "打开历史 Agent"}
+          title={agentHistoryOpen ? "收起历史 Agent" : "打开历史 Agent"}
+          className={cn(
+            "text-muted-foreground hover:bg-white/[0.08] hover:text-foreground",
+            agentHistoryOpen && "bg-white/[0.08] text-foreground",
+          )}
+        >
+          {agentHistoryOpen ? <PanelRightClose className="size-4" /> : <PanelRightOpen className="size-4" />}
+        </Button>
+      )}
     </>
   );
 
@@ -2572,14 +2591,16 @@ function FreezoneChatDock({
             </SheetHeader>
             <div className="relative flex min-h-0 flex-1 overflow-hidden">
               <div className="min-h-0 flex-1">{agentPanels}</div>
-              <div
-                className={cn(
-                  "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-[#212121] shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
-                  agentHistoryOpen ? "translate-x-0" : "translate-x-full",
-                )}
-              >
-                {agentHistoryPanel}
-              </div>
+              {FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED && (
+                <div
+                  className={cn(
+                    "absolute inset-y-0 right-0 z-20 w-[220px] border-l border-white/[0.08] bg-[#212121] shadow-[-16px_0_32px_rgba(0,0,0,0.18)] transition-transform duration-200",
+                    agentHistoryOpen ? "translate-x-0" : "translate-x-full",
+                  )}
+                >
+                  {agentHistoryPanel}
+                </div>
+              )}
             </div>
           </SheetContent>
         </Sheet>
@@ -2685,7 +2706,7 @@ function FreezoneChatDock({
           <div className="min-w-0 shrink-0" style={{ width: `var(${CHAT_PANE_WIDTH_VAR})` }}>
             {agentPanels}
           </div>
-          {agentHistoryOpen && (
+          {FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED && agentHistoryOpen && (
             <div
               className="group relative z-20 flex w-2 shrink-0 cursor-col-resize touch-none items-stretch justify-center bg-white/[0.03] transition-colors hover:bg-white/[0.08]"
               role="separator"
@@ -2797,16 +2818,18 @@ function FreezoneAgentHistoryPanel({
           </div>
         )}
       </div>
-      <Button
-        type="button"
-        variant="secondary"
-        size="sm"
-        className="mt-3 h-9 shrink-0 rounded-lg bg-white/[0.10] text-sm text-zinc-100 hover:bg-white/[0.16]"
-        onClick={onAdd}
-      >
-        <Plus className="mr-1.5 size-4" />
-        新建 Agent
-      </Button>
+      {FREEZONE_MULTI_AGENT_SESSION_UI_ENABLED && (
+        <Button
+          type="button"
+          variant="secondary"
+          size="sm"
+          className="mt-3 h-9 shrink-0 rounded-lg bg-white/[0.10] text-sm text-zinc-100 hover:bg-white/[0.16]"
+          onClick={onAdd}
+        >
+          <Plus className="mr-1.5 size-4" />
+          新建 Agent
+        </Button>
+      )}
     </div>
   );
 }

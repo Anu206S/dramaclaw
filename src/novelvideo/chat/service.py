@@ -1603,25 +1603,28 @@ def _turn_disposition_for(event: Any) -> str:
 def _evidence_identity(
     project: str | None, store_scope: Any | None, agent_profile: str
 ) -> dict[str, str]:
-    """Name the episode and project this turn belongs to.
+    """Name the trajectory and project this turn belongs to.
 
     ``project_group_id`` is the DramaClaw project, or the home sentinel when
     there is none — BrainClaw refuses to invent a grouping it cannot see, so the
     caller must say "no project" explicitly rather than omit it.
 
-    ``trajectory_id`` is the most specific conversation scope available: a Freezone
-    canvas when there is one, otherwise the project-and-profile conversation.
-    That deliberately over-groups — every turn of one long conversation lands in
-    one family — because over-grouping only costs statistical power, while
-    under-grouping manufactures independence that does not exist and silently
-    inflates any sign test built on it.
+    ``trajectory_id`` is the most specific conversation scope available within
+    the project: a Freezone canvas-and-Agent profile when there is one,
+    otherwise the project-and-profile conversation. Project is part of both
+    names so a reused canvas ID cannot merge evidence families across projects;
+    the profile keeps the identity correct if multi-session UI is enabled again.
+    Within that boundary this deliberately over-groups — every turn of one long
+    conversation lands in one family — because over-grouping only costs
+    statistical power, while under-grouping manufactures independence that
+    does not exist.
     """
     from novelvideo.chat.hermes_egress import HOME_SCOPE_EGRESS_PROJECT_ID
 
     project_id = (project or "").strip() or HOME_SCOPE_EGRESS_PROJECT_ID
     canvas_id = str(getattr(store_scope, "canvas_id", "") or "").strip()
     trajectory_id = (
-        f"canvas:{canvas_id}"
+        f"canvas:{project_id}:{canvas_id}:{agent_profile}"
         if canvas_id
         else f"conversation:{project_id}:{agent_profile}"
     )

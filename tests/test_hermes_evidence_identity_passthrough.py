@@ -67,14 +67,14 @@ def test_home_scope_states_the_absence_of_a_project_explicitly() -> None:
     assert identity["trajectory_id"].startswith("conversation:")
 
 
-def test_a_canvas_is_its_own_episode_and_a_project_groups_them() -> None:
+def test_a_canvas_is_its_own_trajectory_within_a_project() -> None:
     class Scope:
         canvas_id = "canvas-7"
 
     canvas = service._evidence_identity("proj-a", Scope(), "freezone:main")
     plain = service._evidence_identity("proj-a", None, "main")
 
-    assert canvas["trajectory_id"] == "canvas:canvas-7"
+    assert canvas["trajectory_id"] == "canvas:proj-a:canvas-7:freezone:main"
     assert canvas["trajectory_id"] != plain["trajectory_id"], "a canvas is not the plain conversation"
     # The project is what groups distinct episodes for fold-splitting.
     assert canvas["project_id"] == plain["project_id"] == "proj-a"
@@ -96,6 +96,28 @@ def test_different_projects_never_share_a_group() -> None:
     b = service._evidence_identity("proj-b", None, "main")
     assert a["project_id"] != b["project_id"]
     assert a["trajectory_id"] != b["trajectory_id"]
+
+
+def test_the_same_canvas_id_never_spans_projects() -> None:
+    class Scope:
+        canvas_id = "canvas-7"
+
+    a = service._evidence_identity("proj-a", Scope(), "freezone:main")
+    b = service._evidence_identity("proj-b", Scope(), "freezone:main")
+    assert a["project_id"] != b["project_id"]
+    assert a["trajectory_id"] != b["trajectory_id"]
+
+
+def test_agent_profiles_on_the_same_canvas_never_share_a_trajectory() -> None:
+    class Scope:
+        canvas_id = "canvas-7"
+
+    main = service._evidence_identity("proj-a", Scope(), "freezone:main")
+    future_session = service._evidence_identity(
+        "proj-a", Scope(), "freezone:agent-future"
+    )
+    assert main["project_id"] == future_session["project_id"]
+    assert main["trajectory_id"] != future_session["trajectory_id"]
 
 
 def test_the_turn_key_reaches_the_worker_through_every_hop() -> None:
