@@ -46,6 +46,13 @@ function RechargePage() {
   const packages = useRechargeLinkPackages(token, authenticated);
   const createOrder = useCreateRechargeLinkOrder(token);
   const items = packages.data?.data.items ?? [];
+  const selectedPackageItem = items.find(
+    (item) => item.package_id === selectedPackage,
+  );
+  const availablePaymentMethods = selectedPackageItem?.payment_methods ?? [];
+  const selectedPaymentMethod = availablePaymentMethods.includes(paymentMethod)
+    ? paymentMethod
+    : availablePaymentMethods[0];
   const language = i18n.resolvedLanguage ?? i18n.language ?? "zh";
 
   useEffect(() => {
@@ -74,11 +81,11 @@ function RechargePage() {
   }, [token, validateSession]);
 
   const pay = async () => {
-    if (!selectedPackage || createOrder.isPending) return;
+    if (!selectedPackage || !selectedPaymentMethod || createOrder.isPending) return;
     try {
       const response = await createOrder.mutateAsync({
         packageId: selectedPackage,
-        paymentMethod,
+        paymentMethod: selectedPaymentMethod,
         idempotencyKey: `link-${crypto.randomUUID()}`,
       });
       if (!response.data.checkout) {
@@ -154,14 +161,14 @@ function RechargePage() {
         </div>
         <div className="mt-5 flex flex-wrap items-center justify-between gap-3 border-t border-foreground/12 pt-5">
           <div className="inline-flex rounded-md border border-foreground/12 bg-foreground/8 p-1">
-            {(["alipay", "wxpay"] as const).map((method) => (
+            {availablePaymentMethods.map((method) => (
               <button
                 key={method}
                 type="button"
-                aria-pressed={paymentMethod === method}
+                aria-pressed={selectedPaymentMethod === method}
                 className={cn(
                   "inline-flex h-8 items-center gap-1.5 rounded px-3 text-xs font-medium",
-                  paymentMethod === method
+                  selectedPaymentMethod === method
                     ? "bg-primary text-primary-foreground"
                     : "text-muted-foreground hover:text-foreground",
                 )}
@@ -174,7 +181,7 @@ function RechargePage() {
           </div>
           <button
             type="button"
-            disabled={!selectedPackage || createOrder.isPending}
+            disabled={!selectedPackage || !selectedPaymentMethod || createOrder.isPending}
             className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground disabled:cursor-not-allowed disabled:opacity-40"
             onClick={() => void pay()}
           >

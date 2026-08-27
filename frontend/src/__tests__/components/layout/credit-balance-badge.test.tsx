@@ -1,7 +1,7 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 import { CreditBalanceBadge } from "@/components/layout/credit-balance-badge";
@@ -77,6 +77,11 @@ vi.mock("@/components/ui/popover", () => ({
   PopoverContent: ({ children }: React.PropsWithChildren) => <>{children}</>,
 }));
 
+vi.mock("@/components/credits/CreditCenterDialog", () => ({
+  CreditCenterDialog: ({ open, initialTab }: { open: boolean; initialTab?: string }) =>
+    open ? <div role="dialog">积分中心弹窗:{initialTab}</div> : null,
+}));
+
 // The real dictionary, not a hand-copied one: which wallet this popover claims
 // to be showing lives entirely in the copy, so a test carrying its own strings
 // would keep passing while the shipped labels said something else.
@@ -121,6 +126,7 @@ function renderBadge() {
 
 describe("CreditBalanceBadge", () => {
   beforeEach(() => {
+    sessionStorage.clear();
     authState.username = "alice";
     currentUserState.isError = false;
     currentUserState.isLoading = false;
@@ -149,6 +155,25 @@ describe("CreditBalanceBadge", () => {
       expect(screen.getByText(label).parentElement).toHaveClass("rounded-sm", "bg-white/[0.075]");
       expect(screen.getByText(label).parentElement).not.toHaveClass("border");
     }
+  });
+
+  it("opens the credit center dialog instead of navigating away", () => {
+    renderBadge();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看明细" }));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("积分中心弹窗:packages");
+  });
+
+  it("opens billing history after returning from payment", () => {
+    sessionStorage.setItem("dramaclaw-open-credit-center", "1");
+    sessionStorage.setItem("dramaclaw-credit-center-tab", "orders");
+
+    renderBadge();
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("积分中心弹窗:orders");
+    expect(sessionStorage.getItem("dramaclaw-open-credit-center")).toBeNull();
+    expect(sessionStorage.getItem("dramaclaw-credit-center-tab")).toBeNull();
   });
 
   it("uses the same available-balance title for an organization allocation", () => {

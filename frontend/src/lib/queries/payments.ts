@@ -14,15 +14,33 @@ export type RechargeOrderType =
 
 export interface RechargePackage {
   package_id: string;
+  package_group_id?: string;
   order_type: RechargeOrderType;
   effective_org_id: string | null;
   name: string;
+  description?: string;
+  badge?: string;
+  validity_label?: string;
+  purchase_limit?: "once" | "unlimited";
+  purchase_note?: string;
+  payment_methods: RechargePaymentMethod[];
   amount_cents: number;
   base_credits: number;
   gift_credits: number;
   org_credit_cost: number;
   currency: "CNY";
   sort_order: number;
+  variant_sort_order?: number;
+}
+
+export interface CustomRechargeConfig {
+  enabled: boolean;
+  payment_methods: RechargePaymentMethod[];
+  credits_per_cny: number;
+  min_credits: number;
+  max_credits: number;
+  quick_credits: number[];
+  version: number;
 }
 
 export interface RechargeOrder {
@@ -77,7 +95,21 @@ export function useRechargePackages() {
   });
 }
 
-export function useRechargeOrders() {
+export function useCustomRechargeConfig(enabled = true) {
+  return useQuery({
+    queryKey: queryKeys.customRecharge(),
+    queryFn: ({ signal }) =>
+      api
+        .get("api/v1/payments/custom-recharge", { signal })
+        .json<OkResponse<CustomRechargeConfig>>(),
+    enabled,
+    staleTime: 30_000,
+    refetchOnWindowFocus: true,
+    retry: false,
+  });
+}
+
+export function useRechargeOrders(options: { poll?: boolean; enabled?: boolean } = {}) {
   return useQuery({
     queryKey: queryKeys.rechargeOrders(),
     queryFn: ({ signal }) =>
@@ -87,15 +119,42 @@ export function useRechargeOrders() {
           signal,
         })
         .json<OkResponse<{ items: RechargeOrder[]; total: number }>>(),
+    enabled: options.enabled ?? true,
     staleTime: 5_000,
     refetchOnMount: "always",
     refetchOnWindowFocus: true,
     refetchInterval: (query) =>
-      query.state.data?.data.items.some(
+      options.poll || query.state.data?.data.items.some(
         (order) => order.payment_status === "pending" || order.fulfillment_status === "processing",
       )
         ? 5_000
         : false,
+    retry: false,
+  });
+}
+
+export function useRechargeOrder(orderId: string | null) {
+  return useQuery({
+    queryKey: queryKeys.rechargeOrder(orderId ?? "missing"),
+    queryFn: ({ signal }) =>
+      api
+        .get(`api/v1/payments/orders/${encodeURIComponent(orderId!)}`, { signal })
+        .json<OkResponse<RechargeOrder>>(),
+    enabled: Boolean(orderId),
+    staleTime: 0,
+    refetchOnMount: "always",
+    refetchOnWindowFocus: true,
+    refetchInterval: (query) => {
+      const order = query.state.data?.data;
+      if (!order) return 3_000;
+      const terminalPayment = ["failed", "expired", "closed", "refunded"].includes(
+        order.payment_status,
+      );
+      const terminalFulfillment = ["credited", "failed", "reversed"].includes(
+        order.fulfillment_status,
+      );
+      return terminalPayment || terminalFulfillment ? false : 3_000;
+    },
     retry: false,
   });
 }
@@ -116,6 +175,42 @@ export function useCreateRechargeOrder() {
         .post("api/v1/payments/orders", {
           headers: { "Idempotency-Key": idempotencyKey },
           json: { package_id: packageId, payment_method: paymentMethod },
+          retry: 0,
+        })
+        .json<OkResponse<CreateRechargeOrderResponse>>(),
+    onSuccess: async () => {
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: queryKeys.rechargeOrders() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.creditSummary() }),
+        queryClient.invalidateQueries({ queryKey: queryKeys.creditTransactionsRoot() }),
+      ]);
+    },
+    retry: false,
+  });
+}
+
+export function useCreateCustomRechargeOrder() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: ({
+      credits,
+      configVersion,
+      paymentMethod,
+      idempotencyKey,
+    }: {
+      credits: number;
+      configVersion: number;
+      paymentMethod: RechargePaymentMethod;
+      idempotencyKey: string;
+    }) =>
+      api
+        .post("api/v1/payments/custom-orders", {
+          headers: { "Idempotency-Key": idempotencyKey },
+          json: {
+            credits,
+            config_version: configVersion,
+            payment_method: paymentMethod,
+          },
           retry: 0,
         })
         .json<OkResponse<CreateRechargeOrderResponse>>(),

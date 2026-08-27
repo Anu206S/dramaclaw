@@ -53,13 +53,20 @@ export function RechargePanel() {
   const createOrder = useCreateRechargeOrder();
   const packageItems = packages.data?.data.items ?? [];
   const orderItems = orders.data?.data.items ?? [];
+  const selectedPackageItem = packageItems.find(
+    (item) => item.package_id === selectedPackage,
+  );
+  const availablePaymentMethods = selectedPackageItem?.payment_methods ?? [];
+  const selectedPaymentMethod = availablePaymentMethods.includes(paymentMethod)
+    ? paymentMethod
+    : availablePaymentMethods[0];
 
   const pay = async () => {
-    if (!selectedPackage || createOrder.isPending) return;
+    if (!selectedPackage || !selectedPaymentMethod || createOrder.isPending) return;
     try {
       const response = await createOrder.mutateAsync({
         packageId: selectedPackage,
-        paymentMethod,
+        paymentMethod: selectedPaymentMethod,
         idempotencyKey: `web-${crypto.randomUUID()}`,
       });
       if (!response.data.checkout) {
@@ -151,15 +158,15 @@ export function RechargePanel() {
               className="inline-flex rounded-md border border-foreground/12 bg-foreground/10 p-1"
               aria-label={t("credits.recharge.paymentMethod")}
             >
-              {(["alipay", "wxpay"] as const).map((method) => (
+              {availablePaymentMethods.map((method) => (
                 <button
                   key={method}
                   type="button"
-                  aria-pressed={paymentMethod === method}
+                  aria-pressed={selectedPaymentMethod === method}
                   onClick={() => setPaymentMethod(method)}
                   className={cn(
                     "inline-flex h-8 items-center gap-1.5 rounded px-3 text-xs font-medium transition-colors",
-                    paymentMethod === method
+                    selectedPaymentMethod === method
                       ? "bg-primary text-primary-foreground"
                       : "text-muted-foreground hover:text-foreground",
                   )}
@@ -175,7 +182,7 @@ export function RechargePanel() {
             </div>
             <button
               type="button"
-              disabled={!selectedPackage || createOrder.isPending}
+              disabled={!selectedPackage || !selectedPaymentMethod || createOrder.isPending}
               onClick={() => void pay()}
               className="inline-flex h-9 items-center gap-2 rounded-md bg-primary px-4 text-sm font-medium text-primary-foreground hover:bg-primary/90 disabled:cursor-not-allowed disabled:opacity-40"
             >
