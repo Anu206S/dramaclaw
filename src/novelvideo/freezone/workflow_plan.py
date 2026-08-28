@@ -5,28 +5,17 @@ from __future__ import annotations
 import re
 from typing import Any
 
-WORKFLOW_PLAN_SCHEMA_VERSION = "freezone_workflow_plan.v1"
+from novelvideo.freezone.workflow_schema import (
+    LINK_TYPE_VALUES,
+    NODE_TYPE_VALUES,
+    WORKFLOW_PLAN_SCHEMA_VERSION,
+)
+
 MAX_WORKFLOW_NODES = 200
 MAX_WORKFLOW_EDGES = 400
 
-ALLOWED_NODE_TYPES = {
-    "textAnnotationNode",
-    "scriptNode",
-    "beatContextNode",
-    "imageGenNode",
-    "videoNode",
-    "audioNode",
-    "videoComposeNode",
-}
-
-ALLOWED_LINK_TYPES = {
-    "context_for",
-    "prompt_for",
-    "dependency_for",
-    "media_input_for",
-    "derived_from",
-    "composition_input_for",
-}
+ALLOWED_NODE_TYPES = set(NODE_TYPE_VALUES)
+ALLOWED_LINK_TYPES = set(LINK_TYPE_VALUES)
 
 _OBJECT_TYPE_BY_NODE_TYPE = {
     "textAnnotationNode": "TextNode",
@@ -91,6 +80,14 @@ def validate_workflow_plan(
                 f"must equal {WORKFLOW_PLAN_SCHEMA_VERSION}",
             )
         )
+    for execution_key in ("run_after_create", "runAfterCreate"):
+        if execution_key in payload:
+            errors.append(
+                _issue(
+                    execution_key,
+                    "execution policy must be passed beside plan in the tool arguments",
+                )
+            )
 
     nodes = payload.get("nodes")
     if not isinstance(nodes, list) or not nodes:
@@ -605,27 +602,36 @@ def _validate_group_refs(
     errors: list[dict[str, str]],
 ) -> None:
     groups = payload.get("groups")
+    groups_path = "groups"
+    if groups is None:
+        groups = payload.get("group")
+        groups_path = "group"
     layout = payload.get("layout")
     if groups is None and isinstance(layout, dict):
         groups = layout.get("groups")
+        groups_path = "layout.groups"
     if groups is None:
         return
+    if isinstance(groups, dict):
+        groups = [groups]
     if not isinstance(groups, list):
-        errors.append(_issue("groups", "must be an array"))
+        errors.append(_issue(groups_path, "must be an object or array"))
         return
     for group_index, group in enumerate(groups):
         if not isinstance(group, dict):
-            errors.append(_issue(f"groups[{group_index}]", "must be an object"))
+            errors.append(_issue(f"{groups_path}[{group_index}]", "must be an object"))
             continue
-        refs = group.get("node_ids") or group.get("nodeIds") or []
+        refs = group.get("node_ids") or group.get("nodeIds") or group.get("nodes") or []
         if not isinstance(refs, list):
-            errors.append(_issue(f"groups[{group_index}].node_ids", "must be an array"))
+            errors.append(
+                _issue(f"{groups_path}[{group_index}].node_ids", "must be an array")
+            )
             continue
         for ref_index, node_id in enumerate(refs):
             if node_id not in node_types:
                 errors.append(
                     _issue(
-                        f"groups[{group_index}].node_ids[{ref_index}]",
+                        f"{groups_path}[{group_index}].node_ids[{ref_index}]",
                         f"unknown node: {node_id}",
                     )
                 )

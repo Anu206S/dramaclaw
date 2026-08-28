@@ -95,6 +95,15 @@ except Exception as exc:
     get_workflow_skill = None
     validate_agent_workflow_plan = None
 
+try:
+    from novelvideo.freezone.workflow_schema import (
+        workflow_intent_json_schema,
+        workflow_plan_json_schema,
+    )
+except Exception:
+    workflow_intent_json_schema = None
+    workflow_plan_json_schema = None
+
 
 _CANVAS_COMMAND_BRIDGE_IMPORT_ERROR: Exception | None = None
 try:
@@ -709,6 +718,59 @@ def _handle_request_user_clarification(args: dict[str, Any], **_: Any) -> str:
                 "clarification_id": clarification_id,
             }
         )
+    if _external_mcp_agent_enabled():
+        composite_generation_ids = {
+            "generation_settings",
+            "image_settings",
+            "media_settings",
+            "video_settings",
+        }
+        bundled_question = next(
+            (
+                question
+                for question in questions
+                if isinstance(question, dict)
+                and str(question.get("id") or "").strip().lower()
+                in composite_generation_ids
+            ),
+            None,
+        )
+        if bundled_question is not None:
+            return tool_result(
+                {
+                    "ok": False,
+                    "status": "generation_parameter_questions_invalid",
+                    "code": "generation_parameter_questions_invalid",
+                    "error": (
+                        "图片和视频生成参数不能合并成推荐设置；必须按缺失字段分别展示选项"
+                    ),
+                    "required_question_ids": {
+                        "image": [
+                            "image_model",
+                            "image_aspect_ratio",
+                            "image_resolution",
+                            "image_quality",
+                            "image_variants_per_node",
+                        ],
+                        "video": [
+                            "video_model",
+                            "video_aspect_ratio",
+                            "video_resolution",
+                            "video_duration_seconds",
+                            "video_generate_audio",
+                            "video_variants_per_node",
+                        ],
+                    },
+                    "agent_instruction": (
+                        "No clarification card was shown. Inspect the live node create schema for "
+                        "each relevant image/video node type, then retry once with one question per "
+                        "missing field. Use canonical question ids and exact option values. For "
+                        "video_resolution, expose every resolution supported by the selected/live "
+                        "model, including 480P when the schema lists it. Do not bundle ratio, "
+                        "resolution, duration, sound, or count into a preset option."
+                    ),
+                }
+            )
     return _emit_clarification_event(
         project,
         canvas,
@@ -2322,6 +2384,22 @@ def _validate_write_commands_shape(
                 "invalid_command_schema",
                 f"commands[{index}] {command_type} missing required field(s): {', '.join(missing_required)}",
             )
+        if command_type == "run_workflow":
+            node_ids = command.get("node_ids")
+            scope = str(command.get("scope") or "").strip()
+            if not (
+                isinstance(node_ids, list)
+                and any(str(node_id).strip() for node_id in node_ids)
+            ) and scope != "canvas":
+                return _emit_command_error(
+                    project,
+                    canvas,
+                    "invalid_command_schema",
+                    (
+                        f"commands[{index}] run_workflow requires a non-empty node_ids "
+                        "array or scope=canvas"
+                    ),
+                )
         if command_type == "create_node" or (
             command_type == "add_next_node" and command.get("node_type") not in (None, "")
         ):
@@ -2395,6 +2473,306 @@ def _external_mcp_agent_enabled() -> bool:
         "yes",
         "on",
     }
+
+
+_GENERATION_ACTION_NODE_TYPES = {
+    "generate_image": "imageGenNode",
+    "generate_video": "videoNode",
+}
+_GENERATION_PARAMETER_FIELDS = {
+    "imageGenNode": ("model", "aspectRatio", "size", "quality", "count"),
+    "videoNode": (
+        "model",
+        "aspectRatio",
+        "quality",
+        "durationSec",
+        "generateAudio",
+        "count",
+    ),
+}
+_RECOMMENDED_GENERATION_MODEL_VALUES = {
+    "auto",
+    "default",
+    "recommend",
+    "recommended",
+    "推荐",
+    "推荐模型",
+    "默认",
+    "自动",
+}
+
+
+def _generation_parameter_value_present(field: str, value: Any) -> bool:
+    if field == "generateAudio":
+        return isinstance(value, bool)
+    if field in {"count", "durationSec"}:
+        return (
+            isinstance(value, (int, float))
+            and not isinstance(value, bool)
+            and value > 0
+        )
+    return isinstance(value, str) and bool(value.strip())
+
+
+def _use_frontend_default_for_recommended_models(commands: list[Any]) -> None:
+    """Resolve a symbolic recommendation through the frontend's live default.
+
+    The sentinel stays present through parameter preflight to record that the
+    user answered. It is removed only immediately before dispatch because it is
+    a preference, not a model catalog id.
+    """
+    for command in commands:
+        if not isinstance(command, dict):
+            continue
+        if str(command.get("type") or "").strip() not in {
+            "create_node",
+            "update_node_data",
+        }:
+            continue
+        data = command.get("data")
+        if not isinstance(data, dict):
+            continue
+        model = str(data.get("model") or "").strip().lower()
+        if model in _RECOMMENDED_GENERATION_MODEL_VALUES:
+            data.pop("model", None)
+
+
+def _canvas_generation_preflight_state(
+    project: str,
+    canvas: str,
+) -> tuple[dict[str, dict[str, Any]], list[dict[str, Any]], dict[str, Any] | None]:
+    response = _request(
+        "GET",
+        f"/api/v1/projects/{quote(project, safe='')}/freezone/canvases/"
+        f"{quote(canvas, safe='')}",
+    )
+    if not response.get("ok", True):
+        return {}, [], {
+            "ok": False,
+            "status": "generation_parameter_preflight_unavailable",
+            "code": "generation_parameter_preflight_unavailable",
+            "error": response.get("error") or "failed to read canvas before generation",
+            "agent_instruction": (
+                "Do not write or run the canvas. Report that generation parameter "
+                "preflight could not read the current canvas, then retry only after the "
+                "canvas is available."
+            ),
+        }
+    current = response.get("data") if isinstance(response.get("data"), dict) else {}
+    nodes = {
+        str(node.get("id")): _clone_json(node)
+        for node in current.get("nodes") or []
+        if isinstance(node, dict) and str(node.get("id") or "").strip()
+    }
+    edges = [
+        _clone_json(edge)
+        for edge in current.get("edges") or []
+        if isinstance(edge, dict)
+    ]
+    return nodes, edges, None
+
+
+def _workflow_generation_target_ids(
+    command: dict[str, Any],
+    nodes: dict[str, dict[str, Any]],
+    edges: list[dict[str, Any]],
+) -> set[str]:
+    scope = str(command.get("scope") or "").strip()
+    if scope == "canvas":
+        return set(nodes)
+    starts = {
+        str(node_id).strip()
+        for node_id in command.get("node_ids") or []
+        if str(node_id).strip()
+    }
+    direction = str(command.get("direction") or "connected").strip()
+    if direction == "node":
+        return starts
+    adjacency: dict[str, set[str]] = {}
+    for edge in edges:
+        source = str(edge.get("source") or "").strip()
+        target = str(edge.get("target") or "").strip()
+        if not source or not target:
+            continue
+        adjacency.setdefault(source, set()).add(target)
+        if direction == "connected":
+            adjacency.setdefault(target, set()).add(source)
+    pending = list(starts)
+    visited = set(starts)
+    while pending:
+        current = pending.pop()
+        for target in adjacency.get(current, set()):
+            if target in visited:
+                continue
+            visited.add(target)
+            pending.append(target)
+    return visited
+
+
+def _generation_parameters_required_result(
+    missing: list[dict[str, Any]],
+) -> dict[str, Any]:
+    media_types = sorted(
+        {
+            "image" if item["node_type"] == "imageGenNode" else "video"
+            for item in missing
+        }
+    )
+    required_choices = {
+        "image": ["model", "aspect_ratio", "resolution", "quality", "count"],
+        "video": [
+            "model",
+            "aspect_ratio",
+            "resolution",
+            "duration_seconds",
+            "generate_audio",
+            "count",
+        ],
+    }
+    return {
+        "ok": False,
+        "status": "clarification_required",
+        "code": "generation_parameters_required",
+        "error": "image/video generation parameters require user clarification",
+        "media_types": media_types,
+        "missing_parameters": missing,
+        "required_choices": {
+            media_type: required_choices[media_type] for media_type in media_types
+        },
+        "clarification": {
+            "title": "确认图片和视频生成参数",
+            "allow_recommended": True,
+            "allow_skip": False,
+        },
+        "agent_instruction": (
+            "Stop before every canvas write. Call freezone_request_user_clarification "
+            "exactly once for all missing image/video choices, offering a recommended "
+            "option. After the user answers, retry the same operation with the chosen "
+            "values. For a WorkflowPlan, put them in each image/video node data. For a "
+            "workflow draft, patch inputs with the portable image_* and video_* keys. "
+            "Do not claim success and do not silently choose defaults."
+        ),
+    }
+
+
+def _external_generation_parameter_preflight(
+    project: str,
+    canvas: str,
+    commands: list[Any],
+) -> dict[str, Any] | None:
+    if not _external_mcp_agent_enabled():
+        return None
+    execution_commands = [
+        command
+        for command in commands
+        if isinstance(command, dict)
+        and (
+            command.get("type") == "run_workflow"
+            or (
+                command.get("type") == "run_node_action"
+                and str(command.get("action") or "")
+                in _GENERATION_ACTION_NODE_TYPES
+            )
+        )
+    ]
+    if not execution_commands:
+        return None
+    created_ids = {
+        str(command.get("client_id") or "").strip()
+        for command in commands
+        if isinstance(command, dict)
+        and command.get("type") == "create_node"
+        and str(command.get("client_id") or "").strip()
+    }
+    needs_canvas_read = any(
+        command.get("type") == "run_workflow"
+        and (
+            str(command.get("scope") or "").strip() == "canvas"
+            or not command.get("node_ids")
+            or any(
+                str(node_id).strip() not in created_ids
+                for node_id in command.get("node_ids") or []
+            )
+        )
+        or command.get("type") == "run_node_action"
+        and str(command.get("node_id") or "").strip() not in created_ids
+        for command in execution_commands
+    )
+    if needs_canvas_read:
+        nodes, edges, read_error = _canvas_generation_preflight_state(project, canvas)
+        if read_error is not None:
+            return read_error
+    else:
+        nodes, edges = {}, []
+    missing_by_node: dict[str, dict[str, Any]] = {}
+    for raw_command in commands:
+        if not isinstance(raw_command, dict):
+            continue
+        command_type = str(raw_command.get("type") or "").strip()
+        if command_type == "create_node":
+            node_id = str(raw_command.get("client_id") or "").strip()
+            if node_id:
+                nodes[node_id] = {
+                    "id": node_id,
+                    "type": str(raw_command.get("node_type") or "").strip(),
+                    "data": _clone_json(raw_command.get("data") or {}),
+                }
+        elif command_type == "update_node_data":
+            node_id = str(raw_command.get("node_id") or "").strip()
+            node = nodes.get(node_id)
+            if node is not None:
+                data = node.get("data") if isinstance(node.get("data"), dict) else {}
+                data.update(_clone_json(raw_command.get("data") or {}))
+                node["data"] = data
+        elif command_type == "create_edge":
+            edges.append(
+                {
+                    "source": str(raw_command.get("source") or "").strip(),
+                    "target": str(raw_command.get("target") or "").strip(),
+                }
+            )
+        if command_type == "run_node_action":
+            expected_type = _GENERATION_ACTION_NODE_TYPES.get(
+                str(raw_command.get("action") or "")
+            )
+            target_ids = {str(raw_command.get("node_id") or "").strip()}
+        elif command_type == "run_workflow":
+            expected_type = None
+            target_ids = _workflow_generation_target_ids(raw_command, nodes, edges)
+        else:
+            continue
+        for node_id in target_ids:
+            node = nodes.get(node_id)
+            if node is None:
+                continue
+            node_type = str(node.get("type") or node.get("node_type") or "").strip()
+            if expected_type is not None and node_type != expected_type:
+                continue
+            required_fields = _GENERATION_PARAMETER_FIELDS.get(node_type)
+            if required_fields is None:
+                continue
+            data = node.get("data") if isinstance(node.get("data"), dict) else {}
+            if command_type == "run_workflow" and not raw_command.get("regenerate"):
+                output_key = "imageUrl" if node_type == "imageGenNode" else "videoUrl"
+                if isinstance(data.get(output_key), str) and data[output_key].strip():
+                    continue
+            missing_fields = [
+                field
+                for field in required_fields
+                if not _generation_parameter_value_present(field, data.get(field))
+            ]
+            if missing_fields:
+                missing_by_node[node_id] = {
+                    "node_id": node_id,
+                    "node_type": node_type,
+                    "display_name": str(
+                        data.get("displayName") or data.get("title") or node_id
+                    )[:120],
+                    "fields": missing_fields,
+                }
+    if not missing_by_node:
+        return None
+    return _generation_parameters_required_result(list(missing_by_node.values()))
 
 
 def _mcp_canvas_approval_enabled() -> bool:
@@ -3230,6 +3608,15 @@ def _emit_canvas_commands(
     shape_error = _validate_write_commands_shape(project, canvas, commands)
     if shape_error:
         return shape_error
+    generation_preflight = _external_generation_parameter_preflight(
+        project,
+        canvas,
+        commands,
+    )
+    if generation_preflight is not None:
+        return tool_result(generation_preflight)
+    if _external_mcp_agent_enabled():
+        _use_frontend_default_for_recommended_models(commands)
     if _mcp_direct_canvas_apply_enabled():
         needs_approval, approval_reasons = _approval_required_for_commands(commands)
         if _mcp_canvas_approval_enabled() and needs_approval:
@@ -3281,6 +3668,8 @@ def _summarize_canvas_command_result(
         if _commands_include_type(commands, "run_workflow"):
             agent_instruction = (
                 "Report briefly that the workflow was accepted and is continuing on the canvas. "
+                "This accepted command is the run request: do not call freezone_run_workflow again "
+                "for the same operation or in the same turn. "
                 "Do not claim generation is complete, do not report a timeout, and do not ask the "
                 "user to run nodes manually."
             )
@@ -3399,15 +3788,31 @@ def _handle_create_workflow_graph(args: dict[str, Any], **_: Any) -> str:
     validated = validate_agent_workflow_plan(args["plan"])
     if not validated.get("ok"):
         return tool_result(validated)
-    built = build_workflow_graph_commands(args)
-    if not built.get("ok"):
-        return tool_result(built)
     project = (
         str(args.get("project_id") or args.get("project") or _default_project_id()).strip() or None
     )
     canvas = (
         str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip() or None
     )
+    preflight = _workflow_runtime_preflight(
+        {
+            "plan": args["plan"],
+            "preflight": {"status": "ready", "blockers": [], "warnings": []},
+        },
+        project_id=project or "",
+    )
+    if preflight["blockers"]:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_preflight_failed",
+                "error": preflight["blockers"][0]["message"],
+                "preflight": preflight,
+            }
+        )
+    built = build_workflow_graph_commands(args)
+    if not built.get("ok"):
+        return tool_result(built)
     commands = built.get("commands")
     return _emit_canvas_commands(
         project,
@@ -3636,6 +4041,112 @@ def _finish_workflow_draft(
     )
 
 
+def _catalog_string_options(entry: dict[str, Any], key: str) -> list[str]:
+    values = entry.get(key)
+    if not isinstance(values, list):
+        return []
+    return [str(value).strip() for value in values if str(value).strip()]
+
+
+def _catalog_option_supported(
+    value: Any,
+    options: list[str],
+    *,
+    case_insensitive: bool = False,
+) -> bool:
+    requested = str(value or "").strip()
+    if not requested:
+        return True
+    if case_insensitive:
+        requested = requested.casefold()
+        return any(requested == option.casefold() for option in options)
+    return requested in options
+
+
+def _workflow_node_capability_blockers(
+    node: dict[str, Any],
+    catalog_entry: dict[str, Any],
+) -> list[dict[str, Any]]:
+    node_type = str(node.get("node_type") or "").strip()
+    data = node.get("data") if isinstance(node.get("data"), dict) else {}
+    node_id = str(node.get("id") or node_type).strip()
+    model_id = str(data.get("model") or "").strip()
+    field_options = (
+        {
+            "aspectRatio": ("ratioOptions", False),
+            "size": ("resolutionOptions", True),
+            "quality": ("qualityOptions", True),
+        }
+        if node_type == "imageGenNode"
+        else {
+            "aspectRatio": ("ratioOptions", False),
+            "quality": ("resolutionOptions", True),
+        }
+        if node_type == "videoNode"
+        else {}
+    )
+    blockers: list[dict[str, Any]] = []
+    for field, (catalog_key, case_insensitive) in field_options.items():
+        value = data.get(field)
+        if value is None or (isinstance(value, str) and not value.strip()):
+            continue
+        options = _catalog_string_options(catalog_entry, catalog_key)
+        if not options:
+            # Missing ratio/resolution declarations use the canvas fallback. Quality
+            # deliberately has no fallback: an absent qualityOptions means the model
+            # does not accept the quality parameter.
+            if catalog_key != "qualityOptions":
+                continue
+        if _catalog_option_supported(
+            value,
+            options,
+            case_insensitive=case_insensitive,
+        ):
+            continue
+        blockers.append(
+            {
+                "path": f"runtime.models.{node_id}.{field}",
+                "message": (
+                    f"{field} value {value!r} is not supported by model {model_id}"
+                ),
+                "code": "model_capability_unsupported",
+            }
+        )
+    if node_type == "videoNode" and isinstance(data.get("durationSec"), (int, float)):
+        duration = float(data["durationSec"])
+        minimum = catalog_entry.get("minDuration")
+        maximum = catalog_entry.get("maxDuration")
+        if (
+            isinstance(minimum, (int, float))
+            and duration < float(minimum)
+            or isinstance(maximum, (int, float))
+            and duration > float(maximum)
+        ):
+            blockers.append(
+                {
+                    "path": f"runtime.models.{node_id}.durationSec",
+                    "message": (
+                        f"durationSec value {data['durationSec']!r} is not supported "
+                        f"by model {model_id}"
+                    ),
+                    "code": "model_capability_unsupported",
+                }
+            )
+    if (
+        node_type == "videoNode"
+        and data.get("generateAudio") is True
+        and catalog_entry.get("supportsGenerateAudio") is False
+    ):
+        blockers.append(
+            {
+                "path": f"runtime.models.{node_id}.generateAudio",
+                "message": f"generateAudio is not supported by model {model_id}",
+                "code": "model_capability_unsupported",
+            }
+        )
+    return blockers
+
+
 def _workflow_runtime_preflight(
     compiled: dict[str, Any],
     *,
@@ -3661,32 +4172,52 @@ def _workflow_runtime_preflight(
             "videoNode": f"/projects/{quote(project_id, safe='')}/freezone/video/models",
         }
         for node_type, endpoint in model_endpoints.items():
-            requested = {
-                str((node.get("data") or {}).get("model") or "").strip()
+            typed_nodes = [
+                node
                 for node in nodes
                 if isinstance(node, dict)
                 and node.get("node_type") == node_type
                 and isinstance(node.get("data"), dict)
                 and str((node.get("data") or {}).get("model") or "").strip()
+            ]
+            requested = {
+                str((node.get("data") or {}).get("model") or "").strip()
+                for node in typed_nodes
             }
             if not requested:
                 continue
             response = _request("GET", endpoint)
             if response.get("ok") is False:
                 checks[f"{node_type}.models"] = "unavailable"
-                warnings.append(
+                blockers.append(
                     {
                         "path": "runtime.models",
-                        "message": f"could not verify {node_type} model availability",
+                        "message": (
+                            f"could not verify {node_type} capabilities because the "
+                            "live model catalog is unavailable"
+                        ),
+                        "code": "model_catalog_unavailable",
                     }
                 )
                 continue
             raw_models = response.get("data")
-            available = {
-                str(item.get("id") or item.get("apiModel") or item.get("api_model") or "").strip()
-                for item in raw_models if isinstance(item, dict)
-            } if isinstance(raw_models, list) else set()
-            missing = sorted(requested - available)
+            catalog_by_id = {
+                str(
+                    item.get("id")
+                    or item.get("apiModel")
+                    or item.get("api_model")
+                    or ""
+                ).strip(): item
+                for item in raw_models
+                if isinstance(item, dict)
+                and str(
+                    item.get("id")
+                    or item.get("apiModel")
+                    or item.get("api_model")
+                    or ""
+                ).strip()
+            } if isinstance(raw_models, list) else {}
+            missing = sorted(requested - set(catalog_by_id))
             checks[f"{node_type}.models"] = {
                 "requested": sorted(requested),
                 "available": not missing,
@@ -3699,6 +4230,13 @@ def _workflow_runtime_preflight(
                 }
                 for model in missing
             )
+            for node in typed_nodes:
+                model = str((node.get("data") or {}).get("model") or "").strip()
+                catalog_entry = catalog_by_id.get(model)
+                if catalog_entry is not None:
+                    blockers.extend(
+                        _workflow_node_capability_blockers(node, catalog_entry)
+                    )
         limits = _request(
             "GET",
             f"/api/v1/projects/{quote(project_id, safe='')}/tasks/limits",
@@ -4156,10 +4694,6 @@ def _handle_create_workflow_from_intent(args: dict[str, Any], **_: Any) -> str:
     compiled = compile_workflow_intent(args.get("intent"))
     if not compiled.get("ok"):
         return tool_result(compiled)
-    plan = compiled.get("plan")
-    built = build_workflow_graph_commands({**args, "plan": plan})
-    if not built.get("ok"):
-        return tool_result(built)
     project = (
         str(args.get("project_id") or args.get("project") or _default_project_id()).strip()
         or None
@@ -4168,6 +4702,21 @@ def _handle_create_workflow_from_intent(args: dict[str, Any], **_: Any) -> str:
         str(args.get("canvas_id") or args.get("canvasId") or _default_canvas_id()).strip()
         or None
     )
+    preflight = _workflow_runtime_preflight(compiled, project_id=project or "")
+    compiled["preflight"] = preflight
+    if preflight["blockers"]:
+        return tool_result(
+            {
+                "ok": False,
+                "status": "workflow_preflight_failed",
+                "error": preflight["blockers"][0]["message"],
+                "preflight": preflight,
+            }
+        )
+    plan = compiled.get("plan")
+    built = build_workflow_graph_commands({**args, "plan": plan})
+    if not built.get("ok"):
+        return tool_result(built)
     return _emit_canvas_commands(
         project,
         canvas,
@@ -4981,6 +5530,14 @@ _WORKFLOW_RUN_AFTER_CREATE_PROPS = {
     },
 }
 
+# Use the same public contract advertised by the standalone MCP server. Keep the
+# local definitions above as a compatibility fallback for isolated Hermes
+# installations that do not yet ship the shared schema module.
+if workflow_plan_json_schema is not None:
+    _WORKFLOW_PLAN_OBJECT_SCHEMA = workflow_plan_json_schema()
+if workflow_intent_json_schema is not None:
+    _WORKFLOW_INTENT_OBJECT_SCHEMA = workflow_intent_json_schema()
+
 _SKILL_STUDIO_OPTION_SCHEMA = {
     "type": "object",
     "properties": {
@@ -5640,18 +6197,27 @@ _CANVAS_COMMAND_ITEM_SCHEMA = {
             {"project_id": _NON_EMPTY_STRING, "request": {"type": "object"}},
             ["request"],
         ),
-        _command_variant(
-            "run_workflow",
-            {
-                "node_ids": _NODE_IDS_SCHEMA,
-                "scope": {"type": "string", "enum": ["selection", "canvas"]},
-                "direction": {
-                    "type": "string",
-                    "enum": ["connected", "node", "downstream"],
+        {
+            **_command_variant(
+                "run_workflow",
+                {
+                    "node_ids": _NODE_IDS_SCHEMA,
+                    "scope": {"type": "string", "enum": ["selection", "canvas"]},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["connected", "node", "downstream"],
+                    },
+                    "regenerate": {"type": "boolean"},
                 },
-                "regenerate": {"type": "boolean"},
-            },
-        ),
+            ),
+            "anyOf": [
+                {"required": ["node_ids"]},
+                {
+                    "properties": {"scope": {"const": "canvas"}},
+                    "required": ["scope"],
+                },
+            ],
+        },
     ]
 }
 
@@ -5703,7 +6269,7 @@ TOOLS = (
         "freezone_request_user_clarification",
         _schema(
             "freezone_request_user_clarification",
-            "Ask the user structured clarification questions in the Freezone frontend and wait for their submitted answers. Use for user choices before continuing the current chat or workflow, including Skill Studio setup questions. The submitted answers only mean the user completed the choices; decide the next step from the current context. This tool does not write canvas nodes or save catalog files.",
+            "Ask the user structured clarification questions in the Freezone frontend and wait for their submitted answers. Use for user choices before continuing the current chat or workflow, including Skill Studio setup questions. For image/video generation, never combine fields into a recommended-settings preset: use one question per missing field, inspect the live node schema, and expose exact resolution values such as 480P/720P when supported. The submitted answers only mean the user completed the choices; decide the next step from the current context. This tool does not write canvas nodes or save catalog files.",
             {
                 "clarification_id": {
                     "type": "string",

@@ -81,6 +81,10 @@ _HERMES_REPLAY_HISTORY_MESSAGES = 1
 _HERMES_REPLAY_HISTORY_MAX_CHARS = 64_000
 _CODEX_MODEL_PROVIDER = "dramaclaw_gateway"
 _DEFAULT_CODEX_MODEL = "DC-codex-agent-LLM"
+_DEFAULT_CODEX_REASONING_EFFORT = "medium"
+_CODEX_REASONING_EFFORT_VALUES = frozenset(
+    {"none", "minimal", "low", "medium", "high", "xhigh", "max", "ultra"}
+)
 _CODEX_GATEWAY_BASE_URL_ENV = "DRAMACLAW_CODEX_GATEWAY_BASE_URL"
 _CODEX_PER_TURN_CREDENTIAL_PLACEHOLDER = "dramaclaw-codex-per-turn-placeholder"
 _CODEX_GATEWAY_KEY_METADATA = "dramaclaw_gateway_api_key"
@@ -101,12 +105,67 @@ _CODEX_FREEZONE_DEVELOPER_INSTRUCTIONS = (
     "Freezone tools are exposed directly with names such as freezone_emit_canvas_command; "
     "do not look for the progressive dramaclaw_tool_search/describe/call bridge in this mode. "
     "For any workflow, several connected nodes, grouped stages, storyboard, or media pipeline, "
-    "load and follow the project Agent Skill named dramaclaw-workflows. Use the high-level "
+    "load and follow the project Agent Skill named dramaclaw-workflows. Read that Skill only from "
+    "the exact file URI advertised in the available Skills or dramaclaw resources; never invent a "
+    "project:// Skill URI. "
+    "The Agent Skill package name dramaclaw-workflows is not a Workflow catalog skill_id: never "
+    "pass dramaclaw-workflows to workflow_skill_get, freezone_get_workflow_skill, or an intent's "
+    "skill_id. Select the matching production Workflow Skill returned by the catalog instead "
+    "(for example text-to-image-video for a general image/video pipeline). "
+    "The current canvas summary is already injected in SUPERTALE_CANVAS_ONTOLOGY_SUMMARY: use it "
+    "directly, never request a canvas:// resource, and call "
+    "freezone_get_canvas_ontology only when a fresher or more detailed view is actually required. "
+    "Use the high-level "
     "workflow draft/graph tools; never use freezone_emit_canvas_command for a workflow and never "
     "fall back to repeated single-node or single-edge tools after an error. "
     "For a normal workflow request, follow that Skill's discovery, draft, preview, and confirmation "
     "sequence. When the user explicitly specifies exact nodes and dependencies, follow the Skill's "
-    "custom-topology reference and call freezone_create_workflow_graph once instead. For a "
+    "custom-topology reference and call freezone_create_workflow_graph once instead; do not route "
+    "that request through the normal draft flow merely because a production Skill matches. The "
+    "user's explicit imperative to create or run is authorization to submit the protected canvas "
+    "write and display its approval surface. Never ask for a duplicate 'create and run' confirmation, "
+    "and never claim that the environment cannot display an approval card: the Freezone write tool "
+    "creates that card. In auto_execute mode the frontend applies the normal approval event, so once "
+    "required generation parameters are known, call the write tool immediately. For structured "
+    "clarification, call only the dramaclaw MCP tool freezone_request_user_clarification; never use "
+    "the built-in request_user_input tool. Never call create_goal for a canvas request. For a "
+    "workflow confirmation or graph call with run_after_create=true, that same approved batch is "
+    "the one and only run request. If its result says accepted or reports a run_workflow command, "
+    "never call freezone_run_workflow again in the same turn. "
+    "Only a later explicit user retry after a terminal failure may start another run. For a "
+    "request whose actual next step will generate image or video media, inspect the user's message, "
+    "the selected Recipe, and existing target-node data before any canvas write. Obey the injected "
+    "FREEZONE_CANVAS_EXECUTION_MODE contract. In manual_confirm mode, do not ask a preliminary "
+    "generation-parameter clarification: inspect the live schema and populate missing fields with "
+    "supported defaults or symbolic recommended values so the approval card is the final parameter "
+    "editor. In auto_execute mode, if relevant image or video generation choices are still missing, "
+    "call freezone_request_user_clarification once and ask only for the missing user-facing choices. "
+    "Image choices are model preference, aspect "
+    "ratio, resolution/quality, and variants per node. Video choices are model or generation mode, aspect "
+    "ratio, resolution, duration, sound generation, and variants per node. Offer a recommended/default "
+    "choice instead of forcing technical knowledge. Never bundle these fields into one preset such "
+    "as 'recommended settings'. Use one clarification question per missing field with the portable "
+    "field name as its question id. Before asking, inspect the live node create schema once for each "
+    "relevant image/video type and use its exact options; video_resolution must show every supported "
+    "value, including 480P whenever the selected/live model supports it. Do not write, approve, or start the workflow "
+    "until the answer is returned. This rule applies to generation or run requests, including "
+    "run_after_create=true; it does not apply when the user only asks to create empty nodes, connect, "
+    "group, lay out, or edit them without generation. It is an explicit exception to any general "
+    "instruction not to ask about model parameters, and it applies only to image and video for now. "
+    "Store confirmed shared choices in workflow intent.inputs using portable image_model, "
+    "image_aspect_ratio, image_resolution, image_quality, image_variants_per_node, video_model, "
+    "video_aspect_ratio, video_resolution, video_duration_seconds, video_generate_audio, and "
+    "video_variants_per_node keys. The Skill-specific image_count/video_count fields describe "
+    "workflow deliverable or node counts and must never be copied to a node's data.count. If a "
+    "canvas write returns code=generation_parameters_required, never retry "
+    "unchanged. In manual_confirm mode, fill the returned fields from the live schema/defaults and "
+    "retry the same plan so the approval card can expose them. In auto_execute mode, call the "
+    "clarification tool once for all returned missing choices and retry with the answers. A "
+    "recommended/default model choice is symbolic: serialize "
+    "it as model=\"recommended\" (or the matching portable intent input), not as an invented model "
+    "id. The authorized adapter resolves it through the live frontend default. If a complete graph "
+    "write fails, do not regenerate or truncate the whole plan merely to replace that sentinel. "
+    "For a "
     "standalone canvas mutation, your first assistant action must be the matching "
     "freezone write tool call. Never claim that a canvas operation succeeded unless that same "
     "tool call returned a successful frontend canvas result. The built-in update_plan tool only "
@@ -120,7 +179,7 @@ _CODEX_FREEZONE_DEVELOPER_INSTRUCTIONS = (
 # browser-bridge contract changes so canvas turns cannot silently resume a
 # thread that predates the required concrete write tools. Mainline thread keys
 # intentionally remain unchanged.
-_CODEX_FREEZONE_THREAD_PROTOCOL_VERSION = "canvas-workflows-v4"
+_CODEX_FREEZONE_THREAD_PROTOCOL_VERSION = "canvas-workflows-v13"
 
 
 def _codex_developer_instructions(tool_mode: str | None) -> str:
@@ -331,26 +390,41 @@ Scope:
 
 Clarification:
 - Use freezone_request_user_clarification when several user-facing choices are required. Ask about
-  creative intent, not tool fields, node types, link_type, schema, or model parameters. For ordinary
-  chat, one natural follow-up, or an explicit request, reply normally without a card.
+  creative intent, not tool fields, node types, link_type, schema, or model parameters. Image/video
+  generation parameters are the exception and must follow the injected
+  FREEZONE_CANVAS_EXECUTION_MODE contract. For ordinary chat, one natural follow-up, or an explicit
+  request, reply normally without a card.
 
 Canvas write contract:
 - Before writing, ground the operation in the current canvas summary/context. Read command catalog,
   node create schema, link type catalog, node detail, or action catalog only when needed. Validate
   multi-step or edge-creating commands before writing.
 - For create/add/delete/update/connect/move/layout/select/open/run/apply/execute requests, you MUST
-  call a Freezone write tool. The first assistant output MUST be that write tool call; do not emit
-  prose first. Use the matching single-operation write tool for exactly one operation.
+  call a Freezone write tool. For one standalone operation, the first assistant output MUST be that
+  matching single-operation write tool call; do not emit prose first. Workflow requests may perform
+  only the Skill/catalog reads required by the next rule before their single workflow write call.
 - For any workflow, several connected nodes, grouped stages, storyboard, or media pipeline, load
   and follow the dramaclaw-workflows Agent Skill. For an exact user-specified topology, read its
   references/custom-topology.md and call freezone_create_workflow_graph once with one complete
-  freezone_workflow_plan.v1. Do not use freezone_emit_canvas_command for a workflow.
+  freezone_workflow_plan.v1. Exact means the user names the nodes and their dependency order; do not
+  route it through the normal draft flow merely because a production Skill matches.
+  Do not use freezone_emit_canvas_command for a workflow.
+- `dramaclaw-workflows` is the Agent Skill package name, not a Workflow catalog `skill_id`. Never
+  pass it to workflow_skill_get/freezone_get_workflow_skill or use it as intent.skill_id. Select the
+  matching production Workflow Skill returned by the catalog, such as text-to-image-video for a
+  general image/video pipeline.
 - Use freezone_create_node only for exactly one standalone textAnnotationNode when the user asks for
   one text node. Use one freezone_emit_canvas_command batch only for several ordinary non-workflow
   canvas edits. Use FREEZONE_CANVAS_CONTEXT's canvas_id. Do not precheck pipeline failure unless the
   user asks about status.
 - Never claim any canvas change succeeded without a successful same-turn frontend write result. If
   it fails or is absent, say the change could not be confirmed.
+- The user's explicit request to create or run is authorization to submit the protected canvas write
+  and show its approval card. Do not ask for a second “创建并运行” confirmation and do not say the
+  environment cannot display the card; the write tool creates it. In auto_execute, submit the write
+  immediately after required media parameters are known and let the frontend apply the approval.
+- For structured clarification, call the MCP tool freezone_request_user_clarification only. Never
+  use the host's built-in request_user_input, update_plan, or create_goal tools for canvas work.
 - In interactive Xi画 chat, never set auto_apply_after_mcp_approval; canvas writes must produce an
   approval card. Use clear_canvas for “清空画布/全部删除”, and never encode that intent as an empty
   delete_nodes command.
@@ -376,6 +450,10 @@ _FREEZONE_CANVAS_WRITE_OBJECT_RE = re.compile(
 _FREEZONE_CANVAS_KNOWLEDGE_QUESTION_RE = re.compile(
     r"(?:如何|怎么|为什么|为何|是什么|教程|方法|步骤|是否支持|支不支持|"
     r"what|why|how|can\s+i)",
+    re.IGNORECASE,
+)
+_FREEZONE_CANVAS_NO_WRITE_FAILURE_RE = re.compile(
+    r"(?:未能|无法|失败|找不到|不可用|未创建|没有创建|未执行|没有执行|不能)",
     re.IGNORECASE,
 )
 _FREEZONE_CANVAS_WRITE_TOOLS = frozenset(
@@ -462,6 +540,38 @@ def _codex_freezone_write_result_succeeded(event: Any) -> bool:
             if apply_status in {"applied", "accepted", "direct_applied"}:
                 return True
     return False
+
+
+def _codex_freezone_write_result_error(event: Any) -> str:
+    """Extract the business error returned by a completed Freezone write tool."""
+
+    if _codex_freezone_tool_name(event) not in _FREEZONE_CANVAS_WRITE_TOOLS:
+        return ""
+    values = [
+        getattr(event, "structured", None),
+        getattr(event, "output", None),
+        getattr(event, "error", None),
+    ]
+    for value in values:
+        for payload in _json_objects_from_codex_tool_value(value):
+            if payload.get("ok") is not False:
+                continue
+            for key in ("user_message", "error"):
+                message = payload.get(key)
+                if isinstance(message, str) and message.strip():
+                    return message.strip()[:1000]
+            errors = payload.get("errors")
+            if isinstance(errors, list):
+                messages = [str(item).strip() for item in errors if str(item).strip()]
+                if messages:
+                    return "；".join(messages[:3])[:1000]
+            message = payload.get("message")
+            if isinstance(message, str) and message.strip():
+                return message.strip()[:1000]
+    raw_error = getattr(event, "error", None)
+    if isinstance(raw_error, str) and raw_error.strip():
+        return raw_error.strip()[:1000]
+    return ""
 
 
 _FREEZONE_SKILL_STUDIO_TRIGGER_RE = re.compile(
@@ -749,6 +859,15 @@ def _freezone_canvas_id_from_context(surface_context: dict[str, Any] | None) -> 
     )
 
 
+def _freezone_canvas_execution_mode_from_context(
+    surface_context: dict[str, Any] | None,
+) -> str:
+    value = str(
+        (surface_context or {}).get("canvas_command_execution_mode") or ""
+    ).strip()
+    return "auto_execute" if value == "auto_execute" else "manual_confirm"
+
+
 def _write_hermes_tool_mode(username: str, *, mode: str) -> None:
     try:
         from novelvideo.chat.hermes_workspace import ensure_user_hermes_workspace
@@ -816,11 +935,28 @@ def _prompt_with_user_context(
     )
     scope = f"project:{project}" if project else "home"
     canvas_id = _freezone_canvas_id_from_context(surface_context)
+    canvas_execution_mode = _freezone_canvas_execution_mode_from_context(
+        surface_context
+    )
     canvas_context = (
         "\n\n[FREEZONE_CANVAS_CONTEXT]\n"
         f"canvas_id: {canvas_id}\n"
         "Use this canvas_id for Freezone canvas tools unless the user explicitly names another canvas.\n"
-        "[/FREEZONE_CANVAS_CONTEXT]"
+        "[/FREEZONE_CANVAS_CONTEXT]\n\n"
+        "[FREEZONE_CANVAS_EXECUTION_MODE]\n"
+        f"mode: {canvas_execution_mode}\n"
+        "manual_confirm: Do not ask a preliminary image/video parameter clarification. Read the live "
+        "schema and put supported defaults or symbolic recommended values into the plan; the approval "
+        "card is where the user reviews and adjusts final generation parameters.\n"
+        "auto_execute: If image/video parameters needed for generation are missing, ask once before "
+        "the canvas write, with one structured question per missing field. A normal approval event is "
+        "still emitted and the frontend auto-applies it; explicit human-review requirements may pause. "
+        "After the answers return, submit the protected canvas write immediately without asking for "
+        "another create/run confirmation. Use the MCP clarification tool, never built-in "
+        "request_user_input.\n"
+        "If the mode is absent or invalid, use manual_confirm. The mode changes parameter collection "
+        "only; it does not bypass validation, approval events, or the authorized canvas write path.\n"
+        "[/FREEZONE_CANVAS_EXECUTION_MODE]"
         if tool_mode == "freezone_canvas"
         else ""
     )
@@ -952,6 +1088,21 @@ def _codex_model() -> str:
     )
 
 
+def _codex_reasoning_effort() -> str:
+    value = (
+        os.environ.get(
+            "CODEX_REASONING_EFFORT", _DEFAULT_CODEX_REASONING_EFFORT
+        ).strip()
+        or _DEFAULT_CODEX_REASONING_EFFORT
+    ).lower()
+    if value not in _CODEX_REASONING_EFFORT_VALUES:
+        supported = ", ".join(sorted(_CODEX_REASONING_EFFORT_VALUES))
+        raise RuntimeError(
+            f"Unsupported CODEX_REASONING_EFFORT={value!r}; expected one of: {supported}"
+        )
+    return value
+
+
 def _claude_model() -> str | None:
     model = os.environ.get("CLAUDE_MODEL", "").strip()
     return model or None
@@ -1059,9 +1210,7 @@ def _sync_project_skills(skills_dir: Path, *, agent_profile: str = "main") -> No
         pass
 
     sources = {
-        name: src
-        for name, src in _skill_sources()
-        if _is_safe_managed_skill_name(name)
+        name: src for name, src in _skill_sources() if _is_safe_managed_skill_name(name)
     }
     managed_names = previous_managed | set(sources)
     active: dict[str, str] = {}
@@ -1790,10 +1939,11 @@ def _bounded_replay_history(contents: list[str]) -> list[str]:
     """Keep only a small display-dedup window; this history never becomes agent context."""
 
     bounded = [
-        str(content or "")
-        for content in contents[-_HERMES_REPLAY_HISTORY_MESSAGES:]
+        str(content or "") for content in contents[-_HERMES_REPLAY_HISTORY_MESSAGES:]
     ]
-    return [content[:_HERMES_REPLAY_HISTORY_MAX_CHARS] for content in bounded if content]
+    return [
+        content[:_HERMES_REPLAY_HISTORY_MAX_CHARS] for content in bounded if content
+    ]
 
 
 def _is_truncated_assistant_replay(content: str, candidates: list[str]) -> bool:
@@ -5000,6 +5150,7 @@ def _codex_gateway_config_overrides(base_url: str) -> tuple[str, ...]:
         *_codex_gateway_provider_overrides(
             base_url,
         ),
+        f'model_reasoning_effort="{_codex_reasoning_effort()}"',
         'web_search="disabled"',
         "features.apps=false",
         "features.hooks=false",
@@ -6226,6 +6377,7 @@ async def _stream_assistant_reply_codex(
     ).strip() == "freezone_canvas" and _freezone_canvas_write_requested(prompt)
     canvas_write_attempted = False
     canvas_write_succeeded = False
+    canvas_write_failure = ""
     authorization = await authorize_hermes_launch(
         egress_context=egress_context,
         username=username,
@@ -6411,6 +6563,10 @@ async def _stream_assistant_reply_codex(
                         and _codex_freezone_write_result_succeeded(event)
                     ):
                         canvas_write_succeeded = True
+                    elif event.type == "tool_updated":
+                        failure = _codex_freezone_write_result_error(event)
+                        if failure:
+                            canvas_write_failure = failure
                 event_tool_text = str(event.text or "")
                 if event_tool_text:
                     tool_text += event_tool_text
@@ -6489,12 +6645,24 @@ async def _stream_assistant_reply_codex(
         if turn_operation is not None:
             await turn_operation.finish(turn_disposition)
 
-    if requires_canvas_write_receipt and not canvas_write_succeeded:
-        assistant_text = "画布操作未完成：" + (
-            "没有收到成功的画布写入回执，请重试。"
-            if canvas_write_attempted
-            else "本轮没有执行画布写入，请重试。"
-        )
+    # A transport timeout/cancellation is not a canvas receipt failure. Keep
+    # the runtime's actionable reason instead of replacing it with the
+    # misleading "no canvas write" postcondition message.
+    canvas_postcondition_applies = turn_disposition not in {"timeout", "cancelled"}
+    if (
+        requires_canvas_write_receipt
+        and not canvas_write_succeeded
+        and canvas_postcondition_applies
+    ):
+        if canvas_write_attempted:
+            failure_detail = (
+                canvas_write_failure or "没有收到成功的画布写入回执，请重试。"
+            )
+        elif _FREEZONE_CANVAS_NO_WRITE_FAILURE_RE.search(assistant_text):
+            failure_detail = assistant_text.strip()
+        else:
+            failure_detail = "本轮没有执行画布写入，请重试。"
+        assistant_text = "画布操作未完成：" + failure_detail
     assistant_text = assistant_text.strip() or "已执行，但没有返回正文。"
     assistant_text = _normalize_json_render_reply(assistant_text)
     if requires_canvas_write_receipt:

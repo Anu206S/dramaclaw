@@ -26,6 +26,10 @@ from novelvideo.freezone.agent_workflows.registry import (
     get_catalog_item,
     search_catalog,
 )
+from novelvideo.freezone.workflow_schema import (
+    workflow_intent_json_schema,
+    workflow_plan_json_schema,
+)
 
 SERVER = Server("dramaclaw-workflows", version="1.0.0")
 
@@ -151,7 +155,7 @@ async def list_tools() -> list[types.Tool]:
                 "or graph tool to persist and commit it."
             ),
             inputSchema=_object_schema(
-                {"intent": {"type": "object"}},
+                {"intent": workflow_intent_json_schema()},
                 ["intent"],
             ),
         ),
@@ -163,7 +167,7 @@ async def list_tools() -> list[types.Tool]:
             ),
             inputSchema=_object_schema(
                 {
-                    "plan": {"type": "object"},
+                    "plan": workflow_plan_json_schema(),
                     "workflow_instance_id": {"type": "string"},
                     "run_after_create": {"type": "boolean", "default": False},
                 },

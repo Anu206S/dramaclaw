@@ -1,7 +1,7 @@
 # Exact custom workflow topology
 
-Use this path only when the user explicitly names the required nodes and dependencies and the
-selected Skill's standard planner cannot preserve that topology.
+Use this path whenever the user explicitly names the required nodes and dependencies. A matching
+production Skill does not turn an exact topology request into the normal draft flow.
 
 1. Load exactly one matching workflow Skill with `freezone_get_workflow_skill(compact=true)`.
 2. Author one complete `freezone_workflow_plan.v1` using only that Skill's allowed node capabilities
@@ -12,6 +12,10 @@ selected Skill's standard planner cannot preserve that topology.
    them into same-batch `client_id` values.
 5. Call `freezone_create_workflow_graph` once. It deterministically adds grouping, layout, selection,
    and one canvas batch.
+
+The user's imperative to create or run authorizes this protected write submission. Do not ask for a
+second create/run confirmation. The graph call emits the approval surface; in `auto_execute`, the
+host applies the ordinary approval event automatically after required media parameters are known.
 
 Do not call `freezone_emit_canvas_command` for this path. Do not separately create nodes, edges,
 groups, or layout after the graph call.

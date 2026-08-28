@@ -714,7 +714,6 @@ async def test_fallback_display_groups_all_final_videos_into_one_spec(monkeypatc
     ]
 
 
-
 @pytest.mark.anyio
 @pytest.mark.parametrize(
     ("tool_name", "asset_path"),
@@ -880,11 +879,7 @@ def test_codex_freezone_protocol_upgrade_does_not_resume_legacy_thread(
     state_file.parent.mkdir(parents=True)
     state_file.write_text(
         json.dumps(
-            {
-                '["freezone:main","project","project-a","canvas-a"]': (
-                    "legacy-thread"
-                )
-            }
+            {'["freezone:main","project","project-a","canvas-a"]': ("legacy-thread")}
         ),
         encoding="utf-8",
     )
@@ -1153,13 +1148,24 @@ async def test_codex_stream_passes_conversation_scope_to_thread_builder(
         assert "[FREEZONE_CANVAS_CONTEXT]" in captured["prompt"]
         assert "canvas_id: canvas-a" in captured["prompt"]
         assert "references/custom-topology.md" in captured["prompt"]
-        assert "Do not use freezone_emit_canvas_command for a workflow" in captured["prompt"]
+        assert (
+            "Do not use freezone_emit_canvas_command for a workflow"
+            in captured["prompt"]
+        )
         developer_instructions = chat_service._codex_developer_instructions(tool_mode)
         assert "concrete tools currently listed" in developer_instructions
         assert "dramaclaw_tool_search/describe/call" in developer_instructions
         assert "do not look for" in developer_instructions
         assert "custom-topology reference" in developer_instructions
         assert "freezone_create_workflow_graph once" in developer_instructions
+        assert "not a Workflow catalog skill_id" in developer_instructions
+        assert (
+            "never pass dramaclaw-workflows to workflow_skill_get"
+            in developer_instructions
+        )
+        assert "call freezone_request_user_clarification once" in developer_instructions
+        assert "applies only to image and video for now" in developer_instructions
+        assert "run_after_create=true" in developer_instructions
     else:
         assert "[FREEZONE_CANVAS_ASSISTANT]" not in captured["prompt"]
         assert (
@@ -1206,9 +1212,18 @@ def test_codex_freezone_write_request_detection_ignores_injected_context_and_que
         is True
     )
     assert chat_service._freezone_canvas_write_requested("怎么创建图片节点？") is False
-    assert chat_service._freezone_canvas_write_requested("能否帮我创建一个短视频工作流？") is True
-    assert chat_service._freezone_canvas_write_requested("可不可以创建一个图片节点？") is True
-    assert chat_service._freezone_canvas_write_requested("你们是否支持创建图片节点？") is False
+    assert (
+        chat_service._freezone_canvas_write_requested("能否帮我创建一个短视频工作流？")
+        is True
+    )
+    assert (
+        chat_service._freezone_canvas_write_requested("可不可以创建一个图片节点？")
+        is True
+    )
+    assert (
+        chat_service._freezone_canvas_write_requested("你们是否支持创建图片节点？")
+        is False
+    )
     assert (
         chat_service._freezone_canvas_write_requested(
             "生成下这个\n[SUPERTALE_CANVAS_NODE_REFERENCES] node_id: image-a"
@@ -1224,12 +1239,57 @@ def test_codex_freezone_write_request_detection_ignores_injected_context_and_que
     )
 
 
+def test_codex_freezone_instructions_forbid_invented_resource_uris():
+    instructions = chat_service._CODEX_FREEZONE_DEVELOPER_INSTRUCTIONS
+
+    assert "never invent a project:// Skill URI" in instructions
+    assert "never request a canvas:// resource" in instructions
+    assert "freezone_get_canvas_ontology" in instructions
+    assert "one and only run request" in instructions
+    assert "never call freezone_run_workflow again in the same turn" in instructions
+    assert "not a Workflow catalog skill_id" in instructions
+    assert "text-to-image-video" in instructions
+    assert "Never ask for a duplicate 'create and run' confirmation" in instructions
+    assert "the Freezone write tool creates that card" in instructions
+    assert "never use the built-in request_user_input tool" in instructions
+    assert "Never call create_goal for a canvas request" in instructions
+
+
+def test_codex_freezone_write_result_error_preserves_canvas_validation_reason():
+    event = SimpleNamespace(
+        name="dramaclaw.freezone_create_workflow_graph",
+        output={
+            "content": [
+                {
+                    "type": "text",
+                    "text": json.dumps(
+                        {
+                            "ok": False,
+                            "status": "invalid_command_schema",
+                            "error": (
+                                "commands[0] create_node requires "
+                                "textAnnotationNode content in data"
+                            ),
+                        }
+                    ),
+                }
+            ]
+        },
+        structured=None,
+        error=None,
+    )
+
+    assert chat_service._codex_freezone_write_result_error(event) == (
+        "commands[0] create_node requires textAnnotationNode content in data"
+    )
+
+
 @pytest.mark.anyio
-@pytest.mark.parametrize("with_successful_tool", [False, True])
+@pytest.mark.parametrize("tool_outcome", ["missing", "success", "failure", "blocked"])
 async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
     monkeypatch,
     tmp_path,
-    with_successful_tool,
+    tool_outcome,
 ):
     monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
     monkeypatch.setenv("NOVELVIDEO_RUNTIME_DIR", str(tmp_path / "runtime"))
@@ -1253,7 +1313,16 @@ async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
                 thread_id="codex-thread",
                 turn_id="codex-turn",
             )
-            if with_successful_tool:
+            if tool_outcome not in {"missing", "blocked"}:
+                result_payload = (
+                    {"ok": True, "canvas_apply_status": "applied"}
+                    if tool_outcome == "success"
+                    else {
+                        "ok": False,
+                        "status": "invalid_command_schema",
+                        "error": "文本节点缺少 content 字段",
+                    }
+                )
                 yield SimpleNamespace(
                     type="tool_updated",
                     text="[mcp:completed] dramaclaw.freezone_emit_canvas_command",
@@ -1265,18 +1334,19 @@ async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
                         "content": [
                             {
                                 "type": "text",
-                                "text": json.dumps(
-                                    {"ok": True, "canvas_apply_status": "applied"}
-                                ),
+                                "text": json.dumps(result_payload),
                             }
                         ]
                     },
                     error=None,
                     structured=None,
                 )
-            yield SimpleNamespace(
-                type="assistant_delta", text="好的，已创建一个图片节点。"
+            assistant_reply = (
+                "未能创建工作流：找不到匹配的 Workflow Skill。"
+                if tool_outcome == "blocked"
+                else "好的，已创建一个图片节点。"
             )
+            yield SimpleNamespace(type="assistant_delta", text=assistant_reply)
             yield SimpleNamespace(
                 type="complete",
                 thread_id="codex-thread",
@@ -1320,14 +1390,95 @@ async def test_codex_freezone_write_cannot_claim_success_without_tool_receipt(
     assistant_deltas = [
         event["text"] for event in events if event["type"] == "assistant_delta"
     ]
-    if with_successful_tool:
+    if tool_outcome == "success":
         assert result["content"] == "好的，已创建一个图片节点。"
         assert assistant_deltas == ["好的，已创建一个图片节点。"]
-    else:
+    elif tool_outcome == "failure":
+        assert result["content"] == "画布操作未完成：文本节点缺少 content 字段"
+        assert assistant_deltas == [result["content"]]
+    elif tool_outcome == "missing":
         assert "已创建" not in result["content"]
         assert result["content"] == "画布操作未完成：本轮没有执行画布写入，请重试。"
         assert assistant_deltas == [result["content"]]
+    else:
+        assert result["content"] == (
+            "画布操作未完成：未能创建工作流：找不到匹配的 Workflow Skill。"
+        )
+        assert assistant_deltas == [result["content"]]
     assert revoked == ["agent-token"]
+
+
+@pytest.mark.anyio
+async def test_codex_freezone_timeout_preserves_runtime_reason(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+    events = []
+
+    async def fake_authorize(**_kwargs):
+        return None
+
+    async def fake_create_token(*_args, **_kwargs):
+        return "agent-token"
+
+    class FakeAuthPort:
+        async def revoke_agent_session(self, _token):
+            return None
+
+    class FakeThread:
+        async def stream(self, _prompt):
+            yield SimpleNamespace(
+                type="thread_started",
+                thread_id="codex-thread",
+                turn_id="codex-turn",
+            )
+            yield SimpleNamespace(
+                type="egress_disposition",
+                disposition="timeout",
+            )
+            yield SimpleNamespace(
+                type="complete",
+                thread_id="codex-thread",
+                turn_id="codex-turn",
+                text="Codex App Server 响应超时，请重试。",
+            )
+
+    monkeypatch.setattr(chat_service, "authorize_hermes_launch", fake_authorize)
+    monkeypatch.setattr(
+        chat_service, "_create_page_agent_session_token", fake_create_token
+    )
+    monkeypatch.setattr(
+        chat_service, "_build_codex_thread", lambda *_args, **_kwargs: FakeThread()
+    )
+    monkeypatch.setattr(chat_service, "get_auth_session_port", lambda: FakeAuthPort())
+    monkeypatch.setattr(hermes_sdk, "_issue_turn_capability", lambda **_kwargs: None)
+
+    async def collect_event(event):
+        events.append(event)
+
+    scope = ChatScope(
+        kind="project",
+        id="project-a",
+        surface="freezone",
+        canvas_id="canvas-a",
+        agent_id="main",
+        state_dir=str(tmp_path / "state" / "admin" / "project-a"),
+    )
+    result = await chat_service._stream_assistant_reply_codex(
+        "admin",
+        "project-a",
+        "创建一个图片工作流",
+        collect_event,
+        project_state_dir=tmp_path / "state" / "admin" / "project-a",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+        store_scope=scope,
+        turn_id="business-turn",
+        route_prompt="创建一个图片工作流",
+    )
+
+    assert result["content"] == "Codex App Server 响应超时，请重试。"
+    assert [
+        event["text"] for event in events if event["type"] == "assistant_delta"
+    ] == ["Codex App Server 响应超时，请重试。"]
 
 
 @pytest.mark.asyncio
@@ -1476,18 +1627,10 @@ def test_user_agent_workspace_is_not_project_workspace(monkeypatch, tmp_path):
     assert (codex_workspace / ".agents" / "skills").is_dir()
     assert (freezone_workspace / ".agents" / "skills").is_dir()
     assert (
-        codex_workspace
-        / ".agents"
-        / "skills"
-        / "dramaclaw-workflows"
-        / "SKILL.md"
+        codex_workspace / ".agents" / "skills" / "dramaclaw-workflows" / "SKILL.md"
     ).is_file()
     assert (
-        freezone_workspace
-        / ".agents"
-        / "skills"
-        / "dramaclaw-workflows"
-        / "SKILL.md"
+        freezone_workspace / ".agents" / "skills" / "dramaclaw-workflows" / "SKILL.md"
     ).is_file()
     assert codex_home.is_dir()
 
@@ -1529,13 +1672,17 @@ def test_freezone_skill_sync_refreshes_managed_skills_and_preserves_user_skills(
     chat_service._sync_project_skills(skills_dir, agent_profile="freezone:main")
 
     assert not stale_mainline.exists()
-    assert (stale_workflow / "SKILL.md").read_text(encoding="utf-8") == "# Workflow v1\n"
+    assert (stale_workflow / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "# Workflow v1\n"
     assert (user_skill / "SKILL.md").read_text(encoding="utf-8") == "# User-owned\n"
 
     (workflow_source / "SKILL.md").write_text("# Workflow v2\n", encoding="utf-8")
     chat_service._sync_project_skills(skills_dir, agent_profile="freezone:main")
 
-    assert (stale_workflow / "SKILL.md").read_text(encoding="utf-8") == "# Workflow v2\n"
+    assert (stale_workflow / "SKILL.md").read_text(
+        encoding="utf-8"
+    ) == "# Workflow v2\n"
     manifest = json.loads(
         (skills_dir / ".dramaclaw-managed-skills.json").read_text(encoding="utf-8")
     )
@@ -1795,8 +1942,26 @@ def test_codex_gateway_overrides_use_responses_without_embedding_secret():
     assert "features.shell_tool=false" in overrides
     assert "memories.generate_memories=false" in overrides
     assert "memories.use_memories=false" in overrides
+    assert 'model_reasoning_effort="medium"' in overrides
     assert 'web_search="disabled"' in overrides
     assert "secret-value" not in rendered
+
+
+def test_codex_gateway_reasoning_effort_is_configurable(monkeypatch):
+    monkeypatch.setenv("CODEX_REASONING_EFFORT", "high")
+
+    overrides = chat_service._codex_gateway_config_overrides(
+        "https://gateway.example/v1"
+    )
+
+    assert 'model_reasoning_effort="high"' in overrides
+
+
+def test_codex_gateway_rejects_invalid_reasoning_effort(monkeypatch):
+    monkeypatch.setenv("CODEX_REASONING_EFFORT", "disabled")
+
+    with pytest.raises(RuntimeError, match="Unsupported CODEX_REASONING_EFFORT"):
+        chat_service._codex_gateway_config_overrides("https://gateway.example/v1")
 
 
 def test_codex_env_uses_effective_gateway_and_isolates_codex_home(
@@ -2595,13 +2760,18 @@ def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainl
     assert "node create schema" in prompt
     assert "link type catalog" in prompt
     assert "call a Freezone write tool" in prompt
-    assert "first assistant output MUST be that write tool call" in prompt
+    assert "first assistant output MUST be that" in prompt
+    assert "Skill/catalog reads required by the next rule" in prompt
     assert "prose first" in prompt
     assert "matching single-operation write tool" in prompt
     assert "successful same-turn frontend write result" in prompt
     assert "Validate" in prompt
     assert "batch only for several ordinary non-workflow" in prompt
     assert "freezone_create_workflow_graph once" in prompt
+    assert "not a Workflow catalog `skill_id`" in prompt
+    assert "Do not ask for a second “创建并运行” confirmation" in prompt
+    assert "the write tool creates it" in prompt
+    assert "Never\n  use the host's built-in request_user_input" in prompt
     assert "canvas video/audio/composition nodes" in prompt
     assert "videoComposeNode is terminal" in prompt
     assert "never connect planning text or prompts to it" in prompt
@@ -2610,6 +2780,47 @@ def test_freezone_prompt_allows_creative_ideation_canvas_framework_without_mainl
     assert "[RENDERING_CONTRACT]" not in prompt
     assert "dramaclaw_get_episode_media" not in prompt
     assert "do not generate/plan scripts" not in prompt
+
+
+def test_freezone_prompt_defaults_canvas_execution_mode_to_manual_confirmation(
+    monkeypatch, tmp_path
+):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "生成一张图片",
+        tool_mode="freezone_canvas",
+        surface_context={"freezone_canvas_id": "canvas-a"},
+    )
+
+    assert "[FREEZONE_CANVAS_EXECUTION_MODE]" in prompt
+    assert "mode: manual_confirm" in prompt
+    assert "Do not ask a preliminary image/video parameter clarification" in prompt
+    assert "approval card is where the user reviews and adjusts" in prompt
+
+
+def test_freezone_prompt_injects_auto_execute_parameter_policy(monkeypatch, tmp_path):
+    monkeypatch.setenv("NOVELVIDEO_STATE_DIR", str(tmp_path / "state"))
+
+    prompt = chat_service._prompt_with_user_context(
+        "admin",
+        "project-a",
+        "生成一段视频",
+        tool_mode="freezone_canvas",
+        surface_context={
+            "freezone_canvas_id": "canvas-a",
+            "canvas_command_execution_mode": "auto_execute",
+        },
+    )
+
+    assert "mode: auto_execute" in prompt
+    assert "ask once before the canvas write" in prompt
+    assert "one structured question per missing field" in prompt
+    assert "frontend auto-applies it" in prompt
+    assert "without asking for another create/run confirmation" in prompt
+    assert "never built-in request_user_input" in prompt
 
 
 def test_freezone_prompt_omits_skill_studio_contract_for_normal_canvas_requests(

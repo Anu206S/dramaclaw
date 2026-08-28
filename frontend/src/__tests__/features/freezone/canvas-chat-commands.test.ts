@@ -7167,6 +7167,196 @@ describe("canvas chat commands", () => {
     }
   });
 
+  it("ignores a duplicate workflow start while the same canvas run is active", async () => {
+    const imageNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      { prompt: "雨夜首帧" },
+    );
+    const events: Array<{ nodeId: string; action: string; requestId?: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push(payload);
+    });
+    const envelope = extractCanvasChatCommandEnvelopes([{
+      schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+      commands: [{ type: "run_workflow", node_ids: [imageNodeId] }],
+    }]);
+
+    try {
+      const firstRun = applyCanvasChatCommandsAsync(envelope, {
+        canvasId: "canvas-duplicate-run",
+        actionTimeoutMs: 1_000,
+      });
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+
+      const duplicateResult = await applyCanvasChatCommandsAsync(envelope, {
+        canvasId: "canvas-duplicate-run",
+        actionTimeoutMs: 1_000,
+      });
+
+      expect(events).toHaveLength(1);
+      expect(duplicateResult.errors).toEqual([]);
+      expect(duplicateResult.commandResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "run_workflow",
+          status: "success",
+          output: expect.objectContaining({ reason: "workflow_already_running" }),
+        }),
+      ]));
+
+      const requestId = events[0]?.requestId;
+      if (!requestId) throw new Error("expected workflow request id");
+      useCanvasStore.getState().updateNodeData(imageNodeId, {
+        imageUrl: "/static/project/rainy-night.png",
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId,
+        nodeId: imageNodeId,
+        action: "generate_image",
+        status: "success",
+      });
+      await firstRun;
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("serializes distinct workflow runs on the same canvas instead of discarding them", async () => {
+    const firstNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      { prompt: "第一条工作流" },
+    );
+    const secondNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 360, y: 0 },
+      { prompt: "第二条工作流" },
+    );
+    const events: Array<{ nodeId: string; action: string; requestId?: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push(payload);
+    });
+
+    try {
+      const firstRun = applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{ type: "run_workflow", node_ids: [firstNodeId] }],
+        }]),
+        { canvasId: "canvas-distinct-runs", actionTimeoutMs: 1_000 },
+      );
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+
+      const secondRun = applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{ type: "run_workflow", node_ids: [secondNodeId] }],
+        }]),
+        { canvasId: "canvas-distinct-runs", actionTimeoutMs: 1_000 },
+      );
+      await Promise.resolve();
+      expect(events).toHaveLength(1);
+
+      const firstRequestId = events[0]?.requestId;
+      if (!firstRequestId) throw new Error("expected first workflow request id");
+      useCanvasStore.getState().updateNodeData(firstNodeId, {
+        imageUrl: "/static/project/first.png",
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: firstRequestId,
+        nodeId: firstNodeId,
+        action: "generate_image",
+        status: "success",
+      });
+      await firstRun;
+      await vi.waitFor(() => expect(events).toHaveLength(2));
+
+      const secondRequestId = events[1]?.requestId;
+      if (!secondRequestId) throw new Error("expected second workflow request id");
+      useCanvasStore.getState().updateNodeData(secondNodeId, {
+        imageUrl: "/static/project/second.png",
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId: secondRequestId,
+        nodeId: secondNodeId,
+        action: "generate_image",
+        status: "success",
+      });
+      const secondResult = await secondRun;
+
+      expect(events.map((event) => event.nodeId)).toEqual([firstNodeId, secondNodeId]);
+      expect(secondResult.errors).toEqual([]);
+      expect(secondResult.commandResults).not.toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          output: expect.objectContaining({ reason: "workflow_already_running" }),
+        }),
+      ]));
+    } finally {
+      unsubscribe();
+    }
+  });
+
+  it("rechecks completed outputs when a workflow reaches the action queue", async () => {
+    const imageNodeId = useCanvasStore.getState().addNode(
+      CANVAS_NODE_TYPES.imageGen,
+      { x: 0, y: 0 },
+      { prompt: "排队中的首帧" },
+    );
+    const events: Array<{ nodeId: string; action: string; requestId?: string }> = [];
+    const unsubscribe = canvasEventBus.subscribe("freezone/run-node-action", (payload) => {
+      events.push(payload);
+    });
+
+    try {
+      const directRun = applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{
+            type: "run_node_action",
+            node_id: imageNodeId,
+            action: "generate_image",
+          }],
+        }]),
+        { canvasId: "canvas-late-skip", actionTimeoutMs: 1_000 },
+      );
+      await vi.waitFor(() => expect(events).toHaveLength(1));
+
+      const queuedWorkflow = applyCanvasChatCommandsAsync(
+        extractCanvasChatCommandEnvelopes([{
+          schema_version: CANVAS_CHAT_COMMANDS_SCHEMA_VERSION,
+          commands: [{ type: "run_workflow", node_ids: [imageNodeId] }],
+        }]),
+        { canvasId: "canvas-late-skip", actionTimeoutMs: 1_000 },
+      );
+
+      const requestId = events[0]?.requestId;
+      if (!requestId) throw new Error("expected direct action request id");
+      useCanvasStore.getState().updateNodeData(imageNodeId, {
+        imageUrl: "/static/project/completed-while-queued.png",
+      });
+      canvasEventBus.publish("freezone/node-action-result", {
+        requestId,
+        nodeId: imageNodeId,
+        action: "generate_image",
+        status: "success",
+      });
+
+      await directRun;
+      const workflowResult = await queuedWorkflow;
+      expect(events).toHaveLength(1);
+      expect(workflowResult.errors).toEqual([]);
+      expect(workflowResult.commandResults).toEqual(expect.arrayContaining([
+        expect.objectContaining({
+          type: "run_node_action",
+          status: "success",
+          output: expect.objectContaining({ reason: "workflow_action_already_completed" }),
+        }),
+      ]));
+    } finally {
+      unsubscribe();
+    }
+  });
+
   it("runs the parent workflow when targeting its disconnected user input node", async () => {
     const store = useCanvasStore.getState();
     const inputNodeId = store.addNode(

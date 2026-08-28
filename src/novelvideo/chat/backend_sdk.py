@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import os
 import threading
 import tomllib
 from dataclasses import dataclass
@@ -11,12 +12,30 @@ from typing import Any, AsyncIterator, Literal, Protocol, runtime_checkable
 
 _log = logging.getLogger(__name__)
 
+
 # Codex App Server may keep a turn open indefinitely when its upstream model
 # request never produces a notification. Hermes already has idle and total
 # stream deadlines; keep the same lifecycle guarantee here, with a tighter
 # first-progress deadline so an upstream request that never emits its first
-# model/tool event cannot leave the UI spinning for minutes.
-CODEX_STREAM_FIRST_PROGRESS_TIMEOUT = 120.0
+# model/tool event cannot leave the UI spinning indefinitely. Large canvas
+# workflows can legitimately spend more than two minutes planning before the
+# runtime emits its first reasoning/tool notification, so keep the default in
+# line with the active-stream idle deadline. Operators may tune it without a
+# code change when their model gateway has a different latency envelope.
+def _positive_timeout_from_env(name: str, default: float) -> float:
+    raw = os.environ.get(name, "").strip()
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        return default
+    return value if value > 0 else default
+
+
+CODEX_STREAM_FIRST_PROGRESS_TIMEOUT = _positive_timeout_from_env(
+    "DRAMACLAW_CODEX_FIRST_PROGRESS_TIMEOUT_SECONDS", 300.0
+)
 CODEX_STREAM_IDLE_TIMEOUT = 300.0
 CODEX_STREAM_TOTAL_TIMEOUT = max(1800.0, CODEX_STREAM_IDLE_TIMEOUT)
 CODEX_INTERRUPT_GRACE_TIMEOUT = 5.0

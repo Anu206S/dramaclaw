@@ -7,30 +7,20 @@ import json
 import re
 from typing import Any
 
+from novelvideo.freezone.workflow_schema import (
+    LINK_TYPE_VALUES as PORTABLE_LINK_TYPE_VALUES,
+    NODE_TYPE_VALUES,
+)
+
 CANVAS_CHAT_COMMANDS_SCHEMA_VERSION = "canvas_chat_commands.v1"
 
-ALLOWED_NODE_TYPES = {
-    "textAnnotationNode",
-    "scriptNode",
-    "beatContextNode",
-    "imageGenNode",
-    "videoNode",
-    "audioNode",
-    "videoComposeNode",
-}
+ALLOWED_NODE_TYPES = set(NODE_TYPE_VALUES)
 
 DEFAULT_NODE_TYPE = "textAnnotationNode"
 
 TEXTUAL_NODE_TYPES = {"textAnnotationNode", "scriptNode", "beatContextNode"}
 
-LINK_TYPE_VALUES = {
-    "context_for",
-    "prompt_for",
-    "dependency_for",
-    "media_input_for",
-    "derived_from",
-    "composition_input_for",
-}
+LINK_TYPE_VALUES = set(PORTABLE_LINK_TYPE_VALUES)
 
 LINK_OBJECT_TYPE_BY_NODE_TYPE = {
     "textAnnotationNode": "TextNode",
@@ -277,7 +267,7 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
         }
         commands.append(command)
 
-    groups = _groups(payload.get("groups"), payload.get("layout"))
+    groups = _groups(payload.get("groups") or payload.get("group"), payload.get("layout"))
     group_client_node_ids: list[list[str]] = []
     if groups:
         for group in groups:
@@ -320,10 +310,12 @@ def build_workflow_graph_commands(args: dict[str, Any]) -> dict[str, Any]:
             "focus": True,
         }
     )
-    run_after_create = _bool_value(
-        args.get("run_after_create") or args.get("runAfterCreate"),
-        False,
+    raw_run_after_create = (
+        args.get("run_after_create")
+        if "run_after_create" in args
+        else args.get("runAfterCreate")
     )
+    run_after_create = _bool_value(raw_run_after_create, False)
     if run_after_create:
         commands.append(
             {
@@ -471,7 +463,25 @@ def _node_data(
         result.setdefault("description", description.strip())
     prompt = node.get("prompt")
     if isinstance(prompt, str) and prompt.strip():
-        result.setdefault("prompt", prompt.strip())
+        current_prompt = result.get("prompt")
+        if not isinstance(current_prompt, str) or not current_prompt.strip():
+            result["prompt"] = prompt.strip()
+    if node_type == "textAnnotationNode":
+        # Workflow plans authored by different agent hosts commonly use either
+        # ``text`` or ``content`` for a plain text node. The canvas command
+        # contract is intentionally narrower and requires ``data.content``.
+        # Normalize at the portable workflow boundary so every host emits the
+        # same valid canvas command without loosening the canvas schema.
+        content = result.get("content")
+        if not isinstance(content, str) or not content.strip():
+            for candidate in (
+                result.get("text"),
+                node.get("content"),
+                node.get("text"),
+            ):
+                if isinstance(candidate, str) and candidate.strip():
+                    result["content"] = candidate.strip()
+                    break
     _normalize_model_alias(result, node_type)
     if node_type == "audioNode":
         result.setdefault("audioKind", "speech")
@@ -593,6 +603,8 @@ def _groups(raw_groups: Any, layout: Any) -> list[dict[str, Any]]:
     groups = raw_groups
     if not isinstance(groups, list) and isinstance(layout, dict):
         groups = layout.get("groups")
+    if isinstance(groups, dict):
+        groups = [groups]
     result: list[dict[str, Any]] = []
     if not isinstance(groups, list):
         return result

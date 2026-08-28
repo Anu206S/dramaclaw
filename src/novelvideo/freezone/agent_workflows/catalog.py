@@ -9,6 +9,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from novelvideo.freezone.workflow_schema import (
+    WORKFLOW_INTENT_SCHEMA_VERSION,
+    WORKFLOW_PLAN_SCHEMA_VERSION,
+)
+
 try:
     from novelvideo.freezone.agent_config_store import list_user_agent_config_items
 except Exception:  # pragma: no cover - Hermes can run before app imports are available.
@@ -25,8 +30,7 @@ except Exception:  # pragma: no cover - Hermes can run before app imports are av
     ALLOWED_LINK_TYPES = set()
     ALLOWED_NODE_TYPES = set()
 
-PLAN_SCHEMA_VERSION = "freezone_workflow_plan.v1"
-WORKFLOW_INTENT_SCHEMA_VERSION = "freezone_workflow_intent.v1"
+PLAN_SCHEMA_VERSION = WORKFLOW_PLAN_SCHEMA_VERSION
 
 _ROOT = Path(__file__).resolve().parents[4]
 _CATALOG_ROOT = _ROOT / "src" / "novelvideo" / "freezone" / "agent_catalog" / "builtins"
@@ -123,6 +127,76 @@ _DETERMINISTIC_SKILL_PLANNERS = {
         "default_include_audio": True,
     },
 }
+
+_UNIVERSAL_GENERATION_INPUT_KEYS = {
+    "aspect_ratio",
+    "image_aspect_ratio",
+    "image_model",
+    "image_quality",
+    "image_resolution",
+    "image_variants_per_node",
+    "video_aspect_ratio",
+    "video_duration_seconds",
+    "video_generate_audio",
+    "video_generation_mode",
+    "video_model",
+    "video_resolution",
+    "video_variants_per_node",
+}
+
+_PORTABLE_GENERATION_VARIANT_COUNTS = {1, 2, 4}
+_PORTABLE_VIDEO_GENERATION_MODES = {
+    "allReference",
+    "firstLastFrame",
+    "imageReference",
+    "imageToVideo",
+    "textToVideo",
+}
+
+
+def _portable_generation_input_error(parameter_id: str, value: Any) -> str | None:
+    """Validate stable generation inputs before copying them into node data.
+
+    Model ids and model-dependent ratios/resolutions remain dynamic strings; the
+    progressively loaded live node schema validates whether a selected model
+    supports their concrete values. Stable scalar types, ranges, and modes are
+    enforced here for every Agent host.
+    """
+    if parameter_id in {
+        "image_variants_per_node",
+        "video_variants_per_node",
+    }:
+        if not isinstance(value, int) or isinstance(value, bool):
+            return "must be an integer"
+        if value not in _PORTABLE_GENERATION_VARIANT_COUNTS:
+            supported = ", ".join(
+                str(item) for item in sorted(_PORTABLE_GENERATION_VARIANT_COUNTS)
+            )
+            return f"unsupported option: {value}; supported values: {supported}"
+        return None
+    if parameter_id == "video_duration_seconds":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return "must be a number"
+        if value <= 0:
+            return "must be greater than 0"
+        if value > 600:
+            return "must be less than or equal to 600"
+        return None
+    if parameter_id == "video_generate_audio":
+        return None if isinstance(value, bool) else "must be a boolean"
+    if parameter_id == "video_generation_mode":
+        if not isinstance(value, str) or not value.strip():
+            return "must be a non-empty string"
+        if value not in _PORTABLE_VIDEO_GENERATION_MODES:
+            return f"unsupported option: {value}"
+        return None
+    if parameter_id in _UNIVERSAL_GENERATION_INPUT_KEYS:
+        return (
+            None
+            if isinstance(value, str) and bool(value.strip())
+            else "must be a non-empty string"
+        )
+    return None
 
 
 def _workflow_input_values(args: dict[str, Any]) -> dict[str, Any]:
@@ -335,6 +409,23 @@ def _skill_input_contract(
                 ),
             }
         )
+
+    # Image/video generation choices are portable execution inputs rather than
+    # Skill-specific creative inputs. Preserve the recognized keys even when a
+    # catalog Skill has no matching input_parameters declaration, so an answer
+    # collected by any Agent host reaches every generated media node.
+    for parameter_id in sorted(_UNIVERSAL_GENERATION_INPUT_KEYS):
+        if parameter_id in provided and not _is_missing_parameter_value(
+            provided[parameter_id]
+        ):
+            value = provided[parameter_id]
+            error = _portable_generation_input_error(parameter_id, value)
+            if error is not None:
+                errors.append(
+                    {"path": f"inputs.{parameter_id}", "message": error}
+                )
+            else:
+                resolved[parameter_id] = deepcopy(value)
 
     execution_mode = _text(resolved.get("execution_mode")) or "manual"
     return {
@@ -1247,7 +1338,10 @@ def _compile_dynamic_recipe_items_intent(
                     "source": normalized_source,
                     "target": item_id,
                     "link_type": (
-                        "media_input_for"
+                        _intent_reference_link_type(
+                            node_types.get(normalized_source, ""),
+                            node_types.get(item_id, ""),
+                        )
                         if normalized_source in normalized_references
                         else _intent_link_type(
                             node_types.get(normalized_source, ""),
@@ -1735,6 +1829,24 @@ def _intent_link_type(source_type: str, target_type: str) -> str:
     return "context_for"
 
 
+def _intent_reference_link_type(source_type: str, target_type: str) -> str:
+    """Choose a typed input edge for an explicit Agent reference.
+
+    ``reference_inputs`` means that the target consumes the referenced node, but
+    it does not imply that every reference is media. Text references are prompts;
+    only generated media may use ``media_input_for``.
+    """
+    if target_type == "videoComposeNode":
+        return "composition_input_for"
+    if source_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
+        if target_type in {"textAnnotationNode", "scriptNode", "beatContextNode"}:
+            return "context_for"
+        return "prompt_for"
+    if source_type in {"imageGenNode", "videoNode", "audioNode"}:
+        return "media_input_for"
+    return _intent_link_type(source_type, target_type)
+
+
 def _is_redundant_compose_item(item_id: str, item: dict[str, Any]) -> bool:
     normalized_id = item_id.strip().lower().replace("-", "_")
     if normalized_id in {
@@ -1822,15 +1934,55 @@ def _intent_item_node(
             },
         },
     }
-    if model:
+    generation_model = _text(
+        resolved_inputs.get("image_model")
+        if node_type == "imageGenNode"
+        else resolved_inputs.get("video_model")
+        if node_type == "videoNode"
+        else ""
+    )
+    if generation_model:
+        data["model"] = generation_model
+    elif model:
         data["model"] = model
-    aspect_ratio = _text(resolved_inputs.get("aspect_ratio"))
+    aspect_ratio = _text(
+        resolved_inputs.get("image_aspect_ratio")
+        if node_type == "imageGenNode"
+        else resolved_inputs.get("video_aspect_ratio")
+        if node_type == "videoNode"
+        else ""
+    ) or _text(resolved_inputs.get("aspect_ratio"))
     if aspect_ratio and node_type in {"imageGenNode", "videoNode"}:
         data["aspectRatio"] = aspect_ratio
+    if node_type == "imageGenNode":
+        image_resolution = _text(resolved_inputs.get("image_resolution"))
+        image_quality = _text(resolved_inputs.get("image_quality"))
+        image_variants = resolved_inputs.get("image_variants_per_node")
+        if image_resolution:
+            data["size"] = image_resolution
+        if image_quality:
+            data["quality"] = image_quality
+        if isinstance(image_variants, int) and not isinstance(image_variants, bool):
+            data["count"] = image_variants
     if node_type == "videoNode":
         duration_seconds = _positive_duration_seconds(item.get("duration_seconds"))
+        if duration_seconds is None:
+            duration_seconds = _positive_duration_seconds(
+                resolved_inputs.get("video_duration_seconds")
+            )
         if duration_seconds is not None:
             data["durationSec"] = duration_seconds
+        video_resolution = _text(resolved_inputs.get("video_resolution"))
+        video_mode = _text(resolved_inputs.get("video_generation_mode"))
+        video_variants = resolved_inputs.get("video_variants_per_node")
+        if video_resolution:
+            data["quality"] = video_resolution
+        if video_mode:
+            data["genMode"] = video_mode
+        if isinstance(resolved_inputs.get("video_generate_audio"), bool):
+            data["generateAudio"] = resolved_inputs["video_generate_audio"]
+        if isinstance(video_variants, int) and not isinstance(video_variants, bool):
+            data["count"] = video_variants
     if node_type == "audioNode":
         data["text"] = prompt
         if audio_kind == "music":

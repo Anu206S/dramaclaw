@@ -133,6 +133,16 @@ MCP freezone 工具
 
 `DRAMACLAW_EXTERNAL_MCP=1` 只用于外部 Agent 入口。内置 Hermes 不设置该变量，因此仍使用虾画聊天内的审批卡；外部 Agent 则在 Codex / Claude / OpenClaw 自己的聊天中确认，确认后前端自动执行命令，不弹出虾画聊天审批。
 
+当外部 Agent 真正运行图片或视频节点时，授权 MCP 会在审批和画布写入前执行参数预检。
+如果模型、比例、分辨率/质量、时长、声音开关或数量仍有缺项，会返回
+`generation_parameters_required`。Agent 应使用 `freezone_request_user_clarification` 一次询问
+全部缺项，再以同一个工作流草稿或计划重试；不得静默采用默认值。普通空节点创建、连线、
+归组、布局、文案及独立音频设置不受该预检影响。
+
+用户在询问卡中选择“推荐模型”时，Agent 应传递标准符号值 `"recommended"`，不得自行猜测
+具体模型 ID。授权 MCP 会在提交画布前移除该符号值，由本地画布使用当前实际可用的默认模型；
+因此也不需要为了替换推荐项而重新生成整份工作流图。
+
 只有在无浏览器的 headless/测试场景，才建议显式开启：
 
 ```bash

@@ -27,6 +27,18 @@ async def test_standalone_workflow_mcp_exposes_portable_tools_and_resources():
         "dramaclaw-workflow://recipes/{recipe_id}",
     }
 
+    schemas = {tool.name: tool.inputSchema for tool in tools}
+    plan_schema = schemas["workflow_graph_compile"]["properties"]["plan"]
+    intent_schema = schemas["workflow_intent_compile"]["properties"]["intent"]
+    assert plan_schema["properties"]["schema_version"]["enum"] == [
+        "freezone_workflow_plan.v1"
+    ]
+    assert plan_schema["properties"]["nodes"]["items"]["anyOf"]
+    assert "groups" in plan_schema["properties"]
+    assert intent_schema["properties"]["schema_version"]["enum"] == [
+        "freezone_workflow_intent.v1"
+    ]
+
 
 @pytest.mark.asyncio
 async def test_recipe_resource_reads_one_exact_definition(monkeypatch):
@@ -100,8 +112,10 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
                     {
                         "id": "prompt",
                         "node_type": "textAnnotationNode",
-                        "title": "测试提示词",
-                        "content": "夜晚的未来城市",
+                        "data": {
+                            "title": "测试提示词",
+                            "text": "夜晚的未来城市",
+                        },
                     },
                     {
                         "id": "frame",
@@ -115,6 +129,10 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
                     {"source": "prompt", "target": "frame", "link_type": "prompt_for"},
                     {"source": "frame", "target": "video", "link_type": "media_input_for"},
                 ],
+                "group": {
+                    "label": "文生视频测试工作流",
+                    "node_ids": ["prompt", "frame", "video"],
+                },
             }
         }
     )
@@ -133,3 +151,52 @@ def test_graph_compiler_emits_one_grouped_canvas_batch():
     ]
     assert result["commands"][0]["data"]["title"] == "测试提示词"
     assert result["commands"][1]["data"]["prompt"] == "霓虹灯下的未来城市首帧"
+    assert result["commands"][0]["data"]["content"] == "夜晚的未来城市"
+    assert result["commands"][5]["label"] == "文生视频测试工作流"
+
+
+def test_graph_compiler_prefers_canonical_run_after_create_flag():
+    result = build_workflow_graph_commands(
+        {
+            "plan": {
+                "schema_version": "freezone_workflow_plan.v1",
+                "nodes": [
+                    {
+                        "id": "prompt",
+                        "node_type": "textAnnotationNode",
+                        "stage": "input",
+                        "content": "只创建，不执行",
+                    }
+                ],
+                "edges": [],
+            },
+            "run_after_create": False,
+            "runAfterCreate": True,
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["run_after_create"] is False
+    assert "run_workflow" not in [command["type"] for command in result["commands"]]
+
+
+def test_graph_compiler_replaces_empty_nested_prompt_with_portable_prompt():
+    result = build_workflow_graph_commands(
+        {
+            "plan": {
+                "schema_version": "freezone_workflow_plan.v1",
+                "nodes": [
+                    {
+                        "id": "frame",
+                        "node_type": "imageGenNode",
+                        "prompt": "未来城市首帧",
+                        "data": {"prompt": ""},
+                    }
+                ],
+                "edges": [],
+            }
+        }
+    )
+
+    assert result["ok"] is True
+    assert result["commands"][0]["data"]["prompt"] == "未来城市首帧"
