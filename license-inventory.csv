@@ -86,6 +86,7 @@ docs/en/guides/self-hosting.md,Elastic-2.0,2026 SuperTale contributors,REUSE.tom
 docs/en/guides/telemetry.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/en/guides/troubleshooting.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/en/license.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+docs/en/reference/agent-authorization.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/en/reference/environment-variables.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/releasing.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/superpowers/plans/2026-08-21-ee-config-ce-provisioner-isolation.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -102,6 +103,7 @@ docs/zh/guides/self-hosting.md,Elastic-2.0,2026 SuperTale contributors,REUSE.tom
 docs/zh/guides/telemetry.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/zh/guides/troubleshooting.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/zh/license.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+docs/zh/reference/agent-authorization.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 docs/zh/reference/environment-variables.md,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 examples/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 examples/seedance2_fast_demo.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1661,6 +1663,7 @@ src/novelvideo/render_plan/__init__.py,Elastic-2.0,2026 SuperTale contributors,R
 src/novelvideo/render_plan/ref_image_hash.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/scene_prerequisites.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/security/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/security/agent_scope.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/security/operator_auth.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/security/sandbox_wrap.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/seedance2_i2v/__init__.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1943,6 +1946,7 @@ tests/test_chat_route_prewarm.py,Elastic-2.0,2026 SuperTale contributors,REUSE.t
 tests/test_chat_service_user_agent_scope.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_chat_ws_home_egress.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_chat_ws_project_egress.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_cli_api_binding.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_cli_cognee_commands.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_cli_store_lifecycle.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_cognee_config.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation

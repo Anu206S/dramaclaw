@@ -32,9 +32,15 @@ map $http_x_forwarded_proto $hsts_value {
 
 # Apply even when an upstream media cache still holds a pre-upgrade response.
 # This is deliberately separate from the SPA's script policy.
+# Use the response type, not the URL suffix: a cached HTML response named .mp4
+# must retain the strict document sandbox. Match api/routes/files.py for media.
+map $upstream_http_content_type $project_file_response_csp {
+    default "sandbox; default-src 'none'";
+    "~*^(audio|video)/" "sandbox allow-same-origin; default-src 'none'; media-src 'self'";
+}
 map $uri $project_file_csp {
     default "";
-    "~^/(static/projects/|api/v1/projects/[^/]+/(media|files)/)" "sandbox; default-src 'none'";
+    "~^/(static/projects/|api/v1/projects/[^/]+/(media|files)/)" $project_file_response_csp;
 }
 
 server {

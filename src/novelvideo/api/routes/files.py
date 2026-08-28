@@ -24,6 +24,15 @@ _PROJECT_FILE_HEADERS = {
     "Content-Security-Policy": "sandbox; default-src 'none'",
     "X-Content-Type-Options": "nosniff",
 }
+# Native audio/video documents reload their own URL. Preserve the origin for
+# that authenticated media request, without enabling scripts or other sources.
+# Keep frontend/docker/nginx.conf.template's playback policy in sync.
+_PROJECT_PLAYBACK_HEADERS = {
+    **_PROJECT_FILE_HEADERS,
+    "Content-Security-Policy": (
+        "sandbox allow-same-origin; default-src 'none'; media-src 'self'"
+    ),
+}
 # Only inert representations may be previewed or redirected to object storage.
 # In particular, SVG/HTML/XML/JS and unknown extensions stay download-only,
 # including files uploaded before this policy existed. Do not trust host MIME
@@ -271,13 +280,18 @@ def _serve_or_redirect_to_oss(requested: Path, *, as_download: bool):
             headers={"Cache-Control": "no-store"},
         )
 
+    headers = (
+        _PROJECT_PLAYBACK_HEADERS
+        if media_type.startswith(("audio/", "video/"))
+        else _PROJECT_FILE_HEADERS
+    )
     if as_download:
         return FileResponse(
             path=str(requested), filename=requested.name,
-            media_type=media_type, headers=_PROJECT_FILE_HEADERS,
+            media_type=media_type, headers=headers,
         )
     return FileResponse(
-        path=str(requested), media_type=media_type, headers=_PROJECT_FILE_HEADERS,
+        path=str(requested), media_type=media_type, headers=headers,
     )
 
 

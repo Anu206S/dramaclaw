@@ -64,47 +64,80 @@ def test_upload_keeps_arbitrary_file_storage_without_active_preview(scoped_api_c
 
 @pytest.mark.parametrize("filename,media_type", [
     ("image.png", "image/png"), ("image.JPG", "image/jpeg"),
-    ("clip.mp4", "video/mp4"), ("sound.mp3", "audio/mpeg"),
+    ("clip.mp4", "video/mp4"), ("clip.MP4", "video/mp4"),
+    ("clip.webm", "video/webm"), ("sound.mp3", "audio/mpeg"),
+    ("sound.wav", "audio/wav"), ("sound.opus", "audio/ogg"),
     ("scene.sog", "application/octet-stream"),
 ])
-def test_normal_media_keeps_inline_and_range_delivery(scoped_api_client, monkeypatch, filename, media_type):
+@pytest.mark.parametrize("route", ["static", "media", "files"])
+@pytest.mark.parametrize("use_range", [False, True])
+def test_normal_media_keeps_preview_download_and_range_delivery(
+    scoped_api_client, monkeypatch, filename, media_type, route, use_range,
+):
     from novelvideo.utils import oss_client
 
     monkeypatch.setattr(oss_client, "maybe_presign_static", lambda *args: None)
+    monkeypatch.setattr(oss_client, "maybe_presign_existing_output", lambda *args: None)
     api = scoped_api_client
     payload = b"synthetic media bytes"
     (api.root / "project-a" / "output" / filename).write_bytes(payload)
-    response = api.client.get(f"/static/projects/project-a/{filename}",
-                               headers={**api.headers["read_a"], "Range": "bytes=0-4"})
-    assert response.status_code == 206
-    assert response.content == payload[:5]
+    url = (f"/static/projects/project-a/{filename}" if route == "static" else
+           f"/api/v1/projects/project-a/{route}/{filename}")
+    headers = {**api.headers["read_a"]}
+    if use_range:
+        headers["Range"] = "bytes=0-4"
+    response = api.client.get(url, headers=headers)
+    assert response.status_code == (206 if use_range else 200)
+    assert response.content == (payload[:5] if use_range else payload)
     assert response.headers["content-type"] == media_type
-    assert "content-disposition" not in response.headers
+    if route == "files":
+        assert response.headers["content-disposition"].startswith("attachment;")
+    else:
+        assert "content-disposition" not in response.headers
     assert response.headers["x-content-type-options"] == "nosniff"
+    # Native media documents must reload their own URL with the caller's origin
+    # and cookies. Scripts remain disabled for every representation.
+    expected_csp = (
+        "sandbox allow-same-origin; default-src 'none'; media-src 'self'"
+        if media_type.startswith(("audio/", "video/"))
+        else "sandbox; default-src 'none'"
+    )
+    assert response.headers["content-security-policy"] == expected_csp
 
 
-def test_safe_media_keeps_oss_delivery(scoped_api_client, monkeypatch):
+@pytest.mark.parametrize("filename", ["image.png", "clip.mp4"])
+def test_safe_media_keeps_oss_delivery(scoped_api_client, monkeypatch, filename):
     from novelvideo.utils import oss_client
 
-    monkeypatch.setattr(oss_client, "maybe_presign_static", lambda *args: "https://media.invalid/image.png")
+    target = f"https://media.invalid/{filename}"
+    monkeypatch.setattr(oss_client, "maybe_presign_static", lambda *args: target)
     api = scoped_api_client
-    (api.root / "project-a" / "output" / "image.png").write_bytes(b"image")
-    response = api.client.get("/static/projects/project-a/image.png", headers=api.headers["read_a"],
+    (api.root / "project-a" / "output" / filename).write_bytes(b"media")
+    response = api.client.get(f"/static/projects/project-a/{filename}", headers=api.headers["read_a"],
                                follow_redirects=False)
     assert response.status_code == 302
-    assert response.headers["location"] == "https://media.invalid/image.png"
+    assert response.headers["location"] == target
 
 
-def test_html_with_image_extension_is_not_served_as_html(scoped_api_client, monkeypatch):
+@pytest.mark.parametrize("filename,media_type", [
+    ("spoof.png", "image/png"), ("spoof.mp4", "video/mp4"),
+    ("spoof.mp3", "audio/mpeg"),
+])
+def test_html_with_media_extension_is_not_served_as_html(
+    scoped_api_client, monkeypatch, filename, media_type,
+):
     from novelvideo.utils import oss_client
 
     monkeypatch.setattr(oss_client, "maybe_presign_static", lambda *args: None)
     api = scoped_api_client
-    (api.root / "project-a" / "output" / "spoof.png").write_bytes(b"<script>alert(1)</script>")
-    response = api.client.get("/static/projects/project-a/spoof.png", headers=api.headers["read_a"])
-    assert response.headers["content-type"] == "image/png"
+    (api.root / "project-a" / "output" / filename).write_bytes(b"<script>alert(1)</script>")
+    response = api.client.get(f"/static/projects/project-a/{filename}", headers=api.headers["read_a"])
+    assert response.headers["content-type"] == media_type
     assert response.headers["x-content-type-options"] == "nosniff"
-    assert response.headers["content-security-policy"].startswith("sandbox;")
+    csp = response.headers["content-security-policy"]
+    assert csp.startswith("sandbox")
+    assert "allow-scripts" not in csp
+    assert "default-src 'none'" in csp
 
 
 def _ctx(tmp_path: Path) -> ProjectContext:
