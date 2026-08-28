@@ -840,6 +840,51 @@ def test_dynamic_workflow_creation_reaches_canvas_bridge(monkeypatch):
     assert captured["kwargs"]["allow_dynamic_workflow_batch"] is True
 
 
+def test_dynamic_workflow_creation_stops_when_live_model_catalog_is_unavailable(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    plan = {
+        "schema_version": "freezone_workflow_plan.v1",
+        "workflow_type": "dynamic.ecommerce-product",
+        "skill": {"id": "ecommerce-product"},
+        "nodes": [
+            {
+                "id": "image",
+                "node_type": "imageGenNode",
+                "data": {"model": "image-model", "size": "8K"},
+            }
+        ],
+        "edges": [],
+    }
+    monkeypatch.setattr(
+        plugin, "validate_agent_workflow_plan", lambda value: {"ok": value is plan}
+    )
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+
+    def fake_request(method, path, **_kwargs):
+        assert method == "GET"
+        if path.endswith("/freezone/image/models"):
+            return {"ok": False, "error": "catalog unavailable"}
+        if path.endswith("/tasks/limits"):
+            return {"ok": True, "data": {}}
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    monkeypatch.setattr(
+        plugin,
+        "build_workflow_graph_commands",
+        lambda _args: pytest.fail("must stop before building canvas commands"),
+    )
+
+    result = plugin._handle_create_workflow_graph(
+        {"project_id": "project-a", "canvas_id": "canvas-a", "plan": plan}
+    )
+
+    assert result["status"] == "workflow_preflight_failed"
+    assert result["preflight"]["blockers"][0]["code"] == "model_catalog_unavailable"
+
+
 def test_compact_workflow_intent_compiles_before_canvas_bridge(monkeypatch):
     plugin = _load_plugin_module()
     intent = {"skill_id": "video-ad", "user_goal": "制作五镜广告"}
@@ -1016,6 +1061,127 @@ def test_workflow_draft_can_be_prepared_patched_and_confirmed_once(
     assert len(emitted) == 1
     assert emitted[0][0:2] == ("project-a", "canvas-a")
     assert repeated["status"] == "workflow_draft_already_confirmed"
+
+
+def test_workflow_draft_prepare_stops_when_live_model_catalog_is_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _load_plugin_module()
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
+    draft_request = plugin._request
+    compiled = {
+        "ok": True,
+        "skill_id": "ecommerce-product",
+        "plan": {
+            "nodes": [
+                {
+                    "id": "image",
+                    "node_type": "imageGenNode",
+                    "data": {"model": "image-model", "size": "8K"},
+                }
+            ],
+            "edges": [],
+        },
+    }
+    monkeypatch.setattr(plugin, "compile_workflow_intent", lambda _intent: compiled)
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+
+    def fake_request(method, path, **kwargs):
+        if path.endswith("/freezone/image/models"):
+            return {"ok": False, "error": "catalog unavailable"}
+        if path.endswith("/tasks/limits"):
+            return {"ok": True, "data": {}}
+        return draft_request(method, path, **kwargs)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    result = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "intent": {
+                "skill_id": "ecommerce-product",
+                "user_goal": "生成商品图",
+            },
+            "planning_confirmed": True,
+        }
+    )
+
+    assert result["status"] == "workflow_preflight_failed"
+    assert result["preflight"]["blockers"][0]["code"] == "model_catalog_unavailable"
+
+
+def test_workflow_draft_confirm_stops_when_live_model_catalog_becomes_unavailable(
+    monkeypatch,
+    tmp_path,
+):
+    plugin = _load_plugin_module()
+    _install_workflow_draft_api(monkeypatch, plugin, tmp_path)
+    draft_request = plugin._request
+    catalog_available = True
+    compiled = {
+        "ok": True,
+        "skill_id": "ecommerce-product",
+        "plan": {
+            "nodes": [
+                {
+                    "id": "image",
+                    "node_type": "imageGenNode",
+                    "data": {"model": "image-model", "size": "2K"},
+                }
+            ],
+            "edges": [],
+        },
+    }
+    monkeypatch.setattr(plugin, "compile_workflow_intent", lambda _intent: compiled)
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+
+    def fake_request(method, path, **kwargs):
+        if path.endswith("/freezone/image/models"):
+            return (
+                {
+                    "ok": True,
+                    "data": [
+                        {
+                            "id": "image-model",
+                            "resolutionOptions": ["2K"],
+                            "ratioOptions": ["1:1"],
+                        }
+                    ],
+                }
+                if catalog_available
+                else {"ok": False, "error": "catalog unavailable"}
+            )
+        if path.endswith("/tasks/limits"):
+            return {"ok": True, "data": {}}
+        return draft_request(method, path, **kwargs)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    monkeypatch.setattr(
+        plugin,
+        "_emit_canvas_commands",
+        lambda *_args, **_kwargs: pytest.fail("must stop before the protected write"),
+    )
+    prepared = plugin._handle_prepare_workflow_draft(
+        {
+            "project_id": "project-a",
+            "canvas_id": "canvas-a",
+            "intent": {
+                "skill_id": "ecommerce-product",
+                "user_goal": "生成商品图",
+            },
+            "planning_confirmed": True,
+        }
+    )
+    assert prepared["ok"] is True
+
+    catalog_available = False
+    result = plugin._handle_confirm_workflow_draft(
+        {"draft_id": prepared["draft_id"], "revision": prepared["revision"]}
+    )
+
+    assert result["status"] == "workflow_preflight_failed"
+    assert result["preflight"]["blockers"][0]["code"] == "model_catalog_unavailable"
 
 
 def test_workflow_draft_normalizes_json_intent_string(monkeypatch, tmp_path):
@@ -1376,6 +1542,62 @@ def test_workflow_runtime_preflight_blocks_unavailable_model(monkeypatch):
             "path": "runtime.models",
             "message": "configured model is unavailable: missing-image-model",
             "code": "model_unavailable",
+        }
+    ]
+
+
+def test_workflow_runtime_preflight_blocks_unavailable_live_model_catalog(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+
+    def fake_request(method, path, **_kwargs):
+        assert method == "GET"
+        if path.endswith("/freezone/image/models"):
+            return {"ok": False, "error": "catalog unavailable"}
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {
+                    "default": {"limit": 3, "remaining": 3},
+                    "video": {"limit": 3, "remaining": 3},
+                    "ffmpeg": {"limit": 1, "remaining": 1},
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    result = plugin._workflow_runtime_preflight(
+        {
+            "preflight": {"status": "ready", "blockers": [], "warnings": []},
+            "plan": {
+                "nodes": [
+                    {
+                        "id": "image",
+                        "node_type": "imageGenNode",
+                        "data": {
+                            "model": "image-model",
+                            "size": "8K",
+                            "aspectRatio": "banana",
+                            "quality": "ultra",
+                        },
+                    }
+                ]
+            },
+        },
+        project_id="project-a",
+    )
+
+    assert result["status"] == "blocked"
+    assert result["blockers"] == [
+        {
+            "path": "runtime.models",
+            "message": (
+                "could not verify imageGenNode capabilities because the live model "
+                "catalog is unavailable"
+            ),
+            "code": "model_catalog_unavailable",
         }
     ]
 

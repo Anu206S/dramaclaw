@@ -4189,10 +4189,14 @@ def _workflow_runtime_preflight(
             response = _request("GET", endpoint)
             if response.get("ok") is False:
                 checks[f"{node_type}.models"] = "unavailable"
-                warnings.append(
+                blockers.append(
                     {
                         "path": "runtime.models",
-                        "message": f"could not verify {node_type} model availability",
+                        "message": (
+                            f"could not verify {node_type} capabilities because the "
+                            "live model catalog is unavailable"
+                        ),
+                        "code": "model_catalog_unavailable",
                     }
                 )
                 continue
