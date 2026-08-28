@@ -115,7 +115,6 @@ interface RecipeDraft {
   planningPrompt: string;
   resultSummary: string;
   sourceMediaRequired: boolean;
-  forceEnhancement: boolean;
 }
 
 interface RatingBandDraft {
@@ -711,7 +710,6 @@ function NewRecipeEditor({
     planningPrompt: "",
     resultSummary: "",
     sourceMediaRequired: false,
-    forceEnhancement: false,
   });
   const [rawJsonOpen, setRawJsonOpen] = useState(false);
 
@@ -733,7 +731,6 @@ function NewRecipeEditor({
         planningPrompt: "",
         resultSummary: "",
         sourceMediaRequired: false,
-        forceEnhancement: false,
       });
       setRawJsonOpen(false);
     }
@@ -756,7 +753,6 @@ function NewRecipeEditor({
       requires_source_media: recipeDraft.sourceMediaRequired,
       output_kind: recipeDraft.outputKind,
       name: recipeDraft.name,
-      force_enhancement: recipeDraft.forceEnhancement,
     }),
     [initialPayload, recipeDraft],
   );
@@ -877,12 +873,6 @@ function NewRecipeEditor({
               hint={t("settings.freezoneCatalog.newRecipe.sourceMediaRequiredHint")}
               checked={recipeDraft.sourceMediaRequired}
               onChange={(value) => updateRecipeDraft({ sourceMediaRequired: value })}
-            />
-            <ToggleRow
-              label={t("settings.freezoneCatalog.newRecipe.forceEnhancement")}
-              hint={t("settings.freezoneCatalog.newRecipe.forceEnhancementHint")}
-              checked={recipeDraft.forceEnhancement}
-              onChange={(value) => updateRecipeDraft({ forceEnhancement: value })}
             />
           </EditorFieldGroup>
 
@@ -1366,7 +1356,6 @@ function recipeDraftFromPayload(payload: FreezoneAgentConfigPayload | null): Rec
     planningPrompt: getString(payload?.planning_prompt),
     resultSummary: getString(payload?.result_summary),
     sourceMediaRequired: payload?.requires_source_media === true,
-    forceEnhancement: payload?.force_enhancement === true,
   };
 }
 

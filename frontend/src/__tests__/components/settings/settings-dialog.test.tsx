@@ -552,6 +552,7 @@ describe("SettingsDialog pages", () => {
     expect(screen.getAllByText("System Prompt")).toHaveLength(1);
     expect(screen.getAllByText("必需元素")).toHaveLength(1);
     expect(screen.getByText("需要上游素材输入")).toBeInTheDocument();
+    expect(screen.queryByText("跳过详细度检查")).not.toBeInTheDocument();
   });
 
   it("shows raw JSON that maps to the current new Recipe form fields", () => {
@@ -602,7 +603,36 @@ describe("SettingsDialog pages", () => {
       result_summary: "输出描述",
       requires_source_media: true,
     });
-    expect(rawJson.force_enhancement).toBe(false);
+    expect(rawJson).not.toHaveProperty("force_enhancement");
+    expect(rawJson).not.toHaveProperty("skip_detail_check");
+  });
+
+  it("preserves legacy Recipe enhancement flags while keeping them out of the form", () => {
+    freezoneAgentConfigMocks.items = [
+      {
+        id: "legacy-recipe",
+        name: "旧版 Recipe",
+        enabled: true,
+        output_kind: "image",
+        action_keys: ["legacy-action"],
+        system_prompt: "旧版系统提示",
+        planning_prompt: "旧版规划提示",
+        result_summary: "旧版输出说明",
+        requires_source_media: false,
+        force_enhancement: true,
+        skip_detail_check: true,
+      },
+    ];
+    renderSettingsDialog();
+
+    openRecipesManagement();
+    fireEvent.click(screen.getByRole("button", { name: "编辑 旧版 Recipe" }));
+
+    expect(screen.queryByText("跳过详细度检查")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看 / 编辑原始 JSON（高级）" }));
+    const rawJson = JSON.parse(screen.getByLabelText("Recipe 原始 JSON").textContent ?? "{}");
+    expect(rawJson.force_enhancement).toBe(true);
+    expect(rawJson.skip_detail_check).toBe(true);
   });
 
   it("copies the generated Recipe raw JSON from the raw JSON header", async () => {
