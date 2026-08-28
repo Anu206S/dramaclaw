@@ -18,7 +18,7 @@ concurrency:
 
 jobs:
   publish:
-    runs-on: ubuntu-latest
+    runs-on: [dramaclaw-ce-build]
     environment: official-media-catalog
     steps:
       - uses: actions/checkout@v4
@@ -26,7 +26,9 @@ jobs:
         with:
           python-version: "3.11"
       - name: Install OSS client
-        run: python -m pip install oss2==2.19.1
+        run: |
+          python -m venv "$RUNNER_TEMP/catalog-venv"
+          "$RUNNER_TEMP/catalog-venv/bin/python" -m pip install oss2==2.19.1
       - name: Validate and publish immutable catalog
         env:
           PYTHONPATH: src
@@ -35,4 +37,4 @@ jobs:
           OFFICIAL_CATALOG_OSS_PREFIX: ${{ vars.OFFICIAL_CATALOG_OSS_PREFIX || 'official-media-catalog' }}
           OFFICIAL_CATALOG_OSS_ACCESS_KEY_ID: ${{ secrets.OFFICIAL_CATALOG_OSS_ACCESS_KEY_ID || secrets.OSS_RELAY_AK }}
           OFFICIAL_CATALOG_OSS_ACCESS_KEY_SECRET: ${{ secrets.OFFICIAL_CATALOG_OSS_ACCESS_KEY_SECRET || secrets.OSS_RELAY_SK }}
-        run: python scripts/publish_official_media_catalog.py
+        run: '"$RUNNER_TEMP/catalog-venv/bin/python" scripts/publish_official_media_catalog.py'

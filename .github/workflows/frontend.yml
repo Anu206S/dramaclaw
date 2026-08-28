@@ -23,7 +23,7 @@ defaults:
 
 jobs:
   build-test:
-    runs-on: ubuntu-latest
+    runs-on: [dramaclaw-ce-ci]
     steps:
       - uses: actions/checkout@v4
       - name: Install pnpm (reads packageManager from package.json)
@@ -41,6 +41,33 @@ jobs:
       - name: Build (tsc typecheck + vite build)
         run: pnpm build
       - name: Unit tests (vitest)
-        run: pnpm test
+        run: pnpm test --maxWorkers=4
+      - name: Set up bounded PR builder
+        id: buildx
+        uses: docker/setup-buildx-action@v3
+        with:
+          name: ${{ runner.name }}-pr-validation
+          buildkitd-flags: --allow-insecure-entitlement network.host
+          driver-opts: |
+            image=moby/buildkit:v0.32.2@sha256:28a898719c18a33f4e8000685287fa36fd0dd9560c6440227d3a732d79bb41d8
+            network=host
+            memory=3g
+            memory-swap=3g
+            cpu-quota=400000
+            cpu-period=100000
+          buildkitd-config-inline: |
+            [registry."docker.io"]
+              mirrors = ["mirror.lingshan.ai"]
+            [worker.oci]
+              max-parallelism = 1
+              gc = true
+              reservedSpace = "2GB"
+              maxUsedSpace = "20GB"
+              minFreeSpace = "50GB"
+          keep-state: true
+          cache-binary: false
+
       - name: Validate rendered Nginx configuration
-        run: docker build --target nginx-config-test --file Dockerfile .
+        env:
+          BUILDER: ${{ steps.buildx.outputs.name }}
+        run: docker buildx build --builder "$BUILDER" --target nginx-config-test --file Dockerfile .

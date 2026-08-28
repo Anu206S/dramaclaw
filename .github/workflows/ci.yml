@@ -13,7 +13,8 @@ permissions:
 
 jobs:
   deps:
-    runs-on: ubuntu-latest
+    runs-on: [dramaclaw-ce-ci]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
       - name: Install uv (with cache)
@@ -34,6 +35,6 @@ jobs:
       # 规则集冻结在 pyproject，ruff 版本锁定于 dev 依赖组，CI 与本地同版。
       - name: Lint (ruff)
         run: uv run ruff check --output-format=github .
-      # 单元测试：pytest 默认 addopts 已排除 ee/e2e；-n auto 走 xdist 并行。
+      # 单元测试：pytest 默认 addopts 已排除 ee/e2e；-n 4 限制共享宿主上的 xdist 并行度。
       - name: Run tests
-        run: uv run pytest -n auto
+        run: uv run pytest -n 4

@@ -9,7 +9,7 @@ on:
 
 jobs:
   sync:
-    runs-on: ubuntu-latest
+    runs-on: [dramaclaw-ce-build]
     timeout-minutes: 30
 
     steps:
@@ -18,23 +18,35 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Setup SSH key
+      - name: Setup task-local SSH key
+        env:
+          GITEE_SSH_PRIVATE_KEY: ${{ secrets.GITEE_SSH_PRIVATE_KEY }}
         run: |
-          mkdir -p ~/.ssh
-          echo "${{ secrets.GITEE_SSH_PRIVATE_KEY }}" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          ssh-keyscan gitee.com >> ~/.ssh/known_hosts
-          # 跨境链路易出现 TCP 僵死连接：keepalive 让 ssh 在 ~2 分钟内
-          # 主动断开死连接并报错，交给下面的重试兜底，而不是无限挂起
-          cat >> ~/.ssh/config <<'SSHEOF'
+          set -euo pipefail
+          umask 077
+          mkdir -p "$RUNNER_TEMP/gitee-ssh"
+          printf '%s\n' "$GITEE_SSH_PRIVATE_KEY" > "$RUNNER_TEMP/gitee-ssh/key"
+          ssh-keyscan gitee.com > "$RUNNER_TEMP/gitee-ssh/known_hosts"
+          # Keep the existing keepalive and retry behavior without changing ~/.ssh.
+          cat > "$RUNNER_TEMP/gitee-ssh/config" <<EOF
           Host gitee.com
+            IdentityFile "$RUNNER_TEMP/gitee-ssh/key"
+            UserKnownHostsFile "$RUNNER_TEMP/gitee-ssh/known_hosts"
+            IdentitiesOnly yes
+            StrictHostKeyChecking yes
             ServerAliveInterval 30
             ServerAliveCountMax 4
-          SSHEOF
+          EOF
+          printf 'GIT_SSH_COMMAND=ssh -F "%s/gitee-ssh/config"\n' "$RUNNER_TEMP" >> "$GITHUB_ENV"
 
       - name: Push to Gitee
         run: |
-          git remote add gitee git@gitee.com:dramaclaw/dramaclaw.git
+          # Checkout preserves .git/config on a persistent runner.
+          if git remote get-url gitee > /dev/null 2>&1; then
+            git remote set-url gitee git@gitee.com:dramaclaw/dramaclaw.git
+          else
+            git remote add gitee git@gitee.com:dramaclaw/dramaclaw.git
+          fi
           for attempt in 1 2 3; do
             if git push gitee --all --force && git push gitee --tags --force; then
               exit 0
@@ -44,3 +56,7 @@ jobs:
           done
           echo "all push attempts failed"
           exit 1
+
+      - name: Remove task-local SSH credentials
+        if: always()
+        run: rm -rf -- "$RUNNER_TEMP/gitee-ssh"

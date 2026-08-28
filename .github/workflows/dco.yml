@@ -11,7 +11,7 @@ permissions:
 
 jobs:
   dco:
-    runs-on: ubuntu-latest
+    runs-on: [dramaclaw-ce-ci]
     steps:
       - uses: actions/checkout@v4
         with:

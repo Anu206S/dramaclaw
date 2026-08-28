@@ -12,7 +12,7 @@ permissions:
 
 jobs:
   banned-words:
-    runs-on: ubuntu-latest
+    runs-on: [dramaclaw-ce-ci]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
