@@ -17,7 +17,7 @@ from fastapi.responses import JSONResponse
 logger = logging.getLogger("novelvideo.api.characters")
 
 from novelvideo.api.asset_metadata import newest_updated_at, tree_updated_at
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
     may_run_asset_repair,
     make_sqlite_store,
@@ -766,7 +766,7 @@ async def list_characters(
 async def add_character(
     project: str,
     body: CharacterCreate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """手动添加单个角色（当自动提取失败时使用）。"""
     logger.info("[%s] add_character: %s (main=%s)", project, body.name, body.is_main)
@@ -817,7 +817,7 @@ async def add_character(
 
 
 @router.post("/projects/{project}/characters/build")
-async def build_characters(project: str, user: dict = Depends(get_api_user)):
+async def build_characters(project: str, user: dict = Depends(require_scope("tasks:submit"))):
     """从知识图谱补充缺失角色。"""
     logger.info("[%s] build_characters", project)
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -866,7 +866,7 @@ async def get_project_character_image_selection(
 async def update_project_character_image_selection(
     project: str,
     body: CharacterImageSelectionRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """保存项目级角色/身份图生成源选择。"""
     _ctx, username, project_name, _project_dir, _output_dir, _store = (
@@ -920,7 +920,7 @@ async def update_project_asset_image_source_selection(
     project: str,
     asset_kind: str,
     body: AssetImageSourceSelectionRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """保存项目级素材图源选择。"""
     normalized_kind = _validate_asset_image_source_kind(asset_kind)
@@ -1115,7 +1115,7 @@ async def restore_character_asset_history(
     project: str,
     name: str,
     body: CharacterAssetRestoreRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """把某个历史备份恢复到角色资产 canonical 槽位。"""
     ctx, _username, _project_name, project_dir, _output_dir, store = (
@@ -1176,7 +1176,7 @@ async def update_character(
     project: str,
     name: str,
     body: CharacterUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """编辑角色基本信息。"""
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
@@ -1235,7 +1235,7 @@ async def update_character(
 async def delete_character(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """删除角色。POST 保持与 React active UI 的兼容契约。"""
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
@@ -1278,7 +1278,7 @@ async def upload_character_voice_sample(
     name: str,
     slot: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """上传角色 IndexTTS2 声线样本。"""
     ctx, _username, _project_name, project_dir, _output_dir, store = (
@@ -1324,7 +1324,7 @@ async def record_character_voice_sample(
     name: str,
     slot: str,
     body: CharacterVoiceRecordRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """保存浏览器录音为角色 IndexTTS2 声线样本。"""
     ctx, username, project_name, project_dir, _output_dir, store = (
@@ -1369,7 +1369,7 @@ async def trim_character_voice_sample(
     name: str,
     slot: str,
     body: CharacterVoiceTrimRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """裁剪角色 IndexTTS2 声线样本并写回同一插槽。"""
     ctx, username, project_name, project_dir, _output_dir, store = (
@@ -1413,7 +1413,7 @@ async def delete_character_voice_sample(
     project: str,
     name: str,
     slot: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """清除角色 IndexTTS2 声线样本。"""
     ctx, username, project_name, project_dir, _output_dir, store = (
@@ -1450,7 +1450,7 @@ async def add_identity(
     project: str,
     name: str,
     body: IdentityCreate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """为角色新增一个身份。"""
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
@@ -1492,7 +1492,7 @@ async def update_identity(
     name: str,
     identity_id: str,
     body: IdentityUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """编辑角色身份属性。"""
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
@@ -1520,7 +1520,7 @@ async def delete_identity(
     project: str,
     name: str,
     identity_id: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """删除角色身份。"""
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
@@ -1541,7 +1541,7 @@ async def generate_single_portrait_async(
     project: str,
     name: str,
     body: PortraitGenRequest = PortraitGenRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """启动单角色 Portrait 后台任务。"""
     ctx, username, project_name, project_dir, _output_dir, _store = (
@@ -1593,7 +1593,7 @@ async def generate_single_portrait(
     project: str,
     name: str,
     body: PortraitGenRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """为单个角色生成肖像（face close-up）。"""
     logger.info(
@@ -1655,7 +1655,7 @@ async def upload_portrait(
     project: str,
     name: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """上传角色肖像图片。"""
     logger.info("[%s] upload_portrait: %s", project, name)
@@ -1696,7 +1696,7 @@ async def upload_identity_image(
     name: str,
     identity_name: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """上传角色身份图片。"""
     logger.info("[%s] upload_identity_image: %s/%s", project, name, identity_name)
@@ -1732,7 +1732,7 @@ async def delete_identity_image(
     project: str,
     name: str,
     identity_id: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
@@ -1749,7 +1749,7 @@ async def upload_identity_costume(
     name: str,
     identity_id: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
@@ -1789,7 +1789,7 @@ async def delete_identity_costume(
     project: str,
     name: str,
     identity_id: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
@@ -1833,7 +1833,7 @@ async def upload_identity_portrait(
     name: str,
     identity_id: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
@@ -1875,7 +1875,7 @@ async def generate_identity_portrait_async(
     name: str,
     identity_id: str,
     body: IdentityImageGenRequest = IdentityImageGenRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
@@ -1937,7 +1937,7 @@ async def generate_identity_portrait(
     name: str,
     identity_id: str,
     body: IdentityImageGenRequest = IdentityImageGenRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """同步生成身份级 portrait，供旧调用保留。新 UI 应优先使用 async。"""
     ctx, username, project_name, project_dir, _output_dir, store = (
@@ -2005,7 +2005,7 @@ async def generate_identity_image_async(
     name: str,
     identity_id: str,
     body: IdentityImageGenRequest = IdentityImageGenRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_character_project(project, user)
@@ -2100,7 +2100,7 @@ async def generate_identity_image(
     name: str,
     identity_id: str,
     body: IdentityImageGenRequest = IdentityImageGenRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """基于角色肖像生成身份参考图（Identity Locking）。"""
     from novelvideo.generators.image_generator import generate_identity_image_unified

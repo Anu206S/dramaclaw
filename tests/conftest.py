@@ -3,6 +3,103 @@ from __future__ import annotations
 import os
 
 import pytest
+from fastapi import Request
+
+
+@pytest.fixture
+def scoped_api_client(tmp_path):
+    """Real HTTP/auth/project boundaries with isolated identities and files."""
+    import asyncio
+    from types import SimpleNamespace
+
+    from fastapi import Depends, FastAPI
+    from fastapi.testclient import TestClient
+
+    from novelvideo.api import api_router, register_verification_routes
+    from novelvideo.api.auth import get_api_user
+    from novelvideo.api.routes.files import preview_project_media_file
+    from novelvideo.ports import registry
+    from novelvideo.ports.auth_contract import AuthenticatedUser, AuthError, AuthFailureReason
+    from novelvideo.ports.local.auth import LocalAuthSession
+    from novelvideo.ports.project import Principal, ProjectRecord
+
+    records = {}
+    for project in ("project-a", "project-b", "victim-private"):
+        root = tmp_path / project
+        for directory in ("output", "state", "runtime"):
+            (root / directory).mkdir(parents=True)
+        records[project] = ProjectRecord(
+            id=project, name=project, owner_type="user",
+            owner_id="victim" if project == "victim-private" else "local",
+            owner_username="victim" if project == "victim-private" else "parent",
+            home_node_id="local", status="active",
+            output_dir=str(root / "output"), state_dir=str(root / "state"),
+            runtime_dir=str(root / "runtime"),
+        )
+
+    class Projects:
+        async def get_project(self, project_id):
+            return records.get(project_id)
+
+        async def get_project_by_owner_name(self, user_id, name):
+            record = records.get(name)
+            return record if record and record.owner_id == user_id else None
+
+        async def list_accessible_projects(self, principals):
+            return [r for r in records.values() if ("user", r.owner_id) in principals]
+
+    class Access:
+        async def resolve_requester_principals(self, user_id):
+            return [Principal("user", user_id)]
+
+        async def effective_project_role(self, project, principals):
+            ids = {p.id for p in principals}
+            if project.owner_id in ids:
+                return "owner"
+            if "victim" in ids and project.id == "project-a":
+                return "viewer"
+            return None
+
+    class BrowserAuth:
+        async def verify_session(self, cookie):
+            user_id = {"parent-session": "local", "victim-session": "victim"}.get(cookie)
+            if user_id is None:
+                raise AuthError(AuthFailureReason.MISSING)
+            return AuthenticatedUser(id=user_id, username=user_id, role="owner").to_legacy_dict()
+
+    sessions = LocalAuthSession()
+    registry.register_port("auth", BrowserAuth())
+    registry.register_port("auth_session", sessions)
+    registry.register_port("project_registry", Projects())
+    registry.register_port("project_access", Access())
+
+    async def issue():
+        credentials = {}
+        for name, scope, project in (
+            ("write_a", "projects:write", "project-a"),
+            ("write_b", "projects:write", "project-b"),
+            ("read_a", "projects:read", "project-a"),
+            ("task_a", "tasks:submit", "project-a"),
+        ):
+            token = await sessions.create_agent_session(
+                username="parent", scopes=[scope], current_scope_kind="project",
+                current_project_id=project,
+            )
+            credentials[name] = {"Authorization": "Bearer " + token.value}
+        return credentials
+
+    register_verification_routes()
+    app = FastAPI()
+    app.include_router(api_router)
+
+    @app.get("/static/projects/{project}/{file_path:path}")
+    async def static_media(project: str, file_path: str, request: Request,
+                           user: dict = Depends(get_api_user)):
+        return await preview_project_media_file(project, file_path, user, request=request)
+
+    with TestClient(app) as client:
+        yield SimpleNamespace(client=client, headers=asyncio.run(issue()),
+                              records=records, root=tmp_path)
 
 
 @pytest.fixture(autouse=True)

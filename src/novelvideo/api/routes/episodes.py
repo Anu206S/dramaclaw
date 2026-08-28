@@ -8,7 +8,7 @@ from typing import Literal
 
 from fastapi import APIRouter, Depends
 
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.chapter_preview import build_chapter_preview
 from novelvideo.api.deps import (
     make_cognee_store,
@@ -289,7 +289,7 @@ async def list_episodes(project: str, user: dict = Depends(get_api_user)):
 
 
 @router.post("/projects/{project}/episodes/plan")
-async def plan_episodes(project: str, body: EpisodePlanRequest, user: dict = Depends(get_api_user)):
+async def plan_episodes(project: str, body: EpisodePlanRequest, user: dict = Depends(require_scope("tasks:submit"))):
     """规划分集。"""
     logger.info(
         "[%s] plan_episodes: target=%d, mode=%s",
@@ -474,7 +474,7 @@ async def delete_manual_shot_route(
     project: str,
     episode_num: int,
     beat_number: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """删除手工插入的 beat。普通主流程 beat 不允许从这里删。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -504,7 +504,7 @@ async def insert_manual_shot_route(
     project: str,
     episode_num: int,
     body: InsertManualShotRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """插入手工 beat；after_beat_number=None 表示插到第一张前。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -551,7 +551,7 @@ async def insert_manual_shot_route(
 
 @router.post("/projects/{project}/episodes/{episode_num}/identities/plan")
 async def plan_episode_identities(
-    project: str, episode_num: int, user: dict = Depends(get_api_user)
+    project: str, episode_num: int, user: dict = Depends(require_scope("tasks:submit"))
 ):
     """规划单集角色身份。"""
     logger.info("[%s] EP%d plan_episode_identities", project, episode_num)
@@ -667,14 +667,14 @@ async def plan_episode_identities(
 
 @router.post("/projects/{project}/episodes/{episode_num}/identities/plan-async")
 async def plan_episode_identities_async(
-    project: str, episode_num: int, user: dict = Depends(get_api_user)
+    project: str, episode_num: int, user: dict = Depends(require_scope("tasks:submit"))
 ):
     """兼容 1.0/旧前端的异步身份规划入口。"""
     return await plan_episode_identities(project=project, episode_num=episode_num, user=user)
 
 
 @router.post("/projects/{project}/episodes/{episode_num}/scenes/plan")
-async def plan_episode_scenes(project: str, episode_num: int, user: dict = Depends(get_api_user)):
+async def plan_episode_scenes(project: str, episode_num: int, user: dict = Depends(require_scope("tasks:submit"))):
     """规划单集场景菜单。"""
     logger.info("[%s] EP%d plan_episode_scenes", project, episode_num)
     return await _enqueue_episode_asset_planner(
@@ -686,7 +686,7 @@ async def plan_episode_scenes(project: str, episode_num: int, user: dict = Depen
 
 
 @router.post("/projects/{project}/episodes/{episode_num}/props/plan")
-async def plan_episode_props(project: str, episode_num: int, user: dict = Depends(get_api_user)):
+async def plan_episode_props(project: str, episode_num: int, user: dict = Depends(require_scope("tasks:submit"))):
     """规划单集道具菜单。"""
     logger.info("[%s] EP%d plan_episode_props", project, episode_num)
     return await _enqueue_episode_asset_planner(
@@ -702,7 +702,7 @@ async def update_episode(
     project: str,
     episode_num: int,
     body: EpisodeUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """编辑指定集的元数据。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")

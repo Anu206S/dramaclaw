@@ -1488,7 +1488,7 @@ async def upload_seedance2_asset(
     episode_num: int,
     beat_num: int,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Upload a manual Seedance 2.0 reference asset."""
     ctx = await _seedance2_panel_context(
@@ -1527,7 +1527,7 @@ async def delete_seedance2_asset(
     episode_num: int,
     beat_num: int,
     body: Seedance2AssetDeleteRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Remove a manually attached Seedance 2.0 reference asset."""
     ctx = await _seedance2_panel_context(
@@ -1563,7 +1563,7 @@ async def crop_seedance2_asset(
     episode_num: int,
     beat_num: int,
     body: Seedance2AssetCropRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Crop an existing Seedance 2.0 image reference into a manual reference."""
     ctx = await _seedance2_panel_context(
@@ -1601,7 +1601,7 @@ async def trim_seedance2_audio_asset(
     episode_num: int,
     beat_num: int,
     body: Seedance2AssetAudioTrimRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Trim an existing Seedance 2.0 audio reference into a 3-5 second clip."""
     ctx = await _seedance2_panel_context(
@@ -1740,7 +1740,7 @@ async def get_render_settings(
 async def update_render_settings(
     project: str,
     body: RenderSettingsUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Persist Render-stage image model and sizing settings."""
     from novelvideo.config import image_generation_selection_options
@@ -1786,7 +1786,7 @@ async def get_sketch_settings(
 async def update_sketch_settings(
     project: str,
     body: SketchSettingsUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Persist Sketch-stage image model settings."""
     from novelvideo.config import image_generation_selection_options
@@ -1879,7 +1879,7 @@ async def update_sketch_regen_queue(
     project: str,
     episode_num: int,
     body: SketchRegenQueueUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Persist the React sketch regeneration dispatch queue per episode."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -1961,7 +1961,7 @@ async def verify_image_generation_guard_password(
     project: str,
     episode_num: int,
     body: OperatorPasswordVerifyRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Verify the same operator password NiceGUI requires after repeated image attempts."""
     from novelvideo.security.operator_auth import get_prompt_export_password
@@ -1980,7 +1980,7 @@ async def compose_video(
     project: str,
     episode_num: int,
     body: VideoComposeRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """合成成片。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -2059,7 +2059,7 @@ async def generate_tts(
     project: str,
     episode_num: int,
     body: TTSGenerateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Legacy TTS endpoint removed after IndexTTS2 cutover."""
     raise HTTPException(
@@ -2075,7 +2075,7 @@ async def generate_tts(
 async def preview_tts(
     project: str,
     body: TTSPreviewRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Legacy TTS preview endpoint removed after IndexTTS2 cutover."""
     raise HTTPException(
@@ -2402,7 +2402,7 @@ async def audio_generation_billing_quote(
     project: str,
     episode_num: int,
     body: TTSGenerateRequest = TTSGenerateRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Quote the exact set of Beat audio model calls for an audio action."""
     resolved = await _resolve_generation_project(project, user, required_role="viewer")
@@ -2474,7 +2474,7 @@ async def generate_audio(
     project: str,
     episode_num: int,
     body: TTSGenerateRequest = TTSGenerateRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """批量生成语音（IndexTTS2）。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -2644,7 +2644,7 @@ async def global_optimize_video(
     project: str,
     episode_num: int,
     body: GlobalOptimizeRequest = GlobalOptimizeRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """全局视频提示词优化（草图 → AI 自由决策每个 beat 的 i2v/k2v 模式）。
 
@@ -2738,7 +2738,7 @@ async def regenerate_grid(
     episode_num: int,
     grid_index: int,
     body: GridRegenerateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """重新生成单个网格。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -2899,7 +2899,7 @@ async def render_plan(
     project: str,
     episode_num: int,
     body: RenderPlanRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Return the server-authoritative render plan for selected beats."""
     if _render_plan_feature_disabled():
@@ -3004,7 +3004,7 @@ async def render_execute(
     project: str,
     episode_num: int,
     body: RenderPlanExecuteRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Validate and dispatch a render plan through the current selected-regen task path."""
     if _render_plan_feature_disabled():
@@ -3242,7 +3242,7 @@ async def regenerate_beats(
     project: str,
     episode_num: int,
     body: BeatsRegenerateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """选中 Beats 再生画面。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -3359,7 +3359,7 @@ async def regenerate_sketches(
     project: str,
     episode_num: int,
     body: SketchRegenerateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """选中 Beats 再生草图。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -3906,7 +3906,7 @@ async def save_beat_director_stage_overlay(
     episode_num: int,
     beat_num: int,
     body: dict[str, Any],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Persist the current Beat 3GS overlay to director_blockings/epNNN/beat_MM.json."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -3970,7 +3970,7 @@ async def export_beat_director_stage_control_frame(
     episode_num: int,
     beat_num: int,
     body: dict[str, Any],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Persist Director Render control-frame PNG layers and frame_meta.json."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -4036,7 +4036,7 @@ async def update_beat_background_anchor(
     episode_num: int,
     beat_num: int,
     body: BeatBackgroundAnchorUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Persist the single-beat background anchor selection.
 
@@ -4085,7 +4085,7 @@ async def crop_beat_background_anchor(
     episode_num: int,
     beat_num: int,
     body: dict[str, Any],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Crop a source background into the beat-owned render background slot."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -4137,7 +4137,7 @@ async def upload_beat_background_anchor(
     episode_num: int,
     beat_num: int,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Upload an external render-background reference for a single Beat.
 
@@ -4213,7 +4213,7 @@ async def director_control_to_sketch(
     project: str,
     episode_num: int,
     beat_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Start the existing Direct Render combined.png -> canonical sketch task."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -4410,7 +4410,7 @@ async def save_sketch_pose_editor(
     episode_num: int,
     beat_num: int,
     body: dict[str, Any],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Persist pose editor strokes/skeletons back to the canonical sketch."""
     from novelvideo.services.sketch_pose_service import save_pose_editor_state
@@ -4447,7 +4447,7 @@ async def crop_current_sketch(
     episode_num: int,
     beat_num: int,
     body: dict[str, Any],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Crop and overwrite the canonical sketch, matching NiceGUI current-image crop."""
     from PIL import Image
@@ -4500,7 +4500,7 @@ async def crop_current_sketch(
 async def generate_missing_manual_sketches(
     project: str,
     episode_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Dispatch sketch regen only for manually inserted beats missing sketches.
 
@@ -4635,7 +4635,7 @@ async def generate_single_video(
     episode_num: int,
     beat_num: int,
     body: SingleVideoRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """单 Beat 视频再生。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -4973,7 +4973,7 @@ async def select_video_pool(
     episode_num: int,
     beat_num: int,
     body: VideoPoolSelectRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     resolved = await _resolve_generation_project(project, user, required_role="editor")
     project_dir = resolved.project_dir
@@ -5084,7 +5084,7 @@ async def list_grids(project: str, episode_num: int, user: dict = Depends(get_ap
 async def rebuild_grids_pool_index(
     project: str,
     episode_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Rebuild the episode image pool index using the same helper as NiceGUI."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -5224,7 +5224,7 @@ async def select_pool_image(
     episode_num: int,
     beat_num: int,
     body: PoolSelectRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """选择 pool 图片，按类型设为 beat 首帧或草图。"""
     import shutil
@@ -5327,7 +5327,7 @@ async def upload_beat_sketch(
     episode_num: int,
     beat_num: int,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Upload a beat sketch, store the canonical sketch file, and add it to the pool."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -5371,7 +5371,7 @@ async def upload_beat_render(
     episode_num: int,
     beat_num: int,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Upload a beat render first frame, promote it, and add it to the pool."""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -5417,7 +5417,7 @@ async def regenerate_beat_audio(
     project: str,
     episode_num: int,
     beat_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """重新生成单个 beat 的 IndexTTS2 语音。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -5566,7 +5566,7 @@ async def upload_grid(
     grid_type: str = Form("render"),
     mode_key: str = Form(""),
     beat_numbers: str = Form(""),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """上传单张网格整图并更新 pool index 中同 scope 的 grid_path。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -5723,7 +5723,7 @@ async def sketch_grid_preview(
     episode_num: int,
     grid_index: int,
     body: GridSketchPreviewRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Return the same sketch-thumbnail preview NiceGUI shows for planned grids.
 
@@ -5808,7 +5808,7 @@ async def cut_grid(
     episode_num: int,
     grid_index: int,
     body: GridCutRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """将网格切割为单个 beat 图片入池。"""
     resolved = await _resolve_generation_project(project, user, required_role="editor")
@@ -5891,7 +5891,7 @@ async def cut_grid(
 
 
 @router.post("/projects/{project}/episodes/{episode_num}/export/zip")
-async def export_zip(project: str, episode_num: int, user: dict = Depends(get_api_user)):
+async def export_zip(project: str, episode_num: int, user: dict = Depends(require_scope("projects:write"))):
     """打包指定集的所有资源为 ZIP 文件下载。"""
     import zipfile
     import tempfile
@@ -5970,7 +5970,7 @@ async def export_zip(project: str, episode_num: int, user: dict = Depends(get_ap
 async def assign_sketch_colors(
     project: str,
     episode_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """为本集出场身份和全局道具分配共享颜色。"""
     from novelvideo.generators.episode_optimizer import EpisodeOptimizer
@@ -6075,7 +6075,7 @@ async def assign_sketch_colors(
 async def detect_sketch_identities(
     project: str,
     episode_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """AI 视觉识别草图中出现的身份/道具颜色标记。"""
     from novelvideo.agents.global_video_optimizer import detect_identities_by_ai

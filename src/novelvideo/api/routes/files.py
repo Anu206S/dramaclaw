@@ -20,6 +20,54 @@ from novelvideo.utils.thumbnails import (
 
 router = APIRouter()
 
+_PROJECT_FILE_HEADERS = {
+    "Content-Security-Policy": "sandbox; default-src 'none'",
+    "X-Content-Type-Options": "nosniff",
+}
+# Only inert representations may be previewed or redirected to object storage.
+# In particular, SVG/HTML/XML/JS and unknown extensions stay download-only,
+# including files uploaded before this policy existed. Do not trust host MIME
+# registrations, request Content-Type, or the uploaded bytes to select a type.
+_INERT_FILE_TYPES = {
+    ".png": "image/png",
+    ".apng": "image/apng",
+    ".jpg": "image/jpeg",
+    ".jpeg": "image/jpeg",
+    ".webp": "image/webp",
+    ".gif": "image/gif",
+    ".avif": "image/avif",
+    ".bmp": "image/bmp",
+    ".ico": "image/vnd.microsoft.icon",
+    ".heic": "image/heic",
+    ".heif": "image/heif",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".mp4": "video/mp4",
+    ".m4v": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+    ".mp3": "audio/mpeg",
+    ".wav": "audio/wav",
+    ".m4a": "audio/mp4",
+    ".aac": "audio/aac",
+    ".ogg": "audio/ogg",
+    ".oga": "audio/ogg",
+    ".opus": "audio/ogg",
+    ".flac": "audio/flac",
+    ".txt": "text/plain",
+    ".srt": "text/plain",
+    ".vtt": "text/vtt",
+    ".json": "application/json",
+    ".zip": "application/zip",
+    ".glb": "model/gltf-binary",
+    ".gltf": "model/gltf+json",
+    ".ply": "application/octet-stream",
+    ".sog": "application/octet-stream",
+    ".splat": "application/octet-stream",
+}
+
 
 # Cache-bust tokens the canvas appends when it knows an image's version
 # (``withImageCacheBust`` in the frontend). Their presence is what makes a URL
@@ -143,7 +191,7 @@ def _maybe_thumbnail_response(
         path=str(thumb),
         media_type="image/webp",
         stat_result=stat_result,
-        headers={"Cache-Control": cache_control},
+        headers={**_PROJECT_FILE_HEADERS, "Cache-Control": cache_control},
     )
     if _etag_matches(request, response.headers.get("etag")):
         # FileResponse itself never answers a conditional request — that lives in
@@ -153,6 +201,7 @@ def _maybe_thumbnail_response(
         return Response(
             status_code=304,
             headers={
+                **_PROJECT_FILE_HEADERS,
                 "Cache-Control": cache_control,
                 "ETag": response.headers["etag"],
                 "Last-Modified": response.headers["last-modified"],
@@ -188,6 +237,17 @@ def _serve_or_redirect_to_oss(requested: Path, *, as_download: bool):
     or the object is not yet readable in OSS (ossfs write-back lag), so behaviour
     degrades gracefully and same-origin frontend URLs keep working.
     """
+    media_type = _INERT_FILE_TYPES.get(requested.suffix.lower())
+    if media_type is None:
+        # Do not redirect active content: response headers on a 302 do not
+        # constrain the document served by its destination.
+        return FileResponse(
+            path=str(requested),
+            filename=requested.name,
+            media_type="application/octet-stream",
+            headers={**_PROJECT_FILE_HEADERS, "Cache-Control": "no-store"},
+        )
+
     presigned = None
     try:
         if as_download:
@@ -212,8 +272,13 @@ def _serve_or_redirect_to_oss(requested: Path, *, as_download: bool):
         )
 
     if as_download:
-        return FileResponse(path=str(requested), filename=requested.name)
-    return FileResponse(path=str(requested))
+        return FileResponse(
+            path=str(requested), filename=requested.name,
+            media_type=media_type, headers=_PROJECT_FILE_HEADERS,
+        )
+    return FileResponse(
+        path=str(requested), media_type=media_type, headers=_PROJECT_FILE_HEADERS,
+    )
 
 
 @router.get("/projects/{project}/files/{file_path:path}")

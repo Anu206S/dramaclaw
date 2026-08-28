@@ -26,9 +26,45 @@ Key points in `docker-compose.yml` (already set for you, no changes needed):
 | Item | Value | Notes |
 |---|---|---|
 | Services | `api` + `web` | No PG/Redis (the self-hosted-gateway variant adds `newapi`) |
-| Port | `8780:8780` | REST API |
+| Port | `127.0.0.1:8780:8780` | REST API |
 | Enforced environment | `ST_EDITION=ce`, control-plane/Redis/Celery cleared | CE mode cannot be downgraded |
 | Data volume | `ce-data:/data` (output at `/data/output`) | Persists project databases, settings, and generated media |
+
+### Network access and upgrades
+
+CE has no login: any client that can reach it has local owner authority. All
+shipped Compose variants publish the API, web, and bundled gateway ports on
+`127.0.0.1` by default. Changing `ST_API_PORT`, `ST_WEB_PORT`, or
+`ST_NEWAPI_PORT` changes only the port number, not this protection. The API
+still listens on `0.0.0.0` **inside** its container so the web container can
+reach it; do not change that internal listener to loopback.
+
+For personal remote access, keep these bindings and use an SSH tunnel, e.g.
+`ssh -L 8080:127.0.0.1:8080 user@your-host`, then open local port 8080. If you
+deliberately publish a shared service, place authentication in front of it and
+block direct access to both the API and web ports. A DC/model key is not login
+protection. Review custom Compose overrides, daemon/network routing settings,
+and host firewall rules; use a supported Docker release (versions before 28.0.0
+have known localhost-publishing isolation limitations).
+
+An upgrade from all-interface publication stops implicit LAN access. Recreate
+containers with the updated Compose files and inspect `docker compose ps` or
+`docker port` to verify the effective bindings; restarting an old container does
+not change its port mappings. Preserve the data volume. The native CE CLI,
+`scripts/start-ce.sh`, and the Vite development proxy also default to loopback.
+A development proxy connected to CE exposes owner capabilities too; do not
+publish it directly to an untrusted network. An explicit CLI
+`--host`/`NOVELVIDEO_API_HOST` override remains available and warns when it exposes
+no-login owner access. EE CLI defaults are unchanged. Vite's `--host` and the
+launcher's `SUPERTALE_FE_HOST` still allow deliberate frontend bind overrides.
+
+Project file delivery preserves normal image/audio/video previews and arbitrary
+file storage. HTML, SVG, script formats, and unknown extensions are served as
+sandboxed attachments, including existing files; fetching file bytes still works.
+When upgrading a deployment with an external media cache, invalidate previously
+cached project-file responses or enforce the new sandbox/nosniff response policy
+at that proxy. Do not let a custom proxy remove those headers or cache responses
+marked `no-store`. Review any direct object-storage delivery paths separately.
 
 ## 3. Configure `.env`
 
@@ -109,7 +145,7 @@ After the formal release this will switch to **pulling published, pinned-version
 | Symptom | What to check |
 |---|---|
 | Container won't start | `docker compose logs api`; usually the `.env` gateway address/key was not changed or is unreachable |
-| Port 8780 already in use | Change the left-hand value of `ports` in compose, e.g. `8888:8780` |
+| Port 8780 already in use | Change the left-hand value of `ports` in compose, e.g. `127.0.0.1:8888:8780` |
 | Model call errors | Confirm the gateway is reachable and that the `*_MODEL` names exist in the gateway backend |
 
 ## Related

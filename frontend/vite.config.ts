@@ -125,7 +125,8 @@ export default defineConfig(({ mode }) => {
       exclude: ["@ffmpeg/ffmpeg", "@ffmpeg/util"],
     },
     server: {
-      host: true,
+      // The proxy can reach CE's no-login API. LAN access requires --host.
+      host: "127.0.0.1",
       port: 5173,
       proxy: {
         "^/assets/org-brand(?:/|$)": {

@@ -14,6 +14,7 @@ from novelvideo.ports.project import (
     require_role_value,
 )
 from novelvideo.ports.registry import PortNotRegistered
+from novelvideo.security.agent_scope import enforce_agent_project_scope
 from novelvideo.shared.node_identity import resolve_worker_id
 
 
@@ -110,6 +111,8 @@ async def resolve_project_context(
     project_name: str | None = None,
     required_role: str = "viewer",
 ) -> ProjectContext:
+    if project_id:
+        enforce_agent_project_scope(user, project_id)
     try:
         registry = get_project_registry()
         access = get_project_access()
@@ -129,6 +132,8 @@ async def resolve_project_context(
     if record is None:
         raise HTTPException(status_code=404, detail="Project not found")
 
+    # Name-based callers must check the canonical identity after resolution too.
+    enforce_agent_project_scope(user, record.id)
     role = await access.effective_project_role(record, principals)
     require_role_value(role, required_role)
     return _ctx_from_record(

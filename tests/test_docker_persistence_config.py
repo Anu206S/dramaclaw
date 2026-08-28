@@ -34,3 +34,17 @@ def test_env_example_configures_data_root_instead_of_individual_directories() ->
 
     assert re.search(r"^NOVELVIDEO_OUTPUT_DIR=", env_example, re.MULTILINE) is None
     assert "# NOVELVIDEO_DATA_ROOT=" in env_example
+
+
+def test_all_ce_published_ports_are_loopback_only_without_changing_container_ports() -> None:
+    for relative_path in COMPOSE_FILES:
+        compose = yaml.safe_load((REPOSITORY_ROOT / relative_path).read_text())
+        for name, service in compose["services"].items():
+            for port in service.get("ports", []):
+                assert port.startswith("127.0.0.1:"), (relative_path, name, port)
+        assert compose["services"]["api"]["ports"][0].endswith(":8780")
+        assert compose["services"]["web"]["environment"]["BACKEND_HOST"] == "api"
+
+
+def test_docker_api_keeps_listening_on_container_interface() -> None:
+    assert "--host 0.0.0.0" in (REPOSITORY_ROOT / "Dockerfile").read_text()

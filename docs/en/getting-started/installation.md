@@ -64,7 +64,7 @@ cd dramaclaw
 uv sync                                  # install dependencies into .venv per uv.lock
 cp .env.example .env && $EDITOR .env     # set the gateway and key
 
-uv run novelvideo api --host 0.0.0.0 --port 8780
+uv run novelvideo api --host 127.0.0.1 --port 8780
 ```
 
 CE defaults to `ST_EDITION=ce`, no-login single local user, and in-process inline task execution (no Ray/Redis/Celery).

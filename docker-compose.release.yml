@@ -34,7 +34,7 @@ services:
     # 宿主发布端口可配,便于一机多套(每套换 ST_API_PORT + 换 -p 项目名)。
     # 冒号右侧 8780 是容器内端口,固定不变(web 经内部网络访问它)。
     ports:
-      - "${ST_API_PORT:-8780}:8780"
+      - "127.0.0.1:${ST_API_PORT:-8780}:8780"
     volumes:
       - ce-data:/data
 
@@ -49,7 +49,7 @@ services:
       BACKEND_PORT: "8780"
     # 浏览器打开的就是这个端口(默认 8080)。一机多套时换 ST_WEB_PORT。
     ports:
-      - "${ST_WEB_PORT:-8080}:80"
+      - "127.0.0.1:${ST_WEB_PORT:-8080}:80"
     depends_on:
       - api
 

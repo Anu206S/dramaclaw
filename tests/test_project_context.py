@@ -32,6 +32,23 @@ def test_require_project_home_node_allows_local_project(tmp_path):
     assert require_project_home_node(ctx) is ctx
 
 
+@pytest.mark.parametrize("project", ["project-a", "project-b"])
+@pytest.mark.parametrize("lookup", ["project_id", "project_name"])
+@pytest.mark.asyncio
+async def test_resolved_project_never_widens_delegated_agent_scope(scoped_api_client, project, lookup):
+    from novelvideo.project_context import resolve_project_context
+
+    user = {"id": "local", "username": "parent", "credential_kind": "agent_session",
+            "current_scope_kind": "project", "current_project_id": "project-a"}
+    if project == "project-a":
+        ctx = await resolve_project_context(user=user, **{lookup: project})
+        assert ctx.project_id == "project-a"
+    else:
+        with pytest.raises(HTTPException) as exc:
+            await resolve_project_context(user=user, **{lookup: project})
+        assert exc.value.status_code == 403
+
+
 def test_require_project_home_node_rejects_remote_project(tmp_path):
     ctx = _ctx(tmp_path, is_home_node=False)
 

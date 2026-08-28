@@ -10,7 +10,7 @@ from urllib.parse import quote
 from fastapi import APIRouter, Depends, Query
 
 from novelvideo.api.asset_metadata import newest_updated_at, tree_updated_at, utc_iso
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
     may_run_asset_repair,
     make_sqlite_store,
@@ -235,7 +235,7 @@ async def list_props(
 async def create_prop(
     project: str,
     body: PropCreate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = (
@@ -273,7 +273,7 @@ async def update_prop(
     project: str,
     name: str,
     body: PropUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = (
@@ -315,7 +315,7 @@ async def update_prop(
 async def delete_prop(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     store = (
@@ -335,7 +335,7 @@ async def generate_prop_reference(
     project: str,
     name: str,
     body: PropReferenceGenerateRequest | None = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     resolved = await resolve_project_scope(project, user, required_role="editor")
     ctx = resolved.ctx

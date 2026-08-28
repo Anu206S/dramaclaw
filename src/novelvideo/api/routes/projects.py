@@ -382,6 +382,8 @@ async def list_projects(user: dict = Depends(get_api_user)):
     principals = await access.resolve_requester_principals(user_id)
     records = await registry.list_accessible_projects([(p.type, p.id) for p in principals])
     records = [record for record in records if not record.purged_at]
+    if user.get("credential_kind") == "agent_session" and user.get("current_scope_kind") == "project":
+        records = [record for record in records if record.id == user.get("current_project_id")]
     roles = {
         record.id: await access.effective_project_role(record, principals) for record in records
     }
@@ -415,6 +417,8 @@ async def list_project_summaries(
     principals = await access.resolve_requester_principals(user_id)
     records = await registry.list_accessible_projects([(p.type, p.id) for p in principals])
     records = [record for record in records if not record.purged_at]
+    if user.get("credential_kind") == "agent_session" and user.get("current_scope_kind") == "project":
+        records = [record for record in records if record.id == user.get("current_project_id")]
     summaries = []
     for record in records:
         role = await access.effective_project_role(record, principals)
@@ -619,7 +623,7 @@ async def list_narrator_voice_sources(project: str, user: dict = Depends(get_api
 async def upload_narrator_voice(
     project: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """上传第三人称项目解说声线。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
@@ -645,7 +649,7 @@ async def upload_narrator_voice(
 async def record_narrator_voice(
     project: str,
     body: CharacterVoiceRecordRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """保存浏览器录音为第三人称项目解说声线。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
@@ -671,7 +675,7 @@ async def record_narrator_voice(
 async def copy_project_audio_as_narrator_voice(
     project: str,
     body: NarratorVoiceCopyRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """从项目内已有音频复制为第三人称项目解说声线。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
@@ -702,7 +706,7 @@ async def copy_project_audio_as_narrator_voice(
 async def trim_narrator_voice(
     project: str,
     body: NarratorVoiceTrimRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """裁剪第三人称项目解说声线并写回项目声线槽位。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
@@ -726,7 +730,7 @@ async def trim_narrator_voice(
 @router.post("/projects/{project}/narrator-voice/delete")
 async def delete_narrator_voice(
     project: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """移除第三人称项目解说声线。"""
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")

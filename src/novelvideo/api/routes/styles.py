@@ -9,7 +9,7 @@ from fastapi.responses import FileResponse
 
 logger = logging.getLogger("novelvideo.api.styles")
 
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import resolve_project_scope
 from novelvideo.api.schemas import StylePreviewRequest
 
@@ -170,7 +170,7 @@ async def get_style_preview(
 
 
 @router.post("/styles")
-async def create_style(body: dict, user: dict = Depends(get_api_user)):
+async def create_style(body: dict, user: dict = Depends(require_scope("projects:write"))):
     """创建自定义风格。"""
     from novelvideo.services.style_service import StyleService
     from novelvideo.models import StyleConfig
@@ -226,7 +226,7 @@ async def create_style(body: dict, user: dict = Depends(get_api_user)):
 async def delete_style(
     style_id: str,
     project: str | None = Query(None, description="项目名"),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """删除自定义风格。"""
     from novelvideo.services.style_service import StyleService
@@ -253,7 +253,7 @@ async def delete_style(
 
 @router.post("/styles/{style_id}/preview")
 async def preview_style(
-    style_id: str, body: StylePreviewRequest, user: dict = Depends(get_api_user)
+    style_id: str, body: StylePreviewRequest, user: dict = Depends(require_scope("tasks:submit"))
 ):
     """使用指定风格生成预览图。"""
     from novelvideo.services.style_service import StyleService
@@ -315,7 +315,7 @@ async def analyze_style(
     project: str,
     file: UploadFile = File(...),
     style_id: str = Form(""),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """上传参考图片，AI 分析并提取风格参数。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -429,7 +429,7 @@ async def upload_style_preview(
     project: str,
     file: UploadFile = File(...),
     style_id: str = Form(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """立即保存自定义风格参考图，不等待 AI 风格分析。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")

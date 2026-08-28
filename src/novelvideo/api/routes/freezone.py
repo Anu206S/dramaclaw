@@ -27,7 +27,7 @@ from fastapi import (
 )
 from fastapi.responses import FileResponse, JSONResponse
 
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
     make_cognee_store_for_context,
     make_sqlite_store,
@@ -4488,7 +4488,7 @@ async def freezone_skills(user: dict = Depends(get_api_user)):
 async def freezone_upload(
     project: str,
     file: Annotated[UploadFile, File()],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """把外部资源上传保存到 `freezone/_uploads/`。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -4515,7 +4515,7 @@ async def freezone_upload(
 async def freezone_three_d_viewer_screenshot(
     project: str,
     body: FreezoneThreeDViewerScreenshotRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """保存内置 3D viewer 普通截图到 Freezone 输出目录。"""
 
@@ -4563,7 +4563,7 @@ async def freezone_three_d_viewer_screenshot(
 async def freezone_gen(
     project: str,
     body: FreezoneGenRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：启动文生图任务，返回可供 SSE 追踪的 `task_key`。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -4626,7 +4626,7 @@ async def freezone_gen(
 async def freezone_sketch_from_context(
     project: str,
     body: FreezoneSketchFromContextRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """主线上下文：从 Beat / 背景 / 导演合成图生成草图候选。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -4708,7 +4708,7 @@ async def freezone_sketch_from_context(
 async def freezone_frame_from_context(
     project: str,
     body: FreezoneFrameFromContextRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """主线上下文：从草图和可选背景生成分镜候选。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -4757,7 +4757,7 @@ async def freezone_frame_from_context(
 async def freezone_scene_360(
     project: str,
     body: FreezoneScene360Request,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：基于场景 master 源图生成 2:1 的 360 全景候选图。"""
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -4834,7 +4834,7 @@ async def _run_ai_staging_prop(request: dict[str, object]) -> dict[str, object]:
 async def freezone_ai_staging_prop(
     project: str,
     request: dict[str, object] = Body(default_factory=dict),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     ctx, _username, _project_name, _project_dir, _output_dir = await _resolve_freezone_project(
         project, user, required_role="editor"
@@ -4886,7 +4886,7 @@ async def freezone_skill_run(
     project: str,
     skill_id: str,
     body: SkillRunRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     skill = find_skill(skill_id)
     if skill is None:
@@ -5297,7 +5297,7 @@ async def freezone_skill_run(
 async def freezone_multi_view(
     project: str,
     body: FreezoneCharacterMultiViewRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：基于单张源图做多角度重构 / 机位重定位。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -5332,7 +5332,7 @@ async def freezone_multi_view(
 async def freezone_relight(
     project: str,
     body: FreezoneRelightRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：打光。基于源图和打光参考图的光照重塑接口。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -5367,7 +5367,7 @@ async def freezone_relight(
 async def freezone_template_edit(
     project: str,
     body: FreezoneTemplateEditRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：九宫格下拉菜单统一编辑接口。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -5466,7 +5466,7 @@ def _freezone_not_implemented(endpoint: str) -> None:
 async def freezone_image_to_3gs(
     project: str,
     body: FreezoneImageTo3GSRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：把 Freezone 图片节点作为 SHARP 输入，生成 Freezone 3GS PLY。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -5546,7 +5546,7 @@ async def freezone_image_to_3gs(
 async def freezone_upscale(
     project: str,
     body: FreezoneUpscaleRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：高清放大接口。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -5601,7 +5601,7 @@ async def freezone_upscale(
 async def freezone_outpaint(
     project: str,
     body: FreezoneOutpaintRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：扩图接口。
 
@@ -5670,7 +5670,7 @@ async def freezone_outpaint(
 async def freezone_redraw(
     project: str,
     body: FreezoneRedrawRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：重绘接口。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -5769,7 +5769,7 @@ async def freezone_redraw(
 async def freezone_extract_frames(
     project: str,
     body: FreezoneExtractFramesRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：从视频中抽取关键帧，返回任务 `task_key`。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -5804,7 +5804,7 @@ async def freezone_extract_frames(
 async def freezone_analyze_shots(
     project: str,
     body: FreezoneAnalyzeShotsRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：分析一组关键帧的镜头内容，返回任务 `task_key`。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -5845,7 +5845,7 @@ async def freezone_analyze_shots(
 async def freezone_analyze_video_story(
     project: str,
     body: FreezoneAnalyzeVideoStoryRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：抽帧并解析视频故事，返回任务 `task_key`。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -6169,7 +6169,7 @@ def _start_freezone_text_generate_task(
 async def freezone_text_generate(
     project: str,
     body: FreezoneTextGenerateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """文本节点：根据用户要求生成可继续编辑的自由文本。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -6226,7 +6226,7 @@ async def freezone_text_generate(
 async def freezone_text_translate(
     project: str,
     body: FreezoneTextTranslateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """文本工具：中英文互译，供各类节点编写提示词时直接调用。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -7066,7 +7066,7 @@ async def create_freezone_audio_voice(
     project: str,
     file: Annotated[UploadFile, File(description="参考音频文件，支持 mp3/wav/m4a/aac/ogg/webm")],
     name: Annotated[str, Form(description="音色名称，用于音色选择弹窗展示")] = "",
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """创建账号级“我的音色”。
 
@@ -7279,7 +7279,7 @@ def _start_freezone_story_script_task(
 async def freezone_story_script_generate(
     project: str,
     body: FreezoneStoryScriptGenerateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """文本工具：根据上传剧本内容生成结构化故事脚本表。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -8008,7 +8008,7 @@ async def freezone_image_models(
 async def freezone_mark_detect(
     project: str,
     body: FreezoneMarkDetectRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：识别单张图片中点击点或框选区域的局部元素标记。"""
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -8161,7 +8161,7 @@ async def freezone_mark_detect(
 async def freezone_image_reverse_prompt(
     project: str,
     body: FreezoneImageReversePromptRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：异步反推图片提示词。"""
     from novelvideo.api.routes.model_credits import (
@@ -8243,7 +8243,7 @@ async def freezone_video_character_library(
 async def freezone_add_video_character_library_item(
     project: str,
     body: FreezoneVideoCharacterLibraryItemRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """视频处理：把上传好的素材登记到资产库（图片/视频/音频）。"""
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -8317,7 +8317,7 @@ async def freezone_asset_library_folders(
 async def freezone_add_asset_library_folder(
     project: str,
     body: FreezoneAssetLibraryFolderRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """视频处理：新建一个资产库文件夹。"""
     _ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -8338,7 +8338,7 @@ async def freezone_update_asset_library_folder(
     project: str,
     folder_id: str,
     body: FreezoneAssetLibraryFolderPatchRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """视频处理：给资产库文件夹改名或换封面。系统文件夹没有实体记录，一律 404。"""
     _ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -8373,7 +8373,7 @@ async def freezone_update_asset_library_folder(
 async def freezone_delete_asset_library_folder(
     project: str,
     folder_id: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """视频处理：删掉一个自建文件夹，柜内素材条目一并从资产库移除。
 
@@ -8395,7 +8395,7 @@ async def freezone_delete_asset_library_folder(
 )
 async def freezone_sync_asset_library_from_mainline(
     project: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """视频处理：把主线的人物/场景/道具参考图与人物语音幂等同步进资产库。
 
@@ -8497,7 +8497,7 @@ async def freezone_rename_video_character_library_item(
     project: str,
     item_id: str,
     body: FreezoneAssetLibraryItemPatchRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """视频处理：给资产库条目改名。
 
@@ -8523,7 +8523,7 @@ async def freezone_rename_video_character_library_item(
 async def freezone_delete_video_character_library_item(
     project: str,
     item_id: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """视频处理：删除角色素材库条目。"""
     _ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -8539,7 +8539,7 @@ async def freezone_delete_video_character_library_item(
 async def freezone_video_gen(
     project: str,
     body: FreezoneVideoGenRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：文生视频。
 
@@ -8641,7 +8641,7 @@ async def freezone_video_gen(
 async def freezone_video_i2v(
     project: str,
     body: FreezoneImageToVideoRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：图片驱动视频。
 
@@ -8766,7 +8766,7 @@ async def freezone_video_i2v(
 async def freezone_video_keyframes(
     project: str,
     body: FreezoneKeyframeVideoRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：关键帧视频。
 
@@ -8897,7 +8897,7 @@ async def freezone_video_keyframes(
 async def freezone_video_omni_gen(
     project: str,
     body: FreezoneVideoOmniGenRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：全能参考文生视频。
 
@@ -9052,7 +9052,7 @@ async def freezone_video_omni_gen(
 async def freezone_video_edit(
     project: str,
     body: FreezoneVideoEditRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：视频编辑。
 
@@ -9190,7 +9190,7 @@ async def freezone_video_edit(
 async def freezone_video_erase(
     project: str,
     body: FreezoneVideoEraseRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：智能去字幕 / 框选擦除。
 
@@ -9258,7 +9258,7 @@ async def freezone_video_erase(
 async def freezone_video_upscale(
     project: str,
     body: FreezoneVideoUpscaleRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：基础版高清增强。
 
@@ -9327,7 +9327,7 @@ async def freezone_video_upscale(
 async def freezone_audio_separate(
     project: str,
     body: FreezoneAudioSeparateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：音视频分离。
 
@@ -9391,7 +9391,7 @@ async def freezone_audio_separate(
 async def freezone_audio_speech(
     project: str,
     body: FreezoneAudioSpeechRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Freezone 音频节点：文本生成语音。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -9515,7 +9515,7 @@ async def freezone_audio_speech(
 async def freezone_audio_eleven_music(
     project: str,
     body: FreezoneAudioMusicRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Freezone 音频节点：文本生成音乐。"""
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -9579,7 +9579,7 @@ async def freezone_audio_eleven_music(
 async def freezone_video_compose(
     project: str,
     body: FreezoneVideoComposeRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """视频处理：按时间线描述异步导出成片。
 
@@ -9685,7 +9685,7 @@ async def freezone_video_compose(
 async def freezone_edit(
     project: str,
     body: FreezoneEditRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """图片处理：启动图生图 / 图编辑任务，返回 `task_key`。"""
     ctx, username, project_name, project_dir, output_dir = await _resolve_freezone_project(
@@ -11362,7 +11362,7 @@ async def _build_projection_payload_for_request(
 async def create_canvas_from_preset(
     project: str,
     body: PresetCanvasRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """根据项目上下文创建一个预填充画布。
 
@@ -11683,7 +11683,7 @@ async def create_canvas_from_preset(
 async def build_projection_from_preset(
     project: str,
     body: ProjectionPresetCanvasRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project,
@@ -11718,7 +11718,7 @@ async def project_canvas_from_preset(
     project: str,
     canvas_id: str,
     body: ProjectionPresetCanvasRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
@@ -11885,7 +11885,7 @@ async def remove_canvas_projection(
     project: str,
     canvas_id: str,
     body: ProjectionRemoveRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
@@ -12015,7 +12015,7 @@ async def projection_status(
     project: str,
     canvas_id: str,
     body: ProjectionStatusRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
@@ -12224,7 +12224,7 @@ async def restore_canvas_history(
     project: str,
     canvas_id: str,
     body: dict = Body(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
@@ -12347,7 +12347,7 @@ async def delete_node_generation_history_record(
     canvas_id: str,
     node_id: str,
     record_id: str = Query(..., min_length=1, max_length=512),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Remove one entry from the history browser without deleting its media."""
     if not CANVAS_ID_RE.match(canvas_id):
@@ -12428,7 +12428,7 @@ async def put_canvas(
     project: str,
     canvas_id: str,
     body: CanvasPayload,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
@@ -12499,7 +12499,7 @@ async def put_canvas(
 
 
 @router.delete("/projects/{project}/freezone/canvases/{canvas_id}", tags=[TAG_FREEZONE_CANVAS])
-async def delete_canvas(project: str, canvas_id: str, user: dict = Depends(get_api_user)):
+async def delete_canvas(project: str, canvas_id: str, user: dict = Depends(require_scope("projects:write"))):
     if not CANVAS_ID_RE.match(canvas_id):
         raise HTTPException(400, "invalid canvas_id")
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
@@ -13100,7 +13100,7 @@ async def _persist_freezone_selected_background_scene_ref(
 async def freezone_impact(
     project: str,
     body: ImpactRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, _project_dir, _output_dir = await _resolve_freezone_project(
         project, user, required_role="viewer"
@@ -13252,7 +13252,7 @@ async def freezone_director_capture_sync_background(
     project: str,
     episode: int,
     beat: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """Mirror env_only.png → selected_background.png (idempotent).
 
@@ -13365,7 +13365,7 @@ async def freezone_scene_assets_for_beat(
 
 
 @router.post("/projects/{project}/freezone/push", tags=[TAG_FREEZONE_COMMIT])
-async def freezone_push(project: str, body: PushRequest, user: dict = Depends(get_api_user)):
+async def freezone_push(project: str, body: PushRequest, user: dict = Depends(require_scope("projects:write"))):
     """把 Freezone candidate 媒体写回主流程 canonical slot。
 
     源文件通常来自 `freezone/_outputs/`，也允许来自同项目作用域内的其他静态资源。
@@ -13963,7 +13963,7 @@ async def list_freezone_beat_context_assets(
 async def freezone_create_identity_asset(
     project: str,
     body: CreateIdentityAssetRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """从选中的 Freezone 图片创建一个新的角色 identity。
 
@@ -14053,7 +14053,7 @@ async def freezone_create_identity_asset(
 
 
 @router.post("/projects/{project}/freezone/init", tags=[TAG_FREEZONE_BOOTSTRAP])
-async def init_freezone(project: str, user: dict = Depends(get_api_user)):
+async def init_freezone(project: str, user: dict = Depends(require_scope("projects:write"))):
     """懒创建 Freezone 目录树，可重复调用且幂等。"""
     ctx, _username, _project_name, project_dir, _output_dir = await _resolve_freezone_project(
         project, user

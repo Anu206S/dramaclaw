@@ -18,6 +18,95 @@ from novelvideo.project_context import ProjectContext
 pytestmark = pytest.mark.m09
 
 
+@pytest.mark.parametrize("filename", ["marker.html", "marker.SVG", "marker.xhtml", "marker.xml", "marker.js", "marker.unknown"])
+@pytest.mark.parametrize("route", ["static", "media", "files"])
+def test_active_or_unknown_existing_files_are_sandboxed_downloads(
+    scoped_api_client, monkeypatch, filename, route,
+):
+    from novelvideo.utils import oss_client
+
+    def no_redirect(*args, **kwargs):
+        pytest.fail("Active/unknown files must not be handed off to an unconstrained OSS response")
+
+    monkeypatch.setattr(oss_client, "maybe_presign_static", no_redirect)
+    monkeypatch.setattr(oss_client, "maybe_presign_existing_output", no_redirect)
+    api = scoped_api_client
+    payload = b'<!doctype html><script>document.title="unexpected execution"</script>'
+    (api.root / "project-a" / "output" / filename).write_bytes(payload)
+    url = (f"/static/projects/project-a/{filename}" if route == "static" else
+           f"/api/v1/projects/project-a/{route}/{filename}")
+    response = api.client.get(url, headers=api.headers["read_a"], follow_redirects=False)
+    assert response.status_code == 200
+    assert response.content == payload
+    assert response.headers["content-type"] == "application/octet-stream"
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["content-security-policy"] == "sandbox; default-src 'none'"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["cache-control"] == "no-store"
+
+
+def test_upload_keeps_arbitrary_file_storage_without_active_preview(scoped_api_client):
+    api = scoped_api_client
+    payload = b'<script>document.title="unexpected execution"</script>'
+    upload = api.client.post("/api/v1/projects/project-a/freezone/upload",
+                             headers=api.headers["write_a"],
+                             files={"file": ("marker.html", payload, "text/html")})
+    assert upload.status_code == 200, upload.text
+    url = upload.json()["data"]["url"]
+    assert api.client.get(url).status_code == 401
+    api.client.cookies.set("st_session", "victim-session")
+    response = api.client.get(url)
+    assert response.status_code == 200
+    assert response.content == payload
+    assert response.headers["content-disposition"].startswith("attachment;")
+    assert response.headers["content-type"] == "application/octet-stream"
+
+
+@pytest.mark.parametrize("filename,media_type", [
+    ("image.png", "image/png"), ("image.JPG", "image/jpeg"),
+    ("clip.mp4", "video/mp4"), ("sound.mp3", "audio/mpeg"),
+    ("scene.sog", "application/octet-stream"),
+])
+def test_normal_media_keeps_inline_and_range_delivery(scoped_api_client, monkeypatch, filename, media_type):
+    from novelvideo.utils import oss_client
+
+    monkeypatch.setattr(oss_client, "maybe_presign_static", lambda *args: None)
+    api = scoped_api_client
+    payload = b"synthetic media bytes"
+    (api.root / "project-a" / "output" / filename).write_bytes(payload)
+    response = api.client.get(f"/static/projects/project-a/{filename}",
+                               headers={**api.headers["read_a"], "Range": "bytes=0-4"})
+    assert response.status_code == 206
+    assert response.content == payload[:5]
+    assert response.headers["content-type"] == media_type
+    assert "content-disposition" not in response.headers
+    assert response.headers["x-content-type-options"] == "nosniff"
+
+
+def test_safe_media_keeps_oss_delivery(scoped_api_client, monkeypatch):
+    from novelvideo.utils import oss_client
+
+    monkeypatch.setattr(oss_client, "maybe_presign_static", lambda *args: "https://media.invalid/image.png")
+    api = scoped_api_client
+    (api.root / "project-a" / "output" / "image.png").write_bytes(b"image")
+    response = api.client.get("/static/projects/project-a/image.png", headers=api.headers["read_a"],
+                               follow_redirects=False)
+    assert response.status_code == 302
+    assert response.headers["location"] == "https://media.invalid/image.png"
+
+
+def test_html_with_image_extension_is_not_served_as_html(scoped_api_client, monkeypatch):
+    from novelvideo.utils import oss_client
+
+    monkeypatch.setattr(oss_client, "maybe_presign_static", lambda *args: None)
+    api = scoped_api_client
+    (api.root / "project-a" / "output" / "spoof.png").write_bytes(b"<script>alert(1)</script>")
+    response = api.client.get("/static/projects/project-a/spoof.png", headers=api.headers["read_a"])
+    assert response.headers["content-type"] == "image/png"
+    assert response.headers["x-content-type-options"] == "nosniff"
+    assert response.headers["content-security-policy"].startswith("sandbox;")
+
+
 def _ctx(tmp_path: Path) -> ProjectContext:
     return ProjectContext(
         project_id="01KS77361FXAQNKQF2W4EWWVCW",

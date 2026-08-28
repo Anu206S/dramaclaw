@@ -64,7 +64,7 @@ cd dramaclaw
 uv sync                                  # 按 uv.lock 装依赖到 .venv
 cp .env.example .env && $EDITOR .env     # 填网关与 Key
 
-uv run novelvideo api --host 0.0.0.0 --port 8780
+uv run novelvideo api --host 127.0.0.1 --port 8780
 ```
 
 CE 默认 `ST_EDITION=ce`、免登录单本地用户、任务进程内 inline 执行(无 Ray/Redis/Celery)。

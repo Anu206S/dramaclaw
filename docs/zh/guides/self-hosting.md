@@ -26,9 +26,36 @@ cp .env.example .env
 | 项 | 值 | 说明 |
 |---|---|---|
 | 服务 | `api` + `web` | 无 PG/Redis（自建网关版另起 `newapi`） |
-| 端口 | `8780:8780` | REST API |
+| 端口 | `127.0.0.1:8780:8780` | REST API |
 | 强制环境 | `ST_EDITION=ce`、清空 control-plane/Redis/Celery | CE 模式不可降级 |
 | 数据卷 | `ce-data:/data`（输出为 `/data/output`） | 持久化项目数据库、设置和生成媒体 |
+
+### 网络访问与升级
+
+CE 没有登录鉴权，能访问服务的客户端就具有本地 owner 权限。所有随项目提供的
+Compose 版本默认将 API、Web 和内置网关端口发布到 `127.0.0.1`；修改
+`ST_API_PORT`、`ST_WEB_PORT`、`ST_NEWAPI_PORT` 只改变端口号，不改变绑定地址。
+API 在**容器内部**仍监听 `0.0.0.0`，以便 Web 容器连接，不要把内部监听也改成回环地址。
+
+个人远程访问可保留默认绑定，通过 `ssh -L 8080:127.0.0.1:8080 user@your-host`
+建立隧道后访问本机 8080。若明确要发布共享服务，须在前置代理上配置鉴权，同时
+阻止绕过代理直连 API/Web。DC Key 或模型 Key 不是登录保护。检查自定义 Compose
+覆盖、Docker 网络/daemon 设置和宿主防火墙；使用受支持的 Docker 版本，28.0.0
+之前的版本存在 localhost 端口发布隔离限制。
+
+从旧版全部网卡绑定升级后，原先直接通过 LAN 访问的方式会停止工作。用新版 Compose
+重建容器，再通过 `docker compose ps` 或 `docker port` 核对实际绑定；仅重启旧容器
+不会修改端口映射。保留数据卷。原生 CE CLI、`scripts/start-ce.sh` 和 Vite 开发代理
+也默认绑定回环地址。开发代理连接 CE 时同样暴露 owner 能力，不应直接发布到不可信网络。
+CLI 仍可通过显式
+`--host`/`NOVELVIDEO_API_HOST` 改写，暴露免登录 owner 时会警告。EE CLI 默认行为不变。
+Vite 的 `--host` 和启动脚本的 `SUPERTALE_FE_HOST` 仍支持显式改写前端绑定。
+
+项目文件仍可存储任意内容，正常图片、音视频继续预览。HTML、SVG、脚本格式及未知
+后缀改为带 sandbox 的附件下载，存量文件同样受保护；通过 fetch 读取文件字节仍可用。
+使用外部媒体缓存的部署升级时，须失效旧的项目文件缓存，或在该代理统一施加新版
+sandbox/nosniff 策略。不要移除安全响应头或缓存 `no-store` 响应；独立的对象存储
+直出路径需要另行核对。
 
 ## 3. 配置 `.env`
 
@@ -109,7 +136,7 @@ docker compose up -d --build
 | 现象 | 排查 |
 |---|---|
 | 容器起不来 | `docker compose logs api`；多半是 `.env` 网关地址/Key 未改或不可达 |
-| 8780 端口占用 | 改 compose `ports` 左值，如 `8888:8780` |
+| 8780 端口占用 | 改 compose `ports` 左值，如 `127.0.0.1:8888:8780` |
 | 模型调用报错 | 确认网关可达、`*_MODEL` 名在网关后台存在 |
 
 ## 相关

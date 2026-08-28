@@ -66,6 +66,15 @@ from novelvideo.newapi_provisioner import (
 )
 
 
+@pytest.fixture(autouse=True)
+def local_gateway_auth_port(restore_ports_registry_globals):
+    # These route-unit apps do not run the real CE bootstrap/lifespan.
+    from novelvideo.ports import registry
+    from novelvideo.ports.local.auth import FileAuthPort
+
+    registry.register_port("auth", FileAuthPort())
+
+
 def test_generic_comfyui_i2v_defaults_to_widescreen():
     config = model_gateway._default_comfyui_media_model_config("wan-i2v")
 

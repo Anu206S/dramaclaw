@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 
 logger = logging.getLogger("novelvideo.api.scripts")
 
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
     make_cognee_store,
     make_cognee_store_for_context,
@@ -334,7 +334,7 @@ async def generate_script(
     project: str,
     episode_num: int,
     body: ScriptGenerateRequest | None = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """生成指定集数的剧本。"""
     logger.info("[%s] EP%d generate_script", project, episode_num)
@@ -392,7 +392,7 @@ async def update_beat(
     episode_num: int,
     beat_num: int,
     body: BeatUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """编辑指定 Beat。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -462,7 +462,7 @@ async def generate_beat_video_prompt(
     episode_num: int,
     beat_num: int,
     body: BeatVideoPromptGenerateRequest | None = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """AI 生成 1.x 单个 Beat 的视频提示词并保存。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -560,7 +560,7 @@ async def generate_seedance2_prompt(
     episode_num: int,
     beat_num: int,
     body: Seedance2PromptGenerateRequest | None = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """AI 生成单个 Beat 的 Seedance2 final_prompt 并保存回配置 JSON。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -744,7 +744,7 @@ async def save_script(
     project: str,
     episode_num: int,
     body: ScriptSaveRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """保存（覆盖）指定集数的完整剧本。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")

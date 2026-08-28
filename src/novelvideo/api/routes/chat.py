@@ -16,12 +16,12 @@ from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisco
 from pydantic import BaseModel
 
 from novelvideo.api.auth import (
+    require_scope,
     AGENT_WRITE_SCOPES,
     AUTH_COOKIE_NAME,
     UNSUPPORTED_QUERY_CREDENTIALS,
     _verify_agent_bearer,
     _verify_browser_session,
-    get_api_user,
 )
 from novelvideo.api.deps import list_user_projects
 from novelvideo.api.egress_binding import request_egress_scope
@@ -56,7 +56,7 @@ HERMES_TEXT_EGRESS_TASK_TYPE = "agent.hermes.text"
 
 
 @router.post("/chat/cancel")
-async def cancel_chat_turn(user: dict = Depends(get_api_user)) -> dict[str, Any]:
+async def cancel_chat_turn(user: dict = Depends(require_scope("tasks:submit"))) -> dict[str, Any]:
     """Best-effort cancellation for the active Hermes chat worker.
 
     The WebSocket receive loop is blocked while a Hermes prompt is streaming,
@@ -123,10 +123,11 @@ class ChatNotificationIn(BaseModel):
 @router.post("/chat/notifications")
 async def append_chat_notification(
     payload: ChatNotificationIn,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ) -> dict[str, Any]:
     username = str(user["username"])
     scope = _scope_from_model(payload.scope)
+    _enforce_agent_chat_scope(user, scope, require_write=True)
     text = payload.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
@@ -154,10 +155,11 @@ async def append_chat_notification(
 @router.post("/chat/ui-events")
 async def append_chat_ui_event(
     payload: ChatUiEventIn,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ) -> dict[str, Any]:
     username = str(user["username"])
     scope = _scope_from_model(payload.scope)
+    _enforce_agent_chat_scope(user, scope, require_write=True)
     if scope.kind == "project":
         await _project_context_for_scope(user, scope)
     turn_id = payload.turn_id.strip()

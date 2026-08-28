@@ -6,7 +6,7 @@ import asyncio
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from novelvideo import config as app_config
@@ -61,6 +61,8 @@ from novelvideo.newapi_provisioner import (
     upsert_channel,
     update_provider_channel_credentials,
 )
+
+from novelvideo.api.auth import require_scope
 
 router = APIRouter(prefix="/model-gateway")
 
@@ -152,6 +154,15 @@ def require_ce_gateway_management() -> None:
     if not is_ce_effective():
         raise ServiceControlEgressDenied()
     require_provisioner_enabled()
+
+
+def _require_local_gateway_request() -> None:
+    # Preserve service-operation exclusion before authentication touches ports.
+    # The handler still checks provisioning availability after authentication.
+    try:
+        require_legacy_local_service_operation()
+    except ServiceOperationExcluded as exc:
+        raise HTTPException(status_code=403, detail=exc.code) from None
 
 
 class OfficialGatewayBody(BaseModel):
@@ -524,7 +535,7 @@ async def get_official_media_catalog_status() -> dict[str, Any]:
     return {"ok": True, "data": get_official_media_catalog_update_status()}
 
 
-@router.post("/official/media-catalog/preferences")
+@router.post("/official/media-catalog/preferences", dependencies=[Depends(require_scope("projects:write"))])
 async def save_official_media_catalog_preferences(
     body: OfficialMediaCatalogPreferencesBody,
 ) -> dict[str, Any]:
@@ -536,7 +547,7 @@ async def save_official_media_catalog_preferences(
     return {"ok": True, "data": status}
 
 
-@router.post("/official/media-catalog/check")
+@router.post("/official/media-catalog/check", dependencies=[Depends(require_scope("projects:write"))])
 async def check_official_media_catalog() -> dict[str, Any]:
     try:
         _require_ce_media_catalog_management()
@@ -548,7 +559,7 @@ async def check_official_media_catalog() -> dict[str, Any]:
     return {"ok": True, "data": {**status, "updated": updated}}
 
 
-@router.post("/official/enable")
+@router.post("/official/enable", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def enable_official_gateway() -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -575,7 +586,7 @@ async def enable_official_gateway() -> dict[str, Any]:
     }
 
 
-@router.post("/custom/enable")
+@router.post("/custom/enable", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def enable_custom_gateway() -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -601,7 +612,7 @@ async def enable_custom_gateway() -> dict[str, Any]:
     }
 
 
-@router.post("/hybrid/enable")
+@router.post("/hybrid/enable", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def enable_hybrid_gateway() -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -628,7 +639,7 @@ async def enable_hybrid_gateway() -> dict[str, Any]:
     }
 
 
-@router.post("/official/config")
+@router.post("/official/config", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def save_official_gateway_config(body: OfficialGatewayBody) -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -649,7 +660,7 @@ async def save_official_gateway_config(body: OfficialGatewayBody) -> dict[str, A
     }
 
 
-@router.post("/media-relay/config")
+@router.post("/media-relay/config", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def save_media_relay_settings(body: MediaRelayConfigBody) -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -730,7 +741,7 @@ async def save_media_relay_settings(body: MediaRelayConfigBody) -> dict[str, Any
     return {"ok": True, "data": _media_relay_status()}
 
 
-@router.post("/custom/newapi/init")
+@router.post("/custom/newapi/init", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def init_custom_newapi(body: NewApiInitBody = NewApiInitBody()) -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -801,7 +812,7 @@ async def init_custom_newapi(body: NewApiInitBody = NewApiInitBody()) -> dict[st
     }
 
 
-@router.post("/custom/newapi/provider-channels")
+@router.post("/custom/newapi/provider-channels", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def save_custom_newapi_provider_channels(
     body: SaveProviderChannelsBody,
 ) -> dict[str, Any]:
@@ -906,7 +917,7 @@ async def save_custom_newapi_provider_channels(
     }
 
 
-@router.delete("/custom/newapi/comfyui")
+@router.delete("/custom/newapi/comfyui", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def clear_custom_newapi_comfyui() -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -964,7 +975,7 @@ async def get_custom_newapi_channel_types() -> dict[str, Any]:
     return {"ok": True, "data": {"items": items}}
 
 
-@router.post("/custom/newapi/provider-channel/sync")
+@router.post("/custom/newapi/provider-channel/sync", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def sync_custom_newapi_provider_channel(
     body: SyncProviderChannelBody,
 ) -> dict[str, Any]:
@@ -1046,7 +1057,7 @@ async def sync_custom_newapi_provider_channel(
     }
 
 
-@router.post("/custom/newapi/channels")
+@router.post("/custom/newapi/channels", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def create_custom_newapi_channel(body: CreateChannelBody) -> dict[str, Any]:
     try:
         require_ce_gateway_management()
@@ -1076,7 +1087,7 @@ async def create_custom_newapi_channel(body: CreateChannelBody) -> dict[str, Any
     }
 
 
-@router.post("/custom/newapi/channels/batch")
+@router.post("/custom/newapi/channels/batch", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def create_custom_newapi_channels_batch(
     body: CreateChannelsBatchBody,
 ) -> dict[str, Any]:
@@ -1133,7 +1144,7 @@ async def create_custom_newapi_channels_batch(
     }
 
 
-@router.post("/custom/newapi/embedding-model")
+@router.post("/custom/newapi/embedding-model", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def save_custom_newapi_embedding_model(
     body: SaveEmbeddingModelBody,
 ) -> dict[str, Any]:
@@ -1194,7 +1205,7 @@ async def save_custom_newapi_embedding_model(
     }
 
 
-@router.post("/custom/newapi/media-models")
+@router.post("/custom/newapi/media-models", dependencies=[Depends(_require_local_gateway_request), Depends(require_scope("projects:write"))])
 async def save_custom_newapi_media_models(body: SaveMediaModelsBody) -> dict[str, Any]:
     try:
         require_ce_gateway_management()

@@ -20,6 +20,7 @@ from fastapi import Depends, HTTPException, Request
 from novelvideo.ports import get_auth_port, get_auth_session_port
 from novelvideo.ports import registry as port_registry
 from novelvideo.ports.auth_contract import AuthError, AuthFailureReason
+from novelvideo.security.agent_scope import enforce_agent_project_scope
 
 logger = logging.getLogger("novelvideo.api.auth")
 
@@ -105,16 +106,13 @@ def _enforce_agent_request_boundary(request: Request, user: dict) -> None:
     if user.get("credential_kind") != "agent_session":
         return
 
-    match = PROJECT_PATH_RE.search(request.url.path)
-    if match:
-        requested_project = unquote(match.group(1))
-        current_kind = str(user.get("current_scope_kind") or "home")
-        current_project = user.get("current_project_id")
-        if current_kind != "project" or current_project != requested_project:
-            raise HTTPException(
-                status_code=403,
-                detail="Agent session scope mismatch",
-            )
+    requested_project = request.path_params.get("project")
+    if requested_project is None and "route" not in request.scope:
+        # Standalone reauthentication callers may not carry a resolved route.
+        match = PROJECT_PATH_RE.search(request.url.path)
+        requested_project = unquote(match.group(1)) if match else None
+    if requested_project is not None:
+        enforce_agent_project_scope(user, str(requested_project))
 
     if request.method.upper() in UNSAFE_METHODS:
         scopes = set(user.get("scopes") or [])
@@ -162,15 +160,17 @@ def require_scope(needed: str) -> Callable[[dict], dict]:
 
     async def _check(user: dict = Depends(get_api_user)) -> dict:
         scopes = user.get("scopes")
-        if scopes is None:
+        if scopes is None and user.get("credential_kind") != "agent_session":
             return user
-        if needed not in scopes:
+        if needed not in (scopes or []):
             raise HTTPException(
                 status_code=403,
                 detail=f"scope missing: '{needed}' (token has {scopes})",
             )
         return user
 
+    # Expose the contract for route inventory and missing-scope regression checks.
+    _check.required_agent_scope = needed
     return _check
 
 
@@ -184,18 +184,7 @@ def require_project_scope(needed: str) -> Callable[[str, dict], dict]:
     """
 
     async def _check(project: str, user: dict = Depends(require_scope(needed))) -> dict:
-        if user.get("credential_kind") != "agent_session":
-            return user
-        current_kind = str(user.get("current_scope_kind") or "home")
-        current_project = user.get("current_project_id")
-        if current_kind != "project" or current_project != project:
-            raise HTTPException(
-                status_code=403,
-                detail=(
-                    "agent session scope mismatch: "
-                    f"current={current_kind}:{current_project}, requested=project:{project}"
-                ),
-            )
+        enforce_agent_project_scope(user, project)
         return user
 
     return _check

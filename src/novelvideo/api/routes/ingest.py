@@ -159,7 +159,7 @@ async def upload_novel(
     project: str,
     file: UploadFile = File(...),
     spine_template: Annotated[str | None, Form()] = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     """上传小说文件到项目的 uploads/ 目录。"""
     logger.info("[%s] upload_novel: %s", project, file.filename)

@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 
 logger = logging.getLogger(__name__)
 
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import require_scope
 from novelvideo.api.deps import make_sqlite_store_for_context, resolve_project_scope
 from novelvideo.ports import get_task_backend
 from novelvideo.task_identity import project_task_state_key, task_config_scope
@@ -84,7 +84,7 @@ async def verify_beat(
     episode_num: int,
     beat_num: int,
     body: VerifyRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """验证单个 beat 的草图/首帧是否匹配描述。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -173,7 +173,7 @@ async def start_sketch_edit_execute(
     project: str,
     episode_num: int,
     body: SketchEditExecuteRequest = SketchEditExecuteRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """启动 episode 级 sketch edit execute 后台任务。"""
     resolved = await resolve_project_scope(project, user, required_role="editor")
@@ -249,7 +249,7 @@ async def verify_consistency(
     project: str,
     episode_num: int,
     body: ConsistencyVerifyRequest = ConsistencyVerifyRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """检查整集跨 beat 的角色/服装一致性。支持 verify_type="sketch"(默认) 或 "frame"。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -280,7 +280,7 @@ async def verify_frame(
     project: str,
     episode_num: int,
     beat_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """验证单个 beat 的首帧渲染质量（对比草图）。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -363,7 +363,7 @@ async def score_beat(
     episode_num: int,
     beat_num: int,
     body: SketchScoreRequest = SketchScoreRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """T3: 对单个 beat 的草图进行内容匹配评分。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -434,7 +434,7 @@ async def score_batch(
     project: str,
     episode_num: int,
     body: ScoreBatchRequest = ScoreBatchRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """T3 批量: 对指定 beat 的所有候选草图打分。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -514,7 +514,7 @@ async def compare_beat(
     episode_num: int,
     beat_num: int,
     body: CompareRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """T4: 对比多张候选草图，选择最佳。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -593,7 +593,7 @@ async def verify_continuity(
     project: str,
     episode_num: int,
     body: ContinuityRequest = ContinuityRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """T6: 检查相邻 beat 之间的叙事连贯性。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -631,7 +631,7 @@ async def verify_continuity(
 async def verify_similarity(
     project: str,
     episode_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """T7: 像素级草图相似度检测（零 LLM 成本）。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -662,7 +662,7 @@ async def sketch_select(
     project: str,
     episode_num: int,
     body: SketchSelectRequest = SketchSelectRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """编排端点: 一站式草图择优 — 加载候选 → T1/T2 淘汰 → T3 评分 → T4 对比 → 输出选择。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -747,7 +747,7 @@ async def sketch_select(
 async def verify_episode_overview(
     project: str,
     episode_num: int,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """T8: 导演视角全局分镜审片 — 整集草图拼网格图，一次 LLM 调用评估整体表现。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")
@@ -776,7 +776,7 @@ async def verify_sketch_colors(
     project: str,
     episode_num: int,
     body: ColorVerifyRequest = ColorVerifyRequest(),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """Step 12.4: 草图颜色交叉验证 — 检测草图中角色颜色是否与剧本预期一致。"""
     resolved = await _resolve_verification_project(project, user, required_role="viewer")

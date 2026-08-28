@@ -440,14 +440,7 @@ def m05_client_factory(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
             "username": "alice",
             "role": "owner",
         }
-        for dep in (
-            api_auth.get_api_user,
-            scenes.get_api_user,
-            generation.get_api_user,
-            episodes.get_api_user,
-            verification_routes.get_api_user,
-        ):
-            app.dependency_overrides[dep] = lambda user=user: user
+        app.dependency_overrides[api_auth.get_api_user] = lambda user=user: user
         return TestClient(app), task_backend, project_dir, store
 
     task_backend = _FakeTaskBackend("inline")

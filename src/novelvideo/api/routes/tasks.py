@@ -13,6 +13,7 @@ from starlette.concurrency import run_in_threadpool
 from starlette.responses import JSONResponse
 
 from novelvideo.api.auth import (
+    require_scope,
     get_api_user,
     get_api_user_or_query,
     verify_credential_for_request,
@@ -324,7 +325,7 @@ async def get_project_task_limits(project: str, user: dict = Depends(get_api_use
 
 @router.delete("/projects/{project}/tasks/completed")
 async def clear_project_completed_tasks(
-    project: str, user: dict = Depends(get_api_user)
+    project: str, user: dict = Depends(require_scope("projects:write"))
 ):
     """删除单个项目的已完成任务记录。"""
     ctx = await resolve_project_context(
@@ -583,7 +584,7 @@ async def cancel_project_task_route(
     ),
     force: bool = Query(False, description="确认终止已开始执行的任务"),
     acknowledge_no_refund: bool = Query(False, description="确认运行中终止不退积分"),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     """终止一个项目任务。
 

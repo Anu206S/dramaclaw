@@ -15,7 +15,7 @@ from typing import Annotated, Any
 from fastapi import APIRouter, Depends, File, Query, UploadFile
 
 from novelvideo.api.asset_metadata import newest_updated_at, tree_updated_at
-from novelvideo.api.auth import get_api_user
+from novelvideo.api.auth import get_api_user, require_scope
 from novelvideo.api.deps import (
     may_run_asset_repair,
     make_sqlite_store_for_context,
@@ -828,7 +828,7 @@ async def update_scene_pano_correction(
     project: str,
     name: str,
     correction: PanoViewerCorrection,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
@@ -880,7 +880,7 @@ async def save_scene_director_world(
     project: str,
     name: str,
     body: dict[str, Any],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
@@ -925,7 +925,7 @@ async def save_scene_director_world_source(
     project: str,
     name: str,
     body: dict[str, Any],
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
@@ -970,7 +970,7 @@ async def clear_scene_director_world(
     project: str,
     name: str,
     body: dict[str, Any] | None = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     _ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user, required_role="editor")
@@ -991,7 +991,7 @@ async def clear_scene_director_world(
 async def create_scene(
     project: str,
     body: SceneCreate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1041,7 +1041,7 @@ async def update_scene(
     project: str,
     name: str,
     body: SceneUpdate,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1101,7 +1101,7 @@ async def update_scene(
 async def delete_scene(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     _ctx, _username, _project_name, _project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1117,7 +1117,7 @@ async def delete_scene(
 
 
 @router.post("/projects/{project}/scenes/build")
-async def build_scenes(project: str, user: dict = Depends(get_api_user)):
+async def build_scenes(project: str, user: dict = Depends(require_scope("tasks:submit"))):
     ctx, username, project_name, project_dir, output_dir, store = (
         await _resolve_scene_project(
             project,
@@ -1168,7 +1168,7 @@ async def upload_scene_master(
     project: str,
     name: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1206,7 +1206,7 @@ async def upload_scene_master(
 async def delete_scene_master(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     _ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1228,7 +1228,7 @@ async def generate_scene_master(
     project: str,
     name: str,
     body: SceneReferenceGenerateRequest | None = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     return await _start_scene_reference_task(
         project=project,
@@ -1244,7 +1244,7 @@ async def generate_scene_reverse_master(
     project: str,
     name: str,
     body: SceneReferenceGenerateRequest | None = None,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     return await _start_scene_reference_task(
         project=project,
@@ -1317,7 +1317,7 @@ async def upload_scene_pano(
     project: str,
     name: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1374,7 +1374,7 @@ async def upload_scene_pano(
 async def delete_scene_pano(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     _ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1408,7 +1408,7 @@ async def upload_scene_custom_package(
     project: str,
     name: str,
     file: UploadFile = File(...),
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     ctx, username, project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1452,7 +1452,7 @@ async def upload_scene_custom_package(
 async def delete_scene_custom_package(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("projects:write")),
 ):
     _ctx, _username, _project_name, project_dir, _output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1559,7 +1559,7 @@ async def _start_3gs_single_face_task(
 async def generate_scene_3gs_master_ply(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     return await _start_3gs_single_face_task(
         project=project,
@@ -1574,7 +1574,7 @@ async def generate_scene_3gs_master_ply(
 async def generate_scene_3gs_reverse_ply(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     return await _start_3gs_single_face_task(
         project=project,
@@ -1589,7 +1589,7 @@ async def generate_scene_3gs_reverse_ply(
 async def generate_scene_3gs_pano_ply(
     project: str,
     name: str,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     ctx, username, project_name, project_dir, output_dir, store = (
         await _resolve_scene_project(project, user)
@@ -1650,7 +1650,7 @@ async def generate_scene_pano(
     project: str,
     name: str,
     body: ScenePanoGenerateRequest,
-    user: dict = Depends(get_api_user),
+    user: dict = Depends(require_scope("tasks:submit")),
 ):
     ctx, username, project_name, project_dir, output_dir, store = (
         await _resolve_scene_project(project, user)

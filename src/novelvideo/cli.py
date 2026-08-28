@@ -452,7 +452,24 @@ def api(
         console.print("[dim]请运行: pip install uvicorn[/dim]")
         raise typer.Exit(1)
 
-    api_host = host or os.environ.get("NOVELVIDEO_API_HOST", "0.0.0.0")
+    from ipaddress import ip_address
+    from novelvideo.shared.runtime_env import is_ce_effective
+
+    local_owner_mode = is_ce_effective()
+    api_host = host or os.environ.get("NOVELVIDEO_API_HOST", "").strip() or (
+        "127.0.0.1" if local_owner_mode else "0.0.0.0"
+    )
+    try:
+        loopback = ip_address(api_host).is_loopback
+    except ValueError:
+        loopback = api_host.lower() == "localhost"
+    if local_owner_mode and not loopback:
+        console.print(
+            "[bold yellow]WARNING: CE has no login; every reachable client has owner access. "
+            "Use loopback host port publishing or an authenticated reverse proxy, "
+            "and block direct access to the API. Container-internal binding alone "
+            "does not restrict the published host ports.[/bold yellow]"
+        )
     api_port = port or int(os.environ.get("NOVELVIDEO_API_PORT", "8780"))
     console.print(f"[green]访问: http://{api_host}:{api_port}/api/v1[/green]")
     uvicorn.run(
