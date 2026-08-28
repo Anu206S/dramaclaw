@@ -4,6 +4,8 @@ import copy
 import importlib.util
 from pathlib import Path
 
+import pytest
+
 from novelvideo.freezone.workflow_plan import validate_workflow_plan
 
 _MINIMAL_ECOMMERCE_SKILL = {
@@ -653,6 +655,51 @@ def test_compiler_propagates_portable_image_generation_inputs(monkeypatch):
         "quality": "medium",
         "count": 2,
     }
+
+
+@pytest.mark.parametrize(
+    ("parameter_id", "value", "message"),
+    [
+        ("image_count", -7, "must be greater than or equal to 1"),
+        ("video_count", 0, "must be greater than or equal to 1"),
+        ("image_count", True, "must be an integer"),
+        ("video_duration_seconds", 0, "must be greater than 0"),
+        ("video_duration_seconds", 601, "must be less than or equal to 600"),
+        ("video_generate_audio", "false", "must be a boolean"),
+        ("image_model", 42, "must be a non-empty string"),
+        ("video_generation_mode", "unknown", "unsupported option: unknown"),
+    ],
+)
+def test_compiler_rejects_invalid_portable_generation_inputs(
+    monkeypatch,
+    parameter_id,
+    value,
+    message,
+):
+    catalog = _load_catalog_module()
+    _install_minimal_builtin_catalog(monkeypatch, catalog)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "ecommerce-product",
+            "user_goal": "生成商品主图",
+            "inputs": {parameter_id: value},
+            "items": [
+                {
+                    "id": "hero",
+                    "title": "商品主图",
+                    "recipe_id": "general-image",
+                }
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is False
+    assert compiled["status"] == "invalid_workflow_intent"
+    assert compiled["errors"] == [
+        {"path": f"inputs.{parameter_id}", "message": message}
+    ]
 
 
 def test_dynamic_item_auto_connects_unique_generated_source_anchor(monkeypatch):

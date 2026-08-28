@@ -476,7 +476,7 @@ const DEFAULT_NODE_ACTION_ACCEPT_TIMEOUT_MS = 3 * 1000;
 const DEFAULT_NODE_ACTION_RESULT_FIELD_TIMEOUT_MS = 3 * 1000;
 const NODE_ACTION_ACCEPTANCE_GRACE_MS = 25;
 const canvasNodeActionQueues = new Map<string, Promise<void>>();
-const activeOrQueuedWorkflowRunsByCanvas = new Set<string>();
+const activeOrQueuedWorkflowRunKeys = new Set<string>();
 let nodeActionMountQueue: Promise<void> = Promise.resolve();
 const WORKFLOW_ACTION_CONCURRENCY = 3;
 const WORKFLOW_ACTION_MAX_RETRIES = 2;
@@ -2609,15 +2609,31 @@ function enqueueCanvasNodeActions<T>(canvasId: string | null | undefined, run: (
   return next;
 }
 
+function workflowRunDedupKey(
+  canvasId: string | null | undefined,
+  pendingActions: PendingNodeAction[],
+): string {
+  const actionFingerprint = pendingActions
+    .map((action) => [
+      action.nodeId,
+      action.action,
+      action.executionMode ?? "single",
+      action.invalidationReason ?? "",
+    ].join(":"))
+    .sort()
+    .join("|");
+  return `${canvasId || "default"}::${actionFingerprint}`;
+}
+
 async function executeQueuedNodeActions(
   pendingActions: PendingNodeAction[],
   result: CanvasChatCommandApplyResult,
   options: ApplyCanvasChatCommandsOptions,
 ): Promise<void> {
   if (pendingActions.length === 0) return;
-  const canvasQueueKey = options.canvasId || "default";
   const hasWorkflowRun = pendingActions.some((action) => action.executionMode === "workflow");
-  if (hasWorkflowRun && activeOrQueuedWorkflowRunsByCanvas.has(canvasQueueKey)) {
+  const workflowRunKey = workflowRunDedupKey(options.canvasId, pendingActions);
+  if (hasWorkflowRun && activeOrQueuedWorkflowRunKeys.has(workflowRunKey)) {
     const commandIndexes = new Set(
       pendingActions
         .filter((action) => action.executionMode === "workflow")
@@ -2637,7 +2653,7 @@ async function executeQueuedNodeActions(
     }
     return;
   }
-  if (hasWorkflowRun) activeOrQueuedWorkflowRunsByCanvas.add(canvasQueueKey);
+  if (hasWorkflowRun) activeOrQueuedWorkflowRunKeys.add(workflowRunKey);
   const execute = async (): Promise<void> => {
     // A workflow may wait behind an earlier canvas action. Re-check outputs
     // after it reaches the head of the queue so results produced while waiting
@@ -3376,7 +3392,7 @@ async function executeQueuedNodeActions(
   try {
     await enqueueCanvasNodeActions(options.canvasId, execute);
   } finally {
-    if (hasWorkflowRun) activeOrQueuedWorkflowRunsByCanvas.delete(canvasQueueKey);
+    if (hasWorkflowRun) activeOrQueuedWorkflowRunKeys.delete(workflowRunKey);
   }
 }
 

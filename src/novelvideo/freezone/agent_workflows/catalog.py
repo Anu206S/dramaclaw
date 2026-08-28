@@ -144,6 +144,53 @@ _UNIVERSAL_GENERATION_INPUT_KEYS = {
     "video_resolution",
 }
 
+_PORTABLE_VIDEO_GENERATION_MODES = {
+    "allReference",
+    "firstLastFrame",
+    "imageReference",
+    "imageToVideo",
+    "textToVideo",
+}
+
+
+def _portable_generation_input_error(parameter_id: str, value: Any) -> str | None:
+    """Validate stable generation inputs before copying them into node data.
+
+    Model ids and model-dependent ratios/resolutions remain dynamic strings; the
+    progressively loaded live node schema validates whether a selected model
+    supports their concrete values. Stable scalar types, ranges, and modes are
+    enforced here for every Agent host.
+    """
+    if parameter_id in {"image_count", "video_count"}:
+        if not isinstance(value, int) or isinstance(value, bool):
+            return "must be an integer"
+        if value < 1:
+            return "must be greater than or equal to 1"
+        return None
+    if parameter_id == "video_duration_seconds":
+        if not isinstance(value, (int, float)) or isinstance(value, bool):
+            return "must be a number"
+        if value <= 0:
+            return "must be greater than 0"
+        if value > 600:
+            return "must be less than or equal to 600"
+        return None
+    if parameter_id == "video_generate_audio":
+        return None if isinstance(value, bool) else "must be a boolean"
+    if parameter_id == "video_generation_mode":
+        if not isinstance(value, str) or not value.strip():
+            return "must be a non-empty string"
+        if value not in _PORTABLE_VIDEO_GENERATION_MODES:
+            return f"unsupported option: {value}"
+        return None
+    if parameter_id in _UNIVERSAL_GENERATION_INPUT_KEYS:
+        return (
+            None
+            if isinstance(value, str) and bool(value.strip())
+            else "must be a non-empty string"
+        )
+    return None
+
 
 def _workflow_input_values(args: dict[str, Any]) -> dict[str, Any]:
     value = args.get("inputs")
@@ -364,7 +411,14 @@ def _skill_input_contract(
         if parameter_id in provided and not _is_missing_parameter_value(
             provided[parameter_id]
         ):
-            resolved[parameter_id] = deepcopy(provided[parameter_id])
+            value = provided[parameter_id]
+            error = _portable_generation_input_error(parameter_id, value)
+            if error is not None:
+                errors.append(
+                    {"path": f"inputs.{parameter_id}", "message": error}
+                )
+            else:
+                resolved[parameter_id] = deepcopy(value)
 
     execution_mode = _text(resolved.get("execution_mode")) or "manual"
     return {

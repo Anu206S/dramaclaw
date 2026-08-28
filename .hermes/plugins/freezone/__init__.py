@@ -2384,6 +2384,22 @@ def _validate_write_commands_shape(
                 "invalid_command_schema",
                 f"commands[{index}] {command_type} missing required field(s): {', '.join(missing_required)}",
             )
+        if command_type == "run_workflow":
+            node_ids = command.get("node_ids")
+            scope = str(command.get("scope") or "").strip()
+            if not (
+                isinstance(node_ids, list)
+                and any(str(node_id).strip() for node_id in node_ids)
+            ) and scope != "canvas":
+                return _emit_command_error(
+                    project,
+                    canvas,
+                    "invalid_command_schema",
+                    (
+                        f"commands[{index}] run_workflow requires a non-empty node_ids "
+                        "array or scope=canvas"
+                    ),
+                )
         if command_type == "create_node" or (
             command_type == "add_next_node" and command.get("node_type") not in (None, "")
         ):
@@ -6021,18 +6037,27 @@ _CANVAS_COMMAND_ITEM_SCHEMA = {
             {"project_id": _NON_EMPTY_STRING, "request": {"type": "object"}},
             ["request"],
         ),
-        _command_variant(
-            "run_workflow",
-            {
-                "node_ids": _NODE_IDS_SCHEMA,
-                "scope": {"type": "string", "enum": ["selection", "canvas"]},
-                "direction": {
-                    "type": "string",
-                    "enum": ["connected", "node", "downstream"],
+        {
+            **_command_variant(
+                "run_workflow",
+                {
+                    "node_ids": _NODE_IDS_SCHEMA,
+                    "scope": {"type": "string", "enum": ["selection", "canvas"]},
+                    "direction": {
+                        "type": "string",
+                        "enum": ["connected", "node", "downstream"],
+                    },
+                    "regenerate": {"type": "boolean"},
                 },
-                "regenerate": {"type": "boolean"},
-            },
-        ),
+            ),
+            "anyOf": [
+                {"required": ["node_ids"]},
+                {
+                    "properties": {"scope": {"const": "canvas"}},
+                    "required": ["scope"],
+                },
+            ],
+        },
     ]
 }
 

@@ -490,6 +490,29 @@ def test_freezone_run_workflow_command_passes_write_shape_validation():
     assert error is None
 
 
+@pytest.mark.parametrize(
+    "command",
+    [
+        {"type": "run_workflow"},
+        {"type": "run_workflow", "scope": "selection"},
+        {"type": "run_workflow", "node_ids": []},
+    ],
+)
+def test_freezone_run_workflow_command_requires_explicit_targets(command):
+    plugin = _load_plugin_module()
+
+    error = plugin._validate_write_commands_shape(
+        "project-a",
+        "canvas-a",
+        [command],
+    )
+
+    assert error["ok"] is False
+    assert error["status"] == "invalid_command_schema"
+    assert "node_ids" in error["error"]
+    assert "scope=canvas" in error["error"]
+
+
 def test_external_generation_preflight_blocks_missing_downstream_parameters(
     monkeypatch,
 ):
@@ -4105,10 +4128,18 @@ def test_canvas_command_schema_accepts_minimal_variants_and_rejects_union_shell(
         {"type": "select_nodes", "node_ids": ["node-1"]},
         {"type": "run_node_action", "node_id": "node-1", "action": "generate"},
         {"type": "open_mainline_projection", "request": {"scope": "episode"}},
-        {"type": "run_workflow"},
+        {"type": "run_workflow", "scope": "canvas"},
     ]
     for command in commands:
         validator.validate({"commands": [command]})
+
+    for command in (
+        {"type": "run_workflow"},
+        {"type": "run_workflow", "scope": "selection"},
+        {"type": "run_workflow", "node_ids": []},
+    ):
+        with pytest.raises(ValidationError):
+            validator.validate({"commands": [command]})
 
     union_shell = {
         "type": "create_node",
