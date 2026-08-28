@@ -750,7 +750,7 @@ def _handle_request_user_clarification(args: dict[str, Any], **_: Any) -> str:
                             "image_aspect_ratio",
                             "image_resolution",
                             "image_quality",
-                            "image_count",
+                            "image_variants_per_node",
                         ],
                         "video": [
                             "video_model",
@@ -758,7 +758,7 @@ def _handle_request_user_clarification(args: dict[str, Any], **_: Any) -> str:
                             "video_resolution",
                             "video_duration_seconds",
                             "video_generate_audio",
-                            "video_count",
+                            "video_variants_per_node",
                         ],
                     },
                     "agent_instruction": (

@@ -1902,6 +1902,10 @@ def test_external_generation_clarification_rejects_bundled_settings(monkeypatch)
     assert result["ok"] is False
     assert result["code"] == "generation_parameter_questions_invalid"
     assert "video_resolution" in result["required_question_ids"]["video"]
+    assert "image_variants_per_node" in result["required_question_ids"]["image"]
+    assert "video_variants_per_node" in result["required_question_ids"]["video"]
+    assert "image_count" not in result["required_question_ids"]["image"]
+    assert "video_count" not in result["required_question_ids"]["video"]
     assert "480P" in result["agent_instruction"]
     assert emitted == []
 

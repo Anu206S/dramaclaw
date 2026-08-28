@@ -142,6 +142,40 @@ def test_social_content_campaign_builtin_skill_is_loadable(monkeypatch):
     }
 
 
+def test_social_content_image_count_controls_nodes_not_variants(monkeypatch):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "social-content-campaign",
+            "user_goal": "制作三张社交媒体配图",
+            "items": [
+                {
+                    "id": f"social_image_{index}",
+                    "title": f"社交配图 {index}",
+                    "recipe_id": "social-content-image",
+                }
+                for index in range(1, 4)
+            ],
+            "include_compose": False,
+        }
+    )
+
+    assert compiled["ok"] is True, compiled
+    image_nodes = [
+        node
+        for node in compiled["plan"]["nodes"]
+        if node["node_type"] == "imageGenNode"
+    ]
+    assert len(image_nodes) == 3
+    assert all("count" not in node["data"] for node in image_nodes)
+    assert all(
+        node["data"]["workflowCatalog"]["confirmedInputs"]["image_count"] == 3
+        for node in image_nodes
+    )
+
+
 def test_standard_video_planner_distributes_target_duration_across_clips(monkeypatch):
     catalog = _load_catalog_module()
     _install_real_builtin_catalog(monkeypatch, catalog)
@@ -626,7 +660,8 @@ def test_compiler_propagates_portable_image_generation_inputs(monkeypatch):
                 "image_aspect_ratio": "16:9",
                 "image_resolution": "2K",
                 "image_quality": "medium",
-                "image_count": 2,
+                "image_count": 7,
+                "image_variants_per_node": 2,
             },
             "items": [
                 {
@@ -660,9 +695,17 @@ def test_compiler_propagates_portable_image_generation_inputs(monkeypatch):
 @pytest.mark.parametrize(
     ("parameter_id", "value", "message"),
     [
-        ("image_count", -7, "must be greater than or equal to 1"),
-        ("video_count", 0, "must be greater than or equal to 1"),
-        ("image_count", True, "must be an integer"),
+        (
+            "image_variants_per_node",
+            3,
+            "unsupported option: 3; supported values: 1, 2, 4",
+        ),
+        (
+            "video_variants_per_node",
+            0,
+            "unsupported option: 0; supported values: 1, 2, 4",
+        ),
+        ("image_variants_per_node", True, "must be an integer"),
         ("video_duration_seconds", 0, "must be greater than 0"),
         ("video_duration_seconds", 601, "must be less than or equal to 600"),
         ("video_generate_audio", "false", "must be a boolean"),
@@ -1098,7 +1141,8 @@ def test_compiler_propagates_portable_video_generation_inputs(monkeypatch):
                 "video_resolution": "1080P",
                 "video_duration_seconds": 10,
                 "video_generate_audio": True,
-                "video_count": 2,
+                "video_count": 3,
+                "video_variants_per_node": 2,
             },
             "items": [
                 {

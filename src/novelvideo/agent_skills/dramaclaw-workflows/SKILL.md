@@ -52,9 +52,9 @@ canvas execution mode:
 
 The image/video choices are:
 
-- Image: model preference, aspect ratio, resolution/quality, and output count.
+- Image: model preference, aspect ratio, resolution/quality, and variants per node.
 - Video: model or generation mode, aspect ratio, resolution, duration, sound generation, and output
-  count.
+  variants per node.
 
 Offer a recommended/default option so the user does not need to understand provider-specific
 fields. In `auto_execute`, do not draft, commit, approve, or run until the required clarification
@@ -72,15 +72,20 @@ The portable workflow intent carries confirmed shared choices in `inputs`:
   "image_aspect_ratio": "16:9",
   "image_resolution": "2K",
   "image_quality": "medium",
-  "image_count": 1,
+  "image_variants_per_node": 1,
   "video_model": "<catalog model id>",
   "video_aspect_ratio": "16:9",
   "video_resolution": "720P",
   "video_duration_seconds": 5,
   "video_generate_audio": false,
-  "video_count": 1
+  "video_variants_per_node": 1
 }
 ```
+
+`image_count` and `video_count`, when declared by a selected Skill, describe workflow deliverable
+or node counts. Never use them as per-node generation counts. Only
+`image_variants_per_node` / `video_variants_per_node` map to canvas node `data.count`, and their
+portable supported values are `1`, `2`, and `4`.
 
 Use only the image or video keys relevant to the selected plan. For an exact custom topology, put
 the equivalent canvas fields directly in every generated node's `data`. If a write returns

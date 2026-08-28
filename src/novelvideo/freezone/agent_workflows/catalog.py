@@ -131,19 +131,20 @@ _DETERMINISTIC_SKILL_PLANNERS = {
 _UNIVERSAL_GENERATION_INPUT_KEYS = {
     "aspect_ratio",
     "image_aspect_ratio",
-    "image_count",
     "image_model",
     "image_quality",
     "image_resolution",
+    "image_variants_per_node",
     "video_aspect_ratio",
-    "video_count",
     "video_duration_seconds",
     "video_generate_audio",
     "video_generation_mode",
     "video_model",
     "video_resolution",
+    "video_variants_per_node",
 }
 
+_PORTABLE_GENERATION_VARIANT_COUNTS = {1, 2, 4}
 _PORTABLE_VIDEO_GENERATION_MODES = {
     "allReference",
     "firstLastFrame",
@@ -161,11 +162,17 @@ def _portable_generation_input_error(parameter_id: str, value: Any) -> str | Non
     supports their concrete values. Stable scalar types, ranges, and modes are
     enforced here for every Agent host.
     """
-    if parameter_id in {"image_count", "video_count"}:
+    if parameter_id in {
+        "image_variants_per_node",
+        "video_variants_per_node",
+    }:
         if not isinstance(value, int) or isinstance(value, bool):
             return "must be an integer"
-        if value < 1:
-            return "must be greater than or equal to 1"
+        if value not in _PORTABLE_GENERATION_VARIANT_COUNTS:
+            supported = ", ".join(
+                str(item) for item in sorted(_PORTABLE_GENERATION_VARIANT_COUNTS)
+            )
+            return f"unsupported option: {value}; supported values: {supported}"
         return None
     if parameter_id == "video_duration_seconds":
         if not isinstance(value, (int, float)) or isinstance(value, bool):
@@ -1950,13 +1957,13 @@ def _intent_item_node(
     if node_type == "imageGenNode":
         image_resolution = _text(resolved_inputs.get("image_resolution"))
         image_quality = _text(resolved_inputs.get("image_quality"))
-        image_count = resolved_inputs.get("image_count")
+        image_variants = resolved_inputs.get("image_variants_per_node")
         if image_resolution:
             data["size"] = image_resolution
         if image_quality:
             data["quality"] = image_quality
-        if isinstance(image_count, int) and not isinstance(image_count, bool):
-            data["count"] = image_count
+        if isinstance(image_variants, int) and not isinstance(image_variants, bool):
+            data["count"] = image_variants
     if node_type == "videoNode":
         duration_seconds = _positive_duration_seconds(item.get("duration_seconds"))
         if duration_seconds is None:
@@ -1967,15 +1974,15 @@ def _intent_item_node(
             data["durationSec"] = duration_seconds
         video_resolution = _text(resolved_inputs.get("video_resolution"))
         video_mode = _text(resolved_inputs.get("video_generation_mode"))
-        video_count = resolved_inputs.get("video_count")
+        video_variants = resolved_inputs.get("video_variants_per_node")
         if video_resolution:
             data["quality"] = video_resolution
         if video_mode:
             data["genMode"] = video_mode
         if isinstance(resolved_inputs.get("video_generate_audio"), bool):
             data["generateAudio"] = resolved_inputs["video_generate_audio"]
-        if isinstance(video_count, int) and not isinstance(video_count, bool):
-            data["count"] = video_count
+        if isinstance(video_variants, int) and not isinstance(video_variants, bool):
+            data["count"] = video_variants
     if node_type == "audioNode":
         data["text"] = prompt
         if audio_kind == "music":
