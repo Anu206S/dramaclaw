@@ -693,6 +693,43 @@ def test_compiler_propagates_portable_image_generation_inputs(monkeypatch):
 
 
 @pytest.mark.parametrize(
+    ("parameter_id", "value"),
+    [
+        ("image_resolution", "3K"),
+        ("image_aspect_ratio", "1:8"),
+        ("video_resolution", "2K"),
+        ("video_aspect_ratio", "9:21"),
+    ],
+)
+def test_compiler_defers_model_dependent_generation_values_to_live_schema(
+    monkeypatch,
+    parameter_id,
+    value,
+):
+    catalog = _load_catalog_module()
+    _install_real_builtin_catalog(monkeypatch, catalog)
+
+    compiled = catalog.compile_workflow_intent(
+        {
+            "skill_id": "text-to-image-video",
+            "user_goal": "生成模型能力测试工作流",
+            "inputs": {parameter_id: value},
+        }
+    )
+
+    assert compiled["ok"] is True, compiled
+    node_type = "imageGenNode" if parameter_id.startswith("image_") else "videoNode"
+    data_key = "aspectRatio" if parameter_id.endswith("aspect_ratio") else (
+        "size" if node_type == "imageGenNode" else "quality"
+    )
+    media_nodes = [
+        node for node in compiled["plan"]["nodes"] if node["node_type"] == node_type
+    ]
+    assert media_nodes
+    assert all(node["data"][data_key] == value for node in media_nodes)
+
+
+@pytest.mark.parametrize(
     ("parameter_id", "value", "message"),
     [
         (

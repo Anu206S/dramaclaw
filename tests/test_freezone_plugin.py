@@ -809,6 +809,13 @@ def test_dynamic_workflow_creation_reaches_canvas_bridge(monkeypatch):
         lambda args: {"ok": True, "commands": commands, "plan": args["plan"]},
     )
 
+    def fake_preflight(compiled, *, project_id):
+        captured["preflight_plan"] = compiled["plan"]
+        captured["preflight_project"] = project_id
+        return {"status": "ready", "blockers": [], "warnings": []}
+
+    monkeypatch.setattr(plugin, "_workflow_runtime_preflight", fake_preflight)
+
     def fake_emit(project, canvas, emitted, **kwargs):
         captured.update(
             {
@@ -828,6 +835,8 @@ def test_dynamic_workflow_creation_reaches_canvas_bridge(monkeypatch):
 
     assert result == "created"
     assert captured["commands"] == commands
+    assert captured["preflight_plan"] is plan
+    assert captured["preflight_project"] == "project-a"
     assert captured["kwargs"]["allow_dynamic_workflow_batch"] is True
 
 
@@ -849,6 +858,13 @@ def test_compact_workflow_intent_compiles_before_canvas_bridge(monkeypatch):
         lambda args: {"ok": args["plan"] is plan, "commands": commands},
     )
 
+    def fake_preflight(compiled, *, project_id):
+        captured["preflight_compiled"] = compiled
+        captured["preflight_project"] = project_id
+        return {"status": "ready", "blockers": [], "warnings": []}
+
+    monkeypatch.setattr(plugin, "_workflow_runtime_preflight", fake_preflight)
+
     def fake_emit(project, canvas, emitted, **kwargs):
         captured.update(
             {
@@ -868,6 +884,8 @@ def test_compact_workflow_intent_compiles_before_canvas_bridge(monkeypatch):
 
     assert result == "created-from-intent"
     assert captured["commands"] == commands
+    assert captured["preflight_compiled"]["plan"] is plan
+    assert captured["preflight_project"] == "project-a"
     assert captured["kwargs"]["allow_dynamic_workflow_batch"] is True
 
 
@@ -1360,6 +1378,162 @@ def test_workflow_runtime_preflight_blocks_unavailable_model(monkeypatch):
             "code": "model_unavailable",
         }
     ]
+
+
+def test_workflow_runtime_preflight_uses_live_model_capabilities(monkeypatch):
+    plugin = _load_plugin_module()
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+
+    def fake_request(method, path, **_kwargs):
+        assert method == "GET"
+        if path.endswith("/freezone/image/models"):
+            return {
+                "ok": True,
+                "data": [
+                    {
+                        "id": "seedream-5.0-lite",
+                        "resolutionOptions": ["2K", "3K"],
+                        "ratioOptions": ["1:1", "16:9"],
+                    },
+                    {
+                        "id": "LingShan-NB-2",
+                        "resolutionOptions": ["1K", "2K", "4K"],
+                        "ratioOptions": ["1:1", "1:4", "4:1", "1:8", "8:1"],
+                    },
+                ],
+            }
+        if path.endswith("/freezone/video/models"):
+            return {
+                "ok": True,
+                "data": [
+                    {
+                        "id": "MiniMax-H3",
+                        "resolutionOptions": ["768P", "2K"],
+                        "ratioOptions": ["21:9", "9:16"],
+                        "minDuration": 4,
+                        "maxDuration": 15,
+                        "supportsGenerateAudio": False,
+                    }
+                ],
+            }
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {
+                    "default": {"limit": 8, "remaining": 8},
+                    "video": {"limit": 8, "remaining": 8},
+                    "ffmpeg": {"limit": 1, "remaining": 1},
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    result = plugin._workflow_runtime_preflight(
+        {
+            "preflight": {"status": "ready", "blockers": [], "warnings": []},
+            "plan": {
+                "nodes": [
+                    {
+                        "id": "image-3k",
+                        "node_type": "imageGenNode",
+                        "data": {
+                            "model": "seedream-5.0-lite",
+                            "size": "3K",
+                            "aspectRatio": "16:9",
+                        },
+                    },
+                    {
+                        "id": "image-wide",
+                        "node_type": "imageGenNode",
+                        "data": {
+                            "model": "LingShan-NB-2",
+                            "size": "4K",
+                            "aspectRatio": "1:8",
+                        },
+                    },
+                    {
+                        "id": "video",
+                        "node_type": "videoNode",
+                        "data": {
+                            "model": "MiniMax-H3",
+                            "quality": "2k",
+                            "aspectRatio": "21:9",
+                            "durationSec": 10,
+                            "generateAudio": False,
+                        },
+                    },
+                ]
+            },
+        },
+        project_id="project-a",
+    )
+
+    assert result["status"] == "ready"
+    assert result["blockers"] == []
+
+
+def test_workflow_runtime_preflight_rejects_values_outside_selected_model_schema(
+    monkeypatch,
+):
+    plugin = _load_plugin_module()
+    monkeypatch.setattr(plugin, "_available", lambda: True)
+
+    def fake_request(method, path, **_kwargs):
+        assert method == "GET"
+        if path.endswith("/freezone/image/models"):
+            return {
+                "ok": True,
+                "data": [
+                    {
+                        "id": "image-model",
+                        "resolutionOptions": ["2K", "3K"],
+                        "ratioOptions": ["1:1", "16:9"],
+                        "qualityOptions": ["low", "medium", "high"],
+                    }
+                ],
+            }
+        if path.endswith("/tasks/limits"):
+            return {
+                "ok": True,
+                "data": {
+                    "default": {"limit": 3, "remaining": 3},
+                    "video": {"limit": 3, "remaining": 3},
+                    "ffmpeg": {"limit": 1, "remaining": 1},
+                },
+            }
+        raise AssertionError(path)
+
+    monkeypatch.setattr(plugin, "_request", fake_request)
+    result = plugin._workflow_runtime_preflight(
+        {
+            "preflight": {"status": "ready", "blockers": [], "warnings": []},
+            "plan": {
+                "nodes": [
+                    {
+                        "id": "image",
+                        "node_type": "imageGenNode",
+                        "data": {
+                            "model": "image-model",
+                            "size": "8K",
+                            "aspectRatio": "banana",
+                            "quality": "ultra",
+                        },
+                    }
+                ]
+            },
+        },
+        project_id="project-a",
+    )
+
+    assert result["status"] == "blocked"
+    assert {
+        (blocker["path"], blocker["code"])
+        for blocker in result["blockers"]
+    } == {
+        ("runtime.models.image.aspectRatio", "model_capability_unsupported"),
+        ("runtime.models.image.size", "model_capability_unsupported"),
+        ("runtime.models.image.quality", "model_capability_unsupported"),
+    }
 
 
 def test_workflow_runtime_preflight_warns_when_queue_is_full(monkeypatch):
