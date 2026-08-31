@@ -8,10 +8,11 @@ from typing import BinaryIO
 
 MAX_NOVEL_UPLOAD_BYTES = 512 * 1024
 MAX_NOVEL_IMPORT_BYTES = 1 * 1024 * 1024
+MAX_PROJECT_UPLOAD_BYTES = 200 * 1024 * 1024
 
 
 class UploadTooLargeError(ValueError):
-    """Raised when a novel upload exceeds its raw file-size limit."""
+    """Raised when an upload exceeds its raw file-size limit."""
 
 
 def sanitize_upload_filename(raw_name: str | None, *, fallback: str = "upload.txt") -> str:

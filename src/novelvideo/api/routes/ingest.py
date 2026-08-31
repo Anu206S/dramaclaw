@@ -1,13 +1,18 @@
 """小说上传 & 导入端点。"""
 
+import asyncio
+import functools
 import logging
 import os
 import secrets
 import shutil
 import stat
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Any
 
+import anyio
+from anyio.lowlevel import RunVar
 from fastapi import APIRouter, Depends, File, Form, UploadFile
 
 from novelvideo.api.auth import get_api_user, require_scope
@@ -48,6 +53,48 @@ from novelvideo.utils.upload_safety import (
 
 logger = logging.getLogger("novelvideo.api.ingest")
 router = APIRouter()
+_INGEST_UPLOAD_CONCURRENCY = 2
+_ingest_upload_limiter_var: RunVar[anyio.CapacityLimiter] = RunVar(
+    "ingest_upload_limiter"
+)
+
+
+def _ingest_upload_limiter() -> anyio.CapacityLimiter:
+    """Return the upload-processing gate scoped to the current async run."""
+
+    limiter = _ingest_upload_limiter_var.get(None)
+    if limiter is None:
+        limiter = anyio.CapacityLimiter(_INGEST_UPLOAD_CONCURRENCY)
+        _ingest_upload_limiter_var.set(limiter)
+    return limiter
+
+
+async def _run_ingest_upload_operation(
+    operation: Callable[..., Any], /, *args: Any, **kwargs: Any
+) -> Any:
+    """Run blocking upload work off-loop without abandoning its limiter token."""
+
+    bound = functools.partial(operation, *args, **kwargs)
+    worker_task = asyncio.create_task(
+        anyio.to_thread.run_sync(
+            bound,
+            abandon_on_cancel=False,
+            limiter=_ingest_upload_limiter(),
+        )
+    )
+    try:
+        return await asyncio.shield(worker_task)
+    except asyncio.CancelledError as cancellation:
+        with anyio.CancelScope(shield=True):
+            try:
+                await asyncio.shield(worker_task)
+            except BaseException:
+                pass
+        try:
+            worker_task.result()
+        except BaseException:
+            pass
+        raise cancellation
 
 
 @router.get("/projects/{project}/ingest/graph")
@@ -154,21 +201,21 @@ def _create_staged_upload(staging_dir: Path, suffix: str) -> Path:
     raise OSError("failed to allocate upload staging file")
 
 
-@router.post("/projects/{project}/ingest/upload")
-async def upload_novel(
+def _upload_novel_sync(
+    *,
     project: str,
-    file: UploadFile = File(...),
-    spine_template: Annotated[str | None, Form()] = None,
-    user: dict = Depends(get_api_user),
-):
-    """上传小说文件到项目的 uploads/ 目录。"""
-    logger.info("[%s] upload_novel: %s", project, file.filename)
-    resolved = await resolve_project_scope(project, user, required_role="editor")
-    project_dir = resolved.project_dir
+    upload_stream: Any,
+    filename: str | None,
+    project_dir: Path,
+    state_dir: str | Path,
+    spine_template: str | None,
+) -> dict:
+    """Stage, parse, preview, and atomically persist one novel upload."""
+
     uploads_dir = project_dir / "uploads"
     uploads_dir.mkdir(parents=True, exist_ok=True)
 
-    safe_name = sanitize_upload_filename(file.filename)
+    safe_name = sanitize_upload_filename(filename)
     if not is_safe_upload_target(uploads_dir, safe_name):
         return {"ok": False, "error": "非法文件名"}
     if not is_supported_novel_path(safe_name):
@@ -179,7 +226,7 @@ async def upload_novel(
     staged_path = _create_staged_upload(staging_dir, Path(safe_name).suffix)
     try:
         try:
-            size = stream_to_file_with_limit(file.file, staged_path)
+            size = stream_to_file_with_limit(upload_stream, staged_path)
         except UploadTooLargeError:
             return _file_too_large_response()
 
@@ -189,9 +236,7 @@ async def upload_novel(
             billable_chars = count_billable_novel_chars(content)
             if billable_chars > MAX_NOVEL_IMPORT_CHARS:
                 return _text_too_large_response(billable_chars)
-            project_config = load_project_config_file_from_state_dir(
-                resolved.state_dir
-            )
+            project_config = load_project_config_file_from_state_dir(state_dir)
             requested_spine_template = str(
                 spine_template
                 or project_config.get("spine_template")
@@ -216,7 +261,9 @@ async def upload_novel(
                 "detail": str(exc),
             }
         except Exception:
-            logger.warning("[%s] failed to build chapter preview", project, exc_info=True)
+            logger.warning(
+                "[%s] failed to build chapter preview", project, exc_info=True
+            )
             return {"ok": False, "error": "解析章节失败"}
 
         has_chapters = bool(preview.get("chapters"))
@@ -244,7 +291,9 @@ async def upload_novel(
                 staged_path.chmod(destination_mode)
             os.replace(staged_path, dest)
         except OSError:
-            logger.exception("[%s] failed to persist uploaded novel: %s", project, safe_name)
+            logger.exception(
+                "[%s] failed to persist uploaded novel: %s", project, safe_name
+            )
             return {"ok": False, "error": "保存上传文件失败"}
 
         data.update(preview)
@@ -260,6 +309,27 @@ async def upload_novel(
                 staged_path.name,
                 exc_info=True,
             )
+
+
+@router.post("/projects/{project}/ingest/upload")
+async def upload_novel(
+    project: str,
+    file: UploadFile = File(...),
+    spine_template: Annotated[str | None, Form()] = None,
+    user: dict = Depends(get_api_user),
+):
+    """上传小说文件到项目的 uploads/ 目录。"""
+    logger.info("[%s] upload_novel: %s", project, file.filename)
+    resolved = await resolve_project_scope(project, user, required_role="editor")
+    return await _run_ingest_upload_operation(
+        _upload_novel_sync,
+        project=project,
+        upload_stream=file.file,
+        filename=file.filename,
+        project_dir=Path(resolved.project_dir),
+        state_dir=resolved.state_dir,
+        spine_template=spine_template,
+    )
 
 
 @router.post("/projects/{project}/ingest/start")

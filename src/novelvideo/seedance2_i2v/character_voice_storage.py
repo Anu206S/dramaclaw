@@ -7,16 +7,24 @@ the metadata required by ``NovelCharacter.reference_audio_*`` /
 
 from __future__ import annotations
 
+import asyncio
 import base64
 import binascii
+import functools
 import hashlib
 import json
 import re
 import shutil
 import subprocess
 import tempfile
+import weakref
+from collections.abc import Awaitable, Callable
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
+
+import anyio
+from anyio.lowlevel import RunVar
 
 VOICE_SAMPLE_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
 DEFAULT_SLOT = "default"
@@ -33,6 +41,134 @@ RECORDED_AUDIO_EXTENSION_BY_MIME = {
     "audio/wav": ".wav",
     "audio/x-wav": ".wav",
 }
+
+FFMPEG_TIMEOUT_SECONDS = 60.0
+"""Hard wall-clock limit for user-provided audio conversion and trimming."""
+
+_VOICE_MEDIA_CONCURRENCY = 2
+_voice_media_limiter_var: RunVar[anyio.CapacityLimiter] = RunVar("voice_media_limiter")
+_voice_resource_locks_var: RunVar[
+    weakref.WeakValueDictionary[tuple[Any, ...], asyncio.Lock]
+] = RunVar("voice_resource_locks")
+
+
+def _voice_media_limiter() -> anyio.CapacityLimiter:
+    """Return the small media-process gate scoped to the current async run."""
+
+    limiter = _voice_media_limiter_var.get(None)
+    if limiter is None:
+        limiter = anyio.CapacityLimiter(_VOICE_MEDIA_CONCURRENCY)
+        _voice_media_limiter_var.set(limiter)
+    return limiter
+
+
+def voice_resource_lock(key: tuple[Any, ...]) -> asyncio.Lock:
+    """Return a per-async-run lock for one canonical voice resource."""
+
+    locks = _voice_resource_locks_var.get(None)
+    if locks is None:
+        locks = weakref.WeakValueDictionary()
+        _voice_resource_locks_var.set(locks)
+    lock = locks.get(key)
+    if lock is None:
+        lock = asyncio.Lock()
+        locks[key] = lock
+    return lock
+
+
+def character_voice_resource_key(
+    *, project_dir: str | Path, character_name: str, slot: str
+) -> tuple[Any, ...]:
+    """Canonical key covering one character voice slot and its metadata."""
+
+    return (
+        "character-voice",
+        str(Path(project_dir).resolve()),
+        _safe_asset_name(character_name),
+        str(slot).strip().lower(),
+    )
+
+
+def narrator_voice_resource_key(
+    *, project_dir: str | Path, state_dir: str | Path
+) -> tuple[Any, ...]:
+    """Canonical key covering a project's narrator files and config metadata."""
+
+    return (
+        "narrator-voice",
+        str(Path(project_dir).resolve()),
+        str(Path(state_dir).resolve()),
+    )
+
+
+def seedance2_asset_resource_key(
+    *, project_dir: str | Path, episode: int, beat_number: int
+) -> tuple[Any, ...]:
+    """Canonical key for one beat's shared upload naming/config domain."""
+
+    return (
+        "seedance2-assets",
+        str(Path(project_dir).resolve()),
+        int(episode),
+        int(beat_number),
+    )
+
+
+async def run_voice_media_operation(
+    operation: Callable[..., Any],
+    /,
+    *args: Any,
+    finalize: Callable[[Any], Awaitable[Any]] | None = None,
+    **kwargs: Any,
+) -> Any:
+    """Run a blocking voice operation and optional async metadata commit atomically.
+
+    Cancellation is delayed until the worker and metadata finalizer have both
+    completed.  This keeps the limiter token held while the thread is alive and
+    prevents a published voice file from being left without its async metadata.
+    """
+
+    bound = functools.partial(operation, *args, **kwargs)
+    worker_task = asyncio.create_task(
+        anyio.to_thread.run_sync(
+            bound,
+            abandon_on_cancel=False,
+            limiter=_voice_media_limiter(),
+        )
+    )
+    result, cancellation = await _wait_for_voice_task_completion(worker_task)
+    if finalize is not None:
+        finalize_task = asyncio.create_task(finalize(result))
+        result, cancellation = await _wait_for_voice_task_completion(
+            finalize_task, cancellation
+        )
+    if cancellation is not None:
+        raise cancellation
+    return result
+
+
+async def _wait_for_voice_task_completion(
+    task: asyncio.Task,
+    cancellation: asyncio.CancelledError | None = None,
+) -> tuple[Any, asyncio.CancelledError | None]:
+    """Wait through direct, repeated, or AnyIO level cancellation."""
+
+    while not task.done():
+        try:
+            if cancellation is None:
+                await asyncio.shield(task)
+            else:
+                with anyio.CancelScope(shield=True):
+                    await asyncio.shield(task)
+        except asyncio.CancelledError as exc:
+            if cancellation is None:
+                cancellation = exc
+        except BaseException:
+            raise
+    try:
+        return task.result(), cancellation
+    except BaseException:
+        raise
 
 
 def decode_recorded_audio_data_url(data_url: str) -> tuple[bytes, str]:
@@ -85,7 +221,10 @@ def _transcode_to_mp3(content: bytes) -> bytes:
             input=content,
             capture_output=True,
             check=True,
+            timeout=FFMPEG_TIMEOUT_SECONDS,
         )
+    except subprocess.TimeoutExpired as exc:
+        raise ValueError(f"ffmpeg 转码超时（>{FFMPEG_TIMEOUT_SECONDS:g}s）") from exc
     except subprocess.CalledProcessError as exc:
         stderr = (exc.stderr or b"").decode("utf-8", "ignore").strip()
         raise ValueError(f"ffmpeg 转码失败：{stderr or exc}") from exc
@@ -200,7 +339,12 @@ def trim_voice_sample_content(
                 ],
                 capture_output=True,
                 check=True,
+                timeout=FFMPEG_TIMEOUT_SECONDS,
             )
+        except subprocess.TimeoutExpired as exc:
+            raise ValueError(
+                f"ffmpeg 裁剪超时（>{FFMPEG_TIMEOUT_SECONDS:g}s）"
+            ) from exc
         except subprocess.CalledProcessError as exc:
             stderr = (exc.stderr or b"").decode("utf-8", "ignore").strip()
             raise ValueError(f"ffmpeg 裁剪失败：{stderr or exc}") from exc
