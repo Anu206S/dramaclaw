@@ -212,13 +212,6 @@ async def test_project_summary_preserves_anyio_cancel_scope_marker(
     record = _project_record(tmp_path)
     worker_entered = threading.Event()
     release_worker = threading.Event()
-    shield_calls = 0
-    original_shield = asyncio.shield
-
-    def tracking_shield(awaitable):
-        nonlocal shield_calls
-        shield_calls += 1
-        return original_shield(awaitable)
 
     def fake_load_config(_state_dir: str) -> dict:
         worker_entered.set()
@@ -233,7 +226,6 @@ async def test_project_summary_preserves_anyio_cancel_scope_marker(
         release_worker.set()
 
     monkeypatch.setattr(projects, "is_record_home_node", lambda _record: True)
-    monkeypatch.setattr(projects.asyncio, "shield", tracking_shield)
     monkeypatch.setattr(
         projects, "load_project_config_file_from_state_dir", fake_load_config
     )
@@ -244,7 +236,6 @@ async def test_project_summary_preserves_anyio_cancel_scope_marker(
     await canceller
 
     assert scope.cancel_called
-    assert shield_calls == 1
 
 
 @pytest.mark.asyncio

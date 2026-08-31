@@ -19,6 +19,10 @@ class RecordingTaskManager:
         self.call_thread_id = threading.get_ident()
         return self.tasks
 
+    def get_task(self, *_args, **_kwargs):
+        self.call_thread_id = threading.get_ident()
+        return self.task
+
 
 def assert_called_off_event_loop(manager, event_loop_thread_id):
     assert manager.call_thread_id is not None
@@ -125,6 +129,32 @@ async def test_freezone_job_result_reads_task_state_off_event_loop(
 
 
 @pytest.mark.asyncio
+async def test_legacy_freezone_job_result_reads_task_state_off_event_loop(
+    monkeypatch, tmp_path: Path
+):
+    from novelvideo.api.routes import freezone
+
+    manager = RecordingTaskManager(
+        task=SimpleNamespace(status="failed", error="boom", logs=[], current_task=None)
+    )
+
+    async def resolve_freezone_project(*_args, **_kwargs):
+        return None, "admin", "demo", tmp_path, tmp_path / "output"
+
+    monkeypatch.setattr(freezone, "_resolve_freezone_project", resolve_freezone_project)
+    monkeypatch.setattr(freezone, "get_task_manager", lambda: manager)
+
+    await freezone.freezone_job_result(
+        project="demo",
+        task_type="freezone_edit",
+        job_id="job_1",
+        user={"username": "admin"},
+    )
+
+    assert_called_off_event_loop(manager, threading.get_ident())
+
+
+@pytest.mark.asyncio
 async def test_freezone_skill_result_reads_task_state_off_event_loop(
     monkeypatch, tmp_path: Path
 ):
@@ -150,6 +180,38 @@ async def test_freezone_skill_result_reads_task_state_off_event_loop(
 
     await freezone.freezone_skill_run_result(
         project="proj_123",
+        run_id="freezone_edit:job_1",
+        user={"username": "admin"},
+    )
+
+    assert_called_off_event_loop(manager, threading.get_ident())
+
+
+@pytest.mark.asyncio
+async def test_legacy_freezone_skill_result_reads_task_state_off_event_loop(
+    monkeypatch, tmp_path: Path
+):
+    from novelvideo.api.routes import freezone
+
+    manager = RecordingTaskManager(task=SimpleNamespace(status="running"))
+
+    async def resolve_freezone_project(*_args, **_kwargs):
+        return None, "admin", "demo", tmp_path, tmp_path / "output"
+
+    monkeypatch.setattr(freezone, "_resolve_freezone_project", resolve_freezone_project)
+    monkeypatch.setattr(
+        freezone,
+        "_read_skill_run_metadata",
+        lambda *_args: {
+            "task_type": "freezone_edit",
+            "job_id": "job_1",
+            "task_key": "task-key",
+        },
+    )
+    monkeypatch.setattr(freezone, "get_task_manager", lambda: manager)
+
+    await freezone.freezone_skill_run_result(
+        project="demo",
         run_id="freezone_edit:job_1",
         user={"username": "admin"},
     )

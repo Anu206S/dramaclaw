@@ -1,12 +1,8 @@
 """小说上传 & 导入端点。"""
 
-import asyncio
-import functools
 import logging
 import os
-import secrets
 import shutil
-import stat
 from collections.abc import Callable
 from pathlib import Path
 from typing import Annotated, Any
@@ -42,10 +38,12 @@ from novelvideo.utils.document_parsers import (
     supported_novel_extensions_label,
 )
 from novelvideo.utils.screenplay_quality import build_import_format_check
+from novelvideo.utils.async_ops import run_sync_bounded
 from novelvideo.utils.upload_safety import (
     MAX_NOVEL_IMPORT_BYTES,
     MAX_NOVEL_UPLOAD_BYTES,
     UploadTooLargeError,
+    create_staged_upload_file,
     is_safe_upload_target,
     sanitize_upload_filename,
     stream_to_file_with_limit,
@@ -74,27 +72,12 @@ async def _run_ingest_upload_operation(
 ) -> Any:
     """Run blocking upload work off-loop without abandoning its limiter token."""
 
-    bound = functools.partial(operation, *args, **kwargs)
-    worker_task = asyncio.create_task(
-        anyio.to_thread.run_sync(
-            bound,
-            abandon_on_cancel=False,
-            limiter=_ingest_upload_limiter(),
-        )
+    return await run_sync_bounded(
+        operation,
+        *args,
+        limiter=_ingest_upload_limiter(),
+        **kwargs,
     )
-    try:
-        return await asyncio.shield(worker_task)
-    except asyncio.CancelledError as cancellation:
-        with anyio.CancelScope(shield=True):
-            try:
-                await asyncio.shield(worker_task)
-            except BaseException:
-                pass
-        try:
-            worker_task.result()
-        except BaseException:
-            pass
-        raise cancellation
 
 
 @router.get("/projects/{project}/ingest/graph")
@@ -183,24 +166,6 @@ def _text_too_large_response(actual_chars: int) -> dict:
     }
 
 
-def _create_staged_upload(staging_dir: Path, suffix: str) -> Path:
-    """Create a unique staging file whose mode respects the process umask."""
-
-    for _ in range(10):
-        staged_path = staging_dir / f"upload-{secrets.token_hex(16)}{suffix}"
-        try:
-            fd = os.open(
-                staged_path,
-                os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-                0o666,
-            )
-        except FileExistsError:
-            continue
-        os.close(fd)
-        return staged_path
-    raise OSError("failed to allocate upload staging file")
-
-
 def _upload_novel_sync(
     *,
     project: str,
@@ -223,7 +188,11 @@ def _upload_novel_sync(
     dest = uploads_dir / safe_name
     staging_dir = uploads_dir / ".staging"
     staging_dir.mkdir(exist_ok=True)
-    staged_path = _create_staged_upload(staging_dir, Path(safe_name).suffix)
+    staged_path = create_staged_upload_file(
+        staging_dir,
+        suffix=Path(safe_name).suffix,
+        destination=dest,
+    )
     try:
         try:
             size = stream_to_file_with_limit(upload_stream, staged_path)
@@ -280,15 +249,6 @@ def _upload_novel_sync(
             }
 
         try:
-            # Replacements preserve their existing mode. New staging files were
-            # created with mode 0666 filtered through the process umask, matching
-            # the historical ``open(path, "wb")`` behavior.
-            try:
-                destination_mode = stat.S_IMODE(dest.stat().st_mode)
-            except FileNotFoundError:
-                pass
-            else:
-                staged_path.chmod(destination_mode)
             os.replace(staged_path, dest)
         except OSError:
             logger.exception(

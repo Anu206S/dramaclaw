@@ -9863,8 +9863,13 @@ async def freezone_job_result(
             scope=job_id,
         )
     else:
-        task = get_task_manager().get_task(
-            task_type, username, project_name, 0, scope=job_id
+        task = await run_in_threadpool(
+            get_task_manager().get_task,
+            task_type,
+            username,
+            project_name,
+            0,
+            scope=job_id,
         )
     if task_type == "freezone_image_to_3gs":
         if task is not None:
@@ -10126,7 +10131,8 @@ async def freezone_skill_run_result(
             scope=task_scope,
         )
     else:
-        task = get_task_manager().get_task(
+        task = await run_in_threadpool(
+            get_task_manager().get_task,
             task_type,
             username,
             project_name,

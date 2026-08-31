@@ -5906,13 +5906,11 @@ async def cut_grid(
 async def export_zip(project: str, episode_num: int, user: dict = Depends(get_api_user)):
     """打包指定集的所有资源为 ZIP 文件下载。"""
     import asyncio
-    import anyio
     import zipfile
     import tempfile
 
-    from starlette.background import BackgroundTask
     from novelvideo.export.episode_export import build_srt_content
-    from novelvideo.utils.async_ops import call_blocking
+    from novelvideo.utils.async_ops import call_blocking, wait_for_task_completion
     from novelvideo.utils.path_resolver import PathResolver
 
     resolved = await _resolve_generation_project(project, user, required_role="viewer")
@@ -5981,29 +5979,15 @@ async def export_zip(project: str, episode_num: int, user: dict = Depends(get_ap
             raise
 
     build_task = asyncio.create_task(call_blocking(build_zip_file))
-    try:
-        tmp_path = await asyncio.shield(build_task)
-    except asyncio.CancelledError as cancellation:
-        while not build_task.done():
-            try:
-                with anyio.CancelScope(shield=True):
-                    await asyncio.shield(build_task)
-            except asyncio.CancelledError:
-                continue
-            except BaseException:
-                break
-        try:
-            cancelled_tmp_path = build_task.result()
-        except BaseException:
-            raise
-        Path(cancelled_tmp_path).unlink(missing_ok=True)
+    tmp_path, cancellation = await wait_for_task_completion(build_task)
+    if cancellation is not None:
+        Path(tmp_path).unlink(missing_ok=True)
         raise cancellation
     try:
         return _TemporaryFileResponse(
             path=tmp_path,
             filename=f"{project_name}_{ep_tag}.zip",
             media_type="application/zip",
-            background=BackgroundTask(Path(tmp_path).unlink, missing_ok=True),
         )
     except Exception:
         Path(tmp_path).unlink(missing_ok=True)

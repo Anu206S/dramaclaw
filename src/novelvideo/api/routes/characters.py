@@ -4,7 +4,6 @@ import asyncio
 import logging
 import re
 import shutil
-import tempfile
 from contextlib import asynccontextmanager
 from datetime import datetime
 from pathlib import Path
@@ -70,6 +69,8 @@ from novelvideo.utils.path_resolver import (
     canonical_identity_portrait_path,
 )
 from novelvideo.utils.static_urls import project_static_url
+from novelvideo.utils.async_ops import metadata_io_limiter
+from novelvideo.utils.upload_safety import create_staged_upload_file
 from novelvideo.seedance2_i2v.character_voice_storage import (
     AGE_GROUP_SLOTS as VOICE_AGE_GROUP_SLOTS,
     ALL_SLOTS as VOICE_SAMPLE_SLOTS,
@@ -292,13 +293,12 @@ def _persist_uploaded_character_image(file: UploadFile, target: Path) -> None:
         with Image.open(file.file) as source:
             converted = source.convert("RGB")
         target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
+        tmp_path = create_staged_upload_file(
+            target.parent,
             prefix=f".{target.stem}_",
             suffix=target.suffix,
-            dir=target.parent,
-            delete=False,
-        ) as tmp:
-            tmp_path = Path(tmp.name)
+            destination=target,
+        )
         converted.save(tmp_path, format="PNG")
         _backup_character_asset(target)
         tmp_path.replace(target)
@@ -1542,6 +1542,7 @@ async def delete_character_voice_sample(
             character_name=name,
             slot=slot,
             finalize=finalize_voice_delete,
+            worker_limiter=metadata_io_limiter(),
         )
     return {"ok": True, "data": data}
 
@@ -2171,7 +2172,11 @@ async def get_identity_attempts(
             if not p.name.endswith("_costume.png") and "_portrait" not in p.stem
         ]
     )
-    portrait_attempts = len(list(identities_dir.glob(f"*{safe_name}_portrait*.png")))
+    portrait_attempts = sum(
+        1
+        for path in identities_dir.glob(f"*{safe_name}_portrait*.png")
+        if path.is_file() and not path.name.startswith(".")
+    )
     return {
         "ok": True,
         "data": {

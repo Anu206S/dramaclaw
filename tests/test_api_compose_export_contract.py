@@ -186,11 +186,9 @@ async def test_export_zip_cancellation_waits_for_writer_and_removes_temp(monkeyp
     _client(monkeypatch, tmp_path)
     writer_started = threading.Event()
     release_writer = threading.Event()
-    shield_calls = 0
     temp_paths: list[Path] = []
     real_zip_file = zipfile.ZipFile
     real_named_temporary_file = tempfile.NamedTemporaryFile
-    real_shield = asyncio.shield
 
     class BlockingZipFile(real_zip_file):
         def write(self, *args, **kwargs):
@@ -203,14 +201,8 @@ async def test_export_zip_cancellation_waits_for_writer_and_removes_temp(monkeyp
         temp_paths.append(Path(tmp.name))
         return tmp
 
-    def tracking_shield(awaitable):
-        nonlocal shield_calls
-        shield_calls += 1
-        return real_shield(awaitable)
-
     monkeypatch.setattr(zipfile, "ZipFile", BlockingZipFile)
     monkeypatch.setattr(tempfile, "NamedTemporaryFile", tracking_named_temporary_file)
-    monkeypatch.setattr(asyncio, "shield", tracking_shield)
 
     scope_ready = asyncio.Event()
     scope_holder = {}
@@ -232,7 +224,6 @@ async def test_export_zip_cancellation_waits_for_writer_and_removes_temp(monkeyp
     finally:
         release_writer.set()
         await controller
-    assert shield_calls == 2
     assert temp_paths and all(not path.exists() for path in temp_paths)
 
 
@@ -310,7 +301,7 @@ async def test_export_zip_repeated_direct_cancellation_waits_and_cleans_temp(
 
 
 @pytest.mark.asyncio
-async def test_export_zip_worker_error_wins_after_repeated_cancellation(
+async def test_export_zip_cancellation_wins_over_late_worker_error(
     monkeypatch, tmp_path
 ):
     import asyncio
@@ -352,8 +343,9 @@ async def test_export_zip_worker_error_wins_after_repeated_cancellation(
     finally:
         release_writer.set()
 
-    with pytest.raises(OSError, match="zip worker failed"):
+    with pytest.raises(asyncio.CancelledError) as raised:
         await route_task
+    assert raised.value.args == ("first-cancel",)
     assert temp_paths and all(not path.exists() for path in temp_paths)
 
 
@@ -371,6 +363,7 @@ async def test_export_zip_response_removes_temp_after_successful_send(monkeypatc
         sent_messages.append(message)
 
     assert archive_path.exists()
+    assert response.background is None
     await response(_download_scope(), _unused_receive, send)
 
     assert sent_messages[0]["type"] == "http.response.start"

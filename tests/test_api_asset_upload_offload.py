@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 import gc
 import io
+import os
+import stat
 import threading
 import weakref
 from pathlib import Path
@@ -22,6 +24,65 @@ def _png_upload(size: tuple[int, int] = (4, 4)) -> UploadFile:
     Image.new("RGB", size, color=(120, 80, 40)).save(payload, format="PNG")
     payload.seek(0)
     return UploadFile(filename="upload.png", file=payload)
+
+
+@pytest.mark.parametrize("publisher", ["character", "scene"])
+def test_published_images_respect_umask_for_new_targets(tmp_path, publisher):
+    from PIL import Image
+
+    from novelvideo.api.routes import characters, scenes
+
+    target = tmp_path / "portrait.png"
+    previous_umask = os.umask(0o022)
+    try:
+        if publisher == "character":
+            characters._persist_uploaded_character_image(_png_upload(), target)
+        else:
+            scenes._publish_scene_image(
+                Image.new("RGB", (4, 4), color="red"), target, "master"
+            )
+    finally:
+        os.umask(previous_umask)
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o644
+
+
+@pytest.mark.parametrize("publisher", ["character", "scene"])
+def test_published_images_preserve_existing_target_mode(tmp_path, publisher):
+    from PIL import Image
+
+    from novelvideo.api.routes import characters, scenes
+
+    target = tmp_path / "portrait.png"
+    Image.new("RGB", (2, 2), color="blue").save(target)
+    target.chmod(0o640)
+
+    if publisher == "character":
+        characters._persist_uploaded_character_image(_png_upload(), target)
+    else:
+        scenes._publish_scene_image(
+            Image.new("RGB", (4, 4), color="red"), target, "master"
+        )
+
+    assert stat.S_IMODE(target.stat().st_mode) == 0o640
+
+
+def test_scene_image_archives_do_not_collide_within_one_second(tmp_path, monkeypatch):
+    from PIL import Image
+
+    from novelvideo.api.routes import scenes
+
+    target = tmp_path / "master.png"
+    monkeypatch.setattr(scenes.time, "time", lambda: 1_700_000_000.0)
+    stamps = iter((1_700_000_000_000_000_001, 1_700_000_000_000_000_002))
+    monkeypatch.setattr(scenes.time, "time_ns", lambda: next(stamps))
+
+    for color in ("red", "green", "blue"):
+        scenes._publish_scene_image(
+            Image.new("RGB", (4, 4), color=color), target, "master"
+        )
+
+    assert len(list(tmp_path.glob("master_*.png"))) == 2
 
 
 class _CharacterStore:
@@ -60,6 +121,42 @@ class _SceneStore:
     async def touch_scene_asset(self, _name: str) -> bool:
         self.touched.append(_name)
         return True
+
+
+@pytest.mark.asyncio
+async def test_identity_attempts_ignore_hidden_staging_files(tmp_path, monkeypatch):
+    from novelvideo.api.routes import characters
+
+    store = _CharacterStore()
+
+    async def resolve_project(*_args, **_kwargs):
+        return (
+            SimpleNamespace(project_id="proj_demo"),
+            "admin",
+            "demo",
+            tmp_path,
+            str(tmp_path),
+            store,
+        )
+
+    monkeypatch.setattr(characters, "_resolve_character_project", resolve_project)
+    identities_dir = tmp_path / "assets" / "characters" / "秦" / "identities"
+    identities_dir.mkdir(parents=True)
+    for filename in (
+        "秦_少年_portrait.png",
+        "秦_少年_portrait_20260831.png",
+        ".秦_少年_portrait_deadbeef.png",
+    ):
+        (identities_dir / filename).write_bytes(b"png")
+
+    response = await characters.get_identity_attempts(
+        project="demo",
+        name="秦",
+        identity_id="秦_少年",
+        user={"username": "admin"},
+    )
+
+    assert response["data"]["portrait_attempts"] == 2
 
 
 @pytest.mark.asyncio
@@ -594,6 +691,68 @@ async def test_scene_delete_waits_for_matching_upload_transaction(
             stage_manifest.resolve_ply_path(tmp_path, "Hall", ply_kind="custom")
             is None
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("kind", ["pano", "custom"])
+async def test_scene_metadata_delete_does_not_wait_for_upload_capacity(
+    tmp_path, monkeypatch, kind
+):
+    from novelvideo.api.routes import scenes
+    from novelvideo.api.upload_workers import run_asset_upload_operation
+
+    store = _SceneStore()
+    ctx = SimpleNamespace(project_id="proj_demo")
+
+    async def resolve_project(*_args, **_kwargs):
+        return ctx, "admin", "demo", tmp_path, str(tmp_path), store
+
+    monkeypatch.setattr(scenes, "_resolve_scene_project", resolve_project)
+    upload_capacity_full = threading.Event()
+    release_uploads = threading.Event()
+    started_count = 0
+    started_lock = threading.Lock()
+
+    def blocking_upload() -> None:
+        nonlocal started_count
+        with started_lock:
+            started_count += 1
+            if started_count == 2:
+                upload_capacity_full.set()
+        assert release_uploads.wait(timeout=5)
+
+    delete_started = threading.Event()
+
+    def delete_files(*_args) -> bool:
+        delete_started.set()
+        return True
+
+    if kind == "pano":
+        monkeypatch.setattr(scenes, "_delete_scene_pano_files", delete_files)
+        delete_call = scenes.delete_scene_pano(
+            project="demo", name="Hall", user={"username": "admin"}
+        )
+    else:
+        monkeypatch.setattr(scenes, "_delete_scene_custom_files", delete_files)
+        delete_call = scenes.delete_scene_custom_package(
+            project="demo", name="Hall", user={"username": "admin"}
+        )
+
+    blockers = [
+        asyncio.create_task(run_asset_upload_operation(blocking_upload))
+        for _ in range(2)
+    ]
+    delete_task = None
+    try:
+        assert await asyncio.to_thread(upload_capacity_full.wait, 1)
+        delete_task = asyncio.create_task(delete_call)
+        assert await asyncio.to_thread(delete_started.wait, 1)
+        assert (await delete_task)["ok"] is True
+    finally:
+        release_uploads.set()
+        await asyncio.gather(*blockers, return_exceptions=True)
+        if delete_task is not None and not delete_task.done():
+            await asyncio.gather(delete_task, return_exceptions=True)
 
 
 @pytest.mark.asyncio
@@ -1157,6 +1316,121 @@ async def test_cancelled_upload_finishes_metadata_before_reraising(tmp_path):
     assert raised.value.args == ("publish-cancel",)
     assert target.exists()
     assert metadata == [target]
+
+
+@pytest.mark.asyncio
+async def test_cancelled_asset_worker_preserves_cancellation_precedence():
+    from novelvideo.api.upload_workers import run_asset_upload_operation
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def failing_worker() -> None:
+        started.set()
+        release.wait(timeout=3)
+        raise RuntimeError("asset worker failed after cancellation")
+
+    task = asyncio.create_task(run_asset_upload_operation(failing_worker))
+    assert await asyncio.to_thread(started.wait, 1)
+    task.cancel("cancel-asset-worker")
+    release.set()
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+    assert raised.value.args == ("cancel-asset-worker",)
+
+
+@pytest.mark.asyncio
+async def test_unshielded_bounded_worker_cancels_while_waiting_for_capacity():
+    from novelvideo.utils.async_ops import run_sync_bounded
+
+    limiter = anyio.CapacityLimiter(1)
+    holder_started = threading.Event()
+    release_holder = threading.Event()
+    queued_started = threading.Event()
+
+    def hold_capacity() -> None:
+        holder_started.set()
+        assert release_holder.wait(timeout=5)
+
+    holder = asyncio.create_task(
+        run_sync_bounded(hold_capacity, limiter=limiter, shield=False)
+    )
+    queued = None
+    try:
+        assert await asyncio.to_thread(holder_started.wait, 1)
+        queued = asyncio.create_task(
+            run_sync_bounded(
+                queued_started.set,
+                limiter=limiter,
+                shield=False,
+            )
+        )
+        while limiter.statistics().tasks_waiting != 1:
+            await asyncio.sleep(0)
+
+        queued.cancel("drop-queued-work")
+        done, _pending = await asyncio.wait({queued}, timeout=1)
+        assert queued in done
+        with pytest.raises(asyncio.CancelledError) as raised:
+            await queued
+        assert raised.value.args == ("drop-queued-work",)
+        assert not queued_started.is_set()
+        assert limiter.statistics().tasks_waiting == 0
+    finally:
+        release_holder.set()
+        await asyncio.gather(holder, return_exceptions=True)
+        if queued is not None and not queued.done():
+            await asyncio.gather(queued, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_unshielded_bounded_worker_keeps_capacity_after_admission():
+    from novelvideo.utils.async_ops import run_sync_bounded
+
+    limiter = anyio.CapacityLimiter(1)
+    worker_started = threading.Event()
+    release_worker = threading.Event()
+
+    def hold_capacity() -> str:
+        worker_started.set()
+        assert release_worker.wait(timeout=5)
+        return "worker-result"
+
+    task = asyncio.create_task(
+        run_sync_bounded(hold_capacity, limiter=limiter, shield=False)
+    )
+    try:
+        assert await asyncio.to_thread(worker_started.wait, 1)
+        task.cancel("cancel-admitted-work")
+        await asyncio.sleep(0)
+
+        assert not task.done()
+        assert limiter.borrowed_tokens == 1
+    finally:
+        release_worker.set()
+
+    with pytest.raises(asyncio.CancelledError) as raised:
+        await task
+    assert raised.value.args == ("cancel-admitted-work",)
+    assert limiter.borrowed_tokens == 0
+
+
+@pytest.mark.asyncio
+async def test_bounded_worker_returns_finalizer_result():
+    from novelvideo.utils.async_ops import run_sync_bounded
+
+    async def finalize(worker_result: str) -> str:
+        assert worker_result == "worker-result"
+        return "finalizer-result"
+
+    result = await run_sync_bounded(
+        lambda: "worker-result",
+        limiter=anyio.CapacityLimiter(1),
+        finalize=finalize,
+    )
+
+    assert result == "finalizer-result"
 
 
 @pytest.mark.asyncio

@@ -175,22 +175,53 @@ async def test_voice_media_capacity_is_held_until_cancelled_worker_finishes():
 
 
 @pytest.mark.asyncio
-async def test_voice_media_operation_preserves_anyio_cancel_scope_cancellation(monkeypatch):
+async def test_voice_media_operation_accepts_an_independent_worker_limiter():
+    import anyio
+
+    from novelvideo.seedance2_i2v import character_voice_storage
+
+    release_workers = threading.Event()
+    capacity_started = threading.Event()
+    started = 0
+    started_lock = threading.Lock()
+
+    def blocking_operation() -> None:
+        nonlocal started
+        with started_lock:
+            started += 1
+            if started == character_voice_storage._VOICE_MEDIA_CONCURRENCY:
+                capacity_started.set()
+        release_workers.wait(timeout=5)
+
+    blockers = [
+        asyncio.create_task(
+            character_voice_storage.run_voice_media_operation(blocking_operation)
+        )
+        for _ in range(character_voice_storage._VOICE_MEDIA_CONCURRENCY)
+    ]
+    try:
+        assert await asyncio.to_thread(capacity_started.wait, 1)
+        result = await asyncio.wait_for(
+            character_voice_storage.run_voice_media_operation(
+                lambda: "metadata",
+                worker_limiter=anyio.CapacityLimiter(1),
+            ),
+            timeout=1,
+        )
+        assert result == "metadata"
+    finally:
+        release_workers.set()
+        await asyncio.gather(*blockers, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_voice_media_operation_preserves_anyio_cancel_scope_cancellation():
     import anyio
 
     from novelvideo.seedance2_i2v import character_voice_storage
 
     worker_started = threading.Event()
     release_worker = threading.Event()
-    shield_calls = 0
-    real_shield = asyncio.shield
-
-    def tracking_shield(awaitable):
-        nonlocal shield_calls
-        shield_calls += 1
-        return real_shield(awaitable)
-
-    monkeypatch.setattr(character_voice_storage.asyncio, "shield", tracking_shield)
 
     def blocking_operation() -> None:
         worker_started.set()
@@ -206,14 +237,13 @@ async def test_voice_media_operation_preserves_anyio_cancel_scope_cancellation(m
         with anyio.move_on_after(0.01) as scope:
             await character_voice_storage.run_voice_media_operation(blocking_operation)
         assert scope.cancel_called
-        assert shield_calls == 2
     finally:
         release_worker.set()
         await releaser
 
 
 @pytest.mark.asyncio
-async def test_cancelled_voice_worker_failure_is_not_hidden():
+async def test_cancelled_voice_worker_preserves_cancellation_precedence():
     from novelvideo.seedance2_i2v import character_voice_storage
 
     started = threading.Event()
@@ -231,12 +261,13 @@ async def test_cancelled_voice_worker_failure_is_not_hidden():
     task.cancel("cancel-worker")
     release.set()
 
-    with pytest.raises(RuntimeError, match="worker failed after cancellation"):
+    with pytest.raises(asyncio.CancelledError) as raised:
         await task
+    assert raised.value.args == ("cancel-worker",)
 
 
 @pytest.mark.asyncio
-async def test_cancelled_voice_finalizer_failure_is_not_hidden():
+async def test_cancelled_voice_finalizer_preserves_cancellation_precedence():
     from novelvideo.seedance2_i2v import character_voice_storage
 
     finalize_started = asyncio.Event()
@@ -257,8 +288,9 @@ async def test_cancelled_voice_finalizer_failure_is_not_hidden():
     task.cancel("cancel-finalize")
     release_finalize.set()
 
-    with pytest.raises(RuntimeError, match="finalize failed after cancellation"):
+    with pytest.raises(asyncio.CancelledError) as raised:
         await task
+    assert raised.value.args == ("cancel-finalize",)
 
 
 @pytest.mark.asyncio
@@ -553,3 +585,13 @@ def test_trim_existing_character_voice_file_rewrites_slot_with_short_clip(tmp_pa
         if path.name.startswith("voice_default_") and path.suffix == ".wav"
     ]
     assert archived
+
+
+@pytest.mark.parametrize("state_dir", ["", Path("")])
+def test_narrator_voice_resource_key_rejects_empty_state_dir(tmp_path, state_dir):
+    from novelvideo.seedance2_i2v.character_voice_storage import (
+        narrator_voice_resource_key,
+    )
+
+    with pytest.raises(ValueError, match="state_dir"):
+        narrator_voice_resource_key(project_dir=tmp_path, state_dir=state_dir)

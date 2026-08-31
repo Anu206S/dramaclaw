@@ -61,6 +61,7 @@ from novelvideo.task_identity import project_task_state_key
 from novelvideo.task_state import get_task_manager
 from novelvideo.task_scopes import scene_reference_asset_scope, stage_asset_scope
 from novelvideo.utils.asset_names import move_asset_dir, path_safe_asset_name
+from novelvideo.utils.async_ops import metadata_io_limiter
 from novelvideo.utils.derived_scenes import (
     compose_derived_scene_name,
 )
@@ -69,6 +70,7 @@ from novelvideo.utils.path_resolver import (
     compute_scene_master_path,
     compute_scene_reverse_master_path,
 )
+from novelvideo.utils.upload_safety import create_staged_upload_file
 from novelvideo.utils.static_urls import project_static_url
 from novelvideo.utils.upload_safety import (
     MAX_PROJECT_UPLOAD_BYTES,
@@ -487,16 +489,15 @@ def _publish_scene_image(image, target: Path, archive_stem: str) -> None:
     tmp_path: Path | None = None
     try:
         target.parent.mkdir(parents=True, exist_ok=True)
-        with tempfile.NamedTemporaryFile(
+        tmp_path = create_staged_upload_file(
+            target.parent,
             prefix=f".{target.stem}_",
             suffix=target.suffix,
-            dir=target.parent,
-            delete=False,
-        ) as tmp:
-            tmp_path = Path(tmp.name)
+            destination=target,
+        )
         image.save(tmp_path, format="PNG")
         if target.exists():
-            target.replace(target.parent / f"{archive_stem}_{int(time.time())}.png")
+            target.replace(target.parent / f"{archive_stem}_{time.time_ns()}.png")
         tmp_path.replace(target)
         tmp_path = None
     finally:
@@ -1553,6 +1554,7 @@ async def delete_scene_pano(
             _delete_scene_pano_files,
             project_dir,
             scene.name,
+            worker_limiter=metadata_io_limiter(),
         )
     return {"ok": True, "data": {"deleted": deleted}}
 
@@ -1630,6 +1632,7 @@ async def delete_scene_custom_package(
             _delete_scene_custom_files,
             project_dir,
             scene.name,
+            worker_limiter=metadata_io_limiter(),
         )
 
     return {"ok": True, "data": {"deleted": deleted}}

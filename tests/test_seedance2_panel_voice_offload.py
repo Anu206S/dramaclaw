@@ -21,21 +21,24 @@ class RecordingStore:
 
 
 @pytest.mark.asyncio
-async def test_seedance2_route_reads_in_memory_upload_in_voice_worker(
+async def test_seedance2_route_reads_in_memory_upload_in_asset_worker(
     monkeypatch: pytest.MonkeyPatch, tmp_path: Path
 ) -> None:
     from novelvideo.api.routes import generation
-    from novelvideo.seedance2_i2v import character_voice_storage
+    from novelvideo.seedance2_i2v import character_voice_storage, panel_service
 
     loop_thread = threading.get_ident()
     read_threads: list[int] = []
-    borrowed_tokens: list[int] = []
+    borrowed_tokens: list[tuple[int, int]] = []
     voice_limiter = character_voice_storage._voice_media_limiter()
+    asset_limiter = panel_service._seedance2_asset_limiter()
 
     class RecordingBytesIO(io.BytesIO):
         def read(self, *args, **kwargs):
             read_threads.append(threading.get_ident())
-            borrowed_tokens.append(voice_limiter.borrowed_tokens)
+            borrowed_tokens.append(
+                (voice_limiter.borrowed_tokens, asset_limiter.borrowed_tokens)
+            )
             return super().read(*args, **kwargs)
 
     store = RecordingStore()
@@ -66,7 +69,7 @@ async def test_seedance2_route_reads_in_memory_upload_in_voice_worker(
 
     assert response == {"ok": True}
     assert read_threads and loop_thread not in read_threads
-    assert borrowed_tokens == [1]
+    assert borrowed_tokens == [(0, 1)]
     targets = list((tmp_path / "seedance2_uploads").rglob("voice.wav"))
     assert len(targets) == 1 and targets[0].read_bytes() == b"seedance-voice"
 

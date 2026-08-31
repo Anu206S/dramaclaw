@@ -497,14 +497,7 @@ async def test_upload_novel_preserves_anyio_cancel_scope_marker_and_cleans_stagi
     )
     worker_entered = threading.Event()
     release_worker = threading.Event()
-    shield_calls = 0
-    real_shield = asyncio.shield
     real_load = ingest.load_novel_text
-
-    def tracking_shield(awaitable):
-        nonlocal shield_calls
-        shield_calls += 1
-        return real_shield(awaitable)
 
     def blocking_load(path):
         worker_entered.set()
@@ -517,7 +510,6 @@ async def test_upload_novel_preserves_anyio_cancel_scope_marker_and_cleans_stagi
         await asyncio.sleep(0)
         release_worker.set()
 
-    monkeypatch.setattr(ingest.asyncio, "shield", tracking_shield)
     monkeypatch.setattr(ingest, "load_novel_text", blocking_load)
 
     with anyio.CancelScope() as scope:
@@ -533,7 +525,6 @@ async def test_upload_novel_preserves_anyio_cancel_scope_marker_and_cleans_stagi
     await canceller
 
     assert scope.cancel_called
-    assert shield_calls == 2
     assert list((tmp_path / "uploads" / ".staging").glob("upload-*")) == []
 
 

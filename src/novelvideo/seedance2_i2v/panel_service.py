@@ -9,6 +9,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any
 
+import anyio
+from anyio.lowlevel import RunVar
+
 from novelvideo.manual_shots import resolve_target_video_duration
 from novelvideo.project_config import set_narrator_reference_audio_in_state_dir
 from novelvideo.seedance2_i2v.assets import (
@@ -38,7 +41,11 @@ from novelvideo.seedance2_i2v.prompt import (
     generate_seedance2_prompt,
 )
 from novelvideo.seedance2_i2v.voice_clone import normalize_seedance2_audio_type
-from novelvideo.utils.media_io import get_audio_duration
+from novelvideo.utils.async_ops import metadata_io_limiter
+from novelvideo.utils.media_io import (
+    crop_image_to_path_sync as _crop_image_to_path_sync,
+    get_audio_duration,
+)
 from novelvideo.utils.path_resolver import PathResolver
 
 
@@ -50,6 +57,18 @@ SEEDANCE2_PROMPT_GUIDANCE_TEMPLATES: dict[str, str] = {
     "风格": "风格：限定画面质感、时代感、色彩倾向和真实度，避免风格漂移。",
     "无字幕": "无字幕：避免生成任何文字或字幕，保持画面纯净。",
 }
+_SEEDANCE2_ASSET_CONCURRENCY = 2
+_seedance2_asset_limiter_var: RunVar[anyio.CapacityLimiter] = RunVar(
+    "seedance2_asset_limiter"
+)
+
+
+def _seedance2_asset_limiter() -> anyio.CapacityLimiter:
+    limiter = _seedance2_asset_limiter_var.get(None)
+    if limiter is None:
+        limiter = anyio.CapacityLimiter(_SEEDANCE2_ASSET_CONCURRENCY)
+        _seedance2_asset_limiter_var.set(limiter)
+    return limiter
 
 
 @dataclass(frozen=True)
@@ -133,6 +152,7 @@ async def save_seedance2_video_panel_config(
             project_dir=project_dir,
             next_beat=next_beat,
             prop_menu=prop_menu,
+            worker_limiter=metadata_io_limiter(),
             finalize=finalize,
         )
 
@@ -233,6 +253,7 @@ async def append_seedance2_prompt_guidance_template(
             beat=beat,
             label=label,
             prompt_guidance=prompt_guidance,
+            worker_limiter=metadata_io_limiter(),
             finalize=finalize,
         )
 
@@ -362,6 +383,7 @@ async def save_seedance2_uploaded_asset(
             filename=filename,
             content=content,
             content_type=content_type,
+            worker_limiter=_seedance2_asset_limiter(),
             finalize=finalize,
         )
 
@@ -406,6 +428,7 @@ async def save_seedance2_uploaded_file(
             project_dir=project_dir,
             filename=filename,
             content_type=content_type,
+            worker_limiter=_seedance2_asset_limiter(),
             finalize=finalize,
         )
 
@@ -512,6 +535,7 @@ async def crop_seedance2_asset_to_reference(
             asset_key=asset_key,
             source_path=source_path,
             crop_data=crop_data,
+            worker_limiter=_seedance2_asset_limiter(),
             finalize=finalize,
         )
 
@@ -566,30 +590,6 @@ def _prepare_cropped_seedance2_asset(
     if target in {"first_frame", "last_frame"}:
         paths.write_video_input_frame_meta(beat_num, slot=target, source_path=source)
     return output_path, saved_json
-
-
-def _crop_image_to_path_sync(
-    image_path: str | Path,
-    *,
-    x: int,
-    y: int,
-    width: int,
-    height: int,
-    output_path: str | Path,
-) -> tuple[int, int]:
-    from PIL import Image
-
-    source = Path(image_path)
-    target = Path(output_path)
-    with Image.open(source) as img:
-        crop_x = max(0, min(int(x), img.width - 1))
-        crop_y = max(0, min(int(y), img.height - 1))
-        right = min(crop_x + max(1, int(width)), img.width)
-        bottom = min(crop_y + max(1, int(height)), img.height)
-        cropped = img.crop((crop_x, crop_y, right, bottom))
-        target.parent.mkdir(parents=True, exist_ok=True)
-        cropped.save(target)
-        return cropped.width, cropped.height
 
 
 def _project_relative_path(project_dir: Path, path: Path) -> str:
@@ -766,6 +766,7 @@ async def remove_seedance2_uploaded_asset(
             beat=beat,
             media_kind=media_kind,
             path=path,
+            worker_limiter=metadata_io_limiter(),
             finalize=finalize,
         )
 

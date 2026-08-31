@@ -1,7 +1,6 @@
 """项目 CRUD 端点。"""
 
 import asyncio
-import functools
 import logging
 import shutil
 import sqlite3
@@ -69,6 +68,7 @@ from novelvideo.seedance2_i2v.voice_clone import (
     NARRATION_STYLES,
     resolve_narrator_source,
 )
+from novelvideo.utils.async_ops import metadata_io_limiter, run_sync_bounded
 
 logger = logging.getLogger("novelvideo.api.projects")
 
@@ -187,27 +187,12 @@ async def _summary_for_record(
 ) -> ProjectSummary:
     """Build one project summary off-loop without abandoning its limiter token."""
 
-    operation = functools.partial(
+    return await run_sync_bounded(
         _summary_for_record_sync,
         record,
         effective_role=effective_role,
+        limiter=_project_summary_limiter(),
     )
-    worker_task = asyncio.create_task(
-        anyio.to_thread.run_sync(
-            operation,
-            abandon_on_cancel=False,
-            limiter=_project_summary_limiter(),
-        )
-    )
-    try:
-        return await asyncio.shield(worker_task)
-    except asyncio.CancelledError as cancellation:
-        with anyio.CancelScope(shield=True):
-            try:
-                await worker_task
-            except BaseException:
-                pass
-        raise cancellation
 
 
 def _project_relative_path(project_dir: str | Path, path: str | Path) -> str:
@@ -435,6 +420,7 @@ async def _run_narrator_voice_update(
     store,
     operation,
     /,
+    worker_limiter: anyio.CapacityLimiter | None = None,
     **operation_kwargs,
 ) -> dict:
     """Serialize one narrator mutation through its final response snapshot."""
@@ -444,9 +430,16 @@ async def _run_narrator_voice_update(
         state_dir=project_context.state_dir,
     )
     async with voice_resource_lock(key):
-        await run_voice_media_operation(operation, **operation_kwargs)
+        await run_voice_media_operation(
+            operation,
+            worker_limiter=worker_limiter,
+            **operation_kwargs,
+        )
         return await run_voice_media_operation(
-            _narrator_voice_payload, project_context, store
+            _narrator_voice_payload,
+            project_context,
+            store,
+            worker_limiter=metadata_io_limiter(),
         )
 
 
@@ -889,7 +882,11 @@ async def delete_narrator_voice(
     ctx = await resolve_project_context(user=user, project_id=project, required_role="editor")
     store = await make_sqlite_store_for_context(ctx)
     payload = await _run_narrator_voice_update(
-        ctx, store, _delete_narrator_voice_content, ctx=ctx
+        ctx,
+        store,
+        _delete_narrator_voice_content,
+        ctx=ctx,
+        worker_limiter=metadata_io_limiter(),
     )
     return {
         "ok": True,

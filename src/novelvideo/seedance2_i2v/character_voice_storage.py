@@ -10,7 +10,6 @@ from __future__ import annotations
 import asyncio
 import base64
 import binascii
-import functools
 import hashlib
 import json
 import re
@@ -25,6 +24,8 @@ from typing import Any
 
 import anyio
 from anyio.lowlevel import RunVar
+
+from novelvideo.utils.async_ops import run_sync_bounded
 
 VOICE_SAMPLE_EXTENSIONS = (".mp3", ".wav", ".m4a", ".aac", ".ogg")
 DEFAULT_SLOT = "default"
@@ -94,10 +95,14 @@ def narrator_voice_resource_key(
 ) -> tuple[Any, ...]:
     """Canonical key covering a project's narrator files and config metadata."""
 
+    normalized_state_dir = str(state_dir).strip()
+    if normalized_state_dir in {"", "."}:
+        raise ValueError("state_dir is required for narrator voice locking")
+
     return (
         "narrator-voice",
         str(Path(project_dir).resolve()),
-        str(Path(state_dir).resolve()),
+        str(Path(normalized_state_dir).resolve()),
     )
 
 
@@ -119,6 +124,7 @@ async def run_voice_media_operation(
     /,
     *args: Any,
     finalize: Callable[[Any], Awaitable[Any]] | None = None,
+    worker_limiter: anyio.CapacityLimiter | None = None,
     **kwargs: Any,
 ) -> Any:
     """Run a blocking voice operation and optional async metadata commit atomically.
@@ -128,47 +134,14 @@ async def run_voice_media_operation(
     prevents a published voice file from being left without its async metadata.
     """
 
-    bound = functools.partial(operation, *args, **kwargs)
-    worker_task = asyncio.create_task(
-        anyio.to_thread.run_sync(
-            bound,
-            abandon_on_cancel=False,
-            limiter=_voice_media_limiter(),
-        )
+    limiter = worker_limiter if worker_limiter is not None else _voice_media_limiter()
+    return await run_sync_bounded(
+        operation,
+        *args,
+        finalize=finalize,
+        limiter=limiter,
+        **kwargs,
     )
-    result, cancellation = await _wait_for_voice_task_completion(worker_task)
-    if finalize is not None:
-        finalize_task = asyncio.create_task(finalize(result))
-        result, cancellation = await _wait_for_voice_task_completion(
-            finalize_task, cancellation
-        )
-    if cancellation is not None:
-        raise cancellation
-    return result
-
-
-async def _wait_for_voice_task_completion(
-    task: asyncio.Task,
-    cancellation: asyncio.CancelledError | None = None,
-) -> tuple[Any, asyncio.CancelledError | None]:
-    """Wait through direct, repeated, or AnyIO level cancellation."""
-
-    while not task.done():
-        try:
-            if cancellation is None:
-                await asyncio.shield(task)
-            else:
-                with anyio.CancelScope(shield=True):
-                    await asyncio.shield(task)
-        except asyncio.CancelledError as exc:
-            if cancellation is None:
-                cancellation = exc
-        except BaseException:
-            raise
-    try:
-        return task.result(), cancellation
-    except BaseException:
-        raise
 
 
 def decode_recorded_audio_data_url(data_url: str) -> tuple[bytes, str]:
