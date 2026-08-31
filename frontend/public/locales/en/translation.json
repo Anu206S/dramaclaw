@@ -3693,7 +3693,8 @@
       "placeholderAudio": "Audio",
       "placeholderScript": "Script",
       "betaTag": "Beta",
-      "videoCompose": "Video Compose"
+      "videoCompose": "Video Compose",
+      "previz": "Previz Stage"
     },
     "imageNode": {
       "title": "Image Node",
@@ -4878,6 +4879,22 @@
       "ORG_CREDENTIAL_GATEWAY_MISMATCH": "The organization gateway key is bound to a different gateway. Ask your organization administrator to rebind it.",
       "ORG_AUTHZ_STALE": "Your access changed. Refresh before trying again.",
       "generic": "Generation is unavailable right now. Refresh or contact your organization administrator."
+    }
+  },
+  "previz": {
+    "node": {
+      "open": "Open Previz Stage",
+      "hint": "Block out a scene in 3D and capture it from multiple angles",
+      "empty": "No scene yet",
+      "summary": "{{objects}} objects · {{frames}} frames",
+      "versionTooNew": "This scene was written by a newer version. Update before opening it."
+    },
+    "editor": {
+      "title": "Previz Stage",
+      "description": "Block out a scene in 3D, place cameras, and capture multiple angles",
+      "close": "Close previz stage",
+      "duration": "{{frames}} frames",
+      "sceneTooLarge": "The scene is too large to save. Remove some objects and try again."
     }
   }
 }
