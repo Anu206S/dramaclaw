@@ -105,6 +105,34 @@ def test_the_fallback_still_applies_without_any_usable_text():
     assert SCENE_FALLBACK_FINGERPRINT in generated
 
 
+def test_english_fallback_keeps_fixed_headings_but_uses_english_bodies():
+    generated = _ensure_directional_environment_prompt(
+        prompt="",
+        scene_name="Central Library",
+        scene_type="interior",
+        time_of_day="",
+        context_lines=["Maya walks between the shelves."],
+        output_language="en",
+    )
+
+    assert generated.startswith("正面：Use the main entrance")
+    assert "左侧：From the front-facing view" in generated
+    assert "Maya walks between the shelves" in generated
+
+
+def test_unsupported_source_language_never_falls_back_to_chinese():
+    generated = _ensure_directional_environment_prompt(
+        prompt="",
+        scene_name="도서관",
+        scene_type="interior",
+        time_of_day="",
+        context_lines=["민지가 책을 펼친다."],
+        output_language="source",
+    )
+
+    assert generated == ""
+
+
 # ── the repair predicate both tracks share ──────────────────────────────────
 
 PLACEHOLDER = _ensure_directional_environment_prompt(

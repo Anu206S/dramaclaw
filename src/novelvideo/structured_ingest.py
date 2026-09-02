@@ -26,6 +26,7 @@ from novelvideo.utils.document_parsers import load_novel_text
 # when source text, schema version, this version and the spine template all
 # match, so a bump simply starts a fresh plan rather than corrupting an old one.
 STRUCTURED_PIPELINE_VERSION = "structured_v1"
+STRUCTURED_ANALYSIS_VERSION = "structured_analysis_v2"
 STRUCTURED_SCHEMA_VERSION = 1
 
 _PROGRESS = {
@@ -90,7 +91,7 @@ async def ingest_source_text_structured(
     reused = await store.get_reusable_analysis_run(
         source_sha256=digest,
         schema_version=STRUCTURED_SCHEMA_VERSION,
-        pipeline_version=STRUCTURED_PIPELINE_VERSION,
+        pipeline_version=STRUCTURED_ANALYSIS_VERSION,
         spine_template=template,
     )
     if reused:
@@ -102,7 +103,7 @@ async def ingest_source_text_structured(
         run_id = uuid.uuid4().hex
         await store.start_analysis_run(
             run_id=run_id,
-            pipeline_version=STRUCTURED_PIPELINE_VERSION,
+            pipeline_version=STRUCTURED_ANALYSIS_VERSION,
             schema_version=STRUCTURED_SCHEMA_VERSION,
             spine_template=template,
             source_sha256=digest,

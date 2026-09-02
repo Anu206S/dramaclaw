@@ -22,6 +22,7 @@ from novelvideo.project_config import load_project_config_file_from_state_dir
 import json
 
 from novelvideo.story_analysis import SourceChunk, chunk_source_text
+from novelvideo.utils.source_language import AssetLanguage, detect_asset_language
 
 PROP_BUILD_DEFERRED_MESSAGE = "道具将在分集规划时按需生成"
 SCENE_BUILD_DEFERRED_MESSAGE = "解说剧场景将在分集规划时按需生成"
@@ -60,6 +61,7 @@ async def build_characters_structured(
 
     novel_text = require_imported_novel(store.project_dir)
     template = spine_template_for(store)
+    output_language = detect_asset_language(novel_text)
 
     report(0.1, "切分原文...")
     chunks = chunk_source_text(novel_text, template)
@@ -124,7 +126,12 @@ async def build_characters_structured(
                     for item in payload
                 ]
                 return await _publish_characters(
-                    store, merged, run_id, report, log
+                    store,
+                    merged,
+                    run_id,
+                    report,
+                    log,
+                    output_language=output_language,
                 )
 
     async def persist_done(chunk: SourceChunk, output: ChunkCharacterOutput) -> None:
@@ -148,6 +155,7 @@ async def build_characters_structured(
         roster={name for chunk in chunks for name in chunk.characters},
         on_chunk_done=persist_done,
         on_chunk_failed=persist_failed,
+        output_language=output_language,
     )
     async def finish(status_error: tuple[str, str]) -> None:
         if run_id:
@@ -194,7 +202,13 @@ async def build_characters_structured(
         )
 
     return await _publish_characters(
-        store, merged, run_id, report, log, outcome
+        store,
+        merged,
+        run_id,
+        report,
+        log,
+        outcome,
+        output_language=output_language,
     )
 
 
@@ -306,6 +320,7 @@ async def _publish_characters(
     report: Callable[[float, str], None],
     log: Callable[[str], None],
     outcome: tuple[str, str] = ("completed", ""),
+    output_language: AssetLanguage | None = None,
 ) -> list[str]:
     """Publish a settled cast, whether freshly built or replayed from cache."""
     from novelvideo.cognee.pipeline import NovelCharacter, StoreAnalysisItemCache
@@ -322,6 +337,7 @@ async def _publish_characters(
         synopsis=_source_synopsis(store),
         cache=StoreAnalysisItemCache(store),
         on_log=log,
+        output_language=output_language,
     )
 
     _settle_narrator(store, appearances)
@@ -533,13 +549,13 @@ async def _current_run(store: Any, novel_text: str, spine_template: str) -> dict
     """
     from novelvideo.story_analysis import source_sha256
     from novelvideo.structured_ingest import (
-        STRUCTURED_PIPELINE_VERSION,
+        STRUCTURED_ANALYSIS_VERSION,
         STRUCTURED_SCHEMA_VERSION,
     )
 
     return await store.get_reusable_analysis_run(
         source_sha256=source_sha256(novel_text),
         schema_version=STRUCTURED_SCHEMA_VERSION,
-        pipeline_version=STRUCTURED_PIPELINE_VERSION,
+        pipeline_version=STRUCTURED_ANALYSIS_VERSION,
         spine_template=spine_template,
     )
