@@ -67,8 +67,11 @@ def detect_asset_language(text: str) -> AssetLanguage:
         detected = ""
 
     ascii_prose = unicodedata.normalize("NFKD", prose).encode("ascii", "ignore").decode()
+    ascii_word_count = len(re.findall(r"[A-Za-z]+", ascii_prose))
     langid_detected = langid.classify(ascii_prose)[0] if ascii_prose.strip() else ""
-    if langid_detected == "en" and (detected == "en" or looks_like_short_english_action):
+    if detected == "en" and (langid_detected == "en" or ascii_word_count >= 3):
+        return "en"
+    if langid_detected == "en" and looks_like_short_english_action:
         return "en"
 
     # Unsupported natural languages — including kana/Hangul prose and Latin

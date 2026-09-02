@@ -27,6 +27,8 @@ from novelvideo.utils.source_language import (
         ("MAYA cries.", "en"),
         ("John pauses.", "en"),
         ("INT. ROOM - DAY\n민지 opens the door.", "en"),
+        ("INT. SUBWAY STATION - NIGHT\nJi-won raises her phone.", "en"),
+        ("SCENE 1 - ROOM\nLocation: Room\nMAYA: Go now.", "en"),
         ("ESCENA 1 - SALON - DIA\nMaria abre la puerta.", "zh"),
         ("Er geht in das Zimmer.", "zh"),
         ("On entre dans la pièce.", "zh"),
