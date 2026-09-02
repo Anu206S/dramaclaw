@@ -73,6 +73,10 @@ MANUAL_LICENSES = {
         "LicenseRef-Apple-Sample-Code AND LicenseRef-Apple-ML-Research-Model",
         "package license files: sharp-0.1.dist-info/licenses/LICENSE and LICENSE_MODEL",
     ),
+    "wordninja": (
+        "MIT",
+        "manual review: https://github.com/keredson/wordninja/blob/master/LICENSE",
+    ),
 }
 
 
@@ -125,7 +129,6 @@ LOCKED_LICENSE_OVERRIDES = {
     "transformers": ("Apache-2.0", "package metadata recorded for locked optional dependency"),
     "uvloop": ("MIT", "package metadata published for locked dependency"),
     "wadler-lindig": ("Apache-2.0", "package metadata recorded for locked optional dependency"),
-    "wordninja": ("MIT", "upstream repository root LICENSE for locked dependency"),
 }
 
 
