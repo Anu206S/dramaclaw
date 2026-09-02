@@ -79,6 +79,10 @@ def test_ce_project_create_list_detail_and_project_context_contract(
         assert body["data"]["id"] == project_id
         assert len(project_id) == 26
 
+        too_long = client.post("/api/v1/projects", json={"name": "a" * 65})
+        assert too_long.status_code == 422
+        assert "64" in too_long.text
+
         listed = client.get("/api/v1/projects")
         assert listed.status_code == 200
         assert listed.json()["data"] == [
