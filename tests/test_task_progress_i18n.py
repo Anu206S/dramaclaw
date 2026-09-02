@@ -7,6 +7,8 @@
 「纯字符串必须清掉上一条 code」的规则。
 """
 
+import json
+
 from novelvideo.i18n_message import (
     lmsg,
     log_entry_payload,
@@ -82,3 +84,23 @@ def test_merge_logs_dedupes_overlapping_tails_across_mixed_shapes():
         "任务已开始",
         "任务已完成",
     ]
+
+
+def test_state_stays_json_serializable_after_a_localizable_update():
+    """LocalizableMessage 绝不能原样活到存储层。
+
+    EE 的 _pg_state_params 和 CE 的 SQLite 写入都会 json.dumps(state.logs) 和
+    json.dumps(state.metadata)。只要有一处忘了转换，任务会在写库时炸
+    TypeError: Object of type LocalizableMessage is not JSON serializable，
+    而且是任务跑到一半才炸，前端只看到一条没头没尾的红字。
+    """
+    state = _state()
+    _manager()._apply_progress_message(
+        state,
+        lmsg("tasks.progress.ingest.chunking", "正在切分章节...", chunkCount=3),
+        [lmsg("tasks.log.ingest.chunked", "已切分 3 段", chunkCount=3)],
+    )
+
+    json.dumps(state.logs)
+    json.dumps(state.metadata)
+    assert isinstance(state.current_task, str)
