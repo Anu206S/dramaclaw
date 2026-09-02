@@ -2743,6 +2743,44 @@
       "unknownCharacter": "角色",
       "withEpisodeBeat": "{{label}}（第 {{episode}} 集 Beat {{beat}}）",
       "withEpisode": "{{label}}（第 {{episode}} 集）"
+    },
+    "progress": {
+      "ingest": {
+        "reading": "读取并校验原文...",
+        "validated": "原文校验完成",
+        "chunking": "切分原文...",
+        "planning": "记录分析计划...",
+        "saving": "保存导入结果...",
+        "complete": "导入完成"
+      },
+      "pipeline": {
+        "normalizingScenes": "AI 规范化剧本场景块..."
+      },
+      "script": {
+        "start": "开始生成脚本...",
+        "beatVideoPromptStart": "开始生成 Beat {{beatNum}} 视频提示词",
+        "beatVideoPromptSaved": "已保存 Beat {{beatNum}} 视频提示词"
+      }
+    },
+    "log": {
+      "ingest": {
+        "readingFile": "读取文件: {{path}}",
+        "readComplete": "文件读取完成: {{charCount}} 字符",
+        "chunked": "确定性切分完成: {{chunkCount}} 个片段（{{sectionType}}）",
+        "planReused": "复用已有分析计划: {{runId}}",
+        "planRecorded": "分析计划已记录: {{runId}}",
+        "sourceSaved": "原文已保存"
+      },
+      "source": {
+        "loading": "从文件加载原文...",
+        "loaded": "原文加载完成: {{charCount}} 字符"
+      },
+      "pipeline": {
+        "legacyRecall": "程序召回 sanity check 得到 {{sceneCount}} 个场景块: {{sceneNames}}"
+      }
+    },
+    "toast": {
+      "scenesBuildQueued": "场景补充任务已进入队列"
     }
   },
   "taskCenter": {

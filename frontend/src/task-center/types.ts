@@ -1,5 +1,13 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
+/**
+ * 一条任务日志。字符串是未迁移的调用点直接写的中文；对象形式带 i18n code，
+ * text 仍是中文兜底（词条缺失、或老客户端读到新后端时用）。
+ */
+export type TaskLogEntry =
+  | string
+  | { text: string; code?: string | null; params?: Record<string, unknown> | null };
+
 export type TaskStatus =
   | "submitting"
   | "queued"
@@ -23,11 +31,14 @@ export interface TaskState {
   status: TaskStatus;
   progress: number;
   current_task: string;
+  /** current_task 的 i18n 词条 key；后端还没迁移的调用点没有这个字段。 */
+  current_task_code?: string | null;
+  current_task_params?: Record<string, unknown> | null;
   result: unknown | null;
   metadata?: Record<string, unknown> | null;
   error: string | null;
   error_code?: string | null;
-  logs: string[];
+  logs: TaskLogEntry[];
   task_type_label?: string;
   display_name?: string;
   /** false = display_name 是调用方自带的业务名；true/缺省 = 后端按 task_type 拼的中文，前端重拼。 */

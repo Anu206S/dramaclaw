@@ -2743,6 +2743,44 @@
       "unknownCharacter": "Character",
       "withEpisodeBeat": "{{label}} (Ep {{episode}}, Beat {{beat}})",
       "withEpisode": "{{label}} (Ep {{episode}})"
+    },
+    "progress": {
+      "ingest": {
+        "reading": "Reading and validating source text...",
+        "validated": "Source text validated",
+        "chunking": "Splitting source text...",
+        "planning": "Recording analysis plan...",
+        "saving": "Saving import result...",
+        "complete": "Import complete"
+      },
+      "pipeline": {
+        "normalizingScenes": "Normalizing screenplay scene blocks with AI..."
+      },
+      "script": {
+        "start": "Generating script...",
+        "beatVideoPromptStart": "Generating video prompt for beat {{beatNum}}",
+        "beatVideoPromptSaved": "Saved video prompt for beat {{beatNum}}"
+      }
+    },
+    "log": {
+      "ingest": {
+        "readingFile": "Reading file: {{path}}",
+        "readComplete": "File read: {{charCount}} characters",
+        "chunked": "Deterministic split complete: {{chunkCount}} segments ({{sectionType}})",
+        "planReused": "Reusing existing analysis plan: {{runId}}",
+        "planRecorded": "Analysis plan recorded: {{runId}}",
+        "sourceSaved": "Source text saved"
+      },
+      "source": {
+        "loading": "Loading source text from file...",
+        "loaded": "Source text loaded: {{charCount}} characters"
+      },
+      "pipeline": {
+        "legacyRecall": "Rule-based recall sanity check found {{sceneCount}} scene blocks: {{sceneNames}}"
+      }
+    },
+    "toast": {
+      "scenesBuildQueued": "Scene build task queued"
     }
   },
   "taskCenter": {

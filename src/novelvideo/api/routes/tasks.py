@@ -221,6 +221,24 @@ def _sanitize_task_result_for_client(value: Any, *, ctx: ProjectContext | None) 
     return sanitized
 
 
+def _current_task_message_fields(metadata: dict | None) -> dict:
+    """把 current_task 的 i18n code/params 摊平到响应顶层。
+
+    存储层为了不给 CE tasks 表和 EE ee_task_states 加列，把 code/params 塞在
+    metadata 里；对外仍然给独立字段，前端不用知道这个存储细节。
+    没有 code 时不下发字段，前端直接回落到 current_task 的中文。
+    """
+    if not isinstance(metadata, dict):
+        return {}
+    message = metadata.get("current_task_message")
+    if not isinstance(message, dict) or not message.get("code"):
+        return {}
+    return {
+        "current_task_code": message["code"],
+        "current_task_params": message.get("params") or {},
+    }
+
+
 def _serialize_task(t: TaskState, *, ctx: ProjectContext | None = None) -> dict:
     metadata = t.metadata if isinstance(t.metadata, dict) else {}
     if t.project_id:
@@ -274,6 +292,7 @@ def _serialize_task(t: TaskState, *, ctx: ProjectContext | None = None) -> dict:
         # task_display 全部由服务端构造、请求体注入不进来，所以这个标记必须是后端
         # 自己打的，不能改成读客户端字段。
         "display_name_localizable": not bool(metadata.get("display_name_user_content")),
+        **_current_task_message_fields(t.metadata),
     }
 
 
@@ -557,6 +576,7 @@ async def stream_project_task(
                     "progress": round(task.progress, 3),
                     "current_task": task.current_task,
                     "logs": task.logs[-100:],
+                    **_current_task_message_fields(task.metadata),
                 }
                 if is_terminal:
                     payload["result"] = task.result

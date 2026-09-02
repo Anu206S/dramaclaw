@@ -1455,9 +1455,11 @@ scripts/acceptance/api_coverage_report.py,Elastic-2.0,2026 SuperTale contributor
 scripts/acceptance/checks/m05.sh,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/acceptance/foss_only_e2e.sh,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/acceptance/run.sh,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+scripts/backend_i18n_allowlist.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/backfill_thumbnails.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/build_style_gallery.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/ce_allowlist.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+scripts/check_backend_i18n.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/check_ce_port_closure.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/check_dco.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 scripts/check_dependency_licenses.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -1645,6 +1647,7 @@ src/novelvideo/generators/wan2-2-FLF-LightX2V.json,Elastic-2.0,2026 SuperTale co
 src/novelvideo/generators/wan2-2-I2V-GGUF-LightX2V.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/generators/wan2-2-I2V-LightX2V.json,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/graph_preview.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/i18n_message.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/identity_prerequisites.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/image_request_usage.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/knowledge_pipeline.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -2184,6 +2187,7 @@ tests/test_task_envelope_producer.py,Elastic-2.0,2026 SuperTale contributors,REU
 tests/test_task_envelope_signing_config.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_task_payload_projection.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_task_payload_projection_guardrails.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_task_progress_i18n.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_task_runner_cancel_checkpoints.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_task_runner_home_node_placement.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_task_runner_state_dir.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation

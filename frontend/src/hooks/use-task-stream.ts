@@ -13,6 +13,7 @@ import {
 } from "@/lib/api-errors";
 import { SESSION_EXPIRED_EVENT } from "@/lib/session-expiry";
 import { p } from "@/lib/api-path";
+import { currentTaskText, taskLogLines } from "@/task-center/derivations";
 import type { TaskStatus, TaskStreamEvent } from "@/types/task";
 
 interface UseTaskStreamOptions {
@@ -129,10 +130,10 @@ export function useTaskStream(options: UseTaskStreamOptions): TaskStreamState {
         setState({
           status: data.status,
           progress: data.progress ?? 0,
-          currentTask: data.current_task ?? "",
+          currentTask: currentTaskText({ ...data, status: data.status }, t),
           result: data.result ?? null,
           error: data.error ?? null,
-          logs: Array.isArray(data.logs) ? data.logs.filter((x) => typeof x === "string") : [],
+          logs: taskLogLines(data.logs, t),
         });
 
         if (data.status === "completed") {
