@@ -790,12 +790,6 @@ def _ensure_directional_environment_prompt(
     text = str(prompt or "").strip()
     if _has_required_scene_environment_headings(text):
         return normalize_scene_environment_prompt(text)
-    if output_language == "source":
-        # There is no dependency-free way to author a correct fallback in an
-        # arbitrary language. An empty, retryable gap is safer than silently
-        # publishing Chinese prose into a Japanese or Korean project.
-        return ""
-
     # Evidence comes from the script, never from the prompt that just failed
     # validation. Quoting a rejected description back as "原文证据" produced a
     # self-referential contract that cited itself as its own source.

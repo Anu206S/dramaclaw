@@ -289,25 +289,6 @@ async def test_english_per_scene_retry_receives_the_same_language_contract():
     assert "Write every user-visible prose field in English" in agent.prompts[0]
 
 
-async def test_unsupported_language_failure_is_not_published_or_cached():
-    candidate = _candidate(
-        "도서관",
-        characters=["민지"],
-        context_lines=["민지가 책을 펼친다."],
-    )
-    cache = DictCache()
-
-    scenes = await enrich_scene_environments_batched(
-        [candidate],
-        enrichment_agent=FakeAgent(fail_on={"도서관"}),
-        cache=cache,
-        output_language="source",
-    )
-
-    assert scenes == []
-    assert cache.bucket(SCENE_ENRICHMENT_CACHE_TYPE) == {}
-
-
 async def test_a_second_run_over_unchanged_input_calls_no_model_at_all():
     candidates = [_candidate(f"场景{i}") for i in range(7)]
     cache = DictCache()

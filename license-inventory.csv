@@ -1817,6 +1817,7 @@ src/novelvideo/utils/project_paths.py,Elastic-2.0,2026 SuperTale contributors,RE
 src/novelvideo/utils/ref_image_hash.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/screenplay_quality.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/screenplay_scene_parser.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+src/novelvideo/utils/source_language.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/state_index_files.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/static_urls.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 src/novelvideo/utils/text_utils.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -2057,6 +2058,7 @@ tests/test_hermes_workspace.py,Elastic-2.0,2026 SuperTale contributors,REUSE.tom
 tests/test_history_asset_model_mode.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_identity_planner_appearance_validation.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_identity_planner_character_promotion.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_identity_planner_language.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_identity_runner_result.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_image_credit_reservation.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_image_generation_selection.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
@@ -2157,6 +2159,7 @@ tests/test_seedance2_voice_audio_task.py,Elastic-2.0,2026 SuperTale contributors
 tests/test_seedance2_voice_clone.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_sketch_edit_execute_celery.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_sketch_runner_reads_projection.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
+tests/test_source_language.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_spa_static_serving.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_sqlite_pragmas.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation
 tests/test_sqlite_schema_initialization.py,Elastic-2.0,2026 SuperTale contributors,REUSE.toml aggregate annotation

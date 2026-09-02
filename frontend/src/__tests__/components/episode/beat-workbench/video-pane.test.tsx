@@ -1,6 +1,6 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { I18nextProvider, initReactI18next } from "react-i18next";
 import i18next from "i18next";
@@ -2054,6 +2054,31 @@ describe("VideoPane Seedance2 inspector", () => {
     renderPane();
 
     await user.click(screen.getByRole("button", { name: "镜头" }));
+    await user.click(screen.getByRole("button", { name: "镜头" }));
+
+    const template =
+      "镜头：说明景别、视角、运镜速度和运动方向，保持镜头运动清晰可执行。";
+    expect(screen.getByLabelText("自定义提示词")).toHaveValue(template);
+    await waitForSeedance2Autosave();
+    const payload = updateBeatMock.mock.calls[0][0];
+    const config = JSON.parse(payload.data.seedance2_config_json);
+    expect(config.prompt_guidance).toBe(template);
+  });
+
+  it("uses the current UI language for Seedance2 guidance after switching", async () => {
+    const user = userEvent.setup();
+    await i18n.changeLanguage("en");
+    renderPane(
+      makeBeat({
+        narration_segment: "She raises her phone.",
+        visual_description: "Ji-won walks through the subway corridor.",
+        video_prompt: "遗留中文提示词不应影响语言判断。",
+      }),
+    );
+    await act(async () => {
+      await i18n.changeLanguage("zh");
+    });
+
     await user.click(screen.getByRole("button", { name: "镜头" }));
 
     const template =

@@ -12,8 +12,26 @@ from novelvideo.utils.source_language import (
         ("第一场 客厅 日 内\n林默推开门。", "zh"),
         ("INT. LIVING ROOM - DAY\nMAYA opens the door.", "en"),
         ("ABC门打开", "zh"),
-        ("第一話\n図書館で美咲が本を開く。", "source"),
-        ("제1화\n도서관에서 민지가 책을 펼친다.", "source"),
+        ("第一話\n図書館で美咲が本を開く。", "zh"),
+        ("제1화\n도서관에서 민지가 책을 펼친다.", "zh"),
+        ("INT. LIBRARY - DAY\n美咲は歩く。", "zh"),
+        ("SCENE 1 - ROOM\n민지가 문을 연다.", "zh"),
+        ("ESCENA 1 - SALÓN - DÍA\nMaría abre la puerta.", "zh"),
+        ("SCENE 1 - ROOM\n女孩走进房间。", "zh"),
+        ("INT. LIVING ROOM - DAY\n林默进门。", "zh"),
+        ("SCENE 1 - CENTRAL LIBRARY - MORNING\n女孩走进房间。", "zh"),
+        ("INT. CAFÉ - DAY\nChloë enters the room.", "en"),
+        ("INT. CAFÉ - DAY\nChloë smiles.", "en"),
+        ("INT. ROOM - DAY\nChloë nods.", "en"),
+        ("MAYA laughs.", "en"),
+        ("MAYA cries.", "en"),
+        ("John pauses.", "en"),
+        ("INT. ROOM - DAY\n민지 opens the door.", "en"),
+        ("ESCENA 1 - SALON - DIA\nMaria abre la puerta.", "zh"),
+        ("Er geht in das Zimmer.", "zh"),
+        ("On entre dans la pièce.", "zh"),
+        ("Lei entra in camera.", "zh"),
+        ("Christopher Montgomery：你好。", "zh"),
         ("", "zh"),
     ],
 )
@@ -33,10 +51,3 @@ def test_chinese_instruction_keeps_prose_chinese_and_names_unchanged():
 
     assert "中文" in instruction
     assert "原样" in instruction
-
-
-def test_other_scripts_are_told_to_follow_the_source_without_translation():
-    instruction = asset_language_instruction("source")
-
-    assert "same dominant natural language" in instruction
-    assert "verbatim" in instruction
