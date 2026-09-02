@@ -125,6 +125,7 @@ LOCKED_LICENSE_OVERRIDES = {
     "transformers": ("Apache-2.0", "package metadata recorded for locked optional dependency"),
     "uvloop": ("MIT", "package metadata published for locked dependency"),
     "wadler-lindig": ("Apache-2.0", "package metadata recorded for locked optional dependency"),
+    "wordninja": ("MIT", "upstream repository root LICENSE for locked dependency"),
 }
 
 
