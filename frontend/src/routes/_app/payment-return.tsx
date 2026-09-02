@@ -16,6 +16,7 @@ import { useTranslation } from "react-i18next";
 import {
   CHECKOUT_DRAFT_KEY,
   CHECKOUT_RETURN_KEY,
+  clearPaymentAttempt,
   CREDIT_CENTER_TAB_KEY,
   OPEN_CREDIT_CENTER_KEY,
   PAYMENT_RETURN_ORDER_ID_KEY,
@@ -36,6 +37,7 @@ const STATE_PRESENTATION: Record<
   closed: { icon: Clock3, tone: "text-white/55" },
   failed: { icon: XCircle, tone: "text-destructive" },
   fulfillment_failed: { icon: TriangleAlert, tone: "text-warning" },
+	manual_review: { icon: TriangleAlert, tone: "text-warning" },
   refunded: { icon: RotateCcw, tone: "text-white/65" },
   unavailable: { icon: TriangleAlert, tone: "text-warning" },
 };
@@ -68,6 +70,7 @@ export function PaymentReturnPage() {
     sessionStorage.removeItem(CHECKOUT_DRAFT_KEY);
     sessionStorage.removeItem(PAYMENT_RETURN_ORDER_ID_KEY);
     sessionStorage.removeItem(PAYMENT_RETURN_ORDER_KEY);
+    clearPaymentAttempt();
     window.location.assign(returnPath);
   };
 

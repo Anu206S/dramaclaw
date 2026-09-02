@@ -1448,6 +1448,17 @@
       "pay": "立即支付",
       "creating": "正在创建订单…",
       "createFailed": "支付订单创建失败，请稍后重试",
+      "errors": {
+        "tooManyPending": "当前已有多笔待支付订单，请先完成支付或等待订单关闭后再试",
+        "packageUnavailable": "该充值套餐已不可用，请刷新后选择其他套餐",
+        "purchaseLimit": "该充值套餐已达到购买次数限制",
+        "methodUnavailable": "当前无法使用所选支付方式",
+        "orgCreditsInsufficient": "组织积分不足，无法完成本次购买",
+        "accountUnavailable": "当前账号不符合该充值方式的使用条件",
+        "linkUnavailable": "充值链接已过期、被停用或不属于当前账号",
+        "requestChanged": "充值配置已更新，请刷新后重新提交订单",
+        "serviceUnavailable": "支付服务暂时不可用，请稍后重试"
+      },
       "orderAlreadyCreated": "该订单已经创建，请在充值记录中查看状态",
       "history": "充值记录",
       "loadingOrders": "正在加载充值记录…",
@@ -1470,6 +1481,7 @@
         "expired": "已过期",
         "closed": "已关闭",
         "refunded": "已退款",
+        "manualReview": "需要人工复核",
         "creditFailed": "到账异常"
       }
     },
@@ -1587,6 +1599,7 @@
     "loading": "正在准备支付页面…",
     "invalidTitle": "支付会话已失效",
     "invalidDescription": "请返回积分中心重新选择充值内容。",
+    "subjectMismatch": "所选套餐与积分到账账号不一致，请返回并刷新可用套餐后重试。",
     "back": "返回",
     "amountDue": "待支付总额",
     "orderSummary": "订单汇总",
@@ -1637,6 +1650,10 @@
       "fulfillment_failed": {
         "title": "支付成功，到账处理中",
         "description": "系统已收到付款，但积分入账出现异常。请勿重复支付，可在账单记录中查看处理进度。"
+      },
+      "manual_review": {
+        "title": "订单需要人工复核",
+        "description": "支付渠道退款与积分冲正尚未同时确认。请勿重复支付，最终处理结果以账单记录为准。"
       },
       "refunded": {
         "title": "订单已退款",

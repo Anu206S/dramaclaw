@@ -19,6 +19,8 @@ import {
   useCreateRechargeLinkOrder,
   useRechargeLinkPackages,
 } from "@/lib/queries/payments";
+import { BackendStatusError } from "@/lib/api-errors";
+import { paymentErrorToastMessage } from "@/lib/payment-errors";
 
 const server = setupServer();
 
@@ -37,6 +39,25 @@ function wrapper(queryClient: QueryClient) {
 }
 
 describe("recharge checkout", () => {
+  it("maps structured payment failures to actionable messages", () => {
+    const t = ((key: string) => key) as never;
+
+    expect(
+      paymentErrorToastMessage(
+        new BackendStatusError("PAYMENT_TOO_MANY_PENDING", 429),
+        t,
+        "credits.recharge.createFailed",
+      ),
+    ).toBe("credits.recharge.errors.tooManyPending");
+    expect(
+      paymentErrorToastMessage(
+        new BackendStatusError("payment service unavailable", 503),
+        t,
+        "credits.recharge.createFailed",
+      ),
+    ).toBe("credits.recharge.errors.serviceUnavailable");
+  });
+
   it("posts the selected package with an explicit idempotency key", async () => {
     let capturedHeader = "";
     let capturedBody: unknown;

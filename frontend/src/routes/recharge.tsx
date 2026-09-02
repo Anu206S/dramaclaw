@@ -14,6 +14,11 @@ import {
 } from "@/lib/queries/payments";
 import { useAuthStore } from "@/stores/auth-store";
 import { cn } from "@/lib/utils";
+import {
+  paymentIdempotencyKey,
+  rememberPaymentOrder,
+} from "@/lib/payment-navigation";
+import { paymentErrorToastMessage } from "@/lib/payment-errors";
 
 const TOKEN_STORAGE_KEY = "supertale-recharge-token";
 
@@ -86,15 +91,19 @@ function RechargePage() {
       const response = await createOrder.mutateAsync({
         packageId: selectedPackage,
         paymentMethod: selectedPaymentMethod,
-        idempotencyKey: `link-${crypto.randomUUID()}`,
+        idempotencyKey: paymentIdempotencyKey(
+          "link",
+          JSON.stringify({ token, packageId: selectedPackage, paymentMethod: selectedPaymentMethod }),
+        ),
       });
+      rememberPaymentOrder(response.data.order);
       if (!response.data.checkout) {
-        toast.info(t("rechargeLink.orderAlreadyCreated"));
+        window.location.assign("/payment-return");
         return;
       }
       submitEpayCheckout(response.data.checkout);
-    } catch {
-      toast.error(t("rechargeLink.createFailed"));
+    } catch (error) {
+      toast.error(paymentErrorToastMessage(error, t, "rechargeLink.createFailed"));
     }
   };
 

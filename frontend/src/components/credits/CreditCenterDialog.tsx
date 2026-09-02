@@ -681,7 +681,12 @@ function OrdersTab({ orders, loading, language }: { orders: RechargeOrder[]; loa
         <tbody>
           {orders.map((order) => {
             const status =
-              order.fulfillment_status === "credited"
+              (order.payment_status === "refunded") !==
+              (order.fulfillment_status === "reversed")
+                ? "manualReview"
+                : order.payment_status === "refunded"
+                  ? "refunded"
+                  : order.fulfillment_status === "credited"
                 ? "credited"
                 : order.fulfillment_status === "failed"
                   ? "creditFailed"
@@ -710,7 +715,9 @@ function OrdersTab({ orders, loading, language }: { orders: RechargeOrder[]; loa
                       status === "credited" && "bg-emerald-500/12 text-emerald-400",
                       (status === "pending" || status === "paid") &&
                         "bg-amber-400/12 text-amber-300",
-                      (status === "failed" || status === "creditFailed") &&
+                      (status === "failed" ||
+                        status === "creditFailed" ||
+                        status === "manualReview") &&
                         "bg-red-500/12 text-red-400",
                       (status === "expired" || status === "closed") &&
                         "bg-white/8 text-white/45",
@@ -744,8 +751,9 @@ function UsageTab({ summary, language }: { summary: CreditSummary | undefined; l
   const filterOptionsQuery = useCreditFilterOptions();
   const transactionsQuery = useCreditTransactions({
     category: category === "pending" ? "all" : category,
-    page: category === "pending" ? 1 : page,
-    pageSize: category === "pending" ? 100 : 20,
+    status: category === "pending" ? "pending" : undefined,
+    page,
+    pageSize: 20,
     startAt: dateBoundary(startDate),
     endAt: dateBoundary(endDate, true),
     projectId: projectId || undefined,
@@ -754,13 +762,8 @@ function UsageTab({ summary, language }: { summary: CreditSummary | undefined; l
   });
   const dashboardItems = dashboardQuery.data?.data.items ?? [];
   const transactionPage = transactionsQuery.data?.data;
-  const pendingItems = category === "pending"
-    ? (transactionPage?.items ?? []).filter((item) => item.status === "pending")
-    : [];
-  const visibleTransactions = category === "pending"
-    ? pendingItems.slice((page - 1) * 20, page * 20)
-    : (transactionPage?.items ?? []);
-  const visibleTotal = category === "pending" ? pendingItems.length : (transactionPage?.total ?? 0);
+  const visibleTransactions = transactionPage?.items ?? [];
+  const visibleTotal = transactionPage?.total ?? 0;
   const totalPages = Math.max(1, Math.ceil(visibleTotal / 20));
   const filterOptions = filterOptionsQuery.data?.data;
   const dashboard = useMemo(() => {

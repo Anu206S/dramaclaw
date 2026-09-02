@@ -14,6 +14,11 @@ import {
   useRechargePackages,
 } from "@/lib/queries/payments";
 import { cn } from "@/lib/utils";
+import {
+  paymentIdempotencyKey,
+  rememberPaymentOrder,
+} from "@/lib/payment-navigation";
+import { paymentErrorToastMessage } from "@/lib/payment-errors";
 
 const PANEL = "rounded-lg border border-foreground/12 bg-foreground/8 p-4";
 const ITEM = "rounded-md border border-foreground/12 bg-foreground/10";
@@ -37,6 +42,13 @@ function timestamp(value: string, language: string): string {
 }
 
 function orderStatus(order: RechargeOrder): string {
+  if (
+    (order.payment_status === "refunded") !==
+    (order.fulfillment_status === "reversed")
+  ) {
+    return "manualReview";
+  }
+  if (order.payment_status === "refunded") return "refunded";
   if (order.fulfillment_status === "credited") return "credited";
   if (order.fulfillment_status === "failed") return "creditFailed";
   if (order.payment_status === "paid") return "paid";
@@ -67,15 +79,19 @@ export function RechargePanel() {
       const response = await createOrder.mutateAsync({
         packageId: selectedPackage,
         paymentMethod: selectedPaymentMethod,
-        idempotencyKey: `web-${crypto.randomUUID()}`,
+        idempotencyKey: paymentIdempotencyKey(
+          "web",
+          JSON.stringify({ packageId: selectedPackage, paymentMethod: selectedPaymentMethod }),
+        ),
       });
+      rememberPaymentOrder(response.data.order);
       if (!response.data.checkout) {
-        toast.info(t("credits.recharge.orderAlreadyCreated"));
+        window.location.assign("/payment-return");
         return;
       }
       submitEpayCheckout(response.data.checkout);
-    } catch {
-      toast.error(t("credits.recharge.createFailed"));
+    } catch (error) {
+      toast.error(paymentErrorToastMessage(error, t, "credits.recharge.createFailed"));
     }
   };
 

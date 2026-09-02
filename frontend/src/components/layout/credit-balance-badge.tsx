@@ -78,10 +78,10 @@ export function CreditBalanceBadge() {
     }, 160);
   };
 
-  const openCredits = () => {
+  const openCredits = (tab: CreditCenterTab) => {
     cancelScheduledClose();
     setOpen(false);
-    setCenterTab("packages");
+    setCenterTab(tab);
     setCenterOpen(true);
   };
 
@@ -127,13 +127,22 @@ export function CreditBalanceBadge() {
           <div className="px-4 pb-2.5 pt-3.5">
             <div className="flex items-center justify-between">
               <div className="text-xs font-semibold">{t("credits.availableBalance")}</div>
-              <button
-                type="button"
-                onClick={openCredits}
-                className="text-xs font-medium text-primary outline-none transition-colors hover:text-primary/80 focus:outline-none focus:shadow-none focus:ring-0 focus-visible:outline-none focus-visible:shadow-none focus-visible:ring-0"
-              >
-                {t("credits.details")}
-              </button>
+              <div className="flex items-center gap-3">
+                <button
+                  type="button"
+                  onClick={() => openCredits("custom")}
+                  className="text-xs font-medium text-primary outline-none transition-colors hover:text-primary/80 focus:outline-none focus:shadow-none focus:ring-0 focus-visible:outline-none focus-visible:shadow-none focus-visible:ring-0"
+                >
+                  {t("credits.centerModal.tabs.custom")}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => openCredits("usage")}
+                  className="text-xs font-medium text-white/65 outline-none transition-colors hover:text-white focus:outline-none focus:shadow-none focus:ring-0 focus-visible:outline-none focus-visible:shadow-none focus-visible:ring-0"
+                >
+                  {t("credits.details")}
+                </button>
+              </div>
             </div>
             <div className="mt-3 flex items-center gap-1.5">
               <CreditSparkIcon className="size-5" />
@@ -161,7 +170,7 @@ export function CreditBalanceBadge() {
           {summary && summary.promotion_count > 0 ? (
             <button
               type="button"
-              onClick={openCredits}
+              onClick={() => openCredits("benefits")}
               className="flex w-full items-center gap-3 border-t border-white/8 px-4 py-3 text-left transition-colors hover:bg-white/[0.04]"
             >
               <span className="flex size-8 items-center justify-center rounded-lg bg-amber-400/12 text-amber-300">

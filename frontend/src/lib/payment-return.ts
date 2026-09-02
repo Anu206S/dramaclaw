@@ -8,6 +8,7 @@ export type PaymentReturnState =
   | "closed"
   | "failed"
   | "fulfillment_failed"
+  | "manual_review"
   | "refunded"
   | "unavailable";
 
@@ -17,8 +18,11 @@ export function resolvePaymentReturnState(
 ): PaymentReturnState {
   if (queryFailed) return "unavailable";
   if (!order) return "confirming";
-  if (order.payment_status === "refunded" || order.fulfillment_status === "reversed") {
+  if (order.payment_status === "refunded" && order.fulfillment_status === "reversed") {
     return "refunded";
+  }
+  if (order.payment_status === "refunded" || order.fulfillment_status === "reversed") {
+    return "manual_review";
   }
   if (order.fulfillment_status === "credited") return "credited";
   if (order.fulfillment_status === "failed") return "fulfillment_failed";

@@ -143,9 +143,12 @@ describe("CreditBalanceBadge", () => {
     expect(screen.getByText("当前有 2 项可能适用的优惠")).toBeInTheDocument();
   });
 
-  it("keeps one details entry and presents the summary as lightweight cards", () => {
+  it("presents recharge and details entries with the lightweight summary cards", () => {
     renderBadge();
 
+    expect(screen.getByRole("button", { name: "充值积分" })).toHaveClass(
+      "focus-visible:ring-0",
+    );
     expect(screen.getByRole("button", { name: "查看明细" })).toHaveClass(
       "focus-visible:ring-0",
     );
@@ -157,12 +160,20 @@ describe("CreditBalanceBadge", () => {
     }
   });
 
-  it("opens the credit center dialog instead of navigating away", () => {
+  it("opens the usage dashboard from the details entry", () => {
     renderBadge();
 
     fireEvent.click(screen.getByRole("button", { name: "查看明细" }));
 
-    expect(screen.getByRole("dialog")).toHaveTextContent("积分中心弹窗:packages");
+    expect(screen.getByRole("dialog")).toHaveTextContent("积分中心弹窗:usage");
+  });
+
+  it("opens custom recharge from the recharge entry", () => {
+    renderBadge();
+
+    fireEvent.click(screen.getByRole("button", { name: "充值积分" }));
+
+    expect(screen.getByRole("dialog")).toHaveTextContent("积分中心弹窗:custom");
   });
 
   it("opens billing history after returning from payment", () => {

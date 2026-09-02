@@ -1,9 +1,14 @@
 // SPDX-License-Identifier: Elastic-2.0
 // Copyright (c) 2026 ClaymoreLab
-import { describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it } from "vitest";
 
 import {
+  clearPaymentAttempt,
+  paymentIdempotencyKey,
   paymentOrderNumberFromSearch,
+  PAYMENT_RETURN_ORDER_ID_KEY,
+  PAYMENT_RETURN_ORDER_KEY,
+  rememberPaymentOrder,
   safePaymentReturnPath,
 } from "@/lib/payment-navigation";
 import {
@@ -62,8 +67,17 @@ describe("payment return state", () => {
       "fulfillment_failed",
     );
     expect(resolvePaymentReturnState(order({ payment_status: "refunded" }), false)).toBe(
-      "refunded",
+      "manual_review",
     );
+    expect(resolvePaymentReturnState(order({ fulfillment_status: "reversed" }), false)).toBe(
+      "manual_review",
+    );
+    expect(
+      resolvePaymentReturnState(
+        order({ payment_status: "refunded", fulfillment_status: "reversed" }),
+        false,
+      ),
+    ).toBe("refunded");
   });
 });
 
@@ -78,6 +92,8 @@ describe("payment expiry presentation", () => {
 });
 
 describe("payment return navigation", () => {
+  beforeEach(() => sessionStorage.clear());
+
   it("reads supported merchant order number parameters", () => {
     expect(paymentOrderNumberFromSearch("?mchOrderNo=DC1")).toBe("DC1");
     expect(paymentOrderNumberFromSearch("?out_trade_no=DC2")).toBe("DC2");
@@ -88,5 +104,24 @@ describe("payment return navigation", () => {
     expect(safePaymentReturnPath("https://evil.example")).toBe("/");
     expect(safePaymentReturnPath("//evil.example")).toBe("/");
     expect(safePaymentReturnPath("/payment-return?state=2")).toBe("/");
+  });
+
+  it("reuses an idempotency key for the same payment draft", () => {
+    const first = paymentIdempotencyKey("checkout", "package-a:alipay");
+    const retry = paymentIdempotencyKey("checkout", "package-a:alipay");
+    const changed = paymentIdempotencyKey("checkout", "package-a:wxpay");
+
+    expect(retry).toBe(first);
+    expect(changed).not.toBe(first);
+  });
+
+  it("records the order before checkout navigation and clears only the attempt", () => {
+    rememberPaymentOrder({ order_id: "order-1", merchant_order_no: "DC-1" });
+    paymentIdempotencyKey("checkout", "package-a:alipay");
+
+    expect(sessionStorage.getItem(PAYMENT_RETURN_ORDER_ID_KEY)).toBe("order-1");
+    expect(sessionStorage.getItem(PAYMENT_RETURN_ORDER_KEY)).toBe("DC-1");
+    clearPaymentAttempt();
+    expect(sessionStorage.getItem(PAYMENT_RETURN_ORDER_ID_KEY)).toBe("order-1");
   });
 });

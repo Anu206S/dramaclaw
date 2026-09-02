@@ -35,11 +35,15 @@ import {
   CHECKOUT_DRAFT_KEY,
   CHECKOUT_RETURN_KEY,
   CREDIT_CENTER_TAB_KEY,
+  clearPaymentAttempt,
   OPEN_CREDIT_CENTER_KEY,
   PAYMENT_RETURN_ORDER_ID_KEY,
   PAYMENT_RETURN_ORDER_KEY,
+  paymentIdempotencyKey,
+  rememberPaymentOrder,
   safePaymentReturnPath,
 } from "@/lib/payment-navigation";
+import { paymentErrorToastMessage } from "@/lib/payment-errors";
 import { cn } from "@/lib/utils";
 import { useAuthStore } from "@/stores/auth-store";
 
@@ -111,7 +115,18 @@ export function CheckoutPage() {
       : undefined;
   const summary = summaryQuery.data?.data;
   const org = creditOrgOf(summary);
-  const isOrgScope = creditScopeOf(summary) === "org_member";
+  const targetOrderType =
+    existingOrder?.order_type ?? packageItem?.order_type ?? "personal_recharge";
+  const effectiveOrgId = existingOrder?.org_id ?? packageItem?.effective_org_id ?? null;
+  const isOrgScope = targetOrderType === "org_member_recharge" && Boolean(effectiveOrgId);
+  const targetOrganizationName = org?.org_id === effectiveOrgId ? org.name : effectiveOrgId;
+  const subjectMatches = Boolean(
+    existingOrder ||
+      (summary &&
+        (targetOrderType === "personal_recharge"
+          ? creditScopeOf(summary) === "personal" && effectiveOrgId === null
+          : isOrgScope && creditScopeOf(summary) === "org_member" && org?.org_id === effectiveOrgId)),
+  );
   const customRecharge = customRechargeQuery.data?.data;
   const configuredPaymentMethods =
     draft?.kind === "custom"
@@ -139,7 +154,10 @@ export function CheckoutPage() {
       draft.credits <= customRecharge.max_credits,
   );
   const ready = Boolean(
-    draft && selectedPaymentMethod && (draft.kind === "custom" ? customReady : packageItem),
+    draft &&
+      subjectMatches &&
+      selectedPaymentMethod &&
+      (draft.kind === "custom" ? customReady : packageItem),
   );
   const creating = createOrder.isPending || createCustomOrder.isPending;
   const paymentClosed = Boolean(
@@ -171,7 +189,16 @@ export function CheckoutPage() {
   const continuePayment = async () => {
     if (!draft || !ready || !selectedPaymentMethod || creating) return;
     try {
-      const idempotencyKey = `checkout-${crypto.randomUUID()}`;
+      const fingerprint = JSON.stringify({
+        draft,
+        paymentMethod: selectedPaymentMethod,
+        orderType: targetOrderType,
+        effectiveOrgId,
+        amountCents,
+        credits,
+        configVersion: draft.kind === "custom" ? customRecharge?.version : undefined,
+      });
+      const idempotencyKey = paymentIdempotencyKey("checkout", fingerprint);
       const response = draft.kind === "custom"
         ? await createCustomOrder.mutateAsync({
             credits: draft.credits,
@@ -184,18 +211,14 @@ export function CheckoutPage() {
             paymentMethod: selectedPaymentMethod,
             idempotencyKey,
           });
+      rememberPaymentOrder(response.data.order);
       if (!response.data.checkout) {
-        toast.info(t("credits.recharge.orderAlreadyCreated"));
+        window.location.assign("/payment-return");
         return;
       }
-      sessionStorage.setItem(
-        PAYMENT_RETURN_ORDER_KEY,
-        response.data.order.merchant_order_no,
-      );
-      sessionStorage.setItem(PAYMENT_RETURN_ORDER_ID_KEY, response.data.order.order_id);
       submitEpayCheckout(response.data.checkout);
-    } catch {
-      toast.error(t("credits.recharge.createFailed"));
+    } catch (error) {
+      toast.error(paymentErrorToastMessage(error, t, "credits.recharge.createFailed"));
     }
   };
 
@@ -203,6 +226,7 @@ export function CheckoutPage() {
     if (paymentClosed || paymentFailed) {
       sessionStorage.removeItem(PAYMENT_RETURN_ORDER_ID_KEY);
       sessionStorage.removeItem(PAYMENT_RETURN_ORDER_KEY);
+      clearPaymentAttempt();
       window.location.reload();
       return;
     }
@@ -225,12 +249,14 @@ export function CheckoutPage() {
     );
   }
 
-  if (!draft || (draft.kind === "package" ? !packageItem : !customReady)) {
+  if (!draft || !subjectMatches || (draft.kind === "package" ? !packageItem : !customReady)) {
     return (
       <main className="flex min-h-dvh items-center justify-center bg-[#0b0d11] px-4 text-white">
         <section className="w-full max-w-md rounded-lg border border-white/10 bg-white/[0.035] p-6 text-center">
           <h1 className="text-lg font-semibold">{t("checkout.invalidTitle")}</h1>
-          <p className="mt-2 text-sm text-white/45">{t("checkout.invalidDescription")}</p>
+          <p className="mt-2 text-sm text-white/45">
+            {t(subjectMatches ? "checkout.invalidDescription" : "checkout.subjectMismatch")}
+          </p>
           <button
             type="button"
             onClick={leaveCheckout}
@@ -315,7 +341,9 @@ export function CheckoutPage() {
                   {isOrgScope ? <Building2 className="size-5" /> : <UserRound className="size-5" />}
                 </span>
                 <div className="min-w-0">
-                  <div className="truncate text-sm font-medium">{org?.name || username}</div>
+                  <div className="truncate text-sm font-medium">
+                    {isOrgScope ? targetOrganizationName : username}
+                  </div>
                   <div className="mt-1 text-xs text-white/40">
                     {t(isOrgScope ? "checkout.orgCredits" : "checkout.personalCredits")}
                   </div>
