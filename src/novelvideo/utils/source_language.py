@@ -4,9 +4,12 @@ from __future__ import annotations
 
 import inspect
 import re
+import unicodedata
 from typing import Literal
 
+import langid
 from langdetect import DetectorFactory, LangDetectException, detect
+import wordninja
 
 AssetLanguage = Literal["zh", "en"]
 
@@ -18,7 +21,7 @@ _SCREENPLAY_HEADING_RE = re.compile(
 )
 _LATIN_SPEAKER_CUE_RE = re.compile(r"^[A-Za-z][A-Za-z .'-]{0,80}[:：]\s*")
 _SHORT_ENGLISH_ACTION_RE = re.compile(
-    r"^\s*\S+\s+[A-Za-z]{2,}(?:s|ed|ing)\b",
+    r"^\s*\S+\s+(?P<verb>[A-Za-z]{2,}(?:s|ed|ing))\b",
     re.IGNORECASE | re.MULTILINE,
 )
 
@@ -49,13 +52,23 @@ def detect_asset_language(text: str) -> AssetLanguage:
     if han * 2 >= latin and han:
         return "zh"
 
-    looks_like_short_english_action = bool(_SHORT_ENGLISH_ACTION_RE.search(prose))
+    short_action_match = _SHORT_ENGLISH_ACTION_RE.search(prose)
+    # langdetect is intentionally conservative for tiny screenplay actions.
+    # Require the inflected verb to exist in wordninja's pinned English
+    # frequency lexicon before overriding a non-English statistical result.
+    looks_like_short_english_action = bool(
+        short_action_match
+        and short_action_match.group("verb").lower()
+        in wordninja.DEFAULT_LANGUAGE_MODEL._wordcost
+    )
     try:
         detected = detect(prose) if prose.strip() else ""
     except LangDetectException:
         detected = ""
 
-    if detected == "en" or looks_like_short_english_action:
+    ascii_prose = unicodedata.normalize("NFKD", prose).encode("ascii", "ignore").decode()
+    langid_detected = langid.classify(ascii_prose)[0] if ascii_prose.strip() else ""
+    if langid_detected == "en" and (detected == "en" or looks_like_short_english_action):
         return "en"
 
     # Unsupported natural languages — including kana/Hangul prose and Latin
