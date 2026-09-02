@@ -18,7 +18,6 @@
   "src/novelvideo/ports/local/tasks.py": 2,
   "src/novelvideo/sqlite_store.py": 12,
   "src/novelvideo/stage_asset_tasks.py": 14,
-  "src/novelvideo/structured_builders.py": 25,
   "src/novelvideo/structured_extraction.py": 16,
   "src/novelvideo/task_backend/run_core.py": 4,
   "src/novelvideo/task_backend/runners/prop_reference.py": 1,
@@ -26,7 +25,6 @@
   "src/novelvideo/task_backend/runners/script.py": 3,
   "src/novelvideo/task_backend/runners/sketch.py": 25,
   "src/novelvideo/task_backend/runners/video.py": 14,
-  "src/novelvideo/task_state.py": 1,
   "src/novelvideo/utils/screenplay_quality.py": 6,
   "src/novelvideo/verification/routes.py": 1,
   "src/novelvideo/workflows/literal_script_writing.py": 9

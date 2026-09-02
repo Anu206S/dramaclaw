@@ -29,6 +29,7 @@ from typing import List, Optional
 
 from novelvideo.i18n_message import (
     MessageLike,
+    lmsg,
     log_entry_payload,
     message_payload,
     message_text,
@@ -723,11 +724,16 @@ class TaskStateManager:
                 scope=scope,
                 status="submitting",
                 progress=0.0,
-                current_task="任务正在投递",
+                current_task="",
                 result=self._merge_metadata_into_result(None, metadata),
                 metadata=metadata,
                 created_at=now,
                 updated_at=now,
+            )
+            # 初始文案不走 update_progress_for_project，直接写字段就没有 code 可翻；
+            # 这里补一次，英文界面才不会闪一句中文。
+            self._apply_progress_message(
+                state, lmsg("tasks.progress.submitting", "任务正在投递"), None
             )
             self._save_on_connection(conn, task_key, state, None)
             return state, True
@@ -861,7 +867,9 @@ class TaskStateManager:
             if state.status in {"submitting", "queued"}:
                 state.status = "queued"
                 state.progress = 0.0
-                state.current_task = "任务已进入队列"
+                self._apply_progress_message(
+                    state, lmsg("tasks.progress.queued", "任务已进入队列"), None
+                )
             if metadata is not None:
                 state.metadata = self._merge_task_metadata(state.metadata, metadata)
                 state.result = self._merge_metadata_into_result(state.result, state.metadata)
