@@ -123,6 +123,18 @@ beforeAll(async () => {
                 seedance2GuidanceLighting: "光影",
                 seedance2GuidanceCamera: "镜头",
                 seedance2GuidanceStyle: "风格",
+                seedance2GuidanceSubjectTemplate:
+                  "主体：明确画面核心人物或物体、当前动作和状态，避免多个主体争抢焦点。",
+                seedance2GuidanceSceneTemplate:
+                  "场景：补充空间背景、地点关系、关键道具和环境材质，保持与参考图一致。",
+                seedance2GuidanceLightingTemplate:
+                  "光影：描述主光源、明暗层次、色温和氛围，避免忽明忽暗。",
+                seedance2GuidanceCameraTemplate:
+                  "镜头：说明景别、视角、运镜速度和运动方向，保持镜头运动清晰可执行。",
+                seedance2GuidanceStyleTemplate:
+                  "风格：限定画面质感、时代感、色彩倾向和真实度，避免风格漂移。",
+                seedance2GuidanceNoSubtitleTemplate:
+                  "无字幕：避免生成任何文字或字幕，保持画面纯净。",
                 seedance2SceneOptimizeLabels: {
                   anime: "动漫",
                   realistic: "写实",
@@ -168,6 +180,19 @@ beforeAll(async () => {
                 narratorVoiceRecord: "录音",
                 narratorVoiceProjectAudio: "项目音频",
                 narratorVoiceDelete: "删除",
+              },
+            },
+          },
+        },
+      },
+      en: {
+        translation: {
+          episode: {
+            workbench: {
+              video: {
+                seedance2GuidanceCamera: "Camera",
+                seedance2GuidanceCameraTemplate:
+                  "Camera: Specify shot size, viewpoint, movement speed, and direction so the camera move is clear and executable.",
               },
             },
           },
@@ -2088,6 +2113,21 @@ describe("VideoPane Seedance2 inspector", () => {
     const payload = updateBeatMock.mock.calls[0][0];
     const config = JSON.parse(payload.data.seedance2_config_json);
     expect(config.prompt_guidance).toBe(template);
+  });
+
+  it("inserts English Seedance2 guidance in the English UI", async () => {
+    const user = userEvent.setup();
+    await i18n.changeLanguage("en");
+    renderPane();
+
+    await user.click(screen.getByRole("button", { name: "Camera" }));
+
+    expect(screen.getByLabelText("自定义提示词")).toHaveValue(
+      "Camera: Specify shot size, viewpoint, movement speed, and direction so the camera move is clear and executable.",
+    );
+    await act(async () => {
+      await i18n.changeLanguage("zh");
+    });
   });
 
   it("does not render project narrator voice management inside the video pane", () => {

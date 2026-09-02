@@ -121,57 +121,37 @@ const BEAT_VIDEO_GENERATION_FEATURE_KEY = "mainline.beat_video_generation";
  */
 const SEEDANCE2_UNSENT_REFERENCE_LABEL = "未发送"; // i18n-exempt —— 后端契约值
 
-type Seedance2PromptLanguage = "zh" | "en";
-
 /** Prompt guidance inserted by UI controls follows the current UI language. */
 const SEEDANCE2_PROMPT_GUIDANCE_TEMPLATES = [
   {
     key: "subject",
     labelKey: "seedance2GuidanceSubject",
-    text: {
-      zh: "主体：明确画面核心人物或物体、当前动作和状态，避免多个主体争抢焦点。",
-      en: "Subject: Define the primary character or object, its current action and state, and avoid competing focal subjects.",
-    },
+    textKey: "seedance2GuidanceSubjectTemplate",
   },
   {
     key: "scene",
     labelKey: "seedance2GuidanceScene",
-    text: {
-      zh: "场景：补充空间背景、地点关系、关键道具和环境材质，保持与参考图一致。",
-      en: "Scene: Describe the spatial background, location relationships, key props, and environmental materials while staying consistent with the references.",
-    },
+    textKey: "seedance2GuidanceSceneTemplate",
   },
   {
     key: "lighting",
     labelKey: "seedance2GuidanceLighting",
-    text: {
-      zh: "光影：描述主光源、明暗层次、色温和氛围，避免忽明忽暗。",
-      en: "Lighting: Describe the key light, tonal layers, color temperature, and atmosphere while avoiding unintended flicker.",
-    },
+    textKey: "seedance2GuidanceLightingTemplate",
   },
   {
     key: "camera",
     labelKey: "seedance2GuidanceCamera",
-    text: {
-      zh: "镜头：说明景别、视角、运镜速度和运动方向，保持镜头运动清晰可执行。",
-      en: "Camera: Specify shot size, viewpoint, movement speed, and direction so the camera move is clear and executable.",
-    },
+    textKey: "seedance2GuidanceCameraTemplate",
   },
   {
     key: "style",
     labelKey: "seedance2GuidanceStyle",
-    text: {
-      zh: "风格：限定画面质感、时代感、色彩倾向和真实度，避免风格漂移。",
-      en: "Style: Define visual texture, period, color direction, and realism to prevent style drift.",
-    },
+    textKey: "seedance2GuidanceStyleTemplate",
   },
   {
     key: "no_subtitle",
     labelKey: "seedance2GuidanceNoSubtitle",
-    text: {
-      zh: "无字幕：避免生成任何文字或字幕，保持画面纯净。",
-      en: "No subtitles: Do not generate any text or subtitles; keep the frame visually clean.",
-    },
+    textKey: "seedance2GuidanceNoSubtitleTemplate",
   },
 ] as const;
 const VIDEO_GRID_CLASS =
@@ -287,12 +267,7 @@ export function VideoPane({
   defaultBackend,
   showAudioMediaStatus = true,
 }: VideoPaneProps) {
-  const { t, i18n } = useTranslation();
-  const seedance2PromptLanguage: Seedance2PromptLanguage = (
-    i18n.resolvedLanguage ?? i18n.language
-  ).startsWith("zh")
-    ? "zh"
-    : "en";
+  const { t } = useTranslation();
   const { spec } = useProjectAspectRatio(project);
   const frameAspectCss = ratioToCss(spec.renderAspect);
   const seedance2Id = useId();
@@ -2481,7 +2456,7 @@ export function VideoPane({
                     className={SEEDANCE2_PILL_ACTION_CLASS}
                     onClick={() =>
                       appendSeedance2PromptGuidanceTemplate(
-                        template.text[seedance2PromptLanguage],
+                        t(`episode.workbench.video.${template.textKey}`),
                       )
                     }
                   >
